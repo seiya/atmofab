@@ -86,6 +86,27 @@ to **one unbilled observation**).
   event, **count the traces on the success side**
 - When a premise collapses, **keep the measurements**. The plan dies; the measured facts stay
 
+**1-e. "Out of scope because the leaf gains nothing" is a classification rule 1 does not govern.**
+Rule 1 answers *can this happen* and demands an execution record, which is right for
+**unreachable** — a claim about the mechanism. It is the wrong rule, and an expensive one, for
+**out of scope**, a claim about the premises: `AGENTS.md` §"Development premises" defends against a
+`leaf shortcut`, an action getting a leaf closer to reporting its task done without earning it, and
+against nothing a leaf gains nothing from. A finding on the second side is dropped by **naming what
+the leaf would gain and showing it is nothing**, with no attack run.
+
+- **Confusing the two is a defect in both directions.** Say "unreachable" about something you never
+  attacked and PR #51's P1 comes back — five rounds in the residual bucket on an unverified
+  premise. Demand the attack for a gains-nothing finding and you bought a reproduction for
+  something you were dropping either way. **Decide which claim you are making before you decide
+  what evidence it needs**
+- **The test is what the leaf is closer to afterwards.** Write "a leaf that takes this is closer to
+  ___". If the blank fills with reporting a `substep` done — a check passed, a gate cleared, a
+  verdict green — rule 1 applies and you run it. If it cannot be filled, it is out of scope
+- **Intent is not a defense.** A leaf under a goal has a motive to find the spelling that works, so
+  "no leaf would phrase it that way" carries no weight on a finding that reaches done
+- **This deletes no existing defense.** Deleting is rule 1-b's question and needs 1-b's evidence.
+  What this rule decides is whether you ADD one, and whether a finding against one is worth a round
+
 **2. Do not close an environment-dependent finding with a mock on the test side.** When told
 "this test fails on a machine without the compiler", first ask **what happens in production on
 that machine** (PR #51: mocking `which` capped a hole where the rule was inert on machines with
@@ -380,6 +401,9 @@ If you judge that no update is needed, say so in one line. The judgment itself i
 Use this skill even when you have not touched code. Judgment rule 1 is what matters at this
 moment.
 
+- **Ask what the leaf GAINS before reaching for a reproduction** (rule 1-e). The findings that
+  survive the most rounds here die on that question, and attacking first buys evidence the
+  classification never reads
 - Before sorting a finding into real / false positive / residual, run the reproduction
 - Treat "the implementation is right but the test is weak" as real (PR #51's surviving mutants
   came from here)

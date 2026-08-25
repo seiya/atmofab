@@ -265,12 +265,23 @@ nor resets the two-consecutive-clean-security-rounds condition.**
 - **If the reported HEAD is a hash you do not recognize, find out what commit it is first** —
   the user or another session can commit to the same branch. That is concurrency, not staleness:
   read it and **judge whether it collides with your scope**
-- **Hand over the threat model and the purpose in one paragraph** (from "Fix or out of scope"
-  below): "a single-operator research workflow platform; what is defended against is a deviating
-  `LLM` leaf and the defects my own changes introduce; hardening paths only the operator can
-  reach, and handling constructs that exist nowhere in the real corpus, are out of scope."
-  **Without it the report fills with future forms of details.** But **do not name individual
-  findings as excluded** — that is an exclusion list, subject to the three-round rule below
+- **Hand over the premises in one paragraph** (`AGENTS.md` §"Development premises" is canonical;
+  hand over this short form): "a single-operator research workflow platform. What is defended
+  against is a **`leaf shortcut`** — an `LLM` leaf is not malicious and takes shortcuts, so
+  anything getting it closer to reporting its task DONE without earning it (a loosened assertion,
+  a hardcoded expected value, a check recorded as run, a gate edited rather than satisfied, a past
+  artifact read as input) is in scope at full severity — and the defects my own changes introduce.
+  **A hole getting the leaf no closer to done is out of scope**: the operator's credentials, a
+  read outside the checkout, another orchestration, anything outliving the run. So is hardening a
+  path only the operator can reach, and a construct occurring zero times in the real corpus."
+  **Both halves are load-bearing**: without the first, the review skips the machinery that makes a
+  verdict mean anything; without the second, it fills with escapes that gain a leaf nothing
+- **Make each finding carry its own gain sentence** — "a leaf taking this gets ⟨what⟩ toward
+  reporting its task done". **A finding that cannot carry one is not a finding**, it is a mechanism
+  description, and the sentence is what you triage against afterwards. It also states the
+  over-refusal probe's other half: for a check, the same sentence is what a legitimate input says
+- But **do not name individual findings as excluded** — that is an exclusion list, subject to the
+  three-round rule below
 - **For a change that adds checking machinery, include "construct legitimate work that this check
   wrongly refuses".** Ask only for misses and the over-refusals stay. The criterion is whether the
   pin is on **the rule** or on **the result the rule produced**; pinning results makes ordinary
@@ -353,7 +364,9 @@ had dropped it into residual).
 **Codex's token budget is scarce. One launch per branch as a rule, two at the most.** Do not launch
 in round 1 — round 1 findings are the coarse layer subagents also produce, and spending the launch
 there **leaves nothing for the moment independence pays most: after your own fixes have piled up**.
-Launch once **in round 2 or 3** (do not save it for the end).
+Launch once **in round 2** (do not save it for the end). Round 3 is not an equal alternative under
+the budget above: the launch has to leave a round behind it for its own findings' fixes to be
+reviewed in, and at the default of round 0 plus three, only a round-2 launch does.
 
 **Cases where not launching is better** (spend a blank-slate subagent review instead): a change
 that **adds checking machinery** (Codex structurally almost always finds "one more construct", so
@@ -403,13 +416,29 @@ something there, **write one line of justification and do not carry the list int
 (same reason as exclusion lists — and if reachability is unverified, do not drop it, run the
 reproduction).
 
-**What this repository is**: a **single-operator research workflow platform** that generates and
-certifies weather and climate kernels from a `spec` — `README.md` §Scope is canonical for what it
-builds, while the threat model below is this skill's framing of it —
-`docs/design/zero_base_architecture.md` states the leaf half, and the "defects my own changes
-introduce" half appears nowhere else. What is defended
-against is **a deviating `LLM` leaf and defects my own changes introduce**, not a malicious third
-party and not an unknown user population. It is neither a distributed artifact nor a long-lived API.
+**`AGENTS.md` §"Development premises" is canonical for the model** — what this repository is, the
+two defended classes, and the decision criterion. It moved there because Codex gets only
+`AGENTS.md` (see "When to bring in Codex"), so the independent pass was running with no premise at
+all. Do not restate it here; what this section holds is what a REVIEW does with it.
+
+**The leaf is not malicious and does not hold back. Those are one premise, not a middle.** The
+reviewer's question is never "could a leaf do this" — a capable model under a goal can do nearly
+anything — but **"does doing it get the leaf closer to reporting its task DONE?"** That is the
+cut, and it runs both ways:
+
+- **On the shortest route to done** — a `leaf shortcut` (`docs/GLOSSARY.md` §12): an assertion
+  loosened until it passes, an expected value hardcoded, a check recorded as run, a `gate`
+  satisfied by editing it, an unmeasured value written down, a past artifact read as input. **In
+  scope**, and the leaf will spell it however it has to: "a leaf would not phrase it that way" is
+  no defense here, because reaching done is the motive that makes it phrase it that way
+- **Buying the leaf nothing toward done** — the operator's credentials, a read outside the
+  checkout, another `orchestration`, anything outliving the run. **Out of scope however real the
+  mechanism**, and saying so **costs no reproduction**: name what the leaf would gain, show it is
+  nothing, stop. That permission is narrow and is not rule 1's — `metdsl-enforcement-change`
+  rule 1-e states the two apart
+
+**Both halves have a recorded failure, in opposite directions, so apply both** (episodes:
+`references/class-descent-log.md` §"The gain cut").
 
 **Fix (directly serves the purpose):**
 
@@ -420,16 +449,28 @@ party and not an unknown user population. It is neither a distributed artifact n
 - **false evidence** — recording something as run that was not, breaking the audit trail, a commit
   message / PR / doc disagreeing with the artifact
 - **loss of reproducibility** — `--resume` breaks, non-determinism enters a verdict
+- **a `leaf shortcut`** — anything letting a leaf report done without earning it. It subsumes the
+  four above whenever a leaf is what reaches them
 - **a hole an `LLM` leaf hits with ordinary spelling** — a shape that exists in the real corpus
-  (this tree's spec and generated artifacts)
+  (this tree's spec and generated artifacts). For a shortcut, ordinary spelling **also covers
+  whatever spelling reaches done**
 
 **Do not fix (declare out of scope and stop):**
 
+- **anything a leaf gains nothing from** — the operator's credentials, a read outside the checkout,
+  another `orchestration`'s state, persistence past the run. No route through one of them ends at a
+  green verdict. **Check the gain before the mechanism.** Mind the near miss: reading a PAST
+  ARTIFACT is on the other side of this line, forbidden by `docs/workflow/WORKFLOW_CORE.md`
+  precisely because it shortens the route to done, so "a read the manifest does not grant" is by
+  itself neither verdict
 - **defenses against paths only the operator can reach** — hand-crafting invalid argv, editing
-  files to bypass a gate. Outside the threat model
+  files to bypass a gate. The operator owns the machine
 - **handling constructs that occur zero times in the real corpus** — future forms an adversarial
   reviewer wrote to break the rule. Declare the scope: "this is regression prevention for ordinary
-  spelling, not enforcement against someone trying to circumvent it"
+  spelling, not enforcement against someone trying to circumvent it". **This is a cheap proxy for
+  the gain test, not a second rule**: one `grep` decides it, so reach for it first, and when the
+  two disagree the gain test governs — a shape absent from today's corpus is still in scope when
+  taking it shortens a leaf's route to done
 - **generalization for future extension** — unnecessary while there is no second caller
 - **optimization that measurement shows is not the bottleneck** — the bottleneck is thinking, not
   Python
@@ -438,11 +479,61 @@ party and not an unknown user population. It is neither a distributed artifact n
 - **rough edges in existing behaviour this PR does not touch** — file them in TODO.md and hand
   them over. Pulling them in compounds "fixes calling for fixes"
 
-**One question when in doubt**: "if this stays unfixed and one `workflow` runs, does a **wrong
-certification** or a **false record** come out?" If not, out of scope is fine. Write the count and
+**Two questions when in doubt**, both of which must answer yes: "if this stays unfixed and one
+`workflow` runs, does a **wrong certification** or a **false record** come out?" and "**does a leaf
+get closer to reporting its task done by taking it?**" If either is no, out of scope is fine — and
+when the second is the no, say what the leaf would have gained. Write the count and
 the breakdown of what you dropped into the PR body / your report to the user — never drop silently.
 
 ## Stopping conditions
+
+**The budget comes first. Every condition below is a property of the FINDINGS, and none of them
+bounds the cost** — which is why no recorded loop was ended by one of them alone.
+
+**Round 0 plus THREE rounds is the default; FIVE rounds is the cap.** At the cap you stop, whatever
+the class did.
+
+**The default is three because of where Codex lands.** The launch goes in round 2 (see "When to
+bring in Codex": not round 1, which is the coarse layer, and not the end), it is the pass that
+structurally sees what subagents do not, and **what it finds then has to be fixed — so round 3 is
+the round that reviews those fixes**. Ending at round 2 would ship the answers to Codex's findings
+unreviewed, against this loop's strongest recorded regularity: **most findings sit inside the
+previous round's fix**. Round 3 is not slack in the budget; it is the round Codex's launch creates.
+A change that fixes existing machinery, or one where the Codex launch is deliberately not spent,
+often closes at round 0 plus one or two — spend fewer than the default when the reason is that
+kind, never to reach a deadline.
+
+What counts: every round counts, the disclosure round and the census round included — the
+disclosure round is one of the budgeted rounds, never an addition to them. A Codex pass rides
+inside a round and is not a round of its own.
+
+**What the cap ends is the SEARCH, not the REPAIR.** An in-scope finding already on the table at
+the cap — a `leaf shortcut`, a wrong verdict, a broken contract, a false record — is fixed before
+the branch goes anywhere. **The budget never ships a known one**, and a fix commit answering a
+finding you already hold is not a new round. What stops is looking for the next finding.
+
+**Rounds past the cap do find real defects. The budget is a decision to pay that cost, not a claim
+that nothing is left** — writing it down the second way would be false, and recorded false: issue
+#71's round 15 found five defects in a committed measurement script, two of them functional, and
+PR #72's third Codex pass found what four subagent rounds had missed. What the budget weighs
+against them is the work not being done meanwhile (`references/class-descent-log.md` §"The budget").
+
+**Stopping at the cap is not convergence. Say which condition you did not meet**, in the PR body
+and to the user, and never write "converged" for it.
+
+**The remainder goes into the PR body as a disclosure, not into a new issue.** Filing it as an
+issue reads as closure while the backlog is what actually grew; measured, every open issue on this
+repository is infrastructure spun out of a review loop. File an issue only for work someone has
+decided to do, not for a remainder nobody has. This is about a ROUND's remainder and leaves the
+residue convention alone: a rough edge in existing behaviour the PR does not touch still goes to
+`TODO.md` under "Fix or out of scope" above.
+
+**Reaching the cap with something in scope still open is a signal about the CHANGE.** Do not
+answer it with a sixth round — split the branch, narrow the rule, or hand it over with what would
+have to be built to make a strong claim. The sign below ("five rounds without the class descending
+→ the shape of the rule is wrong") is the same reading arrived at from the findings' side.
+**Past the cap, adding a round is the USER's decision**, put to them with the count, what the last
+round found, and what you would spend the round on.
 
 **The main condition is "class descent plus a demonstration that the remainder is bounded".** Stop
 once the severity class of the findings has dropped **and** you can show the remainder is bounded.
@@ -490,6 +581,12 @@ code:
   the severity of the action it causes
 - **Text a maintainer reads to decide** — a residue entry, a justification comment, a measured
   number — is descriptive, and belongs in the bounded remainder
+- **Text only a maintainer reads gets no ROUND of its own**, which is a statement about the budget
+  and not about whether it is fixed. `TODO.md`, `references/`, a skill file, a commit-message body:
+  correct a defect there in the commit that notices it — "false evidence" keeps it in the fix list
+  — but it never advances or resets a stopping condition and never justifies spending a budgeted
+  round. These are the files where a round can always find one more thing, and measured over one
+  month `TODO.md` alone took more than an order of magnitude more commits than `spec/` did
 - The tell that you are in the first category: the sentence contains an imperative, or names a
   condition under which something is refused
 
