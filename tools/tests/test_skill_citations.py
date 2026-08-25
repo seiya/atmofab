@@ -21,15 +21,19 @@ Two properties the first draft lacked, both found by review:
 - **The corpus is discovered from git and its size is asserted.** Moving `references/` out from
   under a skill made the scan find nothing and pass — an empty corpus satisfies an
   absence-assertion for ever.
-- **Nothing touches the filesystem.** The first draft asked `Path.exists()`, so a gitignored
-  file present in the author's checkout passed here and failed in every clone; the repair
-  after that still `read_text()` its way to a `FileNotFoundError` on a tree whose index and
-  worktree disagree. Git is asked once, and it is the only thing asked.
+- **Nothing touches the filesystem** — neither the path set nor the CONTENT. The first draft
+  asked `Path.exists()`, so a gitignored file present in the author's checkout passed here and
+  failed in every clone. The first repair fixed only the path set and still `read_text()` its
+  way to a `FileNotFoundError` on a tree whose index and worktree disagree; it said in its own
+  docstring that it had fixed both, which is the class this branch exists to stop. Paths come
+  from `git ls-files` and bodies from `git show :<path>`, so both sides read the same index.
 """
 from __future__ import annotations
 
+import functools
 import re
 import subprocess
+import tempfile
 import unittest
 from functools import lru_cache
 from pathlib import Path
@@ -79,7 +83,12 @@ def normalize(token: str) -> str:
     """
     token = token.rstrip(".,;:)").rstrip("/")
     token = token.split("#", 1)[0].split("::", 1)[0]
-    return re.sub(r":\d+$", "", token)
+    # A locator is a line, a line RANGE, or either with an `L` prefix; a possessive `'s` is
+    # ordinary prose around a filename. The first version handled only a bare single line, so
+    # `cli.py:120-140`, `HOOKS.md:L14` and `cli.py's` were all refused — over-refusal on
+    # correct writing, which is what gets a check weakened instead of answered.
+    token = re.sub(r"'s$", "", token)
+    return re.sub(r":L?\d+(-L?\d+)?$", "", token)
 
 
 def citation_targets(text: str, source: str) -> list[str]:
@@ -121,7 +130,39 @@ def skill_documents() -> tuple[str, ...]:
                         if f.startswith(SKILL_ROOT + "/") and f.endswith(".md")))
 
 
+def document_body(path: str, root: Path = REPO_ROOT) -> str:
+    """The document as the INDEX holds it.
+
+    Not `read_text`. A tree whose index and worktree disagree — a deletion not yet staged, a
+    partial or sparse checkout, a rebase in flight — makes the filesystem read raise while the
+    path set says the file is there, so the check dies with `FileNotFoundError` instead of
+    reporting on citations. The two halves have to ask the same source.
+    """
+    return subprocess.run(["git", "show", f":{path}"], cwd=root,
+                          capture_output=True, text=True, check=True).stdout
+
+
+def skill_names() -> frozenset[str]:
+    """The skill directories git tracks a document in."""
+    return frozenset(document.split("/")[2] for document in skill_documents())
+
+
 class SkillCitationTests(unittest.TestCase):
+
+    @staticmethod
+    def _corpus_by_pathspec() -> frozenset[str]:
+        """The corpus again, asked of git a DIFFERENT way.
+
+        `skill_documents()` filters the full `ls-files` output in Python; this asks git to do
+        the matching with a glob pathspec. Two derivations, so a change to either one's filter
+        shows up as a disagreement — a floor expressed as a count did not: dropping every
+        `references/` document (a third of the corpus, including the file this branch edited)
+        still cleared "at least 6 documents, at least 30 citations".
+        """
+        out = subprocess.run(
+            ["git", "ls-files", "-z", "--", f":(glob){SKILL_ROOT}/**/*.md"],
+            cwd=REPO_ROOT, capture_output=True, text=True, check=True).stdout
+        return frozenset(entry for entry in out.split("\0") if entry)
 
     def test_every_repository_path_a_skill_cites_is_tracked(self) -> None:
         """A pointer nobody can follow is worse than no pointer.
@@ -132,7 +173,7 @@ class SkillCitationTests(unittest.TestCase):
         """
         broken = []
         for document in skill_documents():
-            text = (REPO_ROOT / document).read_text(encoding="utf-8")
+            text = document_body(document)
             for target in citation_targets(text, document):
                 if not is_tracked(target):
                     broken.append(f"{document}: `{target}` is not a tracked path")
@@ -147,10 +188,15 @@ class SkillCitationTests(unittest.TestCase):
         rather than an equality because these documents are edited constantly.
         """
         documents = skill_documents()
-        self.assertGreaterEqual(len(documents), 6, documents)
-        total = sum(len(citation_targets((REPO_ROOT / d).read_text(encoding="utf-8"), d))
-                    for d in documents)
-        self.assertGreaterEqual(total, 30, f"only {total} citations found — is the scan live?")
+        # STRUCTURAL, not just a number. A floor of "6 documents / 30 citations" was measured
+        # to pass with a THIRD of the corpus dropped — including the reference file this branch
+        # edited — because the remainder still cleared it. What must hold is that every skill
+        # git tracks a document in is represented, and that each contributes something.
+        self.assertEqual(frozenset(documents), self._corpus_by_pathspec())
+        for name in sorted(skill_names()):
+            docs = [d for d in documents if d.split("/")[2] == name]
+            found = sum(len(citation_targets(document_body(d), d)) for d in docs)
+            self.assertGreater(found, 0, f"{name} contributed no citations — is the scan live?")
 
 
 class CitationScannerSelfTests(unittest.TestCase):
@@ -164,10 +210,18 @@ class CitationScannerSelfTests(unittest.TestCase):
         self.assertEqual(targets, ["tools/no_such_file.py"])
         self.assertFalse(is_tracked(targets[0]))
 
-    def test_a_path_untracked_but_present_locally_is_not_accepted(self) -> None:
-        """The environment-dependence a round-0 worktree run exposed: `workspace/` is
-        gitignored and populated in a working checkout, absent from a clone."""
-        self.assertFalse(is_tracked("workspace/orchestrations"))
+    def test_a_path_untracked_but_present_on_disk_is_not_accepted(self) -> None:
+        """The witness for "git, not the filesystem" — and it must hold in EVERY checkout.
+
+        The first version of this row named `workspace/orchestrations`, which is gitignored
+        and populated in a working checkout and ABSENT from a clone. So in a clone it passed
+        because the path did not exist, not because the predicate asks git: reverting
+        `is_tracked` to `Path.exists()` left all nine rows green there. The witness has to name
+        something that is present in every checkout and tracked in none. `.git` is exactly
+        that — a directory in a main checkout, a file in a linked worktree, never tracked.
+        """
+        self.assertTrue((REPO_ROOT / ".git").exists(), "no .git — this row cannot witness")
+        self.assertFalse(is_tracked(".git"))
         self.assertTrue(is_tracked("tools/hooks"))
 
     def test_a_deliberately_untracked_citation_is_exempt_by_name(self) -> None:
@@ -190,6 +244,30 @@ class CitationScannerSelfTests(unittest.TestCase):
             citation_targets("`scripts/measure_claude_tool.py`", source),
             [f"{SKILL_ROOT}/metdsl-enforcement-change/scripts/measure_claude_tool.py"])
 
+    def test_the_body_is_read_from_the_index_not_the_worktree(self) -> None:
+        """The property the previous round claimed to have fixed and had not.
+
+        Replacing `document_body` with `read_text` passes in any checkout where the index and
+        the worktree agree — which is every checkout the suite normally runs in, so the
+        mutation survived and the docstring's claim went unwitnessed. A tree where they
+        DISAGREE has to be built: this stages a file and then deletes it from disk, which is
+        an unstaged deletion, a partial checkout and a rebase in flight all at once as far as
+        this predicate is concerned.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run = functools.partial(subprocess.run, cwd=root, check=True,
+                                    capture_output=True, text=True)
+            run(["git", "init", "-q"])
+            run(["git", "config", "user.email", "t@example.invalid"])
+            run(["git", "config", "user.name", "t"])
+            (root / "doc.md").write_text("cites `tools/hooks/cli.py`", encoding="utf-8")
+            run(["git", "add", "doc.md"])
+            (root / "doc.md").unlink()
+            self.assertEqual(document_body("doc.md", root), "cites `tools/hooks/cli.py`")
+            with self.assertRaises(FileNotFoundError):
+                (root / "doc.md").read_text(encoding="utf-8")
+
     def test_prose_that_only_looks_like_a_path_is_not_a_citation(self) -> None:
         """The over-refusal direction, which is what gets a check deleted rather than fixed.
 
@@ -202,7 +280,8 @@ class CitationScannerSelfTests(unittest.TestCase):
 
     def test_an_anchor_or_a_line_number_does_not_break_a_citation(self) -> None:
         for spelling in ("docs/HOOKS.md#the-rule", "docs/HOOKS.md:14", "docs/HOOKS.md::absolute",
-                         "tools/tests/"):
+                         "tools/tests/", "tools/hooks/cli.py:120-140", "docs/HOOKS.md:L14",
+                         "docs/HOOKS.md#L14", "tools/hooks/cli.py's"):
             with self.subTest(spelling):
                 targets = citation_targets(f"`{spelling}`", self._SOURCE)
                 self.assertEqual(len(targets), 1, spelling)
