@@ -132,34 +132,52 @@ emitted** 40 lines below stayed stale. Worse, the "measured value" I cited as gr
 inverted by an implementation change (the consequence of `language: " fortran"`). Use the grep
 procedure in `references/verification.md`.
 
-**3-a. Past three statement sites, the sweep is not enough — COUPLE the documents to the rule
-with a check.** Rule 3 is a discipline, and on issue #71 that discipline failed **four
-consecutive rounds after it had been diagnosed**. Round 11 named "the rounds were reliable
-about code and unreliable about their own record"; rounds 12, 13, 14 and 15 each found the
-same class again. The worst instance: the hook refuses on `pattern.startswith(("/", "~"))`,
-and **five canonical statements said "ONLY when it is ABSOLUTE"** — `~` is not absolute, which
-was that branch's own central measurement — so `docs/AGENT_CONTRACT.md`, **the only document a
-leaf reads**, told a leaf that a refusal it can actually receive cannot happen. Round 14
-corrected the refusal string and propagated it to none of the five.
+**3-a. When the sweep keeps losing, COUPLE the documents to the rule with a check.** Rule 3
+is a discipline, and on issue #71 it failed **four consecutive rounds after it had been
+diagnosed**: round 11 named "the rounds were reliable about code and unreliable about their own
+record", and rounds 12 through 15 each CARRIED the same class — carried, not found: round 12 is the
+narrowing commit and discovered no record defect, so "four rounds found it" would overstate what
+the history shows. The worst instance: the hook
+refuses a `Glob` pattern beginning with `/` or with `~`, and **five canonical statements said
+"ONLY when it is ABSOLUTE"** — `~` is not absolute, which was that branch's own central
+measurement — so `docs/AGENT_CONTRACT.md`, the one document EVERY leaf reads, told a leaf that
+a refusal it can actually receive cannot happen.
 
-What ended it was not more care. It was a test that **reads the rule's constant out of the
-code** and requires every statement site to name every member, so adding a prefix fails until
-the documents say so:
+**Reach for the pattern this repository already uses three times** rather than inventing one:
+`tools/tests/test_hooks_cli.py` holds `_SCRATCH_SURFACES`, `_REDIRECT_RULE_SURFACES` and
+`_SURFACES` — a table of `(file, anchor)` pairs, a bounded reader, and a requirement over what
+each anchored statement must contain. Copy the nearest one. Its three traps, each of which cost
+a round:
 
-- **The rule is defined once, in the code, and the documents are checked against it.** Not the
-  reverse, and not both spelled out independently — two independent spellings is the defect
 - **Anchor on text that PRECEDES the rule and is byte-identical in the wording you are
-  refusing.** My first draft anchored on my own corrected sentence, so restoring the true
-  pre-fix wording failed with "the anchor is missing" — it pinned that my correction survived,
-  not that the rule is stated. Witness the check by restoring the old wording and confirming
-  the failure names the missing member
-- **Bound the reader and self-test the bound.** `docs/HOOKS.md` names `~` several times in its
-  MEASUREMENT list on the same line whose RULE sentence said "absolute"; a whole-file window
-  would have called that file correct
-- The trigger for reaching for this: **count the places that state the rule.** At three or more,
-  or when one of them is read by a leaf or an operator, discipline has already lost. This is the
-  documentation twin of surface 5's "at three or more sites, change the channel design instead
-  of fixing them individually"
+  refusing.** Anchoring on your own corrected sentence pins that the correction survived, not
+  that the rule is stated — witness the check by restoring the old wording and confirming the
+  failure names what is missing, not the anchor
+- **Bound the reader and self-test the bound**, or a document that mentions the rule's terms
+  anywhere passes on the strength of an unrelated sentence
+- **Decide what "names the rule" means for THIS rule.** Couple by MEMBERS only when the prose
+  names them in full — a two-element trigger, yes; a nineteen-entry environment allowlist,
+  never, because the documents state that policy abstractly and correctly. Otherwise couple by
+  POINTER (each site must cite where the constant lives) or by NUMBER. Pin the members, not the
+  source line: a legitimate extraction to a named constant must not turn a true statement red
+
+**Before adding a check, ask whether the sites should exist.** The cheaper fix is this
+repository's ordinary practice — one canonical statement, everyone else cites it (`AGENTS.md`
+§Dedicated rule documents) — and it cannot rot. Coupling is for the sites that must repeat the
+rule anyway: a leaf-read contract has to be self-contained, and a refusal message has to say it
+to whoever was refused. Note this is NOT surface 5's twin, though both count to three: surface
+5 changes the design so there is one site, and 3-a adds machinery so that many sites stay
+honest. Prefer surface 5's move whenever it is available.
+
+**The trigger is the count; the audience is the priority.** Three or more statement sites is
+when discipline has already lost. That one of them is read by a leaf or an operator does not
+lower the count — it decides how soon you do it, and which site you check first.
+
+**Sites a test cannot reach are real and the check does not cover them**: commit messages and
+PR bodies (which cannot be edited), issue text, a prompt assembled at runtime, and
+`docs/examples/*.yaml`, which this repository has recorded as untested and therefore
+permanently drifting. For those the only moves are to remove the statement or to make it
+derived. Say in the commit which sites you could not couple.
 
 **The flip side of 3: prose you newly write in that same commit is also unverified until you
 run it.** Read rule 3 as being about old text and you keep only half of it. In L128 I got
@@ -309,29 +327,6 @@ pinning the range and the class **name** → now the class's **branches** were w
 **Rule**: never let a pin and the command with authority to loosen it **live in the same file
 or the same procedure**. And pin the rule, not the result the rule produced (pinning results
 makes ordinary work fail and teaches the habit of regenerating without reading the rule).
-
-**Two more questions about the same sentence, both of which cost real consequence on issue
-#71.** Surface 6 above asks what the remedy REWRITES. Ask also what it MEANS to the person who
-follows it, because a remedy is the one piece of a gate that is executed by a human or a leaf
-rather than by code:
-
-- **Can it be followed by half?** The `Glob` refusal ended "Re-issue it against a granted
-  directory, or drop the leading `/` and pass the directory as `path`." That reads as two
-  options. A leaf doing only the first half is **allowed by the hook** (rc=0, measured) and the
-  tool then matches nothing, because a relative pattern is anchored at the repository root
-  while the search is confined to `path`. No refusal, no log line, nothing below that could
-  produce one — the leaf reports "the files are not there". **Silent empty is the worst answer
-  a read boundary can give**, because it is indistinguishable from a true negative. When a
-  remedy is a conjunction, say so, and say what doing one half produces
-- **Does it name the most REACHABLE cause first?** The roster check's `missing` remedy said
-  "for a built-in the CLI stopped offering, record it in `CLAUDE_LEAF_TOOLS_ABSENT_ON_CLI`" —
-  a vendor cause. But the probe deliberately seeds the committed leaf configuration, and a
-  `permissions.deny` there removes the tool, so **a local one-line edit was the shortest path
-  to that failure** and was the one cause the remedy omitted. Following the printed remedy
-  subtracts the tool from the required set permanently: **the check goes green by having been
-  WIDENED rather than satisfied**. Enumerate the ways the failure can be produced, order them
-  by reachability, and let the printed remedy follow that order. A remedy whose first move
-  loosens the check is the same defect as surface 6's regenerate command, delivered as prose
 
 **Surface 7: when you say you closed a configuration surface, what else does that tool read
 besides configuration files?** The six above are about inputs reaching a gate; this one is
@@ -505,6 +500,20 @@ cannot converge in principle**, handed back to the leaf (flagged two rounds runn
   program unit rather than the actual cause). Do not let it read as "the cause is here"
 - If the enumeration does not close, **say so and describe the shape to look for** ("an
   identifier or label sits where the parser expects structure")
+- **Order the causes by REACHABILITY, most reachable first.** Issue #71's roster check offered
+  a vendor cause ("the CLI stopped offering this tool, record it in the absent-on-CLI seam")
+  when the shortest path to that failure was a one-line `permissions.deny` in the leaf
+  configuration the probe itself seeds. Following the printed remedy subtracts the tool from
+  the required set permanently: **the check goes green by having been WIDENED rather than
+  satisfied**, which is surface 6's regenerate command delivered as prose
+- **A remedy must not be followable by HALF.** The same branch's `Glob` refusal ended
+  "Re-issue it against a granted directory, or drop the leading `/` and pass the directory as
+  `path`" — read as two options. A leaf doing only the first half is ALLOWED by the hook (rc=0,
+  measured) and the tool then matches nothing, because a relative pattern is anchored at the
+  repository root while the search is confined to `path`. No refusal, no log line, nothing
+  below that could produce one. **Silent empty is the worst answer a boundary can give**: it is
+  indistinguishable from a true negative, so the leaf reports absence and stops. When a remedy
+  is a conjunction, say so, and say what doing one half produces
 
 ### 4. Tests pin properties
 

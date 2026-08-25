@@ -60,12 +60,36 @@ commit on top of a red suite. Either run the command bare and read the code (`py
 -q; echo $?`), or put the guard on the command itself and pipe afterwards
 (`set -o pipefail` also fixes it, but only if the shell honours it — check rather than assume).
 
-**`git worktree add -C <repo> <name>` resolves `<name>` against the repository, not your cwd.**
-`-C` changes directory before running, so a relative path meant for a scratch directory creates
-the worktree INSIDE the checkout, and the next `git add -A` commits it as a gitlink — git warns,
-in a hint block that is easy to scroll past, and the commit succeeds. Give the path absolutely,
-and read `git show --stat` before believing a commit contains what you staged. `git worktree
-list` is the check; `git worktree remove <path>` is the repair, before amending.
+**`git -C <repo> worktree add <name>` resolves `<name>` against `<repo>`, not your cwd.** `-C`
+is a global option and changes directory before the subcommand runs — written after the
+subcommand it is not even accepted (`error: unknown switch 'C'`, measured; an earlier version of
+this entry had it in that unusable position, in the file that says to execute what you write).
+So a relative path meant for a scratch directory creates the worktree INSIDE the checkout, and
+the next `git add -A` commits it as a gitlink; git warns, in a hint block that is easy to scroll
+past, and the commit succeeds. **The general rule is the one to keep: read `git show --stat`
+before believing a commit contains what you staged.** Give worktree paths absolutely; `git
+worktree list` is the check and `git worktree remove <path>` the repair, before amending.
+
+**A multi-edit script that asserts before writing loses the whole batch, silently.** Three times
+on issue #71 an edit reported as landed had not: a Python heredoc making several substitutions
+raised on a stale `assert` for one of them, after the earlier substitutions had been computed
+and before anything was written. The shell shows a traceback, the commit that follows says the
+work is done, and `git log -S` cannot find it. **One edit per script**, each asserting its own
+match count. This is the same failure as a commit message claiming work the artifact does not
+carry, arriving by a different road.
+
+**Name the mutation survivors in the commit message, individually.** "34 mutants, 30 killed, the
+four survivors confirmed equivalent or unreachable" is not a record: a later round cannot check
+it, cannot tell which four, and cannot tell equivalent from unreachable. On issue #71 that claim
+had to be replaced by re-running the sweep, because nothing could recover the list. A survivor
+you accept is a classification, and rule 1-b applies to it.
+
+**An instrument you commit needs a machine-readable verdict and its own test.** `measure_claude_tool.py`
+shipped with `main` returning 0 unconditionally, rows a reader classified by eye, and no test —
+and a review round then found five defects in it, two functional. If a script's output is
+evidence for a decision, it must be able to say PASS or FAIL, and an error (a timeout, a launch
+that produced nothing) must fail whatever the row expected rather than being scored as one of
+the two answers.
 
 ## Whole-tree diff (mandatory whenever you change a gate)
 

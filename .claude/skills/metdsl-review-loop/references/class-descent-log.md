@@ -9,37 +9,25 @@ to the content filter — `codex-episodes.md` has them); PR #53 ran 3 rounds
 with none empty and Codex never clean (it found a hole on the first pass); in PR #55 round 3 both
 a subagent and Codex produced new findings.
 
-## issue #71 — both proxies held for four rounds while the record stayed wrong
+## issue #71 — the proxies held from R11 and four more rounds still found real defects
 
-The longest recorded loop: **15 rounds**, and the only one where the two stopping proxies held
-early and stayed held while real defects kept arriving.
+15 rounds, the longest recorded. R1-R5 "witnesses weaker than their names, and four of my own
+'measurements' of a vendor tool were measurements of something else" → R8 "a brace alternation
+walked out of the manifest, found by a reviewer" → R11 **"the rounds are reliable about code and
+unreliable about their own record"** → R12 narrowing (a net 164 lines out of `tools/hooks/cli.py`)
+→ R13-R15 "no defect in the enforcement code, and a false or missing statement every round".
 
-R1-R2 "witnesses weaker than their names; my own R1 fix was cosmetic and its justification
-false" → R3-R5 "an escape I 'fixed' twice cannot happen — and my four 'measurements' of the tool
-were Python's `glob` twice and bare `ripgrep` once" → R8 "a brace alternation walked out of the
-manifest, found by a reviewer" → R9 "I drove the real tool at last" → R11 **"the rounds were
-reliable about code and unreliable about their own record"** → R12 narrowing (a NET 164 lines out of `tools/hooks/cli.py`: +47 -211)
-→ **R13, R14, R15: zero functional defects, and false or missing statements every round.**
+What ends the loop is not what this history teaches. Two things it is the evidence for, both now
+in SKILL.md's stopping conditions: **"only prose remains" is a claim about severity** that fails
+when a leaf or an operator acts on the prose, and **a round spent on disclosure alone is worth
+running before stopping** — that round found five documents stating a rule's own trigger wrongly,
+one of them a document every leaf reads.
 
-What R15 found, in a branch whose code had been clean for four rounds: **five canonical documents
-stating the rule's own trigger wrongly**, one of them the only document a leaf reads; a refusal a
-leaf could follow by half and get a silent empty result; an operator remedy whose first move
-widened the check; a TODO residue falsified by its own commit's artifact; a "production caller"
-no callable answers to; and a committed re-check that could not see the reopening it warns about.
-
-**Two things this history is the evidence for**, both now in SKILL.md: that "only prose remains"
-is a claim about severity which fails when the prose is executed by a leaf or an operator, and
-that a round spent on the disclosure axis alone is worth running before stopping. A third is in
-`metdsl-enforcement-change` rule 3-a: **discipline about sweeping the prose failed four
-consecutive rounds after being diagnosed**, and what ended it was a test reading the rule's
-constant out of the code and requiring every statement site to name every member.
-
-**Defects introduced by the fixes themselves recurred in most rounds** — four in the final
-round alone, each named in its own commit: a contract sentence that blew the leaf-read byte
-ceiling, a harness scoring a TIMEOUT as a read (so a run where every launch failed would have
-reported the premise holding), an anchor taken from my own corrected wording (pinning that the
-correction survived rather than that the rule is stated), and a `git worktree` created inside
-the checkout and committed as a gitlink.
+**And "the code was clean" was itself imprecise**, which is the sharper lesson: R15 found five
+defects in a measurement script the branch had COMMITTED, two of them functional (a denylist
+environment that could send an unbilled probe to a real endpoint; a timed-out launch scored as a
+successful read). Nobody had been asked to review it, because the briefs named the enforcement
+code. A committed instrument is review surface.
 
 ## issue #63 — the first time both proxies held at once (R4)
 
