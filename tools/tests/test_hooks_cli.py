@@ -5146,6 +5146,36 @@ class BashWriteTargetGrammarTests(unittest.TestCase):
         # `>|` clobber, both spacings
         ("cmd >|workspace/out.txt", ["workspace/out.txt"]),
         ("cmd >| workspace/out.txt", ["workspace/out.txt"]),
+        # `>&word` with a non-numeric word is "and stderr too", i.e. a file write.
+        # Missed on origin/main as well as by #74's first fix.
+        ("echo x >& workspace/pipelines/x.json", ["workspace/pipelines/x.json"]),
+        ("echo x >&workspace/pipelines/x.json", ["workspace/pipelines/x.json"]),
+    )
+
+    # Round 1 of this branch's review found the argv path split fragments by
+    # comparing `shlex` tokens against a control-token set, which cannot see a
+    # separator bash does not require whitespace around, and blanked a redirect
+    # only from the operator onward, leaving its fd prefix as an operand. Both
+    # were live in BOTH directions; every row here was measured failing first.
+    _ROUND1_WITNESSES = (
+        # fail-open: the destination vanished behind a glued separator
+        ("cd workspace; cp a.py workspace/pipelines/f.json", ["workspace/pipelines/f.json"]),
+        ("mkdir -p x\ncp a.py workspace/pipelines/f.json", ["workspace/pipelines/f.json"]),
+        ("cp a b&&ls", ["b"]),
+        # phantom target: the NEXT command's name became the destination
+        ("cp a workspace/f.txt; echo done", ["workspace/f.txt"]),
+        ("touch workspace/f.txt; echo done", ["workspace/f.txt"]),
+        ("cp a b ; ls", ["b"]),
+        ("cp a b | grep x", ["b"]),
+        # phantom target: the fd prefix of a redirect became the destination
+        ("cp src dst 2>/dev/null", ["dst"]),
+        ("touch out.txt 2>/dev/null", ["out.txt"]),
+        ("cp a b 2>>workspace/out.log", ["workspace/out.log", "b"]),
+        ("cp a b &> log.txt", ["log.txt", "b"]),
+        # `install -d` creates EVERY operand, not just the last
+        ("install -d a b", ["a", "b"]),
+        # a bundled short cluster's LAST letter takes the value
+        ("cp -at workspace/ir a b", ["workspace/ir"]),
     )
 
     # Spellings whose CURRENT result must survive the widened regex. `>(` is the
@@ -5155,6 +5185,8 @@ class BashWriteTargetGrammarTests(unittest.TestCase):
         ("cmd 2>&1 > out.txt", ["out.txt"]),
         ("cmd >&2", []),
         ("cmd 1>&2", []),
+        ("cp a b 2>&1", ["b"]),
+        ("cp a b >&2", ["b"]),
         ("cmd >> log.txt", ["log.txt"]),
         ("cmd 1> a.txt 2> b.txt", ["a.txt", "b.txt"]),
         ("cmd &> all.log", ["all.log"]),
@@ -5176,6 +5208,44 @@ class BashWriteTargetGrammarTests(unittest.TestCase):
         for command, expected in self._ISSUE_74_WITNESSES:
             with self.subTest(command=command):
                 self.assertEqual(sorted(self._targets(command)), sorted(expected))
+
+    def test_round1_review_witnesses(self) -> None:
+        for command, expected in self._ROUND1_WITNESSES:
+            with self.subTest(command=command):
+                self.assertEqual(sorted(self._targets(command)), sorted(expected))
+
+    def test_decisions_a_hand_built_mutant_sweep_found_unwitnessed(self) -> None:
+        """Rows that no other test distinguishes; each was a review-round survivor.
+
+        Every row here was chosen so that deleting ONE clause changes it, and the
+        clause is named. Without them the clause can be removed with the suite
+        green — which is what a reviewer's independent mutant sweep measured.
+        """
+        rows = (
+            # `name = tokens[0].split("/")[-1]` — the command may be a path
+            ("/bin/cp a b", ["b"], "argv0 basename"),
+            # `arg == "-"` is an operand (stdin/stdout), not an option
+            ("cp - b", ["b"], "bare dash is an operand"),
+            # `dd of=` with an empty value names no path
+            ("dd of=", [], "dd empty-value guard"),
+            # `--` ends option parsing: without the branch, `-S` eats `b`
+            ("cp -- -S b", ["b"], "-- operand boundary"),
+            # a token still carrying redirection syntax is dropped, not reported
+            ("cp a b <&3", ["b"], "unmodelled redirection token dropped"),
+        )
+        for command, expected, clause in rows:
+            with self.subTest(clause=clause, command=command):
+                self.assertEqual(sorted(self._targets(command)), sorted(expected))
+
+    def test_unbalanced_quote_falls_back_to_the_raw_span(self) -> None:
+        """`_shlex_one`'s ValueError fallback returns the blob, never the empty string.
+
+        An unterminated quote is left alone by `_strip_quoted_strings` (the
+        fail-closed direction there), so the span reaches shlex unbalanced.
+        Returning "" instead would append an empty target and block naming ''.
+        """
+        self.assertEqual(cli._shlex_one('"abc'), '"abc')
+        self.assertEqual(self._targets('cmd > "abc'), ['"abc'])
 
     def test_redirect_spellings_that_must_not_regress(self) -> None:
         for command, expected in self._MUST_NOT_REGRESS:
@@ -5334,6 +5404,62 @@ class BashWriteTargetGrammarTests(unittest.TestCase):
             for command in (
                 "cat > workspace/pipelines/evil.json <<'EOF'",
                 "cat >workspace/pipelines/evil.json <<'EOF'",
+            ):
+                with self.subTest(command=command):
+                    code, body = self._run_bash_hook(
+                        orch=orch, repo_root=repo_root, command=command
+                    )
+                    self.assertEqual(code, 2, body)
+                    self.assertEqual(body.get("decision"), "block", body)
+                    self.assertIn("workspace/pipelines/evil.json", body.get("reason", ""))
+
+    def test_stderr_capture_on_an_argv_write_is_not_refused(self) -> None:
+        """Round 1's strongest finding, at the handler: the block named the path `2`.
+
+        `cp <src> <dst> 2>/dev/null` with `<dst>` under `allowed_tmp_root` is work a
+        leaf is entitled to do. The first version of the argv path blanked the
+        redirect only from the operator onward, so the fd prefix `2` survived as the
+        last operand and the write guard refused, naming a path the leaf never wrote.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            orch = "orch_issue74_fdprefix"
+            run_id = "step_run_issue74_fdprefix"
+            tmp_root = f"workspace/tmp/{run_id}"
+            self._setup(repo_root, orch=orch, run_id=run_id, tmp_root=tmp_root)
+            for command in (
+                f"cp {tmp_root}/a {tmp_root}/b",
+                f"cp {tmp_root}/a {tmp_root}/b 2>/dev/null",
+                f"touch {tmp_root}/b 2>/dev/null",
+                f"cp {tmp_root}/a {tmp_root}/b; ls workspace",
+                f"touch {tmp_root}/b\nls workspace",
+            ):
+                with self.subTest(command=command):
+                    code, body = self._run_bash_hook(
+                        orch=orch, repo_root=repo_root, command=command
+                    )
+                    self.assertNotEqual(code, 2, body)
+                    self.assertNotEqual(body.get("decision"), "block", body)
+
+    def test_glued_separator_does_not_hide_an_argv_destination(self) -> None:
+        """Round 1's fail-open half, at the handler.
+
+        `shlex` glues `;` onto the preceding word and eats `\n`, so the first
+        version's token-equality fragment split saw one fragment and the `cp`'s
+        destination disappeared. Every row is a write the guard must still refuse.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            orch = "orch_issue74_glued"
+            run_id = "step_run_issue74_glued"
+            self._setup(
+                repo_root, orch=orch, run_id=run_id, tmp_root=f"workspace/tmp/{run_id}"
+            )
+            for command in (
+                "cd workspace; cp a.py workspace/pipelines/evil.json",
+                "mkdir -p x\ncp a.py workspace/pipelines/evil.json",
+                "cp a.py workspace/pipelines/evil.json; ls",
+                "cp a.py workspace/pipelines/evil.json&&ls",
             ):
                 with self.subTest(command=command):
                     code, body = self._run_bash_hook(

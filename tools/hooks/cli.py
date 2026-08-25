@@ -27,7 +27,9 @@ from tools.hooks.common import (
     _workflow_orchestration_id,
     _read_target_in_allowed_roots,
     _resolve_target_path,
+    _BASH_ESCAPED_SEPARATOR_RE,
     _BASH_FD_DUP_RE,
+    _BASH_FRAGMENT_SEPARATOR_RE,
     _blank_heredoc_bodies,
     _strip_quoted_strings,
     _utc_now_iso,
@@ -365,21 +367,35 @@ def _get_orchestration_agent_run_id(repo_root: Path, orchestration_id: str) -> s
     return run_id.strip() if isinstance(run_id, str) and run_id.strip() else None
 
 
-# shell redirection: cmd > path, cmd >> path, cmd >|path (clobber), and every
-# one of those written with NO space before the path (`cat >path`, which bash
-# parses identically and which the earlier `\s+` spelling missed entirely —
-# issue #74(c)).
-#
-# The target alternation is matched against the QUOTE-STRIPPED command, where a
-# quoted run survives as its delimiters around blanks; the caller recovers the
-# original span (_strip_quoted_strings is length-preserving) and shlex-splits it,
-# so `> "a b"/c` and `> pre"post"` come back as one dequoted token instead of the
-# bare `"` the previous `[^\s…]+` collapsed them to (issue #74(a)).
-#
-# `(` is excluded from the unquoted class so process substitution `>(cmd)` — which
-# names no file — does not become a phantom target now that no space is required.
-# `&` stays excluded, so `2>&1` / `>&2` remain non-matches.
-_BASH_REDIRECT_RE = re.compile(r"(?:>>?)\|?\s*((?:\"[^\"]*\"|'[^']*'|[^\s;&|<>)(])+)")
+# A word that can be a redirection TARGET, matched against the QUOTE-STRIPPED
+# command (where a quoted run survives as its delimiters around blanks). The
+# caller recovers the original span — _strip_quoted_strings is length-preserving
+# — and shlex-joins it, so `> "a b"/c` and `> pre"post"` come back as one
+# dequoted token instead of the bare `"` the pre-#74 class collapsed them to.
+# `(` is excluded so process substitution `>(cmd)`, which names no file, does not
+# become a phantom target; `&` is excluded so an fd-dup RHS never reads as a path.
+_REDIRECT_TARGET = r"((?:\"[^\"]*\"|'[^']*'|[^\s;&|<>)(])+)"
+# `&` after the operator means "and stderr too" — `>&word` writes to the file
+# `word`, EXCEPT when `word` is a bare fd number, which is duplication. The
+# negative lookahead is the same test `_BASH_FD_DUP_RE` makes in common.py.
+_REDIR_AND_STDERR = r"&(?!\d+(?![\w./-]))"
+
+# Shell output redirection. The whole span is what the argv view has to blank, so
+# the leading fd digit of `2>path` and the leading `&` of `&>path` are INSIDE the
+# match: leaving either behind made it the last operand of the surrounding
+# command, and `cp src dst 2>/dev/null` was refused naming the path `2`.
+# Spelling coverage: `>`, `>>`, `>|`, `>&file`, `&>`, `&>>`, `2>`, and every one
+# of them written with no space before the path (issue #74(c)).
+_BASH_REDIRECT_RE = re.compile(
+    r"(?:\d+|&)?>>?(?:\||" + _REDIR_AND_STDERR + r")?\s*" + _REDIRECT_TARGET
+)
+# Input redirection, including a heredoc operator and its (possibly quoted)
+# delimiter. Only the argv view uses this: `<` names a READ, and the read
+# boundary is a different guard. Blanking it keeps `cp a b < in.txt` from
+# reporting `in.txt` as the destination.
+_BASH_INPUT_REDIRECT_RE = re.compile(
+    r"(?:\d+)?<<?-?(?:" + _REDIR_AND_STDERR + r")?\s*" + _REDIRECT_TARGET
+)
 # tee: tee [-opts] path
 _BASH_TEE_RE = re.compile(r"\btee\b(?:\s+-\w+)*\s+([^\n;&|<>]+)")
 _REDIRECT_SKIP = frozenset({
@@ -552,11 +568,6 @@ def _extract_command_substitution_bodies(command: str) -> list[str]:
 
 
 _SHELL_CONTROL_TOKENS = frozenset({"|", "||", "&&", ";"})
-
-# Input redirections. Blanked out of the argv view below for the same reason the
-# write redirects are: `<`, `<<` and their targets are shell syntax, not operands,
-# so leaving them in makes the LAST operand of `cp a b < x` the heredoc/file name.
-_BASH_INPUT_REDIRECT_RE = re.compile(r"<<?\|?\s*((?:\"[^\"]*\"|'[^']*'|[^\s;&|<>)(])+)")
 # Commands whose write DESTINATION is an operand rather than a shell redirect.
 # Until this was added (TODO.md 378(d), landed with issue #74) none of them
 # produced a write target at all, so `cp x workspace/pipelines/y.json` reached
@@ -589,6 +600,12 @@ _ARGV_WRITE_DEST_OPTS: dict[str, frozenset[str]] = {
 # (`install -m 644 …`), a size (`truncate -s 0 …`) or a timestamp is the same
 # defect class as issue #74(a)/(b), which is why `-t` is a DESTINATION option for
 # `cp`/`mv`/`install`/`ln` and a TIMESTAMP option for `touch`.
+# Options that turn the grammar into "every operand is a destination".
+# `install -d a b` creates BOTH directories; read under the last-operand rule it
+# reported `b` and missed `a`.
+_ARGV_WRITE_DIRECTORY_OPTS: dict[str, frozenset[str]] = {
+    "install": frozenset({"-d", "--directory"}),
+}
 _ARGV_WRITE_VALUE_OPTS: dict[str, frozenset[str]] = {
     "cp": frozenset({"-S", "--suffix"}),
     "mv": frozenset({"-S", "--suffix"}),
@@ -739,9 +756,17 @@ def _argv_view(command: str, scanned: str) -> str:
     Length-preserving: the caller shlex-splits the result, and blanking (rather
     than deleting) keeps a redirect from gluing the words on either side of it
     together. Redirections are located in `scanned` so a `>` or `<` living inside
-    a quoted argument is not mistaken for one. `_BASH_FD_DUP_RE` is imported from
-    `common` rather than respelled here: `2>&1` is neither a write nor an operand,
-    and the two modules must agree on what fd-duplication looks like.
+    a quoted argument is not mistaken for one, and each regex covers the WHOLE
+    redirection including its fd prefix — the first version blanked only from the
+    operator onward, so `cp src dst 2>/dev/null` kept a stray `2` that became the
+    last operand and the command was refused naming the path `2`.
+
+    The `_BASH_FD_DUP_RE` pass is NOT independently pinned: `_argv_operand_tokens`
+    drops whatever still carries `<`, `>` or a leading `&`, so removing this pass
+    changed no result over the eight fd-dup spellings measured (`cp a b 2>&1`,
+    `1>&2`, `>&2`, and the same with `touch` / `dd` / `truncate` / a pipe). It is
+    kept so the view this function returns is correct on its own terms rather than
+    by what a later filter happens to remove.
     """
     out = list(command)
     for regex in (_BASH_FD_DUP_RE, _BASH_REDIRECT_RE, _BASH_INPUT_REDIRECT_RE):
@@ -751,88 +776,158 @@ def _argv_view(command: str, scanned: str) -> str:
     return "".join(out)
 
 
+def _argv_fragments(command: str, scanned: str) -> list[str]:
+    """Split a command into per-fragment argv blobs, redirections removed.
+
+    Segmentation is done on the string, with `common._BASH_FRAGMENT_SEPARATOR_RE`
+    — the SAME separator set the read side uses — not by comparing `shlex` tokens
+    against a control-token set. That first spelling could not see a separator
+    bash does not require whitespace around: `shlex` eats `\\n` and glues `;` onto
+    the preceding word, so `cd x; cp a b` and a two-line Bash call both stayed ONE
+    fragment. Both directions were live — the destination of `cp a b; ls` came out
+    as `ls`, and `cd x; cp a <managed path>` produced no target at all.
+
+    Escaped separators are blanked first (a backslash-escaped `;` is a literal
+    character, not a
+    separator), matching `extract_bash_read_targets`.
+    """
+    argv_source = _argv_view(command, scanned)
+    # Segment on the quote-stripped copy with the redirections already blanked, so
+    # a separator inside a quoted argument or inside a redirect target is not one.
+    masked = _argv_view(scanned, scanned)
+    masked = _BASH_ESCAPED_SEPARATOR_RE.sub(lambda m: " " * len(m.group()), masked)
+    fragments: list[str] = []
+    cursor = 0
+    for match in _BASH_FRAGMENT_SEPARATOR_RE.finditer(masked):
+        fragments.append(argv_source[cursor : match.start()])
+        cursor = match.end()
+    fragments.append(argv_source[cursor:])
+    return fragments
+
+
+def _argv_operand_tokens(fragment: str) -> list[str]:
+    """The words of one fragment, with anything still carrying shell syntax dropped.
+
+    A token that survived `_argv_view` still holding a `<`, `>` or a leading `&` is
+    a redirection spelling this module does not model. Dropping it is the FAIL-OPEN
+    direction, chosen deliberately: reporting it would name a write target the leaf
+    never wrote, and a block a leaf cannot map to an action it took is the defect
+    issue #74(a)/(b) were filed for.
+    """
+    try:
+        tokens = shlex.split(fragment)
+    except ValueError:
+        tokens = fragment.split()
+    return [
+        tok
+        for tok in tokens
+        if not (tok.startswith("&") or "<" in tok or ">" in tok)
+    ]
+
+
+def _split_short_option_cluster(arg: str) -> list[str]:
+    """`-at` -> ['-a', '-t']; a long option or a bare `-` is returned unchanged.
+
+    GNU accepts bundled short options, and the LAST letter of a cluster is the one
+    that takes the value — so `cp -at DIR src` names DIR as the destination. Read
+    as a single token, the `-t` was invisible and the real destination was lost.
+    """
+    if len(arg) <= 2 or not arg.startswith("-") or arg.startswith("--"):
+        return [arg]
+    return ["-" + ch for ch in arg[1:]]
+
+
 def _detect_argv_write_targets(command: str, scanned: str) -> list[str]:
     """Write destinations named as OPERANDS rather than by a shell redirect.
 
     Covers the commands in `_ARGV_WRITE_LAST_OPERAND` / `_ARGV_WRITE_ALL_OPERANDS`
-    plus `dd of=`. The command name is read at the FRAGMENT HEAD only (the position
-    after `|`, `||`, `&&`, `;` or the start), the same argv0 rule the read side uses
-    in `extract_bash_read_targets`, so `echo cp a b` names nothing.
+    plus `dd of=`. The command name is read at the FRAGMENT HEAD only, the same
+    argv0 rule the read side uses in `extract_bash_read_targets`, so `echo cp a b`
+    names nothing.
 
-    Accepted residue, all yielding nothing: a destination reached through another
-    program (`xargs cp`, `find -exec cp`), a `$VAR` or glob destination, a `cd`
-    issued earlier in the same command (this function does not anchor on `cd`,
-    which the read side does), `install -d` directory creation, the single-operand
-    `ln`, and a fragment whose head is not the writer itself (`sudo cp …`, an
-    `env`-assignment prefix `VAR=1 cp …`). An empty result means "nothing
-    extracted", not "no write".
+    Residue this does NOT extract, all yielding nothing: a destination reached
+    through another program (`xargs cp`, `find -exec cp`); a fragment whose head is
+    not the writer itself (`sudo cp …`, an env-assignment prefix `VAR=1 cp …`); the
+    single-operand `ln`, whose link name appears nowhere in the argv; a token still
+    carrying unmodelled redirection syntax; and every write command outside the
+    tables. An empty result means "nothing extracted", not "no write".
+
+    Residue of a different kind — a target IS reported, but it is not the path that
+    gets written: a `$VAR` or glob destination is reported unexpanded, and a
+    destination relative to a `cd` earlier in the same command is reported
+    un-anchored (the read side anchors on `cd`; this side does not). Both shapes
+    predate this function — the redirect branch has always reported `> $OUT` as
+    `$OUT` — and both can refuse legitimate work. `TODO.md` carries them.
     """
-    argv_source = _argv_view(command, scanned)
-    try:
-        tokens = shlex.split(argv_source)
-    except ValueError:
-        tokens = argv_source.split()
     targets: list[str] = []
-    idx = 0
-    while idx < len(tokens):
-        if tokens[idx] in _SHELL_CONTROL_TOKENS:
-            idx += 1
+    for fragment in _argv_fragments(command, scanned):
+        tokens = _argv_operand_tokens(fragment)
+        if not tokens:
             continue
-        # This fragment runs to the next control token; its head is the command.
-        end = idx + 1
-        while end < len(tokens) and tokens[end] not in _SHELL_CONTROL_TOKENS:
-            end += 1
-        name = tokens[idx].split("/")[-1]
-        args = tokens[idx + 1 : end]
+        name = tokens[0].split("/")[-1]
+        args = tokens[1:]
         if name == "dd":
             targets.extend(
                 arg[len(_DD_OUTPUT_PREFIX) :]
                 for arg in args
                 if arg.startswith(_DD_OUTPUT_PREFIX) and arg[len(_DD_OUTPUT_PREFIX) :]
             )
-        elif name in _ARGV_WRITE_LAST_OPERAND or name in _ARGV_WRITE_ALL_OPERANDS:
-            dest_opts = _ARGV_WRITE_DEST_OPTS.get(name, frozenset())
-            value_opts = _ARGV_WRITE_VALUE_OPTS.get(name, frozenset())
-            operands: list[str] = []
-            dest_from_opt = False
-            k = 0
-            while k < len(args):
-                arg = args[k]
-                if arg == "--":  # everything after is an operand
-                    operands.extend(args[k + 1 :])
-                    break
-                if arg.startswith("-") and arg != "-":
-                    head, sep, value = arg.partition("=")
-                    if sep and head in dest_opts:
-                        if value:
-                            targets.append(value)
-                            dest_from_opt = True
-                        k += 1
-                        continue
-                    if sep and head in value_opts:
-                        k += 1
-                        continue
-                    if arg in dest_opts:
-                        if k + 1 < len(args):
-                            targets.append(args[k + 1])
-                            dest_from_opt = True
-                        k += 2
-                        continue
-                    if arg in value_opts:
-                        k += 2
-                        continue
-                    k += 1
-                    continue
+            continue
+        if name not in _ARGV_WRITE_LAST_OPERAND and name not in _ARGV_WRITE_ALL_OPERANDS:
+            continue
+        dest_opts = _ARGV_WRITE_DEST_OPTS.get(name, frozenset())
+        value_opts = _ARGV_WRITE_VALUE_OPTS.get(name, frozenset())
+        all_operands = name in _ARGV_WRITE_ALL_OPERANDS
+        operands: list[str] = []
+        dest_from_opt = False
+        k = 0
+        while k < len(args):
+            arg = args[k]
+            if arg == "--":  # everything after is an operand, `-S` included
+                operands.extend(args[k + 1 :])
+                break
+            if not arg.startswith("-") or arg == "-":
                 operands.append(arg)
                 k += 1
-            if name in _ARGV_WRITE_ALL_OPERANDS:
-                targets.extend(operands)
-            elif dest_from_opt:
-                # With `-t DIR` every operand is a SOURCE.
-                pass
-            elif len(operands) >= 2:
-                targets.append(operands[-1])
-        idx = end
+                continue
+            head, sep, value = arg.partition("=")
+            if sep and head in dest_opts:
+                if value:
+                    targets.append(value)
+                    dest_from_opt = True
+                k += 1
+                continue
+            # A long option's `=` form needs no branch of its own for the VALUE
+            # options: it consumes no separate argv element, and the fall-through
+            # below already declines to treat a `-`-leading word as an operand.
+            # The branch that used to sit here was an equivalent mutant — measured
+            # over all 48 spellings the value tables produce (every long option ×
+            # {before, after, empty value, behind `--`}), identical either way.
+            # A bundled cluster's value belongs to its LAST letter, so only that
+            # one can consume the next argv element.
+            cluster = _split_short_option_cluster(arg)
+            if cluster[-1] in dest_opts:
+                if k + 1 < len(args):
+                    targets.append(args[k + 1])
+                    dest_from_opt = True
+                k += 2
+                continue
+            if cluster[-1] in value_opts:
+                k += 2
+                continue
+            dir_opts = _ARGV_WRITE_DIRECTORY_OPTS.get(name, frozenset())
+            if head in dir_opts or any(c in dir_opts for c in cluster):
+                # `install -d a b` CREATES both operands; the last-operand rule
+                # would report `b` and miss `a`.
+                all_operands = True
+            k += 1
+        if all_operands:
+            targets.extend(operands)
+        elif dest_from_opt:
+            # With `-t DIR` every operand is a SOURCE.
+            pass
+        elif len(operands) >= 2:
+            targets.append(operands[-1])
     return targets
 
 
