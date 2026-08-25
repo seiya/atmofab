@@ -687,6 +687,34 @@ boundary was these two holding together:
 When both hold, the remainder has fallen to "an enumerable, finite set of descriptive fixes". One
 alone is not enough.
 
+**"Only prose remains" is a claim about SEVERITY, and it is wrong whenever the prose is executed
+by someone.** Issue #71 is the counterexample: functional defects stopped at round 11 and the
+last four rounds found none, both proxies above held — and rounds 12 through 15 each still found
+statements that were false, including a refusal message a leaf follows and a remedy an operator
+follows. Two of round 15's "prose" findings had real consequence: one made a leaf report absence
+after obeying half a remedy, the other told an operator to permanently subtract a tool from a
+required set to paper over a one-line configuration bug.
+
+So before calling the remainder descriptive, **classify each remaining finding by audience and
+consequence, not by whether it is code**:
+
+- **Text a leaf or an operator ACTS ON is behaviour delivered as prose** — refusal messages,
+  remedies, the leaf-read contract, the runbook step for a failure mode. Treat a defect there
+  at the severity of the action it causes
+- **Text a maintainer reads to decide** — a residue entry, a justification comment, a measured
+  number — is descriptive, and belongs in the bounded remainder
+- The tell that you are in the first category: the sentence contains an imperative, or names a
+  condition under which something is refused
+
+**The move that finds them: spend one round on the disclosure axis alone**, with no functional
+brief — "verify every claim in the commit messages at HEAD" and "read it as the next
+maintainer: what would mislead you, can the deletion's measurement be re-taken from what is
+written, what does a LEAF see, what does an OPERATOR see, would you merge". On issue #71 that
+round returned two real-consequence items and five documents stating the rule's own trigger
+wrongly, in a branch whose code had been clean for four rounds. **Run it before stopping, not
+as an extra round after deciding to stop** — and if it returns items in the first category
+above, the record has not converged even though the code has.
+
 **But the two are not equal in standing. Use them by change type.**
 
 - **changes that fix existing machinery** (closing a fail-open, tightening a gate): both apply. The

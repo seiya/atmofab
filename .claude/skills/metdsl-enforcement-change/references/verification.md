@@ -49,6 +49,24 @@ python3 -m pytest tools/tests/ -q -p no:randomly
   version of this line claimed one permanent calibration skip and sent a reader hunting a test that
   does not exist
 
+## Two ways a verification step silently does not run
+
+Both were hit on issue #71, and both look exactly like a passing step.
+
+**`cmd | tail && git commit` does not gate on `cmd`.** A pipeline exits with the status of its
+LAST element, so `python3 -m pytest … | tail -3 && git commit` commits whatever pytest did — the
+`&&` is inert and the summary line scrolls past in the same output that reports success. It put a
+commit on top of a red suite. Either run the command bare and read the code (`python3 -m pytest …
+-q; echo $?`), or put the guard on the command itself and pipe afterwards
+(`set -o pipefail` also fixes it, but only if the shell honours it — check rather than assume).
+
+**`git worktree add -C <repo> <name>` resolves `<name>` against the repository, not your cwd.**
+`-C` changes directory before running, so a relative path meant for a scratch directory creates
+the worktree INSIDE the checkout, and the next `git add -A` commits it as a gitlink — git warns,
+in a hint block that is easy to scroll past, and the commit succeeds. Give the path absolutely,
+and read `git show --stat` before believing a commit contains what you staged. `git worktree
+list` is the check; `git worktree remove <path>` is the repair, before amending.
+
 ## Whole-tree diff (mandatory whenever you change a gate)
 
 **The single most effective check in this repo.** Point the gate at the real corpus and compare
