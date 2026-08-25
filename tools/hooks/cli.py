@@ -1155,13 +1155,20 @@ def _evaluate_grep_glob_read_policy(
     # resolve to, so "No files found" cannot be true merely because the target was absent:
     #
     #     ../secret/*  ../../secret/*  ../../../secret/*  */../../secret/*  -> nothing
-    #     {../secret,sub}/*                                                 -> nothing
+    #     sub/../../secret/*   {../secret,sub}/*                            -> nothing
     #     linkdir/*  docs/linkdir/*  docs/linkfile.txt   (symlinks)         -> nothing
-    #     ~/.bashrc   $HOME/.bashrc                                         -> nothing
-    #     {/etc,sub}/hostname   {sub,/tmp/<marker>}/*   (both orders)       -> nothing
-    #     " /tmp/<marker>/*"    (one leading space)                         -> nothing
-    #     /etc/hostname   /tmp/<marker>/*   //tmp/<marker>/*                -> READ
-    #     /tmp/{a,b}/*    /tmp/x/../x/*     (braces and `..` AFTER the slash) -> READ
+    #     ~/secret/*   $HOME/secret/*    (HOME is the fixture base)         -> nothing
+    #     {<base>/secret,sub}/*   {sub,<base>/secret}/*   (both orders)     -> nothing
+    #     " <base>/secret/*"   "\t<base>/secret/*"   (leading whitespace)   -> nothing
+    #     <base>/secret/*   /<base>/secret/*   (doubled leading slash)      -> READ
+    #     <base>/{secret,outside}/*   <base>/secret/../secret/*             -> READ
+    #     <base>/[s]ecret/*    (braces, `..` and a class AFTER the slash)   -> READ
+    #
+    # Every path above is INSIDE the fixture, including the `~` rows — an earlier version
+    # of this table named `/etc/hostname` and `~/.bashrc`, which the fixture does not
+    # create, so those rows proved nothing on a host that happens to lack them. That is
+    # the "the target was absent" trap this measurement exists to avoid, surviving inside
+    # the record of the measurement that avoids it.
     #
     # The tool asks `path.isAbsolute` of the WHOLE pattern string, so a brace alternative
     # that is absolute does not re-root and neither does `~`. Every shape this check used

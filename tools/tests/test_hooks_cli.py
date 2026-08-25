@@ -4107,8 +4107,13 @@ class GrepGlobReadGuardTests(unittest.TestCase):
         So these rows assert that the check does NOT refuse them. If a future CLI starts
         resolving `..`, this test is what turns green into a decision: it will still pass,
         and the premise it rests on is re-measurable by
-        `.claude/skills/metdsl-enforcement-change/scripts/measure_claude_tool.py`, whose default
-        case list is these rows plus the controls that make an empty result mean something.
+        `.claude/skills/metdsl-enforcement-change/scripts/measure_claude_tool.py`. That list asks
+        the same SHAPES as the rows below, not the same strings: its absolute alternative
+        points into the fixture rather than at `/etc`, so the row is saturated, and it also
+        carries `~/…`, which cannot appear here because the hook refuses it. An earlier
+        version of this docstring claimed the two lists were the same, and they differed in
+        BOTH directions; the harness's own coverage is pinned by
+        `tools/tests/test_measure_claude_tool.py` instead of asserted here in prose.
         """
         manifest = {"allowed_read_roots": ["docs"]}
         for pattern in ("../secret/*", "../../secret/*", "../../../secret/*",
