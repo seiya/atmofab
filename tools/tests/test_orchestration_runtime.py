@@ -35450,6 +35450,32 @@ class ClaudeLeafToolRosterPreflightTests(unittest.TestCase):
         self.assertIn("Bash,Edit,Glob,Grep,Read,Write", rendered)
         self.assertIn("Edit,Glob,Grep,Read,Write |", rendered.replace("Bash,", ""))
 
+    def test_each_failure_names_its_own_remedy(self) -> None:
+        """The remedy follows the problem, one per failure class.
+
+        Appended unconditionally, an MCP failure told the operator to add a `PreToolUse`
+        matcher or to edit `CLAUDE_LEAF_TOOLS_ABSENT_ON_CLI` — neither of which is the fix
+        for "your MCP server did not start". Reproduced against the real CLI by pointing
+        `.mcp.json`'s `command` at a nonexistent interpreter.
+        """
+        cases = (
+            ("unclassified", self._full_roster(extra=["Monitor"]),
+             "dispatch branch", "ABSENT_ON_CLI"),
+            ("missing", self._full_roster(without=["Bash"]),
+             "ABSENT_ON_CLI", "dispatch branch"),
+            ("silent server", list(_leaf_tools()),
+             "did not start", "PreToolUse matcher"),
+            ("undeclared server", self._full_roster(extra=["mcp__evil__x"]),
+             "strict-mcp-config", "PreToolUse matcher"),
+        )
+        for label, roster, expected, unwanted in cases:
+            with self.subTest(label), tempfile.TemporaryDirectory() as td:
+                check = self._probe(self._repo(td), self._runner(roster=roster))
+                self.assertIs(check["pass"], False, label)
+                remedy = check["detail"].split("deliberately.")[1]
+                self.assertIn(expected, remedy, f"{label}: {remedy}")
+                self.assertNotIn(unwanted, remedy, f"{label}: {remedy}")
+
     def test_a_tool_from_an_undeclared_mcp_server_fails(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             check = self._probe(

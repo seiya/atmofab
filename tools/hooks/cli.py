@@ -1171,6 +1171,17 @@ def _evaluate_grep_glob_read_policy(
     #
     # `~` is kept in the trigger although it is inert, because `_glob_literal_prefix`
     # already returns the expanded location and the condition costs one character.
+    #
+    # ONE OVER-REFUSAL IS KNOWINGLY KEPT, because closing it costs the machinery this
+    # commit deleted. `{` is not in `_GLOB_META_RE` (the Bash extractor that shares it
+    # resolves against the filesystem, where a brace is not a wildcard), so an ABSOLUTE
+    # brace pattern spanning two granted roots — `<repo>/{docs,sub}/*` — has the literal
+    # prefix `<repo>/{docs,sub}`, which is under neither, and is refused although it
+    # READS both (measured by driving the tool). Judging it properly needs brace
+    # expansion, whose four guards were where three review rounds found defects. Absent
+    # from the corpus — no skill or prompt directs a leaf to an absolute brace `Glob` —
+    # and the leaf has a working alternative the refusal names: pass the directory as
+    # `path`.
     if (decision.action != HookDecisionAction.BLOCK
             and tool_name in _PATTERN_IS_A_PATH_TOOLS):
         raw_pattern = _tool_input(decoded.payload).get("pattern")
@@ -1204,7 +1215,10 @@ def _evaluate_grep_glob_read_policy(
                             f"{tool_name}'s pattern {pattern!r} is ABSOLUTE, so it searches "
                             f"{prefix!r} and ignores 'path' entirely — and the read_manifest "
                             f"does not grant it. Re-issue it against a granted directory, or "
-                            f"drop the leading '/' and pass the directory as 'path'."
+                            f"drop the leading '/' and pass the directory as 'path'. "
+                            f"A brace in an absolute pattern is judged at the literal text "
+                            f"before it, so `<repo>/{{a,b}}/*` is refused even when both `a` "
+                            f"and `b` are granted — pass one of them as 'path' instead."
                         ).strip(),
                     )
     if decision.action == HookDecisionAction.BLOCK and path_missing and not pattern_blocked:

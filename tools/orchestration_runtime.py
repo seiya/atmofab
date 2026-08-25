@@ -17353,12 +17353,34 @@ def _probe_claude_leaf_tool_roster(
                 f"{','.join(report['builtins']) or '(none)'}; mcp="
                 f"{','.join(report['mcp']) or '(none)'}{version_note}")
     if problems:
+        # THE REMEDY FOLLOWS THE PROBLEM. It used to be appended unconditionally, so an MCP
+        # failure told the operator to add a `PreToolUse` matcher or to edit
+        # `CLAUDE_LEAF_TOOLS_ABSENT_ON_CLI` — neither of which is the fix for "your MCP
+        # server did not start". That is the same defect named one paragraph up for the
+        # per-request case, left standing for the MCP half.
+        remedies = []
+        if report["unclassified"]:
+            remedies.append(
+                "For a built-in a leaf may keep, TWO things are needed: a PreToolUse "
+                "matcher in leaf_config/claude/settings.json AND a dispatch branch that "
+                "judges it in tools/hooks/cli.py — a matcher makes the hook fire, not "
+                "judge (docs/HOOKS.md).")
+        if report["missing"]:
+            remedies.append(
+                "For a built-in the CLI stopped offering, record it in "
+                "CLAUDE_LEAF_TOOLS_ABSENT_ON_CLI with the version that dropped it.")
+        if report["silent_mcp_servers"]:
+            remedies.append(
+                "A declared server that contributed no tool did not start: check its "
+                "`command` in .mcp.json and run it by hand (mcp_servers/README.md).")
+        if report["undeclared_mcp"]:
+            remedies.append(
+                "A tool from an undeclared server means the --strict-mcp-config closure "
+                "did not hold: a leaf's server set must be the committed .mcp.json.")
         return {"name": name, "pass": False,
                 "detail": ("; ".join(problems) + ". " + measured
-                           + ". Classify the change deliberately: add a PreToolUse matcher "
-                             "for a tool a leaf may keep (docs/HOOKS.md), or record it in "
-                             "CLAUDE_LEAF_TOOLS_ABSENT_ON_CLI if the CLI stopped offering "
-                             "one. See docs/RUNBOOK.md §0-2.")}
+                           + ". Classify the change deliberately. " + " ".join(remedies)
+                           + " See docs/RUNBOOK.md §0-2.")}
     return {"name": name, "pass": True, "detail": measured}
 
 

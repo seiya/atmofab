@@ -4012,6 +4012,26 @@ class GrepGlobReadGuardTests(unittest.TestCase):
                 self.assertEqual(code, 2, f"{pattern} was not blocked: {body}")
                 self.assertIn("ABSOLUTE", body)
 
+    def test_when_both_the_path_and_the_pattern_are_ungranted_the_path_is_reported(self) -> None:
+        """Precedence when BOTH halves refuse — untested until a reviewer mutated the guard.
+
+        The pattern branch runs only when the `path` verdict is not already a block, so the
+        `path` is the reported cause and the audit row names it. That is the right order:
+        `path` is what the leaf passed first and what it can fix first, and for an absolute
+        pattern the tool ignores `path` anyway, so reporting the pattern would send the
+        leaf to change something that was not consulted.
+        """
+        manifest = {"allowed_read_roots": ["docs"]}
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = self._make_repo(tmp, manifest=manifest)
+            (repo_root / "tools").mkdir(exist_ok=True)
+            code, body = self._run(
+                repo_root, "Glob", {"path": "tools", "pattern": "/etc/*"})
+            row = self._log_lines(repo_root)[-1]
+        self.assertEqual(code, 2, body)
+        self.assertNotIn("ABSOLUTE", body)
+        self.assertEqual(row["path"], "tools")
+
     def test_an_absolute_pattern_inside_a_granted_root_is_allowed(self) -> None:
         """Absolute is not by itself a refusal — it is judged where it points."""
         manifest = {"allowed_read_roots": ["docs"]}
