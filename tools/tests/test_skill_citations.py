@@ -21,7 +21,9 @@ document which quotes the constant. So it is coupled here.
 from __future__ import annotations
 
 import re
+import subprocess
 import unittest
+from functools import lru_cache
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -43,18 +45,56 @@ def repository_citations(text: str) -> list[str]:
             continue
         if any(char in token for char in _NOT_A_CITATION):
             continue
-        found.append(token.rstrip(".,;:)"))
+        # A trailing slash marks a directory in prose (`tools/tests/`); git tracks the
+        # directory under its bare name, so both spellings must reach the same lookup.
+        found.append(token.rstrip(".,;:)").rstrip("/"))
     return found
+
+
+# Citations to paths this repository deliberately does NOT track. Each is named, with the
+# reason, rather than matched by a pattern: an untracked path is exactly what a stale pointer
+# looks like, so the exemption must be a decision and not a shape.
+_UNTRACKED_ON_PURPOSE = {
+    # The operator's machine-local settings layer. The skill names it to say what it is NOT
+    # (not read by a leaf, not consulted by the permission gate), which is why it is cited at
+    # all — and it cannot be tracked without becoming the thing it is contrasted with.
+    ".claude/settings.local.json",
+}
+
+
+@lru_cache(maxsize=1)
+def tracked_paths() -> frozenset[str]:
+    """Every path git tracks, plus every directory prefix of one.
+
+    Judged against GIT, not against the filesystem. The first version of this check asked
+    `Path.exists()` and passed in the author's checkout while failing in a fresh worktree,
+    because a gitignored machine-local file happened to be present — the "a test passes
+    because of its own environment" shape this repository has recorded twice. It was caught
+    by the round-0 mutation run, which builds worktrees, and not by the suite.
+    """
+    out = subprocess.run(["git", "ls-files", "-z"], cwd=REPO_ROOT,
+                         capture_output=True, text=True, check=True).stdout
+    paths = set()
+    for entry in out.split("\0"):
+        if not entry:
+            continue
+        paths.add(entry)
+        parts = entry.split("/")
+        for i in range(1, len(parts)):
+            paths.add("/".join(parts[:i]))
+    return frozenset(paths)
 
 
 def unresolved(token: str, root: Path) -> str:
     """"" if the citation resolves, else why it does not."""
     path, _, symbol = token.partition("::")
+    if path in _UNTRACKED_ON_PURPOSE:
+        return ""
+    if path not in tracked_paths():
+        return "not a tracked path"
     target = root / path
-    if not target.exists():
-        return "file does not exist"
     if symbol and symbol.split("::")[0] not in target.read_text(encoding="utf-8"):
-        return "file exists but does not contain the symbol"
+        return "file is tracked but does not contain the symbol"
     return ""
 
 
@@ -110,6 +150,19 @@ class CitationScannerSelfTests(unittest.TestCase):
         tokens = repository_citations(text)
         self.assertEqual(tokens, ["tools/this_file_does_not_exist.py"])
         self.assertTrue(unresolved(tokens[0], REPO_ROOT))
+
+    def test_an_untracked_file_that_exists_locally_does_not_resolve(self) -> None:
+        """The environment-dependence that the round-0 worktree run exposed.
+
+        `.gitignore` itself is tracked, so it cannot serve as the fixture; a path under a
+        gitignored directory is present in the author's checkout and absent from a clone.
+        Judging by `Path.exists()` made this check pass here and fail everywhere else.
+        """
+        self.assertTrue(unresolved("workspace/orchestrations", REPO_ROOT))
+        self.assertFalse(unresolved("tools/hooks", REPO_ROOT))
+
+    def test_a_deliberately_untracked_citation_is_exempt_by_name(self) -> None:
+        self.assertFalse(unresolved(".claude/settings.local.json", REPO_ROOT))
 
     def test_a_missing_symbol_is_found(self) -> None:
         self.assertTrue(
