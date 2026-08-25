@@ -17366,9 +17366,23 @@ def _probe_claude_leaf_tool_roster(
                 "judges it in tools/hooks/cli.py — a matcher makes the hook fire, not "
                 "judge (docs/HOOKS.md).")
         if report["missing"]:
+            # CHECK THE LEAF CONFIG FIRST. The probe deliberately seeds its scratch home
+            # with the committed `leaf_config/claude/settings.json`, because that layer
+            # decides the roster — a `permissions.deny` naming a tool removes it (measured
+            # on 2.1.238 and 2.1.239). That makes a local edit to that file the MOST
+            # REACHABLE cause of `missing`, and it is the one cause the remedy used to
+            # omit: an operator following "record it in CLAUDE_LEAF_TOOLS_ABSENT_ON_CLI"
+            # would permanently subtract a tool from the required set to paper over a
+            # one-line configuration bug, and the check would go green having been
+            # widened rather than satisfied.
             remedies.append(
-                "For a built-in the CLI stopped offering, record it in "
-                "CLAUDE_LEAF_TOOLS_ABSENT_ON_CLI with the version that dropped it.")
+                "A built-in the CLI did not offer is USUALLY a local cause, not a vendor "
+                "one: check leaf_config/claude/settings.json for a permissions.deny "
+                "naming it, which removes it from the roster the leaf is given. Only for "
+                "a built-in the CLI itself stopped offering, record it in "
+                "CLAUDE_LEAF_TOOLS_ABSENT_ON_CLI with the version that dropped it - that "
+                "seam subtracts from the required set and must not be used to absorb a "
+                "configuration mistake.")
         if report["silent_mcp_servers"]:
             remedies.append(
                 "A declared server that contributed no tool did not start: check its "

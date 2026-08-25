@@ -35461,8 +35461,18 @@ class ClaudeLeafToolRosterPreflightTests(unittest.TestCase):
         cases = (
             ("unclassified", self._full_roster(extra=["Monitor"]),
              "dispatch branch", "ABSENT_ON_CLI"),
+            # The remedy must lead with the LOCAL cause. `ABSENT_ON_CLI` alone was
+            # measured to be the wrong first move for the most reachable way to produce
+            # this row (a `permissions.deny` in the committed leaf config, which the probe
+            # deliberately seeds and which removes the tool from the roster): following it
+            # subtracts the tool from the required set permanently, turning the check
+            # green by widening it. Both halves are asserted, so neither can be dropped.
             ("missing", self._full_roster(without=["Bash"]),
              "ABSENT_ON_CLI", "dispatch branch"),
+            ("missing names the local cause first", self._full_roster(without=["Bash"]),
+             "permissions.deny", "dispatch branch"),
+            ("missing names the file to look in", self._full_roster(without=["Bash"]),
+             "leaf_config/claude/settings.json", "dispatch branch"),
             ("silent server", list(_leaf_tools()),
              "did not start", "PreToolUse matcher"),
             ("undeclared server", self._full_roster(extra=["mcp__evil__x"]),
