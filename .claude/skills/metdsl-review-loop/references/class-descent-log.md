@@ -21,9 +21,11 @@ defect in the enforcement code, and a false or missing statement every round".
 Evidence for two of SKILL.md's stopping conditions — that "only prose remains" is a claim about
 severity, and that a disclosure round is worth running before stopping. **And for the limit of
 proxy 1**: R15 found five defects in a measurement script the branch had COMMITTED, one of them
-functional (a denylist environment that could send an unbilled probe to a real endpoint; a second
-incident in the same script, a timed-out launch scored as a successful read, would have reported
-the premise holding for a run where nothing launched). Nobody
+functional — a denylist environment that could send an unbilled probe to a real endpoint, and a
+timed-out launch scored as a successful read, which would have reported the premise holding for a
+run where nothing launched. (This file said "one of them functional" from before the split, while
+`SKILL.md` described both incidents and called them functional defects, plural; the count is
+corrected to two on both sides. Five were found in total, two of them described.) Nobody
 had been asked to review it, because the briefs named the enforcement code — so "a reviewer with
 no exclusions returns zero functional defects" was true of the files anyone looked at. A
 committed instrument is review surface.

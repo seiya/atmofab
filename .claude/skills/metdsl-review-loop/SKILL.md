@@ -39,14 +39,16 @@ in practice **most findings sat inside the previous round's fix**.
 --porcelain` empty).
 
 **One commit per finding is the default**: the mutation check works as-is with `--range
-HEAD~1..HEAD`, which fix answers which finding stays traceable, and the next round can be told
-to look hardest at the files you just fixed. Folding is allowed when splitting is unnatural —
-**say in one line why**, and **read `git show --stat` before writing the message**, which must
+HEAD~1..HEAD`, which fix answers which finding stays traceable — **put the gist of the finding in the commit
+message** — and the next round can be told to look hardest at the files you just fixed. Folding
+is allowed when splitting is unnatural, for an experimental check, or for something you expect to
+revert immediately — **say in one line why**, and **read `git show --stat` before writing the message**, which must
 describe everything in the commit (PR #67 folded eight fixes and described two).
 
 **`git commit --amend` for a message-only fix requires an empty index** (or `--only`); it
 silently absorbs whatever is staged (PR #58: an amend swallowed a file replacement, leaving a
-commit that claims work `git log -S` cannot find).
+commit that claims work `git log -S` cannot find). **If it is unpushed you can fix it by
+squashing — and say in the message that you did.**
 
 **If the plan staged the PRs, close each stage before starting the next** — implement A →
 review → fix → merge → then B. The review target is the whole stack, so splitting the history
@@ -74,7 +76,7 @@ python3 .claude/skills/metdsl-review-loop/scripts/mutation_check.py \
 
 **Pass `-x`.** The exit code decides the verdict — the output is read only to tell a real
 failure from a suite that never ran. Hunks run in separate worktrees, `min(cores - 2, 4)` at a
-time (`--jobs`); 4 hunks × 805 tests measured 5m52s → 43s. **Do not put a `TMPDIR=` prefix in
+time by default and never more than the hunk count (`--jobs`); 4 hunks × 805 tests measured 5m52s → 43s. **Do not put a `TMPDIR=` prefix in
 `--test-cmd`**: each job already gets its own temp root, a prefix puts them all back on one, and
 failures then belong to no hunk and are recorded as `killed` — a false pin (at more than one job
 the script refuses the combination, exit 2). **Run the un-mutated baseline first**; a red
@@ -108,7 +110,9 @@ when a rule does not obviously apply:
 - **Past 50 lines, a hunk hides the decisions inside it** — re-target each judgment individually
 - **Survivors** mean no pin, or a neighbouring check killing it. Fix them or write down why not.
   Test-file hunks are excluded by default (`--include-tests` keeps them); **nothing else is
-  excluded on a guess about `#`**. Prose-only hunks are **annotated, not excluded**
+  excluded on a guess about `#`**: it opens a heading in Markdown, a preprocessor directive in the
+  c/cpp families, a shebang, a lint pragma, and inside a Python string or a YAML block scalar it is
+  the prompt-template text this repository pins. Prose-only hunks are **annotated, not excluded**
   (`[prose-only (comment/docstring) — expected]`), by AST comparison over Python files only — so
   a `#` inside a string literal is not prose, a prose hunk in another file type is unlabelled,
   and **a hunk that also carries a code move is never annotated**: a missing annotation is not
@@ -118,7 +122,7 @@ when a rule does not obviously apply:
   that resolves but is wrong (`origin/main..HEAD` is empty after a merge; after a rebase it is
   your own commits replayed), a `--paths` matching nothing, a round that is all test files.
   A change with no revertible hunk — pure rename, binary, mode change, empty new file — is
-  listed by name and exits 1
+  listed by name and **exits 1 whatever else the run found, because nothing was tested for it**
 - **If the change's mechanism lives inside a test file, hunk mutation does not apply** — "nothing
   to check" with a correct base is **not applicable, not a pass**, and `--include-tests` does not
   rescue it (reverting an ADDED test hunk deletes an assertion, so it always survives). Build
@@ -126,10 +130,13 @@ when a rule does not obviously apply:
 - **Do not handwrite a mutation harness** (PR #53's `str.replace` rewrote all occurrences at
   once, hiding 2 reachable fail-opens). If you must: hit occurrences one at a time, **assert the
   patch applied**, and **re-point a mutant list reused across rounds** — a stale target reports
-  as a survivor (PR #86), and a not-applied patch is a failed run, not a finding
+  as a survivor (PR #86, visible only because the harness printed `PATCH DID NOT APPLY` instead
+  of counting them green), and a not-applied patch is a failed run, not a finding. **The script is
+  not universal either: one hunk can bundle a pinned and an unpinned change, so follow up at line
+  granularity when one rule lives in N places**
 - **Never revert a mutation with `git checkout -- <file>`; it deletes uncommitted work too.** Use
-  a worktree (the script's default; `--keep` leaves it REGISTERED — `git worktree remove <path>`,
-  not `prune`) or a `cp` backup
+  a worktree (the script's default; `--keep` leaves it REGISTERED, and `git worktree prune` will NOT
+  unregister one whose directory still exists — `git worktree remove <path>` does) or a `cp` backup
 - **Mutation checking cannot detect a test spinning in neutral.** A live-but-unobserved hunk
   looks like a pass (L128: deleting the scope mechanism outright kept everything green and all 5
   tests meant to pin it were inert). Countermeasures — each with its episode in the reference:
@@ -163,7 +170,9 @@ when a rule does not obviously apply:
   - **for stateful code, match the fixture to the lifetime of the state**, and always include a
     version with one level of syntactic nesting
 
-2. **Do not type measured values by hand; generate them from the artifact you measured.** A list
+2. **Do not type measured values by hand; generate them from the artifact you measured** — what
+   worked was a script that substitutes the numbers in TODO / docs from the measurement
+   artifacts, run and diffed. **Leave no path where a human transcribes.** A list
    of "every place you wrote a number, re-measured at the end" is not enough, and **"re-measure
    at the end" fails outright once a review loop starts, because the end keeps moving** — a fix
    commit adds a test or a hunk, so answering a finding invalidates the ledger describing the
@@ -311,6 +320,9 @@ triage), and layers needing a hypothesis → mutate → run cycle (gate semantic
 arithmetic).
 
 **Make the prompt a checklist**, not free-form, and hand over the same ground rules as above.
+**This conclusion holds only inside the axis delegated** — "sonnet matched opus at recomputing
+numbers" does not give "it matches on parser semantics". **Measure per axis.**
+
 **Tell it to report claims it cannot locate rather than accounting for them** — refusing a false
 premise I had put in its prompt is the most valuable thing this axis has done (data point 5).
 **This stays an experiment**: collect real/total findings, elapsed time and the overlap count,
@@ -350,7 +362,7 @@ The mechanics, the flags and the failure modes are in `references/codex-episodes
 that decide what you do:
 
 - **Prefer native `review`; `adversarial-review` stalls more often** (measured), even though only
-  adversarial takes focus text
+  adversarial takes focus text. **Run native once first even when you want to narrow the focus**
 - **Never wrap it in `timeout`; `--background` does not detach.** Let the harness's background
   execution do the waiting; add no polling of your own
 - **Check the base before launching** — on a merged branch `origin/main` is your own merge commit
@@ -359,7 +371,7 @@ that decide what you do:
   **Treat the same phase for more than 15 minutes as a stall and cancel**
 - **`result <job-id>` returns `No job found` before completion** — take in-flight information from
   status's `Progress:` and **the launch command's stdout**, where a partial verdict sometimes
-  appears
+  appears. **Read the output up to the stall**
 - **Do not count a stall as clean** (same for a filter drop) — but **stalls are intermittent**, so
   do not conclude "Codex cannot be used on this branch". The two-launch cap is a budget, not
   evidence of quality; decide a third by how large the remaining doubt is. If you stop, **write in
@@ -372,7 +384,8 @@ that decide what you do:
 clean" but "pass once over the surfaces subagents structurally do not look at" — dependencies,
 preflight, execution policy, consistency with repository conventions. It fails
 differently from a subagent because **it does not share the premises you handed over** —
-subagents get the diff and the threat model, Codex gets only `AGENTS.md`. **Interaction with
+subagents get the diff and the threat model, Codex gets only `AGENTS.md`. **So do not over-brief
+Codex on history either.** **Interaction with
 elements that come from anywhere other than "the input I built"** is the subagent blind spot it
 covers (PR #72). **Do not expect a clean axis split** — L174 split cleanly, PR #66 did not
 reproduce it and one of its two runs fully duplicated a subagent's finding.
@@ -477,7 +490,7 @@ code:
 
 **Also name any script, harness or fixture generator the branch committed as review surface** —
 "zero functional defects" otherwise means "zero in the files anyone looked at" (issue #71's round
-15 found five defects in a committed measurement script, one of them functional).
+15 found five defects in a committed measurement script, two of them functional).
 
 **The move that finds them: spend one round on the disclosure axis alone**, with no functional
 brief, **before stopping rather than as an extra round after deciding to stop**. Two briefs:

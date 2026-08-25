@@ -102,7 +102,9 @@ re-measure them together at the end**; a commit message cannot be fixed afterwar
 mark the number as measured at a point or rewrite it in the final round.
 
 **3-a. When the sweep keeps losing, COUPLE the documents to the rule with a check.** Rule 3 is a
-discipline, and it failed four consecutive rounds on issue #71 **after it had been diagnosed** —
+discipline, and it failed four consecutive rounds on issue #71 **after it had been diagnosed**
+(carried, not found: the narrowing round discovered no record defect of its own, so "four rounds
+found it" would overstate the history) —
 the worst instance told every leaf, in the one document every leaf reads, that a refusal it can
 actually receive cannot happen. **The trigger is the count; the audience is the priority**: three
 or more statement sites is when discipline has already lost, and a site read by a leaf or an
@@ -115,7 +117,8 @@ copying as the starting point. The four traps, each of which cost a round:
 
 - **Anchor on text that PRECEDES the rule and is byte-identical in the wording you are refusing.**
   Anchoring on your own corrected sentence pins that the correction survived, not that the rule is
-  stated — witness the check by restoring the old wording
+  stated — witness the check by restoring the old wording and confirming the failure names
+  what is missing, not the anchor
 - **Bound the reader and self-test the bound**, or a document that mentions the rule's terms
   anywhere passes on the strength of an unrelated sentence
 - **Decide what "names the rule" means for THIS rule.** Couple by MEMBERS only when the prose
@@ -241,6 +244,10 @@ auto-discovery side went straight through).
 - Confirm the **position** of the check too. Placed after a skip or an early return, it is inert
   under that condition
 - Check whether two places read the same fact, via `references/dual-read-pairs.md`
+- **If what you are adding is a conductor in-process (deterministic) substep, work
+  `references/deterministic-substep-wiring.md` before writing anything** — it lists the sites that
+  special-case one, across `tools/workflow_conductor.py` and `tools/orchestration_runtime.py`, and
+  every miss recorded there left the unit suite green while the real flow failed closed
 
 **There are two kinds of position. Look only at control flow inside the function and you miss
 one.**
@@ -301,7 +308,9 @@ that could not converge in principle).
 - **Do not call a sample a pin.** A test placed **outside** the place that defines the set cannot
   claim set identity — it can only sample rejections. **Write in the docstring what is pinned and
   what is sampled**, and if the predicate has several branches (`==` / `startswith` / trailing
-  slash), **each branch needs its own probe**
+  slash), **each branch needs its own probe** — PR #55 said "pinned" three rounds running and was
+  broken three different ways, the third being "a file and **not a directory**", a branch nobody
+  had probed
 - **If one string states two rules, a substring pin is necessarily true via the other one.** This
   repo's remedy, hint and contract texts fold two rules into one message, and PR #76 hit this four
   times on one branch. **Remedy: split on the half the rule governs, then read**
