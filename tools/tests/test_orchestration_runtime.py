@@ -35846,6 +35846,58 @@ def _leaf_tools() -> list[str]:
     return list(CLAUDE_LEAF_TOOLS)
 
 
+class AdvisorySkipDetailNamesTheRealEntryPointTests(unittest.TestCase):
+    """An operator-facing detail must not name a function that does not exist.
+
+    These strings tell a reader "this skip cannot happen in production, because the
+    production caller always passes `repo_root`" — a claim whose whole weight is the
+    caller's name. For four sites that name was `cmd_preflight`, which `git grep` finds
+    only in those four mentions; the real entry is the `preflight` subcommand, whose
+    `--repo-root` is required. A reader who greps for the named caller and finds nothing
+    cannot check the claim, and one of the four is printed, not a comment.
+
+    Round 15 found it, and this round's mutation sweep then reported both string sites as
+    SURVIVED — the correction had no witness, which is how the wrong name lasted. The
+    assertion is on the property that failed (the detail names something a reader can
+    find), not on the exact sentence.
+    """
+
+    def _advisory_details(self) -> list[str]:
+        def unused_runner(*_a, **_k):
+            raise AssertionError("the advisory path must not launch anything")
+
+        # `_probe_claude_mcp_registry` returns `(checks, ok)`; the roster probe returns a
+        # single check. Both advisory paths are read, because the four wrong names were
+        # split across them and fixing one would have looked like fixing both.
+        checks = list(ort._probe_claude_mcp_registry("claude", None, unused_runner)[0])
+        checks.append(ort._probe_claude_leaf_tool_roster("claude", None, unused_runner))
+        return [str(check.get("detail") or "") for check in checks
+                if check.get("pass") is None]
+
+    def test_the_advisory_details_name_the_preflight_subcommand(self) -> None:
+        details = self._advisory_details()
+        self.assertTrue(details, "no advisory-skip detail was produced")
+        for detail in details:
+            self.assertIn("preflight", detail, detail)
+
+    def test_no_advisory_detail_names_a_callable_the_repository_lacks(self) -> None:
+        """`cmd_preflight` specifically, because that is the name that was there.
+
+        Pinned as "this dead name is absent from every tracked file" rather than only
+        from these strings: it had spread to three comments and a test docstring from one
+        original, which is how a name nobody can resolve becomes four places to fix.
+        """
+        repo_root = Path(__file__).resolve().parents[2]
+        hits = subprocess.run(
+            ["git", "grep", "-l", "cmd_preflight"], cwd=repo_root,
+            capture_output=True, text=True).stdout.split()
+        # This file is excluded because it must SPELL the name to forbid it. That is the
+        # whole exclusion: it is one path, named here, and not a pattern that could grow
+        # to cover a real occurrence.
+        hits = [path for path in hits if path != "tools/tests/test_orchestration_runtime.py"]
+        self.assertEqual(hits, [], f"a name no callable answers to is back in: {hits}")
+
+
 class ClaudeRosterProbeRepoRootPropagationTests(unittest.TestCase):
     """`repo_root` must reach EVERY claude probe, not only the top-level one.
 
