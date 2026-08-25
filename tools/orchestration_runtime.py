@@ -17044,9 +17044,20 @@ def _classify_claude_leaf_roster(
         # a new refusal resting on an unmeasured premise.
         if not any(name.startswith(f"mcp__{server}__") for server in declared):
             undeclared_mcp.append(name)
+    # A DECLARED SERVER THAT CONTRIBUTES NOTHING is the same failure as a missing built-in,
+    # and the argument the `missing` half already makes applies with more force here: every
+    # `compile` / `run` / `lint` gate goes through `mcp__build-runtime__*`, so a leaf that
+    # comes up without them dies mid-billing looking like a model failure. Measured: with
+    # `.mcp.json`'s `command` pointed at a nonexistent interpreter the roster carries the
+    # six built-ins and NO mcp names, and every other preflight row stays green — this
+    # check holds the only direct evidence and used to discard it.
+    silent_servers = sorted(
+        server for server in declared
+        if not any(name.startswith(f"mcp__{server}__") for name in mcp_names))
     return {
         "builtins": sorted(builtins),
         "mcp": mcp_names,
+        "silent_mcp_servers": silent_servers,
         "unclassified": sorted(builtins - required),
         # THE UNION FOR EXTRAS, EACH CAPTURE FOR OMISSIONS. The two questions are not
         # symmetric and one set cannot answer both: a name in ANY request is a tool the
@@ -17310,6 +17321,9 @@ def _probe_claude_leaf_tool_roster(
     if report["undeclared_mcp"]:
         problems.append("MCP tools from servers .mcp.json does not declare: "
                         + ", ".join(report["undeclared_mcp"]))
+    if report["silent_mcp_servers"]:
+        problems.append("servers .mcp.json declares that put NO tool in the roster: "
+                        + ", ".join(report["silent_mcp_servers"]))
     measured = (f"measured {report['captures']} capture(s); built-ins="
                 f"{','.join(report['builtins']) or '(none)'}; mcp="
                 f"{','.join(report['mcp']) or '(none)'}{version_note}")

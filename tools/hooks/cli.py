@@ -1196,29 +1196,38 @@ def _evaluate_grep_glob_read_policy(
     # record showed `Glob path=docs` for both `pattern=*.md` and `pattern=/etc/*`, and
     # `append_hook_access_log` carries no reason field to tell them apart.
     logged_path = search_path
-    # THE PATTERN, for the tools whose pattern names paths. `Glob`'s pattern decides where
-    # the search reads, so it is authorized like a path — judged AT THE PLACE THE READ
-    # WOULD LAND, which is what `os.path.normpath` computes for a pattern carrying `..`
-    # and what brace expansion computes for one carrying alternatives.
+    # THE PATTERN, for the tools whose pattern names paths. `Glob`'s pattern can name a
+    # place outside `path`, so it is authorized like a path — judged AT THE PLACE THE READ
+    # WOULD LAND, which `os.path.normpath` computes for a pattern carrying `..` and brace
+    # expansion for one carrying alternatives.
     #
-    # THIS CHECK DELIBERATELY DOES NOT REST ON WHAT THE TOOL CAN REACH, and that is the
-    # correction of two earlier rounds. They narrowed and then widened this code on a
-    # premise about the vendor's implementation — "the tool runs `rg --files --glob` rooted
-    # at `path`, so a relative `..` reads nothing" — which was written as MEASURED and was
-    # not: what had been measured was bare ripgrep, not the tool, and the same paragraph
-    # was self-inconsistent (under ripgrep the ABSOLUTE pattern reads nothing either,
-    # while the paragraph called it the one live escape). Driving the real tool returned
-    # files for `../x/*`, for `*/../../x/*`, through a symlinked directory and for a brace
-    # alternation, with the results spelled as literal joins — so the premise was false in
-    # the direction that matters. It is gone rather than corrected: the landing place is
+    # WHAT THE TOOL ACTUALLY DOES, measured by DRIVING IT — a loopback stand-in answers the
+    # first turn with a synthetic `tool_use` and the `tool_result` is read out of the next
+    # request body (unbilled). Recorded here because this layer has been wrong four times,
+    # every time from measuring something ELSE and writing it down as the tool: Python's
+    # `glob` twice, then bare `ripgrep`, then a claim of driving the tool that does not
+    # reproduce. On CLI 2.1.239, with `path=docs` in a tree holding `docs/sub/b.md`:
+    #
+    #     pattern=sub/*.md              -> No files found
+    #     pattern=docs/sub/*.md         -> docs/sub/b.md
+    #     pattern=../spec/*.yaml        -> No files found
+    #     pattern=*/../../outside/*     -> No files found
+    #     pattern={../../outside,sub}/* -> No files found
+    #     pattern=linkdir/*             -> No files found   (a symlinked directory)
+    #     pattern=/etc/hostname         -> /etc/hostname     (an ABSOLUTE pattern re-roots)
+    #
+    # So a relative pattern is matched against the REPOSITORY-relative path and the read is
+    # confined to `path`; only an absolute pattern leaves it. `Grep`'s `glob` filter cannot
+    # leave either (`glob=../../outside/*` and an absolute `glob` both return nothing), so
+    # it stays out of `_PATTERN_IS_A_PATH_TOOLS` — as does `Grep`'s `pattern`, a content
+    # regex where refusing `\.\./config` would be an over-refusal.
+    #
+    # THE CHECK STILL JUDGES RELATIVE PATTERNS, deliberately, and this is not a
+    # contradiction. The measurement says such a pattern reads NOTHING, so refusing it
+    # costs a leaf an empty result it was going to get anyway — and it costs one that says
+    # why. What the check must not do is DEPEND on the measurement: the landing place is
     # computable from the pattern alone, so the rule holds whichever engine runs it, and a
-    # vendor change cannot reopen a hole. What the tool actually does belongs in a
-    # measurement note, not in a load-bearing predicate.
-    #
-    # `Grep`'s pattern is a CONTENT regex and names no path, so it stays out of
-    # `_PATTERN_IS_A_PATH_TOOLS`: treating `\.\./config` as a path escape would refuse a
-    # legitimate search. Its `glob` / `type` FILTERS are a separate, unvalidated residue
-    # that this branch did not close and did not re-measure — `docs/HOOKS.md` records it.
+    # vendor change cannot reopen the absolute case through a relative spelling.
     if (decision.action != HookDecisionAction.BLOCK
             and tool_name in _PATTERN_IS_A_PATH_TOOLS):
         raw_pattern = _tool_input(decoded.payload).get("pattern")
@@ -1261,13 +1270,14 @@ def _evaluate_grep_glob_read_policy(
             if alternatives is None:
                 prefixes = ["."]
             for prefix in sorted(set(prefixes)):
+                # An alternative landing on `path` itself was authorized a few lines above,
+                # so re-validating it can only return the same verdict. NOT PINNED, and
+                # said so rather than left looking load-bearing: measured, deleting this
+                # line changes no verdict and no audit row — it is a cost guard on the
+                # common case (`{.,sub}/*` and every ordinary pattern land here), not a
+                # rule. A test asserting otherwise was written and withdrawn.
                 if prefix == search_path:
                     continue
-                # WHERE THE READ WAS JUDGED, for the log, on both verdicts. Recording
-                # `path` filed a pattern-caused block as a read of the innocent directory,
-                # and an allowed `../spec/*` as a read of `docs` — and the first fix moved
-                # the conflation instead of removing it, by changing only the block side.
-                logged_path = prefix
                 pattern_decision = validate_read_access(
                     repo_root,
                     orchestration_id,
@@ -1282,6 +1292,15 @@ def _evaluate_grep_glob_read_policy(
                     # path" are two contradictory sentences, and only the first names
                     # something the leaf can act on.
                     pattern_blocked = True
+                    # THE BLOCK SIDE ONLY. A pattern-caused refusal must not be filed as a
+                    # read of the innocent `path`, so the row names where the pattern was
+                    # judged. The ALLOW side keeps `path`, and that is not the conflation
+                    # an earlier round took it for: measured, a relative pattern reads only
+                    # under `path`, so `path` is where the read happened — while recording
+                    # the judged prefix there produced rows like `docs/docs` for
+                    # `Glob(path=docs, pattern=docs/**/*.md)`, the one relative spelling
+                    # that works, and named `spec` for a read that never happened.
+                    logged_path = prefix
                     decision = dataclasses.replace(
                         pattern_decision,
                         reason=(

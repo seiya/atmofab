@@ -4069,6 +4069,33 @@ class GrepGlobReadGuardTests(unittest.TestCase):
         self.assertEqual(row["decision"], "block")
         self.assertEqual(row["path"], "secret")
 
+    def test_brace_expansion_handles_nesting_the_unbalanced_and_the_repeated(self) -> None:
+        """`_brace_alternatives` directly, for the branches the end-to-end rows cannot see.
+
+        Three mutants survived the hook-level tests: splitting on a comma at ANY depth
+        (which mangles nesting), turning an unbalanced `{` into a refusal instead of a
+        literal, and skipping the alternative whose prefix equals `path`. The first two are
+        invisible end to end because the mangled or refused forms still block for another
+        reason, so they are asserted here on the function's own output.
+        """
+        from tools.hooks.cli import _brace_alternatives
+
+        # NESTING: a comma at depth 2 belongs to the inner group. Splitting on it at any
+        # depth yields `['a', '{b', 'c}}/*']` — every one of which still blocks, which is
+        # why the escape rows do not see it.
+        self.assertEqual(_brace_alternatives("{a,{b,c}}/*"), ["a/*", "b/*", "c/*"])
+        # UNBALANCED: not an alternation, so it stays a literal and the pattern is judged
+        # as written. Returning None instead would refuse every pattern carrying a stray
+        # brace — an over-refusal nothing else would have caught.
+        for pattern in ("{a", "a}b{c", "docs/{"):
+            self.assertEqual(_brace_alternatives(pattern), [pattern], pattern)
+        # BOUNDED: past the limit there is no enumeration, and the caller falls back to the
+        # repository root.
+        self.assertEqual(len(_brace_alternatives("{a,b}" * 6)), 64)
+        self.assertIsNone(_brace_alternatives("{a,b}" * 7))
+        # An empty alternative is a real one.
+        self.assertEqual(_brace_alternatives("{,x}y"), ["y", "xy"])
+
     def test_a_brace_alternation_inside_the_grants_is_allowed(self) -> None:
         """The other half: expanding must not turn a legitimate alternation into a refusal.
 
@@ -4104,14 +4131,18 @@ class GrepGlobReadGuardTests(unittest.TestCase):
         self.assertEqual(blocked, 2)
         self.assertEqual(allowed, 0)
 
-    def test_a_pattern_landing_in_another_granted_root_agrees_with_bash(self) -> None:
-        """The route-disagreement test, in the direction that actually bit.
+    def test_a_pattern_landing_in_another_granted_root_is_not_refused(self) -> None:
+        """A `..` pattern whose landing place is granted must not be refused.
 
-        `Glob(path="docs", pattern="*/../../spec/*")` lands in `spec/`, which the manifest
-        grants, and the identical read spelled for `Bash` is allowed. A version of this
-        check that validated every `..` pattern at the repository root refused the `Glob`
-        spelling — recreating, in the other direction, the disagreement it was written to
-        remove. Both routes are asserted here so neither can drift alone.
+        NOT a claim of route agreement, which is what this test asserted until the tool was
+        driven: `cat docs/*/../../spec/*` really reads `spec/`, while
+        `Glob(path="docs", pattern="*/../../spec/*")` reads NOTHING — a relative pattern is
+        confined to `path`. The two routes do not do the same thing, so pinning them as
+        equal pinned a falsehood. What must hold is the weaker, true property: the check
+        does not refuse a pattern whose landing place the manifest grants, which is what a
+        version validating every `..` pattern at the repository root got wrong. The Bash
+        row stays because it is the spelling that DOES reach `spec/`, and it must keep
+        working.
         """
         manifest = {"allowed_read_roots": ["docs", "spec"]}
         with tempfile.TemporaryDirectory() as tmp:
@@ -4136,8 +4167,12 @@ class GrepGlobReadGuardTests(unittest.TestCase):
         `native_hook_events.jsonl`, not this file — an earlier version of this docstring
         named it, wrongly).
 
-        BOTH VERDICTS, because fixing only the block side moves the conflation rather than
-        removing it: an allowed pattern judged at `spec/` still filed a read of `docs`.
+        THE BLOCK SIDE ONLY. An earlier round recorded the judged prefix on BOTH verdicts,
+        calling `path` on the allow side a conflation. Measured since, by driving the real
+        tool: a relative pattern reads only under `path`, so on an allowed call `path` IS
+        where the read happened — and recording the judged prefix there produced rows like
+        `docs/docs` for `Glob(path="docs", pattern="docs/**/*.md")`, which is the one
+        relative spelling that finds anything.
         """
         manifest = {"allowed_read_roots": ["docs", "spec"]}
         with tempfile.TemporaryDirectory() as tmp:
@@ -4147,17 +4182,18 @@ class GrepGlobReadGuardTests(unittest.TestCase):
             for label, tool_input, expected_code in (
                 ("blocked_by_pattern", {"path": "docs", "pattern": "/etc/*"}, 2),
                 ("allowed_elsewhere", {"path": "docs", "pattern": "../spec/*"}, 0),
-                ("allowed_here", {"path": "docs", "pattern": "*.md"}, 0),
+                ("allowed_here", {"path": "docs", "pattern": "docs/**/*.md"}, 0),
             ):
                 code, body = self._run(repo_root, "Glob", tool_input)
                 self.assertEqual(code, expected_code, f"{label}: {body}")
                 rows[label] = self._log_lines(repo_root)[-1]
+        # The refusal names where the PATTERN was judged, not the innocent `path`.
         self.assertEqual(rows["blocked_by_pattern"]["decision"], "block")
         self.assertEqual(rows["blocked_by_pattern"]["path"], "/etc")
-        self.assertEqual(rows["allowed_elsewhere"]["decision"], "allow")
-        self.assertEqual(rows["allowed_elsewhere"]["path"], "spec")
-        self.assertEqual(rows["allowed_here"]["decision"], "allow")
-        self.assertEqual(rows["allowed_here"]["path"], "docs")
+        # An allowed call names the directory the tool actually walks.
+        for label in ("allowed_elsewhere", "allowed_here"):
+            self.assertEqual(rows[label]["decision"], "allow", label)
+            self.assertEqual(rows[label]["path"], "docs", label)
 
     def test_a_pattern_block_without_a_path_names_one_cause(self) -> None:
         """Two remedies for one refusal are worse than one.

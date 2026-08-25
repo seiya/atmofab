@@ -378,14 +378,17 @@ def _answer_claude_roster_probe(args, kwargs, *, roster=None):
     is faked. Returning a canned check result instead would leave every one of those
     unexercised — the shape that let a broken server look green.
 
-    `roster` defaults to exactly the declared allowlist, which is the passing case. The
-    tools carry only `name`, which is the one field the server reads.
+    `roster` defaults to the passing case: the declared allowlist PLUS one tool from the
+    server the fixture's `.mcp.json` declares, because a declared server that contributes
+    nothing to the roster is a finding of its own. The tools carry only `name`, which is
+    the one field the server reads.
     """
     import urllib.error
     import urllib.request
     from tools.orchestration_runtime import CLAUDE_LEAF_TOOLS
 
-    names = list(CLAUDE_LEAF_TOOLS) if roster is None else list(roster)
+    names = ([*CLAUDE_LEAF_TOOLS, "mcp__build-runtime__run_linter"]
+             if roster is None else list(roster))
     base_url = kwargs["env"]["ANTHROPIC_BASE_URL"]
     body = json.dumps({
         "model": "claude-opus-5",
@@ -35274,6 +35277,24 @@ class ClaudeLeafRosterClassificationTests(unittest.TestCase):
         self.assertNotIn("mcp__build-runtime__run_program", report["undeclared_mcp"])
         self.assertEqual(report["unclassified"], [])
 
+    def test_a_declared_server_that_contributes_no_tool_is_reported(self) -> None:
+        """A declared server putting NOTHING in the roster is the `missing` failure again.
+
+        The same argument the built-in half makes applies with more force: every
+        `compile` / `run` / `lint` gate goes through `mcp__build-runtime__*`, so a leaf
+        that comes up without them dies mid-billing looking like a model failure. Measured
+        against the real CLI with `.mcp.json`'s `command` pointed at a nonexistent
+        interpreter: the roster carries the six built-ins and no MCP names at all, every
+        other preflight row stays green, and this check used to report pass on it.
+        """
+        report = self._classify(self._allowed(), servers=("build-runtime",))
+        self.assertEqual(report["silent_mcp_servers"], ["build-runtime"])
+        # And a server that does contribute is not reported, including when a SECOND
+        # declared server is the silent one.
+        report = self._classify(self._allowed() + ["mcp__build-runtime__run_linter"],
+                                servers=("build-runtime", "other"))
+        self.assertEqual(report["silent_mcp_servers"], ["other"])
+
     def test_a_server_name_containing_the_separator_is_matched_whole(self) -> None:
         """`mcp__<server>__<tool>` is matched against the DECLARED names by prefix.
 
@@ -35353,6 +35374,12 @@ class ClaudeLeafToolRosterPreflightTests(unittest.TestCase):
             return _answer_claude_roster_probe(args, kwargs, roster=roster)
         return runner
 
+    #: The passing roster: the declared built-ins plus one tool from the declared server,
+    #: because a server that contributes nothing is now a finding of its own.
+    def _full_roster(self, extra=(), without=()):
+        return [*(n for n in _leaf_tools() if n not in without),
+                "mcp__build-runtime__run_linter", *extra]
+
     def test_the_declared_roster_passes_and_the_detail_records_it(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             check = self._probe(self._repo(td), self._runner())
@@ -35371,10 +35398,9 @@ class ClaudeLeafToolRosterPreflightTests(unittest.TestCase):
         may a leaf have it, and which `PreToolUse` matcher would validate it — which an
         operator cannot begin from a count.
         """
-        from tools.orchestration_runtime import CLAUDE_LEAF_TOOLS
         with tempfile.TemporaryDirectory() as td:
             check = self._probe(self._repo(td),
-                                self._runner(roster=[*CLAUDE_LEAF_TOOLS, "Monitor"]))
+                                self._runner(roster=self._full_roster(extra=["Monitor"])))
         self.assertIs(check["pass"], False)
         # SPLIT on the half the rule governs. The detail states TWO things — the problems
         # and the whole measured roster — and `Monitor` appears in the second half by
@@ -35391,7 +35417,7 @@ class ClaudeLeafToolRosterPreflightTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             check = self._probe(
                 self._repo(td),
-                self._runner(roster=[n for n in _leaf_tools() if n != "Bash"]))
+                self._runner(roster=self._full_roster(without=["Bash"])))
         self.assertIs(check["pass"], False)
         problems = check["detail"].split("measured ")[0]
         self.assertIn("Bash", problems)
@@ -35409,7 +35435,7 @@ class ClaudeLeafToolRosterPreflightTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             check = self._probe(
                 self._repo(td),
-                self._runner(roster=[*_leaf_tools(), "mcp__evil__exfiltrate"]))
+                self._runner(roster=self._full_roster(extra=["mcp__evil__exfiltrate"])))
         self.assertIs(check["pass"], False)
         self.assertIn("mcp__evil__exfiltrate", check["detail"].split("measured ")[0])
 
