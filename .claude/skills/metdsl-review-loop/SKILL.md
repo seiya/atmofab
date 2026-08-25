@@ -265,12 +265,23 @@ nor resets the two-consecutive-clean-security-rounds condition.**
 - **If the reported HEAD is a hash you do not recognize, find out what commit it is first** —
   the user or another session can commit to the same branch. That is concurrency, not staleness:
   read it and **judge whether it collides with your scope**
-- **Hand over the threat model and the purpose in one paragraph** (from "Fix or out of scope"
-  below): "a single-operator research workflow platform; what is defended against is a deviating
-  `LLM` leaf and the defects my own changes introduce; hardening paths only the operator can
-  reach, and handling constructs that exist nowhere in the real corpus, are out of scope."
-  **Without it the report fills with future forms of details.** But **do not name individual
-  findings as excluded** — that is an exclusion list, subject to the three-round rule below
+- **Hand over the premises in one paragraph** (`AGENTS.md` §"Development premises" is canonical;
+  hand over this short form): "a single-operator research workflow platform. What is defended
+  against is a **`leaf shortcut`** — an `LLM` leaf is not malicious and takes shortcuts, so
+  anything getting it closer to reporting its task DONE without earning it (a loosened assertion,
+  a hardcoded expected value, a check recorded as run, a gate edited rather than satisfied, a past
+  artifact read as input) is in scope at full severity — and the defects my own changes introduce.
+  **A hole getting the leaf no closer to done is out of scope**: the operator's credentials, a
+  read outside the checkout, another orchestration, anything outliving the run. So is hardening a
+  path only the operator can reach, and a construct occurring zero times in the real corpus."
+  **Both halves are load-bearing**: without the first, the review skips the machinery that makes a
+  verdict mean anything; without the second, it fills with escapes that gain a leaf nothing
+- **Make each finding carry its own gain sentence** — "a leaf taking this gets ⟨what⟩ toward
+  reporting its task done". **A finding that cannot carry one is not a finding**, it is a mechanism
+  description, and the sentence is what you triage against afterwards. It also states the
+  over-refusal probe's other half: for a check, the same sentence is what a legitimate input says
+- But **do not name individual findings as excluded** — that is an exclusion list, subject to the
+  three-round rule below
 - **For a change that adds checking machinery, include "construct legitimate work that this check
   wrongly refuses".** Ask only for misses and the over-refusals stay. The criterion is whether the
   pin is on **the rule** or on **the result the rule produced**; pinning results makes ordinary
@@ -403,13 +414,29 @@ something there, **write one line of justification and do not carry the list int
 (same reason as exclusion lists — and if reachability is unverified, do not drop it, run the
 reproduction).
 
-**What this repository is**: a **single-operator research workflow platform** that generates and
-certifies weather and climate kernels from a `spec` — `README.md` §Scope is canonical for what it
-builds, while the threat model below is this skill's framing of it —
-`docs/design/zero_base_architecture.md` states the leaf half, and the "defects my own changes
-introduce" half appears nowhere else. What is defended
-against is **a deviating `LLM` leaf and defects my own changes introduce**, not a malicious third
-party and not an unknown user population. It is neither a distributed artifact nor a long-lived API.
+**`AGENTS.md` §"Development premises" is canonical for the model** — what this repository is, the
+two defended classes, and the decision criterion. It moved there because Codex gets only
+`AGENTS.md` (see "When to bring in Codex"), so the independent pass was running with no premise at
+all. Do not restate it here; what this section holds is what a REVIEW does with it.
+
+**The leaf is not malicious and does not hold back. Those are one premise, not a middle.** The
+reviewer's question is never "could a leaf do this" — a capable model under a goal can do nearly
+anything — but **"does doing it get the leaf closer to reporting its task DONE?"** That is the
+cut, and it runs both ways:
+
+- **On the shortest route to done** — a `leaf shortcut` (`docs/GLOSSARY.md` §12): an assertion
+  loosened until it passes, an expected value hardcoded, a check recorded as run, a `gate`
+  satisfied by editing it, an unmeasured value written down, a past artifact read as input. **In
+  scope**, and the leaf will spell it however it has to: "a leaf would not phrase it that way" is
+  no defense here, because reaching done is the motive that makes it phrase it that way
+- **Buying the leaf nothing toward done** — the operator's credentials, a read outside the
+  checkout, another `orchestration`, anything outliving the run. **Out of scope however real the
+  mechanism**, and saying so **costs no reproduction**: name what the leaf would gain, show it is
+  nothing, stop. That permission is narrow and is not rule 1's — `metdsl-enforcement-change`
+  rule 1-e states the two apart
+
+**Both halves have a recorded failure, in opposite directions, so apply both** (episodes:
+`references/class-descent-log.md` §"The gain cut").
 
 **Fix (directly serves the purpose):**
 
@@ -420,16 +447,28 @@ party and not an unknown user population. It is neither a distributed artifact n
 - **false evidence** — recording something as run that was not, breaking the audit trail, a commit
   message / PR / doc disagreeing with the artifact
 - **loss of reproducibility** — `--resume` breaks, non-determinism enters a verdict
+- **a `leaf shortcut`** — anything letting a leaf report done without earning it. It subsumes the
+  four above whenever a leaf is what reaches them
 - **a hole an `LLM` leaf hits with ordinary spelling** — a shape that exists in the real corpus
-  (this tree's spec and generated artifacts)
+  (this tree's spec and generated artifacts). For a shortcut, ordinary spelling **also covers
+  whatever spelling reaches done**
 
 **Do not fix (declare out of scope and stop):**
 
+- **anything a leaf gains nothing from** — the operator's credentials, a read outside the checkout,
+  another `orchestration`'s state, persistence past the run. No route through one of them ends at a
+  green verdict. **Check the gain before the mechanism.** Mind the near miss: reading a PAST
+  ARTIFACT is on the other side of this line, forbidden by `docs/workflow/WORKFLOW_CORE.md`
+  precisely because it shortens the route to done, so "a read the manifest does not grant" is by
+  itself neither verdict
 - **defenses against paths only the operator can reach** — hand-crafting invalid argv, editing
-  files to bypass a gate. Outside the threat model
+  files to bypass a gate. The operator owns the machine
 - **handling constructs that occur zero times in the real corpus** — future forms an adversarial
   reviewer wrote to break the rule. Declare the scope: "this is regression prevention for ordinary
-  spelling, not enforcement against someone trying to circumvent it"
+  spelling, not enforcement against someone trying to circumvent it". **This is a cheap proxy for
+  the gain test, not a second rule**: one `grep` decides it, so reach for it first, and when the
+  two disagree the gain test governs — a shape absent from today's corpus is still in scope when
+  taking it shortens a leaf's route to done
 - **generalization for future extension** — unnecessary while there is no second caller
 - **optimization that measurement shows is not the bottleneck** — the bottleneck is thinking, not
   Python
@@ -438,8 +477,10 @@ party and not an unknown user population. It is neither a distributed artifact n
 - **rough edges in existing behaviour this PR does not touch** — file them in TODO.md and hand
   them over. Pulling them in compounds "fixes calling for fixes"
 
-**One question when in doubt**: "if this stays unfixed and one `workflow` runs, does a **wrong
-certification** or a **false record** come out?" If not, out of scope is fine. Write the count and
+**Two questions when in doubt**, both of which must answer yes: "if this stays unfixed and one
+`workflow` runs, does a **wrong certification** or a **false record** come out?" and "**does a leaf
+get closer to reporting its task done by taking it?**" If either is no, out of scope is fine — and
+when the second is the no, say what the leaf would have gained. Write the count and
 the breakdown of what you dropped into the PR body / your report to the user — never drop silently.
 
 ## Stopping conditions

@@ -264,3 +264,27 @@ second spelling of the RULES, and these EPISODES existed nowhere else. Restored 
   be like this" and never observes the algorithm (cf.
   `test_backend_boundary.py::ScannedSetTests`)
 
+## The gain cut — the two directions it fails in
+
+`SKILL.md` §"Fix or out of scope" cuts a finding by whether it gets a leaf closer to reporting its
+task done. Each half of that cut has a recorded failure, and they are opposite, so neither half is
+a simplification of the other.
+
+**Keeping an adversary half: issue #71's `Glob` pattern check.** `TODO.md` records it as "where
+most of issue #71's eleven review rounds found defects" — an escape it missed, an over-refusal it
+caused, an infinite loop in its brace expander, and four claims about the tool that were
+measurements of something else. **Every one of those is a defect in the check, not in anything it
+protected**, and the design was withdrawn in the end for defending reads that cannot happen. The
+corrected lesson is not that its escapes were unreal: it is that **reading the operator's
+credentials never moved a leaf one step toward generating a kernel**, so the rounds bought nothing
+whatever they found. Read with the entry above, which is the same branch measured on the
+stopping-condition axis.
+
+**Dropping the shortcut half** has no single-branch episode here because the premise that would
+have caused it was corrected before landing (2026-08-25). The standing evidence is structural and
+belongs on this side of the file: the whole verdict apparatus — `gate`, `validator`, `judge`,
+`verdict.json`, the audit trail — exists because a leaf that cannot reach a green verdict honestly
+reaches it the other way, and `docs/design/zero_base_architecture.md` §A4 states the sharpest
+form, a kernel co-generated with checks that report its defect as passing. A cut that classified
+those as "the leaf would have to be trying" would have taken the review off the machinery that
+makes a verdict mean anything. **The axis is the gain, never how deliberate the route looks.**
