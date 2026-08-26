@@ -5113,5 +5113,603 @@ class ReadDecisionAccessLogTests(unittest.TestCase):
             self.assertEqual(lines[1]["policy"], "read_manifest_read_guard")
 
 
+class BashWriteTargetGrammarTests(unittest.TestCase):
+    """The Bash write boundary: issue #74's four defects and TODO.md 378(d).
+
+    Two mechanisms, and the split between them is the point. `_detect_bash_write_targets`
+    NAMES the path a redirect / `tee` / `sed -i` writes, and the guard checks it against
+    the manifest. `_detect_bash_write_commands` does not name anything: it recognises a
+    command that writes a file from Bash and the caller REFUSES it. The second exists
+    because the first shape was tried for the operand family and three review rounds each
+    found the same defect one function further on — a value read off one copy of the
+    command while a decision was made on another.
+
+    SAMPLED, not pinned: what is fixed here is the set of spellings listed below, not
+    "every write bash can express". Both functions are best-effort by construction and
+    carry their residue in their own docstrings; an empty extraction means "nothing
+    extracted", never "this command writes nothing".
+    """
+
+    # Issue #74's three measured defects plus the clobber spelling `>|`, found while
+    # reproducing (c). Each row is (command, expected targets).
+    _ISSUE_74_WITNESSES = (
+        # (a) a quoted redirect target used to collapse to the single char '"'
+        ('cat > "workspace/tmp/run1/work.py" <<EOF', ["workspace/tmp/run1/work.py"]),
+        ("cat > 'workspace/tmp/run1/work.py'", ["workspace/tmp/run1/work.py"]),
+        ("cmd > 'a b'/c", ["a b/c"]),
+        ('cmd > pre"post"', ["prepost"]),
+        # (b) a heredoc BODY is data; a `>` inside it is not a redirect
+        (
+            "cat > workspace/tmp/run1/s.py <<'EOF'\nif a > b:\n    pass\nEOF",
+            ["workspace/tmp/run1/s.py"],
+        ),
+        # (c) no space between the operator and the path
+        ("cat >workspace/pipelines/x.json <<'EOF'", ["workspace/pipelines/x.json"]),
+        ("cmd >>workspace/out.log", ["workspace/out.log"]),
+        ("cmd >|workspace/out.txt", ["workspace/out.txt"]),
+        ("cmd >| workspace/out.txt", ["workspace/out.txt"]),
+        # `>&word` with a non-numeric word is "and stderr too", i.e. a file write.
+        # Missed on origin/main as well as by #74's first fix.
+        ("echo x >& workspace/pipelines/x.json", ["workspace/pipelines/x.json"]),
+        ("echo x >&workspace/pipelines/x.json", ["workspace/pipelines/x.json"]),
+    )
+
+    # Spellings whose result must survive the widened regex. `>(` is the one the
+    # widening itself put at risk: with no space required, process substitution would
+    # otherwise be reported as a write to the phantom `(cat`.
+    _MUST_NOT_REGRESS = (
+        ("cmd 2>&1 > out.txt", ["out.txt"]),
+        ("cmd >&2", []),
+        ("cmd 1>&2", []),
+        ("cmd >> log.txt", ["log.txt"]),
+        ("cmd 1> a.txt 2> b.txt", ["a.txt", "b.txt"]),
+        ("cmd &> all.log", ["all.log"]),
+        ("cmd &>> all.log", ["all.log"]),
+        ("cmd > /dev/null", []),
+        ("echo hi > /dev/stderr", []),
+        ("echo hi > /dev/stdout", []),
+        ("echo hi > /dev/stdin", []),
+        ("tee >(cat) < a", []),
+        ("diff <(a) <(b) > out", ["out"]),
+        ("echo test | tee file1.txt file2.txt", ["file1.txt", "file2.txt"]),
+        ("sed -i's/a/b/' file.txt", ["file.txt"]),
+        ("sed -i 's/a/b/' f.txt", ["f.txt"]),
+        ('python3 foo.py --reply-text "exit code > 0"', []),
+        ('python3 foo.py --arg "$(echo hi > workspace/forbidden.txt)"', ["workspace/forbidden.txt"]),
+        ('python3 foo.py --val "$((1 > 0))"', []),
+    )
+
+    # Redirect-side spellings the three review rounds found. The rounds' argv-side
+    # findings are not here: that mechanism was replaced by refusal, and its rows moved
+    # to `_REFUSED_WRITE_COMMANDS` / `_NOT_REFUSED`.
+    _REVIEW_ROUND_WITNESSES = (
+        # round 1: the fd prefix of a redirect must be inside the blanked span, and
+        # `>&-` / `>& 3` / `>&N-` are descriptor operations, not writes
+        ("cmd 2>&-", []),
+        ("cmd >&-", []),
+        ("echo x >& 3", []),
+        ("cmd >&3", []),
+        ("cmd 2>&3", []),
+        ("cmd >&3-", []),
+        ("cmd 2>&3-", []),
+        # ...but a non-numeric word after `>&` IS a file
+        ("cmd >&1x", ["1x"]),
+        # round 2: a quoted target starting with `&` is a real destination, not an
+        # fd-dup spelling to drop
+        ('cmd > "&1"', ["&1"]),
+        # round 3: a comment is blanked before ANY branch reads the text, so the `tee`
+        # operand list stops at the note and a `$(…)` inside a comment is never run
+        ("python3 x.py | tee workspace/tmp/r1/log.txt  # keep a copy", ["workspace/tmp/r1/log.txt"]),
+        ("echo hi > workspace/out/b # $(echo x > /tmp/pwn)", ["workspace/out/b"]),
+        # ...and a `#` mid-word is not a comment. `run.json#env` occurs in this tree's
+        # own sandbox-profile paths.
+        ("echo hi > workspace/out/run.json#env", ["workspace/out/run.json#env"]),
+        # round 1: an unterminated quote reaches shlex unbalanced
+        ('cmd > "abc', ['"abc']),
+        # round 4: `>` inside a comparison context is an operator, not a redirect.
+        # The GLUED spellings became phantoms when #74(c) dropped the space
+        # requirement; the spaced ones were phantoms on origin/main too.
+        ("echo $((n>0))", []),
+        ("echo $(( n > 0 ))", []),
+        ("[[ a >b ]] && echo y", []),
+        ("[[ a > b ]]", []),
+        # ...but a real redirect nested inside one is still reached, through the
+        # command-substitution recursion that runs before the blanking
+        ('--arg "$(( $(echo 1 > /tmp/pwn) + 1 ))"', ["/tmp/pwn"]),
+        ("[[ -f a ]] && cmd > out.txt", ["out.txt"]),
+        # round 5: `[[` is the conditional ONLY in command position. Matched
+        # anywhere, any `[[` paired with any later `]]` and blanked a REAL
+        # redirect between them — measured writing the file under bash, and
+        # named by origin/main.
+        ("cat a.json [[ > workspace/pipelines/evil.json ]]", ["workspace/pipelines/evil.json"]),
+        ("echo [[ ; cat a > copied.yaml ; echo ]]", ["copied.yaml"]),
+        ("if [[ -f a ]]; then cmd > out.txt; fi", ["out.txt"]),
+        ("while [[ x ]]; do cmd > o; done", ["o"]),
+    )
+
+    # TODO.md 378(d): every one of these is REFUSED, whatever it names. The spellings
+    # are the ones that defeated the parser this replaced — a glued `;`, a newline, a
+    # `\`-continuation, a comment, a command substitution, a wrapper, a shell keyword,
+    # a bundled or glued short option — none of which the refusal has to model, because
+    # it never looks past the fragment head.
+    _REFUSED_WRITE_COMMANDS = (
+        "cp a.txt workspace/pipelines/y.json",
+        "cp -r a b workspace/tmp/r1/",
+        "cp -t workspace/tmp/r1 a b",
+        "cp -tworkspace/tmp/r1 a b",
+        "cp -atworkspace/ir a b",
+        "cp --target-directory=workspace/tmp/r1 a b",
+        "mv old.txt workspace/ir/new.txt",
+        "install -m 644 src workspace/ir/dst",
+        "install -d workspace/ir/a workspace/ir/b",
+        "ln -s target workspace/ir/link",
+        "ln -s ../x",
+        "touch workspace/ir/b.txt",
+        "truncate -s 0 workspace/ir/log.txt",
+        "dd if=/dev/zero of=workspace/ir/x.bin bs=1",
+        "dd of=",
+        "/bin/cp a b",
+        "cp -- a b",
+        "cp - b",
+        # separators the old parser could not see
+        "cd workspace; cp a.py workspace/pipelines/f.json",
+        "mkdir -p x\ncp a.py workspace/pipelines/f.json",
+        "cp a b&&ls",
+        "ls && cp a b",
+        "cp a b | grep x",
+        "cp a \\\n  workspace/out/b",
+        # a comment, a substitution, a redirect in the same fragment
+        "cp src workspace/out/x.py  # copy the artifact",
+        "cp $(ls -t | head -1) workspace/pipelines/f.json",
+        'cp a.json "$(cat dest.txt)"',
+        "cp report.json workspace/tmp/r1/run-$(date +%s).json",
+        "cp a b > log.txt",
+        "cp a b < in.txt",
+        "cp a b 2>/dev/null",
+        "cp a b 2<in.txt",
+        "cp a b 2>&1",
+        "cp a b2>&1",
+        "cp a b <&3",
+        "cp 'a b.txt' 'c d.txt'",
+        # prefixes and wrappers the read side already strips
+        "sudo cp a workspace/ir/b",
+        "VAR=1 cp a workspace/ir/b",
+        "time cp a b",
+        "xargs cp -t workspace/ir",
+        "xargs -n1 cp a b",
+        "for f in *.py; do cp $f workspace/out/; done",
+        "if [ -f a ]; then touch workspace/out/b; fi",
+        "( cp a workspace/out/x.txt )",
+        "{ cp a b; }",
+        # a writer inside a command substitution runs
+        "$(cp a b)",
+        "`cp a b`",
+        "echo $(cp a b)",
+        "x=$(touch workspace/out/f)",
+        # the shell's own `-c`, the nearest rephrasing of a refused `cp`
+        "bash -c 'cp a b'",
+        'sh -c "touch workspace/out/x"',
+        # a quoted or escaped command NAME is still that command
+        '"cp" a b',
+        "\\cp a b",
+        'c""p a b',
+        # a leading redirection does not displace the head
+        "> workspace/x.txt cp a b",
+        # a shell is handed a SCRIPT, and the script need not be in the shell's
+        # own fragment: piped in, or in a heredoc body blanked before the scan
+        "bash <<'EOF'\ncp a b\nEOF",
+        "echo 'cp a b' | bash",
+        "printf 'cp a b' | bash -s",
+        # process substitution runs its body
+        "diff <(cp a b) /dev/null",
+        "cat <(cp a b) >/dev/null",
+        "echo hi > >(cp a d)",
+    )
+
+    # Commands that must NOT be refused. Half are ordinary read-only work; half are the
+    # documented residue, where the refusal recognises no writer and says so.
+    _NOT_REFUSED = (
+        "echo cp a b",
+        "cat workspace/tmp/r1/a.txt",
+        "ls && grep x y",
+        "python3 tools/orchestration_runtime.py record-reply --reply-text 'cp a b'",
+        "grep -rn 'touch' tools/",
+        "cat a.txt | tee workspace/tmp/r1/log.txt",
+        "echo hi > workspace/tmp/r1/out.txt",
+        "sed -i 's/a/b/' workspace/tmp/r1/f.txt",
+        # residue: a writer this does not recognise
+        "find . -name x -exec cp {} workspace/ir \\;",
+        # a `#`-comment mentioning a writer is not one being run — including when
+        # the comment carries a `;` that would otherwise open a new fragment
+        "cat a.txt # cp a b",
+        "echo x; # ; cp a b",
+        # a heredoc BODY is a document being written, not commands being run.
+        # This is how a leaf authors a scratch script; 19 of 283 real leaf Bash
+        # commands mined from this tree's own hook logs carry one.
+        "cat > workspace/tmp/r1/s.py <<'EOF'\ncp a b\nEOF",
+        # residue: only the NAME is indirect, so the fragment carries no literal
+        "$CP a workspace/ir/b",
+        "$(which cp) a workspace/ir/b",
+        # residue: a script FILE handed to an interpreter. The file's content is
+        # not in the command, so nothing here can see the writer.
+        "bash workspace/tmp/r1/copy.sh",
+        "python3 workspace/tmp/r1/copy.py",
+        # `install` is also a package-manager SUBCOMMAND, so it is recognised only
+        # at a fragment head. This row is verbatim from the session corpus.
+        "timeout 600 /v/bin/pip install -q fparser",
+        "env PYTHONPATH=. python3 -m pip install -e .",
+    )
+
+    def _targets(self, command: str) -> list[str]:
+        return cli._detect_bash_write_targets(command)
+
+    def _write_commands(self, command: str) -> list[str]:
+        return cli._detect_bash_write_commands(
+            *cli._blanked_command_and_scan(command), command
+        )
+
+    # ---- the path-naming half ---------------------------------------------
+
+    def test_issue_74_witnesses(self) -> None:
+        for command, expected in self._ISSUE_74_WITNESSES:
+            with self.subTest(command=command):
+                self.assertEqual(sorted(self._targets(command)), sorted(expected))
+
+    def test_redirect_spellings_that_must_not_regress(self) -> None:
+        for command, expected in self._MUST_NOT_REGRESS:
+            with self.subTest(command=command):
+                self.assertEqual(sorted(self._targets(command)), sorted(expected))
+
+    def test_review_round_witnesses(self) -> None:
+        for command, expected in self._REVIEW_ROUND_WITNESSES:
+            with self.subTest(command=command):
+                self.assertEqual(sorted(self._targets(command)), sorted(expected))
+
+    def test_heredoc_body_alone_yields_no_target(self) -> None:
+        # No outer redirect at all: everything in the body is data.
+        command = "cat <<'EOF'\necho x > /etc/passwd\nEOF"
+        self.assertEqual(self._targets(command), [])
+
+    def test_unbalanced_quote_falls_back_to_the_raw_span(self) -> None:
+        """`_shlex_one`'s ValueError fallback returns the blob, never the empty string.
+
+        An unterminated quote is left alone by `_strip_quoted_strings` (the
+        fail-closed direction there), so the span reaches shlex unbalanced.
+        Returning "" instead would append an empty target and block naming ''.
+        """
+        self.assertEqual(cli._shlex_one('"abc'), '"abc')
+        self.assertEqual(self._targets('cmd > "abc'), ['"abc'])
+
+    # ---- the refusal half -------------------------------------------------
+
+    def test_file_write_commands_are_recognised(self) -> None:
+        for command in self._REFUSED_WRITE_COMMANDS:
+            with self.subTest(command=command):
+                self.assertTrue(
+                    self._write_commands(command),
+                    f"no writer recognised in {command!r}",
+                )
+
+    def test_commands_that_must_not_be_refused(self) -> None:
+        for command in self._NOT_REFUSED:
+            with self.subTest(command=command):
+                self.assertEqual(self._write_commands(command), [])
+
+    def test_every_member_of_the_write_command_set_is_recognised(self) -> None:
+        """Set identity, not a sample: generated FROM the constant.
+
+        A name added to `_BASH_FILE_WRITE_COMMANDS` without a probe gets one
+        automatically, and removing one turns this red.
+        """
+        for name in sorted(cli._BASH_FILE_WRITE_COMMANDS):
+            with self.subTest(name=name):
+                self.assertEqual(self._write_commands(f"{name} a b"), [name])
+                mutated = frozenset(cli._BASH_FILE_WRITE_COMMANDS - {name})
+                with patch.object(cli, "_BASH_FILE_WRITE_COMMANDS", mutated):
+                    self.assertEqual(self._write_commands(f"{name} a b"), [])
+
+    # A REALISTIC invocation of each whole-fragment head. The first version of this
+    # test generated `f"{name} cp a b"` for every one of them and passed — but
+    # `timeout cp a b` is not a spelling bash accepts, and every wrapper works in
+    # the no-option form, so the probe family could not distinguish a working
+    # look-through from an inert one. Six of eight wrappers were in fact defeated
+    # by their own canonical invocation, and `timeout` by every spelling that
+    # exists. That is the third time on this branch a measurement was taken over a
+    # family that structurally cannot answer the question.
+    _WHOLE_FRAGMENT_HEAD_SPELLINGS = {
+        "sudo": "sudo -u root cp a b",
+        "env": "env FOO=1 cp a b",
+        "nohup": "nohup cp a b",
+        "xargs": "xargs -I {} cp {} dst",
+        "stdbuf": "stdbuf -o 0 cp a b",
+        "timeout": "timeout 5 cp a b",
+        "nice": "nice -n 10 cp a b",
+        "ionice": "ionice -c 2 cp a b",
+        "command": "command cp a b",
+        "exec": "exec cp a b",
+        "eval": 'eval "cp a b"',
+        "bash": "bash -c 'cp a b'",
+        "sh": 'sh -c "cp a b"',
+        "zsh": "zsh -c 'cp a b'",
+        "dash": "dash -c 'cp a b'",
+        "ksh": "ksh -c 'cp a b'",
+        "case": "case x in x) cp a b;; esac",
+    }
+
+    def test_every_whole_fragment_head_is_scanned(self) -> None:
+        """Set identity over `_BASH_SCAN_WHOLE_FRAGMENT_HEADS`, with REAL spellings.
+
+        The spelling table is checked against the constant first, so a head added
+        to the code without one fails here rather than getting a probe that cannot
+        fail. Each spelling was run under bash in a scratch directory and confirmed
+        to actually perform the copy.
+        """
+        self.assertEqual(
+            set(self._WHOLE_FRAGMENT_HEAD_SPELLINGS),
+            set(cli._BASH_SCAN_WHOLE_FRAGMENT_HEADS),
+            "every whole-fragment head needs a realistic probe spelling",
+        )
+        for name, command in sorted(self._WHOLE_FRAGMENT_HEAD_SPELLINGS.items()):
+            with self.subTest(name=name, command=command):
+                self.assertIn("cp", self._write_commands(command))
+                mutated = frozenset(cli._BASH_SCAN_WHOLE_FRAGMENT_HEADS - {name})
+                shells = frozenset(cli._BASH_SHELL_HEADS - {name})
+                # A shell name is in BOTH sets — the head scan and the raw-word
+                # scan reach it independently — so removing it from one alone
+                # proves nothing. Both are mutated, or the probe cannot fail.
+                with patch.object(cli, "_BASH_SCAN_WHOLE_FRAGMENT_HEADS", mutated):
+                    with patch.object(cli, "_BASH_SHELL_HEADS", shells):
+                        self.assertNotIn("cp", self._write_commands(command))
+
+    def test_a_writer_in_every_fragment_of_a_compound_is_found(self) -> None:
+        # The refusal names the first writer, but the scan must not stop at the
+        # first fragment: a leading read must not hide a trailing write.
+        self.assertEqual(self._write_commands("cat a.txt && cp a b"), ["cp"])
+        self.assertEqual(self._write_commands("cp a b && mv c d"), ["cp", "mv"])
+
+    # ---- end to end through cli.main --------------------------------------
+
+    def _setup(self, repo_root: Path, *, orch: str, run_id: str, tmp_root: str) -> None:
+        orch_root = repo_root / "workspace" / "orchestrations" / orch
+        (orch_root / "output_manifests").mkdir(parents=True, exist_ok=True)
+        (orch_root / "read_manifests").mkdir(parents=True, exist_ok=True)
+        (orch_root / "active_child_agent_run_id.txt").write_text(run_id, encoding="utf-8")
+        (orch_root / "output_manifests" / f"{run_id}.json").write_text(
+            json.dumps(
+                {
+                    "orchestration_id": orch,
+                    "agent_run_id": run_id,
+                    "allowed_output_paths": [],
+                    "allowed_file_tool_paths": [],
+                    "allowed_tmp_root": tmp_root,
+                    "write_roots": ["workspace/ir"],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    def _run_bash_hook(self, *, orch: str, repo_root: Path, command: str) -> tuple[int, dict]:
+        payload = {
+            "orchestration_id": orch,
+            "repo_root": str(repo_root),
+            "tool_name": "Bash",
+            "tool_input": {"command": command},
+        }
+        out = io.StringIO()
+        with patch.dict(os.environ, {"METDSL_WORKFLOW_MODE": "1"}, clear=False):
+            with redirect_stdout(out):
+                code = cli.main(
+                    [
+                        "--backend",
+                        "claude",
+                        "--event",
+                        "PreToolUse",
+                        "--input-json",
+                        json.dumps(payload),
+                    ]
+                )
+        body_text = out.getvalue().strip()
+        return code, (json.loads(body_text) if body_text else {})
+
+    def test_quoted_redirect_target_under_tmp_root_is_not_blocked(self) -> None:
+        """Issue #74(a) end to end: the block named `'"'`, a path nobody wrote."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            orch = "orch_issue74_quoted"
+            run_id = "step_run_issue74_quoted"
+            tmp_root = f"workspace/tmp/{run_id}"
+            self._setup(repo_root, orch=orch, run_id=run_id, tmp_root=tmp_root)
+            code, body = self._run_bash_hook(
+                orch=orch,
+                repo_root=repo_root,
+                command=f'cat > "{tmp_root}/work.py" <<EOF',
+            )
+            self.assertNotEqual(code, 2, body)
+            self.assertNotEqual(body.get("decision"), "block", body)
+
+    def test_redirect_without_space_reaches_the_write_guard(self) -> None:
+        """Issue #74(c) end to end: `cat >path` used to produce no target at all."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            orch = "orch_issue74_nospace"
+            run_id = "step_run_issue74_nospace"
+            self._setup(
+                repo_root, orch=orch, run_id=run_id, tmp_root=f"workspace/tmp/{run_id}"
+            )
+            for command in (
+                "cat > workspace/pipelines/evil.json <<'EOF'",
+                "cat >workspace/pipelines/evil.json <<'EOF'",
+            ):
+                with self.subTest(command=command):
+                    code, body = self._run_bash_hook(
+                        orch=orch, repo_root=repo_root, command=command
+                    )
+                    self.assertEqual(code, 2, body)
+                    self.assertEqual(body.get("decision"), "block", body)
+                    self.assertIn("workspace/pipelines/evil.json", body.get("reason", ""))
+
+    def test_legitimate_redirect_work_is_not_refused(self) -> None:
+        """The over-refusal probe, at the handler, for the rows a round found blocked.
+
+        Each of these names a destination inside the leaf's own `allowed_tmp_root`
+        and was BLOCKED at some commit on this branch, naming `2`, `artifact`,
+        `.json`, `ls` or `-` — a path that appears nowhere in the command.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            orch = "orch_issue74_overrefusal"
+            run_id = "step_run_issue74_overrefusal"
+            tmp_root = f"workspace/tmp/{run_id}"
+            self._setup(repo_root, orch=orch, run_id=run_id, tmp_root=tmp_root)
+            for command in (
+                f"echo hi > {tmp_root}/a.txt",
+                f"echo hi > {tmp_root}/a.txt 2>/dev/null",
+                f"echo hi > {tmp_root}/a.txt 2>&-",
+                f"echo hi > {tmp_root}/a.txt  # keep a note",
+                f"echo hi > {tmp_root}/a.txt\nls workspace",
+                f"echo hi >{tmp_root}/a.txt",
+                f'echo hi > "{tmp_root}/a.txt"',
+                f"cat a.txt | tee {tmp_root}/log.txt  # keep a copy",
+            ):
+                with self.subTest(command=command):
+                    code, body = self._run_bash_hook(
+                        orch=orch, repo_root=repo_root, command=command
+                    )
+                    self.assertNotEqual(code, 2, body)
+                    self.assertNotEqual(body.get("decision"), "block", body)
+
+    def test_no_leaf_permission_grant_matches_a_refused_write_command(self) -> None:
+        """The "costs nothing legitimate" claim, pinned instead of asserted once.
+
+        `docs/HOOKS.md` and the commit that added the refusal both say the seven
+        commands are already refused by the harness, because none of them appears
+        in the Claude leaf's `permissions.allow`. That is the whole argument for
+        the refusal being free, and without this test a `Bash(cp:*)` grant added
+        tomorrow would falsify a canonical document silently.
+
+        **What this does NOT cover**: `leaf_config/` holds only `claude/`. A codex
+        leaf routes `Shell` through this same hook and has no permission allow list
+        for the claim to be about, so the claim is scoped to the Claude backend and
+        the document says so.
+        """
+        repo_root = Path(__file__).resolve().parents[2]
+        config = json.loads(
+            (repo_root / "leaf_config" / "claude" / "settings.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        allow = config.get("permissions", {}).get("allow", [])
+        self.assertTrue(allow, "the leaf allow list must not be empty")
+        for entry in allow:
+            for name in sorted(cli._BASH_FILE_WRITE_COMMANDS):
+                with self.subTest(entry=entry, name=name):
+                    # A grant is `Bash(<prefix>*)`; the writer would have to appear
+                    # at the head of that prefix for the command to be permitted.
+                    inner = entry[len("Bash(") : -1] if entry.startswith("Bash(") else ""
+                    self.assertNotEqual(inner.split(" ")[0].split("/")[-1], name)
+
+    def test_shell_fed_writer_is_refused_at_the_handler(self) -> None:
+        """Pinned at the HANDLER, not the helper: the raw command must be passed.
+
+        `_detect_bash_write_commands` checks every word of the UNBLANKED command
+        when a shell heads a fragment, and only `cli.main` has that string —
+        `_blanked_command_and_scan` has already removed the heredoc body the
+        script lives in. A mutation sweep found the wiring unpinned: the helper
+        tests pass the raw command themselves, so they hold with `cli.main` no
+        longer doing it, and `bash <<'EOF' … EOF` would reach the harness
+        undecided.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            orch = "orch_issue74_shellfed"
+            run_id = "step_run_issue74_shellfed"
+            self._setup(
+                repo_root, orch=orch, run_id=run_id, tmp_root=f"workspace/tmp/{run_id}"
+            )
+            for command in (
+                "bash <<'EOF'\ncp a.txt workspace/pipelines/evil.json\nEOF",
+                "echo 'cp a.txt workspace/pipelines/evil.json' | bash",
+            ):
+                with self.subTest(command=command):
+                    code, body = self._run_bash_hook(
+                        orch=orch, repo_root=repo_root, command=command
+                    )
+                    self.assertEqual(code, 2, body)
+                    self.assertEqual(body.get("decision"), "block", body)
+                    self.assertIn("'cp'", body.get("reason", ""))
+
+    def test_operator_session_outside_workflow_mode_is_not_refused(self) -> None:
+        """The refusal is workflow-only, and this pins it at the handler.
+
+        `.claude/settings.json` (the DEV layer) has to carry every hook command the
+        leaf layer does, so an operator's interactive session runs this same hook.
+        The Bash branch is gated on `METDSL_WORKFLOW_MODE == "1"` (`cli.py`'s
+        step 3), and the operator owns the machine — refusing their `cp` would be
+        an over-refusal with no leaf-shortcut to defend against.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            orch = "orch_issue74_operator"
+            run_id = "step_run_issue74_operator"
+            self._setup(
+                repo_root, orch=orch, run_id=run_id, tmp_root=f"workspace/tmp/{run_id}"
+            )
+            payload = {
+                "orchestration_id": orch,
+                "repo_root": str(repo_root),
+                "tool_name": "Bash",
+                "tool_input": {"command": "cp a.txt b.txt"},
+            }
+            out = io.StringIO()
+            with patch.dict(os.environ, {"METDSL_WORKFLOW_MODE": "0"}, clear=False):
+                with redirect_stdout(out):
+                    code = cli.main(
+                        [
+                            "--backend",
+                            "claude",
+                            "--event",
+                            "PreToolUse",
+                            "--input-json",
+                            json.dumps(payload),
+                        ]
+                    )
+            self.assertEqual(code, 0)
+            self.assertEqual(out.getvalue().strip(), "")
+
+    def test_file_write_command_is_refused_with_an_actionable_remedy(self) -> None:
+        """TODO.md 378(d) end to end, and the remedy is checked, not just the block.
+
+        The remedy is a CONJUNCTION for a copy — `Read` then `Write` — so the
+        message has to say both halves: a leaf doing only the first writes nothing
+        and reports done on an artifact that does not exist.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            orch = "orch_issue74_argv"
+            run_id = "step_run_issue74_argv"
+            tmp_root = f"workspace/tmp/{run_id}"
+            self._setup(repo_root, orch=orch, run_id=run_id, tmp_root=tmp_root)
+            # Refused even when the destination is one the manifest WOULD allow:
+            # the rule is the route, not the path.
+            for command in (
+                "cp a.txt workspace/pipelines/evil.json",
+                f"cp a.txt {tmp_root}/b.txt",
+                f"cd workspace; cp a.py {tmp_root}/b.txt",
+                f"cp -t{tmp_root} a.txt",
+                f"for f in *.py; do cp $f {tmp_root}/; done",
+            ):
+                with self.subTest(command=command):
+                    code, body = self._run_bash_hook(
+                        orch=orch, repo_root=repo_root, command=command
+                    )
+                    self.assertEqual(code, 2, body)
+                    self.assertEqual(body.get("decision"), "block", body)
+                    reason = body.get("reason", "")
+                    self.assertIn("'cp'", reason)
+                    self.assertIn("`Write` tool", reason)
+                    # the copy remedy names BOTH halves
+                    self.assertIn("`Read` it and", reason)
+                    self.assertIn("both halves are", reason)
+
 if __name__ == "__main__":
     unittest.main()

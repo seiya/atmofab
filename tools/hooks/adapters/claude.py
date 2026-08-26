@@ -78,10 +78,12 @@ class ClaudeHookAdapter(HookBackendAdapter):
         if decision.action == HookDecisionAction.ALLOW_AUTO_APPROVE:
             # hookSpecificOutput.permissionDecision="allow" bypasses the harness's
             # permission prompt and continues execution without operator approval.
-            # Premise: ALLOW_AUTO_APPROVE is issued only in the Write/Edit branch
-            # (PreToolUse event) of cli.py. If mixed into another event, the
-            # hookEventName becomes inconsistent, so when adding a new issuing
-            # site, guarantee that it is PreToolUse.
+            # Premise: every ALLOW_AUTO_APPROVE issuing site in cli.py is on the
+            # PreToolUse event. There are two — the Write/Edit branch, and the
+            # read-only-Bash branch guarded by _is_auto_approvable_readonly_bash
+            # (this comment named only the first until issue #74(d)). If mixed
+            # into another event, the hookEventName becomes inconsistent, so when
+            # adding a new issuing site, guarantee that it is PreToolUse.
             audit = decision.audit_detail or {}
             if decision.reason:
                 # Issuing site provided an explicit reason (e.g. the Bash
