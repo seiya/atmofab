@@ -17240,15 +17240,18 @@ def _probe_claude_leaf_tool_roster(
             # with "the CLI made no request carrying a tool roster", against `origin/main`
             # passing on the same host.
             #
-            # Copied rather than SHA-pinned: `_prepare_claude_workflow_home` owns the
-            # pinning, and this is a read-only measurement of the same bytes. A file that
+            # Not SHA-pinned: `_prepare_claude_workflow_home` owns the pinning, and
+            # this is a read-only measurement of the same FILE (no longer the same bytes -
+            # `hooks` is dropped below). A file that
             # cannot be read fails closed below, and whether it is STRUCTURALLY valid is
             # `claude_leaf_config_validated`'s question, ANDed beside this one.
             #
             # THE `hooks` KEY IS DROPPED FROM THE COPY, and that is load-bearing since
-            # issue #102. What decides the roster is `permissions` - a `deny` entry
-            # removes the named tools from what the CLI sends - and the hooks were only
-            # ever along for the ride. They are also the LEAF's hooks, and the leaf
+            # issue #102. What decides the roster is `permissions`: a `deny` entry removes
+            # the named tools from what the CLI sends, measured by CONSTRUCTION against
+            # the real CLI (`deny: ["Glob"]` added to a worktree's copy -> the probe fails
+            # naming Glob) rather than observed on the committed file, which carries only
+            # `allow` today. The hooks were only ever along for the ride. They are also the LEAF's hooks, and the leaf
             # entrypoint now fails closed when it cannot name an orchestration, which by
             # construction is this probe: the three `env.pop`s above remove the very id
             # the hook would need. Seeding them made every claude launch unlaunchable
@@ -17260,8 +17263,17 @@ def _probe_claude_leaf_tool_roster(
             try:
                 leaf_config_doc = json.loads(
                     _claude_leaf_config_path(repo_root).read_text(encoding="utf-8"))
-                if isinstance(leaf_config_doc, dict):
-                    leaf_config_doc.pop("hooks", None)
+                if not isinstance(leaf_config_doc, dict):
+                    # Valid JSON that is not an object. Writing it through launched the
+                    # CLI against a home that loads NO settings, and reported the roster
+                    # it then measured as this check's verdict — the "configuration no
+                    # leaf runs under" this block exists to avoid. Fails closed here;
+                    # `claude_leaf_config_validated` catches the same file structurally,
+                    # and being caught twice is the point of a defence in depth.
+                    raise ValueError(
+                        f"the leaf configuration is {type(leaf_config_doc).__name__}, "
+                        f"not an object")
+                leaf_config_doc.pop("hooks", None)
                 (Path(scratch_home) / "settings.json").write_text(
                     json.dumps(leaf_config_doc, ensure_ascii=False), encoding="utf-8")
             except (OSError, ValueError) as exc:

@@ -1140,8 +1140,12 @@ class ClaudeHookCliTests(unittest.TestCase):
         waved through on exactly the events that open a session."""
         for event in ("SessionStart", "UserPromptSubmit", "Stop", "PostToolUse"):
             with self.subTest(event=event), tempfile.TemporaryDirectory() as tmp:
-                code, _text = self._run_event("codex", event, {"repo_root": tmp})
+                code, text = self._run_event("codex", event, {"repo_root": tmp})
                 self.assertEqual(code, 2)
+                # THE REASON, not just the code. This fixture has a second path to rc 2 —
+                # the codex feature cache is absent too, and refuses with its own message
+                # — so asserting the code alone would hold with the refusal removed.
+                self.assertIn("orchestration_id is required", text)
 
     def test_an_id_from_the_environment_is_enough(self) -> None:
         """The control that keeps the refusal from being read as "the payload must carry
@@ -1321,6 +1325,32 @@ class ClaudeHookCliTests(unittest.TestCase):
                 self.assertEqual(decision.audit_detail.get("command"), command)
                 if matched is not None:
                     self.assertEqual(decision.audit_detail.get("matched_tokens"), matched)
+
+    def test_the_record_lands_where_the_policy_was_evaluated(self) -> None:
+        """The audit and the policy must resolve `repo_root` the same way.
+
+        They did not: `_append_hook_audit` preferred the payload's copy and
+        `_resolve_repo_root` — what `main()` evaluates under — prefers the environment's.
+        Measured with the two disagreeing, the decision was made for one tree and recorded
+        under the other, which is a false record rather than a missing one. Both committed
+        wrappers set both to `$ROOT`, so production never disagreed and nothing made them
+        agree.
+        """
+        with tempfile.TemporaryDirectory() as a, tempfile.TemporaryDirectory() as b:
+            orch = "orch_two_roots"
+            payload = {"repo_root": b, "orchestration_id": orch, "tool_name": "Bash",
+                       "tool_input": {"command": "cat ~/.claude.json"}}
+            code, _text = self._run_pre(
+                "claude", payload,
+                env={"METDSL_WORKFLOW_MODE": "1", "METDSL_ORCHESTRATION_ID": orch,
+                     "METDSL_HOOK_REPO_ROOT": a})
+            self.assertEqual(code, 2)
+            in_a = (Path(a) / "workspace" / "orchestrations" / orch / "hooks"
+                    / "native_hook_events.jsonl")
+            in_b = (Path(b) / "workspace" / "orchestrations" / orch / "hooks"
+                    / "native_hook_events.jsonl")
+            self.assertTrue(in_a.exists(), "the record did not land where the policy ran")
+            self.assertFalse(in_b.exists(), "the record landed in the other tree")
 
     def test_nothing_writes_the_deleted_policy_variable(self) -> None:
         """The writer, not only the reader (issue #102).
@@ -5699,8 +5729,9 @@ class BashWriteTargetGrammarTests(unittest.TestCase):
         the refusal being free, and without this test a `Bash(cp:*)` grant added
         tomorrow would falsify a canonical document silently.
 
-        **What this does NOT cover**: `leaf_config/` holds only `claude/`. A codex
-        leaf routes `Shell` through this same hook and has no permission allow list
+        **What this does NOT cover**: the codex leaf. Since issue #102 `leaf_config/`
+        holds `codex/hooks.json` as well, but it wires hooks only — a codex leaf
+        routes `Shell` through this same hook and still has no permission allow list
         for the claim to be about, so the claim is scoped to the Claude backend and
         the document says so.
         """
@@ -5753,8 +5784,10 @@ class BashWriteTargetGrammarTests(unittest.TestCase):
     def test_operator_session_outside_workflow_mode_is_not_refused(self) -> None:
         """The refusal is workflow-only, and this pins it at the handler.
 
-        `.claude/settings.json` (the DEV layer) has to carry every hook command the
-        leaf layer does, so an operator's interactive session runs this same hook.
+        Since issue #102 an operator's interactive session does NOT run this hook —
+        the DEV layer runs `tools/hooks/dev_cli.py`. What this pins is therefore about a
+        LEAF outside workflow mode, which is the shape a standalone or misconfigured
+        launch produces, and the judgement is unchanged: the refusal is workflow-only.
         The Bash branch is gated on `METDSL_WORKFLOW_MODE == "1"` (`cli.py`'s
         step 3), and the operator owns the machine — refusing their `cp` would be
         an over-refusal with no leaf-shortcut to defend against.

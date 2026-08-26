@@ -35378,6 +35378,36 @@ class ClaudeLeafToolRosterPreflightTests(unittest.TestCase):
         return [*(n for n in _leaf_tools() if n not in without),
                 "mcp__build-runtime__run_linter", *extra]
 
+    def test_a_leaf_configuration_that_is_not_an_object_fails_closed(self) -> None:
+        """The silent else-branch a witness census found, with the input constructed.
+
+        `bd35a5b` replaced a byte copy with a JSON round-trip, and the round-trip only
+        popped `hooks` `if isinstance(doc, dict)`. Valid JSON that is not an object was
+        written through verbatim and the CLI LAUNCHED against it — a home that loads no
+        settings at all, whose roster was then reported as this check's verdict. That is
+        precisely the "configuration no leaf runs under" the surrounding block exists to
+        rule out.
+
+        A second witness for the same widened `except`: malformed JSON. The branch's
+        `except (OSError, ValueError)` covers it (`UnicodeDecodeError` and
+        `JSONDecodeError` are both `ValueError`), but only a MISSING file was pinned, so
+        narrowing back to `except OSError` survived the suite.
+        """
+        from tools.tests.leaf_config_fixture import LEAF_CONFIG_REL
+
+        def runner(args, **kwargs):  # type: ignore[no-untyped-def]
+            raise AssertionError("the CLI must not be launched against this configuration")
+
+        for label, body in (("a JSON array", "[]"),
+                            ("a JSON string", '"not an object"'),
+                            ("malformed JSON", "{ not json")):
+            with self.subTest(configuration=label), tempfile.TemporaryDirectory() as td:
+                root = self._repo(td)
+                (root / LEAF_CONFIG_REL).write_text(body, encoding="utf-8")
+                check = self._probe(root, runner)
+                self.assertIs(check["pass"], False, msg=check.get("detail"))
+                self.assertIn("cannot read the leaf configuration", check["detail"])
+
     def test_the_seeded_home_carries_the_permissions_but_not_the_hooks(self) -> None:
         """The probe is the THIRD caller of the leaf hook chain, and it cannot satisfy it.
 

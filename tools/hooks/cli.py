@@ -251,6 +251,13 @@ def _append_hook_audit(
     # silently unrecorded, because a leaf that lost `METDSL_ORCHESTRATION_ID` has usually
     # lost `METDSL_WORKFLOW_MODE` from the same environment.
     env_repo_root = os.environ.get("METDSL_HOOK_REPO_ROOT", "").strip()
+    # THE SAME ORDER AS THE POLICY, which is the whole point of resolving it here at all.
+    # This function used to prefer the payload's `repo_root` while `_resolve_repo_root` —
+    # what `main()` evaluates the policy under — prefers the environment's. Measured with
+    # the two disagreeing (`METDSL_HOOK_REPO_ROOT=A`, payload `repo_root=B`): the decision
+    # was made for A and recorded under B, which is a false record rather than a missing
+    # one. Both wrappers set both to `$ROOT`, so nothing in production disagreed; nothing
+    # made them agree either.
     repo_root_raw = payload.get("repo_root")
     if not (isinstance(repo_root_raw, str) and repo_root_raw.strip()):
         if isinstance(inner_payload, dict):
@@ -258,16 +265,14 @@ def _append_hook_audit(
             if isinstance(inner_repo_root, str) and inner_repo_root.strip():
                 repo_root_raw = inner_repo_root
 
-    # For an ambient hook call where `repo_root` is unspecified, do not pollute the
-    # actual workspace. To persist the audit log, give an explicit `repo_root`
-    # (or `METDSL_HOOK_REPO_ROOT` via env).
-    if not (isinstance(repo_root_raw, str) and repo_root_raw.strip()):
-        if env_repo_root:
-            repo_root = Path(env_repo_root).resolve()
-        else:
-            return
-    else:
+    # With no root known from any source there is no tree to write into, and an ambient
+    # call must not create one in whatever directory it happens to be run from.
+    if env_repo_root:
+        repo_root = Path(env_repo_root).resolve()
+    elif isinstance(repo_root_raw, str) and repo_root_raw.strip():
         repo_root = Path(repo_root_raw).resolve()
+    else:
+        return
     path = (
         repo_root
         / "workspace"

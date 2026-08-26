@@ -59,6 +59,46 @@ class DevCliRefusesTheTwoOperatorSafetyCommands(unittest.TestCase):
         self.assertEqual(code, 0)
 
 
+class DevCliReadsTheCodexPayloadShape(unittest.TestCase):
+    """The nested payload shape, which every other test in this file skips.
+
+    A witness census found `_payload_field`'s `payload["payload"]` fallback and
+    `_extract_command`'s top-level `"command"` key unwitnessed: every dev-cli test used
+    the flat claude shape. The nested one is the codex shape that `cli.py::_inner_payload`
+    exists for, and `.codex/hooks.json` registers this entrypoint — so a wrong fallback
+    would mean the two operator-safety policies silently never fire for a codex operator,
+    which is exactly the failure that looks like nothing at all.
+    """
+
+    def _run(self, payload) -> int:
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            return dev_cli.main(["--backend", "codex", "--event", "PreToolUse",
+                                 "--input-json", json.dumps(payload)])
+
+    def test_the_command_is_found_in_each_shape_the_backends_send(self) -> None:
+        for label, payload in (
+            ("flat tool_input", {"tool_input": {"command": 'git reset --hard HEAD~1'}}),
+            ("nested tool_input", {"payload": {"tool_input": {"command": 'git reset --hard HEAD~1'}}}),
+            ("flat command", {"command": 'git reset --hard HEAD~1'}),
+            ("nested command", {"payload": {"command": 'git reset --hard HEAD~1'}}),
+        ):
+            with self.subTest(shape=label):
+                self.assertEqual(self._run(payload), 2)
+
+    def test_the_same_shapes_allow_an_ordinary_command(self) -> None:
+        """The control: each shape above must be able to say 0, or the rows prove only
+        that this entrypoint refuses everything it cannot parse."""
+        for label, payload in (
+            ("flat tool_input", {"tool_input": {"command": "echo hello"}}),
+            ("nested tool_input", {"payload": {"tool_input": {"command": "echo hello"}}}),
+            ("flat command", {"command": "echo hello"}),
+            ("nested command", {"payload": {"command": "echo hello"}}),
+        ):
+            with self.subTest(shape=label):
+                self.assertEqual(self._run(payload), 0)
+
+
 class DevCliRefusesNothingElse(unittest.TestCase):
     """The direction that matters more. Each row is a shape that must NOT refuse."""
 
