@@ -160,6 +160,80 @@ class DevCliEncodingMatchesTheAdapters(unittest.TestCase):
         self.assertEqual(got, want)
 
 
+class DevCliWrapperCommandsExecute(unittest.TestCase):
+    """The committed DEV wrapper STRINGS, run as a shell the way the harness runs them.
+
+    The leaf wrappers have had this since before the split
+    (`test_hooks_cli.py::test_hooks_json_command_works_from_subdirectory` and its
+    fail-fast sibling). The dev ones had nothing: when issue #102 repointed
+    `.claude/settings.json` and `.codex/hooks.json` at this module, those two tests
+    followed the LEAF file, and no test executed a dev wrapper at all — measured, every
+    one of the 41 places that read `.claude/settings.json` does so without a shell.
+
+    What that leaves open is the exact failure this module exists to prevent: a quoting
+    or `PYTHONPATH` break in the dev wrapper refuses every tool call in an operator's
+    session, and it would arrive with the suite green. It happened once already on
+    2026-08-26, from the other direction.
+
+    The assertion is a REFUSAL, not `rc 0` with empty stdout. A broken wrapper exits
+    non-zero with an empty stdout too, and an allow-shaped assertion is satisfied by a
+    program that cannot refuse anything — the trap `38c2711` recorded when the codex
+    wrapper test silently moved onto `dev_cli`.
+    """
+
+    @staticmethod
+    def _dev_commands():
+        repo_root = REPO_ROOT
+        found = []
+        for rel in (".claude/settings.json", ".codex/hooks.json"):
+            doc = json.loads((repo_root / rel).read_text(encoding="utf-8"))
+            for event, blocks in (doc.get("hooks") or {}).items():
+                for block in blocks:
+                    for hook in block.get("hooks", []):
+                        found.append((rel, event, hook["command"]))
+        return found
+
+    def test_every_committed_dev_wrapper_refuses_through_a_real_shell(self) -> None:
+        commands = self._dev_commands()
+        self.assertTrue(commands, "no dev wrapper command found to execute")
+        for rel, event, command in commands:
+            if "PreToolUse" not in event and "PermissionRequest" not in event:
+                continue
+            with self.subTest(source=rel, event=event):
+                payload = {"tool_name": "Bash", "tool_input": {"command": 'git reset --hard HEAD~1'}}
+                # PYTHONPATH is STRIPPED: the wrapper sets it itself, and inheriting
+                # the runner's copy is what made a mutation deleting the wrapper's
+                # assignment survive — the module resolved through the ambient value
+                # instead. The rows then proved nothing about the wrapper.
+                env = {k: v for k, v in os.environ.items()
+                       if not k.startswith("METDSL_") and k != "PYTHONPATH"}
+                # FROM A SUBDIRECTORY, like the leaf wrapper's own test: run from the
+                # repository root and `python3 -m` resolves the module through the cwd,
+                # so the wrapper's `PYTHONPATH=` assignment is doing nothing observable
+                # and a mutation deleting it survives (measured). An operator's session
+                # is not always at the root.
+                proc = subprocess.run(
+                    command, cwd=str(REPO_ROOT / "tools"), env=env, text=True,
+                    capture_output=True, input=json.dumps(payload), shell=True)
+                # `PermissionRequest` carries its deny in the body at rc 0; the rest
+                # refuse with rc 2. Either way the DECISION must arrive.
+                self.assertIn("block" if proc.returncode == 2 else "deny", proc.stdout,
+                              msg=f"{proc.returncode} / {proc.stdout!r} / {proc.stderr!r}")
+
+    def test_a_dev_wrapper_allows_an_ordinary_command_through_a_real_shell(self) -> None:
+        """The control. Without it the rows above hold for a wrapper that is simply
+        broken, since a wrapper that cannot run refuses everything."""
+        rel, event, command = next(
+            (r, e, c) for r, e, c in self._dev_commands() if "PreToolUse" in e)
+        payload = {"tool_name": "Bash", "tool_input": {"command": "echo hello"}}
+        env = {k: v for k, v in os.environ.items()
+               if not k.startswith("METDSL_") and k != "PYTHONPATH"}
+        proc = subprocess.run(
+            command, cwd=str(REPO_ROOT / "tools"), env=env, text=True,
+            capture_output=True, input=json.dumps(payload), shell=True)
+        self.assertEqual(proc.returncode, 0, msg=(rel, event, proc.stderr))
+
+
 class DevCliImportBoundary(unittest.TestCase):
     """The boundary is the module's purpose, so it is pinned rather than asked for.
 

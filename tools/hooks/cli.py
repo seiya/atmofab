@@ -2435,8 +2435,20 @@ def main(argv: list[str] | None = None) -> int:
             # session ran this same entrypoint and would have been refused out of it.
             # That session now runs `tools/hooks/dev_cli.py`; nothing else is expected
             # here. `docs/ORCHESTRATION.md` §39.
+            # THE READER OF THIS MESSAGE MAY BE A LEAF, and a leaf reads none of the
+            # files named here — not `docs/`, not `CLAUDE.md`, not these settings. The
+            # first sentence is therefore for the leaf and says the one thing it can act
+            # on: nothing. Without it a leaf meets a refusal it cannot explain and will
+            # retry, which is the shape a fail-closed message must not have
+            # (`.claude/skills/metdsl-review-loop`: a refusal is closed only once it is
+            # an instruction under which a warm retry converges - and here the converging
+            # instruction is to stop). The rest is for the operator who will read it in
+            # `native_hook_events.jsonl` or in their own terminal.
             decision = _decision_error(
-                "orchestration_id is required for hook execution: this entrypoint is a "
+                "orchestration_id is required for hook execution. If you are a workflow "
+                "leaf: this is not something your task can fix - the run's environment "
+                "lost the orchestration id, every later check is keyed on it, and the "
+                "orchestration has to be restarted; do not retry. This entrypoint is a "
                 "workflow leaf's. An operator's interactive session runs "
                 "tools/hooks/dev_cli.py (.claude/settings.json, .codex/hooks.json)."
             )

@@ -17330,9 +17330,11 @@ def _probe_claude_leaf_tool_roster(
         # have any roster at all.
         # BOTH STREAMS, because rc=0 with an empty stderr is what a HOOK failure looks
         # like here and the remedy for it has nothing to do with tools. Since issue #102
-        # the seeded copy carries no `hooks` key, so the leaf chain no longer runs in this
-        # probe — but a hook can still reach it from the operator's own configuration, and
-        # the shape is worth keeping the message for. Originally reproduced by pointing
+        # the seeded copy carries no `hooks` key, and the launch passes
+        # `--setting-sources user` against that scratch home, so neither the operator's
+        # own configuration nor the project layer contributes one: NO hook runs in this
+        # probe. The message is kept because the shape — rc 0, empty stderr, no roster —
+        # is what any prompt-level refusal looks like here. Originally reproduced by pointing
         # `repo_root` at a directory that is not a git working tree, which the
         # `UserPromptSubmit` command's `git rev-parse` needs. Holding stdout and printing
         # only stderr left an operator with a roster remedy for a hook failure.
@@ -17363,9 +17365,9 @@ def _probe_claude_leaf_tool_roster(
                 "detail": (f"the CLI made no request carrying a tool roster (rc="
                            f"{proc.returncode}), so what a leaf would be launched with is "
                            f"unmeasured. The scratch home is seeded with "
-                           f"{CLAUDE_LEAF_CONFIG_REL} minus its `hooks` key, so a hook "
-                           f"that refuses the prompt can only come from elsewhere in the "
-                           f"environment{version_note}"
+                           f"{CLAUDE_LEAF_CONFIG_REL} minus its `hooks` key and the launch "
+                           f"passes --setting-sources user, so no hook runs in this "
+                           f"probe: look at the CLI and the environment{version_note}"
                            + (f"; {streams}" if streams else ""))}
 
     report = _classify_claude_leaf_roster(snapshot, declared_servers)
