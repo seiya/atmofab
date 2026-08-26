@@ -17232,18 +17232,39 @@ def _probe_claude_leaf_tool_roster(
             # configuration no leaf runs under, and the difference was written up as a
             # blind spot the technique could not close — on the claim that the file's
             # `UserPromptSubmit` hook blocks the probe prompt before any request. That
-            # claim is FALSE, measured here against the committed file: rc=1, two captures,
-            # the same six built-ins. (It was reported to me twice and I wrote it down
-            # without running it, which is how it reached three documents.)
+            # claim was FALSE when measured against the committed file (rc=1, two
+            # captures, the same six built-ins), and issue #102 MADE IT TRUE by giving
+            # the leaf entrypoint an unconditional refusal for a call that cannot name an
+            # orchestration — which this probe cannot, by the `env.pop`s above. Hence the
+            # `hooks` key is dropped below. Measured at that point: `pass` went False
+            # with "the CLI made no request carrying a tool roster", against `origin/main`
+            # passing on the same host.
             #
             # Copied rather than SHA-pinned: `_prepare_claude_workflow_home` owns the
             # pinning, and this is a read-only measurement of the same bytes. A file that
             # cannot be read fails closed below, and whether it is STRUCTURALLY valid is
             # `claude_leaf_config_validated`'s question, ANDed beside this one.
+            #
+            # THE `hooks` KEY IS DROPPED FROM THE COPY, and that is load-bearing since
+            # issue #102. What decides the roster is `permissions` - a `deny` entry
+            # removes the named tools from what the CLI sends - and the hooks were only
+            # ever along for the ride. They are also the LEAF's hooks, and the leaf
+            # entrypoint now fails closed when it cannot name an orchestration, which by
+            # construction is this probe: the three `env.pop`s above remove the very id
+            # the hook would need. Seeding them made every claude launch unlaunchable
+            # (`can_launch_agents` ANDs this check and has no launch-time backstop),
+            # while the whole suite stayed green because every test drives this probe
+            # with a mocked runner. Dropping them measures the same roster under no hook
+            # chain at all, which is strictly better than unattributing the rows they
+            # would write.
             try:
-                shutil.copyfile(_claude_leaf_config_path(repo_root),
-                                Path(scratch_home) / "settings.json")
-            except OSError as exc:
+                leaf_config_doc = json.loads(
+                    _claude_leaf_config_path(repo_root).read_text(encoding="utf-8"))
+                if isinstance(leaf_config_doc, dict):
+                    leaf_config_doc.pop("hooks", None)
+                (Path(scratch_home) / "settings.json").write_text(
+                    json.dumps(leaf_config_doc, ensure_ascii=False), encoding="utf-8")
+            except (OSError, ValueError) as exc:
                 return {"name": name, "pass": False,
                         "detail": (f"cannot read the leaf configuration "
                                    f"{_claude_leaf_config_path(repo_root)} "
@@ -17295,12 +17316,12 @@ def _probe_claude_leaf_tool_roster(
         # The CLI ran and sent no request carrying tools. That is not "no tools" — it is
         # no measurement, and the difference matters: a leaf launched from this CLI might
         # have any roster at all.
-        # BOTH STREAMS, and a pointer at the other thing this launch runs. Since the
-        # scratch home is seeded with the leaf configuration, the probe executes the
-        # leaf's whole hook chain, and a hook that exits non-zero blocks the prompt before
-        # any request — so the CLI reports rc=0 with an empty stderr and the roster is
-        # "unmeasured" for a reason that has nothing to do with tools. Reproduced by
-        # pointing `repo_root` at a directory that is not a git working tree, which the
+        # BOTH STREAMS, because rc=0 with an empty stderr is what a HOOK failure looks
+        # like here and the remedy for it has nothing to do with tools. Since issue #102
+        # the seeded copy carries no `hooks` key, so the leaf chain no longer runs in this
+        # probe — but a hook can still reach it from the operator's own configuration, and
+        # the shape is worth keeping the message for. Originally reproduced by pointing
+        # `repo_root` at a directory that is not a git working tree, which the
         # `UserPromptSubmit` command's `git rev-parse` needs. Holding stdout and printing
         # only stderr left an operator with a roster remedy for a hook failure.
         # THE MESSAGE, not the first 400 bytes. The launch carries `--output-format json`,
@@ -17329,9 +17350,10 @@ def _probe_claude_leaf_tool_roster(
         return {"name": name, "pass": False,
                 "detail": (f"the CLI made no request carrying a tool roster (rc="
                            f"{proc.returncode}), so what a leaf would be launched with is "
-                           f"unmeasured. The probe runs the leaf's own hook chain (the "
-                           f"scratch home is seeded with {CLAUDE_LEAF_CONFIG_REL}), so a "
-                           f"hook that refuses the prompt lands here too{version_note}"
+                           f"unmeasured. The scratch home is seeded with "
+                           f"{CLAUDE_LEAF_CONFIG_REL} minus its `hooks` key, so a hook "
+                           f"that refuses the prompt can only come from elsewhere in the "
+                           f"environment{version_note}"
                            + (f"; {streams}" if streams else ""))}
 
     report = _classify_claude_leaf_roster(snapshot, declared_servers)

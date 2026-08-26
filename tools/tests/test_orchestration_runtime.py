@@ -35378,6 +35378,42 @@ class ClaudeLeafToolRosterPreflightTests(unittest.TestCase):
         return [*(n for n in _leaf_tools() if n not in without),
                 "mcp__build-runtime__run_linter", *extra]
 
+    def test_the_seeded_home_carries_the_permissions_but_not_the_hooks(self) -> None:
+        """The probe is the THIRD caller of the leaf hook chain, and it cannot satisfy it.
+
+        `env.pop` above removes `METDSL_ORCHESTRATION_ID` from this launch on purpose (a
+        probe row must not land in a live run's `native_hook_events.jsonl`), and since
+        issue #102 the leaf entrypoint refuses a call that cannot name an orchestration.
+        Seeding the leaf's `hooks` therefore made the probe refuse its own prompt, which
+        ANDs into `can_launch_agents` — measured: `pass` False at that revision against
+        `origin/main` passing on the same host, with the whole suite green, because every
+        test in this class fakes the runner and so never executes a hook.
+
+        What the seeding is FOR is `permissions`: a `deny` there removes the named tools
+        from what the CLI sends. That half must stay, so it is asserted here beside the
+        absence — and asserted against the committed file actually having hooks, or the
+        first half passes over a file that never had any.
+        """
+        from tools.tests.leaf_config_fixture import LEAF_CONFIG_REL, REPO_ROOT
+        committed = json.loads((REPO_ROOT / LEAF_CONFIG_REL).read_text(encoding="utf-8"))
+        self.assertTrue(committed.get("hooks"), "the committed leaf config has no hooks; "
+                                                "the absence below would be vacuous")
+        seen: dict = {}
+
+        def runner(args, **kwargs):  # type: ignore[no-untyped-def]
+            home = (kwargs.get("env") or {}).get("CLAUDE_CONFIG_DIR")
+            if home:
+                seen["settings"] = json.loads(
+                    (Path(home) / "settings.json").read_text(encoding="utf-8"))
+            return _answer_claude_roster_probe(args, kwargs, roster=None)
+
+        with tempfile.TemporaryDirectory() as td:
+            check = self._probe(self._repo(td), runner)
+        self.assertIs(check["pass"], True)
+        self.assertIn("settings", seen, "the probe seeded no CLAUDE_CONFIG_DIR settings")
+        self.assertNotIn("hooks", seen["settings"])
+        self.assertEqual(seen["settings"].get("permissions"), committed.get("permissions"))
+
     def test_the_declared_roster_passes_and_the_detail_records_it(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             check = self._probe(self._repo(td), self._runner())
@@ -35499,12 +35535,12 @@ class ClaudeLeafToolRosterPreflightTests(unittest.TestCase):
         self.assertIs(check["pass"], False)
         self.assertIn("unmeasured", check["detail"])
         self.assertIn("command not found", check["detail"])
-        # BOTH streams, and the pointer at the other thing this launch runs. The scratch
-        # home is seeded with the leaf configuration, so the probe executes the leaf's whole
-        # hook chain, and a hook that refuses the prompt lands here with rc=0 and an empty
-        # stderr — a roster verdict for something that is not about tools. Holding stdout
-        # back left an operator with no way to see that.
-        self.assertIn("hook chain", check["detail"])
+        # BOTH streams, and the pointer at the other thing this launch runs. A hook that
+        # refuses the prompt lands here with rc=0 and an empty stderr — a roster verdict
+        # for something that is not about tools. Holding stdout back left an operator with
+        # no way to see that. Since issue #102 the seeded copy carries no `hooks` key, so
+        # the message says that instead of claiming the leaf chain runs.
+        self.assertIn("minus its `hooks` key", check["detail"])
         self.assertIn(ort.CLAUDE_LEAF_CONFIG_REL, check["detail"])
 
     def test_the_no_capture_detail_surfaces_stdout_too(self) -> None:
@@ -35715,14 +35751,19 @@ class ClaudeLeafToolRosterPreflightTests(unittest.TestCase):
 
         def runner(args, **kwargs):  # type: ignore[no-untyped-def]
             home = Path(kwargs["env"]["CLAUDE_CONFIG_DIR"])
-            seen["settings"] = (home / "settings.json").read_bytes()
+            seen["settings"] = json.loads((home / "settings.json").read_text(encoding="utf-8"))
             return _answer_claude_roster_probe(args, kwargs)
 
         with tempfile.TemporaryDirectory() as td:
             root = self._repo(td)
             check = self._probe(root, runner)
-            expected = (root / LEAF_CONFIG_REL).read_bytes()
+            expected = json.loads((root / LEAF_CONFIG_REL).read_text(encoding="utf-8"))
         self.assertIs(check["pass"], True)
+        # EVERY key except `hooks`, which issue #102 drops — the sibling test pins that
+        # absence and why. This one is about the rest ARRIVING: it compared raw bytes, and
+        # dropping one key would otherwise have left it saying nothing about `permissions`.
+        expected.pop("hooks", None)
+        self.assertIn("permissions", expected, "the comparison lost the deciding key")
         self.assertEqual(seen["settings"], expected)
 
     def test_an_unreadable_leaf_configuration_fails_closed(self) -> None:
