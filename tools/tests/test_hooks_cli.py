@@ -1326,6 +1326,60 @@ class ClaudeHookCliTests(unittest.TestCase):
                 if matched is not None:
                     self.assertEqual(decision.audit_detail.get("matched_tokens"), matched)
 
+    def test_a_non_oserror_from_the_audit_still_fails_closed(self) -> None:
+        """The THIRD guard, which the commit that added it left unwitnessed.
+
+        The two guards inside `_append_hook_audit` catch `OSError`. The write can raise
+        outside that class — a lone surrogate in the command makes
+        `json.dumps(ensure_ascii=False)` produce a string the UTF-8 encoder refuses, a
+        `ValueError` — and the only thing that then keeps the refusal deliverable is the
+        `except Exception` around the HANDLER's own audit call. Removing it survived the
+        whole suite: measured, rc 1 with empty stdout, which is neither the rc 2 block nor
+        a codex deny body.
+
+        Honest limit: this proves the ENTRYPOINT accepts such a payload. Whether the CLI
+        ever emits a lone surrogate into a hook payload is not measured, and the finding
+        does not rest on it — `except OSError` is a narrower net than the failure set of
+        `mkdir` / `open` / `write`, so the guard is load-bearing either way.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            orch = "orch_surrogate"
+            (Path(tmp) / "workspace" / "orchestrations" / orch / "hooks").mkdir(parents=True)
+            payload = {"repo_root": tmp, "orchestration_id": orch, "tool_name": "Bash",
+                       "tool_input": {"command": "echo hi \ud800"}}
+            code, text = self._run_pre(
+                "claude", payload,
+                env={"METDSL_WORKFLOW_MODE": "1", "METDSL_ORCHESTRATION_ID": orch,
+                     "METDSL_HOOK_REPO_ROOT": tmp})
+            self.assertEqual(code, 2, msg=text)
+            self.assertIn("hook entrypoint failure", text)
+            self.assertNotIn("Traceback", text)
+
+    def test_the_record_follows_the_policy_for_the_nested_payload_too(self) -> None:
+        """The rest of the unification. `_append_hook_audit` read the nested (codex)
+        `repo_root` while `_resolve_repo_root` never looked there and fell back to the
+        cwd, so a codex payload carrying only the nested key had its decision evaluated
+        against one tree and recorded under another — the same false-record class as the
+        top-level pair, one key over. Both read one resolver now."""
+        from tools.hooks import cli as _cli
+        with tempfile.TemporaryDirectory() as nested:
+            payload = {"payload": {"repo_root": nested}}
+            with patch.dict(os.environ, {}):
+                os.environ.pop("METDSL_HOOK_REPO_ROOT", None)
+                self.assertEqual(_cli._resolve_repo_root(payload),
+                                 Path(nested).resolve())
+                self.assertEqual(_cli._repo_root_from_sources(payload),
+                                 Path(nested).resolve())
+                # …and the env still outranks both, for both callers.
+                with tempfile.TemporaryDirectory() as env_root:
+                    os.environ["METDSL_HOOK_REPO_ROOT"] = env_root
+                    self.assertEqual(_cli._resolve_repo_root(payload),
+                                     Path(env_root).resolve())
+                    self.assertEqual(_cli._repo_root_from_sources(payload),
+                                     Path(env_root).resolve())
+                os.environ.pop("METDSL_HOOK_REPO_ROOT", None)
+                self.assertIsNone(_cli._repo_root_from_sources({}))
+
     def test_the_record_lands_where_the_policy_was_evaluated(self) -> None:
         """The audit and the policy must resolve `repo_root` the same way.
 

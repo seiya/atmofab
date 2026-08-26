@@ -44,7 +44,10 @@ class CodexHookAdapter(HookBackendAdapter):
                 command = None
         prompt = _lookup_payload_field(payload, "prompt")
         tool_name = _lookup_payload_field(payload, "tool_name")
-        # `.codex/hooks.json` recognizes current lower-case Codex names and
+        # `leaf_config/codex/hooks.json` — the LEAF layer since issue #102, and the
+        # file that registers these names for a leaf; the repository's own
+        # `.codex/hooks.json` is the DEV layer and matches a narrower set —
+        # recognizes current lower-case Codex names and
         # historical title-case aliases. Normalize at the adapter boundary so
         # the backend-neutral policy cannot bypass manifest enforcement because
         # of spelling alone.

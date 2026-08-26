@@ -250,28 +250,13 @@ def _append_hook_audit(
     # one worth a trace. Suppressing it by workflow mode left a codex leaf's refusal
     # silently unrecorded, because a leaf that lost `METDSL_ORCHESTRATION_ID` has usually
     # lost `METDSL_WORKFLOW_MODE` from the same environment.
-    env_repo_root = os.environ.get("METDSL_HOOK_REPO_ROOT", "").strip()
-    # THE SAME ORDER AS THE POLICY, which is the whole point of resolving it here at all.
-    # This function used to prefer the payload's `repo_root` while `_resolve_repo_root` —
-    # what `main()` evaluates the policy under — prefers the environment's. Measured with
-    # the two disagreeing (`METDSL_HOOK_REPO_ROOT=A`, payload `repo_root=B`): the decision
-    # was made for A and recorded under B, which is a false record rather than a missing
-    # one. Both wrappers set both to `$ROOT`, so nothing in production disagreed; nothing
-    # made them agree either.
-    repo_root_raw = payload.get("repo_root")
-    if not (isinstance(repo_root_raw, str) and repo_root_raw.strip()):
-        if isinstance(inner_payload, dict):
-            inner_repo_root = inner_payload.get("repo_root")
-            if isinstance(inner_repo_root, str) and inner_repo_root.strip():
-                repo_root_raw = inner_repo_root
-
-    # With no root known from any source there is no tree to write into, and an ambient
-    # call must not create one in whatever directory it happens to be run from.
-    if env_repo_root:
-        repo_root = Path(env_repo_root).resolve()
-    elif isinstance(repo_root_raw, str) and repo_root_raw.strip():
-        repo_root = Path(repo_root_raw).resolve()
-    else:
+    # THE SAME RESOLVER AS THE POLICY, not merely the same order. Spelling the sources a
+    # second time here is what let the two drift twice; now there is one list and the
+    # callers differ only in what "no source" means. With no root known there is no tree
+    # to write into, and an ambient call must not create one in whatever directory it
+    # happens to be run from.
+    repo_root = _repo_root_from_sources(payload)
+    if repo_root is None:
         return
     path = (
         repo_root
@@ -315,17 +300,34 @@ def _append_hook_audit(
         return
 
 
-def _resolve_repo_root(payload: dict[str, Any], backend: str = "") -> Path:
-    del backend
+def _repo_root_from_sources(payload: dict[str, Any]) -> Path | None:
+    """THE resolution, read by the policy and by the audit alike.
+
+    Environment first, then the payload's own key, then the NESTED key — the codex
+    payload shape. The two callers had drifted apart twice: the audit once preferred the
+    payload over the environment, and after that was unified it still read the nested key
+    while this function never looked there, so a codex payload carrying only the nested
+    root had its policy evaluated against the process cwd and its record filed under the
+    root instead. Measured both times; both times the decision and its record named
+    different trees, which is a false record rather than a missing one.
+
+    Returns None when no source names one. The two callers differ ONLY there, and each
+    says why: the policy falls back to the cwd because it must still decide, the audit
+    writes nothing because there is no tree to write into.
+    """
     env_repo_root = os.environ.get("METDSL_HOOK_REPO_ROOT", "").strip()
     if env_repo_root:
         return Path(env_repo_root).resolve()
-    repo_root_raw = payload.get("repo_root")
-    return (
-        Path(repo_root_raw).resolve()
-        if isinstance(repo_root_raw, str) and repo_root_raw.strip()
-        else Path.cwd()
-    )
+    for candidate in (payload.get("repo_root"), _inner_payload(payload).get("repo_root")):
+        if isinstance(candidate, str) and candidate.strip():
+            return Path(candidate).resolve()
+    return None
+
+
+def _resolve_repo_root(payload: dict[str, Any], backend: str = "") -> Path:
+    del backend
+    # The policy has to decide even with no root named, so it lands on the cwd.
+    return _repo_root_from_sources(payload) or Path.cwd()
 
 
 def _extract_orchestration_id(payload: dict[str, Any]) -> str | None:
