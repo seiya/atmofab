@@ -5201,6 +5201,69 @@ class BashWriteTargetGrammarTests(unittest.TestCase):
         ('python3 foo.py --val "$((1 > 0))"', []),
     )
 
+    # Round 2 put three reviewers on it. Every row below was measured failing at
+    # `bb4e915` first. They cluster on one theme the census named: `_argv_fragments`
+    # segmented a SANITIZED copy but read operands off the RAW command, which is
+    # issue #74(a)'s defect one function over.
+    _ROUND2_WITNESSES = (
+        # a trailing comment is not an operand
+        ("cp src workspace/out/x.py  # copy the artifact", ["workspace/out/x.py"]),
+        ("touch workspace/out/a.txt # marker", ["workspace/out/a.txt"]),
+        # ...and the fail-open half: a path named in the comment must not stand in
+        # for the real destination
+        ("cp a.json workspace/p/evil.json # workspace/tmp/r1/b.json", ["workspace/p/evil.json"]),
+        # a `\`-newline continuation is not a fragment separator
+        ("cp a \\\n  workspace/out/b", ["workspace/out/b"]),
+        ("cp \\\n  a workspace/out/b", ["workspace/out/b"]),
+        ("touch \\\n  workspace/out/a", ["workspace/out/a"]),
+        # a separator inside a command substitution is not a separator either, and
+        # the substitution stands where an operand stands
+        ("cp $(ls -t | head -1) workspace/p/evil.json", ["workspace/p/evil.json"]),
+        ("cp `ls | head -1` workspace/p/evil.json", ["workspace/p/evil.json"]),
+        ('cp "$(ls)" workspace/out/b', ["workspace/out/b"]),
+        # a destination that IS a substitution is residue, not a phantom path
+        ("cp a.json $(cat dest.txt)", []),
+        ("dd if=x of=$(cat d)", []),
+        # GNU takes the REST of a short cluster as the value of its first
+        # value-taking letter, so `-tDIR` is `-t DIR`
+        ("cp -tworkspace/outdir a b", ["workspace/outdir"]),
+        ("cp -tworkspace/outdir src", ["workspace/outdir"]),
+        ("cp -atworkspace/ir a b", ["workspace/ir"]),
+        ("cp -S.bak a b", ["b"]),
+        # `>&-` closes a descriptor; it writes nothing
+        ("cmd 2>&-", []),
+        ("cmd >&-", []),
+        ("cp a workspace/tmp/r1/b 2>&-", ["workspace/tmp/r1/b"]),
+        # `>& 3` is duplication of fd 3, not a write to a file named `3`
+        ("echo x >& 3", []),
+        ("cmd >&3", []),
+        ("cmd 2>&3", []),
+        # ...but a non-numeric word after `>&` IS a file
+        ("cmd >&1x", ["1x"]),
+        # a quoted target starting with `&` is a real destination
+        ('cmd > "&1"', ["&1"]),
+        # the fd-dup pass in _argv_view is load-bearing when the dup is GLUED to
+        # the preceding operand: the token drop would take the destination with it
+        ("cp a b2>&1", ["b"]),
+        ("touch a b2>&1", ["a", "b"]),
+        ("truncate -s 0 f2>&1", ["f"]),
+        # separators that are not separators: quoted, and backslash-escaped
+        ('cp "a;b" workspace/out/c', ["workspace/out/c"]),
+        ("cp a b\\; ls", ["ls"]),
+        # `install`'s directory mode in its other spellings
+        ("install --directory a b", ["a", "b"]),
+        ("install -dv a b", ["a", "b"]),
+        # bounds: `-t` with nothing after it must not raise
+        ("cp -t", []),
+        ("cp --target-directory= a b", ["b"]),
+        # the most common `sed -i` spelling of all, previously unwitnessed
+        ("sed -i 's/a/b/' f.txt", ["f.txt"]),
+        # `_REDIRECT_SKIP`'s non-/dev/null members
+        ("echo hi > /dev/stderr", []),
+        ("echo hi > /dev/stdout", []),
+        ("echo hi > /dev/stdin", []),
+    )
+
     def _targets(self, command: str) -> list[str]:
         return cli._detect_bash_write_targets(command)
 
@@ -5211,6 +5274,11 @@ class BashWriteTargetGrammarTests(unittest.TestCase):
 
     def test_round1_review_witnesses(self) -> None:
         for command, expected in self._ROUND1_WITNESSES:
+            with self.subTest(command=command):
+                self.assertEqual(sorted(self._targets(command)), sorted(expected))
+
+    def test_round2_review_witnesses(self) -> None:
+        for command, expected in self._ROUND2_WITNESSES:
             with self.subTest(command=command):
                 self.assertEqual(sorted(self._targets(command)), sorted(expected))
 
@@ -5307,7 +5375,13 @@ class BashWriteTargetGrammarTests(unittest.TestCase):
                     spellings.append(f"{cmd} {opt}=workspace/ir/dest src1 src2")
                 for command in spellings:
                     with self.subTest(command=command):
-                        self.assertEqual(self._targets(command), ["workspace/ir/dest"])
+                        # Membership, not list equality: a strictly MORE precise
+                        # extractor would also name `dest/src1` and `dest/src2`,
+                        # which is what `cp -t DIR src1 src2` really writes. Pinning
+                        # the exact list would refuse that improvement — the "test
+                        # pins what the implementation should be free to change"
+                        # shape, aimed at the instrument rather than the code.
+                        self.assertIn("workspace/ir/dest", self._targets(command))
                         mutated = dict(cli._ARGV_WRITE_DEST_OPTS)
                         mutated[cmd] = frozenset(opts - {opt})
                         with patch.object(cli, "_ARGV_WRITE_DEST_OPTS", mutated):
@@ -5330,7 +5404,10 @@ class BashWriteTargetGrammarTests(unittest.TestCase):
                     else f"{cmd} src workspace/ir/dest {opt} OPTVAL"
                 )
                 with self.subTest(command=command):
-                    self.assertEqual(self._targets(command), ["workspace/ir/dest"])
+                    # Membership for the destination, and the property that matters
+                    # here stated directly: the option's VALUE is never a target.
+                    self.assertIn("workspace/ir/dest", self._targets(command))
+                    self.assertNotIn("OPTVAL", self._targets(command))
                     mutated = dict(cli._ARGV_WRITE_VALUE_OPTS)
                     mutated[cmd] = frozenset(opts - {opt})
                     with patch.object(cli, "_ARGV_WRITE_VALUE_OPTS", mutated):

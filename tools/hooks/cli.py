@@ -378,7 +378,7 @@ _REDIRECT_TARGET = r"((?:\"[^\"]*\"|'[^']*'|[^\s;&|<>)(])+)"
 # `&` after the operator means "and stderr too" — `>&word` writes to the file
 # `word`, EXCEPT when `word` is a bare fd number, which is duplication. The
 # negative lookahead is the same test `_BASH_FD_DUP_RE` makes in common.py.
-_REDIR_AND_STDERR = r"&(?!\d+(?![\w./-]))"
+_REDIR_AND_STDERR = r"&(?!\s*(?:\d+|-)(?![\w./-]))"
 
 # Shell output redirection. The whole span is what the argv view has to blank, so
 # the leading fd digit of `2>path` and the leading `&` of `&>path` are INSIDE the
@@ -396,6 +396,12 @@ _BASH_REDIRECT_RE = re.compile(
 _BASH_INPUT_REDIRECT_RE = re.compile(
     r"(?:\d+)?<<?-?(?:" + _REDIR_AND_STDERR + r")?\s*" + _REDIRECT_TARGET
 )
+# A `\`-newline continuation. Not a separator, though the newline in it
+# matches `_BASH_FRAGMENT_SEPARATOR_RE`.
+_BASH_LINE_CONTINUATION_RE = re.compile(r"\\\n")
+# Stands in for a command substitution in the argv view. A NUL cannot occur
+# in a command bash actually runs, so it can never collide with a real word.
+_SUBSTITUTION_PLACEHOLDER = "\x00"
 # tee: tee [-opts] path
 _BASH_TEE_RE = re.compile(r"\btee\b(?:\s+-\w+)*\s+([^\n;&|<>]+)")
 _REDIRECT_SKIP = frozenset({
@@ -750,34 +756,117 @@ def _shlex_one(blob: str) -> str:
     return "".join(words) if words else blob
 
 
-def _argv_view(command: str, scanned: str) -> str:
-    """`command` with every redirection blanked, so what remains is operands.
+def _command_substitution_spans(command: str) -> list[tuple[int, int]]:
+    """Half-open spans of every `$(...)` / backtick substitution, delimiters included.
 
-    Length-preserving: the caller shlex-splits the result, and blanking (rather
-    than deleting) keeps a redirect from gluing the words on either side of it
-    together. Redirections are located in `scanned` so a `>` or `<` living inside
-    a quoted argument is not mistaken for one, and each regex covers the WHOLE
-    redirection including its fd prefix — the first version blanked only from the
-    operator onward, so `cp src dst 2>/dev/null` kept a stray `2` that became the
-    last operand and the command was refused naming the path `2`.
+    `_strip_quoted_strings` deliberately leaves a substitution body alone — it is
+    commands, not text — so a `;` or `|` inside `$(ls | head -1)` reaches the
+    fragment splitter as a separator and tears the surrounding command in two.
+    The bodies are recursed into separately by `_detect_bash_write_targets`, so
+    blanking them for the ARGV view loses nothing.
 
-    The `_BASH_FD_DUP_RE` pass is NOT independently pinned: `_argv_operand_tokens`
-    drops whatever still carries `<`, `>` or a leading `&`, so removing this pass
-    changed no result over the eight fd-dup spellings measured (`cp a b 2>&1`,
-    `1>&2`, `>&2`, and the same with `touch` / `dd` / `truncate` / a pipe). It is
-    kept so the view this function returns is correct on its own terms rather than
-    by what a later filter happens to remove.
+    Scanning rules follow `_extract_command_substitution_bodies`: single quotes
+    suppress a substitution, double quotes do NOT.
     """
-    out = list(command)
+    spans: list[tuple[int, int]] = []
+    i = 0
+    n = len(command)
+    in_double = False
+    while i < n:
+        ch = command[i]
+        if ch == "\\" and i + 1 < n:
+            i += 2
+            continue
+        if ch == "'" and not in_double:
+            i = _skip_single_quoted(command, i + 1)
+            continue
+        if ch == '"':
+            in_double = not in_double
+            i += 1
+            continue
+        if command[i : i + 3] == "$((":
+            _, end = _scan_arithmetic_expansion(command, i + 3)
+            spans.append((i, end))
+            i = end
+            continue
+        if command[i : i + 2] == "$(":
+            _, end = _scan_subshell(command, i + 2)
+            spans.append((i, end))
+            i = end
+            continue
+        if ch == "`":
+            _, end = _scan_backtick(command, i + 1)
+            spans.append((i, end))
+            i = end
+            continue
+        i += 1
+    return spans
+
+
+def _argv_view(text: str, scanned: str) -> str:
+    """`text` with everything that is not an operand blanked, length preserved.
+
+    Blanking rather than deleting keeps the words on either side of a removed
+    span from gluing together, and keeps every offset aligned with `scanned`
+    (`_strip_quoted_strings` is length-preserving, and so is this). `text` is
+    either the ORIGINAL command — quoted operands intact, which is what the
+    caller tokenizes — or `scanned` itself, when the caller wants a copy safe to
+    look for separators in. Four families go:
+
+    * redirections, INCLUDING the fd prefix of `2>path` and the leading `&` of
+      `&>path`. Blanking only from the operator left a stray `2`, which became
+      the last operand and refused `cp src dst 2>/dev/null` naming the path `2`;
+    * a `\\`-newline line continuation, which is not a fragment separator even
+      though `_BASH_FRAGMENT_SEPARATOR_RE` splits on the newline in it;
+    * a comment, which `_strip_quoted_strings` blanks in `scanned` but which
+      survives in the original — reading operands off the raw command while
+      segmenting a sanitized copy is issue #74(a)'s defect one function over, and
+      `cp a b # copy the artifact` was refused naming the path `artifact`;
+    * a command substitution, whose body is separators and commands rather than
+      operands (`_detect_bash_write_targets` recurses into it separately).
+
+    The `_BASH_FD_DUP_RE` pass is load-bearing and NOT redundant with
+    `_argv_operand_tokens`' token drop: when the duplication is GLUED to the
+    preceding operand (`cp a b2>&1`) the token carries `>` and the drop takes the
+    real destination `b` with it. An earlier version of this note claimed the drop
+    subsumed the pass, measured over eight spellings that ALL had a space before
+    the fd digit — the one shape that cannot distinguish the two.
+    """
+    out = list(text)
+
+    def blank(start: int, end: int) -> None:
+        for pos in range(start, min(end, len(out))):
+            out[pos] = " "
+
     for regex in (_BASH_FD_DUP_RE, _BASH_REDIRECT_RE, _BASH_INPUT_REDIRECT_RE):
         for m in regex.finditer(scanned):
-            for pos in range(*m.span()):
-                out[pos] = " "
+            blank(*m.span())
+    for m in _BASH_LINE_CONTINUATION_RE.finditer(scanned):
+        blank(*m.span())
+    for start, end in _command_substitution_spans(scanned):
+        # A substitution stands where an OPERAND stands, so it is replaced by a
+        # placeholder rather than erased: blanked to spaces, `cp $(ls) dst` had one
+        # operand left and the `>= 2` rule declined to name `dst` at all. The
+        # placeholder counts as an operand and is dropped from the targets, so a
+        # destination that IS a substitution is residue, not a phantom path.
+        blank(start, end)
+        if end > start:
+            out[start] = _SUBSTITUTION_PLACEHOLDER
+    # A comment runs to end of line. `_strip_quoted_strings` already decided WHERE
+    # one starts — it blanks the body and keeps the `#` — so the marker positions
+    # can be read straight off `scanned`.
+    for pos, char in enumerate(scanned):
+        if char != "#":
+            continue
+        if pos and scanned[pos - 1] not in " \t\n":
+            continue
+        eol = scanned.find("\n", pos)
+        blank(pos, len(scanned) if eol == -1 else eol)
     return "".join(out)
 
 
 def _argv_fragments(command: str, scanned: str) -> list[str]:
-    """Split a command into per-fragment argv blobs, redirections removed.
+    """Split a command into per-fragment argv blobs, non-operands removed.
 
     Segmentation is done on the string, with `common._BASH_FRAGMENT_SEPARATOR_RE`
     — the SAME separator set the read side uses — not by comparing `shlex` tokens
@@ -788,12 +877,9 @@ def _argv_fragments(command: str, scanned: str) -> list[str]:
     as `ls`, and `cd x; cp a <managed path>` produced no target at all.
 
     Escaped separators are blanked first (a backslash-escaped `;` is a literal
-    character, not a
-    separator), matching `extract_bash_read_targets`.
+    character, not a separator), matching `extract_bash_read_targets`.
     """
     argv_source = _argv_view(command, scanned)
-    # Segment on the quote-stripped copy with the redirections already blanked, so
-    # a separator inside a quoted argument or inside a redirect target is not one.
     masked = _argv_view(scanned, scanned)
     masked = _BASH_ESCAPED_SEPARATOR_RE.sub(lambda m: " " * len(m.group()), masked)
     fragments: list[str] = []
@@ -812,7 +898,8 @@ def _argv_operand_tokens(fragment: str) -> list[str]:
     a redirection spelling this module does not model. Dropping it is the FAIL-OPEN
     direction, chosen deliberately: reporting it would name a write target the leaf
     never wrote, and a block a leaf cannot map to an action it took is the defect
-    issue #74(a)/(b) were filed for.
+    issue #74(a)/(b) were filed for. A path that literally contains one of those
+    characters is dropped with them; the construct occurs nowhere in this tree.
     """
     try:
         tokens = shlex.split(fragment)
@@ -825,16 +912,28 @@ def _argv_operand_tokens(fragment: str) -> list[str]:
     ]
 
 
-def _split_short_option_cluster(arg: str) -> list[str]:
-    """`-at` -> ['-a', '-t']; a long option or a bare `-` is returned unchanged.
+def _split_short_option_cluster(arg: str, valued: frozenset[str]) -> tuple[list[str], str | None]:
+    """Split a bundled short-option cluster into its letters and any GLUED value.
 
-    GNU accepts bundled short options, and the LAST letter of a cluster is the one
-    that takes the value — so `cp -at DIR src` names DIR as the destination. Read
-    as a single token, the `-t` was invisible and the real destination was lost.
+    GNU getopt gives the FIRST letter that takes an argument the REST of the
+    cluster as its value: `cp -tDIR src` is `cp -t DIR src`, and `cp -atDIR src`
+    is `cp -a -t DIR src`. Testing only the cluster's last letter — the first
+    spelling of this function — made `-tDIR` match nothing, so the destination
+    of `cp -tworkspace/pipelines a.json` was invisible and the command passed the
+    guard with no target at all.
+
+    Returns `(letters, glued_value)`. A long option, a bare `-`, or a one-letter
+    option is returned unchanged with no glued value.
     """
     if len(arg) <= 2 or not arg.startswith("-") or arg.startswith("--"):
-        return [arg]
-    return ["-" + ch for ch in arg[1:]]
+        return [arg], None
+    letters: list[str] = []
+    for pos, ch in enumerate(arg[1:], start=1):
+        letters.append("-" + ch)
+        if "-" + ch in valued:
+            rest = arg[pos + 1 :]
+            return letters, rest or None
+    return letters, None
 
 
 def _detect_argv_write_targets(command: str, scanned: str) -> list[str]:
@@ -845,12 +944,15 @@ def _detect_argv_write_targets(command: str, scanned: str) -> list[str]:
     argv0 rule the read side uses in `extract_bash_read_targets`, so `echo cp a b`
     names nothing.
 
-    Residue this does NOT extract, all yielding nothing: a destination reached
+    Residue, NOTHING is extracted, every item measured: a destination reached
     through another program (`xargs cp`, `find -exec cp`); a fragment whose head is
-    not the writer itself (`sudo cp …`, an env-assignment prefix `VAR=1 cp …`); the
-    single-operand `ln`, whose link name appears nowhere in the argv; a token still
-    carrying unmodelled redirection syntax; and every write command outside the
-    tables. An empty result means "nothing extracted", not "no write".
+    not the writer itself — `sudo cp`, an env-assignment prefix `VAR=1 cp`, a
+    wrapper (`time`, `nohup`, `env`), a shell keyword or grouping (`for … do cp …
+    done`, `if … then touch … fi`, `( cp … )`, `{ cp …; }`), which is the largest
+    member of this list and the one the read side handles and this one does not;
+    the single-operand `ln`, whose link name appears nowhere in the argv; a token
+    still carrying unmodelled redirection syntax; and every write command outside
+    the tables. An empty result means "nothing extracted", not "no write".
 
     Residue of a different kind — a target IS reported, but it is not the path that
     gets written: a `$VAR` or glob destination is reported unexpanded, and a
@@ -877,6 +979,8 @@ def _detect_argv_write_targets(command: str, scanned: str) -> list[str]:
             continue
         dest_opts = _ARGV_WRITE_DEST_OPTS.get(name, frozenset())
         value_opts = _ARGV_WRITE_VALUE_OPTS.get(name, frozenset())
+        dir_opts = _ARGV_WRITE_DIRECTORY_OPTS.get(name, frozenset())
+        valued = dest_opts | value_opts
         all_operands = name in _ARGV_WRITE_ALL_OPERANDS
         operands: list[str] = []
         dest_from_opt = False
@@ -897,29 +1001,36 @@ def _detect_argv_write_targets(command: str, scanned: str) -> list[str]:
                     dest_from_opt = True
                 k += 1
                 continue
-            # A long option's `=` form needs no branch of its own for the VALUE
-            # options: it consumes no separate argv element, and the fall-through
-            # below already declines to treat a `-`-leading word as an operand.
-            # The branch that used to sit here was an equivalent mutant — measured
-            # over all 48 spellings the value tables produce (every long option ×
-            # {before, after, empty value, behind `--`}), identical either way.
-            # A bundled cluster's value belongs to its LAST letter, so only that
-            # one can consume the next argv element.
-            cluster = _split_short_option_cluster(arg)
-            if cluster[-1] in dest_opts:
+            # A VALUE option's `=` form needs no branch of its own: it consumes
+            # no separate argv element, and the cluster split below stops at the
+            # FIRST value-taking letter, so `-m=abcd` cannot reach the `-d` buried
+            # in its value. An earlier commit deleted that branch calling it an
+            # equivalent mutant on the strength of 48 LONG-option spellings, which
+            # structurally cannot distinguish it — `--` short-circuits the split.
+            # A reviewer built two short `=` witnesses that did distinguish it at
+            # that commit; both give the same answer here (`install -m=abcd src
+            # dst` -> ['dst'], `cp -S=xt DIR a b` -> ['b']). The claim is scoped
+            # to what was measured, not to "no input distinguishes it".
+            letters, glued = _split_short_option_cluster(arg, valued)
+            if head in dir_opts or any(letter in dir_opts for letter in letters):
+                # `install -d a b` CREATES both operands; the last-operand rule
+                # would report `b` and miss `a`.
+                all_operands = True
+            taking = next((letter for letter in letters if letter in valued), None)
+            if taking in dest_opts:
+                if glued is not None:
+                    targets.append(glued)
+                    dest_from_opt = True
+                    k += 1
+                    continue
                 if k + 1 < len(args):
                     targets.append(args[k + 1])
                     dest_from_opt = True
                 k += 2
                 continue
-            if cluster[-1] in value_opts:
-                k += 2
+            if taking in value_opts:
+                k += 1 if glued is not None else 2
                 continue
-            dir_opts = _ARGV_WRITE_DIRECTORY_OPTS.get(name, frozenset())
-            if head in dir_opts or any(c in dir_opts for c in cluster):
-                # `install -d a b` CREATES both operands; the last-operand rule
-                # would report `b` and miss `a`.
-                all_operands = True
             k += 1
         if all_operands:
             targets.extend(operands)
@@ -928,7 +1039,7 @@ def _detect_argv_write_targets(command: str, scanned: str) -> list[str]:
             pass
         elif len(operands) >= 2:
             targets.append(operands[-1])
-    return targets
+    return [t for t in targets if _SUBSTITUTION_PLACEHOLDER not in t]
 
 
 def _detect_bash_write_targets(command: str | None) -> list[str]:
@@ -963,7 +1074,11 @@ def _detect_bash_write_targets(command: str | None) -> list[str]:
         # ORIGINAL span and dequote it. Reading m.group(1) off `scanned` instead is
         # what collapsed `> "path"` to the single character `"` (issue #74(a)).
         path = _shlex_one(command[slice(*m.span(1))])
-        if path not in _REDIRECT_SKIP and not path.startswith("&"):
+        # No `startswith("&")` guard: `&` is outside the unquoted target class, so
+        # the only way one reaches here is QUOTED (`> "&x"`), where it is a real
+        # destination and dropping it was a silent miss. The fd-dup spellings the
+        # guard used to be about are excluded by `_REDIR_AND_STDERR` instead.
+        if path not in _REDIRECT_SKIP:
             targets.append(path)
     for m in _BASH_TEE_RE.finditer(scanned):
         # Match on scanned to skip `tee` inside quoted strings, but recover the
