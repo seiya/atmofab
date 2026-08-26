@@ -128,6 +128,30 @@ def operator_env_names_to_strip(environ) -> list[str]:
     return sorted(names)
 
 
+# Names the SUITE sets on purpose, and who sets them. NOT exemptions from the guard — the
+# guard is about the OPERATOR's environment, and these are set after it has run. Both are
+# process-global, so both are visible to every test collected afterwards; that is recorded
+# as a rough edge in TODO.md rather than fixed.
+SUITE_OWNED_ENV = {
+    "METDSL_WORKFLOW_HOMES_ROOT":
+        "the `_redirect_workflow_homes_root` fixture below, per test",
+    "METDSL_DEP_READINESS_ALLOW_PERSISTED_FALLBACK":
+        "a module-level `os.environ.setdefault` in test_orchestration_runtime.py and the "
+        "three test_pure_leaf_* modules, so it appears once any of them is imported",
+}
+
+
+def undeclared_operator_env_names(environ) -> set[str]:
+    """Strippable names present that nobody has claimed — the ratchet.
+
+    Either the guard stopped stripping, or the suite grew a new process-global environment
+    dependence without saying who sets it. Lives HERE, beside the rule and the table it
+    compares against, so that a mutation to it is a mutation to a mechanism rather than to
+    an assertion inside a test — the version that lived in the witness survived a sweep.
+    """
+    return set(operator_env_names_to_strip(environ)) - set(SUITE_OWNED_ENV)
+
+
 def pytest_configure(config) -> None:
     """Remove the operator's per-run knobs before anything is collected."""
     for name in operator_env_names_to_strip(os.environ):

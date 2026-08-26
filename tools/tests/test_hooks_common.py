@@ -126,6 +126,19 @@ class CpuBudgetCalibrationTests(unittest.TestCase):
         self.assertGreater(measured.units, 0.4, measured.describe())
         self.assertLess(measured.units, 2.5, measured.describe())
 
+    def test_the_calibration_is_taken_on_both_sides_and_averaged(self) -> None:
+        """A single reading taken BEFORE misprices a block the load arrived during.
+
+        Unwitnessed until this test: with the host's load steady the two readings agree,
+        so dropping the second one survives a mutation sweep. Driven with a calibrator
+        whose two readings differ by 3x, which is the situation the averaging is for.
+        """
+        readings = iter((0.1, 0.3))
+        with patch(f"{__name__}._cpu_calibration_unit", lambda: next(readings)):
+            with _CpuUnits() as measured:
+                pass
+        self.assertAlmostEqual(measured.unit_seconds, 0.2, places=9)
+
     def test_the_price_tracks_the_amount_of_work(self) -> None:
         """Three units of the same work cost about three units, not one."""
         with _CpuUnits() as measured:
@@ -2970,7 +2983,9 @@ class ForbidBackendCredentialReadTests(unittest.TestCase):
 
         Two depths outside `$HOME`, where the route runs up to a common ancestor and back
         down. Both fail with `../..` hard-coded, in the primary checkout as well as in a
-        worktree, which is what makes the mutant visible from anywhere.
+        worktree, which is what makes the mutant visible from anywhere. Measured: EITHER
+        depth alone kills that mutant, so the pair is redundancy over route length (2
+        segments against 7), not two independent pins — dropping one survives the sweep.
         """
         with tempfile.TemporaryDirectory() as td:
             for depth in (1, 6):

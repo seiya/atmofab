@@ -28,7 +28,9 @@ from unittest import mock
 from tools.tests.conftest import (
     _BACKEND_CONFIG_HOME_ENV,
     STRIPPED_OPERATOR_ENV,
+    SUITE_OWNED_ENV,
     operator_env_names_to_strip,
+    undeclared_operator_env_names,
 )
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -39,19 +41,6 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SUBJECT_MODULE = "tools.tests.test_build_runtime_server"
 _SUBJECT_CLASS = "OrchestratedEnvAllowlistTests"
 _SUBJECT_TEST = "test_only_an_absent_repo_root_falls_back_to_project_dir"
-
-# Names the SUITE sets on purpose, and who sets them. Not exemptions from the guard —
-# the guard is about the OPERATOR's environment, and these are set after it has run.
-# Both are process-global, so both are visible to every test collected afterwards; that
-# is recorded as a rough edge in TODO.md rather than fixed here.
-_SUITE_OWNED_ENV = {
-    "METDSL_WORKFLOW_HOMES_ROOT":
-        "the `_redirect_workflow_homes_root` fixture in tools/tests/conftest.py, per test",
-    "METDSL_DEP_READINESS_ALLOW_PERSISTED_FALLBACK":
-        "a module-level `os.environ.setdefault` in test_orchestration_runtime.py and the "
-        "three test_pure_leaf_* modules, so it appears once any of them is imported",
-}
-
 
 def _run(argv: list[str], env_extra: dict[str, str]) -> subprocess.CompletedProcess:
     env = dict(os.environ)
@@ -72,10 +61,10 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
            there was nothing to strip — which is why the end-to-end case below drives a
            real poisoned process rather than relying on this one.
         2. Every `METDSL_*` name that IS set during a test is one the SUITE set, and is
-           declared below. That is a ratchet: a new process-global environment dependence
+           declared in conftest's `SUITE_OWNED_ENV`. That is a ratchet: a new process-global environment dependence
            cannot appear without someone naming it here and saying who sets it.
 
-        Subset, not equality: `_SUITE_OWNED_ENV` holds names set at another module's
+        Subset, not equality: `SUITE_OWNED_ENV` holds names set at another module's
         import, so which of them are present depends on what has been collected. Running
         this file alone shows one; running the whole suite shows both.
         """
@@ -91,14 +80,29 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
                     os.environ.get(name), operator_value,
                     f"{name} reached a test with the value the operator exported")
 
-        survivors = set(operator_env_names_to_strip(os.environ))
-        undeclared = survivors - set(_SUITE_OWNED_ENV)
+        undeclared = undeclared_operator_env_names(os.environ)
         self.assertEqual(
             undeclared, set(),
             "an environment name is set during a test and nobody says who sets it. If "
-            "the suite sets it, declare it in _SUITE_OWNED_ENV with the site that does; "
+            "the suite sets it, declare it in SUITE_OWNED_ENV with the site that does; "
             "if it leaked from the operator, the guard in tools/tests/conftest.py is "
             f"broken. Values: {({n: os.environ[n] for n in undeclared})}")
+
+    def test_the_ratchet_reports_a_name_nobody_has_claimed(self) -> None:
+        """The ratchet's own witness — it fires on nothing this suite produces.
+
+        Without this, `undeclared_operator_env_names` returning a constant empty set is
+        invisible: no test sets an undeclared name, so the check above passes either way.
+        Driven on a synthetic mapping, since the real one is the thing being ratcheted.
+        """
+        declared = dict.fromkeys(SUITE_OWNED_ENV, "x")
+        self.assertEqual(undeclared_operator_env_names(declared), set())
+        self.assertEqual(
+            undeclared_operator_env_names({**declared, "METDSL_A_NEW_KNOB": "1"}),
+            {"METDSL_A_NEW_KNOB"})
+        self.assertEqual(
+            undeclared_operator_env_names({**declared, "CODEX_HOME": "/tmp/x"}),
+            {"CODEX_HOME"})
 
     def test_the_rule_is_read_from_the_leaf_env_prefix_constant_not_copied(self) -> None:
         """Coupled by POINTER: the prefix is defined once, in the production constant.
