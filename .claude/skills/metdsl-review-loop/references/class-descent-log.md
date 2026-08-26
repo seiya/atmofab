@@ -282,6 +282,43 @@ measured as lost, and nothing pins the total** — the reachability check pins t
 reachable, not that the entry point stays small. A reader who needs today's figure runs the
 command.
 
+## PR #100 — four rounds, no descent, closed by changing the question twice
+
+A documentation change (land a sizing rule out of a gitignored operator config) that grew a
+committed instrument and its tests. Twelve subagent reviews over four rounds, no Codex pass (a
+prose-centred diff, per SKILL.md's "cases where not launching is better").
+
+**The class never descended.** Every round produced FALSE EVIDENCE findings, and in every round the
+worst of them sat inside the previous round's fix:
+
+| Round | What the previous fix had introduced |
+|---|---|
+| 1 | a hand-transcribed reasoning value that does not exist in the run it cites |
+| 2 | a boldface provenance claim false for three figure groups, withdrawn by its own paragraph 4 000 characters later; and "elapsed cannot be re-taken", which was false and suppressed a re-takeable measurement |
+| 3 | the rule exported to a second provider's sample it was never measured on — wrong field name, the censoring rule inverted, a warning about an unreachable code path. Reverted whole |
+| 4 | a requirement inferred from one closure, falsified by the next day's closure in the same workspace; and the instrument's own vocabulary written into the document as the system's classification |
+
+**What ended it was not a round, it was two shape changes**, both in round 4 and both instances of
+"change to a weaker question that can be answered":
+
+- the document stopped stating an inferred requirement and started stating the largest COMPLETED
+  draw across a named population, as a bound that moves;
+- the sample config stopped summarising a spread of rates in prose — a sentence that had been wrong
+  in three consecutive rounds, each version written to fix the last — and stated the figures
+  instead.
+
+**Two readings for the next loop.** First, the recurrence signal fired correctly and I was slow to
+act on it: SKILL.md says three rounds of the same mechanism means the question is wrong, and this
+loop ran four. Second, the strongest finding of the branch came from the blank-slate reviewer the
+budget mandates from round four, on a branch where rounds 1-3 had all inherited the same evidence
+base — which is an argument for spending one no-history slot EARLIER than round four when the
+evidence is a fixed artifact everyone is handed.
+
+Stopped at the budget with the branch merged and the conditions disclosed in the PR body: class
+descent not achieved, blank-slate zero-functional-defects not achieved twice. The instrument's
+census is explicitly not closed — an independent census found 24 of 40 mutants surviving in round
+4, and the author's own 12-mutant sweep afterwards is a statement about those 12.
+
 ## Census practical notes: the episode behind each (restored 2026-08-25)
 
 These six were compressed to one line each in `SKILL.md` §"Stopping conditions" and their

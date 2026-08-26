@@ -342,3 +342,32 @@ and the suite stayed green. SKILL.md already names the shape ("Pin at the handle
 what this episode adds is that a MUTATION CHECK is what surfaced it, after four review rounds had
 not, and that the tell is a survivor on a one-line call-site hunk.
 
+### A stale `.pyc` reports the PREVIOUS mutant's verdict (PR #100)
+
+Two reviewers, independently, hit this while sweeping a single committed script by rewriting it in
+place. Successive mutants of one file are often the SAME BYTE LENGTH, and if two of them are written
+within the same second, CPython's source-mtime check cannot tell them apart and reuses the cached
+bytecode. One reviewer's first sweep reported three live mutants as killed; the verdict printed was
+the previous mutant's. Both re-ran with `PYTHONDONTWRITEBYTECODE=1 python3 -m pytest ...
+-p no:cacheprovider` and the three came back SURVIVED.
+
+`mutation_check.py` is unaffected — each hunk gets its own worktree, so no two mutants share a path
+— which is exactly why the trap is invisible until you write a sweep by hand, and why the flags now
+appear in SKILL.md's handwritten-harness rule. The general form is the one already in this file: a
+handwritten harness fails in ways the script has designed out, and the failures all look like
+green.
+
+### The fixture built from the constant under test (PR #100)
+
+A witness census had found the script's `WORKSPACE_ROOT` unpinned, so a test was written for it —
+and the mutant pointing the constant at `workspace/NOPE` still passed. The test had built its
+fixture directory with `root / leaf_token_report.WORKSPACE_ROOT / "orch_xyz"`, i.e. from the
+constant it was checking, so it asserted the constant equals itself. Spelling the layout literally
+(`root / "workspace" / "orchestrations"`) killed the mutant.
+
+This is the "generating the probes FROM a constant gives set identity" sign, in its simplest
+possible form and inside a test written specifically to close a census finding. **The tell is that
+the fixture imports the module under test to build the expected value.** Check (a) from SKILL.md
+applies unchanged: name an input for which this test could fail. If the answer requires the
+constant to be self-inconsistent, it cannot fail.
+
