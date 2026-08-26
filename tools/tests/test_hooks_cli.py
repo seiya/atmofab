@@ -1131,20 +1131,56 @@ class ClaudeHookCliTests(unittest.TestCase):
                 env={"METDSL_ORCHESTRATION_ID": "orch_env"})
             self.assertEqual(code, 0, msg=text)
 
-    def test_the_refusal_is_recorded_under_global(self) -> None:
-        """`docs/ORCHESTRATION.md` §38 - the refusal is the one thing worth a record
-        here, since the leaf that hit it cannot name the directory its own record
-        belongs in."""
-        with tempfile.TemporaryDirectory() as tmp:
-            code, _text = self._run_pre(
-                "claude", self._missing_id_payload(Path(tmp)),
-                env={"METDSL_WORKFLOW_MODE": "1"})
-            self.assertEqual(code, 2)
-            log = (Path(tmp) / "workspace" / "orchestrations" / "_global" / "hooks"
-                   / "native_hook_events.jsonl")
-            self.assertTrue(log.exists())
-            entry = json.loads(log.read_text(encoding="utf-8").splitlines()[-1])
-            self.assertEqual(entry["action"], "block")
+    def test_the_refusal_is_recorded_under_global_on_every_backend_and_mode(self) -> None:
+        """`docs/ORCHESTRATION.md` §38 - the refusal is the one thing worth a record here,
+        since the leaf that hit it cannot name the directory its own record belongs in.
+
+        A TABLE over the workflow mode, not the claude/workflow-mode case alone. Two
+        `_global` suppressions in `_append_hook_audit` were keyed on the mode, and a leaf
+        that lost `METDSL_ORCHESTRATION_ID` has usually lost `METDSL_WORKFLOW_MODE` from
+        the same environment — so the one anomaly worth a trace was exactly the one that
+        left none, and for a codex leaf (`tool_name` `shell`) it was suppressed in every
+        mode. Both suppressions are gone with issue #102; this is what replaces them.
+        """
+        for backend, tool, mode in (("claude", "Bash", "1"), ("claude", "Bash", None),
+                                    ("codex", "shell", "1"), ("codex", "shell", None)):
+            with self.subTest(backend=backend, workflow_mode=mode):
+                with tempfile.TemporaryDirectory() as tmp:
+                    payload = self._missing_id_payload(Path(tmp))
+                    payload["tool_name"] = tool
+                    code, _text = self._run_pre(
+                        backend, payload,
+                        env={"METDSL_WORKFLOW_MODE": mode} if mode else {})
+                    self.assertEqual(code, 2)
+                    log = (Path(tmp) / "workspace" / "orchestrations" / "_global" / "hooks"
+                           / "native_hook_events.jsonl")
+                    self.assertTrue(log.exists(), "the refusal left no trace")
+                    entry = json.loads(log.read_text(encoding="utf-8").splitlines()[-1])
+                    self.assertEqual(entry["action"], "block")
+                    self.assertIn("orchestration_id is required", entry["reason"])
+
+    def test_no_record_is_written_when_no_repo_root_can_be_resolved(self) -> None:
+        """The half of the pollution guard that is NOT `_global`-specific and stays: with
+        no `repo_root` in the payload and none in the environment, there is no tree to
+        write into and the refusal is still returned."""
+        with patch.dict(os.environ, {}):
+            for name in ("METDSL_ORCHESTRATION_ID", "METDSL_HOOK_REPO_ROOT",
+                         "METDSL_WORKFLOW_MODE"):
+                os.environ.pop(name, None)
+            with tempfile.TemporaryDirectory() as tmp:
+                cwd = os.getcwd()
+                os.chdir(tmp)
+                try:
+                    out, err = io.StringIO(), io.StringIO()
+                    with redirect_stdout(out), redirect_stderr(err):
+                        code = cli.main(["--backend", "claude", "--event", "PreToolUse",
+                                         "--input-json", json.dumps(
+                                             {"tool_name": "Bash",
+                                              "tool_input": {"command": "echo hello"}})])
+                finally:
+                    os.chdir(cwd)
+                self.assertEqual(code, 2)
+                self.assertFalse((Path(tmp) / "workspace").exists())
 
     def test_nothing_writes_the_deleted_policy_variable(self) -> None:
         """The writer, not only the reader (issue #102).

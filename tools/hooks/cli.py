@@ -239,29 +239,18 @@ def _append_hook_audit(
     inner_tool_name = inner_payload.get("tool_name")
     tool_name_raw = payload.get("tool_name")
     tool_name = tool_name_raw if isinstance(tool_name_raw, str) and tool_name_raw.strip() else inner_tool_name
-    workflow_mode_on = _env_flag_true("METDSL_WORKFLOW_MODE")
-    if (
-        normalized_orch == "_global"
-        and isinstance(tool_name, str)
-        and tool_name.strip().lower() == "shell"
-        and not workflow_mode_on
-    ):
-        return
-    payload_has_repo_root = isinstance(payload.get("repo_root"), str) and bool(
-        str(payload.get("repo_root")).strip()
-    )
-    inner_has_repo_root = isinstance(inner_payload, dict) and isinstance(
-        inner_payload.get("repo_root"), str
-    ) and bool(str(inner_payload.get("repo_root")).strip())
+    # TWO `_global` SUPPRESSIONS STOOD HERE and are gone with issue #102. Both existed
+    # for an AMBIENT call — an operator's own session, which registered this same
+    # entrypoint and whose rows would have created `workspace/orchestrations/_global/` in
+    # their checkout. That caller no longer reaches this module: the DEV layer names
+    # `tools/hooks/dev_cli.py` (pinned by `HookLayerSeparationTests`), and the one
+    # remaining non-leaf caller, the preflight roster probe, no longer seeds the leaf's
+    # hooks at all. What arrives at `_global` now is one thing: a hook that could not name
+    # its orchestration, which `main()` refuses — the single anomaly on this path, and the
+    # one worth a trace. Suppressing it by workflow mode left a codex leaf's refusal
+    # silently unrecorded, because a leaf that lost `METDSL_ORCHESTRATION_ID` has usually
+    # lost `METDSL_WORKFLOW_MODE` from the same environment.
     env_repo_root = os.environ.get("METDSL_HOOK_REPO_ROOT", "").strip()
-    if (
-        normalized_orch == "_global"
-        and not workflow_mode_on
-        and not payload_has_repo_root
-        and not inner_has_repo_root
-        and not env_repo_root
-    ):
-        return
     repo_root_raw = payload.get("repo_root")
     if not (isinstance(repo_root_raw, str) and repo_root_raw.strip()):
         if isinstance(inner_payload, dict):
@@ -317,11 +306,6 @@ def _resolve_repo_root(payload: dict[str, Any], backend: str = "") -> Path:
         if isinstance(repo_root_raw, str) and repo_root_raw.strip()
         else Path.cwd()
     )
-
-
-def _env_flag_true(name: str, default: str = "0") -> bool:
-    raw = os.environ.get(name, default).strip().lower()
-    return raw in {"1", "true", "yes", "on"}
 
 
 def _extract_orchestration_id(payload: dict[str, Any]) -> str | None:
