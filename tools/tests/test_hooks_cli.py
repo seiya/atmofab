@@ -5217,6 +5217,14 @@ class BashWriteTargetGrammarTests(unittest.TestCase):
         # command-substitution recursion that runs before the blanking
         ('--arg "$(( $(echo 1 > /tmp/pwn) + 1 ))"', ["/tmp/pwn"]),
         ("[[ -f a ]] && cmd > out.txt", ["out.txt"]),
+        # round 5: `[[` is the conditional ONLY in command position. Matched
+        # anywhere, any `[[` paired with any later `]]` and blanked a REAL
+        # redirect between them — measured writing the file under bash, and
+        # named by origin/main.
+        ("cat a.json [[ > workspace/pipelines/evil.json ]]", ["workspace/pipelines/evil.json"]),
+        ("echo [[ ; cat a > copied.yaml ; echo ]]", ["copied.yaml"]),
+        ("if [[ -f a ]]; then cmd > out.txt; fi", ["out.txt"]),
+        ("while [[ x ]]; do cmd > o; done", ["o"]),
     )
 
     # TODO.md 378(d): every one of these is REFUSED, whatever it names. The spellings
@@ -5287,6 +5295,15 @@ class BashWriteTargetGrammarTests(unittest.TestCase):
         'c""p a b',
         # a leading redirection does not displace the head
         "> workspace/x.txt cp a b",
+        # a shell is handed a SCRIPT, and the script need not be in the shell's
+        # own fragment: piped in, or in a heredoc body blanked before the scan
+        "bash <<'EOF'\ncp a b\nEOF",
+        "echo 'cp a b' | bash",
+        "printf 'cp a b' | bash -s",
+        # process substitution runs its body
+        "diff <(cp a b) /dev/null",
+        "cat <(cp a b) >/dev/null",
+        "echo hi > >(cp a d)",
     )
 
     # Commands that must NOT be refused. Half are ordinary read-only work; half are the
@@ -5313,13 +5330,23 @@ class BashWriteTargetGrammarTests(unittest.TestCase):
         # residue: only the NAME is indirect, so the fragment carries no literal
         "$CP a workspace/ir/b",
         "$(which cp) a workspace/ir/b",
+        # residue: a script FILE handed to an interpreter. The file's content is
+        # not in the command, so nothing here can see the writer.
+        "bash workspace/tmp/r1/copy.sh",
+        "python3 workspace/tmp/r1/copy.py",
+        # `install` is also a package-manager SUBCOMMAND, so it is recognised only
+        # at a fragment head. This row is verbatim from the session corpus.
+        "timeout 600 /v/bin/pip install -q fparser",
+        "env PYTHONPATH=. python3 -m pip install -e .",
     )
 
     def _targets(self, command: str) -> list[str]:
         return cli._detect_bash_write_targets(command)
 
     def _write_commands(self, command: str) -> list[str]:
-        return cli._detect_bash_write_commands(*cli._blanked_command_and_scan(command))
+        return cli._detect_bash_write_commands(
+            *cli._blanked_command_and_scan(command), command
+        )
 
     # ---- the path-naming half ---------------------------------------------
 
@@ -5426,8 +5453,13 @@ class BashWriteTargetGrammarTests(unittest.TestCase):
             with self.subTest(name=name, command=command):
                 self.assertIn("cp", self._write_commands(command))
                 mutated = frozenset(cli._BASH_SCAN_WHOLE_FRAGMENT_HEADS - {name})
+                shells = frozenset(cli._BASH_SHELL_HEADS - {name})
+                # A shell name is in BOTH sets — the head scan and the raw-word
+                # scan reach it independently — so removing it from one alone
+                # proves nothing. Both are mutated, or the probe cannot fail.
                 with patch.object(cli, "_BASH_SCAN_WHOLE_FRAGMENT_HEADS", mutated):
-                    self.assertNotIn("cp", self._write_commands(command))
+                    with patch.object(cli, "_BASH_SHELL_HEADS", shells):
+                        self.assertNotIn("cp", self._write_commands(command))
 
     def test_a_writer_in_every_fragment_of_a_compound_is_found(self) -> None:
         # The refusal names the first writer, but the scan must not stop at the

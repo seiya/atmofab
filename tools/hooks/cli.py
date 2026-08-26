@@ -401,9 +401,20 @@ _BASH_INPUT_REDIRECT_RE = re.compile(
 # `echo $((n>0))` compares numbers. Neither writes a file. Both are blanked
 # before the redirect scan, because dropping the space requirement in issue
 # #74(c) made the GLUED spellings (`[[ a >b ]]`, `$((n>0))`) name the phantom
-# targets `b` and `0`. The spaced spellings were phantoms on origin/main too;
-# this closes the whole family rather than the half the widening added.
-_BASH_TEST_EXPRESSION_RE = re.compile(r"\[\[.*?\]\]")
+# targets `b` and `0`. The spaced spellings were phantoms on origin/main too.
+#
+# The COMMAND-POSITION requirement is load-bearing, not tidiness. Bash only reads
+# `[[` as the conditional when it starts a command; anywhere else it is an
+# ordinary word. Matching it anywhere let any `[[` pair with any later `]]` and
+# blank everything between them, INCLUDING a real redirect — measured:
+# `cat a.json [[ > workspace/pipelines/evil.json ]]` really writes that file
+# under bash, origin/main named it, and the first spelling of this pass did not.
+_BASH_TEST_EXPRESSION_RE = re.compile(r"\[\[(?=[\s;|&]).*?(?<=[\s;|&])\]\]")
+# What may precede a command: nothing, a separator, an opening group, or one of
+# the keywords a conditional legitimately follows.
+_BASH_COMMAND_POSITION_PREFIX_RE = re.compile(
+    r"(?:^|[;|&(\n]|\b(?:if|elif|while|until|then|do|not|!))\s*$"
+)
 
 # A `\`-newline continuation. Not a separator, though the newline in it
 # matches `_BASH_FRAGMENT_SEPARATOR_RE`.
@@ -639,6 +650,15 @@ _BASH_COMMAND_WRAPPERS = frozenset(
 # command, and `common._strip_bash_fragment_syntax` strips `case` but not the
 # `x in a)` that follows it. Scanned as a whole for the same reason as a wrapper.
 _BASH_SCAN_WHOLE_FRAGMENT_HEADS = _BASH_COMMAND_WRAPPERS | {"case"}
+# The shells among them. A shell is handed a SCRIPT, and the script may live
+# outside the shell's own fragment — piped in, or in a heredoc body.
+_BASH_SHELL_HEADS = frozenset({"bash", "sh", "zsh", "dash", "ksh"})
+# Names in `_BASH_FILE_WRITE_COMMANDS` that are also common SUBCOMMANDS, and so
+# are recognised only at a fragment head, never by the whole-fragment scan.
+# `timeout 600 <venv>/bin/pip install -q fparser` is a verbatim command from this
+# tree's session corpus, and it was refused naming `install` — a block whose
+# remedy ("Read it and Write the content") makes no sense for a package install.
+_SUBCOMMAND_COLLISIONS = frozenset({"install"})
 
 # Bash commands whose ONLY file-write vector is shell redirection (which
 # _detect_bash_write_targets catches) — they carry no own write/exec flags.
@@ -843,6 +863,16 @@ def _command_substitution_spans(command: str) -> list[tuple[int, int]]:
             spans.append((i, end))
             i = end
             continue
+        if command[i : i + 2] in ("<(", ">("):
+            # Process substitution. Its body is a command that RUNS —
+            # `diff <(cp a b) /dev/null` performs the copy — and it occurs in this
+            # tree's own leaf corpus. `_extract_command_substitution_bodies` does
+            # not model it, so it is collected here and `_detect_bash_write_commands`
+            # recurses into the span.
+            _, end = _scan_subshell(command, i + 2)
+            spans.append((i, end))
+            i = end
+            continue
         if ch == "`":
             _, end = _scan_backtick(command, i + 1)
             spans.append((i, end))
@@ -860,7 +890,7 @@ def _argv_view(text: str, scanned: str, substitution_spans: list[tuple[int, int]
     (`_strip_quoted_strings` is length-preserving, and so is this). `text` is
     either the ORIGINAL command — quoted operands intact, which is what the
     caller tokenizes — or `scanned` itself, when the caller wants a copy safe to
-    look for separators in. Four families go:
+    look for separators in. Three families go:
 
     * redirections, INCLUDING the fd prefix of `2>path` and the leading `&` of
       `&>path`. Blanking only from the operator left a stray `2`, which became
@@ -870,17 +900,17 @@ def _argv_view(text: str, scanned: str, substitution_spans: list[tuple[int, int]
     * a command substitution, whose body is separators and commands rather than
       operands (`_detect_bash_write_targets` recurses into it separately).
 
-    **What this view is for changed, and most of it is no longer pinned.** It once
-    fed a destination EXTRACTOR, where each pass decided which operand was named;
-    its only consumer now is `_detect_bash_write_commands`, which reads a fragment
-    HEAD. Measured at the commit that made the switch, three passes change no
-    result for that consumer — the `_BASH_FD_DUP_RE` pass, the substitution
-    blanking, and locating the substitution spans on the original rather than on
-    `scanned` — because a glued or quoted substitution moves no head. They are kept
-    because the view this returns should be correct on its own terms rather than by
-    what a later step happens to ignore, and because the next consumer may read more
-    than a head. What IS pinned: blanking the redirections, without which
-    `> workspace/x.txt cp a b` has the redirect target as its head.
+    **What this view is for changed.** It once fed a destination EXTRACTOR, where
+    each pass decided which operand was named; its only consumer now is
+    `_detect_bash_write_commands`, which reads a fragment HEAD. At the commit that
+    made the switch, five of its six passes were unobservable for a head, and this
+    note said so. That is no longer true: the witnesses added for the shell-fed and
+    process-substitution routes made every pass observable again. **Measured at
+    this commit** by deleting each pass alone and running
+    `python3 -m pytest tools/tests/test_hooks_cli.py -q` against a `git archive`
+    copy: all six — the write-redirect, fd-dup and input-redirect passes, the
+    line-continuation pass, the substitution blanking, and locating the
+    substitution spans on the original rather than on `scanned` — are KILLED.
     """
     out = list(text)
 
@@ -945,10 +975,10 @@ def _argv_operand_tokens(fragment: str) -> list[str]:
     a redirection spelling this module does not model. Dropping it is the FAIL-OPEN
     direction, chosen deliberately: it can only make a fragment's head harder to
     recognise, never invent one, and a refusal a leaf cannot map to an action it
-    took is the defect issue #74(a)/(b) were filed for. Not independently pinned:
-    measured at the commit that switched this module from naming destinations to
-    recognising commands, no input distinguishes it for a HEAD, because a token
-    carrying redirection syntax is never a command name.
+    took is the defect issue #74(a)/(b) were filed for. Pinned as of this commit —
+    deleting the filter fails four tests — though it was NOT when this module
+    switched from naming destinations to recognising commands; the witnesses added
+    for the shell-fed and process-substitution routes brought it back into view.
     """
     try:
         tokens = shlex.split(fragment)
@@ -961,7 +991,18 @@ def _argv_operand_tokens(fragment: str) -> list[str]:
     ]
 
 
-def _detect_bash_write_commands(command: str, scanned: str) -> list[str]:
+def _fragment_head(fragment: str) -> str:
+    """The command name at a fragment's head, after the read side's prefix strip."""
+    tokens = _argv_operand_tokens(fragment)
+    if not tokens:
+        return ""
+    argv, _reads, _stdin = _strip_bash_fragment_syntax(tokens)
+    return argv[0].split("/")[-1] if argv else tokens[0].split("/")[-1]
+
+
+def _detect_bash_write_commands(
+    command: str, scanned: str, _raw_command: str | None = None
+) -> list[str]:
     """Names of file-writing commands run by this Bash command.
 
     Deliberately does NOT try to say WHICH file each writes; see the note on
@@ -977,21 +1018,61 @@ def _detect_bash_write_commands(command: str, scanned: str) -> list[str]:
     copy exactly as `cp a b` does.
 
     Residue, yielding nothing, every item measured at the commit that wrote this:
-    a writer invoked by a program that is neither a fragment head nor a member of
-    `_BASH_SCAN_WHOLE_FRAGMENT_HEADS` (`find . -exec cp {} dst \\;`); a writer
-    whose NAME comes from a variable (`$CP a b`) or from a substitution
-    (`$(which cp) a b`), since only the name is indirect and the fragment carries
-    no literal to match; a shell function or alias that wraps one; and a writer
-    reached through a non-shell interpreter (`python3 -c 'shutil.copy(…)'`, which
-    `forbid_python_inline_write` covers separately). An empty result means "no
-    writer recognised", not "no write".
+
+    * a writer invoked by a program that is neither a fragment head nor a member
+      of `_BASH_SCAN_WHOLE_FRAGMENT_HEADS` (`find . -exec cp {} dst \\;`);
+    * a writer whose NAME comes from a variable (`$CP a b`) or from a substitution
+      (`$(which cp) a b`) — only the name is indirect there, so the fragment
+      carries no literal to match;
+    * a shell function or alias that wraps one;
+    * **a writer inside a script FILE handed to any interpreter** —
+      `bash workspace/tmp/<arid>/copy.sh`, `python3 workspace/tmp/<arid>/copy.py`.
+      The content is not in the command, so nothing here can see it. This is NOT
+      covered by `forbid_python_inline_write`, which refuses only `python3 -c` and
+      `python3 - <<EOF`, and whose own remedy text steers a refused leaf toward
+      exactly this spelling over an allow-list entry that permits it
+      (`Bash(python3 workspace/tmp/*)`). An earlier version of this list called the
+      interpreter route covered; it is the widest thing here that is not;
+    * `install` reached other than at a fragment head, since it is also a package
+      manager's subcommand (`_SUBCOMMAND_COLLISIONS`).
+
+    An empty result means "no writer recognised", not "no write".
     """
+    _raw_command = command if _raw_command is None else _raw_command
     found: list[str] = []
-    # A writer inside `$(…)` or backticks runs. The bodies are not visible to the
-    # fragment walk below — `_argv_view` blanks them so their separators do not
-    # tear the surrounding command apart — so they are recursed into here.
-    for body in _extract_command_substitution_bodies(command):
-        found.extend(_detect_bash_write_commands(body, _strip_quoted_strings(body)))
+    # A writer inside `$(…)`, backticks or a process substitution runs. None of
+    # those bodies is visible to the fragment walk below — `_argv_view` blanks them
+    # so their separators do not tear the surrounding command apart — so they are
+    # recursed into here. `_command_substitution_spans` is the one that knows about
+    # `<(…)` / `>(…)`; `_extract_command_substitution_bodies` does not model them.
+    bodies = list(_extract_command_substitution_bodies(command))
+    bodies.extend(
+        command[start + 2 : end - 1] for start, end in _command_substitution_spans(command)
+    )
+    for body in bodies:
+        if body.strip():
+            found.extend(_detect_bash_write_commands(body, _strip_quoted_strings(body)))
+    # A fragment headed by a SHELL is handed a script, and the script is not
+    # necessarily in that fragment: `echo 'cp a b' | bash` puts it in the previous
+    # one, and `bash <<'EOF' … EOF` puts it in a heredoc body that is blanked
+    # before this ever runs. Adding `bash -c` to the head set closed only the one
+    # spelling. When a shell appears at ANY fragment head, every word of the RAW
+    # command is checked instead — a coarser answer, in the fail-closed direction.
+    if any(
+        _fragment_head(fragment) in _BASH_SHELL_HEADS
+        for fragment in _argv_fragments(command, scanned)
+    ):
+        try:
+            raw_words = shlex.split(_raw_command)
+        except ValueError:
+            raw_words = _raw_command.split()
+        found.extend(
+            word.split("/")[-1]
+            for token in raw_words
+            for word in token.split()
+            if word.split("/")[-1] in _BASH_FILE_WRITE_COMMANDS
+            and word.split("/")[-1] not in _SUBCOMMAND_COLLISIONS
+        )
     for fragment in _argv_fragments(command, scanned):
         tokens = _argv_operand_tokens(fragment)
         if not tokens:
@@ -1010,11 +1091,14 @@ def _detect_bash_write_commands(command: str, scanned: str) -> list[str]:
                 for token in tokens
                 for word in token.split()
                 if word.split("/")[-1] in _BASH_FILE_WRITE_COMMANDS
+                and word.split("/")[-1] not in _SUBCOMMAND_COLLISIONS
             )
             continue
         if head in _BASH_FILE_WRITE_COMMANDS:
             found.append(head)
-    return found
+    # Deduplicated, order preserved: a shell head reaches the same writer through
+    # both the raw-word scan and the fragment walk, and the caller names found[0].
+    return list(dict.fromkeys(found))
 
 
 def _blank_comparison_contexts(scanned: str) -> str:
@@ -1032,6 +1116,8 @@ def _blank_comparison_contexts(scanned: str) -> str:
             out[pos] = " "
 
     for m in _BASH_TEST_EXPRESSION_RE.finditer(scanned):
+        if not _BASH_COMMAND_POSITION_PREFIX_RE.search(scanned[: m.start()]):
+            continue  # an operand that merely looks like one, not a conditional
         blank(*m.span())
     idx = 0
     while idx < len(scanned):
@@ -2200,7 +2286,7 @@ def _evaluate_pre_command_file_access_policy(
         # `leaf_config/claude/settings.json`'s allow list) with the hook layer
         # having decided nothing.
         write_commands = _detect_bash_write_commands(
-            *_blanked_command_and_scan(decoded.command)
+            *_blanked_command_and_scan(decoded.command), decoded.command or ""
         )
         if write_commands:
             return HookDecision(
