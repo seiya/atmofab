@@ -74,9 +74,9 @@ bash's word splitting plus each tool's getopt grammar. Rounds 1, 2 and 3 each fo
 one function further on: a value read off one copy of the command while a decision was made on
 another (`shlex`-token segmentation vs. the read side's string split; operands read from the raw
 command while segmentation ran on a sanitized one; a substitution marked at its first byte, with
-its spans located on the copy where they had been erased). Every fix regenerated the family, in
-both directions at once — `cp src dst 2>/dev/null` refused naming the path `2`, `cd x; cp a
-<managed path>` extracting nothing at all.
+its spans located on the copy where they had been erased). Every fix regenerated the family, and in
+rounds 1 and 2 in both directions at once — `cp src dst 2>/dev/null` refused naming the path `2`,
+`cd x; cp a <managed path>` extracting nothing at all. Round 3's were over-refusal only.
 
 **The trigger fired at THREE rounds, not five.** SKILL.md's count for "the shape of the rule is
 wrong" is five; the sibling sign — "the same mechanism keeps being broken for three rounds or more
@@ -93,11 +93,15 @@ head — and it flipped the failure direction from open to closed.
 - **The redesign was put to the USER, not taken.** SKILL.md's rule for a fix that changes the shape
   of the rule is split-or-ask; the options offered were split the branch / continue / redesign in
   place, with the measured basis (every finding traced to the argv grammar or to a regex widening
-  done to serve it; the redirect half had produced no finding since round 1). The user chose
-  redesign. Taking that decision silently would have been the same class of error as the loop's own
+  done to serve it). **The basis as put to the user overstated one half**: it said the redirect side
+  had produced no finding since round 1, and round 2 had two (`2>&-` reported as a write to `-`, and
+  the `startswith("&")` guard deleted for dropping a quoted `> "&1"`) — both arising from a regex
+  widening done for the argv view, which is the qualification that belonged in the sentence. The
+  user chose redesign. Taking that decision silently would have been the same class of error as the loop's own
   defects.
 - **A weaker question is not a smaller review surface.** The new mechanism got rounds 4 and 5, and
-  each found HIGH defects IN IT — a wrapper hop broken for six of eight wrappers by their own
+  each found serious defects IN IT (severities are the reviewers' and mine at the time; the commits
+  record the defects, not a severity field) — a wrapper hop broken for six of eight wrappers by their own
   canonical invocations, then `[[ … ]]` matched outside command position blanking a real redirect
   (a fail-open REGRESSION against `origin/main`, introduced by round 4's own fix). **The class
   never descended across all five rounds.** The loop ended at the cap, disclosed as not converged.

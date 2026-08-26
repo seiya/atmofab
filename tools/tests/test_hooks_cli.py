@@ -5441,8 +5441,14 @@ class BashWriteTargetGrammarTests(unittest.TestCase):
 
         The spelling table is checked against the constant first, so a head added
         to the code without one fails here rather than getting a probe that cannot
-        fail. Each spelling was run under bash in a scratch directory and confirmed
-        to actually perform the copy.
+        fail. 14 of the 17 spellings were run under bash in a scratch directory and
+        confirmed to actually perform the copy. The three that were not: `sudo`
+        (this host wants a password on a tty) and `ksh` (not installed here), both
+        valid spellings; and `xargs -I {} cp {} dst`, which with no stdin exits 0
+        having copied nothing. That last one is deliberate and stays — what this
+        table probes is whether the DETECTOR sees the writer, and the detector
+        reads words, not behaviour. An earlier version of this docstring said
+        "each spelling", which was false for three of seventeen.
         """
         self.assertEqual(
             set(self._WHOLE_FRAGMENT_HEAD_SPELLINGS),

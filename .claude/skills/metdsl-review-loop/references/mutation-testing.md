@@ -295,15 +295,22 @@ message as having settled the question.
   filter, "measured over eight fd-dup spellings". Every one was written `cp a b 2>&1`. GLUED to the
   operand — `cp a b2>&1` — the filter takes the real destination with it, so the pass was
   load-bearing and the note said the opposite.
-- **17 wrappers, all probed as `f"{name} cp a b"`.** The worst of the three, because it was the
+- **8 wrappers, all probed as `f"{name} cp a b"`.** The worst of the three, because it was the
   set-identity test itself and the commit cited it as answering a census's complaint about
-  sampling. Every wrapper works with no options; six of eight were defeated by their own canonical
-  invocation (`env FOO=1 cp`, `timeout 5 cp`, `sudo -u root cp`, `xargs -I {} cp`), and `timeout`
-  was inert for every spelling that exists, since a valid `timeout` begins with a DURATION.
-  **`timeout cp a b` is not a spelling bash accepts** — the test was green on an input that cannot
-  occur. Fixed with a spelling table asserted to cover the constant, each entry RUN under bash to
-  confirm it performs the write; writing that table caught a fourth instance in itself
-  (`case x in a) cp …` never matches `x`).
+  sampling. Every wrapper works with no options; **six of the eight** were defeated by their own
+  canonical invocation (`env FOO=1 cp`, `timeout 5 cp`, `sudo -u root cp`, `xargs -I {} cp`), and
+  `timeout` was inert for every spelling that exists, since a valid `timeout` begins with a
+  DURATION. **`timeout cp a b` is not an invocation `timeout` accepts** — bash parses it fine
+  (`bash -n` exits 0); `timeout(1)` answers `invalid time interval 'cp'`, rc=125, and writes
+  nothing. The row was green on an input that cannot occur. Fixed with a spelling table asserted to
+  cover the constant, most entries RUN under bash to confirm the write; writing that table caught a
+  fourth instance in itself (`case x in a) cp …` never matches `x`).
+  **Residue in the fix, found by the round that reviewed it**: the fix's docstring says "15 of the
+  17 spellings were run … and confirmed to actually perform the copy", which is one too many —
+  `xargs -I {} cp {} dst` with no stdin exits 0 having copied nothing. The test is still correct
+  (the detector reads words, not behaviour), and the count in the DEFECT above is 8 because that is
+  what the broken table held; 17 is the size of the REPAIRED one. Attributing a fix's number to the
+  defect it fixed is its own small version of this.
 
 **The check is one question**: name a member of the family for which the measurement could have
 come out the other way. Then check the spelling is one the thing under test accepts.
@@ -315,4 +322,23 @@ it: `-x` stopped on the two path-depth-coupled `ForbidBackendCredentialReadTests
 in a `/tmp` worktree and pass in the checkout, so every mutant "killed" the same pre-existing
 failure. `mutation_check.py`'s own baseline catches this (red baseline, exit 2) — a HANDWRITTEN
 sweep in a scratch copy does not. Deselect the known failures in the test command, or drop `-x`.
+The "12 of 12" is that reviewer's own report of their run; it is not reproducible from the tree.
+
+### A revert that reintroduces a SHADOWED duplicate (PR #98, `bb4e915`)
+
+`mutation_check.py` left one unexplained survivor: the hunk DELETING the old
+`_BASH_INPUT_REDIRECT_RE`, whose replacement had moved to the top of the file with a fd prefix
+added. Reverting the deletion re-adds the old definition AFTER the new one, so the old one wins and
+nothing goes red — while the deletion was load-bearing (`cp a b 2<in.txt` yielded a bare `2` as a
+write target without it). This is not the documented "one half of a code move survives": both halves
+are present in the mutant, and the survivor is REAL. **When a definition moved within a file, revert
+its deletion and check which copy wins before reading the survivor as noise.**
+
+### Pinned at the helper, not at the handler (PR #98, `7d3dae9`)
+
+The last survivor of the branch was `cli.main` handing the raw command to the detector. Nothing went
+red because every helper-level test passed the raw command itself — so the wiring could be deleted
+and the suite stayed green. SKILL.md already names the shape ("Pin at the handler, not the helper");
+what this episode adds is that a MUTATION CHECK is what surfaced it, after four review rounds had
+not, and that the tell is a survivor on a one-line call-site hunk.
 

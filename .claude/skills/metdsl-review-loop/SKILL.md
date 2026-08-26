@@ -74,15 +74,9 @@ python3 .claude/skills/metdsl-review-loop/scripts/mutation_check.py \
 #   --range origin/main...HEAD
 ```
 
-**Pass `-x` — but only once you know the baseline is green FOR THE TEST COMMAND YOU PASS.**
-The exit code decides the verdict, and `-x` stops at the first failure: if the suite already has
-one that is nothing to do with your change, every mutant stops there and every mutant reads as
-`killed`. That is a false green over the whole run, not a per-hunk slip. In met-dsl the standing
-instance is the two path-depth-coupled `ForbidBackendCredentialReadTests` cases, which fail in a
-worktree under `/tmp` and pass in the checkout — so the script's own baseline goes red (exit 2)
-and tells you, but a HANDWRITTEN sweep in a scratch copy will not. **Deselect the known failures
-in `--test-cmd`, or drop `-x`.** The output is otherwise read only to tell a real failure from a
-suite that never ran. Hunks run in separate worktrees, `min(cores - 2, 4)` at a
+**Pass `-x` — but only with a `--test-cmd` whose baseline is green** (see the handwritten-sweep
+bullet below, which is where that bites). The exit code decides the verdict — the output is read
+only to tell a real failure from a suite that never ran. Hunks run in separate worktrees, `min(cores - 2, 4)` at a
 time by default and never more than the hunk count (`--jobs`); 4 hunks × 805 tests measured 5m52s → 43s. **Do not put a `TMPDIR=` prefix in
 `--test-cmd`**: each job already gets its own temp root, a prefix puts them all back on one, and
 failures then belong to no hunk and are recorded as `killed` — a false pin (at more than one job
@@ -108,8 +102,14 @@ when a rule does not obviously apply:
   when you do** — a mutant can kill pytest during collection and a `FAILED`-line scorer reads
   that as green (PR #68: 3 mutants hid 41-47 real failures). Put both facts in the reviewer's
   instructions too
-- **Run the baseline for handwritten sweeps too** — a stale worktree makes a red baseline look
-  like every mutant was killed (PR #67)
+- **Run the baseline for handwritten sweeps too, and read it before you trust `-x`** — the script
+  refuses a red baseline (exit 2); a sweep you write yourself will not. Two causes, same false
+  green: a stale worktree (PR #67), and a suite that ALREADY has a failure unrelated to the change,
+  where `-x` stops every mutant at that same failure so every mutant reads as `killed` — a false
+  green over the whole run, not a per-hunk slip. met-dsl's standing instance is the two
+  path-depth-coupled `ForbidBackendCredentialReadTests` cases, which fail in a worktree under
+  `/tmp` and pass in the checkout; one PR #98 reviewer reported 12 of 12 mutants killed that way
+  before re-running. **Deselect the known failures in `--test-cmd`, or drop `-x`**
 - **If the change is a move, hunk mutation answers almost nothing** — `--range` cannot reach code
   that moved without changing. For move / rename / extract PRs build **mechanism-level mutants
   over every mechanism in the files you touched** (PR #68: my 39 mutants, 0 unexpected survivors;
@@ -173,13 +173,9 @@ when a rule does not obviously apply:
     has a witness, the property holding it up usually does not
   - **kill enumerations one element at a time** (regex alternatives, keyword tables); checked
     together, a missing element goes unnoticed
-  - **generating the probes FROM the constant gives set identity, not a family that can
-    distinguish anything.** A table-driven test that builds one input per member is the right
-    shape — a member added without a probe gets one — but the SPELLING you generate can be the
-    one shape every member survives. Ask of the generated family: *is there a member for which
-    this input could not fail?* Then check that the spelling is one the thing under test actually
-    accepts. PR #98 shipped three of these, one per round, and each was reported as having settled
-    the question it could not reach. Episode: `references/mutation-testing.md`
+  - **generating the probes FROM a constant gives set identity, not a family that can distinguish
+    anything** — the sign "you measured a family and reported the conclusion" below carries the
+    two checks; reach for it whenever a table-driven test is the evidence you are about to cite
   - **one test per occurrence of a rule, not per rule** — and **the sharpest trigger is a TWIN**:
     when a change touches one of a matched pair, list the pair, list your witnesses, compare the
     two lists before handing over
@@ -205,6 +201,12 @@ when a rule does not obviously apply:
      figure depends on the diff CONTEXT WIDTH. Name the width, the command, and the exclusions
    - **Recording that a number "was right when written" does not stop the next rot.** Only
      changing the form stopped it
+   - **And then verify the substitution RAN.** The remedy has its own failure mode: PR #98 escalated
+     to scripted substitution after four hand-typed numbers came out wrong, and the very next commit
+     shipped with **eight unsubstituted `{PLACEHOLDER}` tokens in its message**, directly under the
+     sentence saying the numbers were no longer typed (an f-string ate the doubled braces). Assert
+     that no placeholder survives before you commit — one `re.search` — because a message cannot be
+     fixed after it is pushed, and this failure looks exactly like success
 
    Episodes: `references/measurement-records.md`.
 
@@ -341,10 +343,13 @@ replacing one.
 
 **Work you may delegate (verifiable = running it settles the truth)**: re-measuring every number
 in the diff **and reporting mismatches**; back-checking "recorded in X" / "pinned by Y" /
-"covered by Z" (grep for existence, then **delete what the test is ABOUT and see the test
-fail** — deleting the test itself proves nothing, since removing a passing `unittest` method can
-never turn another one red, and a reviewer who reads that instruction literally will report the
-whole axis as vacuous, correctly); a correspondence
+"covered by Z" (grep for existence, then **delete what the test is ABOUT and see the test fail**
+— deleting the test itself USUALLY proves nothing, since removing a passing `unittest` method
+usually cannot turn another one red, and a reviewer who reads that instruction literally will
+report the whole axis as vacuous. Not always, though, and the exceptions are worth knowing: two
+rows here DO notice a deleted sibling — `AgentRoleFailClosedTests::test_this_class_census_is_accurate`
+compares an in-class census against `dir(type(self))`, and `SkillReachabilityTests._run_row`
+constructs a test by name); a correspondence
 table of whether each new failure class has a test; counting the call sites that make the same
 decision; contradictions between prose and implementation.
 
@@ -370,6 +375,12 @@ and "accepted residual". It saves tokens and **propagates your own errors with i
 P1 survived five rounds inside that list (two reviewers had found it, and an unverified premise
 had dropped it into residual).
 
+- **Your own RESIDUE list rots the same way, and nothing above covers it.** A published "what this
+  does not catch" list is read as a completeness claim — `docs/RUNBOOK.md` pointed an operator at
+  one — so re-verify every entry each round, in BOTH directions: an entry that is no longer residue,
+  and a route the list calls covered that is not. On PR #98 the list omitted its largest member for
+  two rounds and asserted the interpreter route was covered for three, and round 5 established that
+  route was the widest gap on the branch
 - Hand over an exclusion list **for at most three rounds**
 - From round four, **run at least one reviewer with no exclusions**: "you get no history — attack
   from scratch"
@@ -495,6 +506,14 @@ cut, and it runs both ways:
   on the "false evidence" side
 - **rough edges in existing behaviour this PR does not touch** — file them in TODO.md and hand
   them over. Pulling them in compounds "fixes calling for fixes"
+
+**When the change ADDS A REFUSAL, read the remedy texts of the neighbouring guards.** A sibling's
+remedy can steer the refused party straight onto the route you did not close, and then the hole is
+not in your rule but in what the surrounding system tells someone to do instead. On PR #98 the new
+refusal's own residue was "a writer inside a script FILE handed to an interpreter" — and
+`forbid_python_inline_write`'s block text says "use a real script file (`python3 script.py`)", over
+an allow-list entry that permits exactly that and a leaf-read document that teaches it. Three
+sources agreeing on a route none of them guards is not something any single-file review sees.
 
 **Two questions when in doubt**, both of which must answer yes: "if this stays unfixed and one
 `workflow` runs, does a **wrong certification** or a **false record** come out?" and "**does a leaf
@@ -726,14 +745,25 @@ that tells you how it closed.
   automatically true via another clause (`"cmake"` contains `"make"`). **Assert inside the test
   that the probe has the property it needs**
 - **You measured a family and reported the conclusion** → ask whether the family could have come
-  out the other way. The criterion is one question: **name a member for which the measurement
-  could have failed.** If you cannot, you measured a family that structurally cannot answer, and
-  the conclusion is unsupported however many members it had — 48 spellings, 8 spellings and 17
-  spellings each did this on PR #98. It is not the substring sign above: there the single probe
-  is degenerate; here every probe is fine and the SET is chosen from one corner. **The most
-  dangerous version is a generated probe that is not a spelling the thing under test accepts at
-  all** (`timeout cp a b` is not valid bash), because then the test is green on an input that
-  cannot occur. The three families and how each was closed: `references/mutation-testing.md`
+  out the other way. **Two checks, and the second is the one that finds things.** (a) Name a member
+  for which the measurement could have failed; if you cannot, you measured a family that
+  structurally cannot answer, however many members it had — 48 spellings, 8 spellings and 8
+  spellings each did this on PR #98. (b) **Is the generated spelling one the ACCEPTING PARTY takes?**
+  The accepting party is whatever produces the input in production, and it is often not the code
+  under test: for a wrapper table it is bash (`timeout cp a b` parses fine and `timeout(1)` then
+  refuses it, so the row is inert), for a detector fed arbitrary argv it is the detector itself, for
+  a source-text scan it is Python's grammar. Check (a) cleared a real defect on this repo's own
+  corpus that (b) caught — a restatement scan generating one quote style where the neighbouring
+  test loops both. This is the generated-family case of **"a hand-built fixture can test a shape
+  that does not exist"** above; that bullet is the same rule for a hand-written probe.
+  **Carve-out**: a loop asserting a property every member is SUPPOSED to have (`assertTrue(name.strip())`
+  over a curated constant) is a future-guard, not a measurement — no current member can fail by
+  construction and that is the point. The checks apply when you are reporting a conclusion FROM the
+  family. **And the family can generate a degenerate member**: `'verdict.json'` is a substring of
+  `'aggregate_verdict.json'` in the same tuple, so the substring sign above and this one compose —
+  check members against EACH OTHER, not only against the implementation. The remedies differ
+  (`assertNotIn(implemented_id, probe)` vs. widening the family), so name both when they overlap.
+  Episodes, including a 13-family sweep of this repository's own tests: `references/mutation-testing.md`
 
 ## Finally
 
