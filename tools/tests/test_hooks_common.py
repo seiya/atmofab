@@ -3637,7 +3637,7 @@ class ForbidBackendCredentialReadTests(unittest.TestCase):
         )
         # `evaluate_common_policy` has no backend branch, so the second pass is
         # a pin against one being introduced, not independent evidence. The
-        # backend-parity claim proper is that `.codex/hooks.json` routes Codex
+        # backend-parity claim proper is that `leaf_config/codex/hooks.json` routes Codex
         # `Shell` through this same function (docs/HOOKS.md).
         for backend in ("claude", "codex"):
             for command in commands:

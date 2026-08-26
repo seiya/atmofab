@@ -14514,6 +14514,55 @@ class SlimRepairLaunchPromptMarkerTest(unittest.TestCase):
             "full substep prompt must satisfy the full marker set (not misclassified as slim)",
         )
 
+    def test_the_hook_refusal_sink_is_not_swept_as_an_orchestration(self) -> None:
+        """`_global/` is a reserved sink, not a run (`docs/ORCHESTRATION.md` §38).
+
+        `tools/hooks/cli.py` records a refusal there when the payload cannot name an
+        orchestration, so the directory holds `hooks/` and nothing a run holds. Swept as
+        a run it produced five violations per refusal, and `--stage full` is the
+        documented CI pass-condition (`docs/workflow/WORKFLOW_CORE.md`) — so one refusal
+        in an operator's gitignored `workspace/` failed the gate, with no artifact saying
+        why, and the waiver flag for it is refused in an operator's own session by
+        `forbid_verify_bypass_flags_in_dev_mode`.
+
+        A real orchestration beside it is the CONTROL: the exclusion must remove the
+        sink, not the sweep. It cannot hide anything either — a leaf's write roots are
+        its own `workspace/orchestrations/<its id>/`, and the conductor never issues
+        `_global` as an id, so nothing a run must produce can be filed there.
+        """
+        from tools.validate_pipeline_semantics import (
+            HOOK_REFUSAL_SINK_DIR_NAME,
+            _validate_orchestration_hierarchy,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp) / "workspace"
+            sink = workspace / "orchestrations" / HOOK_REFUSAL_SINK_DIR_NAME / "hooks"
+            sink.mkdir(parents=True)
+            (sink / "native_hook_events.jsonl").write_text(
+                json.dumps({"action": "block"}) + "\n", encoding="utf-8")
+
+            violations: list = []
+            _validate_orchestration_hierarchy(
+                workspace_path=workspace, executions=[], violations=violations,
+                current_orchestration_id=None)
+            self.assertEqual(
+                [v for v in violations if HOOK_REFUSAL_SINK_DIR_NAME in str(v)], [])
+            # …and with ONLY the sink present the sweep must still say there is no run,
+            # rather than reading the sink as one and passing.
+            self.assertTrue(
+                any("no orchestration run found" in str(v) for v in violations),
+                violations)
+
+            # CONTROL: a directory that is not the sink is still swept and still flagged.
+            (workspace / "orchestrations" / "orch_debris").mkdir(parents=True)
+            control: list = []
+            _validate_orchestration_hierarchy(
+                workspace_path=workspace, executions=[], violations=control,
+                current_orchestration_id=None)
+            self.assertTrue(
+                any("orch_debris" in str(v) and "orchestration_meta.json" in str(v)
+                    for v in control), control)
+
     def test_slim_marker_list_matches_runtime(self) -> None:
         # Drift guard on the marker LIST (not just the sentinel constants): the validator's
         # reduced slim set must equal the renderer's slim branch in

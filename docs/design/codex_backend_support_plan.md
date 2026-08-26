@@ -46,7 +46,9 @@ the strict tool-free isolation provided by the Claude backend.
   `hookSpecificOutput.hookEventName = "PermissionRequest"` with an explicit
   allow or deny decision.
 - Cover canonical Codex tool names and supported aliases in
-  `.codex/hooks.json` without changing Claude behavior.
+  `leaf_config/codex/hooks.json` (this plan predates issue #102, which moved the leaf
+  hook source there and left `.codex/hooks.json` as the DEV layer) without changing
+  Claude behavior.
 - Build a dedicated Codex launch configuration that:
   - loads only the repository's validated hooks;
   - ignores ambient user instructions and unrelated user hooks;

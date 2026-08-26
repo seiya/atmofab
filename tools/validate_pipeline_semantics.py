@@ -9855,6 +9855,13 @@ def _resolve_pipeline_roots(
     return roots
 
 
+#: The reserved directory under `workspace/orchestrations/` that is NOT a run: the hook
+#: entrypoint records a refusal there when the payload cannot name an orchestration
+#: (`tools/hooks/cli.py`, `docs/ORCHESTRATION.md` §38). Spelled once, here, and read by
+#: the hierarchy sweep below.
+HOOK_REFUSAL_SINK_DIR_NAME = "_global"
+
+
 def _validate_orchestration_hierarchy(
     workspace_path: Path,
     executions: list[NodeExecution],
@@ -9870,8 +9877,19 @@ def _validate_orchestration_hierarchy(
         )
         return
 
+    # `_global` IS NOT AN ORCHESTRATION. It is the reserved sink `tools/hooks/cli.py`
+    # records a hook refusal under when the payload cannot name one
+    # (`docs/ORCHESTRATION.md` §38), so it holds `hooks/` and nothing else — no
+    # `orchestration_meta.json`, no `steps/`. Swept as a run it produced five violations
+    # per refusal, which made the documented `--stage full` CI pass-condition
+    # (`docs/workflow/WORKFLOW_CORE.md`) fail from operator-local gitignored debris, with
+    # no artifact explaining it. Measured on the tree one refusal produces. The waiver
+    # flag an operator would reach for, `--allow-missing-orchestration`, is refused in
+    # their own session by `forbid_verify_bypass_flags_in_dev_mode`, so the escape hatch
+    # was closed in the same branch that opened the failure.
     orchestration_dirs = sorted(
-        path for path in orchestrations_root.iterdir() if path.is_dir()
+        path for path in orchestrations_root.iterdir()
+        if path.is_dir() and path.name != HOOK_REFUSAL_SINK_DIR_NAME
     )
     if not orchestration_dirs:
         violations.append(

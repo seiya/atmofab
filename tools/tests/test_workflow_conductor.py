@@ -6533,7 +6533,7 @@ class DiagnosticianTest(unittest.TestCase):
                            llm_config=_cfg("codex", agent_model="gpt-5.6-sol"), env={})
         c.calls = []
         # The diagnostician builds a read-only sandbox profile only under bwrap; this test is
-        # about what it EMITS, and a codex profile needs a `.codex/hooks.json` this fake repo
+        # about what it EMITS, and a codex profile needs `leaf_config/codex/hooks.json` this fake repo
         # has no reason to carry.
         c._bwrap_enabled = lambda: False  # type: ignore[assignment]
         c.emit = lambda event, **f: events.append((event, f))  # type: ignore[assignment]
@@ -6705,10 +6705,9 @@ class DiagnosticianTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp) / "repo"
-            hooks_dir = repo_root / ".codex"
-            hooks_dir.mkdir(parents=True)
-            source_hooks = Path(__file__).resolve().parents[2] / ".codex" / "hooks.json"
-            (hooks_dir / "hooks.json").write_bytes(source_hooks.read_bytes())
+            from tools.tests.leaf_config_fixture import seed_codex_hooks
+            repo_root.mkdir(parents=True, exist_ok=True)
+            seed_codex_hooks(repo_root)
             orch = "orch_codex_diagnostician"
             meta_path = repo_root / "workspace" / "orchestrations" / orch / "orchestration_meta.json"
             meta_path.parent.mkdir(parents=True)

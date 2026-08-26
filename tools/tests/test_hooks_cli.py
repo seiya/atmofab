@@ -10,7 +10,7 @@ import re
 import subprocess
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -111,7 +111,18 @@ class HookCliTests(unittest.TestCase):
 
     def test_hooks_json_command_works_from_subdirectory(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
-        hooks_doc = json.loads((repo_root / ".codex" / "hooks.json").read_text(encoding="utf-8"))
+        # The LEAF wrapper, not `.codex/hooks.json` — which issue #102 made the DEV
+        # layer. These two execute the committed command as a shell string to catch a
+        # quoting / PYTHONPATH break in it, and the leaf's is the one that matters:
+        # left pointing at the dev file they would have run `dev_cli`, which allows
+        # everything and produces no stdout, so the allow assertion would have been
+        # satisfied by a program that cannot refuse anything.
+        hooks_doc = json.loads(
+            (repo_root / "leaf_config" / "codex" / "hooks.json").read_text(encoding="utf-8"))
+        self.assertIn("tools.hooks.cli",
+                      hooks_doc["hooks"]["PreToolUse"][0]["hooks"][0]["command"],
+                      "this test executes the wrapper; pointed at the dev one it would be "
+                      "satisfied by a program that allows everything")
         with tempfile.TemporaryDirectory() as tmp:
             command = (
                 hooks_doc["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
@@ -144,7 +155,18 @@ class HookCliTests(unittest.TestCase):
 
     def test_hooks_json_command_fail_fast_when_not_in_git_repo(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
-        hooks_doc = json.loads((repo_root / ".codex" / "hooks.json").read_text(encoding="utf-8"))
+        # The LEAF wrapper, not `.codex/hooks.json` — which issue #102 made the DEV
+        # layer. These two execute the committed command as a shell string to catch a
+        # quoting / PYTHONPATH break in it, and the leaf's is the one that matters:
+        # left pointing at the dev file they would have run `dev_cli`, which allows
+        # everything and produces no stdout, so the allow assertion would have been
+        # satisfied by a program that cannot refuse anything.
+        hooks_doc = json.loads(
+            (repo_root / "leaf_config" / "codex" / "hooks.json").read_text(encoding="utf-8"))
+        self.assertIn("tools.hooks.cli",
+                      hooks_doc["hooks"]["PreToolUse"][0]["hooks"][0]["command"],
+                      "this test executes the wrapper; pointed at the dev one it would be "
+                      "satisfied by a program that allows everything")
         command = hooks_doc["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
         with tempfile.TemporaryDirectory() as tmp:
             payload = {
@@ -481,93 +503,6 @@ class HookCliTests(unittest.TestCase):
                 entry = json.loads(log_path.read_text(encoding="utf-8").strip())
                 self.assertEqual(entry.get("backend"), "codex")
                 self.assertEqual(entry.get("event"), "pre_command_execute")
-
-    def test_missing_orchestration_id_uses_global_policy_by_default(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            with patch("tools.hooks.cli.read_codex_feature_cache") as feature_mock:
-                feature_mock.return_value = (True, "hooks=true", "ok", "2026-01-01T00:00:00Z")
-                payload = {
-                    "repo_root": str(repo_root),
-                    "tool_name": "Bash",
-                    "tool_input": {"command": "echo hello"},
-                }
-                out = io.StringIO()
-                with redirect_stdout(out):
-                    code = cli.main(
-                        [
-                            "--backend",
-                            "codex",
-                            "--event",
-                            "PreToolUse",
-                            "--input-json",
-                            json.dumps(payload),
-                        ]
-                    )
-                self.assertEqual(code, 0)
-                self._assert_allow_output(out.getvalue())
-
-    def test_session_start_without_orchestration_id_uses_global_log(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            with patch("tools.hooks.cli.read_codex_feature_cache") as feature_mock:
-                feature_mock.return_value = (True, "hooks=true", "ok", "2026-01-01T00:00:00Z")
-                payload = {"repo_root": str(repo_root)}
-                out = io.StringIO()
-                with redirect_stdout(out):
-                    code = cli.main(
-                        [
-                            "--backend",
-                            "codex",
-                            "--event",
-                            "SessionStart",
-                            "--input-json",
-                            json.dumps(payload),
-                        ]
-                    )
-                self.assertEqual(code, 0)
-                log_path = (
-                    repo_root
-                    / "workspace"
-                    / "orchestrations"
-                    / "_global"
-                    / "hooks"
-                    / "native_hook_events.jsonl"
-                )
-                self.assertFalse(log_path.exists())
-
-    def test_missing_orchestration_id_falls_back_to_global_by_default(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            with patch("tools.hooks.cli.read_codex_feature_cache") as feature_mock:
-                feature_mock.return_value = (True, "hooks=true", "ok", "2026-01-01T00:00:00Z")
-                payload = {
-                    "repo_root": str(repo_root),
-                    "tool_name": "Bash",
-                    "tool_input": {"command": "echo hello"},
-                }
-                out = io.StringIO()
-                with redirect_stdout(out):
-                    code = cli.main(
-                        [
-                            "--backend",
-                            "codex",
-                            "--event",
-                            "PreToolUse",
-                            "--input-json",
-                            json.dumps(payload),
-                        ]
-                    )
-                self.assertEqual(code, 0)
-                log_path = (
-                    repo_root
-                    / "workspace"
-                    / "orchestrations"
-                    / "_global"
-                    / "hooks"
-                    / "native_hook_events.jsonl"
-                )
-                self.assertFalse(log_path.exists())
 
     @staticmethod
     def _run_codex_pre(payload: dict) -> int:
@@ -1063,73 +998,11 @@ class ClaudeHookCliTests(unittest.TestCase):
                 self.assertEqual(code, 0)
                 self.assertEqual(out.getvalue().strip(), "")
 
-    def test_claude_backend_falls_back_to_global_without_policy(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root_path = Path(tmp)
-            payload = {
-                "repo_root": str(repo_root_path),
-                "tool_name": "WebSearch",
-                "tool_input": {"query": "workflow status"},
-            }
-            out = io.StringIO()
-            with redirect_stdout(out):
-                code = cli.main(
-                    [
-                        "--backend",
-                        "claude",
-                        "--event",
-                        "PreToolUse",
-                        "--input-json",
-                        json.dumps(payload),
-                    ]
-                )
-            self.assertEqual(code, 0)
-            log_path = (
-                repo_root_path
-                / "workspace"
-                / "orchestrations"
-                / "_global"
-                / "hooks"
-                / "native_hook_events.jsonl"
-            )
-            self.assertFalse(log_path.exists())
-
-    def test_claude_global_audit_uses_metdsl_hook_repo_root_env(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root_path = Path(tmp)
-            payload = {
-                "tool_name": "Bash",
-                "tool_input": {"command": "echo hi"},
-            }
-            with patch.dict(os.environ, {"METDSL_HOOK_REPO_ROOT": str(repo_root_path)}):
-                out = io.StringIO()
-                with redirect_stdout(out):
-                    code = cli.main(
-                        [
-                            "--backend",
-                            "claude",
-                            "--event",
-                            "PreToolUse",
-                            "--input-json",
-                            json.dumps(payload),
-                        ]
-                    )
-                self.assertEqual(code, 0)
-            log_path = (
-                repo_root_path
-                / "workspace"
-                / "orchestrations"
-                / "_global"
-                / "hooks"
-                / "native_hook_events.jsonl"
-            )
-            self.assertFalse(log_path.exists())
-
     def test_claude_backend_settings_json_command_works(self) -> None:
         # The LEAF's settings file is the owner of the hook wiring (issue #63); the
-        # dev layer mirrors it. The sync test asserts leaf hooks are a SUBSET of dev,
-        # so a hook deleted on the leaf side would not show up there — reading the
-        # owner here is what makes that direction observable.
+        # dev layer no longer mirrors it: issue #102 separated the two, and
+        # `HookLayerSeparationTests` pins that they share no command. Reading the
+        # OWNER here is what keeps this test about the wiring a leaf actually loads.
         from tools.orchestration_runtime import CLAUDE_LEAF_CONFIG_REL
         repo_root = Path(__file__).resolve().parents[2]
         settings_doc = json.loads(
@@ -1171,59 +1044,414 @@ class ClaudeHookCliTests(unittest.TestCase):
                     result = cli._resolve_repo_root({}, backend=backend)
                     self.assertEqual(result, Path(tmp).resolve())
 
-    def test_claude_backend_user_prompt_submit_uses_global_without_orchestration_id(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root_path = Path(tmp)
-            payload = {"repo_root": str(repo_root_path), "prompt": "do something"}
+    @staticmethod
+    def _run_claude_pre(payload: dict, env: dict[str, str]) -> tuple[int, str]:
+        """Run one PreToolUse hook with `env` and NEITHER per-launch id inherited.
+
+        The ids are popped rather than left ambient: `_extract_orchestration_id` reads
+        `METDSL_ORCHESTRATION_ID`, so an operator who exported it would otherwise turn
+        every missing-id case in this class into a with-id case (issue #84).
+        """
+        with patch.dict(os.environ, env):
+            for name in ("METDSL_ORCHESTRATION_ID", "METDSL_CHILD_AGENT_RUN_ID",
+                         "METDSL_WORKFLOW_MODE", "METDSL_MISSING_ORCHESTRATION_ID_POLICY"):
+                if name not in env:
+                    os.environ.pop(name, None)
             out = io.StringIO()
-            with redirect_stdout(out):
+            err = io.StringIO()
+            with redirect_stdout(out), redirect_stderr(err):
                 code = cli.main(
                     [
                         "--backend",
                         "claude",
                         "--event",
-                        "UserPromptSubmit",
+                        "PreToolUse",
                         "--input-json",
                         json.dumps(payload),
                     ]
                 )
-            self.assertEqual(code, 0)
-            log_path = (
-                repo_root_path
-                / "workspace"
-                / "orchestrations"
-                / "_global"
-                / "hooks"
-                / "native_hook_events.jsonl"
-            )
-            self.assertFalse(log_path.exists())
+            return code, out.getvalue() + err.getvalue()
 
-    def test_strict_policy_allows_missing_orchestration_id_as_global(self) -> None:
+    @staticmethod
+    def _bash_payload(repo_root: Path, command: str) -> dict:
+        return {
+            "repo_root": str(repo_root),
+            "tool_name": "Bash",
+            "tool_input": {"command": command},
+        }
+
+    @staticmethod
+    def _run_event(backend: str, event: str, payload: dict, env: dict | None = None):
+        """One hook launch with NEITHER per-launch id inherited.
+
+        The ids are popped rather than left ambient: `_extract_orchestration_id` reads
+        `METDSL_ORCHESTRATION_ID`, so an operator who exported it would otherwise turn
+        every missing-id case in this class into a with-id case (issue #84).
+        """
+        with patch.dict(os.environ, env or {}):
+            for name in ("METDSL_ORCHESTRATION_ID", "METDSL_CHILD_AGENT_RUN_ID",
+                         "METDSL_WORKFLOW_MODE", "METDSL_MISSING_ORCHESTRATION_ID_POLICY"):
+                if name not in (env or {}):
+                    os.environ.pop(name, None)
+            out, err = io.StringIO(), io.StringIO()
+            with redirect_stdout(out), redirect_stderr(err):
+                code = cli.main(["--backend", backend, "--event", event,
+                                 "--input-json", json.dumps(payload)])
+            return code, out.getvalue() + err.getvalue()
+
+    def _run_pre(self, backend: str, payload: dict, env: dict | None = None):
+        return self._run_event(backend, "PreToolUse", payload, env)
+
+    def _missing_id_payload(self, repo_root: Path, **extra) -> dict:
+        payload = {"repo_root": str(repo_root), "tool_name": "Bash",
+                   "tool_input": {"command": "echo hello"}}
+        payload.update(extra)
+        return payload
+
+    def test_a_hook_that_cannot_name_its_orchestration_is_refused(self) -> None:
+        """`docs/ORCHESTRATION.md` §39, and the whole of it since issue #102.
+
+        This entrypoint is a LEAF's. Every guard past this point is keyed on the
+        orchestration_id and resolves nothing without one, so evaluating would allow.
+        The operator's session that used to make a refusal here impossible now runs
+        `tools/hooks/dev_cli.py`.
+
+        Was the opposite for 4 months: `ec52a09` (2026-04-25) returned an unconditional
+        ALLOW here, and issue #82 restored a refusal only under a policy variable, which
+        issue #102 then deleted along with its writer.
+        """
+        for backend in ("claude", "codex"):
+            with self.subTest(backend=backend), tempfile.TemporaryDirectory() as tmp:
+                code, text = self._run_pre(backend, self._missing_id_payload(Path(tmp)))
+                self.assertEqual(code, 2, msg=text)
+                self.assertIn("orchestration_id is required", text)
+
+    def test_the_refusal_names_where_an_operator_should_be_instead(self) -> None:
+        """A refusal a human can act on. The reader here is an operator who wired a
+        session at this entrypoint by mistake; "required" alone leaves them nowhere."""
         with tempfile.TemporaryDirectory() as tmp:
-            repo_root_path = Path(tmp)
-            payload = {
-                "repo_root": str(repo_root_path),
-                "tool_name": "WebSearch",
-                "tool_input": {"query": "workflow status"},
-            }
-            with patch.dict(
-                os.environ,
-                {"METDSL_MISSING_ORCHESTRATION_ID_POLICY": "strict"},
-            ):
-                out = io.StringIO()
-                with redirect_stdout(out):
-                    code = cli.main(
-                        [
-                            "--backend",
-                            "claude",
-                            "--event",
-                            "PreToolUse",
-                            "--input-json",
-                            json.dumps(payload),
-                        ]
-                    )
-                self.assertEqual(code, 0)
-                self.assertEqual(out.getvalue().strip(), "")
+            _code, text = self._run_pre("claude", self._missing_id_payload(Path(tmp)))
+            self.assertIn("dev_cli", text)
+            self.assertIn(".claude/settings.json", text)
+
+    def test_every_event_is_refused_not_only_the_command_ones(self) -> None:
+        """The fallback used to be widest here: `SessionStart` / `UserPromptSubmit` /
+        `Stop` took `_global` before any policy ran, so a leaf whose id was lost was
+        waved through on exactly the events that open a session."""
+        for event in ("SessionStart", "UserPromptSubmit", "Stop", "PostToolUse"):
+            with self.subTest(event=event), tempfile.TemporaryDirectory() as tmp:
+                code, text = self._run_event("codex", event, {"repo_root": tmp})
+                self.assertEqual(code, 2)
+                # THE REASON, not just the code. This fixture has a second path to rc 2 —
+                # the codex feature cache is absent too, and refuses with its own message
+                # — so asserting the code alone would hold with the refusal removed.
+                self.assertIn("orchestration_id is required", text)
+
+    def test_an_id_from_the_environment_is_enough(self) -> None:
+        """The control that keeps the refusal from being read as "the payload must carry
+        it". A leaf's id arrives through the environment its profile declares, and that
+        is the production path."""
+        with tempfile.TemporaryDirectory() as tmp:
+            code, text = self._run_pre(
+                "claude", self._missing_id_payload(Path(tmp)),
+                env={"METDSL_ORCHESTRATION_ID": "orch_env"})
+            self.assertEqual(code, 0, msg=text)
+
+    def test_the_refusal_is_recorded_under_global_on_every_backend_and_mode(self) -> None:
+        """`docs/ORCHESTRATION.md` §38 - the refusal is the one thing worth a record here,
+        since the leaf that hit it cannot name the directory its own record belongs in.
+
+        A TABLE over the workflow mode, not the claude/workflow-mode case alone. Two
+        `_global` suppressions in `_append_hook_audit` were keyed on the mode, and a leaf
+        that lost `METDSL_ORCHESTRATION_ID` has usually lost `METDSL_WORKFLOW_MODE` from
+        the same environment — so the one anomaly worth a trace was exactly the one that
+        left none, and for a codex leaf (`tool_name` `shell`) it was suppressed in every
+        mode. Both suppressions are gone with issue #102; this is what replaces them.
+        """
+        for backend, tool, mode in (("claude", "Bash", "1"), ("claude", "Bash", None),
+                                    ("codex", "shell", "1"), ("codex", "shell", None)):
+            with self.subTest(backend=backend, workflow_mode=mode):
+                with tempfile.TemporaryDirectory() as tmp:
+                    payload = self._missing_id_payload(Path(tmp))
+                    payload["tool_name"] = tool
+                    code, _text = self._run_pre(
+                        backend, payload,
+                        env={"METDSL_WORKFLOW_MODE": mode} if mode else {})
+                    self.assertEqual(code, 2)
+                    log = (Path(tmp) / "workspace" / "orchestrations" / "_global" / "hooks"
+                           / "native_hook_events.jsonl")
+                    self.assertTrue(log.exists(), "the refusal left no trace")
+                    entry = json.loads(log.read_text(encoding="utf-8").splitlines()[-1])
+                    self.assertEqual(entry["action"], "block")
+                    self.assertIn("orchestration_id is required", entry["reason"])
+
+    def test_no_record_is_written_when_no_repo_root_can_be_resolved(self) -> None:
+        """The half of the pollution guard that is NOT `_global`-specific and stays: with
+        no `repo_root` in the payload and none in the environment, there is no tree to
+        write into and the refusal is still returned."""
+        with patch.dict(os.environ, {}):
+            for name in ("METDSL_ORCHESTRATION_ID", "METDSL_HOOK_REPO_ROOT",
+                         "METDSL_WORKFLOW_MODE"):
+                os.environ.pop(name, None)
+            with tempfile.TemporaryDirectory() as tmp:
+                cwd = os.getcwd()
+                os.chdir(tmp)
+                try:
+                    out, err = io.StringIO(), io.StringIO()
+                    with redirect_stdout(out), redirect_stderr(err):
+                        code = cli.main(["--backend", "claude", "--event", "PreToolUse",
+                                         "--input-json", json.dumps(
+                                             {"tool_name": "Bash",
+                                              "tool_input": {"command": "echo hello"}})])
+                finally:
+                    os.chdir(cwd)
+                self.assertEqual(code, 2)
+                self.assertFalse((Path(tmp) / "workspace").exists())
+
+    @unittest.skipIf(os.geteuid() == 0, "root bypasses file permissions")
+    def test_a_decision_survives_an_unwritable_audit_sink(self) -> None:
+        """An audit write must never decide the verdict — the fail-open this closes.
+
+        `_append_hook_audit` wrote with no exception handling, and `main()` calls it from
+        inside its `try` AND from the `except` handler, so an `OSError` on the sink became
+        a double fault that escaped with rc 1 and an EMPTY stdout. rc 2 is the block
+        signal and a codex `PermissionRequest` carries its deny in the body, so the
+        refusal was delivered by neither.
+
+        It is REACHABLE by a leaf, and that is why this is a table rather than a note:
+        `workspace/orchestrations/<id>/hooks/` is bound WRITABLE to a leaf
+        (`runtime_rw_rel_paths`), and this same hook allows `rm -f` / `mkdir` /
+        `chmod 000` on the sink and `python3 workspace/tmp/…` (all measured rc 0). One
+        allowed command therefore switched off every later policy — the write manifest,
+        the read manifest, the credential refusal, the protected-root resolver — and left
+        no row saying so. Pre-existing; the branch's own `_global` refusal made it certain
+        under bwrap, where `_global/` is not a leaf write root at all.
+        """
+        blocked = "cat ~/.claude.json"
+
+        def sink_of(root: Path, orch: str) -> Path:
+            return (root / "workspace" / "orchestrations" / orch / "hooks"
+                    / "native_hook_events.jsonl")
+
+        # (1) the id-bearing path: the sink destroyed the way a leaf can destroy it.
+        for label in ("directory", "unwritable file"):
+            with self.subTest(sink=label), tempfile.TemporaryDirectory() as tmp:
+                root, orch = Path(tmp), "orch_sink"
+                sink = sink_of(root, orch)
+                sink.parent.mkdir(parents=True)
+                if label == "directory":
+                    sink.mkdir()
+                else:
+                    sink.write_text("", encoding="utf-8")
+                    os.chmod(sink, 0)
+                payload = {"repo_root": tmp, "orchestration_id": orch,
+                           "tool_name": "Bash", "tool_input": {"command": blocked}}
+                code, text = self._run_pre(
+                    "claude", payload,
+                    env={"METDSL_WORKFLOW_MODE": "1", "METDSL_ORCHESTRATION_ID": orch})
+                self.assertEqual(code, 2, msg=text)
+                self.assertIn("forbidden in workflow mode", text)
+
+        # (2) the missing-id refusal with no writable tree at all, which is what a leaf
+        # that lost its id meets under bwrap. Both backends, because the codex
+        # `PermissionRequest` deny is carried in the BODY at rc 0 and would vanish
+        # differently from the rc 2 one.
+        for backend, event, want_rc in (("claude", "PreToolUse", 2),
+                                        ("codex", "PreToolUse", 2),
+                                        ("codex", "PermissionRequest", 0)):
+            with self.subTest(backend=backend, event=event), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                (root / "workspace" / "orchestrations").mkdir(parents=True)
+                os.chmod(root / "workspace" / "orchestrations", 0o500)
+                try:
+                    code, text = self._run_event(
+                        backend, event, self._missing_id_payload(root),
+                        env={"METDSL_WORKFLOW_MODE": "1"})
+                finally:
+                    os.chmod(root / "workspace" / "orchestrations", 0o700)
+                self.assertEqual(code, want_rc, msg=text)
+                self.assertIn("orchestration_id is required", text)
+                self.assertNotIn("Traceback", text)
+
+    def test_the_payload_is_preferred_over_the_environment_for_the_id(self) -> None:
+        """The precedence in `_extract_orchestration_id`, which issue #102 made
+        load-bearing: it no longer decides only WHICH id labels an audit row, it decides
+        refuse versus evaluate. A mutation inverting it survived the whole suite.
+
+        Neither field it reads is leaf-settable today — the CLI authors the hook payload
+        and `tool_input` is the only leaf-controlled part, which this function does not
+        read — so this is a witness, not a fix. What it buys is that a later change
+        letting any leaf-reachable field reach `payload["orchestration_id"]` cannot land
+        silently.
+        """
+        from tools.hooks import cli as _cli
+        with patch.dict(os.environ, {"METDSL_ORCHESTRATION_ID": "orch_from_env"}):
+            self.assertEqual(
+                _cli._extract_orchestration_id({"orchestration_id": "orch_from_payload"}),
+                "orch_from_payload")
+            self.assertEqual(
+                _cli._extract_orchestration_id(
+                    {"payload": {"orchestration_id": "orch_from_inner"}}),
+                "orch_from_inner")
+            self.assertEqual(_cli._extract_orchestration_id({}), "orch_from_env")
+        with patch.dict(os.environ, {}):
+            os.environ.pop("METDSL_ORCHESTRATION_ID", None)
+            self.assertIsNone(_cli._extract_orchestration_id({}))
+
+    def test_the_operator_safety_audit_detail_survives_the_extraction(self) -> None:
+        """The half of "behaviour-preserving" that had no witness.
+
+        The extraction into `tools/hooks/operator_safety.py` preserves the `audit_detail`
+        dicts of both policies, and a mutation setting `audit_detail=None` at the wrapping
+        site survived the suite: nothing read them. They are what
+        `native_hook_events.jsonl` records the policy id by, so an operator reading the
+        audit for "which rule fired" depends on them.
+        """
+        from tools.hooks.common import HookInput, HookEventName, evaluate_common_policy
+        cases = (
+            ('git reset --hard HEAD~1', "forbid_git_reset_hard", None),
+            ("python3 tools/x.py --force-pass", "forbid_verify_bypass_flags_in_dev_mode",
+             ["--force-pass"]),
+        )
+        for command, policy, matched in cases:
+            with self.subTest(policy=policy):
+                decision = evaluate_common_policy(HookInput(
+                    event_name=HookEventName.PRE_COMMAND_EXECUTE,
+                    backend="claude",
+                    payload={"tool_input": {"command": command}},
+                    command=command))
+                self.assertIsNotNone(decision.audit_detail)
+                self.assertEqual(decision.audit_detail.get("policy"), policy)
+                self.assertEqual(decision.audit_detail.get("command"), command)
+                if matched is not None:
+                    self.assertEqual(decision.audit_detail.get("matched_tokens"), matched)
+
+    def test_a_non_oserror_from_the_audit_still_fails_closed(self) -> None:
+        """The THIRD guard, which the commit that added it left unwitnessed.
+
+        The two guards inside `_append_hook_audit` catch `OSError`. The write can raise
+        outside that class — a lone surrogate in the command makes
+        `json.dumps(ensure_ascii=False)` produce a string the UTF-8 encoder refuses, a
+        `ValueError` — and the only thing that then keeps the refusal deliverable is the
+        `except Exception` around the HANDLER's own audit call. Removing it survived the
+        whole suite: measured, rc 1 with empty stdout, which is neither the rc 2 block nor
+        a codex deny body.
+
+        Honest limit: this proves the ENTRYPOINT accepts such a payload. Whether the CLI
+        ever emits a lone surrogate into a hook payload is not measured, and the finding
+        does not rest on it — `except OSError` is a narrower net than the failure set of
+        `mkdir` / `open` / `write`, so the guard is load-bearing either way.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            orch = "orch_surrogate"
+            (Path(tmp) / "workspace" / "orchestrations" / orch / "hooks").mkdir(parents=True)
+            payload = {"repo_root": tmp, "orchestration_id": orch, "tool_name": "Bash",
+                       "tool_input": {"command": "echo hi \ud800"}}
+            code, text = self._run_pre(
+                "claude", payload,
+                env={"METDSL_WORKFLOW_MODE": "1", "METDSL_ORCHESTRATION_ID": orch,
+                     "METDSL_HOOK_REPO_ROOT": tmp})
+            self.assertEqual(code, 2, msg=text)
+            self.assertIn("hook entrypoint failure", text)
+            self.assertNotIn("Traceback", text)
+
+    def test_the_record_follows_the_policy_for_the_nested_payload_too(self) -> None:
+        """The rest of the unification. `_append_hook_audit` read the nested (codex)
+        `repo_root` while `_resolve_repo_root` never looked there and fell back to the
+        cwd, so a codex payload carrying only the nested key had its decision evaluated
+        against one tree and recorded under another — the same false-record class as the
+        top-level pair, one key over. Both read one resolver now."""
+        from tools.hooks import cli as _cli
+        with tempfile.TemporaryDirectory() as nested:
+            payload = {"payload": {"repo_root": nested}}
+            with patch.dict(os.environ, {}):
+                os.environ.pop("METDSL_HOOK_REPO_ROOT", None)
+                self.assertEqual(_cli._resolve_repo_root(payload),
+                                 Path(nested).resolve())
+                self.assertEqual(_cli._repo_root_from_sources(payload),
+                                 Path(nested).resolve())
+                # …and the env still outranks both, for both callers.
+                with tempfile.TemporaryDirectory() as env_root:
+                    os.environ["METDSL_HOOK_REPO_ROOT"] = env_root
+                    self.assertEqual(_cli._resolve_repo_root(payload),
+                                     Path(env_root).resolve())
+                    self.assertEqual(_cli._repo_root_from_sources(payload),
+                                     Path(env_root).resolve())
+                os.environ.pop("METDSL_HOOK_REPO_ROOT", None)
+                self.assertIsNone(_cli._repo_root_from_sources({}))
+
+    def test_the_record_lands_where_the_policy_was_evaluated(self) -> None:
+        """The audit and the policy must resolve `repo_root` the same way.
+
+        They did not: `_append_hook_audit` preferred the payload's copy and
+        `_resolve_repo_root` — what `main()` evaluates under — prefers the environment's.
+        Measured with the two disagreeing, the decision was made for one tree and recorded
+        under the other, which is a false record rather than a missing one. Both committed
+        wrappers set both to `$ROOT`, so production never disagreed and nothing made them
+        agree.
+        """
+        with tempfile.TemporaryDirectory() as a, tempfile.TemporaryDirectory() as b:
+            orch = "orch_two_roots"
+            payload = {"repo_root": b, "orchestration_id": orch, "tool_name": "Bash",
+                       "tool_input": {"command": "cat ~/.claude.json"}}
+            code, _text = self._run_pre(
+                "claude", payload,
+                env={"METDSL_WORKFLOW_MODE": "1", "METDSL_ORCHESTRATION_ID": orch,
+                     "METDSL_HOOK_REPO_ROOT": a})
+            self.assertEqual(code, 2)
+            in_a = (Path(a) / "workspace" / "orchestrations" / orch / "hooks"
+                    / "native_hook_events.jsonl")
+            in_b = (Path(b) / "workspace" / "orchestrations" / orch / "hooks"
+                    / "native_hook_events.jsonl")
+            self.assertTrue(in_a.exists(), "the record did not land where the policy ran")
+            self.assertFalse(in_b.exists(), "the record landed in the other tree")
+
+    def test_nothing_writes_the_deleted_policy_variable(self) -> None:
+        """The writer, not only the reader (issue #102).
+
+        `tools/run_workflow.py` seeded `METDSL_MISSING_ORCHESTRATION_ID_POLICY` into
+        every node's environment for four months while nothing read it — the false
+        evidence issue #82 was filed for. Deleting the reader without pinning the writer
+        leaves the same shape available to the next edit, and a round-0 mutation sweep
+        confirmed re-adding the line is noticed by nothing.
+
+        Pins WRITES, not occurrences: `tools/orchestration_runtime.py` names the
+        variable in a comment that records why the prefix rule must not rest on an
+        inventory of readers, and that mention is supposed to stay.
+        """
+        import re as _re
+        repo_root = Path(__file__).resolve().parents[2]
+        writer = _re.compile(
+            r"""(?:environ|env|base_env|child_env|body)\s*\[\s*["']METDSL_MISSING_ORCHESTRATION_ID_POLICY["']\s*\]\s*=|"""
+            r"""(?:setenv|putenv)\s*\(\s*["']METDSL_MISSING_ORCHESTRATION_ID_POLICY["']""")
+        # Self-test the detector: a negative assertion over a scan is green when the
+        # scan is broken, and this one is a scan.
+        self.assertTrue(writer.search('base_env["METDSL_MISSING_ORCHESTRATION_ID_POLICY"] = "strict"'))
+        self.assertTrue(writer.search("env['METDSL_MISSING_ORCHESTRATION_ID_POLICY']  =  x"))
+        self.assertFalse(writer.search("# METDSL_MISSING_ORCHESTRATION_ID_POLICY is deleted"))
+        scanned = 0
+        offenders = []
+        for path in sorted((repo_root / "tools").rglob("*.py")):
+            if "tests" in path.parts or "__pycache__" in path.parts:
+                continue
+            scanned += 1
+            for lineno, line in enumerate(
+                    path.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
+                if writer.search(line):
+                    offenders.append(f"{path.relative_to(repo_root)}:{lineno}")
+        self.assertGreater(scanned, 10, "the scan collapsed; it is asserting over nothing")
+        self.assertEqual(offenders, [])
+
+    def test_no_environment_value_turns_the_refusal_off(self) -> None:
+        """It is not a policy any more. `METDSL_MISSING_ORCHESTRATION_ID_POLICY` was
+        deleted with its writer (issue #102); this samples the spellings that used to
+        mean something, so a re-introduced knob cannot pass unnoticed."""
+        for value in ("", "global", "permissive", "0", "strict"):
+            with self.subTest(value=value), tempfile.TemporaryDirectory() as tmp:
+                code, _text = self._run_pre(
+                    "claude", self._missing_id_payload(Path(tmp)),
+                    env={"METDSL_MISSING_ORCHESTRATION_ID_POLICY": value})
+                self.assertEqual(code, 2)
 
     def test_workflow_mode_accepts_orchestration_id_from_environment(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1261,44 +1489,6 @@ class ClaudeHookCliTests(unittest.TestCase):
                 / "native_hook_events.jsonl"
             )
             self.assertTrue(log_path.is_file())
-
-    def test_missing_orchestration_id_allowed_when_workflow_mode_disabled(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root_path = Path(tmp)
-            payload = {
-                "repo_root": str(repo_root_path),
-                "tool_name": "Bash",
-                "tool_input": {
-                    "command": "python3 tools/orchestration_runtime.py run-gate --gate orchestration_read"
-                },
-            }
-            with patch.dict(
-                os.environ,
-                {
-                    "METDSL_WORKFLOW_MODE": "0",
-                    "METDSL_REQUIRE_CODEX_HOOKS_FEATURE": "0",
-                },
-            ):
-                code = cli.main(
-                    [
-                        "--backend",
-                        "codex",
-                        "--event",
-                        "PreToolUse",
-                        "--input-json",
-                        json.dumps(payload),
-                    ]
-                )
-            self.assertEqual(code, 0)
-            log_path = (
-                repo_root_path
-                / "workspace"
-                / "orchestrations"
-                / "_global"
-                / "hooks"
-                / "native_hook_events.jsonl"
-            )
-            self.assertFalse(log_path.exists())
 
     def test_claude_file_tool_blocks_write_outside_manifest_when_active_child_exists(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -5593,8 +5783,9 @@ class BashWriteTargetGrammarTests(unittest.TestCase):
         the refusal being free, and without this test a `Bash(cp:*)` grant added
         tomorrow would falsify a canonical document silently.
 
-        **What this does NOT cover**: `leaf_config/` holds only `claude/`. A codex
-        leaf routes `Shell` through this same hook and has no permission allow list
+        **What this does NOT cover**: the codex leaf. Since issue #102 `leaf_config/`
+        holds `codex/hooks.json` as well, but it wires hooks only — a codex leaf
+        routes `Shell` through this same hook and still has no permission allow list
         for the claim to be about, so the claim is scoped to the Claude backend and
         the document says so.
         """
@@ -5647,8 +5838,10 @@ class BashWriteTargetGrammarTests(unittest.TestCase):
     def test_operator_session_outside_workflow_mode_is_not_refused(self) -> None:
         """The refusal is workflow-only, and this pins it at the handler.
 
-        `.claude/settings.json` (the DEV layer) has to carry every hook command the
-        leaf layer does, so an operator's interactive session runs this same hook.
+        Since issue #102 an operator's interactive session does NOT run this hook —
+        the DEV layer runs `tools/hooks/dev_cli.py`. What this pins is therefore about a
+        LEAF outside workflow mode, which is the shape a standalone or misconfigured
+        launch produces, and the judgement is unchanged: the refusal is workflow-only.
         The Bash branch is gated on `METDSL_WORKFLOW_MODE == "1"` (`cli.py`'s
         step 3), and the operator owns the machine — refusing their `cp` would be
         an over-refusal with no leaf-shortcut to defend against.

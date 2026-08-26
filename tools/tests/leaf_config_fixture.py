@@ -15,7 +15,9 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LEAF_CONFIG_REL = Path("leaf_config") / "claude" / "settings.json"
-CODEX_HOOKS_REL = Path(".codex") / "hooks.json"
+# The LEAF-owned codex hook source since issue #102. `.codex/hooks.json` is the DEV
+# layer now and is not what a leaf launch validates.
+CODEX_HOOKS_REL = Path("leaf_config") / "codex" / "hooks.json"
 
 
 def seed_claude_leaf_config(repo_root: Path) -> Path:
@@ -30,7 +32,8 @@ def seed_codex_hooks(repo_root: Path) -> Path:
     """Copy this repository's committed Codex hook source into `repo_root`.
 
     The codex twin of the above, for the same reason: `_prepare_codex_workflow_home`
-    validates and SHA-pins `.codex/hooks.json` before a codex launch and fails closed
+    validates and SHA-pins `leaf_config/codex/hooks.json` before a codex launch and
+    fails closed
     when it is absent. Fixtures needed it only once the isolation branch started
     keying on the family the PROFILE resolves — before that, a launch whose response
     omitted `backend` silently skipped isolation on both backends.

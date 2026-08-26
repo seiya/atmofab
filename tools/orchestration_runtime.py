@@ -7950,9 +7950,13 @@ LEAF_ENV_PATH_DEFAULT = "/usr/bin:/bin"
 # the closure.
 #
 # TWO justifications this comment has carried and neither survived review, recorded so a
-# third is not written. (1) "every member has an in-tree reader" — false, measured:
-# `METDSL_MISSING_ORCHESTRATION_ID_POLICY` is seeded into every leaf by `run_workflow.py`
-# and read by nothing in the tree. (2) "the namespace is repo-owned, so nothing an
+# third is not written. (1) "every member has an in-tree reader" — the rule must not rest
+# on that whether or not it holds, because the inventory moves: it was false when written
+# (`METDSL_MISSING_ORCHESTRATION_ID_POLICY` was seeded into every leaf by
+# `run_workflow.py` and read by nothing) and issue #82 has since given that very name a
+# reader in `tools/hooks/cli.py`. A justification that has to be re-measured whenever a
+# reader is added or dropped is what this comment is refusing. (2) "the namespace is
+# repo-owned, so nothing an
 # operator put in the environment lands inside it" — also false, and by one command:
 # `leaf_env_from({"METDSL_ANYTHING": "x"})` forwards it. Nothing stops an operator
 # exporting a name under this prefix.
@@ -15969,7 +15973,7 @@ def _codex_hook_invokes_event(hook: Any, event: str) -> bool:
 def _probe_codex_project_hooks(repo_root: Path | None) -> dict[str, Any]:
     """Verify the repository-local Codex hook source that enforces leaf policy."""
     root = (repo_root or Path.cwd()).resolve()
-    path = root / ".codex" / "hooks.json"
+    path = root / _normalize_rel_posix(CODEX_LEAF_HOOKS_REL)
     try:
         payload = _read_json(path)
     except (OSError, ValueError) as exc:
@@ -16584,6 +16588,13 @@ def _secure_backend_home_file(
 # home preparation, and the preflight permission read all resolve through
 # `_claude_leaf_config_path` below rather than repeating it.
 CLAUDE_LEAF_CONFIG_REL = "leaf_config/claude/settings.json"
+# The codex twin. Until issue #102 the leaf read the repository's own
+# `.codex/hooks.json`, which an operator's interactive codex session ALSO loads as
+# its project hook layer (the trust digests in `~/.codex/config.toml` are keyed on
+# that absolute path). One file could not both fail closed for a leaf and leave an
+# operator's session alone, so the leaf owns this one and `.codex/hooks.json` is now
+# the DEV layer, naming `tools/hooks/dev_cli.py`.
+CODEX_LEAF_HOOKS_REL = "leaf_config/codex/hooks.json"
 
 # The events + matchers the leaf's PreToolUse/read boundary depends on. Kept as a
 # COVERAGE map (not a count) for the same reason as the codex twin above: a settings
@@ -16772,8 +16783,8 @@ def _claude_leaf_config_path(repo_root: Path) -> Path:
 def _canonical_claude_hook_command(event: str) -> str:
     """The sole repository-approved native Claude hook wrapper for an event.
 
-    THE single spelling, read by the leaf-config probe, by the dev-layer sync test,
-    and by the documentation. Differs from `_canonical_codex_hook_command` only in
+    THE single spelling, read by the leaf-config probe and by the documentation. A
+    dev-layer sync test read it too until issue #102 repealed that mirroring. Differs from `_canonical_codex_hook_command` only in
     the `--backend` value; both exist because the two CLIs read different files, not
     because the policy differs.
     """
@@ -17221,18 +17232,51 @@ def _probe_claude_leaf_tool_roster(
             # configuration no leaf runs under, and the difference was written up as a
             # blind spot the technique could not close — on the claim that the file's
             # `UserPromptSubmit` hook blocks the probe prompt before any request. That
-            # claim is FALSE, measured here against the committed file: rc=1, two captures,
-            # the same six built-ins. (It was reported to me twice and I wrote it down
-            # without running it, which is how it reached three documents.)
+            # claim was FALSE when measured against the committed file (rc=1, two
+            # captures, the same six built-ins), and issue #102 MADE IT TRUE by giving
+            # the leaf entrypoint an unconditional refusal for a call that cannot name an
+            # orchestration — which this probe cannot, by the `env.pop`s above. Hence the
+            # `hooks` key is dropped below. Measured at that point: `pass` went False
+            # with "the CLI made no request carrying a tool roster", against `origin/main`
+            # passing on the same host.
             #
-            # Copied rather than SHA-pinned: `_prepare_claude_workflow_home` owns the
-            # pinning, and this is a read-only measurement of the same bytes. A file that
+            # Not SHA-pinned: `_prepare_claude_workflow_home` owns the pinning, and
+            # this is a read-only measurement of the same FILE (no longer the same bytes -
+            # `hooks` is dropped below). A file that
             # cannot be read fails closed below, and whether it is STRUCTURALLY valid is
             # `claude_leaf_config_validated`'s question, ANDed beside this one.
+            #
+            # THE `hooks` KEY IS DROPPED FROM THE COPY, and that is load-bearing since
+            # issue #102. What decides the roster is `permissions`: a `deny` entry removes
+            # the named tools from what the CLI sends, measured by CONSTRUCTION against
+            # the real CLI (`deny: ["Glob"]` added to a worktree's copy -> the probe fails
+            # naming Glob) rather than observed on the committed file, which carries only
+            # `allow` today. The hooks were only ever along for the ride. They are also the LEAF's hooks, and the leaf
+            # entrypoint now fails closed when it cannot name an orchestration, which by
+            # construction is this probe: the three `env.pop`s above remove the very id
+            # the hook would need. Seeding them made every claude launch unlaunchable
+            # (`can_launch_agents` ANDs this check and has no launch-time backstop),
+            # while the whole suite stayed green because every test drives this probe
+            # with a mocked runner. Dropping them measures the same roster under no hook
+            # chain at all, which is strictly better than unattributing the rows they
+            # would write.
             try:
-                shutil.copyfile(_claude_leaf_config_path(repo_root),
-                                Path(scratch_home) / "settings.json")
-            except OSError as exc:
+                leaf_config_doc = json.loads(
+                    _claude_leaf_config_path(repo_root).read_text(encoding="utf-8"))
+                if not isinstance(leaf_config_doc, dict):
+                    # Valid JSON that is not an object. Writing it through launched the
+                    # CLI against a home that loads NO settings, and reported the roster
+                    # it then measured as this check's verdict — the "configuration no
+                    # leaf runs under" this block exists to avoid. Fails closed here;
+                    # `claude_leaf_config_validated` catches the same file structurally,
+                    # and being caught twice is the point of a defence in depth.
+                    raise ValueError(
+                        f"the leaf configuration is {type(leaf_config_doc).__name__}, "
+                        f"not an object")
+                leaf_config_doc.pop("hooks", None)
+                (Path(scratch_home) / "settings.json").write_text(
+                    json.dumps(leaf_config_doc, ensure_ascii=False), encoding="utf-8")
+            except (OSError, ValueError) as exc:
                 return {"name": name, "pass": False,
                         "detail": (f"cannot read the leaf configuration "
                                    f"{_claude_leaf_config_path(repo_root)} "
@@ -17284,12 +17328,14 @@ def _probe_claude_leaf_tool_roster(
         # The CLI ran and sent no request carrying tools. That is not "no tools" — it is
         # no measurement, and the difference matters: a leaf launched from this CLI might
         # have any roster at all.
-        # BOTH STREAMS, and a pointer at the other thing this launch runs. Since the
-        # scratch home is seeded with the leaf configuration, the probe executes the
-        # leaf's whole hook chain, and a hook that exits non-zero blocks the prompt before
-        # any request — so the CLI reports rc=0 with an empty stderr and the roster is
-        # "unmeasured" for a reason that has nothing to do with tools. Reproduced by
-        # pointing `repo_root` at a directory that is not a git working tree, which the
+        # BOTH STREAMS, because rc=0 with an empty stderr is what a HOOK failure looks
+        # like here and the remedy for it has nothing to do with tools. Since issue #102
+        # the seeded copy carries no `hooks` key, and the launch passes
+        # `--setting-sources user` against that scratch home, so neither the operator's
+        # own configuration nor the project layer contributes one: NO hook runs in this
+        # probe. The message is kept because the shape — rc 0, empty stderr, no roster —
+        # is what any prompt-level refusal looks like here. Originally reproduced by pointing
+        # `repo_root` at a directory that is not a git working tree, which the
         # `UserPromptSubmit` command's `git rev-parse` needs. Holding stdout and printing
         # only stderr left an operator with a roster remedy for a hook failure.
         # THE MESSAGE, not the first 400 bytes. The launch carries `--output-format json`,
@@ -17318,9 +17364,10 @@ def _probe_claude_leaf_tool_roster(
         return {"name": name, "pass": False,
                 "detail": (f"the CLI made no request carrying a tool roster (rc="
                            f"{proc.returncode}), so what a leaf would be launched with is "
-                           f"unmeasured. The probe runs the leaf's own hook chain (the "
-                           f"scratch home is seeded with {CLAUDE_LEAF_CONFIG_REL}), so a "
-                           f"hook that refuses the prompt lands here too{version_note}"
+                           f"unmeasured. The scratch home is seeded with "
+                           f"{CLAUDE_LEAF_CONFIG_REL} minus its `hooks` key and the launch "
+                           f"passes --setting-sources user, so no hook runs in this "
+                           f"probe: look at the CLI and the environment{version_note}"
                            + (f"; {streams}" if streams else ""))}
 
     report = _classify_claude_leaf_roster(snapshot, declared_servers)
@@ -17743,7 +17790,7 @@ def _prepare_codex_workflow_home(repo_root: Path, orchestration_id: str) -> dict
     probe = _probe_codex_project_hooks(repo_root)
     if probe.get("pass") is not True:
         raise ValueError(f"cannot prepare isolated Codex hooks: {probe.get('detail')}")
-    source = repo_root / ".codex" / "hooks.json"
+    source = repo_root / _normalize_rel_posix(CODEX_LEAF_HOOKS_REL)
     data = source.read_bytes()
     digest = hashlib.sha256(data).hexdigest()
     meta_path = _orchestration_root(repo_root, orchestration_id) / "orchestration_meta.json"
@@ -18370,8 +18417,10 @@ def _read_repo_mcp_tool_permissions(
     `CLAUDE_CONFIG_DIR=<private home> --setting-sources user`, and that home holds a
     SHA-pinned copy of exactly this file. This function answers "will the leaf be allowed to
     call the tool", so it must read what the leaf reads. The repository's own
-    `.claude/settings.json` is the DEV layer and no leaf loads it; a sync test keeps the two
-    files' hook commands identical so an operator's session behaves like a leaf.
+    `.claude/settings.json` is the DEV layer and no leaf loads it. A sync test kept the two
+    files' hook commands identical until issue #102 separated the layers; an operator's
+    session runs `tools/hooks/dev_cli.py` now and does NOT behave like a leaf, so this
+    function reading the leaf file is the whole of what makes it right.
 
     `.claude/settings.local.json` is deliberately NOT consulted. It used to be, and that was
     right while a leaf loaded the `local` source; afterwards it made the gate wrong in both

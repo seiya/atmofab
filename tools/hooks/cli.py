@@ -239,46 +239,25 @@ def _append_hook_audit(
     inner_tool_name = inner_payload.get("tool_name")
     tool_name_raw = payload.get("tool_name")
     tool_name = tool_name_raw if isinstance(tool_name_raw, str) and tool_name_raw.strip() else inner_tool_name
-    workflow_mode = os.environ.get("METDSL_WORKFLOW_MODE", "").strip().lower()
-    if (
-        normalized_orch == "_global"
-        and isinstance(tool_name, str)
-        and tool_name.strip().lower() == "shell"
-        and workflow_mode not in {"1", "true", "yes"}
-    ):
+    # TWO `_global` SUPPRESSIONS STOOD HERE and are gone with issue #102. Both existed
+    # for an AMBIENT call — an operator's own session, which registered this same
+    # entrypoint and whose rows would have created `workspace/orchestrations/_global/` in
+    # their checkout. That caller no longer reaches this module: the DEV layer names
+    # `tools/hooks/dev_cli.py` (pinned by `HookLayerSeparationTests`), and the one
+    # remaining non-leaf caller, the preflight roster probe, no longer seeds the leaf's
+    # hooks at all. What arrives at `_global` now is one thing: a hook that could not name
+    # its orchestration, which `main()` refuses — the single anomaly on this path, and the
+    # one worth a trace. Suppressing it by workflow mode left a codex leaf's refusal
+    # silently unrecorded, because a leaf that lost `METDSL_ORCHESTRATION_ID` has usually
+    # lost `METDSL_WORKFLOW_MODE` from the same environment.
+    # THE SAME RESOLVER AS THE POLICY, not merely the same order. Spelling the sources a
+    # second time here is what let the two drift twice; now there is one list and the
+    # callers differ only in what "no source" means. With no root known there is no tree
+    # to write into, and an ambient call must not create one in whatever directory it
+    # happens to be run from.
+    repo_root = _repo_root_from_sources(payload)
+    if repo_root is None:
         return
-    payload_has_repo_root = isinstance(payload.get("repo_root"), str) and bool(
-        str(payload.get("repo_root")).strip()
-    )
-    inner_has_repo_root = isinstance(inner_payload, dict) and isinstance(
-        inner_payload.get("repo_root"), str
-    ) and bool(str(inner_payload.get("repo_root")).strip())
-    env_repo_root = os.environ.get("METDSL_HOOK_REPO_ROOT", "").strip()
-    if (
-        normalized_orch == "_global"
-        and workflow_mode not in {"1", "true", "yes"}
-        and not payload_has_repo_root
-        and not inner_has_repo_root
-        and not env_repo_root
-    ):
-        return
-    repo_root_raw = payload.get("repo_root")
-    if not (isinstance(repo_root_raw, str) and repo_root_raw.strip()):
-        if isinstance(inner_payload, dict):
-            inner_repo_root = inner_payload.get("repo_root")
-            if isinstance(inner_repo_root, str) and inner_repo_root.strip():
-                repo_root_raw = inner_repo_root
-
-    # For an ambient hook call where `repo_root` is unspecified, do not pollute the
-    # actual workspace. To persist the audit log, give an explicit `repo_root`
-    # (or `METDSL_HOOK_REPO_ROOT` via env).
-    if not (isinstance(repo_root_raw, str) and repo_root_raw.strip()):
-        if env_repo_root:
-            repo_root = Path(env_repo_root).resolve()
-        else:
-            return
-    else:
-        repo_root = Path(repo_root_raw).resolve()
     path = (
         repo_root
         / "workspace"
@@ -287,7 +266,18 @@ def _append_hook_audit(
         / "hooks"
         / "native_hook_events.jsonl"
     )
-    path.parent.mkdir(parents=True, exist_ok=True)
+    # BEST EFFORT, and this is the load-bearing part of the function. Under bwrap a
+    # leaf's only writable tree is its OWN `workspace/orchestrations/<id>/`, so a leaf
+    # that has lost its id cannot create `_global/hooks/` — and that leaf is exactly the
+    # one this function is asked to record. Letting the `OSError` out turned the refusal
+    # into a traceback with rc 1 and an EMPTY stdout: the block signal is rc 2, and a
+    # codex `PermissionRequest` carries its deny in the body, so both were lost. A
+    # decision that cannot be recorded is still a decision; a decision that cannot be
+    # DELIVERED is a fail-open in the path that exists to fail closed.
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return
     entry = {
         "ts": _utc_now_iso(),
         "backend": backend,
@@ -302,26 +292,42 @@ def _append_hook_audit(
         entry["payload_summary"] = payload_summary
     if decision.audit_detail is not None:
         entry["audit_detail"] = _sanitize_audit_detail(decision.audit_detail)
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    # The write is best effort for the same reason as the mkdir above.
+    try:
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except OSError:
+        return
+
+
+def _repo_root_from_sources(payload: dict[str, Any]) -> Path | None:
+    """THE resolution, read by the policy and by the audit alike.
+
+    Environment first, then the payload's own key, then the NESTED key — the codex
+    payload shape. The two callers had drifted apart twice: the audit once preferred the
+    payload over the environment, and after that was unified it still read the nested key
+    while this function never looked there, so a codex payload carrying only the nested
+    root had its policy evaluated against the process cwd and its record filed under the
+    root instead. Measured both times; both times the decision and its record named
+    different trees, which is a false record rather than a missing one.
+
+    Returns None when no source names one. The two callers differ ONLY there, and each
+    says why: the policy falls back to the cwd because it must still decide, the audit
+    writes nothing because there is no tree to write into.
+    """
+    env_repo_root = os.environ.get("METDSL_HOOK_REPO_ROOT", "").strip()
+    if env_repo_root:
+        return Path(env_repo_root).resolve()
+    for candidate in (payload.get("repo_root"), _inner_payload(payload).get("repo_root")):
+        if isinstance(candidate, str) and candidate.strip():
+            return Path(candidate).resolve()
+    return None
 
 
 def _resolve_repo_root(payload: dict[str, Any], backend: str = "") -> Path:
     del backend
-    env_repo_root = os.environ.get("METDSL_HOOK_REPO_ROOT", "").strip()
-    if env_repo_root:
-        return Path(env_repo_root).resolve()
-    repo_root_raw = payload.get("repo_root")
-    return (
-        Path(repo_root_raw).resolve()
-        if isinstance(repo_root_raw, str) and repo_root_raw.strip()
-        else Path.cwd()
-    )
-
-
-def _env_flag_true(name: str, default: str = "0") -> bool:
-    raw = os.environ.get(name, default).strip().lower()
-    return raw in {"1", "true", "yes", "on"}
+    # The policy has to decide even with no root named, so it lands on the cwd.
+    return _repo_root_from_sources(payload) or Path.cwd()
 
 
 def _extract_orchestration_id(payload: dict[str, Any]) -> str | None:
@@ -2415,9 +2421,45 @@ def main(argv: list[str] | None = None) -> int:
         if orchestration_id is None:
             orchestration_id = "_global"
         if orchestration_id == "_global":
-            exit_code, stdout_text = adapter.encode_decision(
-                HookDecision(action=HookDecisionAction.ALLOW), event_name=event_name
+            # FAIL CLOSED. This entrypoint is the LEAF's, and a leaf always has the id:
+            # `_profile_child_env` puts `METDSL_ORCHESTRATION_ID` into every leaf
+            # profile on both of its paths, filling an absence rather than tolerating
+            # it. So a
+            # hook that reaches here either belongs to no run - which now means it was
+            # invoked by something that is not a leaf - or has lost the one value every
+            # guard below is keyed on: the write manifest, the read manifest, the codex
+            # feature certificate and the protected-root resolver all resolve NOTHING
+            # for `_global` and would allow.
+            #
+            # Until issue #102 this could not be the answer, because an operator's own
+            # session ran this same entrypoint and would have been refused out of it.
+            # That session now runs `tools/hooks/dev_cli.py`; nothing else is expected
+            # here. `docs/ORCHESTRATION.md` §39.
+            # THE READER OF THIS MESSAGE MAY BE A LEAF, and a leaf reads none of the
+            # files named here — not `docs/`, not `CLAUDE.md`, not these settings. The
+            # first sentence is therefore for the leaf and says the one thing it can act
+            # on: nothing. Without it a leaf meets a refusal it cannot explain and will
+            # retry, which is the shape a fail-closed message must not have
+            # (`.claude/skills/metdsl-review-loop`: a refusal is closed only once it is
+            # an instruction under which a warm retry converges - and here the converging
+            # instruction is to stop). The rest is for the operator who will read it in
+            # `native_hook_events.jsonl` or in their own terminal.
+            decision = _decision_error(
+                "orchestration_id is required for hook execution. If you are a workflow "
+                "leaf: this is not something your task can fix - the run's environment "
+                "lost the orchestration id, every later check is keyed on it, and the "
+                "orchestration has to be restarted; do not retry. This entrypoint is a "
+                "workflow leaf's. An operator's interactive session runs "
+                "tools/hooks/dev_cli.py (.claude/settings.json, .codex/hooks.json)."
             )
+            _append_hook_audit(
+                backend=args.backend,
+                event_name=event_name,
+                payload=payload,
+                decision=decision,
+                orchestration_id_override="_global",
+            )
+            exit_code, stdout_text = adapter.encode_decision(decision, event_name=event_name)
             return _emit_hook_response(exit_code, stdout_text, event_name=event_name)
 
         repo_root = _resolve_repo_root(payload, backend=args.backend)
@@ -2489,13 +2531,19 @@ def main(argv: list[str] | None = None) -> int:
         fallback_adapter = _adapter_for_backend(args.backend)
         decision = _decision_error(f"hook entrypoint failure: {exc}")
         fallback_orchestration_id = _extract_orchestration_id(payload) or "_global"
-        _append_hook_audit(
-            backend=args.backend,
-            event_name=event_name,
-            payload=payload,
-            decision=decision,
-            orchestration_id_override=fallback_orchestration_id,
-        )
+        # Guarded a SECOND time: this handler exists to turn any failure into a decision,
+        # and an audit that raises here would take the decision with it — the double
+        # fault that produced the traceback described above.
+        try:
+            _append_hook_audit(
+                backend=args.backend,
+                event_name=event_name,
+                payload=payload,
+                decision=decision,
+                orchestration_id_override=fallback_orchestration_id,
+            )
+        except Exception:  # noqa: BLE001 - the decision outranks its record
+            pass
         exit_code, stdout_text = fallback_adapter.encode_decision(decision, event_name=event_name)
     return _emit_hook_response(exit_code, stdout_text, event_name=event_name)
 
