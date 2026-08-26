@@ -40,6 +40,28 @@
 #                    the whole completion has to fit alongside the prompt, and streaming the
 #                    answer does not change that. The default (32768) is sized for a
 #                    CodegenBundle.
+#                    NECESSARY AND NOT SUFFICIENT for an endpoint that streams
+#                    `reasoning_content`: there this field is a COMBINED reasoning+answer
+#                    budget, and the reasoning is the dominant VARIABLE term (measured 2.4x
+#                    across three attempts of one closure on one model at one ceiling). Two
+#                    consequences worth knowing BEFORE the first run: a ceiling below the
+#                    model's reasoning FLOOR yields a zero-character answer with
+#                    `finish_reason: length`, not a short answer — measured 5 runs of 5 — and
+#                    the floor is model-specific, so a value cannot be carried from one entry
+#                    to another. `docs/ORCHESTRATION.md` "Leaf LLM configuration" is canonical
+#                    for the sizing rule and the measurements. It also records that `effort`
+#                    did not move the reasoning volume on the one endpoint measured — on a
+#                    CENSORED probe, where only the ORDER of the three levels is evidence, so
+#                    read it as "do not spend a run tuning this before re-measuring", not as
+#                    "the field does nothing". The entries below still set it, for an endpoint
+#                    that honours it.
+#   timeout_s        Client-side WALL-CLOCK bound on the whole request, default 900. It is not
+#                    bounded from above by the conductor's per-leaf process cap, which applies
+#                    to a CLI leaf and not to an HTTP request. MOVE IT WITH
+#                    `max_output_tokens`: raising the ceiling alone converts a truncation into
+#                    a timeout. Size it on the endpoint's LOADED throughput, not its idle one
+#                    — one measured endpoint halved within a single evening. Canonical, with
+#                    the arithmetic: `docs/ORCHESTRATION.md` "Leaf LLM configuration".
 #   stream           `true` (the default) | `false`. On by default, and the default is the point:
 #                    a non-streaming completion means the endpoint writes nothing until the whole
 #                    answer exists, so anything in front of it that bounds the interval between
@@ -88,7 +110,24 @@ phases:
         api_key_env: LOCAL_LLM_API_KEY
         model: qwen2.5-coder-32b-instruct
         effort: medium
+        # 32768 sizes the ARTIFACT, and that is the whole budget only because the model named
+        # here does not stream `reasoning_content`. A PROBE against a reasoning model at this
+        # same 32768 spent all of it on reasoning and emitted a zero-character bundle on every
+        # effort level; SEPARATELY, a production closure on that model ended at 98304. Two
+        # different measurements, kept apart on purpose — `docs/ORCHESTRATION.md` is canonical
+        # for which is which. Re-size against the model you run.
         max_output_tokens: 32768
+        # Declared rather than defaulted, because the glossary above says the pair moves
+        # together and a sample that omits one models neither half. The value is deliberately
+        # GENEROUS, not derived: this sample's endpoint has not been measured, and the rates
+        # `docs/ORCHESTRATION.md` records belong to another endpoint and another model, which
+        # the same document says cannot be carried across. What the arithmetic does settle is
+        # what the DEFAULT would demand, next to what was measured elsewhere; the comparison is
+        # left to the reader, because summarising a spread of rates in a sentence is how the
+        # two previous versions of this comment came to be wrong. 32768 inside 900 s needs
+        # 36.4 tok/s sustained. The rates in `docs/ORCHESTRATION.md`, on another endpoint and
+        # another model, are 17.6 to 59.8 tok/s. 2400 asks 13.7 tok/s. Re-measure your own.
+        timeout_s: 2400
       # PURE: the verdict reviewer over the bundle above.
       verify:
         provider: openai_compatible
@@ -96,7 +135,16 @@ phases:
         api_key_env: LOCAL_LLM_API_KEY
         model: qwen2.5-coder-32b-instruct
         effort: medium
+        # Half the writer's budget, because a verdict is not a bundle. CORRECT FOR THE MODEL
+        # THIS SAMPLE NAMES and for no other: on a reasoning model 16384 sat below the
+        # measured reasoning floor and returned a zero-character verdict on five attempts of
+        # five, and the run that hit it ended at 32768. Re-size against the model, never by
+        # inheritance. `docs/ORCHESTRATION.md` carries the measurement.
         max_output_tokens: 16384
+        # 16384 inside the 900 s default would demand 18.2 tok/s, which lands INSIDE the
+        # 17.6-19.8 loaded band `docs/ORCHESTRATION.md` records — i.e. the default is a
+        # coin toss there rather than a margin. 1200 asks 13.7 tok/s, as the writer does.
+        timeout_s: 1200
 
   validate:
     substeps:
