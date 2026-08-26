@@ -512,10 +512,9 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp) / "repo"
-            hooks_dir = repo_root / ".codex"
-            hooks_dir.mkdir(parents=True)
-            source_hooks = Path(__file__).resolve().parents[2] / ".codex" / "hooks.json"
-            (hooks_dir / "hooks.json").write_bytes(source_hooks.read_bytes())
+            from tools.tests.leaf_config_fixture import seed_codex_hooks
+            repo_root.mkdir(parents=True, exist_ok=True)
+            seed_codex_hooks(repo_root)
             orch = "orch_private_codex_home"
             meta_path = repo_root / "workspace" / "orchestrations" / orch / "orchestration_meta.json"
             meta_path.parent.mkdir(parents=True)
@@ -580,10 +579,9 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             repo_root = root / "repo"
-            hooks_dir = repo_root / ".codex"
-            hooks_dir.mkdir(parents=True)
-            source_hooks = Path(__file__).resolve().parents[2] / ".codex" / "hooks.json"
-            (hooks_dir / "hooks.json").write_bytes(source_hooks.read_bytes())
+            from tools.tests.leaf_config_fixture import seed_codex_hooks
+            repo_root.mkdir(parents=True, exist_ok=True)
+            seed_codex_hooks(repo_root)
             orch = "orch_codex_symlink"
             unsafe_home = root / "unsafe-home"
             unsafe_home.mkdir(mode=0o700)
@@ -622,10 +620,9 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             repo_root = root / "repo"
-            hooks_dir = repo_root / ".codex"
-            hooks_dir.mkdir(parents=True)
-            source_hooks = Path(__file__).resolve().parents[2] / ".codex" / "hooks.json"
-            (hooks_dir / "hooks.json").write_bytes(source_hooks.read_bytes())
+            from tools.tests.leaf_config_fixture import seed_codex_hooks
+            repo_root.mkdir(parents=True, exist_ok=True)
+            seed_codex_hooks(repo_root)
             orch = "orch_codex_tmp_rotation"
             meta_path = repo_root / "workspace" / "orchestrations" / orch / "orchestration_meta.json"
             meta_path.parent.mkdir(parents=True)
@@ -1951,9 +1948,8 @@ shell_tool                       stable             true
 
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            (repo_root / ".codex").mkdir()
-            (repo_root / ".codex" / "hooks.json").write_bytes(
-                (Path(__file__).resolve().parents[2] / ".codex" / "hooks.json").read_bytes())
+            from tools.tests.leaf_config_fixture import seed_codex_hooks
+            seed_codex_hooks(repo_root)
             result = probe_execution_platform(
                 backend="codex", agent_command="codex", runner=runner,
                 repo_root=repo_root)
@@ -2001,9 +1997,8 @@ shell_tool                       stable             true
             # `can_launch_*` False on its own — the assertion below would then hold with
             # the regression present.
             repo_root = Path(tmp)
-            (repo_root / ".codex").mkdir()
-            (repo_root / ".codex" / "hooks.json").write_bytes(
-                (Path(__file__).resolve().parents[2] / ".codex" / "hooks.json").read_bytes())
+            from tools.tests.leaf_config_fixture import seed_codex_hooks
+            seed_codex_hooks(repo_root)
 
             def _probe(prober):  # type: ignore[no-untyped-def]
                 with patch.dict(ort._BACKEND_PROBERS, {"codex": prober}):
@@ -2024,8 +2019,8 @@ shell_tool                       stable             true
 
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
-            (repo / ".codex").mkdir()
-            (repo / ".codex" / "hooks.json").write_text(
+            (repo / "leaf_config" / "codex").mkdir(parents=True)
+            (repo / "leaf_config" / "codex" / "hooks.json").write_text(
                 json.dumps({"hooks": {"PreToolUse": [{"hooks": [{
                     "command": "python3 -m tools.hooks.cli --backend codex"
                 }]}]}}),
@@ -2040,11 +2035,11 @@ shell_tool                       stable             true
 
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
-            (repo / ".codex").mkdir()
+            (repo / "leaf_config" / "codex").mkdir(parents=True)
             hook = {"matcher": "^Bash$", "hooks": [{
                 "command": "echo tools.hooks.cli --backend codex"
             }]}
-            (repo / ".codex" / "hooks.json").write_text(
+            (repo / "leaf_config" / "codex" / "hooks.json").write_text(
                 json.dumps({"hooks": {event: [hook] for event in (
                     "SessionStart", "UserPromptSubmit", "PreToolUse", "PermissionRequest",
                     "PostToolUse", "Stop",
@@ -2061,14 +2056,14 @@ shell_tool                       stable             true
 
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
-            (repo / ".codex").mkdir()
-            source = Path(__file__).resolve().parents[2] / ".codex" / "hooks.json"
+            (repo / "leaf_config" / "codex").mkdir(parents=True)
+            source = Path(__file__).resolve().parents[2] / "leaf_config" / "codex" / "hooks.json"
             # Keep only the legacy names in every shell-tool matcher.  A config
             # like this used to pass while `bash` and `Shell` skipped policy hooks.
             mutated = source.read_text(encoding="utf-8").replace(
                 "Bash|bash|Shell|shell", "Bash|shell"
             )
-            (repo / ".codex" / "hooks.json").write_text(mutated, encoding="utf-8")
+            (repo / "leaf_config" / "codex" / "hooks.json").write_text(mutated, encoding="utf-8")
             result = _probe_codex_project_hooks(repo)
         self.assertFalse(result["pass"])
         self.assertIn("PreToolUse", result["detail"])
@@ -2078,12 +2073,12 @@ shell_tool                       stable             true
 
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
-            (repo / ".codex").mkdir()
-            source = (Path(__file__).resolve().parents[2] / ".codex" / "hooks.json")
+            (repo / "leaf_config" / "codex").mkdir(parents=True)
+            source = (Path(__file__).resolve().parents[2] / "leaf_config" / "codex" / "hooks.json")
             config = source.read_text(encoding="utf-8").replace(
                 "--event PreToolUse", "--event SessionStart"
             )
-            (repo / ".codex" / "hooks.json").write_text(config, encoding="utf-8")
+            (repo / "leaf_config" / "codex" / "hooks.json").write_text(config, encoding="utf-8")
             result = _probe_codex_project_hooks(repo)
         self.assertFalse(result["pass"])
         self.assertIn("PreToolUse", result["detail"])
@@ -2093,12 +2088,12 @@ shell_tool                       stable             true
 
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
-            (repo / ".codex").mkdir()
-            source = Path(__file__).resolve().parents[2] / ".codex" / "hooks.json"
+            (repo / "leaf_config" / "codex").mkdir(parents=True)
+            source = Path(__file__).resolve().parents[2] / "leaf_config" / "codex" / "hooks.json"
             config = source.read_text(encoding="utf-8").replace(
                 '"command": "sh -lc', '"command": "false && sh -lc'
             )
-            (repo / ".codex" / "hooks.json").write_text(config, encoding="utf-8")
+            (repo / "leaf_config" / "codex" / "hooks.json").write_text(config, encoding="utf-8")
             result = _probe_codex_project_hooks(repo)
         self.assertFalse(result["pass"])
         self.assertIn("PreToolUse", result["detail"])
@@ -36659,10 +36654,9 @@ class DurableWorkflowHomesTests(unittest.TestCase):
     def _codex_repo(self, td: str, orchestration_id: str = "orch_d") -> tuple[Path, Path]:
         """A repo with this repository's real hook source, plus an operator codex home."""
         root = Path(td)
-        hooks_dir = root / "repo" / ".codex"
-        hooks_dir.mkdir(parents=True)
-        source_hooks = Path(__file__).resolve().parents[2] / ".codex" / "hooks.json"
-        (hooks_dir / "hooks.json").write_bytes(source_hooks.read_bytes())
+        from tools.tests.leaf_config_fixture import seed_codex_hooks
+        (root / "repo").mkdir(parents=True, exist_ok=True)
+        seed_codex_hooks(root / "repo")
         meta_dir = root / "repo" / "workspace" / "orchestrations" / orchestration_id
         meta_dir.mkdir(parents=True)
         (meta_dir / "orchestration_meta.json").write_text(
@@ -37650,12 +37644,19 @@ class ClaudeIsolationProfileTests(unittest.TestCase):
 
 
 class ClaudeLeafConfigSyncTests(unittest.TestCase):
-    """The dev layer and the leaf layer must enforce the SAME policy.
+    """The dev layer and the leaf layer are SEPARATE, and this pins the separation.
 
-    `leaf_config/claude/settings.json` is the OWNER of the hook wiring; the repository's
-    `.claude/settings.json` is the dev layer an operator's own session loads. Compared
-    against the owner, never against a second literal in this test: a golden copy here
-    would be a third place to keep in step.
+    Until issue #102 this class asserted the opposite — that `.claude/settings.json`
+    carried every hook command of `leaf_config/claude/settings.json`, so that "an
+    operator's session enforces at least the policy a leaf does". That superset is
+    repealed: the two layers now name different entrypoints, `tools/hooks/dev_cli.py`
+    and `tools/hooks/cli.py`, and no leaf policy is reachable from an operator's
+    session. What replaces the superset is this direction — that the dev layer does NOT
+    invoke the leaf entrypoint, which is the property the separation exists for.
+
+    The permission GRANT parity is a different claim with its own reason
+    (`mcp_servers/README.md`) and is deliberately kept: it is about an operator being
+    able to reproduce what a leaf does, not about policy reaching them.
     """
 
     @staticmethod
@@ -37674,24 +37675,40 @@ class ClaudeLeafConfigSyncTests(unittest.TestCase):
             json.loads((REPO_ROOT / ".claude" / "settings.json").read_text(encoding="utf-8")),
         )
 
-    def test_the_dev_layer_carries_the_same_hook_commands(self) -> None:
-        """SUBSET, not equality: the leaf's policy hooks must all be mirrored into
-        the dev layer, but the dev layer may carry hooks of its own.
-
-        Equality forbade adding any operator-convenience hook to the file this
-        repository's own documentation calls "the DEV layer for an operator's
-        interactive session" — a rule that refuses the file's stated purpose. What
-        must hold is that an operator's session enforces at least the policy a leaf
-        does.
-        """
+    def test_the_leaf_layer_uses_the_one_canonical_command(self) -> None:
+        """Unchanged by the separation: every leaf hook command is the ONE canonical
+        spelling, so a hand-edited leaf entry cannot drift from what the host renders."""
         from tools.orchestration_runtime import _canonical_claude_hook_command
-        leaf, dev = self._layers()
+        leaf, _dev = self._layers()
         self.assertTrue(self._coverage(leaf))
-        self.assertLessEqual(self._coverage(leaf), self._coverage(dev))
-        # ...and every leaf command is the ONE canonical spelling, so "mirrored"
-        # cannot mean "identically wrong".
         for event, _matcher, command in self._coverage(leaf):
             self.assertEqual(command, _canonical_claude_hook_command(event))
+
+    def test_the_two_layers_share_no_hook_command(self) -> None:
+        """The separation itself (issue #102). Not "the sets differ" — that would hold
+        with one shared entry among many; every command of each layer must be absent
+        from the other."""
+        leaf, dev = self._layers()
+        leaf_commands = {command for _e, _m, command in self._coverage(leaf)}
+        dev_commands = {command for _e, _m, command in self._coverage(dev)}
+        self.assertTrue(leaf_commands)
+        self.assertTrue(dev_commands)
+        self.assertEqual(leaf_commands & dev_commands, set())
+
+    def test_the_dev_layer_never_invokes_the_leaf_entrypoint(self) -> None:
+        """The property, rather than the file difference that currently delivers it.
+
+        A dev command spelled with a different wrapper but still ending at
+        `tools.hooks.cli` would pass the set-disjointness above and reopen exactly what
+        the separation closed: a leaf policy applying to the operator, and a defect in
+        the leaf entrypoint refusing the operator out of their own session.
+        """
+        _leaf, dev = self._layers()
+        self.assertTrue(self._coverage(dev))
+        for event, _matcher, command in self._coverage(dev):
+            with self.subTest(event=event):
+                self.assertNotIn("tools.hooks.cli", command)
+                self.assertIn("tools.hooks.dev_cli", command)
 
     def test_the_dev_layer_carries_the_same_build_runtime_grant(self) -> None:
         """`mcp_servers/README.md` says a sync test enforces the GRANT parity too.

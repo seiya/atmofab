@@ -2799,7 +2799,6 @@ def _run_main(
     base_env = dict(os.environ)
     base_env["METDSL_WORKFLOW_MODE"] = "1"
     base_env["METDSL_WORKFLOW_EXEC_MODE"] = workflow_mode
-    base_env["METDSL_MISSING_ORCHESTRATION_ID_POLICY"] = "strict"
     # Warm-resume minor-fix repairs are ALWAYS active (claude only; no env gate): a
     # generate.gate / compile.static finding (and the build->generate reuse
     # repairs) re-run the phase's producer substep (generate.generate / compile.generate) by

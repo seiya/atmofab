@@ -15973,7 +15973,7 @@ def _codex_hook_invokes_event(hook: Any, event: str) -> bool:
 def _probe_codex_project_hooks(repo_root: Path | None) -> dict[str, Any]:
     """Verify the repository-local Codex hook source that enforces leaf policy."""
     root = (repo_root or Path.cwd()).resolve()
-    path = root / ".codex" / "hooks.json"
+    path = root / _normalize_rel_posix(CODEX_LEAF_HOOKS_REL)
     try:
         payload = _read_json(path)
     except (OSError, ValueError) as exc:
@@ -16588,6 +16588,13 @@ def _secure_backend_home_file(
 # home preparation, and the preflight permission read all resolve through
 # `_claude_leaf_config_path` below rather than repeating it.
 CLAUDE_LEAF_CONFIG_REL = "leaf_config/claude/settings.json"
+# The codex twin. Until issue #102 the leaf read the repository's own
+# `.codex/hooks.json`, which an operator's interactive codex session ALSO loads as
+# its project hook layer (the trust digests in `~/.codex/config.toml` are keyed on
+# that absolute path). One file could not both fail closed for a leaf and leave an
+# operator's session alone, so the leaf owns this one and `.codex/hooks.json` is now
+# the DEV layer, naming `tools/hooks/dev_cli.py`.
+CODEX_LEAF_HOOKS_REL = "leaf_config/codex/hooks.json"
 
 # The events + matchers the leaf's PreToolUse/read boundary depends on. Kept as a
 # COVERAGE map (not a count) for the same reason as the codex twin above: a settings
@@ -17747,7 +17754,7 @@ def _prepare_codex_workflow_home(repo_root: Path, orchestration_id: str) -> dict
     probe = _probe_codex_project_hooks(repo_root)
     if probe.get("pass") is not True:
         raise ValueError(f"cannot prepare isolated Codex hooks: {probe.get('detail')}")
-    source = repo_root / ".codex" / "hooks.json"
+    source = repo_root / _normalize_rel_posix(CODEX_LEAF_HOOKS_REL)
     data = source.read_bytes()
     digest = hashlib.sha256(data).hexdigest()
     meta_path = _orchestration_root(repo_root, orchestration_id) / "orchestration_meta.json"

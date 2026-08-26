@@ -30,12 +30,13 @@ A fresh clone needs the host tools and the operator's own CLI state. Every file 
 Steps 1, 2, 3 and 5 all read machine-local state, and each is checked before the first billed leaf — though not all by the same mechanism. Step 1 fail-fasts when `tools/run_workflow.py` starts, before an orchestration exists; steps 2, 3 and 5 are `preflight.json` checks. One requirement is outside both and is called out where it lives: the Codex credential is checked when the first leaf is prepared, not at any gate (`docs/RUNBOOK.md` §0-3).
 
 ## Configuration layers
-Two sessions run against this checkout, and they load disjoint configuration. An operator's own interactive session loads the DEV layer; a workflow leaf loads the LEAF layer and nothing else. `docs/HOOKS.md` is canonical for the split and for what keeps the two in step.
+Two sessions run against this checkout, and they load disjoint configuration. An operator's own interactive session loads the DEV layer; a workflow leaf loads the LEAF layer and nothing else. Since issue #102 that disjointness reaches the HOOK as well as the file: the DEV rows name `tools/hooks/dev_cli.py`, which applies `tools/hooks/operator_safety.py` and nothing else, and the LEAF rows name `tools/hooks/cli.py`, which fails closed when it cannot name an orchestration. `docs/HOOKS.md` is canonical for the split.
 
 | file | layer | read by | tracked |
 |---|---|---|---|
 | `leaf_config/claude/settings.json` | LEAF | a workflow leaf, as the sole settings layer of a host-prepared private configuration directory | yes |
-| `.codex/hooks.json` | LEAF | a workflow leaf, through a digest-verified copy in the isolated home | yes |
+| `leaf_config/codex/hooks.json` | LEAF | a workflow leaf, through a digest-verified copy in the isolated home | yes |
+| `.codex/hooks.json` | DEV | an operator's own interactive codex session, as the project hook layer | yes |
 | `.mcp.json` | LEAF | a workflow leaf, named explicitly at launch | yes |
 | `.claude/settings.json` | DEV | an operator's own interactive session | yes |
 | `.claude/settings.local.json` | DEV | the same session, per operator | no |

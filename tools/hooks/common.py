@@ -16,6 +16,8 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Protocol, Sequence
 
+from tools.hooks.operator_safety import operator_safety_violation
+
 # fcntl is POSIX-only.  On Windows we fall through to fail-closed when the
 # auto-read seen-set needs an exclusive lock — there is no portable
 # equivalent, and Claude Code on Windows has no direct call sites for the
@@ -3564,40 +3566,21 @@ def evaluate_common_policy(hook_input: HookInput) -> HookDecision:
     if not command:
         return HookDecision(action=HookDecisionAction.ALLOW)
     lowered = command.lower()
-    if "git reset --hard" in lowered:
+    # The two policies that are not about a leaf are defined in
+    # `tools/hooks/operator_safety.py` and applied from BOTH entrypoints - this one and
+    # the DEV entrypoint, which must not import this module (issue #102). Defined once
+    # there; wrapped into a decision here.
+    violation = operator_safety_violation(
+        command, workflow_exec_mode=os.environ.get("METDSL_WORKFLOW_EXEC_MODE")
+    )
+    if violation is not None:
+        reason, audit_detail = violation
         return HookDecision(
             action=HookDecisionAction.BLOCK,
-            reason="blocked by common hook policy: git reset --hard is forbidden",
+            reason=reason,
             continue_processing=False,
-            audit_detail={"policy": "forbid_git_reset_hard", "command": command},
+            audit_detail=audit_detail,
         )
-    workflow_mode_raw = os.environ.get("METDSL_WORKFLOW_EXEC_MODE")
-    workflow_mode = (workflow_mode_raw or "dev").strip().lower()
-    if workflow_mode == "dev":
-        forbidden_tokens = (
-            "--allow-missing-orchestration",
-            "--allow-missing-llm-review",
-            "--allow-soft-fail",
-            "--allow-soft-verify",
-            "--ignore-verify-fail",
-            "--force-pass",
-        )
-        matched = [token for token in forbidden_tokens if token in lowered]
-        if matched:
-            return HookDecision(
-                action=HookDecisionAction.BLOCK,
-                reason=(
-                    "blocked by common hook policy: dev mode forbids verify bypass flags: "
-                    + ", ".join(matched)
-                ),
-                continue_processing=False,
-                audit_detail={
-                    "policy": "forbid_verify_bypass_flags_in_dev_mode",
-                    "workflow_mode": workflow_mode,
-                    "command": command,
-                    "matched_tokens": matched,
-                },
-            )
     workflow_mode_val = os.environ.get("METDSL_WORKFLOW_MODE", "0").strip()
     cli_help_audit: dict[str, Any] | None = None
     if workflow_mode_val == "1":

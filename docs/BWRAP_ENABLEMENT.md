@@ -114,7 +114,7 @@ The whole JSONL event stream of each Codex leaf is kept at
 where a failed Codex leaf is diagnosed.
 
 For every Codex orchestration, the host creates an isolated `CODEX_HOME` outside the repository.
-It contains only a SHA-256-verified copy of this repository's `.codex/hooks.json`; the original
+It contains only a SHA-256-verified copy of this repository's `leaf_config/codex/hooks.json` (issue #102 moved it there from `.codex/hooks.json`, which is now the DEV layer); the original
 home contributes only `auth.json` as a read-only bwrap bind. Its `config.toml` marks the repository
 project `untrusted`, preventing the project hook layer from being loaded a second time. Therefore
 `--dangerously-bypass-hook-trust` applies only to that verified user-level hook source, never to
