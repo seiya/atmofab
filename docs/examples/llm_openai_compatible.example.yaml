@@ -122,9 +122,11 @@ phases:
         # GENEROUS, not derived: this sample's endpoint has not been measured, and the rates
         # `docs/ORCHESTRATION.md` records belong to another endpoint and another model, which
         # the same document says cannot be carried across. What the arithmetic does settle is
-        # what the DEFAULT would demand: 32768 inside 900 s needs 36.4 tok/s sustained, above
-        # every rate that document's WRITER reached (28.3-36.9) and about twice the loaded
-        # 17.6-19.8 its reviewer fell to. 2400 asks 13.7 tok/s. Re-measure your own.
+        # what the DEFAULT would demand, next to what was measured elsewhere; the comparison is
+        # left to the reader, because summarising a spread of rates in a sentence is how the
+        # two previous versions of this comment came to be wrong. 32768 inside 900 s needs
+        # 36.4 tok/s sustained. The rates in `docs/ORCHESTRATION.md`, on another endpoint and
+        # another model, are 17.6 to 59.8 tok/s. 2400 asks 13.7 tok/s. Re-measure your own.
         timeout_s: 2400
       # PURE: the verdict reviewer over the bundle above.
       verify:

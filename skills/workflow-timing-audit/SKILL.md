@@ -150,10 +150,18 @@ python3 skills/workflow-timing-audit/scripts/leaf_token_report.py <orch_id | orc
 
 One row per persisted leaf stream, in run order: prompt / reasoning / output tokens, the answer
 in CHARACTERS, elapsed, and tok/s. It reads the OpenAI dialect and says so rather than guessing
-when handed a Messages-API stream, and it distinguishes the three ways a leaf produces no `usage`
-frame — a severed stream, a body that was never an event stream (an HTTP `504` page is DEADLINE
-evidence, not a network fault), and a run with no `finished_at`. `docs/ORCHESTRATION.md`
-§"Leaf LLM configuration" is what its figures feed, and states the sizing rule they support.
+when handed a Messages-API stream, and it separates the four ways a leaf yields no `usage` frame:
+a severed stream, a body from which no event-stream frame parsed, a launch with no
+`agent_runs.jsonl` row, and a run with no `finished_at`.
+
+The second of those is a REPORT about the persisted bytes, not a classification of the failure.
+An HTTP error body lands there — `orch_20260806T060306Z_ec3720ca` shows three nginx
+`504 Gateway Time-out` pages — and the conductor classifies those as `HTTP <code> from provider`
+-> `llm_transport_flake` and RETRIES them. Do not read the note as the repository's
+`response_not_an_event_stream`, which names a 200 body that did not open as a stream and fails
+closed on the first attempt; `docs/ORCHESTRATION.md` §"An HTTP leaf STREAMS its answer by default"
+is canonical for that distinction. `docs/ORCHESTRATION.md` §"Leaf LLM configuration" is what this
+script's figures feed, and states the sizing rule they support.
 
 ### Step 2 — read the report top-down
 1. Read the **anomalies** section FIRST. It names waste and failure the time table hides:

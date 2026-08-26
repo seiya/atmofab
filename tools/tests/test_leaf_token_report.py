@@ -45,16 +45,26 @@ class LeafTokenReportTests(unittest.TestCase):
 
     def _leaf(self, arid, *, substep="verify", started="2026-08-06T12:00:00.000000Z",
               finished="2026-08-06T12:00:10.000000Z", frames=None, body=None,
-              response=True, run_row=True):
+              response=True, run_row=True, run_started=None):
+        """Write one leaf's three artifacts.
+
+        `run_started` defaults to a stamp MICROSECONDS before `finished`, as a real
+        `agent_runs.jsonl` row carries -- the record is written at completion. The request's
+        own start lives only in `response.json`, and keeping the two APART here is what makes
+        "which file supplies `started_at`" observable: with the same value in both, an
+        implementation reading the wrong one passes.
+        """
         text = body if body is not None else _stream(frames or [])
         (self.orch / "launches" / f"{arid}.http_response.txt").write_text(text, encoding="utf-8")
         if response:
             (self.orch / "launches" / f"{arid}.response.json").write_text(
                 json.dumps({"started_at": started}), encoding="utf-8")
         if run_row:
+            if run_started is None and finished is not None:
+                run_started = finished.replace(".000000Z", ".000025Z")
             with open(self.orch / "agent_runs.jsonl", "a", encoding="utf-8") as fh:
                 fh.write(json.dumps({"agent_run_id": arid, "step": "generate",
-                                     "substep": substep, "started_at": started,
+                                     "substep": substep, "started_at": run_started,
                                      "finished_at": finished}) + "\n")
 
     def _rows(self):
@@ -120,8 +130,13 @@ class LeafTokenReportTests(unittest.TestCase):
     def test_an_error_body_is_reported_with_its_head_so_a_504_is_readable(self):
         self._leaf("bbbb2222", body="<html>\n<head><title>504 Gateway Time-out</title></head>\n")
         note = self._rows()["bbbb2222"]["note"]
-        self.assertIn("not an event stream", note)
+        self.assertIn("no event-stream frames parsed", note)
         self.assertIn("504 Gateway Time-out", note)
+        # NOT the repository's own `response_not_an_event_stream`, which names a 200 body that
+        # did not open as a stream and fails closed on the first attempt. An HTTP error body
+        # reaches this branch too and IS classified and retried, so borrowing that spelling
+        # would tell a reader the opposite of what the conductor did.
+        self.assertNotIn("response_not_an_event_stream", note)
 
     def test_a_launch_with_no_agent_runs_row_is_not_called_a_transport_death(self):
         self._leaf("bbbb3333", run_row=False, frames=[_usage_frame()])
@@ -181,6 +196,65 @@ class LeafTokenReportTests(unittest.TestCase):
         self.assertIn("eeee1111", out)
         self.assertNotIn("eeee2222", out)
 
+    def test_the_cli_prints_every_column_under_its_own_label(self):
+        # `in=` and `out=` were witnessed here before `reasoning=` and `answer=` were, and a
+        # sweep that swapped the latter two in the f-string passed: the report would have
+        # printed a reviewer's reasoning floor as its answer length.
+        self._leaf("ffff1111", substep="generate", finished="2026-08-06T12:00:20.000000Z",
+                   frames=[_usage_frame(prompt=37512, completion=65536, reasoning=62460,
+                                        finish="length", content="abcde")])
+        out = self._run_cli().stdout
+        for label, value in (("in=", 37512), ("reasoning=", 62460), ("answer=", 5),
+                             ("out=", 65536)):
+            self.assertRegex(out, rf"{label}\s*{value}(ch)?(\s|$)")
+
+    def test_the_cli_prints_a_note_row_instead_of_crashing_on_a_leaf_with_no_figures(self):
+        # The note branch of `main()` had no test: dropping its `continue` left the suite green
+        # and killed the real CLI with KeyError on any run containing a 504 row.
+        self._leaf("ffff2222", body="<html><head><title>504 Gateway Time-out</title></head>")
+        self._leaf("ffff3333", substep="generate", frames=[_usage_frame()])
+        result = self._run_cli()
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("504 Gateway Time-out", result.stdout)
+        self.assertIn("out=", result.stdout)          # the healthy row still prints
+
+    def test_no_arguments_is_a_usage_error(self):
+        result = subprocess.run([sys.executable, str(_SCRIPT)], capture_output=True, text=True,
+                                cwd=str(_ROOT))
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("usage:", result.stderr)
+
+    def test_only_the_http_response_streams_are_read(self):
+        # A real `launches/` also holds `<arid>.prompt.txt` and `<arid>.reply.txt`; a looser
+        # glob would fabricate a row per sibling file.
+        self._leaf("ffff4444", substep="generate", frames=[_usage_frame()])
+        (self.orch / "launches" / "ffff4444.prompt.txt").write_text("x", encoding="utf-8")
+        (self.orch / "launches" / "ffff4444.reply.txt").write_text("y", encoding="utf-8")
+        self.assertEqual([r["agent_run_id"] for r in leaf_token_report.rows(str(self.orch))],
+                         ["ffff4444"])
+
+    def test_a_zero_elapsed_is_refused_like_a_negative_one(self):
+        # `<= 0`, not `< 0`: at exactly zero the rate is a division by zero, and zero is what a
+        # record written in the same microsecond produces.
+        self._leaf("ffff5555", started="2026-08-06T12:00:10.000000Z",
+                   finished="2026-08-06T12:00:10.000000Z", frames=[_usage_frame()])
+        row = self._rows()["ffff5555"]
+        self.assertIsNone(row.get("tokens_per_second"))
+        self.assertIn("not positive", row["note"])
+
+    def test_elapsed_comes_from_the_request_start_not_the_agent_run_row(self):
+        # The agent run's own `started_at` is written at completion, microseconds before
+        # `finished_at`. Reading it would report ~0 s and an absurd rate for every leaf.
+        self._leaf("ffff6666", started="2026-08-06T12:00:00.000000Z",
+                   finished="2026-08-06T12:00:10.000000Z", frames=[_usage_frame()])
+        self.assertEqual(self._rows()["ffff6666"]["elapsed_seconds"], 10.0)
+
+    def test_a_row_without_finished_at_sorts_last_rather_than_breaking_the_sort(self):
+        self._leaf("ffff7777", finished=None, frames=[_usage_frame()])
+        self._leaf("ffff8888", finished="2026-08-06T12:00:30.000000Z", frames=[_usage_frame()])
+        self.assertEqual([r["agent_run_id"] for r in leaf_token_report.rows(str(self.orch))],
+                         ["ffff8888", "ffff7777"])
+
     def test_a_run_with_no_leaf_streams_says_so_and_exits_nonzero(self):
         (self.orch / "agent_runs.jsonl").write_text("", encoding="utf-8")
         result = self._run_cli()
@@ -188,11 +262,30 @@ class LeafTokenReportTests(unittest.TestCase):
         self.assertIn("no persisted leaf streams", result.stderr)
 
     def test_an_orchestration_id_resolves_under_the_workspace_root(self):
-        # The sibling audit script takes an id; a path-only tool would answer a plausible
-        # invocation with a FileNotFoundError naming a relative path.
+        # POSITIVE witness: an implementation with the id branch deleted passes a
+        # path-in/path-out assertion and a raises-on-nonsense assertion alike, so build the
+        # workspace layout and resolve a bare id through it.
+        # The layout is spelled LITERALLY, not built from `WORKSPACE_ROOT`: deriving the
+        # fixture from the constant under test measures set identity with itself, and a mutant
+        # pointing the constant somewhere else passes.
+        root = self.orch / "fake_repo"
+        (root / "workspace" / "orchestrations" / "orch_xyz").mkdir(parents=True)
+        self.assertEqual(leaf_token_report.resolve("orch_xyz", start=str(root)),
+                         str(root / "workspace" / "orchestrations" / "orch_xyz"))
         self.assertEqual(leaf_token_report.resolve(str(self.orch)), str(self.orch))
         with self.assertRaises(FileNotFoundError):
-            leaf_token_report.resolve("orch_does_not_exist")
+            leaf_token_report.resolve("orch_does_not_exist", start=str(root))
+
+    def test_an_id_resolves_from_a_subdirectory_by_walking_to_the_checkout_root(self):
+        # The sibling `analyze_timing.py` walks up to the repo root, so an id works from
+        # anywhere. A bare relative constant would resolve only from the root itself.
+        root = self.orch / "fake_repo"
+        (root / ".git").mkdir(parents=True)
+        (root / "workspace" / "orchestrations" / "orch_xyz").mkdir(parents=True)
+        deep = root / "tools" / "backends"
+        deep.mkdir(parents=True)
+        self.assertEqual(leaf_token_report.resolve("orch_xyz", start=str(deep)),
+                         str(root / "workspace" / "orchestrations" / "orch_xyz"))
 
 
 if __name__ == "__main__":

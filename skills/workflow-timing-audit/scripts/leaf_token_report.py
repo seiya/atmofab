@@ -48,14 +48,29 @@ import sys
 WORKSPACE_ROOT = "workspace/orchestrations"
 
 
-def resolve(target):
+def repo_root(start=None):
+    """Walk up to the checkout root, so an id resolves from any cwd as the sibling does."""
+    here = os.path.abspath(start or os.getcwd())
+    while True:
+        if os.path.isdir(os.path.join(here, ".git")):
+            return here
+        parent = os.path.dirname(here)
+        if parent == here:
+            return os.path.abspath(start or os.getcwd())
+        here = parent
+
+
+def resolve(target, start=None):
     """Accept a path or a bare `orchestration_id`, as the sibling audit script does."""
     if os.path.isdir(target):
         return target
-    candidate = os.path.join(WORKSPACE_ROOT, target)
-    if os.path.isdir(candidate):
-        return candidate
-    raise FileNotFoundError(f"no orchestration directory at {target!r} or {candidate!r}")
+    tried = []
+    for base in (os.getcwd() if start is None else start, repo_root(start)):
+        candidate = os.path.join(base, WORKSPACE_ROOT, target)
+        tried.append(candidate)
+        if os.path.isdir(candidate):
+            return candidate
+    raise FileNotFoundError(f"no orchestration directory at {target!r}; tried {tried}")
 
 
 def _stamp(text):
@@ -124,13 +139,18 @@ def rows(orch):
         if run is None:
             row["note"] = "no agent_runs.jsonl row for this launch"
         elif usage is None and frames == 0:
-            row["note"] = f"body is not an event stream: {head!r}"
+            # NOT spelled "not an event stream": `docs/ORCHESTRATION.md` defines
+            # `response_not_an_event_stream` as a 200 body that did not OPEN as one, which fails
+            # closed on the first attempt. What is seen here is only that no frame parsed -- an
+            # HTTP error body reaches this branch too, and those ARE classified and retried.
+            row["note"] = f"no event-stream frames parsed; body starts: {head!r}"
         elif usage is None:
             row["note"] = f"stream severed after {frames} frames (no usage frame)"
         elif run.get("finished_at") is None:
             row["note"] = "agent run records no finished_at"
         if row["note"] is None:
-            started = json.load(open(f"{orch}/launches/{arid}.response.json"))["started_at"]
+            with open(f"{orch}/launches/{arid}.response.json", encoding="utf-8") as handle:
+                started = json.load(handle)["started_at"]
             elapsed = (_stamp(run["finished_at"]) - _stamp(started)).total_seconds()
             details = usage.get("completion_tokens_details") or {}
             row.update(prompt_tokens=usage.get("prompt_tokens"),
