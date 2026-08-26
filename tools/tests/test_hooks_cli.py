@@ -1051,6 +1051,11 @@ class ClaudeHookCliTests(unittest.TestCase):
         The ids are popped rather than left ambient: `_extract_orchestration_id` reads
         `METDSL_ORCHESTRATION_ID`, so an operator who exported it would otherwise turn
         every missing-id case in this class into a with-id case (issue #84).
+
+        `tools/tests/conftest.py` now strips those names for the whole session, so under
+        pytest this is the second wall rather than the only one. It is kept because it is
+        not the same wall: this runs under plain `unittest` too, where no conftest is
+        loaded, and it names the exact ids this class is about rather than a prefix.
         """
         with patch.dict(os.environ, env):
             for name in ("METDSL_ORCHESTRATION_ID", "METDSL_CHILD_AGENT_RUN_ID",
@@ -1087,6 +1092,11 @@ class ClaudeHookCliTests(unittest.TestCase):
         The ids are popped rather than left ambient: `_extract_orchestration_id` reads
         `METDSL_ORCHESTRATION_ID`, so an operator who exported it would otherwise turn
         every missing-id case in this class into a with-id case (issue #84).
+
+        `tools/tests/conftest.py` now strips those names for the whole session, so under
+        pytest this is the second wall rather than the only one. It is kept because it is
+        not the same wall: this runs under plain `unittest` too, where no conftest is
+        loaded, and it names the exact ids this class is about rather than a prefix.
         """
         with patch.dict(os.environ, env or {}):
             for name in ("METDSL_ORCHESTRATION_ID", "METDSL_CHILD_AGENT_RUN_ID",

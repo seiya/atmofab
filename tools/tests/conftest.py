@@ -51,12 +51,93 @@ this checkout's `orchestration_meta.json` still removes one belonging to a run i
 DIFFERENT checkout, whose metadata is not visible from here. Redirecting is what makes the
 question not arise — the suite never names the real root, so it never has to decide what
 inside it is safe to remove.
+
+THE SECOND SUBJECT: the operator's ambient environment (issue #84).
+
+Several dozen tests decide what they are asserting by READING `os.environ` — whether the
+server is "under a workflow", which configuration home a backend resolves, whether
+preflight probes for real. Every one of those names is a PER-RUN knob that
+`tools/run_workflow.py` sets in the node environment, so the shell most likely to have
+them exported is a shell used for this repository's own work. A suite that inherits them
+answers a question about the machine instead of about the code, and the cost is a
+reviewer's round: on PR #81 a reviewer reported 152 failures as a branch regression when
+143 were the branch's and the rest were this.
+
+Measured on `165c26f`, whole suite, one variable at a time unless noted:
+
+  clean                                              5280 passed / 114s
+  METDSL_ORCHESTRATION_ID + METDSL_CHILD_AGENT_RUN_ID    9 failed   (the pair issue #84 named)
+  the 17 `METDSL_*` names the tree reads + CODEX_HOME
+    + CLAUDE_CONFIG_DIR, together                      181 failed / 356s
+
+Attributed on `tools/tests/test_orchestration_runtime.py` alone (1242 tests, 20s clean):
+`METDSL_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT=1` 84 failed **and 482s**, because the tests
+then run the real probes; `CODEX_HOME` 10; `METDSL_HOME` 3; `METDSL_ENFORCE_REPLY_BUDGET`
+1; the other ten names 0. So the pair in the issue was 5% of the surface, and the
+expensive member was not in it.
+
+`pytest_configure` removes those names from `os.environ` before collection — before
+collection, because a module body that reads the environment at import runs earlier than
+any fixture. A test that wants one of them sets it itself (`patch.dict`), which is what
+every test already does.
+
+BY PREFIX, not by list: the names are taken from
+`orchestration_runtime.LEAF_ENV_ALLOWED_PREFIXES` — the same constant that decides which
+host names reach a leaf — so a `METDSL_*` knob added later is neutralized without anyone
+remembering this file. The two exact names beside it (`CODEX_HOME`, `CLAUDE_CONFIG_DIR`)
+are the backend configuration homes, which carry no such prefix; `CODEX_HOME` is the one
+measured above, and `CLAUDE_CONFIG_DIR` is its twin, included by symmetry rather than by
+measurement (it cost 0 failures on `165c26f`).
+
+What this does NOT do, stated so it is not read as more: it neutralizes the names above
+and nothing else. `PATH`, `HOME` and the locale family are still inherited, and a suite
+run under `env -i` is not covered — that is a different and much larger claim than the one
+measured here.
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
+
+# The backend configuration homes, which carry no `METDSL_` prefix. See the docstring.
+_BACKEND_CONFIG_HOME_ENV = ("CODEX_HOME", "CLAUDE_CONFIG_DIR")
+
+# Populated by `pytest_configure`; a witness reads it rather than inferring the guard from
+# a side effect. Name -> the value the operator had exported.
+STRIPPED_OPERATOR_ENV: dict[str, str] = {}
+
+
+def operator_env_names_to_strip(environ) -> list[str]:
+    """The ambient names a test must not be able to inherit.
+
+    Defined here ONCE and read by both `pytest_configure` and its witness, so the witness
+    cannot drift into pinning a copy of the rule.
+
+    The candidate names are snapshotted BEFORE the import, so that the import cannot read
+    a name this function is about to declare strippable. Nothing in
+    `orchestration_runtime` reads the environment at module level today; taking the
+    snapshot first is what keeps that from becoming load-bearing.
+    """
+    present = list(environ)
+    from tools.orchestration_runtime import LEAF_ENV_ALLOWED_PREFIXES
+
+    names = {n for n in present if n.startswith(tuple(LEAF_ENV_ALLOWED_PREFIXES))}
+    names.update(n for n in _BACKEND_CONFIG_HOME_ENV if n in present)
+    return sorted(names)
+
+
+def pytest_configure(config) -> None:
+    """Remove the operator's per-run knobs before anything is collected."""
+    for name in operator_env_names_to_strip(os.environ):
+        STRIPPED_OPERATOR_ENV[name] = os.environ.pop(name)
+
+
+def pytest_unconfigure(config) -> None:
+    """Put them back, so an in-process pytest invocation leaves the caller's env alone."""
+    os.environ.update(STRIPPED_OPERATOR_ENV)
+    STRIPPED_OPERATOR_ENV.clear()
 
 
 @pytest.fixture(autouse=True)

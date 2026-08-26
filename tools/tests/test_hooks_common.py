@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -22,6 +24,115 @@ from tools.hooks.common import (
     evaluate_common_policy,
     validate_pipeline_semantics_stage,
 )
+
+# --- The CPU budget the two hook-cost assertions are held to (issue #84) --------------
+#
+# Those two tests guard against a super-linear blowup in a hook that runs SYNCHRONOUSLY on
+# every tool call; every regression the family caught cost 8-135x the baseline. The budget
+# used to be an absolute `assertLess(process_time() - t0, 5.0)`. CPU time was already
+# chosen over wall clock for exactly this reason, and it is NOT enough: CPU time itself
+# inflates under contention (cache and memory pressure, and WSL2 scheduling). Measured on
+# `165c26f`, 22 cores, 2-3 samples per condition:
+#
+#   condition                          test_expansion…      test_glob…
+#   solo                             1.13-1.21s            0.78-0.82s
+#   3 concurrent pytest runs         1.40-1.48s            0.92-1.01s
+#   44 spinners (2x oversubscribed)  2.30-2.41s            1.85-1.91s
+#
+# 2.1-2.5x of movement for a machine fact, against a 5.0s bound. A separate prototype run
+# on the same host reached 4.29s, and issue #84 reports 9.36s at three concurrent pytest
+# runs (their measurement, not re-observed here) — the ceiling is whatever the host is
+# doing, so no absolute number is safe.
+#
+# The budget is therefore RELATIVE to a calibration workload measured in the same process,
+# immediately around the block being measured. Both inflate together, so the quotient is a
+# fact about the code. The same samples, in units:
+#
+#   solo                            18.8-22.6            10.6-15.2
+#   3 concurrent pytest runs        20.4-22.1            14.0-15.0
+#   44 spinners                     15.9-18.1            13.3-14.3
+#
+# 1.4x of spread instead of 2.5x, and what movement remains drifts DOWNWARD under load —
+# the compensating direction for an upper bound, because a budget that tightens cannot
+# produce the flake this is fixing. The bounds below are ~5x the highest figure observed,
+# the same headroom the 5.0s bound had over its ~1s measurement; the smallest regression
+# this family ever caught (8x) is 175 units against a 110-unit bound.
+
+_CPU_CALIBRATION_REPEATS = 2500
+_CPU_CALIBRATION_PATTERN = re.compile(r"(?:[A-Za-z_][A-Za-z0-9_]*|\$\{[^}]*\}|\S)")
+_CPU_CALIBRATION_SAMPLE = ("V=" + "a" * 200 + "; cat ${V##*a*b} x/y ") * 20
+
+
+def _cpu_calibration_unit() -> float:
+    """CPU seconds for one fixed unit of work on this host, measured NOW.
+
+    Deliberately the SAME KIND of work the hook does — compiled-regex scanning over
+    shell-command text — so that whatever slows one down slows the other. A pure
+    arithmetic loop would not track it: the shapes under measurement are dominated by
+    regex and by string building, not by integer work.
+
+    ~0.05s solo. Small enough that two of them per assertion are not worth noticing
+    against the block they bracket, large enough not to be reading timer noise.
+    """
+    start = time.process_time()
+    total = 0
+    for _ in range(_CPU_CALIBRATION_REPEATS):
+        total += len(_CPU_CALIBRATION_PATTERN.findall(_CPU_CALIBRATION_SAMPLE))
+    elapsed = time.process_time() - start
+    assert total, "the calibration loop did no work"
+    return max(elapsed, 1e-6)
+
+
+class _CpuUnits:
+    """Measure a block's CPU cost as a multiple of `_cpu_calibration_unit()`.
+
+    Calibrated on BOTH sides and averaged: the host's load is not constant across a
+    block that runs for a second, and a single reading taken before it would misprice a
+    block that the load arrived during.
+    """
+
+    def __enter__(self) -> "_CpuUnits":
+        self._before = _cpu_calibration_unit()
+        self._start = time.process_time()
+        return self
+
+    def __exit__(self, *exc_info: object) -> bool:
+        self.cpu_seconds = time.process_time() - self._start
+        self.unit_seconds = (self._before + _cpu_calibration_unit()) / 2
+        self.units = self.cpu_seconds / self.unit_seconds
+        return False
+
+    def describe(self) -> str:
+        return (f"{self.units:.1f} calibration units "
+                f"({self.cpu_seconds:.2f}s CPU / {self.unit_seconds:.4f}s per unit)")
+
+
+class CpuBudgetCalibrationTests(unittest.TestCase):
+    """The calibrator is the thing the two budget assertions are denominated in.
+
+    A calibrator that returns a constant does not fail anything by itself — it silently
+    turns `units` back into seconds and multiplies the bound by ~20. That mutant survived
+    the round-0 sweep with every other test green, which is what this class is for. It is a
+    SELF-TEST, not a load test: what it pins is that the denominator tracks the work done,
+    which is the property the compensation rests on. Whether the quotient actually holds
+    still under contention is measured out of band (the table above `_cpu_calibration_unit`)
+    and is NOT pinned here — a suite cannot manufacture the load to check it without
+    becoming the flake it is fixing.
+    """
+
+    def test_the_calibrator_prices_its_own_workload_at_about_one_unit(self) -> None:
+        with _CpuUnits() as measured:
+            _cpu_calibration_unit()
+        self.assertGreater(measured.units, 0.4, measured.describe())
+        self.assertLess(measured.units, 2.5, measured.describe())
+
+    def test_the_price_tracks_the_amount_of_work(self) -> None:
+        """Three units of the same work cost about three units, not one."""
+        with _CpuUnits() as measured:
+            for _ in range(3):
+                _cpu_calibration_unit()
+        self.assertGreater(measured.units, 1.8, measured.describe())
+        self.assertLess(measured.units, 5.5, measured.describe())
 
 
 class HookCommonTests(unittest.TestCase):
@@ -2715,13 +2826,44 @@ class ForbidBackendCredentialReadTests(unittest.TestCase):
                 HookInput(
                     event_name=HookEventName.PRE_COMMAND_EXECUTE,
                     backend=backend,
-                    payload={"command": command, "repo_root": os.getcwd()},
+                    payload={"command": command, "repo_root": self._repo_root()},
                     command=command,
                 )
             )
 
     def _policy(self, command: str, backend: str = "claude") -> str:
         return (self._call(command, backend).audit_detail or {}).get("policy", "")
+
+    def _relative_route_home(self, base: str | None = None) -> str:
+        """The `..`-and-back route from `repo_root` to `$HOME`, for THIS checkout.
+
+        The cases below that exercise a relative escape used to spell it `../..`, which
+        states a fact about the development checkout (`/home/seiya/work/met-dsl` is two
+        levels under `$HOME`) rather than about the guard. In a `git worktree` under
+        `/tmp` — where every mutation sweep of this repository runs — `../..` is `/`, and
+        `test_blocks_bash_only_tilde_prefixes` failed for the depth of the path it ran
+        from (measured on `165c26f` in `/tmp/wt84`: 1 failure there, 0 in the primary
+        checkout). `os.path.relpath` gives the same route at any depth and from outside
+        `$HOME` entirely (`../../home/seiya` from `/tmp/wt84`), so the assertion is about
+        the guard again.
+
+        `test_directory_options_anchor_like_cd` is the reason to prefer this over
+        widening the assertion: at `/tmp/wt84` its `../..` case still passed, on a
+        DIFFERENT policy than the one it means to exercise. A test coupled to the path
+        depth does not only fail in the wrong place — it also passes in the wrong place.
+
+        Anchored on `os.getcwd()`, not on the payload's `repo_root`: `~+` IS `$PWD` and
+        `tools/hooks/common.py` expands it from the process's working directory. The two
+        are the same value here (`_repo_root` returns the cwd as well), and driving the
+        `~+` cases at a synthetic root while the process sits somewhere else measures
+        neither — which is how the first version of the depth witness below failed in a
+        worktree while testing nothing about depth.
+        """
+        return os.path.relpath(str(Path.home()), base or os.getcwd())
+
+    def _repo_root(self) -> str:
+        """The root `_call` hands the hook — one spelling for both."""
+        return os.getcwd()
 
     def test_blocks_shell_expansions_expandvars_cannot_do(self) -> None:
         """`os.path.expandvars` handles only bare `$NAME` / `${NAME}`.
@@ -2808,13 +2950,50 @@ class ForbidBackendCredentialReadTests(unittest.TestCase):
         """
         for command in (
             "cat ~-/.claude.json",
-            "cat ~+/../../.claude.json",
+            f"cat ~+/{self._relative_route_home()}/.claude.json",
             "cat ~1/.claude.json",
         ):
             self.assertEqual(
                 self._policy(command),
                 "forbid_backend_credential_direct_read",
                 msg=command)
+
+    def test_a_relative_escape_to_home_is_blocked_at_any_checkout_depth(self) -> None:
+        """The depth-independence of the two cases above, pinned rather than hoped.
+
+        `_relative_route_home` removes a coupling, and a mutant that puts `../..` back is
+        INVISIBLE in the primary checkout, where `../..` happens to be `$HOME`. So this
+        runs the guard from checkouts at other depths — really moving the process, since
+        both anchors involved (`~+` and the `-C` option) are resolved from the working
+        directory and from `repo_root`, and a synthetic `repo_root` alone would leave the
+        first one pointing at wherever pytest was started.
+
+        Two depths outside `$HOME`, where the route runs up to a common ancestor and back
+        down. Both fail with `../..` hard-coded, in the primary checkout as well as in a
+        worktree, which is what makes the mutant visible from anywhere.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            for depth in (1, 6):
+                root = Path(td).joinpath(*[f"d{i}" for i in range(depth)])
+                root.mkdir(parents=True)
+                cwd = os.getcwd()
+                os.chdir(root)
+                try:
+                    route = self._relative_route_home()
+                    with self.subTest(depth=depth, route=route):
+                        self.assertEqual(
+                            self._policy(f"cat ~+/{route}/.claude.json"),
+                            "forbid_backend_credential_direct_read")
+                        self.assertNotEqual(
+                            self._policy(f"tar cf - -C={route} .claude"), "")
+                        # The control: a route to somewhere that is not a credential home
+                        # is not this guard's business, or the assertions above would hold
+                        # for any `..` at all.
+                        self.assertEqual(
+                            self._call(f"cat ~+/{route}/notes.txt").action,
+                            HookDecisionAction.ALLOW)
+                finally:
+                    os.chdir(cwd)
 
     def test_blocks_every_cd_spelling_that_reaches_home(self) -> None:
         """A bare `cd` goes to $HOME — the shape reached for once `cd ~` closes."""
@@ -3069,10 +3248,11 @@ class ForbidBackendCredentialReadTests(unittest.TestCase):
     def test_directory_options_anchor_like_cd(self) -> None:
         """`-C <dir>` changes the working directory the way `cd` does, in both
         the spaced and the glued spelling."""
+        route = self._relative_route_home()
         for command in (
             "tar cf - -C ~ .codex",
-            "tar cf - --directory=../.. .claude",
-            "tar cf - -C=../.. .claude",
+            f"tar cf - --directory={route} .claude",
+            f"tar cf - -C={route} .claude",
         ):
             self.assertNotEqual(self._policy(command), "", msg=command)
         self.assertEqual(self._call("git -C docs log").action, HookDecisionAction.ALLOW)
@@ -3288,33 +3468,28 @@ class ForbidBackendCredentialReadTests(unittest.TestCase):
         """`${V##*a*a*a*a*b}` made a translated regex backtrack catastrophically
         — 8s at a 240-character value and no return at all at the 4096-character
         bound, in a hook that runs synchronously on every tool call."""
-        import time
-        # CPU time, not wall clock: these are budget assertions about the hook's
-        # own work, and a wall-clock version flaked when the suite ran under
-        # load beside other processes.
-        t0 = time.process_time()
-        self._policy("V=" + "a" * 4096 + "; cat ${V##*a*a*a*a*a*a*b}")
-        self._policy("V=" + "a" * 4096 + "; cat " + " ".join("${V%*zzz" + str(i) + "}" for i in range(200)))
-        self._policy("V=" + "ab" * 2048 + "; cat ${V//a*b/Q}")
-        # A `[…]` class mask is a Python loop over the whole value; rebuilding it
-        # per start position made a 4 KB value with a few classes cost 10-65s.
-        for classes in (5, 20, 100):
-            self._policy("X=" + "a" * 4096 + "; cat ${X//" + "[a-z]" * classes + "b/y}/.claude.json")
-        # Many substitutions over one long value: the per-position work is
-        # O(len(value)), which a budget debiting only the pattern length missed.
-        self._policy(
-            "A=" + "a" * 4000 + "; cat "
-            + " ".join("${A//[a-z]/_" + str(i) + "}" for i in range(50)) + " x/y")
-        # Many assignments x many substitutions: the per-expansion budget bounds
-        # ONE of them, and their number was unbounded (26s of CPU at 1.6 MB).
-        self._policy(
-            "; ".join(f"V{i}=" + "a" * 400 for i in range(400))
-            + "; cat " + " ".join("${V" + str(i) + "//[a-z]/_}" for i in range(400)) + "/x")
-        # 5s, not 2s: measured ~1s of CPU for these shapes, and the point of
-        # the assertion is that nothing here is quadratic or exponential —
-        # every regression this family caught cost 8-135s. A tight bound on
-        # a ~1s measurement only buys flakes when the suite runs under load.
-        self.assertLess(time.process_time() - t0, 5.0)
+        # Neither wall clock NOR absolute CPU time — see `_CpuUnits` above.
+        with _CpuUnits() as measured:
+            self._policy("V=" + "a" * 4096 + "; cat ${V##*a*a*a*a*a*a*b}")
+            self._policy("V=" + "a" * 4096 + "; cat " + " ".join("${V%*zzz" + str(i) + "}" for i in range(200)))
+            self._policy("V=" + "ab" * 2048 + "; cat ${V//a*b/Q}")
+            # A `[…]` class mask is a Python loop over the whole value; rebuilding it
+            # per start position made a 4 KB value with a few classes cost 10-65s.
+            for classes in (5, 20, 100):
+                self._policy("X=" + "a" * 4096 + "; cat ${X//" + "[a-z]" * classes + "b/y}/.claude.json")
+            # Many substitutions over one long value: the per-position work is
+            # O(len(value)), which a budget debiting only the pattern length missed.
+            self._policy(
+                "A=" + "a" * 4000 + "; cat "
+                + " ".join("${A//[a-z]/_" + str(i) + "}" for i in range(50)) + " x/y")
+            # Many assignments x many substitutions: the per-expansion budget bounds
+            # ONE of them, and their number was unbounded (26s of CPU at 1.6 MB).
+            self._policy(
+                "; ".join(f"V{i}=" + "a" * 400 for i in range(400))
+                + "; cat " + " ".join("${V" + str(i) + "//[a-z]/_}" for i in range(400)) + "/x")
+        # 80 units against a 10.6-15.2 measurement — the headroom argument is the
+        # same as the sibling assertion's.
+        self.assertLess(measured.units, 80, measured.describe())
 
     def test_transformations_match_bash_shortest_and_longest(self) -> None:
         """`#`/`%` strip the shortest match, `##`/`%%` the longest — verified
@@ -3569,37 +3744,36 @@ class ForbidBackendCredentialReadTests(unittest.TestCase):
         24s before the caps; the 1200-assignment case took 18s. Each shape is
         exercised at a size where a quadratic implementation cannot pass.
         """
-        import time
-        # CPU time, not wall clock: these are budget assertions about the hook's
-        # own work, and a wall-clock version flaked when the suite ran under
-        # load beside other processes.
-        t0 = time.process_time()
-        self._policy("cat " + " ".join(["${A:-${B:-${C:-x}}}"] * 40))
-        self._policy("cat " + " ".join([f"V{i}=$HOME" for i in range(40)]) + "; cat $V1/x")
-        self._policy("cd ~ && cat " + " ".join([f"f{i}.txt" for i in range(200)]))
-        # Many distinct cd targets (the anchor axis).
-        self._policy(" ".join(f"cd d{i} && cat f{i}.txt" for i in range(800)))
-        # Many assignments (the substitution axis).
-        self._policy(" ".join(f"V{i}=$HOME" for i in range(1200)) + "; cat $V1/x")
-        # A CYCLIC assignment chain: the caps bound the count, but each pass
-        # applies every assignment to the whole string, so this multiplied the
-        # candidate's length per pass — a 56-character command took 134s.
-        self._policy("A=$B$B$B$B; B=$C$C$C$C; C=$D$D$D$D; D=$A$A$A$A; cat $A/x")
-        self._policy(
-            "; ".join(f"V{i}=$V{(i + 1) % 8}$V{(i + 1) % 8}$V{(i + 1) % 8}$V{(i + 1) % 8}"
-                      for i in range(8))
-            + "; cat $V0/x")
-        # Many parameter expansions in ONE token (the per-token fan-out axis).
-        self._policy("cat " + "".join(f"${{Z{i}:-x}}" for i in range(200)) + "/x")
-        # Anchors x tokens is the last quadratic pair: both factors are
-        # attacker-chosen, and every combination is a `.resolve()` syscall.
-        self._policy(" ".join(f"cd d{i}" for i in range(800))
-                     + " && " + " ".join(f"cat ../g{i}.txt" for i in range(800)))
-        # 5s, not 2s: measured ~1s of CPU for these shapes, and the point of
-        # the assertion is that nothing here is quadratic or exponential —
-        # every regression this family caught cost 8-135s. A tight bound on
-        # a ~1s measurement only buys flakes when the suite runs under load.
-        self.assertLess(time.process_time() - t0, 5.0)
+        # Neither wall clock NOR absolute CPU time: both are facts about the
+        # machine's load. The budget is relative to a calibration workload
+        # measured around this block — see `_CpuUnits` above for the figures.
+        with _CpuUnits() as measured:
+            self._policy("cat " + " ".join(["${A:-${B:-${C:-x}}}"] * 40))
+            self._policy("cat " + " ".join([f"V{i}=$HOME" for i in range(40)]) + "; cat $V1/x")
+            self._policy("cd ~ && cat " + " ".join([f"f{i}.txt" for i in range(200)]))
+            # Many distinct cd targets (the anchor axis).
+            self._policy(" ".join(f"cd d{i} && cat f{i}.txt" for i in range(800)))
+            # Many assignments (the substitution axis).
+            self._policy(" ".join(f"V{i}=$HOME" for i in range(1200)) + "; cat $V1/x")
+            # A CYCLIC assignment chain: the caps bound the count, but each pass
+            # applies every assignment to the whole string, so this multiplied the
+            # candidate's length per pass — a 56-character command took 134s.
+            self._policy("A=$B$B$B$B; B=$C$C$C$C; C=$D$D$D$D; D=$A$A$A$A; cat $A/x")
+            self._policy(
+                "; ".join(f"V{i}=$V{(i + 1) % 8}$V{(i + 1) % 8}$V{(i + 1) % 8}$V{(i + 1) % 8}"
+                          for i in range(8))
+                + "; cat $V0/x")
+            # Many parameter expansions in ONE token (the per-token fan-out axis).
+            self._policy("cat " + "".join(f"${{Z{i}:-x}}" for i in range(200)) + "/x")
+            # Anchors x tokens is the last quadratic pair: both factors are
+            # attacker-chosen, and every combination is a `.resolve()` syscall.
+            self._policy(" ".join(f"cd d{i}" for i in range(800))
+                         + " && " + " ".join(f"cat ../g{i}.txt" for i in range(800)))
+        # 110 units against a 15.9-22.6 measurement: the point of the assertion
+        # is that nothing here is quadratic or exponential — every regression
+        # this family caught cost 8-135x, i.e. 175 units or more. The headroom
+        # is what stops the bound from reading a machine's load as a defect.
+        self.assertLess(measured.units, 110, measured.describe())
 
     def test_a_root_containing_repo_root_is_dropped_not_enforced(self) -> None:
         """A misconfigured CODEX_HOME above the checkout must not block everything.

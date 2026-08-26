@@ -118,6 +118,9 @@ _DECLARED_ENVIRONMENT_SKIPS = {
     "the suite's homes guard is not installed":
         "running outside pytest, where conftest is not loaded and the guard under test "
         "does not exist",
+    "the suite's environment guard is not installed":
+        "the same condition for the conftest hook that strips the operator's ambient "
+        "environment (issue #84)",
 }
 
 # Canonical name -> index of the reason among the positional arguments. `skipUnless`/`skipIf`
