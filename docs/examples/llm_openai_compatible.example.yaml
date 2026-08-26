@@ -40,6 +40,23 @@
 #                    the whole completion has to fit alongside the prompt, and streaming the
 #                    answer does not change that. The default (32768) is sized for a
 #                    CodegenBundle.
+#                    NECESSARY AND NOT SUFFICIENT for an endpoint that streams
+#                    `reasoning_content`: there this field is a COMBINED reasoning+answer
+#                    budget, and the reasoning is the dominant VARIABLE term (measured 2.4x
+#                    across three attempts of one closure on one model at one ceiling). Two
+#                    consequences worth knowing BEFORE the first run: a ceiling below the
+#                    model's reasoning FLOOR yields a zero-character answer with
+#                    `finish_reason: length`, not a short answer — measured 5 runs of 5 — and
+#                    the floor is model-specific, so a value cannot be carried from one entry
+#                    to another. `docs/ORCHESTRATION.md` "Leaf LLM configuration" is canonical
+#                    for the sizing rule and the measurements; `effort` is NOT a lever on it.
+#   timeout_s        Client-side WALL-CLOCK bound on the whole request, default 900. It is not
+#                    bounded from above by the conductor's per-leaf process cap, which applies
+#                    to a CLI leaf and not to an HTTP request. MOVE IT WITH
+#                    `max_output_tokens`: raising the ceiling alone converts a truncation into
+#                    a timeout. Size it on the endpoint's LOADED throughput, not its idle one
+#                    — one measured endpoint halved within a single evening. Canonical, with
+#                    the arithmetic: `docs/ORCHESTRATION.md` "Leaf LLM configuration".
 #   stream           `true` (the default) | `false`. On by default, and the default is the point:
 #                    a non-streaming completion means the endpoint writes nothing until the whole
 #                    answer exists, so anything in front of it that bounds the interval between
@@ -96,6 +113,10 @@ phases:
         api_key_env: LOCAL_LLM_API_KEY
         model: qwen2.5-coder-32b-instruct
         effort: medium
+        # Half the writer's budget, because a verdict is not a bundle — and that arithmetic
+        # holds only for a model that does not stream `reasoning_content`. On a reasoning
+        # model 16384 is BELOW one measured reasoning floor and returns a zero-character
+        # verdict every time; re-size this entry against the model, never by inheritance.
         max_output_tokens: 16384
 
   validate:
