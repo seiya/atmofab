@@ -102,4 +102,10 @@ the case history that tells you how it closed.
   "cmake", ...)`'s message contains the implemented `make`, which is always true because **`"cmake"`
   contains `"make"`** (found independently by two reviewers). **Assert inside the test that the
   probe has the property it needs** (`assertNotIn(implemented_id, probe)`)
+- **You measured a family and reported the conclusion** → PR #98 did this three times, once per
+  round, each time in the commit message that announced the fix. The three families and the
+  one-question check are in `references/mutation-testing.md`. What makes it a distinct sign from
+  the substring one above: there a single probe is degenerate and reading it shows that; here every
+  probe is individually fine, and only the SET is wrong — nothing in any one of them looks off, so
+  it survives review by anyone who reads the test rather than asking what the family spans
 

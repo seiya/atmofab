@@ -34,6 +34,15 @@ first failing test instead of finishing the suite, and keep `--test-cmd` narrowe
 the tests that could plausibly see the change. Measured on a 4-hunk met-dsl range with
 an 805-test file: 5m52s serially without `-x`, 43s with both (21s of that the baseline).
 
+**`-x` is only safe once the baseline for THAT `--test-cmd` is green.** If the command
+you pass already has a failure unrelated to the change, `-x` stops every mutant at it and
+every mutant is recorded `killed` — a false green over the whole run. The baseline check
+below is what protects you (red baseline, exit 2), so heed it rather than reaching for
+`--skip-baseline`; and note the protection does NOT extend to a sweep you write by hand.
+met-dsl's standing instance is the two path-depth-coupled `ForbidBackendCredentialReadTests`
+cases, which fail in a worktree under `/tmp` and pass in the checkout: deselect them in
+`--test-cmd`, or drop `-x`.
+
 A baseline run (nothing reverted) goes first. Without it a suite that is already red
 reports every hunk as "killed" — a false green, and the failure mode of this script that
 reads most like success.
