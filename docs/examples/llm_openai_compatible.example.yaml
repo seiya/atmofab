@@ -49,7 +49,12 @@
 #                    `finish_reason: length`, not a short answer — measured 5 runs of 5 — and
 #                    the floor is model-specific, so a value cannot be carried from one entry
 #                    to another. `docs/ORCHESTRATION.md` "Leaf LLM configuration" is canonical
-#                    for the sizing rule and the measurements; `effort` is NOT a lever on it.
+#                    for the sizing rule and the measurements. It also records that `effort`
+#                    did not move the reasoning volume on the one endpoint measured — on a
+#                    CENSORED probe, where only the ORDER of the three levels is evidence, so
+#                    read it as "do not spend a run tuning this before re-measuring", not as
+#                    "the field does nothing". The entries below still set it, for an endpoint
+#                    that honours it.
 #   timeout_s        Client-side WALL-CLOCK bound on the whole request, default 900. It is not
 #                    bounded from above by the conductor's per-leaf process cap, which applies
 #                    to a CLI leaf and not to an HTTP request. MOVE IT WITH
@@ -106,18 +111,20 @@ phases:
         model: qwen2.5-coder-32b-instruct
         effort: medium
         # 32768 sizes the ARTIFACT, and that is the whole budget only because the model named
-        # here does not stream `reasoning_content`. The same 32768 on a reasoning model was
-        # measured spending all of it on reasoning and emitting a zero-character bundle on
-        # every effort level; that run's writer ended at 98304. Re-size against the model.
+        # here does not stream `reasoning_content`. A PROBE against a reasoning model at this
+        # same 32768 spent all of it on reasoning and emitted a zero-character bundle on every
+        # effort level; SEPARATELY, a production closure on that model ended at 98304. Two
+        # different measurements, kept apart on purpose — `docs/ORCHESTRATION.md` is canonical
+        # for which is which. Re-size against the model you run.
         max_output_tokens: 32768
         # Declared rather than defaulted, because the glossary above says the pair moves
         # together and a sample that omits one models neither half. The value is deliberately
         # GENEROUS, not derived: this sample's endpoint has not been measured, and the rates
         # `docs/ORCHESTRATION.md` records belong to another endpoint and another model, which
         # the same document says cannot be carried across. What the arithmetic does settle is
-        # what the DEFAULT would demand: 32768 inside 900 s needs 36.4 tok/s sustained, which
-        # is at the top of the 28.3-36.9 tok/s that document measured on an UNLOADED endpoint
-        # and roughly twice its loaded 17.6-19.8. 2400 asks 13.7 tok/s. Re-measure your own.
+        # what the DEFAULT would demand: 32768 inside 900 s needs 36.4 tok/s sustained, above
+        # every rate that document's WRITER reached (28.3-36.9) and about twice the loaded
+        # 17.6-19.8 its reviewer fell to. 2400 asks 13.7 tok/s. Re-measure your own.
         timeout_s: 2400
       # PURE: the verdict reviewer over the bundle above.
       verify:

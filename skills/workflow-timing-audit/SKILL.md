@@ -140,6 +140,21 @@ python3 skills/workflow-timing-audit/scripts/analyze_timing.py <orch_id> --json
 ```
 If transcripts live elsewhere, pass `--project-dir <dir>`.
 
+### Step 1b — for an HTTP leaf, take the per-request token and throughput figures
+`analyze_timing.py` reads transcripts. An HTTP leaf has none: it is one request, and what it
+spent is in the run's own `launches/` artifacts. For those, run
+
+```bash
+python3 skills/workflow-timing-audit/scripts/leaf_token_report.py <orch_id | orchestration_dir> [substep ...]
+```
+
+One row per persisted leaf stream, in run order: prompt / reasoning / output tokens, the answer
+in CHARACTERS, elapsed, and tok/s. It reads the OpenAI dialect and says so rather than guessing
+when handed a Messages-API stream, and it distinguishes the three ways a leaf produces no `usage`
+frame — a severed stream, a body that was never an event stream (an HTTP `504` page is DEADLINE
+evidence, not a network fault), and a run with no `finished_at`. `docs/ORCHESTRATION.md`
+§"Leaf LLM configuration" is what its figures feed, and states the sizing rule they support.
+
 ### Step 2 — read the report top-down
 1. Read the **anomalies** section FIRST. It names waste and failure the time table hides:
    a `max_tokens` truncation (especially a thinking-only one — zero output, work redone)
