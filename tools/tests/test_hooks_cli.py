@@ -10,7 +10,7 @@ import re
 import subprocess
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -568,6 +568,40 @@ class HookCliTests(unittest.TestCase):
                     / "native_hook_events.jsonl"
                 )
                 self.assertFalse(log_path.exists())
+
+    def test_global_does_not_consult_the_codex_feature_cache(self) -> None:
+        """An ambient codex hook must not fail-closed on a certificate that cannot exist.
+
+        The feature cache is written HOST-side per orchestration and `_global` is not
+        one, so an ambient codex hook returns before the gate. Deliberately does NOT
+        patch `read_codex_feature_cache` - patching it is what hides this in the
+        neighbouring tests, which would pass even if the gate ran here.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            payload = {
+                "repo_root": tmp,
+                "tool_name": "shell",
+                "tool_input": {"command": "echo hello"},
+            }
+            with patch.dict(os.environ, {}):
+                for name in ("METDSL_ORCHESTRATION_ID", "METDSL_WORKFLOW_MODE",
+                             "METDSL_MISSING_ORCHESTRATION_ID_POLICY"):
+                    os.environ.pop(name, None)
+                out = io.StringIO()
+                err = io.StringIO()
+                with redirect_stdout(out), redirect_stderr(err):
+                    code = cli.main(
+                        [
+                            "--backend",
+                            "codex",
+                            "--event",
+                            "PreToolUse",
+                            "--input-json",
+                            json.dumps(payload),
+                        ]
+                    )
+            self.assertEqual(code, 0, msg=(out.getvalue() + err.getvalue()))
+            self.assertNotIn("hooks feature", out.getvalue() + err.getvalue())
 
     @staticmethod
     def _run_codex_pre(payload: dict) -> int:
@@ -1198,32 +1232,143 @@ class ClaudeHookCliTests(unittest.TestCase):
             )
             self.assertFalse(log_path.exists())
 
-    def test_strict_policy_allows_missing_orchestration_id_as_global(self) -> None:
+    @staticmethod
+    def _run_claude_pre(payload: dict, env: dict[str, str]) -> tuple[int, str]:
+        """Run one PreToolUse hook with `env` and NEITHER per-launch id inherited.
+
+        The ids are popped rather than left ambient: `_extract_orchestration_id` reads
+        `METDSL_ORCHESTRATION_ID`, so an operator who exported it would otherwise turn
+        every missing-id case in this class into a with-id case (issue #84).
+        """
+        with patch.dict(os.environ, env):
+            for name in ("METDSL_ORCHESTRATION_ID", "METDSL_CHILD_AGENT_RUN_ID",
+                         "METDSL_WORKFLOW_MODE", "METDSL_MISSING_ORCHESTRATION_ID_POLICY"):
+                if name not in env:
+                    os.environ.pop(name, None)
+            out = io.StringIO()
+            err = io.StringIO()
+            with redirect_stdout(out), redirect_stderr(err):
+                code = cli.main(
+                    [
+                        "--backend",
+                        "claude",
+                        "--event",
+                        "PreToolUse",
+                        "--input-json",
+                        json.dumps(payload),
+                    ]
+                )
+            return code, out.getvalue() + err.getvalue()
+
+    @staticmethod
+    def _bash_payload(repo_root: Path, command: str) -> dict:
+        return {
+            "repo_root": str(repo_root),
+            "tool_name": "Bash",
+            "tool_input": {"command": command},
+        }
+
+    def test_strict_policy_refuses_missing_orchestration_id(self) -> None:
+        """`docs/ORCHESTRATION.md` §39: under a run the hook fails rather than falling
+        back to `_global`.
+
+        This is the reader of `METDSL_MISSING_ORCHESTRATION_ID_POLICY`. It had none
+        between `ec52a09` (2026-04-25) and issue #82, while `tools/run_workflow.py` kept
+        writing the variable and §39 kept describing it as live.
+        """
         with tempfile.TemporaryDirectory() as tmp:
-            repo_root_path = Path(tmp)
             payload = {
-                "repo_root": str(repo_root_path),
+                "repo_root": tmp,
                 "tool_name": "WebSearch",
                 "tool_input": {"query": "workflow status"},
             }
-            with patch.dict(
-                os.environ,
-                {"METDSL_MISSING_ORCHESTRATION_ID_POLICY": "strict"},
-            ):
-                out = io.StringIO()
-                with redirect_stdout(out):
-                    code = cli.main(
-                        [
-                            "--backend",
-                            "claude",
-                            "--event",
-                            "PreToolUse",
-                            "--input-json",
-                            json.dumps(payload),
-                        ]
-                    )
-                self.assertEqual(code, 0)
-                self.assertEqual(out.getvalue().strip(), "")
+            code, text = self._run_claude_pre(
+                payload, {"METDSL_MISSING_ORCHESTRATION_ID_POLICY": "strict"})
+            self.assertEqual(code, 2)
+            self.assertIn("orchestration_id is required", text)
+
+    def test_strict_policy_is_the_only_value_that_refuses(self) -> None:
+        """Sampled, not pinned: the reader compares against one literal, so this covers
+        the neighbouring spellings a caller might expect to work, not every value."""
+        with tempfile.TemporaryDirectory() as tmp:
+            payload = self._bash_payload(Path(tmp), "echo hello")
+            for value in ("", "global", "yes", "1", "STRICTLY"):
+                code, _ = self._run_claude_pre(
+                    payload, {"METDSL_MISSING_ORCHESTRATION_ID_POLICY": value})
+                self.assertEqual(code, 0, msg=value)
+            code, _ = self._run_claude_pre(
+                payload, {"METDSL_MISSING_ORCHESTRATION_ID_POLICY": "  Strict "})
+            self.assertEqual(code, 2, msg="stripped and case-folded")
+
+    def test_ambient_call_outside_a_run_is_allowed_without_evaluation(self) -> None:
+        """A call belonging to no orchestration is allowed, and this is deliberate.
+
+        An operator's interactive session runs this same entrypoint - the DEV layer
+        carries the leaf's hook commands verbatim - and `forbid_git_reset_hard` is one
+        of the few policies gated on nothing, so it is the shape that shows the choice.
+        The judgment is the one `test_operator_session_outside_workflow_mode_is_not_
+        refused` already records for the Bash write refusal: the operator owns the
+        machine, so no leaf shortcut is being defended here.
+
+        The corollary is that this branch runs BEFORE any policy, so a defect in this
+        module cannot refuse an operator out of their own session.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            code, text = self._run_claude_pre(
+                self._bash_payload(Path(tmp), "git reset --hard HEAD~1"), {})
+            self.assertEqual(code, 0, msg=text)
+
+    def test_missing_orchestration_id_under_a_run_is_evaluated(self) -> None:
+        """The backstop: under a run, `_global` reaches the policies.
+
+        Not the contract - `tools/run_workflow.py` sets the strict policy for every
+        node, so the refusal above is what production takes. This pins the remaining
+        shape (workflow mode on, policy unset) as evaluated rather than waved through,
+        which is what `ec52a09`'s unconditional ALLOW made of it.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            code, text = self._run_claude_pre(
+                self._bash_payload(Path(tmp), "cat ~/.claude.json"),
+                {"METDSL_WORKFLOW_MODE": "1"})
+            self.assertEqual(code, 2)
+            self.assertIn("forbidden in workflow mode", text)
+
+    def test_missing_orchestration_id_allows_an_ordinary_command(self) -> None:
+        """Control for the test above: the layer is not simply refusing everything."""
+        with tempfile.TemporaryDirectory() as tmp:
+            code, _ = self._run_claude_pre(self._bash_payload(Path(tmp), "echo hello"), {})
+            self.assertEqual(code, 0)
+
+    def test_ambient_global_call_writes_no_audit_record(self) -> None:
+        """The pollution `ec52a09` was avoiding, kept without the ALLOW that came with it.
+
+        The record is what would create `workspace/orchestrations/_global/` in the
+        operator's tree; today the ambient branch returns before the audit call, and
+        `_append_hook_audit`'s own `_global` guard covers the paths that do not.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            code, _ = self._run_claude_pre(
+                self._bash_payload(Path(tmp), "git reset --hard HEAD~1"), {})
+            self.assertEqual(code, 0)
+            self.assertFalse(
+                (Path(tmp) / "workspace" / "orchestrations" / "_global" / "hooks"
+                 / "native_hook_events.jsonl").exists())
+
+    def test_strict_refusal_under_a_run_is_recorded(self) -> None:
+        """Under `METDSL_WORKFLOW_MODE=1` the `_global` suppression does not apply, so
+        the refusal leaves the trace `docs/ORCHESTRATION.md` §38 requires."""
+        with tempfile.TemporaryDirectory() as tmp:
+            code, _ = self._run_claude_pre(
+                self._bash_payload(Path(tmp), "echo hello"),
+                {"METDSL_WORKFLOW_MODE": "1",
+                 "METDSL_MISSING_ORCHESTRATION_ID_POLICY": "strict"})
+            self.assertEqual(code, 2)
+            log = (Path(tmp) / "workspace" / "orchestrations" / "_global" / "hooks"
+                   / "native_hook_events.jsonl")
+            self.assertTrue(log.exists())
+            entry = json.loads(log.read_text(encoding="utf-8").splitlines()[-1])
+            self.assertEqual(entry["action"], "block")
+            self.assertIn("orchestration_id is required", entry["reason"])
 
     def test_workflow_mode_accepts_orchestration_id_from_environment(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -7950,9 +7950,13 @@ LEAF_ENV_PATH_DEFAULT = "/usr/bin:/bin"
 # the closure.
 #
 # TWO justifications this comment has carried and neither survived review, recorded so a
-# third is not written. (1) "every member has an in-tree reader" — false, measured:
-# `METDSL_MISSING_ORCHESTRATION_ID_POLICY` is seeded into every leaf by `run_workflow.py`
-# and read by nothing in the tree. (2) "the namespace is repo-owned, so nothing an
+# third is not written. (1) "every member has an in-tree reader" — the rule must not rest
+# on that whether or not it holds, because the inventory moves: it was false when written
+# (`METDSL_MISSING_ORCHESTRATION_ID_POLICY` was seeded into every leaf by
+# `run_workflow.py` and read by nothing) and issue #82 has since given that very name a
+# reader in `tools/hooks/cli.py`. A justification that has to be re-measured whenever a
+# reader is added or dropped is what this comment is refusing. (2) "the namespace is
+# repo-owned, so nothing an
 # operator put in the environment lands inside it" — also false, and by one command:
 # `leaf_env_from({"METDSL_ANYTHING": "x"})` forwards it. Nothing stops an operator
 # exporting a name under this prefix.

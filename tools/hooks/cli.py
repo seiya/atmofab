@@ -239,12 +239,12 @@ def _append_hook_audit(
     inner_tool_name = inner_payload.get("tool_name")
     tool_name_raw = payload.get("tool_name")
     tool_name = tool_name_raw if isinstance(tool_name_raw, str) and tool_name_raw.strip() else inner_tool_name
-    workflow_mode = os.environ.get("METDSL_WORKFLOW_MODE", "").strip().lower()
+    workflow_mode_on = _env_flag_true("METDSL_WORKFLOW_MODE")
     if (
         normalized_orch == "_global"
         and isinstance(tool_name, str)
         and tool_name.strip().lower() == "shell"
-        and workflow_mode not in {"1", "true", "yes"}
+        and not workflow_mode_on
     ):
         return
     payload_has_repo_root = isinstance(payload.get("repo_root"), str) and bool(
@@ -256,7 +256,7 @@ def _append_hook_audit(
     env_repo_root = os.environ.get("METDSL_HOOK_REPO_ROOT", "").strip()
     if (
         normalized_orch == "_global"
-        and workflow_mode not in {"1", "true", "yes"}
+        and not workflow_mode_on
         and not payload_has_repo_root
         and not inner_has_repo_root
         and not env_repo_root
@@ -322,6 +322,20 @@ def _resolve_repo_root(payload: dict[str, Any], backend: str = "") -> Path:
 def _env_flag_true(name: str, default: str = "0") -> bool:
     raw = os.environ.get(name, default).strip().lower()
     return raw in {"1", "true", "yes", "on"}
+
+
+def _missing_orchestration_id_is_strict() -> bool:
+    """Whether a hook that cannot name its orchestration must fail.
+
+    The reader of `METDSL_MISSING_ORCHESTRATION_ID_POLICY` (`docs/ORCHESTRATION.md`
+    §39). `strict` is the only value that changes anything; unset - the default
+    outside a run - keeps the permissive `_global` fallback. `tools/run_workflow.py`
+    sets `strict` for every node, which is the whole of its production use.
+    """
+    return (
+        os.environ.get("METDSL_MISSING_ORCHESTRATION_ID_POLICY", "").strip().lower()
+        == "strict"
+    )
 
 
 def _extract_orchestration_id(payload: dict[str, Any]) -> str | None:
@@ -2415,10 +2429,51 @@ def main(argv: list[str] | None = None) -> int:
         if orchestration_id is None:
             orchestration_id = "_global"
         if orchestration_id == "_global":
-            exit_code, stdout_text = adapter.encode_decision(
-                HookDecision(action=HookDecisionAction.ALLOW), event_name=event_name
-            )
-            return _emit_hook_response(exit_code, stdout_text, event_name=event_name)
+            # Three cases, and only the first two belong to a run.
+            #
+            # `docs/ORCHESTRATION.md` §39: `tools/run_workflow.py` sets the strict
+            # policy for every node, so under a run a hook that cannot name its
+            # orchestration FAILS. Evaluating it as `_global` instead would leave every
+            # guard keyed on `orchestration_id` - the write manifest, the read manifest,
+            # the codex feature certificate - resolving nothing and allowing. This
+            # reader was dropped by `ec52a09` (2026-04-25) while the writer and §39
+            # stayed; issue #82.
+            if _missing_orchestration_id_is_strict():
+                decision = _decision_error(
+                    "orchestration_id is required for hook execution"
+                )
+                _append_hook_audit(
+                    backend=args.backend,
+                    event_name=event_name,
+                    payload=payload,
+                    decision=decision,
+                    orchestration_id_override="_global",
+                )
+                exit_code, stdout_text = adapter.encode_decision(
+                    decision, event_name=event_name
+                )
+                return _emit_hook_response(exit_code, stdout_text, event_name=event_name)
+            # Under a run WITHOUT the policy set - not a shape production produces, since
+            # `run_workflow.py` sets both - fall through and evaluate. A backstop, not a
+            # contract: the refusal above is the contract.
+            if not _env_flag_true("METDSL_WORKFLOW_MODE"):
+                # An ambient call: an operator's own interactive session, whose
+                # `.claude/settings.json` carries the leaf's hook commands verbatim and
+                # so runs this same entrypoint. It is allowed WITHOUT evaluation, which
+                # is the same judgment `test_operator_session_outside_workflow_mode_is_
+                # not_refused` records for the Bash write refusal: the operator owns the
+                # machine, so there is no leaf shortcut here to defend against.
+                #
+                # Which policies a call is subject to is decided by the ENVIRONMENT, not
+                # by which settings file registered the hook. Measured with an
+                # orchestration_id present and no workflow mode: two policies fire
+                # (`forbid_git_reset_hard`, `forbid_verify_bypass_flags_in_dev_mode`)
+                # and the workflow-mode ones do not. This branch returns before both, so
+                # those two reach only a call that can name an orchestration.
+                exit_code, stdout_text = adapter.encode_decision(
+                    HookDecision(action=HookDecisionAction.ALLOW), event_name=event_name
+                )
+                return _emit_hook_response(exit_code, stdout_text, event_name=event_name)
 
         repo_root = _resolve_repo_root(payload, backend=args.backend)
 
