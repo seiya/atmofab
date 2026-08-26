@@ -5206,6 +5206,17 @@ class BashWriteTargetGrammarTests(unittest.TestCase):
         ("echo hi > workspace/out/run.json#env", ["workspace/out/run.json#env"]),
         # round 1: an unterminated quote reaches shlex unbalanced
         ('cmd > "abc', ['"abc']),
+        # round 4: `>` inside a comparison context is an operator, not a redirect.
+        # The GLUED spellings became phantoms when #74(c) dropped the space
+        # requirement; the spaced ones were phantoms on origin/main too.
+        ("echo $((n>0))", []),
+        ("echo $(( n > 0 ))", []),
+        ("[[ a >b ]] && echo y", []),
+        ("[[ a > b ]]", []),
+        # ...but a real redirect nested inside one is still reached, through the
+        # command-substitution recursion that runs before the blanking
+        ('--arg "$(( $(echo 1 > /tmp/pwn) + 1 ))"', ["/tmp/pwn"]),
+        ("[[ -f a ]] && cmd > out.txt", ["out.txt"]),
     )
 
     # TODO.md 378(d): every one of these is REFUSED, whatever it names. The spellings
@@ -5262,6 +5273,20 @@ class BashWriteTargetGrammarTests(unittest.TestCase):
         "if [ -f a ]; then touch workspace/out/b; fi",
         "( cp a workspace/out/x.txt )",
         "{ cp a b; }",
+        # a writer inside a command substitution runs
+        "$(cp a b)",
+        "`cp a b`",
+        "echo $(cp a b)",
+        "x=$(touch workspace/out/f)",
+        # the shell's own `-c`, the nearest rephrasing of a refused `cp`
+        "bash -c 'cp a b'",
+        'sh -c "touch workspace/out/x"',
+        # a quoted or escaped command NAME is still that command
+        '"cp" a b',
+        "\\cp a b",
+        'c""p a b',
+        # a leading redirection does not displace the head
+        "> workspace/x.txt cp a b",
     )
 
     # Commands that must NOT be refused. Half are ordinary read-only work; half are the
@@ -5277,10 +5302,17 @@ class BashWriteTargetGrammarTests(unittest.TestCase):
         "sed -i 's/a/b/' workspace/tmp/r1/f.txt",
         # residue: a writer this does not recognise
         "find . -name x -exec cp {} workspace/ir \\;",
+        # a `#`-comment mentioning a writer is not one being run — including when
+        # the comment carries a `;` that would otherwise open a new fragment
+        "cat a.txt # cp a b",
+        "echo x; # ; cp a b",
+        # a heredoc BODY is a document being written, not commands being run.
+        # This is how a leaf authors a scratch script; 19 of 283 real leaf Bash
+        # commands mined from this tree's own hook logs carry one.
+        "cat > workspace/tmp/r1/s.py <<'EOF'\ncp a b\nEOF",
+        # residue: only the NAME is indirect, so the fragment carries no literal
         "$CP a workspace/ir/b",
         "$(which cp) a workspace/ir/b",
-        # a `#`-comment mentioning a writer is not one being run
-        "cat a.txt # cp a b",
     )
 
     def _targets(self, command: str) -> list[str]:
@@ -5349,14 +5381,53 @@ class BashWriteTargetGrammarTests(unittest.TestCase):
                 with patch.object(cli, "_BASH_FILE_WRITE_COMMANDS", mutated):
                     self.assertEqual(self._write_commands(f"{name} a b"), [])
 
-    def test_every_wrapper_is_looked_through(self) -> None:
-        """Set identity over `_BASH_COMMAND_WRAPPERS`, generated FROM the constant."""
-        for name in sorted(cli._BASH_COMMAND_WRAPPERS):
-            with self.subTest(name=name):
-                self.assertEqual(self._write_commands(f"{name} cp a b"), ["cp"])
-                mutated = frozenset(cli._BASH_COMMAND_WRAPPERS - {name})
-                with patch.object(cli, "_BASH_COMMAND_WRAPPERS", mutated):
-                    self.assertEqual(self._write_commands(f"{name} cp a b"), [])
+    # A REALISTIC invocation of each whole-fragment head. The first version of this
+    # test generated `f"{name} cp a b"` for every one of them and passed — but
+    # `timeout cp a b` is not a spelling bash accepts, and every wrapper works in
+    # the no-option form, so the probe family could not distinguish a working
+    # look-through from an inert one. Six of eight wrappers were in fact defeated
+    # by their own canonical invocation, and `timeout` by every spelling that
+    # exists. That is the third time on this branch a measurement was taken over a
+    # family that structurally cannot answer the question.
+    _WHOLE_FRAGMENT_HEAD_SPELLINGS = {
+        "sudo": "sudo -u root cp a b",
+        "env": "env FOO=1 cp a b",
+        "nohup": "nohup cp a b",
+        "xargs": "xargs -I {} cp {} dst",
+        "stdbuf": "stdbuf -o 0 cp a b",
+        "timeout": "timeout 5 cp a b",
+        "nice": "nice -n 10 cp a b",
+        "ionice": "ionice -c 2 cp a b",
+        "command": "command cp a b",
+        "exec": "exec cp a b",
+        "eval": 'eval "cp a b"',
+        "bash": "bash -c 'cp a b'",
+        "sh": 'sh -c "cp a b"',
+        "zsh": "zsh -c 'cp a b'",
+        "dash": "dash -c 'cp a b'",
+        "ksh": "ksh -c 'cp a b'",
+        "case": "case x in x) cp a b;; esac",
+    }
+
+    def test_every_whole_fragment_head_is_scanned(self) -> None:
+        """Set identity over `_BASH_SCAN_WHOLE_FRAGMENT_HEADS`, with REAL spellings.
+
+        The spelling table is checked against the constant first, so a head added
+        to the code without one fails here rather than getting a probe that cannot
+        fail. Each spelling was run under bash in a scratch directory and confirmed
+        to actually perform the copy.
+        """
+        self.assertEqual(
+            set(self._WHOLE_FRAGMENT_HEAD_SPELLINGS),
+            set(cli._BASH_SCAN_WHOLE_FRAGMENT_HEADS),
+            "every whole-fragment head needs a realistic probe spelling",
+        )
+        for name, command in sorted(self._WHOLE_FRAGMENT_HEAD_SPELLINGS.items()):
+            with self.subTest(name=name, command=command):
+                self.assertIn("cp", self._write_commands(command))
+                mutated = frozenset(cli._BASH_SCAN_WHOLE_FRAGMENT_HEADS - {name})
+                with patch.object(cli, "_BASH_SCAN_WHOLE_FRAGMENT_HEADS", mutated):
+                    self.assertNotIn("cp", self._write_commands(command))
 
     def test_a_writer_in_every_fragment_of_a_compound_is_found(self) -> None:
         # The refusal names the first writer, but the scan must not stop at the
@@ -5474,6 +5545,36 @@ class BashWriteTargetGrammarTests(unittest.TestCase):
                     )
                     self.assertNotEqual(code, 2, body)
                     self.assertNotEqual(body.get("decision"), "block", body)
+
+    def test_no_leaf_permission_grant_matches_a_refused_write_command(self) -> None:
+        """The "costs nothing legitimate" claim, pinned instead of asserted once.
+
+        `docs/HOOKS.md` and the commit that added the refusal both say the seven
+        commands are already refused by the harness, because none of them appears
+        in the Claude leaf's `permissions.allow`. That is the whole argument for
+        the refusal being free, and without this test a `Bash(cp:*)` grant added
+        tomorrow would falsify a canonical document silently.
+
+        **What this does NOT cover**: `leaf_config/` holds only `claude/`. A codex
+        leaf routes `Shell` through this same hook and has no permission allow list
+        for the claim to be about, so the claim is scoped to the Claude backend and
+        the document says so.
+        """
+        repo_root = Path(__file__).resolve().parents[2]
+        config = json.loads(
+            (repo_root / "leaf_config" / "claude" / "settings.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        allow = config.get("permissions", {}).get("allow", [])
+        self.assertTrue(allow, "the leaf allow list must not be empty")
+        for entry in allow:
+            for name in sorted(cli._BASH_FILE_WRITE_COMMANDS):
+                with self.subTest(entry=entry, name=name):
+                    # A grant is `Bash(<prefix>*)`; the writer would have to appear
+                    # at the head of that prefix for the command to be permitted.
+                    inner = entry[len("Bash(") : -1] if entry.startswith("Bash(") else ""
+                    self.assertNotEqual(inner.split(" ")[0].split("/")[-1], name)
 
     def test_operator_session_outside_workflow_mode_is_not_refused(self) -> None:
         """The refusal is workflow-only, and this pins it at the handler.
