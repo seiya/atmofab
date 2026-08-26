@@ -31,6 +31,7 @@ from tools.hooks.common import (
     _BASH_FD_DUP_RE,
     _BASH_FRAGMENT_SEPARATOR_RE,
     _blank_heredoc_bodies,
+    _strip_bash_fragment_syntax,
     _strip_quoted_strings,
     _utc_now_iso,
     append_hook_access_log,
@@ -578,54 +579,37 @@ def _extract_command_substitution_bodies(command: str) -> list[str]:
 
 
 _SHELL_CONTROL_TOKENS = frozenset({"|", "||", "&&", ";"})
-# Commands whose write DESTINATION is an operand rather than a shell redirect.
-# Until this was added (TODO.md 378(d), landed with issue #74) none of them
-# produced a write target at all, so `cp x workspace/pipelines/y.json` reached
-# `cli.main`'s write guard with an EMPTY target list and fell through to the
-# harness permission list.
+# Commands that write a file named as an OPERAND rather than by a shell redirect.
 #
-#   _ARGV_WRITE_LAST_OPERAND — the destination is the final operand (`cp SRC… DEST`).
-#     Requires at least two operands: a one-operand `ln target` writes
-#     `./$(basename target)`, a name that appears nowhere in the argv, and
-#     reporting the operand there would name a path the leaf did not write.
-#     That single-operand form is accepted residue on the fail-open side.
-#   _ARGV_WRITE_ALL_OPERANDS — every operand is a destination (`touch a b c`).
-_ARGV_WRITE_LAST_OPERAND = frozenset({"cp", "mv", "install", "ln"})
-_ARGV_WRITE_ALL_OPERANDS = frozenset({"touch", "truncate"})
-# `dd` takes `key=value` operands; only `of=` names a write destination.
-_DD_OUTPUT_PREFIX = "of="
-
-# Options whose VALUE is the destination, per command.
-_ARGV_WRITE_DEST_OPTS: dict[str, frozenset[str]] = {
-    "cp": frozenset({"-t", "--target-directory"}),
-    "mv": frozenset({"-t", "--target-directory"}),
-    "install": frozenset({"-t", "--target-directory"}),
-    "ln": frozenset({"-t", "--target-directory"}),
-}
-# Options that CONSUME the next argv element, whose value is NOT a destination.
-# Only options with a MANDATORY argument belong here: GNU's optional-argument long
-# forms (`--backup[=CONTROL]`, `--preserve[=LIST]`, `--reflink[=WHEN]`) never take a
-# separate word, so listing them would swallow a real operand. Counting a consumed
-# value as a target is the false-BLOCK direction — a block naming a mode string
-# (`install -m 644 …`), a size (`truncate -s 0 …`) or a timestamp is the same
-# defect class as issue #74(a)/(b), which is why `-t` is a DESTINATION option for
-# `cp`/`mv`/`install`/`ln` and a TIMESTAMP option for `touch`.
-# Options that turn the grammar into "every operand is a destination".
-# `install -d a b` creates BOTH directories; read under the last-operand rule it
-# reported `b` and missed `a`.
-_ARGV_WRITE_DIRECTORY_OPTS: dict[str, frozenset[str]] = {
-    "install": frozenset({"-d", "--directory"}),
-}
-_ARGV_WRITE_VALUE_OPTS: dict[str, frozenset[str]] = {
-    "cp": frozenset({"-S", "--suffix"}),
-    "mv": frozenset({"-S", "--suffix"}),
-    "install": frozenset(
-        {"-m", "--mode", "-o", "--owner", "-g", "--group", "-S", "--suffix"}
-    ),
-    "ln": frozenset({"-S", "--suffix"}),
-    "touch": frozenset({"-d", "--date", "-r", "--reference", "-t", "--time"}),
-    "truncate": frozenset({"-s", "--size", "-r", "--reference"}),
-}
+# **These are REFUSED, not parsed.** The first spelling of TODO.md 378(d) tried to
+# name the destination — last operand, `-t DIR`, `dd of=`, per-command option
+# tables — and three review rounds each found the same defect in a new place: a
+# value read off one copy of the command while a decision was made on another.
+# Every fix regenerated the family one function over. The question "which operand
+# is the destination" cannot be answered without re-implementing bash's word
+# splitting plus each tool's getopt grammar, and getting it wrong costs a BLOCK
+# naming a path the leaf never wrote (`'2'`, `'artifact'`, `'.json'`) or a
+# managed artifact written with the guard seeing nothing.
+#
+# The weaker question this asks instead is answerable with one lookup: **is the
+# head of this fragment a command that writes a file?** If it is, the command is
+# refused with the instruction the contract already gives every leaf — artifacts
+# and scratch files are written with the `Edit` / `Write` tool. There is no
+# legitimate leaf use of these commands: measured on `leaf_config/claude/settings.json`
+# at this commit, `permissions.allow` has 17 entries and not one of them matches
+# `cp`, `mv`, `install`, `ln`, `touch`, `truncate` or `dd`, so the harness refuses
+# every one of them already. This layer is defence in depth that fails CLOSED,
+# and it replaces a parser that failed open and refused legitimate work by turns.
+_BASH_FILE_WRITE_COMMANDS = frozenset(
+    {"cp", "mv", "install", "ln", "touch", "truncate", "dd"}
+)
+# Programs that run another program named in their own arguments. A fragment
+# headed by one of these is looked at one token deeper. This is a bound on
+# growth, not a detector: `find -exec cp`, a shell function, and an interpreter
+# are all still misses, and the docstring of `_detect_bash_write_commands` says so.
+_BASH_COMMAND_WRAPPERS = frozenset(
+    {"sudo", "env", "nohup", "xargs", "stdbuf", "timeout", "nice", "ionice"}
+)
 
 # Bash commands whose ONLY file-write vector is shell redirection (which
 # _detect_bash_write_targets catches) — they carry no own write/exec flags.
@@ -942,143 +926,65 @@ def _argv_operand_tokens(fragment: str) -> list[str]:
     ]
 
 
-def _split_short_option_cluster(arg: str, valued: frozenset[str]) -> tuple[list[str], str | None]:
-    """Split a bundled short-option cluster into its letters and any GLUED value.
+def _detect_bash_write_commands(command: str, scanned: str) -> list[str]:
+    """Names of file-writing commands run by this Bash command, at fragment heads.
 
-    GNU getopt gives the FIRST letter that takes an argument the REST of the
-    cluster as its value: `cp -tDIR src` is `cp -t DIR src`, and `cp -atDIR src`
-    is `cp -a -t DIR src`. Testing only the cluster's last letter — the first
-    spelling of this function — made `-tDIR` match nothing, so the destination
-    of `cp -tworkspace/pipelines a.json` was invisible and the command passed the
-    guard with no target at all.
+    Deliberately does NOT try to say WHICH file each writes; see the note on
+    `_BASH_FILE_WRITE_COMMANDS` for why that question was abandoned. The caller
+    refuses the command outright.
 
-    Returns `(letters, glued_value)`. A long option, a bare `-`, or a one-letter
-    option is returned unchanged with no glued value.
+    A fragment's head is read after stripping the prefixes the read side already
+    strips with `common._strip_bash_fragment_syntax` — a leading `VAR=value`
+    assignment, a shell keyword or grouping (`do cp …`, `then touch …`, `( cp … )`,
+    `{ cp …; }`) — and then, once, a wrapper from `_BASH_COMMAND_WRAPPERS`.
+
+    Residue, yielding nothing, every item measured: a writer invoked by a program
+    that is not in the wrapper set (`find . -exec cp {} dst \\;`); a writer named
+    by a variable or a substitution (`$CP a b`, `$(which cp) a b`); a shell
+    function or alias that wraps one; and a writer reached through an interpreter
+    (`python3 -c 'shutil.copy(...)'`), which `forbid_python_inline_write` covers
+    separately. An empty result means "no writer recognised", not "no write".
     """
-    if len(arg) <= 2 or not arg.startswith("-") or arg.startswith("--"):
-        return [arg], None
-    letters: list[str] = []
-    for pos, ch in enumerate(arg[1:], start=1):
-        letters.append("-" + ch)
-        if "-" + ch in valued:
-            rest = arg[pos + 1 :]
-            return letters, rest or None
-    return letters, None
-
-
-def _detect_argv_write_targets(command: str, scanned: str) -> list[str]:
-    """Write destinations named as OPERANDS rather than by a shell redirect.
-
-    Covers the commands in `_ARGV_WRITE_LAST_OPERAND` / `_ARGV_WRITE_ALL_OPERANDS`
-    plus `dd of=`. The command name is read at the FRAGMENT HEAD only, the same
-    argv0 rule the read side uses in `extract_bash_read_targets`, so `echo cp a b`
-    names nothing.
-
-    Residue, NOTHING is extracted, every item measured: a destination reached
-    through another program (`xargs cp`, `find -exec cp`); a fragment whose head is
-    not the writer itself — `sudo cp`, an env-assignment prefix `VAR=1 cp`, a
-    wrapper (`time`, `nohup`, `env`), a shell keyword or grouping (`for … do cp …
-    done`, `if … then touch … fi`, `( cp … )`, `{ cp …; }`), which is the largest
-    member of this list and the one the read side handles and this one does not;
-    the single-operand `ln`, whose link name appears nowhere in the argv; a token
-    still carrying unmodelled redirection syntax; and every write command outside
-    the tables. An empty result means "nothing extracted", not "no write".
-
-    Residue of a different kind — a target IS reported, but it is not the path that
-    gets written: a `$VAR` or glob destination is reported unexpanded, and a
-    destination relative to a `cd` earlier in the same command is reported
-    un-anchored (the read side anchors on `cd`; this side does not). Both shapes
-    predate this function — the redirect branch has always reported `> $OUT` as
-    `$OUT` — and both can refuse legitimate work. `TODO.md` carries them.
-    """
-    targets: list[str] = []
+    found: list[str] = []
     for fragment in _argv_fragments(command, scanned):
         tokens = _argv_operand_tokens(fragment)
         if not tokens:
             continue
-        name = tokens[0].split("/")[-1]
-        args = tokens[1:]
-        if name == "dd":
-            targets.extend(
-                arg[len(_DD_OUTPUT_PREFIX) :]
-                for arg in args
-                if arg.startswith(_DD_OUTPUT_PREFIX) and arg[len(_DD_OUTPUT_PREFIX) :]
-            )
+        argv, _reads, _stdin = _strip_bash_fragment_syntax(tokens)
+        if argv and argv[0].split("/")[-1] in _BASH_COMMAND_WRAPPERS:
+            argv = argv[1:]
+            # `xargs -n1 cp` — skip the wrapper's own options to reach the program.
+            while argv and argv[0].startswith("-"):
+                argv = argv[1:]
+        if not argv:
             continue
-        if name not in _ARGV_WRITE_LAST_OPERAND and name not in _ARGV_WRITE_ALL_OPERANDS:
-            continue
-        dest_opts = _ARGV_WRITE_DEST_OPTS.get(name, frozenset())
-        value_opts = _ARGV_WRITE_VALUE_OPTS.get(name, frozenset())
-        dir_opts = _ARGV_WRITE_DIRECTORY_OPTS.get(name, frozenset())
-        valued = dest_opts | value_opts
-        all_operands = name in _ARGV_WRITE_ALL_OPERANDS
-        operands: list[str] = []
-        dest_from_opt = False
-        k = 0
-        while k < len(args):
-            arg = args[k]
-            if arg == "--":  # everything after is an operand, `-S` included
-                operands.extend(args[k + 1 :])
-                break
-            if not arg.startswith("-") or arg == "-":
-                operands.append(arg)
-                k += 1
-                continue
-            head, sep, value = arg.partition("=")
-            if sep and head in dest_opts:
-                if value:
-                    targets.append(value)
-                    dest_from_opt = True
-                k += 1
-                continue
-            # A VALUE option's `=` form needs no branch of its own: it consumes
-            # no separate argv element, and the cluster split below stops at the
-            # FIRST value-taking letter, so `-m=abcd` cannot reach the `-d` buried
-            # in its value. An earlier commit deleted that branch calling it an
-            # equivalent mutant on the strength of 48 LONG-option spellings, which
-            # structurally cannot distinguish it — `--` short-circuits the split.
-            # A reviewer built two short `=` witnesses that did distinguish it at
-            # that commit; both give the same answer here (`install -m=abcd src
-            # dst` -> ['dst'], `cp -S=xt DIR a b` -> ['b']). The claim is scoped
-            # to what was measured, not to "no input distinguishes it".
-            letters, glued = _split_short_option_cluster(arg, valued)
-            if head in dir_opts or any(letter in dir_opts for letter in letters):
-                # `install -d a b` CREATES both operands; the last-operand rule
-                # would report `b` and miss `a`.
-                all_operands = True
-            taking = next((letter for letter in letters if letter in valued), None)
-            if taking in dest_opts:
-                if glued is not None:
-                    targets.append(glued)
-                    dest_from_opt = True
-                    k += 1
-                    continue
-                if k + 1 < len(args):
-                    targets.append(args[k + 1])
-                    dest_from_opt = True
-                k += 2
-                continue
-            if taking in value_opts:
-                k += 1 if glued is not None else 2
-                continue
-            k += 1
-        if all_operands:
-            targets.extend(operands)
-        elif dest_from_opt:
-            # With `-t DIR` every operand is a SOURCE.
-            pass
-        elif len(operands) >= 2:
-            targets.append(operands[-1])
-    return [t for t in targets if _SUBSTITUTION_PLACEHOLDER not in t]
+        name = argv[0].split("/")[-1]
+        if name in _BASH_FILE_WRITE_COMMANDS:
+            found.append(name)
+    return found
+
+
+def _blanked_command_and_scan(command: str | None) -> tuple[str, str]:
+    """`(command, scanned)` with heredoc bodies and comments blanked.
+
+    The pair every branch of this module wants: a heredoc body is a document
+    being written rather than commands being run, a comment is not run at all,
+    and `scanned` is the quote-stripped copy that decides where shell syntax is.
+    """
+    if not command:
+        return "", ""
+    blanked = _blank_bash_comments(_blank_heredoc_bodies(command))
+    return blanked, _strip_quoted_strings(blanked)
 
 
 def _detect_bash_write_targets(command: str | None) -> list[str]:
     """Extract write-target paths from a Bash command.
 
-    Best-effort by design: what it can see is bounded by the redirect / `tee` /
-    `sed -i` grammars and by `_detect_argv_write_targets`' command tables. An empty
-    result means "nothing extracted", NOT "this command writes nothing" — the only
-    reader, `cli.main`, treats an empty list as a purely read-only command.
+    Best-effort by design: what it can see is bounded by the redirect, `tee` and
+    `sed -i` grammars. An empty result means "nothing extracted", NOT "this command
+    writes nothing" — the only reader, `cli.main`, treats an empty list as a purely
+    read-only command, which is why `_detect_bash_write_commands` refuses the
+    operand-destination family rather than adding to what this has to name.
     """
     if not command:
         return []
@@ -1130,7 +1036,6 @@ def _detect_bash_write_targets(command: str | None) -> list[str]:
                 break
             targets.append(arg)
     targets.extend(_detect_sed_inplace_targets(command))
-    targets.extend(_detect_argv_write_targets(command, scanned))
     return targets
 
 
@@ -2204,6 +2109,35 @@ def _evaluate_pre_command_file_access_policy(
         )
         if read_decision is not None:
             return read_decision
+        # The operand-destination family is refused rather than parsed. This runs
+        # BEFORE the target guard and before the read-only auto-approve: such a
+        # command names no redirect target, so without this it would fall through
+        # to the permission list (which refuses it today — none of the seven is in
+        # `leaf_config/claude/settings.json`'s allow list) with the hook layer
+        # having decided nothing.
+        write_commands = _detect_bash_write_commands(
+            *_blanked_command_and_scan(decoded.command)
+        )
+        if write_commands:
+            return HookDecision(
+                action=HookDecisionAction.BLOCK,
+                reason=(
+                    f"{write_commands[0]!r} writes a file from Bash, which is not a "
+                    "write route in any position. Write the file with the `Write` "
+                    "tool: an artifact to a path in output_manifest "
+                    "allowed_file_tool_paths, a temporary file to the literal "
+                    "allowed_tmp_root path. To COPY an existing file, `Read` it and "
+                    "`Write` the content to the destination — both halves are "
+                    "needed; doing only the first leaves nothing written."
+                ),
+                continue_processing=False,
+                audit_detail={
+                    "policy": "forbid_bash_file_write_command",
+                    "tool_name": "Bash",
+                    "command": decoded.command,
+                    "write_commands": write_commands,
+                },
+            )
         write_targets = _detect_bash_write_targets(decoded.command)
         if not write_targets:
             # Purely read-only command: if it is a provably-safe composition,

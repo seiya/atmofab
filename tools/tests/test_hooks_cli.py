@@ -5114,21 +5114,24 @@ class ReadDecisionAccessLogTests(unittest.TestCase):
 
 
 class BashWriteTargetGrammarTests(unittest.TestCase):
-    """`_detect_bash_write_targets`: the issue #74 defects and TODO.md 378(d).
+    """The Bash write boundary: issue #74's four defects and TODO.md 378(d).
 
-    SAMPLED, not pinned: what this class fixes is the set of command spellings
-    listed below, not "every write bash can express". `_detect_bash_write_targets`
-    is best-effort by construction and its own docstring carries the residue list;
-    an empty extraction means "nothing extracted", never "this command writes
-    nothing". What IS pinned here is the membership of the two option tables
-    (`_ARGV_WRITE_DEST_OPTS` / `_ARGV_WRITE_VALUE_OPTS`), by mutation: the probes
-    are generated FROM the tables, so a member added to the code without a
-    corresponding grammar gets probed automatically.
+    Two mechanisms, and the split between them is the point. `_detect_bash_write_targets`
+    NAMES the path a redirect / `tee` / `sed -i` writes, and the guard checks it against
+    the manifest. `_detect_bash_write_commands` does not name anything: it recognises a
+    command that writes a file from Bash and the caller REFUSES it. The second exists
+    because the first shape was tried for the operand family and three review rounds each
+    found the same defect one function further on — a value read off one copy of the
+    command while a decision was made on another.
+
+    SAMPLED, not pinned: what is fixed here is the set of spellings listed below, not
+    "every write bash can express". Both functions are best-effort by construction and
+    carry their residue in their own docstrings; an empty extraction means "nothing
+    extracted", never "this command writes nothing".
     """
 
-    # Issue #74's three measured defects plus the clobber spelling `>|`, which was
-    # found while reproducing (c) and is the same fail-open. Each row is
-    # (command, expected targets).
+    # Issue #74's three measured defects plus the clobber spelling `>|`, found while
+    # reproducing (c). Each row is (command, expected targets).
     _ISSUE_74_WITNESSES = (
         # (a) a quoted redirect target used to collapse to the single char '"'
         ('cat > "workspace/tmp/run1/work.py" <<EOF', ["workspace/tmp/run1/work.py"]),
@@ -5143,7 +5146,6 @@ class BashWriteTargetGrammarTests(unittest.TestCase):
         # (c) no space between the operator and the path
         ("cat >workspace/pipelines/x.json <<'EOF'", ["workspace/pipelines/x.json"]),
         ("cmd >>workspace/out.log", ["workspace/out.log"]),
-        # `>|` clobber, both spacings
         ("cmd >|workspace/out.txt", ["workspace/out.txt"]),
         ("cmd >| workspace/out.txt", ["workspace/out.txt"]),
         # `>&word` with a non-numeric word is "and stderr too", i.e. a file write.
@@ -5152,200 +5154,162 @@ class BashWriteTargetGrammarTests(unittest.TestCase):
         ("echo x >&workspace/pipelines/x.json", ["workspace/pipelines/x.json"]),
     )
 
-    # Round 1 of this branch's review found the argv path split fragments by
-    # comparing `shlex` tokens against a control-token set, which cannot see a
-    # separator bash does not require whitespace around, and blanked a redirect
-    # only from the operator onward, leaving its fd prefix as an operand. Both
-    # were live in BOTH directions; every row here was measured failing first.
-    _ROUND1_WITNESSES = (
-        # fail-open: the destination vanished behind a glued separator
-        ("cd workspace; cp a.py workspace/pipelines/f.json", ["workspace/pipelines/f.json"]),
-        ("mkdir -p x\ncp a.py workspace/pipelines/f.json", ["workspace/pipelines/f.json"]),
-        ("cp a b&&ls", ["b"]),
-        # phantom target: the NEXT command's name became the destination
-        ("cp a workspace/f.txt; echo done", ["workspace/f.txt"]),
-        ("touch workspace/f.txt; echo done", ["workspace/f.txt"]),
-        ("cp a b ; ls", ["b"]),
-        ("cp a b | grep x", ["b"]),
-        # phantom target: the fd prefix of a redirect became the destination
-        ("cp src dst 2>/dev/null", ["dst"]),
-        ("touch out.txt 2>/dev/null", ["out.txt"]),
-        ("cp a b 2>>workspace/out.log", ["workspace/out.log", "b"]),
-        ("cp a b &> log.txt", ["log.txt", "b"]),
-        # `install -d` creates EVERY operand, not just the last
-        ("install -d a b", ["a", "b"]),
-        # a bundled short cluster's LAST letter takes the value
-        ("cp -at workspace/ir a b", ["workspace/ir"]),
-    )
-
-    # Spellings whose CURRENT result must survive the widened regex. `>(` is the
-    # one the widening itself put at risk: with no space required, process
-    # substitution would otherwise be reported as a write to the phantom `(cat`.
+    # Spellings whose result must survive the widened regex. `>(` is the one the
+    # widening itself put at risk: with no space required, process substitution would
+    # otherwise be reported as a write to the phantom `(cat`.
     _MUST_NOT_REGRESS = (
         ("cmd 2>&1 > out.txt", ["out.txt"]),
         ("cmd >&2", []),
         ("cmd 1>&2", []),
-        ("cp a b 2>&1", ["b"]),
-        ("cp a b >&2", ["b"]),
         ("cmd >> log.txt", ["log.txt"]),
         ("cmd 1> a.txt 2> b.txt", ["a.txt", "b.txt"]),
         ("cmd &> all.log", ["all.log"]),
         ("cmd &>> all.log", ["all.log"]),
         ("cmd > /dev/null", []),
+        ("echo hi > /dev/stderr", []),
+        ("echo hi > /dev/stdout", []),
+        ("echo hi > /dev/stdin", []),
         ("tee >(cat) < a", []),
         ("diff <(a) <(b) > out", ["out"]),
         ("echo test | tee file1.txt file2.txt", ["file1.txt", "file2.txt"]),
         ("sed -i's/a/b/' file.txt", ["file.txt"]),
+        ("sed -i 's/a/b/' f.txt", ["f.txt"]),
         ('python3 foo.py --reply-text "exit code > 0"', []),
         ('python3 foo.py --arg "$(echo hi > workspace/forbidden.txt)"', ["workspace/forbidden.txt"]),
         ('python3 foo.py --val "$((1 > 0))"', []),
     )
 
-    # Round 2 put three reviewers on it. Every row below was measured failing at
-    # `bb4e915` first. They cluster on one theme the census named: `_argv_fragments`
-    # segmented a SANITIZED copy but read operands off the RAW command, which is
-    # issue #74(a)'s defect one function over.
-    _ROUND2_WITNESSES = (
-        # a trailing comment is not an operand
-        ("cp src workspace/out/x.py  # copy the artifact", ["workspace/out/x.py"]),
-        ("touch workspace/out/a.txt # marker", ["workspace/out/a.txt"]),
-        # ...and the fail-open half: a path named in the comment must not stand in
-        # for the real destination
-        ("cp a.json workspace/p/evil.json # workspace/tmp/r1/b.json", ["workspace/p/evil.json"]),
-        # a `\`-newline continuation is not a fragment separator
-        ("cp a \\\n  workspace/out/b", ["workspace/out/b"]),
-        ("cp \\\n  a workspace/out/b", ["workspace/out/b"]),
-        ("touch \\\n  workspace/out/a", ["workspace/out/a"]),
-        # a separator inside a command substitution is not a separator either, and
-        # the substitution stands where an operand stands
-        ("cp $(ls -t | head -1) workspace/p/evil.json", ["workspace/p/evil.json"]),
-        ("cp `ls | head -1` workspace/p/evil.json", ["workspace/p/evil.json"]),
-        ('cp "$(ls)" workspace/out/b', ["workspace/out/b"]),
-        # a destination that IS a substitution is residue, not a phantom path
-        ("cp a.json $(cat dest.txt)", []),
-        ("dd if=x of=$(cat d)", []),
-        # GNU takes the REST of a short cluster as the value of its first
-        # value-taking letter, so `-tDIR` is `-t DIR`
-        ("cp -tworkspace/outdir a b", ["workspace/outdir"]),
-        ("cp -tworkspace/outdir src", ["workspace/outdir"]),
-        ("cp -atworkspace/ir a b", ["workspace/ir"]),
-        ("cp -S.bak a b", ["b"]),
-        # `>&-` closes a descriptor; it writes nothing
+    # Redirect-side spellings the three review rounds found. The rounds' argv-side
+    # findings are not here: that mechanism was replaced by refusal, and its rows moved
+    # to `_REFUSED_WRITE_COMMANDS` / `_NOT_REFUSED`.
+    _REVIEW_ROUND_WITNESSES = (
+        # round 1: the fd prefix of a redirect must be inside the blanked span, and
+        # `>&-` / `>& 3` / `>&N-` are descriptor operations, not writes
         ("cmd 2>&-", []),
         ("cmd >&-", []),
-        ("cp a workspace/tmp/r1/b 2>&-", ["workspace/tmp/r1/b"]),
-        # `>& 3` is duplication of fd 3, not a write to a file named `3`
         ("echo x >& 3", []),
         ("cmd >&3", []),
         ("cmd 2>&3", []),
-        # ...but a non-numeric word after `>&` IS a file
-        ("cmd >&1x", ["1x"]),
-        # a quoted target starting with `&` is a real destination
-        ('cmd > "&1"', ["&1"]),
-        # the fd-dup pass in _argv_view is load-bearing when the dup is GLUED to
-        # the preceding operand: the token drop would take the destination with it
-        ("cp a b2>&1", ["b"]),
-        ("touch a b2>&1", ["a", "b"]),
-        ("truncate -s 0 f2>&1", ["f"]),
-        # separators that are not separators: quoted, and backslash-escaped
-        ('cp "a;b" workspace/out/c', ["workspace/out/c"]),
-        ("cp a b\\; ls", ["ls"]),
-        # `install`'s directory mode in its other spellings
-        ("install --directory a b", ["a", "b"]),
-        ("install -dv a b", ["a", "b"]),
-        # bounds: `-t` with nothing after it must not raise
-        ("cp -t", []),
-        ("cp --target-directory= a b", ["b"]),
-        # the most common `sed -i` spelling of all, previously unwitnessed
-        ("sed -i 's/a/b/' f.txt", ["f.txt"]),
-        # `_REDIRECT_SKIP`'s non-/dev/null members
-        ("echo hi > /dev/stderr", []),
-        ("echo hi > /dev/stdout", []),
-        ("echo hi > /dev/stdin", []),
-    )
-
-    # Round 3 found the SAME shape a third time — a value read off one copy of the
-    # command while a decision is made on another. Every row measured failing at
-    # `98956af` first.
-    _ROUND3_WITNESSES = (
-        # round 2 marked a substitution span at its FIRST BYTE only, so an EMBEDDED
-        # one split its word and the literal tail became the last operand: a leaf
-        # writing a timestamped file inside its own tmp root was refused naming
-        # `.json`. A destination involving a substitution at all is residue.
-        ("cp report.json workspace/tmp/r1/run-$(date +%s).json", []),
-        ("cp a workspace/out/`date`.json", []),
-        ("touch workspace/out/a-$(id -u).txt", []),
-        ("cp a workspace/out/v$((1+1)).json", []),
-        # bash expands a substitution inside DOUBLE quotes, and _strip_quoted_strings
-        # has already blanked those bodies — so the spans must be located on the
-        # ORIGINAL command, not on `scanned`
-        ('cp a.json "$(cat dest.txt)"', []),
-        ('cp a.json "`cat dest.txt`"', []),
-        ('cp a.json "$(echo workspace/out)/b.json"', []),
-        # a `$(…)` inside a COMMENT is never run: comments are blanked before the
-        # substitution recursion, not only inside the argv view
-        ("cp a workspace/out/b # $(touch /tmp/x)", ["workspace/out/b"]),
-        # ...and the `tee` branch recovers a raw span too, so it needs the same
-        ("python3 x.py | tee workspace/tmp/r1/log.txt  # keep a copy", ["workspace/tmp/r1/log.txt"]),
-        # `>&N-` MOVES a descriptor and writes no file
         ("cmd >&3-", []),
         ("cmd 2>&3-", []),
-        # a `#` mid-word is not a comment; the word-start set is the one
-        # `_strip_quoted_strings` itself uses
-        ("cp a b#c workspace/out/x.json", ["workspace/out/x.json"]),
-        ("cp src workspace/out/run.json#env", ["workspace/out/run.json#env"]),
-        ("touch workspace/out/a#1.txt", ["workspace/out/a#1.txt"]),
+        # ...but a non-numeric word after `>&` IS a file
+        ("cmd >&1x", ["1x"]),
+        # round 2: a quoted target starting with `&` is a real destination, not an
+        # fd-dup spelling to drop
+        ('cmd > "&1"', ["&1"]),
+        # round 3: a comment is blanked before ANY branch reads the text, so the `tee`
+        # operand list stops at the note and a `$(…)` inside a comment is never run
+        ("python3 x.py | tee workspace/tmp/r1/log.txt  # keep a copy", ["workspace/tmp/r1/log.txt"]),
+        ("echo hi > workspace/out/b # $(echo x > /tmp/pwn)", ["workspace/out/b"]),
+        # ...and a `#` mid-word is not a comment. `run.json#env` occurs in this tree's
+        # own sandbox-profile paths.
+        ("echo hi > workspace/out/run.json#env", ["workspace/out/run.json#env"]),
+        # round 1: an unterminated quote reaches shlex unbalanced
+        ('cmd > "abc', ['"abc']),
+    )
+
+    # TODO.md 378(d): every one of these is REFUSED, whatever it names. The spellings
+    # are the ones that defeated the parser this replaced — a glued `;`, a newline, a
+    # `\`-continuation, a comment, a command substitution, a wrapper, a shell keyword,
+    # a bundled or glued short option — none of which the refusal has to model, because
+    # it never looks past the fragment head.
+    _REFUSED_WRITE_COMMANDS = (
+        "cp a.txt workspace/pipelines/y.json",
+        "cp -r a b workspace/tmp/r1/",
+        "cp -t workspace/tmp/r1 a b",
+        "cp -tworkspace/tmp/r1 a b",
+        "cp -atworkspace/ir a b",
+        "cp --target-directory=workspace/tmp/r1 a b",
+        "mv old.txt workspace/ir/new.txt",
+        "install -m 644 src workspace/ir/dst",
+        "install -d workspace/ir/a workspace/ir/b",
+        "ln -s target workspace/ir/link",
+        "ln -s ../x",
+        "touch workspace/ir/b.txt",
+        "truncate -s 0 workspace/ir/log.txt",
+        "dd if=/dev/zero of=workspace/ir/x.bin bs=1",
+        "dd of=",
+        "/bin/cp a b",
+        "cp -- a b",
+        "cp - b",
+        # separators the old parser could not see
+        "cd workspace; cp a.py workspace/pipelines/f.json",
+        "mkdir -p x\ncp a.py workspace/pipelines/f.json",
+        "cp a b&&ls",
+        "ls && cp a b",
+        "cp a b | grep x",
+        "cp a \\\n  workspace/out/b",
+        # a comment, a substitution, a redirect in the same fragment
+        "cp src workspace/out/x.py  # copy the artifact",
+        "cp $(ls -t | head -1) workspace/pipelines/f.json",
+        'cp a.json "$(cat dest.txt)"',
+        "cp report.json workspace/tmp/r1/run-$(date +%s).json",
+        "cp a b > log.txt",
+        "cp a b < in.txt",
+        "cp a b 2>/dev/null",
+        "cp a b 2<in.txt",
+        "cp a b 2>&1",
+        "cp a b2>&1",
+        "cp a b <&3",
+        "cp 'a b.txt' 'c d.txt'",
+        # prefixes and wrappers the read side already strips
+        "sudo cp a workspace/ir/b",
+        "VAR=1 cp a workspace/ir/b",
+        "time cp a b",
+        "xargs cp -t workspace/ir",
+        "xargs -n1 cp a b",
+        "for f in *.py; do cp $f workspace/out/; done",
+        "if [ -f a ]; then touch workspace/out/b; fi",
+        "( cp a workspace/out/x.txt )",
+        "{ cp a b; }",
+    )
+
+    # Commands that must NOT be refused. Half are ordinary read-only work; half are the
+    # documented residue, where the refusal recognises no writer and says so.
+    _NOT_REFUSED = (
+        "echo cp a b",
+        "cat workspace/tmp/r1/a.txt",
+        "ls && grep x y",
+        "python3 tools/orchestration_runtime.py record-reply --reply-text 'cp a b'",
+        "grep -rn 'touch' tools/",
+        "cat a.txt | tee workspace/tmp/r1/log.txt",
+        "echo hi > workspace/tmp/r1/out.txt",
+        "sed -i 's/a/b/' workspace/tmp/r1/f.txt",
+        # residue: a writer this does not recognise
+        "find . -name x -exec cp {} workspace/ir \\;",
+        "$CP a workspace/ir/b",
+        "$(which cp) a workspace/ir/b",
+        # a `#`-comment mentioning a writer is not one being run
+        "cat a.txt # cp a b",
     )
 
     def _targets(self, command: str) -> list[str]:
         return cli._detect_bash_write_targets(command)
+
+    def _write_commands(self, command: str) -> list[str]:
+        return cli._detect_bash_write_commands(*cli._blanked_command_and_scan(command))
+
+    # ---- the path-naming half ---------------------------------------------
 
     def test_issue_74_witnesses(self) -> None:
         for command, expected in self._ISSUE_74_WITNESSES:
             with self.subTest(command=command):
                 self.assertEqual(sorted(self._targets(command)), sorted(expected))
 
-    def test_round1_review_witnesses(self) -> None:
-        for command, expected in self._ROUND1_WITNESSES:
+    def test_redirect_spellings_that_must_not_regress(self) -> None:
+        for command, expected in self._MUST_NOT_REGRESS:
             with self.subTest(command=command):
                 self.assertEqual(sorted(self._targets(command)), sorted(expected))
 
-    def test_round2_review_witnesses(self) -> None:
-        for command, expected in self._ROUND2_WITNESSES:
+    def test_review_round_witnesses(self) -> None:
+        for command, expected in self._REVIEW_ROUND_WITNESSES:
             with self.subTest(command=command):
                 self.assertEqual(sorted(self._targets(command)), sorted(expected))
 
-    def test_round3_review_witnesses(self) -> None:
-        for command, expected in self._ROUND3_WITNESSES:
-            with self.subTest(command=command):
-                self.assertEqual(sorted(self._targets(command)), sorted(expected))
-
-    def test_decisions_a_hand_built_mutant_sweep_found_unwitnessed(self) -> None:
-        """Rows that no other test distinguishes; each was a review-round survivor.
-
-        Every row here was chosen so that deleting ONE clause changes it, and the
-        clause is named. Without them the clause can be removed with the suite
-        green — which is what a reviewer's independent mutant sweep measured.
-        """
-        rows = (
-            # `name = tokens[0].split("/")[-1]` — the command may be a path
-            ("/bin/cp a b", ["b"], "argv0 basename"),
-            # `arg == "-"` is an operand (stdin/stdout), not an option
-            ("cp - b", ["b"], "bare dash is an operand"),
-            # `dd of=` with an empty value names no path
-            ("dd of=", [], "dd empty-value guard"),
-            # `--` ends option parsing: without the branch, `-S` eats `b`
-            ("cp -- -S b", ["b"], "-- operand boundary"),
-            # a token still carrying redirection syntax is dropped, not reported
-            ("cp a b <&3", ["b"], "unmodelled redirection token dropped"),
-            # the INPUT redirect's fd prefix is inside its span too: without it the
-            # orphan `2` is a bare token, so the `<`-carrying drop above misses it
-            ("cp a b 2<in.txt", ["b"], "input redirect fd prefix"),
-            ("touch out.txt 2<in.txt", ["out.txt"], "input redirect fd prefix"),
-        )
-        for command, expected, clause in rows:
-            with self.subTest(clause=clause, command=command):
-                self.assertEqual(sorted(self._targets(command)), sorted(expected))
+    def test_heredoc_body_alone_yields_no_target(self) -> None:
+        # No outer redirect at all: everything in the body is data.
+        command = "cat <<'EOF'\necho x > /etc/passwd\nEOF"
+        self.assertEqual(self._targets(command), [])
 
     def test_unbalanced_quote_falls_back_to_the_raw_span(self) -> None:
         """`_shlex_one`'s ValueError fallback returns the blob, never the empty string.
@@ -5357,99 +5321,48 @@ class BashWriteTargetGrammarTests(unittest.TestCase):
         self.assertEqual(cli._shlex_one('"abc'), '"abc')
         self.assertEqual(self._targets('cmd > "abc'), ['"abc'])
 
-    def test_redirect_spellings_that_must_not_regress(self) -> None:
-        for command, expected in self._MUST_NOT_REGRESS:
+    # ---- the refusal half -------------------------------------------------
+
+    def test_file_write_commands_are_recognised(self) -> None:
+        for command in self._REFUSED_WRITE_COMMANDS:
             with self.subTest(command=command):
-                self.assertEqual(sorted(self._targets(command)), sorted(expected))
-
-    def test_heredoc_body_alone_yields_no_target(self) -> None:
-        # No outer redirect at all: everything in the body is data.
-        command = "cat <<'EOF'\necho x > /etc/passwd\nEOF"
-        self.assertEqual(self._targets(command), [])
-
-    # ---- TODO.md 378(d): destinations named as operands -------------------
-
-    def test_argv_grammar_destinations_are_detected(self) -> None:
-        rows = (
-            ("cp a.txt workspace/pipelines/y.json", ["workspace/pipelines/y.json"]),
-            ("cp -r a b workspace/tmp/r1/", ["workspace/tmp/r1/"]),
-            ("cp -- a b", ["b"]),
-            ("mv old.txt workspace/ir/new.txt", ["workspace/ir/new.txt"]),
-            ("install -m 644 src workspace/ir/dst", ["workspace/ir/dst"]),
-            ("ln -s target workspace/ir/link", ["workspace/ir/link"]),
-            ("touch a.txt workspace/ir/b.txt", ["a.txt", "workspace/ir/b.txt"]),
-            ("truncate -s 0 workspace/ir/log.txt", ["workspace/ir/log.txt"]),
-            ("dd if=/dev/zero of=workspace/ir/x.bin bs=1", ["workspace/ir/x.bin"]),
-            ("cp 'a b.txt' 'c d.txt'", ["c d.txt"]),
-            # a redirect and an operand destination in the same command
-            ("cp a b > log.txt", ["log.txt", "b"]),
-            # an input redirect must not become the last operand
-            ("cp a b < in.txt", ["b"]),
-            # fragment head only: argv0 of each fragment, never a bare word
-            ("ls && cp a b", ["b"]),
-            ("echo cp a b", []),
-            # residue, deliberately empty (see the function's docstring): a
-            # single-operand `ln` names its link nowhere in the argv, and a
-            # destination reached through another program is not at a fragment head
-            ("ln -s ../x", []),
-            ("xargs cp -t workspace/ir", []),
-            ("sudo cp a workspace/ir/b", []),
-            ("VAR=1 cp a workspace/ir/b", []),
-            ("find . -name x -exec cp {} workspace/ir \\\\;", []),
-        )
-        for command, expected in rows:
-            with self.subTest(command=command):
-                self.assertEqual(sorted(self._targets(command)), sorted(expected))
-
-    def test_dest_opt_members_are_each_load_bearing(self) -> None:
-        """Every member of `_ARGV_WRITE_DEST_OPTS` decides a real destination.
-
-        Probes are generated from the table, so this covers whatever it holds.
-        """
-        for cmd, opts in cli._ARGV_WRITE_DEST_OPTS.items():
-            for opt in opts:
-                spellings = [f"{cmd} {opt} workspace/ir/dest src1 src2"]
-                if opt.startswith("--"):
-                    spellings.append(f"{cmd} {opt}=workspace/ir/dest src1 src2")
-                for command in spellings:
-                    with self.subTest(command=command):
-                        # Membership, not list equality: a strictly MORE precise
-                        # extractor would also name `dest/src1` and `dest/src2`,
-                        # which is what `cp -t DIR src1 src2` really writes. Pinning
-                        # the exact list would refuse that improvement — the "test
-                        # pins what the implementation should be free to change"
-                        # shape, aimed at the instrument rather than the code.
-                        self.assertIn("workspace/ir/dest", self._targets(command))
-                        mutated = dict(cli._ARGV_WRITE_DEST_OPTS)
-                        mutated[cmd] = frozenset(opts - {opt})
-                        with patch.object(cli, "_ARGV_WRITE_DEST_OPTS", mutated):
-                            self.assertNotIn("workspace/ir/dest", self._targets(command))
-
-    def test_value_opt_members_are_each_load_bearing(self) -> None:
-        """Every member of `_ARGV_WRITE_VALUE_OPTS` keeps a value out of the targets.
-
-        Dropping one produces a BLOCK naming a mode string / size / timestamp the
-        leaf never wrote — the false-BLOCK direction of issue #74(a)/(b). The option
-        is written AFTER the operands for the last-operand commands, because that is
-        where its value would displace the real destination.
-        """
-        for cmd, opts in cli._ARGV_WRITE_VALUE_OPTS.items():
-            all_operands = cmd in cli._ARGV_WRITE_ALL_OPERANDS
-            for opt in opts:
-                command = (
-                    f"{cmd} {opt} OPTVAL workspace/ir/dest"
-                    if all_operands
-                    else f"{cmd} src workspace/ir/dest {opt} OPTVAL"
+                self.assertTrue(
+                    self._write_commands(command),
+                    f"no writer recognised in {command!r}",
                 )
-                with self.subTest(command=command):
-                    # Membership for the destination, and the property that matters
-                    # here stated directly: the option's VALUE is never a target.
-                    self.assertIn("workspace/ir/dest", self._targets(command))
-                    self.assertNotIn("OPTVAL", self._targets(command))
-                    mutated = dict(cli._ARGV_WRITE_VALUE_OPTS)
-                    mutated[cmd] = frozenset(opts - {opt})
-                    with patch.object(cli, "_ARGV_WRITE_VALUE_OPTS", mutated):
-                        self.assertIn("OPTVAL", self._targets(command))
+
+    def test_commands_that_must_not_be_refused(self) -> None:
+        for command in self._NOT_REFUSED:
+            with self.subTest(command=command):
+                self.assertEqual(self._write_commands(command), [])
+
+    def test_every_member_of_the_write_command_set_is_recognised(self) -> None:
+        """Set identity, not a sample: generated FROM the constant.
+
+        A name added to `_BASH_FILE_WRITE_COMMANDS` without a probe gets one
+        automatically, and removing one turns this red.
+        """
+        for name in sorted(cli._BASH_FILE_WRITE_COMMANDS):
+            with self.subTest(name=name):
+                self.assertEqual(self._write_commands(f"{name} a b"), [name])
+                mutated = frozenset(cli._BASH_FILE_WRITE_COMMANDS - {name})
+                with patch.object(cli, "_BASH_FILE_WRITE_COMMANDS", mutated):
+                    self.assertEqual(self._write_commands(f"{name} a b"), [])
+
+    def test_every_wrapper_is_looked_through(self) -> None:
+        """Set identity over `_BASH_COMMAND_WRAPPERS`, generated FROM the constant."""
+        for name in sorted(cli._BASH_COMMAND_WRAPPERS):
+            with self.subTest(name=name):
+                self.assertEqual(self._write_commands(f"{name} cp a b"), ["cp"])
+                mutated = frozenset(cli._BASH_COMMAND_WRAPPERS - {name})
+                with patch.object(cli, "_BASH_COMMAND_WRAPPERS", mutated):
+                    self.assertEqual(self._write_commands(f"{name} cp a b"), [])
+
+    def test_a_writer_in_every_fragment_of_a_compound_is_found(self) -> None:
+        # The refusal names the first writer, but the scan must not stop at the
+        # first fragment: a leading read must not hide a trailing write.
+        self.assertEqual(self._write_commands("cat a.txt && cp a b"), ["cp"])
+        self.assertEqual(self._write_commands("cp a b && mv c d"), ["cp", "mv"])
 
     # ---- end to end through cli.main --------------------------------------
 
@@ -5532,26 +5445,28 @@ class BashWriteTargetGrammarTests(unittest.TestCase):
                     self.assertEqual(body.get("decision"), "block", body)
                     self.assertIn("workspace/pipelines/evil.json", body.get("reason", ""))
 
-    def test_stderr_capture_on_an_argv_write_is_not_refused(self) -> None:
-        """Round 1's strongest finding, at the handler: the block named the path `2`.
+    def test_legitimate_redirect_work_is_not_refused(self) -> None:
+        """The over-refusal probe, at the handler, for the rows a round found blocked.
 
-        `cp <src> <dst> 2>/dev/null` with `<dst>` under `allowed_tmp_root` is work a
-        leaf is entitled to do. The first version of the argv path blanked the
-        redirect only from the operator onward, so the fd prefix `2` survived as the
-        last operand and the write guard refused, naming a path the leaf never wrote.
+        Each of these names a destination inside the leaf's own `allowed_tmp_root`
+        and was BLOCKED at some commit on this branch, naming `2`, `artifact`,
+        `.json`, `ls` or `-` — a path that appears nowhere in the command.
         """
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            orch = "orch_issue74_fdprefix"
-            run_id = "step_run_issue74_fdprefix"
+            orch = "orch_issue74_overrefusal"
+            run_id = "step_run_issue74_overrefusal"
             tmp_root = f"workspace/tmp/{run_id}"
             self._setup(repo_root, orch=orch, run_id=run_id, tmp_root=tmp_root)
             for command in (
-                f"cp {tmp_root}/a {tmp_root}/b",
-                f"cp {tmp_root}/a {tmp_root}/b 2>/dev/null",
-                f"touch {tmp_root}/b 2>/dev/null",
-                f"cp {tmp_root}/a {tmp_root}/b; ls workspace",
-                f"touch {tmp_root}/b\nls workspace",
+                f"echo hi > {tmp_root}/a.txt",
+                f"echo hi > {tmp_root}/a.txt 2>/dev/null",
+                f"echo hi > {tmp_root}/a.txt 2>&-",
+                f"echo hi > {tmp_root}/a.txt  # keep a note",
+                f"echo hi > {tmp_root}/a.txt\nls workspace",
+                f"echo hi >{tmp_root}/a.txt",
+                f'echo hi > "{tmp_root}/a.txt"',
+                f"cat a.txt | tee {tmp_root}/log.txt  # keep a copy",
             ):
                 with self.subTest(command=command):
                     code, body = self._run_bash_hook(
@@ -5560,25 +5475,65 @@ class BashWriteTargetGrammarTests(unittest.TestCase):
                     self.assertNotEqual(code, 2, body)
                     self.assertNotEqual(body.get("decision"), "block", body)
 
-    def test_glued_separator_does_not_hide_an_argv_destination(self) -> None:
-        """Round 1's fail-open half, at the handler.
+    def test_operator_session_outside_workflow_mode_is_not_refused(self) -> None:
+        """The refusal is workflow-only, and this pins it at the handler.
 
-        `shlex` glues `;` onto the preceding word and eats `\n`, so the first
-        version's token-equality fragment split saw one fragment and the `cp`'s
-        destination disappeared. Every row is a write the guard must still refuse.
+        `.claude/settings.json` (the DEV layer) has to carry every hook command the
+        leaf layer does, so an operator's interactive session runs this same hook.
+        The Bash branch is gated on `METDSL_WORKFLOW_MODE == "1"` (`cli.py`'s
+        step 3), and the operator owns the machine — refusing their `cp` would be
+        an over-refusal with no leaf-shortcut to defend against.
         """
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            orch = "orch_issue74_glued"
-            run_id = "step_run_issue74_glued"
+            orch = "orch_issue74_operator"
+            run_id = "step_run_issue74_operator"
             self._setup(
                 repo_root, orch=orch, run_id=run_id, tmp_root=f"workspace/tmp/{run_id}"
             )
+            payload = {
+                "orchestration_id": orch,
+                "repo_root": str(repo_root),
+                "tool_name": "Bash",
+                "tool_input": {"command": "cp a.txt b.txt"},
+            }
+            out = io.StringIO()
+            with patch.dict(os.environ, {"METDSL_WORKFLOW_MODE": "0"}, clear=False):
+                with redirect_stdout(out):
+                    code = cli.main(
+                        [
+                            "--backend",
+                            "claude",
+                            "--event",
+                            "PreToolUse",
+                            "--input-json",
+                            json.dumps(payload),
+                        ]
+                    )
+            self.assertEqual(code, 0)
+            self.assertEqual(out.getvalue().strip(), "")
+
+    def test_file_write_command_is_refused_with_an_actionable_remedy(self) -> None:
+        """TODO.md 378(d) end to end, and the remedy is checked, not just the block.
+
+        The remedy is a CONJUNCTION for a copy — `Read` then `Write` — so the
+        message has to say both halves: a leaf doing only the first writes nothing
+        and reports done on an artifact that does not exist.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            orch = "orch_issue74_argv"
+            run_id = "step_run_issue74_argv"
+            tmp_root = f"workspace/tmp/{run_id}"
+            self._setup(repo_root, orch=orch, run_id=run_id, tmp_root=tmp_root)
+            # Refused even when the destination is one the manifest WOULD allow:
+            # the rule is the route, not the path.
             for command in (
-                "cd workspace; cp a.py workspace/pipelines/evil.json",
-                "mkdir -p x\ncp a.py workspace/pipelines/evil.json",
-                "cp a.py workspace/pipelines/evil.json; ls",
-                "cp a.py workspace/pipelines/evil.json&&ls",
+                "cp a.txt workspace/pipelines/evil.json",
+                f"cp a.txt {tmp_root}/b.txt",
+                f"cd workspace; cp a.py {tmp_root}/b.txt",
+                f"cp -t{tmp_root} a.txt",
+                f"for f in *.py; do cp $f {tmp_root}/; done",
             ):
                 with self.subTest(command=command):
                     code, body = self._run_bash_hook(
@@ -5586,26 +5541,12 @@ class BashWriteTargetGrammarTests(unittest.TestCase):
                     )
                     self.assertEqual(code, 2, body)
                     self.assertEqual(body.get("decision"), "block", body)
-                    self.assertIn("workspace/pipelines/evil.json", body.get("reason", ""))
-
-    def test_argv_grammar_destination_reaches_the_write_guard(self) -> None:
-        """TODO.md 378(d) end to end: `cp` named no target before this change."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            orch = "orch_issue74_argv"
-            run_id = "step_run_issue74_argv"
-            self._setup(
-                repo_root, orch=orch, run_id=run_id, tmp_root=f"workspace/tmp/{run_id}"
-            )
-            code, body = self._run_bash_hook(
-                orch=orch,
-                repo_root=repo_root,
-                command="cp a.txt workspace/pipelines/evil.json",
-            )
-            self.assertEqual(code, 2, body)
-            self.assertEqual(body.get("decision"), "block", body)
-            self.assertIn("workspace/pipelines/evil.json", body.get("reason", ""))
-
+                    reason = body.get("reason", "")
+                    self.assertIn("'cp'", reason)
+                    self.assertIn("`Write` tool", reason)
+                    # the copy remedy names BOTH halves
+                    self.assertIn("`Read` it and", reason)
+                    self.assertIn("both halves are", reason)
 
 if __name__ == "__main__":
     unittest.main()
