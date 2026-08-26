@@ -1204,6 +1204,71 @@ class ClaudeHookCliTests(unittest.TestCase):
                 self.assertEqual(code, 2)
                 self.assertFalse((Path(tmp) / "workspace").exists())
 
+    @unittest.skipIf(os.geteuid() == 0, "root bypasses file permissions")
+    def test_a_decision_survives_an_unwritable_audit_sink(self) -> None:
+        """An audit write must never decide the verdict — the fail-open this closes.
+
+        `_append_hook_audit` wrote with no exception handling, and `main()` calls it from
+        inside its `try` AND from the `except` handler, so an `OSError` on the sink became
+        a double fault that escaped with rc 1 and an EMPTY stdout. rc 2 is the block
+        signal and a codex `PermissionRequest` carries its deny in the body, so the
+        refusal was delivered by neither.
+
+        It is REACHABLE by a leaf, and that is why this is a table rather than a note:
+        `workspace/orchestrations/<id>/hooks/` is bound WRITABLE to a leaf
+        (`runtime_rw_rel_paths`), and this same hook allows `rm -f` / `mkdir` /
+        `chmod 000` on the sink and `python3 workspace/tmp/…` (all measured rc 0). One
+        allowed command therefore switched off every later policy — the write manifest,
+        the read manifest, the credential refusal, the protected-root resolver — and left
+        no row saying so. Pre-existing; the branch's own `_global` refusal made it certain
+        under bwrap, where `_global/` is not a leaf write root at all.
+        """
+        blocked = "cat ~/.claude.json"
+
+        def sink_of(root: Path, orch: str) -> Path:
+            return (root / "workspace" / "orchestrations" / orch / "hooks"
+                    / "native_hook_events.jsonl")
+
+        # (1) the id-bearing path: the sink destroyed the way a leaf can destroy it.
+        for label in ("directory", "unwritable file"):
+            with self.subTest(sink=label), tempfile.TemporaryDirectory() as tmp:
+                root, orch = Path(tmp), "orch_sink"
+                sink = sink_of(root, orch)
+                sink.parent.mkdir(parents=True)
+                if label == "directory":
+                    sink.mkdir()
+                else:
+                    sink.write_text("", encoding="utf-8")
+                    os.chmod(sink, 0)
+                payload = {"repo_root": tmp, "orchestration_id": orch,
+                           "tool_name": "Bash", "tool_input": {"command": blocked}}
+                code, text = self._run_pre(
+                    "claude", payload,
+                    env={"METDSL_WORKFLOW_MODE": "1", "METDSL_ORCHESTRATION_ID": orch})
+                self.assertEqual(code, 2, msg=text)
+                self.assertIn("forbidden in workflow mode", text)
+
+        # (2) the missing-id refusal with no writable tree at all, which is what a leaf
+        # that lost its id meets under bwrap. Both backends, because the codex
+        # `PermissionRequest` deny is carried in the BODY at rc 0 and would vanish
+        # differently from the rc 2 one.
+        for backend, event, want_rc in (("claude", "PreToolUse", 2),
+                                        ("codex", "PreToolUse", 2),
+                                        ("codex", "PermissionRequest", 0)):
+            with self.subTest(backend=backend, event=event), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                (root / "workspace" / "orchestrations").mkdir(parents=True)
+                os.chmod(root / "workspace" / "orchestrations", 0o500)
+                try:
+                    code, text = self._run_event(
+                        backend, event, self._missing_id_payload(root),
+                        env={"METDSL_WORKFLOW_MODE": "1"})
+                finally:
+                    os.chmod(root / "workspace" / "orchestrations", 0o700)
+                self.assertEqual(code, want_rc, msg=text)
+                self.assertIn("orchestration_id is required", text)
+                self.assertNotIn("Traceback", text)
+
     def test_the_payload_is_preferred_over_the_environment_for_the_id(self) -> None:
         """The precedence in `_extract_orchestration_id`, which issue #102 made
         load-bearing: it no longer decides only WHICH id labels an audit row, it decides

@@ -276,7 +276,18 @@ def _append_hook_audit(
         / "hooks"
         / "native_hook_events.jsonl"
     )
-    path.parent.mkdir(parents=True, exist_ok=True)
+    # BEST EFFORT, and this is the load-bearing part of the function. Under bwrap a
+    # leaf's only writable tree is its OWN `workspace/orchestrations/<id>/`, so a leaf
+    # that has lost its id cannot create `_global/hooks/` — and that leaf is exactly the
+    # one this function is asked to record. Letting the `OSError` out turned the refusal
+    # into a traceback with rc 1 and an EMPTY stdout: the block signal is rc 2, and a
+    # codex `PermissionRequest` carries its deny in the body, so both were lost. A
+    # decision that cannot be recorded is still a decision; a decision that cannot be
+    # DELIVERED is a fail-open in the path that exists to fail closed.
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return
     entry = {
         "ts": _utc_now_iso(),
         "backend": backend,
@@ -291,8 +302,12 @@ def _append_hook_audit(
         entry["payload_summary"] = payload_summary
     if decision.audit_detail is not None:
         entry["audit_detail"] = _sanitize_audit_detail(decision.audit_detail)
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    # The write is best effort for the same reason as the mkdir above.
+    try:
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except OSError:
+        return
 
 
 def _resolve_repo_root(payload: dict[str, Any], backend: str = "") -> Path:
@@ -2497,13 +2512,19 @@ def main(argv: list[str] | None = None) -> int:
         fallback_adapter = _adapter_for_backend(args.backend)
         decision = _decision_error(f"hook entrypoint failure: {exc}")
         fallback_orchestration_id = _extract_orchestration_id(payload) or "_global"
-        _append_hook_audit(
-            backend=args.backend,
-            event_name=event_name,
-            payload=payload,
-            decision=decision,
-            orchestration_id_override=fallback_orchestration_id,
-        )
+        # Guarded a SECOND time: this handler exists to turn any failure into a decision,
+        # and an audit that raises here would take the decision with it — the double
+        # fault that produced the traceback described above.
+        try:
+            _append_hook_audit(
+                backend=args.backend,
+                event_name=event_name,
+                payload=payload,
+                decision=decision,
+                orchestration_id_override=fallback_orchestration_id,
+            )
+        except Exception:  # noqa: BLE001 - the decision outranks its record
+            pass
         exit_code, stdout_text = fallback_adapter.encode_decision(decision, event_name=event_name)
     return _emit_hook_response(exit_code, stdout_text, event_name=event_name)
 
