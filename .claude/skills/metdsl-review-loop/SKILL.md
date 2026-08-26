@@ -144,7 +144,11 @@ when a rule does not obviously apply:
   as a survivor (PR #86, visible only because the harness printed `PATCH DID NOT APPLY` instead
   of counting them green), and a not-applied patch is a failed run, not a finding. **The script is
   not universal either: one hunk can bundle a pinned and an unpinned change, so follow up at line
-  granularity when one rule lives in N places**
+  granularity when one rule lives in N places**. **A handwritten sweep over a SINGLE file must run
+  with `PYTHONDONTWRITEBYTECODE=1` and `-p no:cacheprovider`** — consecutive same-byte-length
+  rewrites within one second reuse a stale `.pyc`, and the mutant that reports `killed` is the
+  PREVIOUS one. Two reviewers hit it independently on PR #100, one of them reporting three live
+  mutants as killed; the skill's own script is unaffected because each hunk gets its own worktree
 - **Never revert a mutation with `git checkout -- <file>`; it deletes uncommitted work too.** Use
   a worktree (the script's default; `--keep` leaves it REGISTERED, and `git worktree prune` will NOT
   unregister one whose directory still exists — `git worktree remove <path>` does) or a `cp` backup
@@ -207,6 +211,16 @@ when a rule does not obviously apply:
      sentence saying the numbers were no longer typed (an f-string ate the doubled braces). Assert
      that no placeholder survives before you commit — one `re.search` — because a message cannot be
      fixed after it is pushed, and this failure looks exactly like success
+   - **Before you DERIVE a threshold from a measurement, enumerate the comparable runs you already
+     have.** Generating a number from the artifact stops transcription errors and does nothing
+     about this one: on PR #100 a requirement inferred from one closure was falsified by the NEXT
+     DAY's closure — same node, same endpoint, same models, running the very configuration the
+     document recommended, and sitting in the same `workspace/` the measurement came from. Three
+     rounds of reviewers re-derived the number correctly because they, too, were handed the one
+     run. **A derived threshold needs its POPULATION stated** ("largest completed draw across the
+     N runs that have one"), and the sweep that finds the population is one loop over the corpus,
+     not a judgment call. Where the population is one, say so and call the number a bound rather
+     than a requirement
 
    Episodes: `references/measurement-records.md`.
 
@@ -506,6 +520,14 @@ cut, and it runs both ways:
   on the "false evidence" side
 - **rough edges in existing behaviour this PR does not touch** — file them in TODO.md and hand
   them over. Pulling them in compounds "fixes calling for fixes"
+- **the SIBLING file a reviewer noticed has the same gap** — when the gap is structural but your
+  EVIDENCE does not reach it, the gap is the honest thing to leave. PR #100 took a reviewer's
+  "this other sample omits the same field" and wrote the rule into a second provider's sample on
+  the strength of the omission being identical; the guidance was not, and the next round found a
+  wrong field name, the rule's own censoring principle inverted, and a warning about a code path
+  that cannot execute. The whole edit was reverted. **The test is not "is the gap the same" but
+  "does my measurement cover the sibling"** — if it does not, say in the PR that the gap is
+  deliberate and belongs to whoever measures it
 
 **When the change ADDS A REFUSAL, read the remedy texts of the neighbouring guards.** A sibling's
 remedy can steer the refused party straight onto the route you did not close, and then the hole is
@@ -693,7 +715,22 @@ that tells you how it closed.
   (`.claude/skills/metdsl-enforcement-change/references/verification.md`). **Rewriting one
   statement repeatedly is a SWEEP problem, which this row owns; several sites that each state the
   rule is a COUPLING problem, which `metdsl-enforcement-change` rule 3-a owns and states the
-  threshold for.** Do not restate its number here — that is the drift this pair is about
+  threshold for.** Do not restate its number here — that is the drift this pair is about.
+  **A sweep does not help when the sentence SUMMARISES a measurement** — "at the top of the band",
+  "above every rate observed" — because there is one site and it is wrong on its own terms. PR #100
+  got that sentence wrong in three consecutive rounds, each version written to fix the previous
+  one. What closed it was DELETING the summary: state the figures, state what they are being
+  compared against, and leave the comparison to the reader. A summary of a spread is a claim with
+  no witness; the spread itself has one
+- **A term you coined for a tool has appeared in a document as if the system used it** → check it
+  against the vocabulary the repository already defines. On PR #100 a reporting script labelled any
+  body it could not parse "body is not an event stream", and that phrase was then written into
+  `docs/ORCHESTRATION.md` as the run's own classification — where
+  `response_not_an_event_stream` is a DIFFERENT thing that fails closed on the first attempt, so
+  the document had one leaf both spending a retry budget and belonging to a class that cannot. **A
+  new term needs one `grep` against the canonical documents before it ships**, and a tool whose
+  output will be transcribed should say what it OBSERVED ("no frames parsed") rather than what it
+  concluded
 - **Prose that enumerates entities in the code** (test names, call-site counts, numbers of
   readers) → **re-measuring loses. Turn it into a check.** Criterion: should this prose break if
   one test is renamed? Then make it a check (the general form, and when a check is the wrong
