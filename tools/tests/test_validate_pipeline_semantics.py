@@ -191,7 +191,7 @@ _STEP_PHASE_PATH = {
 
 
 def _dependency_ref_for_step(step: str) -> str:
-    """Phase-specific dependency_ref per ORCHESTRATION.md, the `dependency_ref` finalization rule.
+    """Phase-specific dependency_ref per ORCHESTRATION.md §"Conventions for `ir_ref` / `pipeline_ref` / `dependency_ref`".
 
     Compile records the spec deps.yaml *file*; Generate and later phases record
     the IR phase-root *directory* (ir_ref).
@@ -11401,7 +11401,7 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
 
     def test_validate_post_generate_stage_leaf_node_directory_dependency_ref(self) -> None:
         """Regression: a leaf node (direct_deps=[]) with dependency_ref pointing at the
-        IR phase-root *directory* (per ORCHESTRATION.md, the `dependency_ref` finalization rule) must resolve the dependency
+        IR phase-root *directory* (per ORCHESTRATION.md §"Conventions for `ir_ref` / `pipeline_ref` / `dependency_ref`") must resolve the dependency
         block from <ir>/spec.ir.yaml instead of crashing with IsADirectoryError."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)

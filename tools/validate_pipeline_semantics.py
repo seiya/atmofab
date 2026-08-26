@@ -5679,7 +5679,7 @@ def _dependency_doc_path(repo_root: Path, dep_path: Path, ir_ref: str | None) ->
     """Resolve the dependency document from a dependency_ref.
 
     Compile contract: dependency_ref is a spec/.../deps.yaml *file*.
-    Generate+ contract (ORCHESTRATION.md, the `dependency_ref` finalization rule): dependency_ref is the IR/pipeline
+    Generate+ contract (ORCHESTRATION.md §"Conventions for `ir_ref` / `pipeline_ref` / `dependency_ref`"): dependency_ref is the IR/pipeline
     phase-root *directory*; the dependency block lives in <ir>/spec.ir.yaml.
     Legacy fixtures also pointed dependency_ref straight at spec.ir.yaml (a file).
     """
