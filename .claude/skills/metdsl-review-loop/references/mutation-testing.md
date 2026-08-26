@@ -278,3 +278,41 @@ The sub-rules below had no section here and were carried in `SKILL.md` in full. 
     `--help` line and a RUNBOOK entry: mutating rc 3's mapping to `return 1` left **1555 rows
     green**, and three review rounds walked past it. The check is mechanical — **list the pair,
     then list your witnesses, and compare the two lists** before handing over
+
+### A probe family generated from a constant, chosen from the one corner where it cannot fail (PR #98)
+
+Table-driven set identity is the right shape and this branch used it three times. All three
+generated the probe SPELLING from the same corner, and all three were written into a commit
+message as having settled the question.
+
+- **48 spellings, all long options.** A branch of the option loop was deleted as an "equivalent
+  mutant, measured over all 48 spellings the value tables produce". The tables hold 12 long and 12
+  short options; the 48 were 12 long × {before, after, empty value, behind `--`}. The deleted
+  branch could only differ when a SHORT option's cluster split ran, and `arg.startswith("--")`
+  short-circuits that — so no member of the family could have failed. A reviewer built two short
+  `=` witnesses that did distinguish it.
+- **8 fd-dup spellings, all with a leading space.** A pass was documented as subsumed by a later
+  filter, "measured over eight fd-dup spellings". Every one was written `cp a b 2>&1`. GLUED to the
+  operand — `cp a b2>&1` — the filter takes the real destination with it, so the pass was
+  load-bearing and the note said the opposite.
+- **17 wrappers, all probed as `f"{name} cp a b"`.** The worst of the three, because it was the
+  set-identity test itself and the commit cited it as answering a census's complaint about
+  sampling. Every wrapper works with no options; six of eight were defeated by their own canonical
+  invocation (`env FOO=1 cp`, `timeout 5 cp`, `sudo -u root cp`, `xargs -I {} cp`), and `timeout`
+  was inert for every spelling that exists, since a valid `timeout` begins with a DURATION.
+  **`timeout cp a b` is not a spelling bash accepts** — the test was green on an input that cannot
+  occur. Fixed with a spelling table asserted to cover the constant, each entry RUN under bash to
+  confirm it performs the write; writing that table caught a fourth instance in itself
+  (`case x in a) cp …` never matches `x`).
+
+**The check is one question**: name a member of the family for which the measurement could have
+come out the other way. Then check the spelling is one the thing under test accepts.
+
+### `-x` turns a pre-existing failure into a whole-run false green (PR #98)
+
+A reviewer's first mutation pass reported 12 of 12 mutants KILLED, and they re-ran and discarded
+it: `-x` stopped on the two path-depth-coupled `ForbidBackendCredentialReadTests` cases, which fail
+in a `/tmp` worktree and pass in the checkout, so every mutant "killed" the same pre-existing
+failure. `mutation_check.py`'s own baseline catches this (red baseline, exit 2) — a HANDWRITTEN
+sweep in a scratch copy does not. Deselect the known failures in the test command, or drop `-x`.
+

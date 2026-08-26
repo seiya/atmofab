@@ -74,8 +74,15 @@ python3 .claude/skills/metdsl-review-loop/scripts/mutation_check.py \
 #   --range origin/main...HEAD
 ```
 
-**Pass `-x`.** The exit code decides the verdict — the output is read only to tell a real
-failure from a suite that never ran. Hunks run in separate worktrees, `min(cores - 2, 4)` at a
+**Pass `-x` — but only once you know the baseline is green FOR THE TEST COMMAND YOU PASS.**
+The exit code decides the verdict, and `-x` stops at the first failure: if the suite already has
+one that is nothing to do with your change, every mutant stops there and every mutant reads as
+`killed`. That is a false green over the whole run, not a per-hunk slip. In met-dsl the standing
+instance is the two path-depth-coupled `ForbidBackendCredentialReadTests` cases, which fail in a
+worktree under `/tmp` and pass in the checkout — so the script's own baseline goes red (exit 2)
+and tells you, but a HANDWRITTEN sweep in a scratch copy will not. **Deselect the known failures
+in `--test-cmd`, or drop `-x`.** The output is otherwise read only to tell a real failure from a
+suite that never ran. Hunks run in separate worktrees, `min(cores - 2, 4)` at a
 time by default and never more than the hunk count (`--jobs`); 4 hunks × 805 tests measured 5m52s → 43s. **Do not put a `TMPDIR=` prefix in
 `--test-cmd`**: each job already gets its own temp root, a prefix puts them all back on one, and
 failures then belong to no hunk and are recorded as `killed` — a false pin (at more than one job
@@ -166,6 +173,13 @@ when a rule does not obviously apply:
     has a witness, the property holding it up usually does not
   - **kill enumerations one element at a time** (regex alternatives, keyword tables); checked
     together, a missing element goes unnoticed
+  - **generating the probes FROM the constant gives set identity, not a family that can
+    distinguish anything.** A table-driven test that builds one input per member is the right
+    shape — a member added without a probe gets one — but the SPELLING you generate can be the
+    one shape every member survives. Ask of the generated family: *is there a member for which
+    this input could not fail?* Then check that the spelling is one the thing under test actually
+    accepts. PR #98 shipped three of these, one per round, and each was reported as having settled
+    the question it could not reach. Episode: `references/mutation-testing.md`
   - **one test per occurrence of a rule, not per rule** — and **the sharpest trigger is a TWIN**:
     when a change touches one of a matched pair, list the pair, list your witnesses, compare the
     two lists before handing over
@@ -327,7 +341,10 @@ replacing one.
 
 **Work you may delegate (verifiable = running it settles the truth)**: re-measuring every number
 in the diff **and reporting mismatches**; back-checking "recorded in X" / "pinned by Y" /
-"covered by Z" (grep for existence; **delete the test and see it fail**); a correspondence
+"covered by Z" (grep for existence, then **delete what the test is ABOUT and see the test
+fail** — deleting the test itself proves nothing, since removing a passing `unittest` method can
+never turn another one red, and a reviewer who reads that instruction literally will report the
+whole axis as vacuous, correctly); a correspondence
 table of whether each new failure class has a test; counting the call sites that make the same
 decision; contradictions between prose and implementation.
 
@@ -684,7 +701,12 @@ that tells you how it closed.
 - **The same mechanism keeps being broken for three rounds or more** → suspect that **the question
   the rule is trying to answer** cannot be answered at this level of analysis; change to a weaker
   question that can be. **If the simple and the complex version give identical measured diffs, the
-  complexity bought nothing**
+  complexity bought nothing.** When the defects are all ONE shape rather than a spread, reach for
+  this before the five-round "the shape of the rule is wrong" count below — on PR #98 it was the
+  correct read at three. **Changing the question is a shape change, so it is split-or-ask**, and
+  **it buys no smaller review surface**: the replacement mechanism drew two more rounds of HIGH
+  findings, one of them a fail-open regression against `origin/main`
+  (`references/class-descent-log.md`)
 - **A reviewer said "it is environment-dependent"** → do not close it with a mock on the test side.
   Ask first what happens in production on that environment (`metdsl-enforcement-change` rule 2
   owns this)
@@ -703,6 +725,15 @@ that tells you how it closed.
 - **A witness test's probe value contains the implemented value as a substring** → the assertion is
   automatically true via another clause (`"cmake"` contains `"make"`). **Assert inside the test
   that the probe has the property it needs**
+- **You measured a family and reported the conclusion** → ask whether the family could have come
+  out the other way. The criterion is one question: **name a member for which the measurement
+  could have failed.** If you cannot, you measured a family that structurally cannot answer, and
+  the conclusion is unsupported however many members it had — 48 spellings, 8 spellings and 17
+  spellings each did this on PR #98. It is not the substring sign above: there the single probe
+  is degenerate; here every probe is fine and the SET is chosen from one corner. **The most
+  dangerous version is a generated probe that is not a spelling the thing under test accepts at
+  all** (`timeout cp a b` is not valid bash), because then the test is green on an input that
+  cannot occur. The three families and how each was closed: `references/mutation-testing.md`
 
 ## Finally
 

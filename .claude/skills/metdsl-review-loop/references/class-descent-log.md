@@ -64,6 +64,53 @@ here", attempted by regex, was broken 16 ways; "is there no other declaration an
 closed it. If the simple and the complex version produce identical measured diffs, the complexity
 bought nothing — take that diff first.
 
+## PR #98 — the weaker question, applied mid-loop, and the class that never descended
+
+The second recorded instance of L128's move, and the first where the redesign happened INSIDE a
+running loop rather than after it.
+
+`TODO.md` 378(d) asked "which operand does this `cp` write?" — extractable only by re-implementing
+bash's word splitting plus each tool's getopt grammar. Rounds 1, 2 and 3 each found the same defect
+one function further on: a value read off one copy of the command while a decision was made on
+another (`shlex`-token segmentation vs. the read side's string split; operands read from the raw
+command while segmentation ran on a sanitized one; a substitution marked at its first byte, with
+its spans located on the copy where they had been erased). Every fix regenerated the family, in
+both directions at once — `cp src dst 2>/dev/null` refused naming the path `2`, `cd x; cp a
+<managed path>` extracting nothing at all.
+
+**The trigger fired at THREE rounds, not five.** SKILL.md's count for "the shape of the rule is
+wrong" is five; the sibling sign — "the same mechanism keeps being broken for three rounds or more
+→ change to a weaker question" — is the one that was right here, and it is the one to reach for
+first when the defects are all one shape rather than a spread.
+
+The weaker question: **stop naming the destination, recognise the command.** "Is the head of this
+fragment a command that writes a file?" is one lookup. It closed the family structurally — every
+spelling that had defeated the parser is caught, because none of them has to be modelled to read a
+head — and it flipped the failure direction from open to closed.
+
+**Two things this episode shows that L128 does not.**
+
+- **The redesign was put to the USER, not taken.** SKILL.md's rule for a fix that changes the shape
+  of the rule is split-or-ask; the options offered were split the branch / continue / redesign in
+  place, with the measured basis (every finding traced to the argv grammar or to a regex widening
+  done to serve it; the redirect half had produced no finding since round 1). The user chose
+  redesign. Taking that decision silently would have been the same class of error as the loop's own
+  defects.
+- **A weaker question is not a smaller review surface.** The new mechanism got rounds 4 and 5, and
+  each found HIGH defects IN IT — a wrapper hop broken for six of eight wrappers by their own
+  canonical invocations, then `[[ … ]]` matched outside command position blanking a real redirect
+  (a fail-open REGRESSION against `origin/main`, introduced by round 4's own fix). **The class
+  never descended across all five rounds.** The loop ended at the cap, disclosed as not converged.
+
+**What the remainder looked like at the cap**, and why it was disclosed rather than fixed: the
+widest gap was a writer inside a script FILE handed to any interpreter (`bash x.sh`,
+`python3 x.py`), which no guard covers — and which a SIBLING guard's remedy text actively steers a
+refused leaf toward, over an allow-list entry that permits it. That is worth reading twice: the
+review found not a hole in the new rule but a hole the surrounding system's own instructions point
+at. Two reviewers' corpus differentials (283 real leaf commands, 51,425 operator commands, ~4,000
+generated redirect spellings) found no lost target and no refusal of real leaf work versus
+`origin/main`, which is what bounded the remainder well enough to stop.
+
 ## PR #53 — the last round changed one behaviour
 
 "Holes in the mechanism itself; a deleted defense is reachable" → "missed spellings and contexts
