@@ -75,26 +75,13 @@ phases:
         provider: anthropic_api
         api_key_env: ANTHROPIC_API_KEY
         model: claude-opus-5
-        # Sized on the artifact. `docs/ORCHESTRATION.md` §"Leaf LLM configuration" records what
-        # that misses on a model that spends part of the ceiling thinking, and this provider
-        # expresses thinking as a token budget rather than a level. Those measurements are from
-        # another endpoint and do not transfer; the rule they carry does — re-size on the model
-        # you run, and read a `finish_reason` of `max_tokens` as the requirement, not as noise.
         max_output_tokens: 32768
-        # Declared with the ceiling because the two move together: raising a ceiling alone
-        # converts a truncation into a timeout. 32768 inside the 900 s default demands
-        # 36.4 tok/s sustained, which is not a margin. Deliberately generous, not derived.
-        timeout_s: 2400
       # PURE: the verdict reviewer over the bundle above.
       verify:
         provider: anthropic_api
         api_key_env: ANTHROPIC_API_KEY
         model: claude-opus-5
-        # Half the writer's budget, because a verdict is not a bundle. A ceiling under what the
-        # model spends thinking returns NO verdict rather than a short one; the measurement is
-        # in `docs/ORCHESTRATION.md`.
         max_output_tokens: 16384
-        timeout_s: 1200
 
   validate:
     substeps:
