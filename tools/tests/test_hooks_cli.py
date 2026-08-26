@@ -5264,6 +5264,39 @@ class BashWriteTargetGrammarTests(unittest.TestCase):
         ("echo hi > /dev/stdin", []),
     )
 
+    # Round 3 found the SAME shape a third time — a value read off one copy of the
+    # command while a decision is made on another. Every row measured failing at
+    # `98956af` first.
+    _ROUND3_WITNESSES = (
+        # round 2 marked a substitution span at its FIRST BYTE only, so an EMBEDDED
+        # one split its word and the literal tail became the last operand: a leaf
+        # writing a timestamped file inside its own tmp root was refused naming
+        # `.json`. A destination involving a substitution at all is residue.
+        ("cp report.json workspace/tmp/r1/run-$(date +%s).json", []),
+        ("cp a workspace/out/`date`.json", []),
+        ("touch workspace/out/a-$(id -u).txt", []),
+        ("cp a workspace/out/v$((1+1)).json", []),
+        # bash expands a substitution inside DOUBLE quotes, and _strip_quoted_strings
+        # has already blanked those bodies — so the spans must be located on the
+        # ORIGINAL command, not on `scanned`
+        ('cp a.json "$(cat dest.txt)"', []),
+        ('cp a.json "`cat dest.txt`"', []),
+        ('cp a.json "$(echo workspace/out)/b.json"', []),
+        # a `$(…)` inside a COMMENT is never run: comments are blanked before the
+        # substitution recursion, not only inside the argv view
+        ("cp a workspace/out/b # $(touch /tmp/x)", ["workspace/out/b"]),
+        # ...and the `tee` branch recovers a raw span too, so it needs the same
+        ("python3 x.py | tee workspace/tmp/r1/log.txt  # keep a copy", ["workspace/tmp/r1/log.txt"]),
+        # `>&N-` MOVES a descriptor and writes no file
+        ("cmd >&3-", []),
+        ("cmd 2>&3-", []),
+        # a `#` mid-word is not a comment; the word-start set is the one
+        # `_strip_quoted_strings` itself uses
+        ("cp a b#c workspace/out/x.json", ["workspace/out/x.json"]),
+        ("cp src workspace/out/run.json#env", ["workspace/out/run.json#env"]),
+        ("touch workspace/out/a#1.txt", ["workspace/out/a#1.txt"]),
+    )
+
     def _targets(self, command: str) -> list[str]:
         return cli._detect_bash_write_targets(command)
 
@@ -5279,6 +5312,11 @@ class BashWriteTargetGrammarTests(unittest.TestCase):
 
     def test_round2_review_witnesses(self) -> None:
         for command, expected in self._ROUND2_WITNESSES:
+            with self.subTest(command=command):
+                self.assertEqual(sorted(self._targets(command)), sorted(expected))
+
+    def test_round3_review_witnesses(self) -> None:
+        for command, expected in self._ROUND3_WITNESSES:
             with self.subTest(command=command):
                 self.assertEqual(sorted(self._targets(command)), sorted(expected))
 

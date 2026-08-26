@@ -378,7 +378,7 @@ _REDIRECT_TARGET = r"((?:\"[^\"]*\"|'[^']*'|[^\s;&|<>)(])+)"
 # `&` after the operator means "and stderr too" — `>&word` writes to the file
 # `word`, EXCEPT when `word` is a bare fd number, which is duplication. The
 # negative lookahead is the same test `_BASH_FD_DUP_RE` makes in common.py.
-_REDIR_AND_STDERR = r"&(?!\s*(?:\d+|-)(?![\w./-]))"
+_REDIR_AND_STDERR = r"&(?!\s*(?:\d+-?|-)(?![\w./-]))"
 
 # Shell output redirection. The whole span is what the argv view has to blank, so
 # the leading fd digit of `2>path` and the leading `&` of `&>path` are INSIDE the
@@ -402,6 +402,10 @@ _BASH_LINE_CONTINUATION_RE = re.compile(r"\\\n")
 # Stands in for a command substitution in the argv view. A NUL cannot occur
 # in a command bash actually runs, so it can never collide with a real word.
 _SUBSTITUTION_PLACEHOLDER = "\x00"
+# The characters after which a `#` opens a comment. Same set
+# `common._strip_quoted_strings` uses to make the same decision; a `#` that
+# follows anything else is part of a word (`run.json#env`).
+_BASH_WORD_START_CHARS = " \t\n;|&("
 # tee: tee [-opts] path
 _BASH_TEE_RE = re.compile(r"\btee\b(?:\s+-\w+)*\s+([^\n;&|<>]+)")
 _REDIRECT_SKIP = frozenset({
@@ -756,6 +760,35 @@ def _shlex_one(blob: str) -> str:
     return "".join(words) if words else blob
 
 
+def _blank_bash_comments(command: str) -> str:
+    """Blank every `#` comment to end of line, preserving length.
+
+    Applied at the TOP of `_detect_bash_write_targets`, so every branch below —
+    redirect, `tee`, `sed -i` and argv — sees a comment-free command. Doing it
+    inside the argv view alone left the other three reading the raw text: the
+    `tee` branch reported `['log.txt', '#', 'keep', 'a', 'copy']` for a `tee`
+    with a trailing note, and `_extract_command_substitution_bodies` recursed
+    into a `$(…)` written INSIDE a comment, so `cp a b # $(touch /tmp/x)` named
+    `/tmp/x` — a path bash never writes.
+
+    `_strip_quoted_strings` decides where a comment starts (it blanks the body
+    and keeps the `#`), so the marker positions are read off its output and its
+    word-start set is reused verbatim rather than restated. A `#` inside quotes,
+    or mid-word as in `run.json#env`, is not one.
+    """
+    scanned = _strip_quoted_strings(command)
+    out = list(command)
+    for pos, char in enumerate(scanned):
+        if char != "#":
+            continue
+        if pos and scanned[pos - 1] not in _BASH_WORD_START_CHARS:
+            continue
+        eol = scanned.find("\n", pos)
+        for i in range(pos, len(scanned) if eol == -1 else eol):
+            out[i] = " "
+    return "".join(out)
+
+
 def _command_substitution_spans(command: str) -> list[tuple[int, int]]:
     """Half-open spans of every `$(...)` / backtick substitution, delimiters included.
 
@@ -803,7 +836,7 @@ def _command_substitution_spans(command: str) -> list[tuple[int, int]]:
     return spans
 
 
-def _argv_view(text: str, scanned: str) -> str:
+def _argv_view(text: str, scanned: str, substitution_spans: list[tuple[int, int]]) -> str:
     """`text` with everything that is not an operand blanked, length preserved.
 
     Blanking rather than deleting keeps the words on either side of a removed
@@ -818,10 +851,6 @@ def _argv_view(text: str, scanned: str) -> str:
       the last operand and refused `cp src dst 2>/dev/null` naming the path `2`;
     * a `\\`-newline line continuation, which is not a fragment separator even
       though `_BASH_FRAGMENT_SEPARATOR_RE` splits on the newline in it;
-    * a comment, which `_strip_quoted_strings` blanks in `scanned` but which
-      survives in the original — reading operands off the raw command while
-      segmenting a sanitized copy is issue #74(a)'s defect one function over, and
-      `cp a b # copy the artifact` was refused naming the path `artifact`;
     * a command substitution, whose body is separators and commands rather than
       operands (`_detect_bash_write_targets` recurses into it separately).
 
@@ -843,25 +872,20 @@ def _argv_view(text: str, scanned: str) -> str:
             blank(*m.span())
     for m in _BASH_LINE_CONTINUATION_RE.finditer(scanned):
         blank(*m.span())
-    for start, end in _command_substitution_spans(scanned):
-        # A substitution stands where an OPERAND stands, so it is replaced by a
-        # placeholder rather than erased: blanked to spaces, `cp $(ls) dst` had one
-        # operand left and the `>= 2` rule declined to name `dst` at all. The
-        # placeholder counts as an operand and is dropped from the targets, so a
-        # destination that IS a substitution is residue, not a phantom path.
-        blank(start, end)
-        if end > start:
-            out[start] = _SUBSTITUTION_PLACEHOLDER
-    # A comment runs to end of line. `_strip_quoted_strings` already decided WHERE
-    # one starts — it blanks the body and keeps the `#` — so the marker positions
-    # can be read straight off `scanned`.
-    for pos, char in enumerate(scanned):
-        if char != "#":
-            continue
-        if pos and scanned[pos - 1] not in " \t\n":
-            continue
-        eol = scanned.find("\n", pos)
-        blank(pos, len(scanned) if eol == -1 else eol)
+    for start, end in substitution_spans:
+        # A substitution stands where an OPERAND stands, so the span is filled
+        # with a placeholder rather than erased. Two things went wrong with the
+        # first spelling. Erased to spaces, `cp $(ls) dst` had one operand left
+        # and the `>= 2` rule declined to name `dst` at all. Marked at the FIRST
+        # BYTE only, an EMBEDDED substitution split its word in two and the
+        # literal tail became the last operand: a leaf writing
+        # `workspace/tmp/<arid>/run-$(date +%s).json` — inside its own tmp root —
+        # was refused naming the path `.json`. Filling the whole span keeps the
+        # word one token, and the token carries the placeholder, so the target
+        # filter drops it: a destination that involves a substitution AT ALL is
+        # residue, never a phantom path.
+        for pos in range(start, min(end, len(out))):
+            out[pos] = _SUBSTITUTION_PLACEHOLDER
     return "".join(out)
 
 
@@ -879,8 +903,14 @@ def _argv_fragments(command: str, scanned: str) -> list[str]:
     Escaped separators are blanked first (a backslash-escaped `;` is a literal
     character, not a separator), matching `extract_bash_read_targets`.
     """
-    argv_source = _argv_view(command, scanned)
-    masked = _argv_view(scanned, scanned)
+    # Spans are located on the ORIGINAL command, not on `scanned`: bash expands a
+    # substitution inside DOUBLE quotes, and `_strip_quoted_strings` has already
+    # blanked those bodies, so `cp a "$(cat d)"` had no span at all and reported
+    # the literal `$(cat d)` as a destination. `_command_substitution_spans` does
+    # its own quote tracking, which is why it can read the original safely.
+    substitution_spans = _command_substitution_spans(command)
+    argv_source = _argv_view(command, scanned, substitution_spans)
+    masked = _argv_view(scanned, scanned, substitution_spans)
     masked = _BASH_ESCAPED_SEPARATOR_RE.sub(lambda m: " " * len(m.group()), masked)
     fragments: list[str] = []
     cursor = 0
@@ -1058,6 +1088,9 @@ def _detect_bash_write_targets(command: str | None) -> list[str]:
     # `if a > b:` yields the phantom target `b:` and blocks an authorized write
     # (issue #74(b)). Length-preserving, so the span recovery below stays aligned.
     command = _blank_heredoc_bodies(command)
+    # ...and comments, before anything reads the text: a `$(…)` inside a comment
+    # is not run, and a `tee` operand list must not swallow the note after it.
+    command = _blank_bash_comments(command)
     targets: list[str] = []
     # Recurse into $(...) and `...` bodies first.  Double-quoted strings do NOT
     # suppress command substitutions in bash, so a redirect inside "$(cmd > path)"
