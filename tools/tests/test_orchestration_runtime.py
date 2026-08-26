@@ -37643,6 +37643,67 @@ class ClaudeIsolationProfileTests(unittest.TestCase):
             self.assertNotIn(str(operator / ".claude"), rw_binds)
 
 
+class HookLayerSeparationTests(unittest.TestCase):
+    """Both backends' DEV and LEAF hook sources, as one table (issue #102).
+
+    `ClaudeLeafConfigSyncTests` beside this one covers the claude pair only, and the
+    codex half was the pair with no witness at all: a round-0 mutation sweep that
+    repointed `.codex/hooks.json` back at `tools.hooks.cli` was killed by nothing. The
+    separation is a property of FOUR files, so it is pinned over four.
+    """
+
+    DEV = (".claude/settings.json", ".codex/hooks.json")
+    LEAF = ("leaf_config/claude/settings.json", "leaf_config/codex/hooks.json")
+    LEAF_ENTRYPOINT = "tools.hooks.cli"
+    DEV_ENTRYPOINT = "tools.hooks.dev_cli"
+
+    @staticmethod
+    def _commands(rel: str) -> set:
+        from tools.tests.leaf_config_fixture import REPO_ROOT
+        payload = json.loads((REPO_ROOT / rel).read_text(encoding="utf-8"))
+        return {
+            hook.get("command")
+            for _event, blocks in (payload.get("hooks") or {}).items()
+            for block in blocks
+            for hook in block.get("hooks", [])
+            if isinstance(hook.get("command"), str)
+        }
+
+    def test_every_source_actually_registers_commands(self) -> None:
+        """First, because every assertion below is vacuous over an empty set — and an
+        empty `hooks` object is exactly what a bad edit to one of these files produces."""
+        for rel in self.DEV + self.LEAF:
+            with self.subTest(rel=rel):
+                self.assertTrue(self._commands(rel), f"{rel} registers no hook command")
+
+    def test_a_leaf_source_names_the_leaf_entrypoint(self) -> None:
+        for rel in self.LEAF:
+            for command in self._commands(rel):
+                with self.subTest(rel=rel, command=command[-60:]):
+                    self.assertIn(self.LEAF_ENTRYPOINT, command)
+                    self.assertNotIn(self.DEV_ENTRYPOINT, command)
+
+    def test_a_dev_source_never_names_the_leaf_entrypoint(self) -> None:
+        """The direction that matters. `tools.hooks.dev_cli` CONTAINS `tools.hooks.cli`
+        as a substring in neither spelling — `dev_cli` is a different module name — but
+        the assertion is written so that a rename making one a prefix of the other cannot
+        turn this green by accident: the dev command must name dev_cli, and the leaf
+        entrypoint must not appear as a whole module path.
+        """
+        self.assertNotIn(self.LEAF_ENTRYPOINT, self.DEV_ENTRYPOINT.split(" ")[0].replace(
+            "dev_cli", "sentinel"))
+        for rel in self.DEV:
+            for command in self._commands(rel):
+                with self.subTest(rel=rel, command=command[-60:]):
+                    self.assertIn(self.DEV_ENTRYPOINT, command)
+                    self.assertNotIn(f"{self.LEAF_ENTRYPOINT} ", command)
+
+    def test_no_command_is_shared_across_the_two_layers(self) -> None:
+        dev = set().union(*(self._commands(rel) for rel in self.DEV))
+        leaf = set().union(*(self._commands(rel) for rel in self.LEAF))
+        self.assertEqual(dev & leaf, set())
+
+
 class ClaudeLeafConfigSyncTests(unittest.TestCase):
     """The dev layer and the leaf layer are SEPARATE, and this pins the separation.
 

@@ -1146,6 +1146,42 @@ class ClaudeHookCliTests(unittest.TestCase):
             entry = json.loads(log.read_text(encoding="utf-8").splitlines()[-1])
             self.assertEqual(entry["action"], "block")
 
+    def test_nothing_writes_the_deleted_policy_variable(self) -> None:
+        """The writer, not only the reader (issue #102).
+
+        `tools/run_workflow.py` seeded `METDSL_MISSING_ORCHESTRATION_ID_POLICY` into
+        every node's environment for four months while nothing read it — the false
+        evidence issue #82 was filed for. Deleting the reader without pinning the writer
+        leaves the same shape available to the next edit, and a round-0 mutation sweep
+        confirmed re-adding the line is noticed by nothing.
+
+        Pins WRITES, not occurrences: `tools/orchestration_runtime.py` names the
+        variable in a comment that records why the prefix rule must not rest on an
+        inventory of readers, and that mention is supposed to stay.
+        """
+        import re as _re
+        repo_root = Path(__file__).resolve().parents[2]
+        writer = _re.compile(
+            r"""(?:environ|env|base_env|child_env|body)\s*\[\s*["']METDSL_MISSING_ORCHESTRATION_ID_POLICY["']\s*\]\s*=|"""
+            r"""(?:setenv|putenv)\s*\(\s*["']METDSL_MISSING_ORCHESTRATION_ID_POLICY["']""")
+        # Self-test the detector: a negative assertion over a scan is green when the
+        # scan is broken, and this one is a scan.
+        self.assertTrue(writer.search('base_env["METDSL_MISSING_ORCHESTRATION_ID_POLICY"] = "strict"'))
+        self.assertTrue(writer.search("env['METDSL_MISSING_ORCHESTRATION_ID_POLICY']  =  x"))
+        self.assertFalse(writer.search("# METDSL_MISSING_ORCHESTRATION_ID_POLICY is deleted"))
+        scanned = 0
+        offenders = []
+        for path in sorted((repo_root / "tools").rglob("*.py")):
+            if "tests" in path.parts or "__pycache__" in path.parts:
+                continue
+            scanned += 1
+            for lineno, line in enumerate(
+                    path.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
+                if writer.search(line):
+                    offenders.append(f"{path.relative_to(repo_root)}:{lineno}")
+        self.assertGreater(scanned, 10, "the scan collapsed; it is asserting over nothing")
+        self.assertEqual(offenders, [])
+
     def test_no_environment_value_turns_the_refusal_off(self) -> None:
         """It is not a policy any more. `METDSL_MISSING_ORCHESTRATION_ID_POLICY` was
         deleted with its writer (issue #102); this samples the spellings that used to

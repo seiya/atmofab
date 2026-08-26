@@ -1,7 +1,5 @@
 {
-  "enabledMcpjsonServers": [
-    "build-runtime"
-  ],
+  "enabledMcpjsonServers": ["build-runtime"],
   "permissions": {
     "allow": [
       "mcp__build-runtime",
