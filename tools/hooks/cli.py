@@ -2400,8 +2400,9 @@ def main(argv: list[str] | None = None) -> int:
             orchestration_id = "_global"
         if orchestration_id == "_global":
             # FAIL CLOSED. This entrypoint is the LEAF's, and a leaf always has the id:
-            # `_write_child_env` puts `METDSL_ORCHESTRATION_ID` into every leaf profile
-            # on both of its paths, filling an absence rather than tolerating it. So a
+            # `_profile_child_env` puts `METDSL_ORCHESTRATION_ID` into every leaf
+            # profile on both of its paths, filling an absence rather than tolerating
+            # it. So a
             # hook that reaches here either belongs to no run - which now means it was
             # invoked by something that is not a leaf - or has lost the one value every
             # guard below is keyed on: the write manifest, the read manifest, the codex

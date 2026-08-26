@@ -1000,9 +1000,9 @@ class ClaudeHookCliTests(unittest.TestCase):
 
     def test_claude_backend_settings_json_command_works(self) -> None:
         # The LEAF's settings file is the owner of the hook wiring (issue #63); the
-        # dev layer mirrors it. The sync test asserts leaf hooks are a SUBSET of dev,
-        # so a hook deleted on the leaf side would not show up there — reading the
-        # owner here is what makes that direction observable.
+        # dev layer no longer mirrors it: issue #102 separated the two, and
+        # `HookLayerSeparationTests` pins that they share no command. Reading the
+        # OWNER here is what keeps this test about the wiring a leaf actually loads.
         from tools.orchestration_runtime import CLAUDE_LEAF_CONFIG_REL
         repo_root = Path(__file__).resolve().parents[2]
         settings_doc = json.loads(

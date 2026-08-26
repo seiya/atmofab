@@ -20,10 +20,14 @@ wraps these into a `HookDecision` for the leaf path; `dev_cli` encodes them itse
 whole command, so a command that merely CONTAINS the text is refused too — a commit
 message that quotes the rule, a heredoc that writes documentation about it, a grep for
 it. Measured 2026-08-26: the commit that introduced this module was refused by it. The
-leaf path has machinery for that (`_strip_quoted_strings`, heredoc blanking in
-`common.py`), and this module deliberately does not import it — the boundary above is
-worth more than the nuisance, the operator owns the machine and can rephrase, and the
-failure direction is refusal rather than a missed one.
+leaf path has blanking machinery (`_strip_quoted_strings`, heredoc blanking in
+`common.py`) but **does not apply it to these two policies either** — measured end to
+end through `tools/hooks/cli.py` with an orchestration_id present: a quoted echo and a
+heredoc body both reach rc 2. So this is not a cost the dev entrypoint pays for its
+import boundary; it is one rule matching raw text on both paths, and the earlier version
+of this paragraph claimed a benefit that does not exist. It stands because the failure
+direction is refusal rather than a missed one and the operator can rephrase — narrowing
+it would weaken the leaf path by the same edit.
 """
 
 from __future__ import annotations

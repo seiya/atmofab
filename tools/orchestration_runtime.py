@@ -16783,8 +16783,8 @@ def _claude_leaf_config_path(repo_root: Path) -> Path:
 def _canonical_claude_hook_command(event: str) -> str:
     """The sole repository-approved native Claude hook wrapper for an event.
 
-    THE single spelling, read by the leaf-config probe, by the dev-layer sync test,
-    and by the documentation. Differs from `_canonical_codex_hook_command` only in
+    THE single spelling, read by the leaf-config probe and by the documentation. A
+    dev-layer sync test read it too until issue #102 repealed that mirroring. Differs from `_canonical_codex_hook_command` only in
     the `--backend` value; both exist because the two CLIs read different files, not
     because the policy differs.
     """
@@ -18403,8 +18403,10 @@ def _read_repo_mcp_tool_permissions(
     `CLAUDE_CONFIG_DIR=<private home> --setting-sources user`, and that home holds a
     SHA-pinned copy of exactly this file. This function answers "will the leaf be allowed to
     call the tool", so it must read what the leaf reads. The repository's own
-    `.claude/settings.json` is the DEV layer and no leaf loads it; a sync test keeps the two
-    files' hook commands identical so an operator's session behaves like a leaf.
+    `.claude/settings.json` is the DEV layer and no leaf loads it. A sync test kept the two
+    files' hook commands identical until issue #102 separated the layers; an operator's
+    session runs `tools/hooks/dev_cli.py` now and does NOT behave like a leaf, so this
+    function reading the leaf file is the whole of what makes it right.
 
     `.claude/settings.local.json` is deliberately NOT consulted. It used to be, and that was
     right while a leaf loaded the `local` source; afterwards it made the gate wrong in both
