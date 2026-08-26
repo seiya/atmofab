@@ -111,7 +111,18 @@ class HookCliTests(unittest.TestCase):
 
     def test_hooks_json_command_works_from_subdirectory(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
-        hooks_doc = json.loads((repo_root / ".codex" / "hooks.json").read_text(encoding="utf-8"))
+        # The LEAF wrapper, not `.codex/hooks.json` — which issue #102 made the DEV
+        # layer. These two execute the committed command as a shell string to catch a
+        # quoting / PYTHONPATH break in it, and the leaf's is the one that matters:
+        # left pointing at the dev file they would have run `dev_cli`, which allows
+        # everything and produces no stdout, so the allow assertion would have been
+        # satisfied by a program that cannot refuse anything.
+        hooks_doc = json.loads(
+            (repo_root / "leaf_config" / "codex" / "hooks.json").read_text(encoding="utf-8"))
+        self.assertIn("tools.hooks.cli",
+                      hooks_doc["hooks"]["PreToolUse"][0]["hooks"][0]["command"],
+                      "this test executes the wrapper; pointed at the dev one it would be "
+                      "satisfied by a program that allows everything")
         with tempfile.TemporaryDirectory() as tmp:
             command = (
                 hooks_doc["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
@@ -144,7 +155,18 @@ class HookCliTests(unittest.TestCase):
 
     def test_hooks_json_command_fail_fast_when_not_in_git_repo(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
-        hooks_doc = json.loads((repo_root / ".codex" / "hooks.json").read_text(encoding="utf-8"))
+        # The LEAF wrapper, not `.codex/hooks.json` — which issue #102 made the DEV
+        # layer. These two execute the committed command as a shell string to catch a
+        # quoting / PYTHONPATH break in it, and the leaf's is the one that matters:
+        # left pointing at the dev file they would have run `dev_cli`, which allows
+        # everything and produces no stdout, so the allow assertion would have been
+        # satisfied by a program that cannot refuse anything.
+        hooks_doc = json.loads(
+            (repo_root / "leaf_config" / "codex" / "hooks.json").read_text(encoding="utf-8"))
+        self.assertIn("tools.hooks.cli",
+                      hooks_doc["hooks"]["PreToolUse"][0]["hooks"][0]["command"],
+                      "this test executes the wrapper; pointed at the dev one it would be "
+                      "satisfied by a program that allows everything")
         command = hooks_doc["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
         with tempfile.TemporaryDirectory() as tmp:
             payload = {
@@ -1181,6 +1203,59 @@ class ClaudeHookCliTests(unittest.TestCase):
                     os.chdir(cwd)
                 self.assertEqual(code, 2)
                 self.assertFalse((Path(tmp) / "workspace").exists())
+
+    def test_the_payload_is_preferred_over_the_environment_for_the_id(self) -> None:
+        """The precedence in `_extract_orchestration_id`, which issue #102 made
+        load-bearing: it no longer decides only WHICH id labels an audit row, it decides
+        refuse versus evaluate. A mutation inverting it survived the whole suite.
+
+        Neither field it reads is leaf-settable today — the CLI authors the hook payload
+        and `tool_input` is the only leaf-controlled part, which this function does not
+        read — so this is a witness, not a fix. What it buys is that a later change
+        letting any leaf-reachable field reach `payload["orchestration_id"]` cannot land
+        silently.
+        """
+        from tools.hooks import cli as _cli
+        with patch.dict(os.environ, {"METDSL_ORCHESTRATION_ID": "orch_from_env"}):
+            self.assertEqual(
+                _cli._extract_orchestration_id({"orchestration_id": "orch_from_payload"}),
+                "orch_from_payload")
+            self.assertEqual(
+                _cli._extract_orchestration_id(
+                    {"payload": {"orchestration_id": "orch_from_inner"}}),
+                "orch_from_inner")
+            self.assertEqual(_cli._extract_orchestration_id({}), "orch_from_env")
+        with patch.dict(os.environ, {}):
+            os.environ.pop("METDSL_ORCHESTRATION_ID", None)
+            self.assertIsNone(_cli._extract_orchestration_id({}))
+
+    def test_the_operator_safety_audit_detail_survives_the_extraction(self) -> None:
+        """The half of "behaviour-preserving" that had no witness.
+
+        The extraction into `tools/hooks/operator_safety.py` preserves the `audit_detail`
+        dicts of both policies, and a mutation setting `audit_detail=None` at the wrapping
+        site survived the suite: nothing read them. They are what
+        `native_hook_events.jsonl` records the policy id by, so an operator reading the
+        audit for "which rule fired" depends on them.
+        """
+        from tools.hooks.common import HookInput, HookEventName, evaluate_common_policy
+        cases = (
+            ('git reset --hard HEAD~1', "forbid_git_reset_hard", None),
+            ("python3 tools/x.py --force-pass", "forbid_verify_bypass_flags_in_dev_mode",
+             ["--force-pass"]),
+        )
+        for command, policy, matched in cases:
+            with self.subTest(policy=policy):
+                decision = evaluate_common_policy(HookInput(
+                    event_name=HookEventName.PRE_COMMAND_EXECUTE,
+                    backend="claude",
+                    payload={"tool_input": {"command": command}},
+                    command=command))
+                self.assertIsNotNone(decision.audit_detail)
+                self.assertEqual(decision.audit_detail.get("policy"), policy)
+                self.assertEqual(decision.audit_detail.get("command"), command)
+                if matched is not None:
+                    self.assertEqual(decision.audit_detail.get("matched_tokens"), matched)
 
     def test_nothing_writes_the_deleted_policy_variable(self) -> None:
         """The writer, not only the reader (issue #102).
