@@ -5608,6 +5608,36 @@ class BashWriteTargetGrammarTests(unittest.TestCase):
                     inner = entry[len("Bash(") : -1] if entry.startswith("Bash(") else ""
                     self.assertNotEqual(inner.split(" ")[0].split("/")[-1], name)
 
+    def test_shell_fed_writer_is_refused_at_the_handler(self) -> None:
+        """Pinned at the HANDLER, not the helper: the raw command must be passed.
+
+        `_detect_bash_write_commands` checks every word of the UNBLANKED command
+        when a shell heads a fragment, and only `cli.main` has that string —
+        `_blanked_command_and_scan` has already removed the heredoc body the
+        script lives in. A mutation sweep found the wiring unpinned: the helper
+        tests pass the raw command themselves, so they hold with `cli.main` no
+        longer doing it, and `bash <<'EOF' … EOF` would reach the harness
+        undecided.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            orch = "orch_issue74_shellfed"
+            run_id = "step_run_issue74_shellfed"
+            self._setup(
+                repo_root, orch=orch, run_id=run_id, tmp_root=f"workspace/tmp/{run_id}"
+            )
+            for command in (
+                "bash <<'EOF'\ncp a.txt workspace/pipelines/evil.json\nEOF",
+                "echo 'cp a.txt workspace/pipelines/evil.json' | bash",
+            ):
+                with self.subTest(command=command):
+                    code, body = self._run_bash_hook(
+                        orch=orch, repo_root=repo_root, command=command
+                    )
+                    self.assertEqual(code, 2, body)
+                    self.assertEqual(body.get("decision"), "block", body)
+                    self.assertIn("'cp'", body.get("reason", ""))
+
     def test_operator_session_outside_workflow_mode_is_not_refused(self) -> None:
         """The refusal is workflow-only, and this pins it at the handler.
 
