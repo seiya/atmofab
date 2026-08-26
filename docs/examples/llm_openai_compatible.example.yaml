@@ -105,7 +105,16 @@ phases:
         api_key_env: LOCAL_LLM_API_KEY
         model: qwen2.5-coder-32b-instruct
         effort: medium
+        # 32768 sizes the ARTIFACT, and that is the whole budget only because the model named
+        # here does not stream `reasoning_content`. The same 32768 on a reasoning model was
+        # measured spending all of it on reasoning and emitting a zero-character bundle on
+        # every effort level; that run's writer ended at 98304. Re-size against the model.
         max_output_tokens: 32768
+        # Declared rather than defaulted, because the glossary above says the pair moves
+        # together and a sample that omits one models neither half. 32768 inside the 900 s
+        # default would demand 36.4 tok/s sustained, at the very top of the throughput band
+        # `docs/ORCHESTRATION.md` records; 2400 asks 13.7 tok/s, under the loaded rate.
+        timeout_s: 2400
       # PURE: the verdict reviewer over the bundle above.
       verify:
         provider: openai_compatible
@@ -113,11 +122,15 @@ phases:
         api_key_env: LOCAL_LLM_API_KEY
         model: qwen2.5-coder-32b-instruct
         effort: medium
-        # Half the writer's budget, because a verdict is not a bundle — and that arithmetic
-        # holds only for a model that does not stream `reasoning_content`. On a reasoning
-        # model 16384 is BELOW one measured reasoning floor and returns a zero-character
-        # verdict every time; re-size this entry against the model, never by inheritance.
+        # Half the writer's budget, because a verdict is not a bundle. CORRECT FOR THE MODEL
+        # THIS SAMPLE NAMES and for no other: on a reasoning model 16384 sat below the
+        # measured reasoning floor and returned a zero-character verdict on five attempts of
+        # five, and the run that hit it ended at 32768. Re-size against the model, never by
+        # inheritance. `docs/ORCHESTRATION.md` carries the measurement.
         max_output_tokens: 16384
+        # 16384 inside the 900 s default would demand 18.2 tok/s, which the measured loaded
+        # rate does not clear; 1200 asks 13.7 tok/s, the same margin the writer takes.
+        timeout_s: 1200
 
   validate:
     substeps:
