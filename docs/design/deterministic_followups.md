@@ -2811,7 +2811,7 @@ ahead of the variable context):
    wrong spec-list forms named as wrong and an explicit "do not oscillate between these two" — the measured failure was not
    ignorance of the rule but a two-attractor loop. What issue #111 changed: `C003` left the gate's declared rule set and the
    gate now runs with allow comments disabled, so the trap has no correct suppression form — the plain `implicit none` alone
-   is correct, and the template (`pure-19`) says so. The two-attractor observation stands and is why the replacement text
+   is correct, and the template says so (`pure-19` when the rule changed; the same region was reworded again at `pure-20` and `pure-21`). The two-attractor observation stands and is why the replacement text
    states one form rather than a choice.
 3. **`Generate.gate` syntax-check legality** (a real `gfortran -fsyntax-only -std=f2008` front-end, so `! allow(...)` suppresses
    nothing): 63-char identifiers *and* the "do not abbreviate an overlong `<spec_id>_model` — it is a spec-level

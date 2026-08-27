@@ -76,8 +76,8 @@ measured its gates against. Checked after the missing-tool arm, because an absen
 version to read.
 
 Today one tool carries a range. The `Generate.gate` lint check applies a rule set this repository
-declares rather than the linter's own default, and that set is measured against the versions
-above; the declaration and the measurement are
+declares rather than the linter's own default, and that set is measured against the range in the
+`fortitude` row of the table above; the declaration and the measurement are
 [docs/backends/linter/fortitude/RULES.md](backends/linter/fortitude/RULES.md). Neither the tool
 name, the range, nor the probe argv is written in the launch check — all three come from the
 backend package that owns the tool, so the check cannot look for a build the gate never runs.
@@ -292,6 +292,17 @@ python3 tools/run_workflow.py <target spec_ref> validate --with-deps
 Without `--with-deps` a single-node run stops at `workflow-launch-check` with `dependency_not_ready`, and the `reason_detail` names the drifted node and the resolution it was certified against versus the one derived now. Staleness is detected at **version granularity only**: a content edit that does not move `spec_version` is not seen, which is why the respec discipline is "content change ⇒ `spec_version` bump".
 
 ## 3-1. Resuming a failed workflow (`--resume`)
+
+**One-time cost when resuming onto sources written before the declared lint rule set landed
+(issue #111).** A `source/<source_id>/src/` produced by an earlier run carries the
+`! allow(C003)` directive the leaf-read contracts used to mandate. The `Generate.gate` lint check
+now runs `--ignore-allow-comments`, so that directive is a finding (`FORT005`) rather than a
+suppression: such a resume fails its lint gate ONCE, warm-resumes `Generate.generate`, and the
+regenerated source carries no directive. Nothing to do — the message names the directive and the
+loop converges on the next attempt. Certified sources under `releases/` are not re-linted (the
+gate lints only the node's own `src/`), so this is confined to in-flight work.
+[docs/backends/linter/fortitude/RULES.md](backends/linter/fortitude/RULES.md) carries the
+measurement.
 
 The canonical path to resume a workflow that failed midway, from the failure point while reusing completed `step` (e.g. already-compiled), is `python3 tools/run_workflow.py --resume`.
 

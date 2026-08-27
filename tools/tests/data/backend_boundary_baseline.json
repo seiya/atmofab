@@ -65,7 +65,7 @@
       "fortran": 12,
       "fortran-module-file": 2,
       "fortran-suffix": 2,
-      "linter-fortitude": 5,
+      "linter-fortitude": 8,
       "make-control-file": 3
     },
     "docs/SPEC.md": {
@@ -143,7 +143,7 @@
       "fortran-standard": 10,
       "fortran-subroutine": 11,
       "fortran-suffix": 16,
-      "linter-fortitude": 8,
+      "linter-fortitude": 6,
       "make-control-file": 14,
       "make-variable": 12,
       "parallel-construct": 4,

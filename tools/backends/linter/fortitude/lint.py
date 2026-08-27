@@ -56,13 +56,17 @@ the tool has, which is how the third stayed open.
   earns NOTHING of its own — the suppressed finding simply fires. So the leaf-facing rule is
   "write none", not "you will be told"; the suppressed finding firing is itself the signal in
   the case a leaf would actually write one.
-* A `.gitignore` INSIDE the directory being checked hides files from the walk entirely. Measured
-  on 0.8.0 and 0.9.2: a `src/.gitignore` reading `*.f90` takes a four-finding tree to
-  `0 files scanned. All checks passed!`, exit 0 — quieter than the allow-comment channel, since
-  there is no diagnostic at all. `--no-respect-gitignore` closes it. An ANCESTOR `.gitignore`
-  does not apply (measured), so this is about a file inside the node's own `src/`. A leaf cannot
-  write one today — the manifest admits only the exact files it declares — but that is a
-  different layer's accident, not this declaration's doing.
+* A `.gitignore` hides files from the walk entirely. Measured on 0.8.0 and 0.9.2: a
+  `src/.gitignore` reading `*.f90` takes a five-finding tree to `0 files scanned. All checks
+  passed!`, exit 0 — quieter than the allow-comment channel, since there is no diagnostic at all.
+  `--no-respect-gitignore` closes it. An ANCESTOR file applies too, and an earlier version of
+  this bullet said it did not: what decides is WHAT THE PATTERN MATCHES, not where the file sits.
+  A pattern matching the sources (`*.f90` at the work-tree root) hides them; a pattern naming a
+  directory ABOVE the walk root does not, because the walk starts below it — which is why this
+  repository's own `workspace/` entry never made the gate inert (measured on the real layout: 3
+  files scanned without the flag). A leaf cannot write either file today — the manifest admits
+  only the exact files it declares — but that is a different layer's accident, not this
+  declaration's doing.
 
 `C003` is excluded FOR that second flag. It is the one rule this repository's own toolchain makes
 unsatisfiable — it wants the F2018 spec-list `implicit none (type, external)`, which is a compile

@@ -147,7 +147,12 @@ PINNED: dict[str, str] = {
     # that imposes it: a rename now breaks both together. Measured before it: reversing the
     # prohibition into its opposite in the three agentic sites passed 1294 tests.
     "pure-21": "ce130490f66843a4adae34584710e4de5dba079706f5f5d5e6f0a7789f5cb272",
-}
+    # pure-22: rule (1) stated the S001 boundary as a version-independent fact ("fires at exactly
+    # 100"). Measured: the comparison is `>=` on 0.8.x and `>` on 0.9.x, both inside the supported
+    # range, so the sentence was false on half of it. The instruction ("under 100") was already
+    # correct everywhere; what changed is that a producer checking the claim against its own host
+    # no longer finds the checklist wrong.
+    "pure-22": "771d0659d2341bb372d1dde2c7afd71b2a25d4383ce900ed94c20c828826e94d",}
 
 
 def _contract_tuple() -> dict[str, object]:

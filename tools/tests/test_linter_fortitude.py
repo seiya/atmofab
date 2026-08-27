@@ -306,9 +306,11 @@ class ResolutionAgainstTheInstalledBuildTests(unittest.TestCase):
     def test_a_gitignore_beside_the_sources_cannot_hide_them(self) -> None:
         """The third channel, with the same negative control as the other two.
 
-        Fortitude walks with `--respect-gitignore` by default, so a `.gitignore` INSIDE the
-        directory being checked removes files from the walk entirely — measured: a four-finding
-        tree becomes `0 files scanned. All checks passed!`, exit 0, with no diagnostic at all.
+        Fortitude walks with `--respect-gitignore` by default, so a `.gitignore` whose pattern
+        matches the sources removes them from the walk entirely — measured: a five-finding tree
+        becomes `0 files scanned. All checks passed!`, exit 0, with no diagnostic at all. An
+        ancestor file counts when its pattern matches the files; a directory pattern above the
+        walk root does not.
         Quieter than the allow-comment channel, and reached by whatever can write one byte into
         the node's own `src/`.
 
@@ -676,6 +678,15 @@ class ProseCouplingTests(unittest.TestCase):
                          set(lint.EXCLUDED_RULE_CODES))
         self.assertIn(lint.SUPPORTED_VERSION_SPEC, doc)
         self.assertIn("RULE_CODES", doc)
+        # Every flag, derived — the row that would have caught the drift that produced it.
+        # Round 2 rewrote this document's channel enumeration and the edit never landed (the
+        # script that made it died on a later assertion before writing), so the commit message
+        # said three channels while the canonical document still said two and never named
+        # `--no-respect-gitignore`. Nothing compared the document to `CHECK_FLAGS`; now it does.
+        for flag in lint.CHECK_FLAGS:
+            if flag.startswith("--") and flag != "--select":
+                self.assertIn(flag, doc,
+                              f"the canonical document does not name {flag}, which the gate runs")
 
     def test_the_backend_package_is_not_gitignored(self) -> None:
         """`.gitignore` carried a bare, unanchored `fortitude` — the linter binary, when an
