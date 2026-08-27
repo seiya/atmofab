@@ -101,67 +101,53 @@ from pathlib import Path
 
 import pytest
 
-# The backend configuration homes, which carry no `METDSL_` prefix. See the docstring.
-_BACKEND_CONFIG_HOME_ENV = ("CODEX_HOME", "CLAUDE_CONFIG_DIR")
+from tools.tests import suite_env_guard
 
-# Populated by `pytest_configure`; a witness reads it rather than inferring the guard from
-# a side effect. Name -> the value the operator had exported.
-STRIPPED_OPERATOR_ENV: dict[str, str] = {}
-
-
-def operator_env_names_to_strip(environ) -> list[str]:
-    """The ambient names a test must not be able to inherit.
-
-    Defined here ONCE and read by both `pytest_configure` and its witness, so the witness
-    cannot drift into pinning a copy of the rule.
-
-    The candidate names are snapshotted BEFORE the import, so that the import cannot read
-    a name this function is about to declare strippable. Nothing in
-    `orchestration_runtime` reads the environment at module level today; taking the
-    snapshot first is what keeps that from becoming load-bearing.
-    """
-    present = list(environ)
-    from tools.orchestration_runtime import LEAF_ENV_ALLOWED_PREFIXES
-
-    names = {n for n in present if n.startswith(tuple(LEAF_ENV_ALLOWED_PREFIXES))}
-    names.update(n for n in _BACKEND_CONFIG_HOME_ENV if n in present)
-    return sorted(names)
+# The rule, the declared table and the record all live in `suite_env_guard`, a PLAIN
+# module. Not here: `tools/tests` has no `__init__.py`, so pytest imports THIS file as
+# module `conftest` while a test's `from tools.tests.conftest import ...` re-executes it as
+# a second module object — the hook would populate one copy's record and the witness read
+# the other's, empty forever. Measured, and it had already made the witness's primary
+# assertion vacuous. A module reached only by its dotted name is imported once.
 
 
-# Names the SUITE sets on purpose, and who sets them. NOT exemptions from the guard — the
-# guard is about the OPERATOR's environment, and these are set after it has run. Both are
-# process-global, so both are visible to every test collected afterwards; that is recorded
-# as a rough edge in TODO.md rather than fixed.
-SUITE_OWNED_ENV = {
-    "METDSL_WORKFLOW_HOMES_ROOT":
-        "the `_redirect_workflow_homes_root` fixture below, per test",
-    "METDSL_DEP_READINESS_ALLOW_PERSISTED_FALLBACK":
-        "a module-level `os.environ.setdefault` in test_orchestration_runtime.py and the "
-        "three test_pure_leaf_* modules, so it appears once any of them is imported",
-}
-
-
-def undeclared_operator_env_names(environ) -> set[str]:
-    """Strippable names present that nobody has claimed — the ratchet.
-
-    Either the guard stopped stripping, or the suite grew a new process-global environment
-    dependence without saying who sets it. Lives HERE, beside the rule and the table it
-    compares against, so that a mutation to it is a mutation to a mechanism rather than to
-    an assertion inside a test — the version that lived in the witness survived a sweep.
-    """
-    return set(operator_env_names_to_strip(environ)) - set(SUITE_OWNED_ENV)
+def pytest_addoption(parser) -> None:
+    parser.addoption(
+        "--keep-operator-env", action="store_true", default=False,
+        help="do not strip the operator's METDSL_* / CODEX_HOME / CLAUDE_CONFIG_DIR "
+             "from the environment (issue #84). For deliberately running the suite "
+             "against a knob you have set; expect failures that belong to the knob.")
 
 
 def pytest_configure(config) -> None:
-    """Remove the operator's per-run knobs before anything is collected."""
-    for name in operator_env_names_to_strip(os.environ):
-        STRIPPED_OPERATOR_ENV[name] = os.environ.pop(name)
+    """Remove the operator's per-run knobs before anything is collected.
+
+    Before COLLECTION, not in a fixture: a module body that reads the environment at import
+    runs earlier than any fixture.
+
+    The removal is REPORTED. A knob discarded in silence is a check recorded as run and not
+    run — `METDSL_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT=1` is the sharp case, worth 84
+    failures and 482s of real probing on `165c26f`, and an operator who sets it now gets
+    1242 passed in 49s with nothing probed. `--keep-operator-env` is the way to mean it.
+    """
+    if config.getoption("--keep-operator-env"):
+        return
+    stripped = suite_env_guard.strip_operator_env(os.environ)
+    if stripped:
+        config._metdsl_stripped_operator_env = stripped
+
+
+def pytest_report_header(config) -> str | None:
+    stripped = getattr(config, "_metdsl_stripped_operator_env", None)
+    if not stripped:
+        return None
+    return ("met-dsl: stripped the operator's environment for this run (issue #84): "
+            + ", ".join(stripped)
+            + " -- pass --keep-operator-env to run against them instead")
 
 
 def pytest_unconfigure(config) -> None:
-    """Put them back, so an in-process pytest invocation leaves the caller's env alone."""
-    os.environ.update(STRIPPED_OPERATOR_ENV)
-    STRIPPED_OPERATOR_ENV.clear()
+    suite_env_guard.restore_operator_env(os.environ)
 
 
 @pytest.fixture(autouse=True)

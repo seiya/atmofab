@@ -25,13 +25,14 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from tools.tests.conftest import (
-    _BACKEND_CONFIG_HOME_ENV,
+from tools.tests.suite_env_guard import (
+    BACKEND_CONFIG_HOME_ENV,
     STRIPPED_OPERATOR_ENV,
     SUITE_OWNED_ENV,
     operator_env_names_to_strip,
     undeclared_operator_env_names,
 )
+import tools.tests.suite_env_guard as suite_env_guard
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -43,7 +44,16 @@ _SUBJECT_CLASS = "OrchestratedEnvAllowlistTests"
 _SUBJECT_TEST = "test_only_an_absent_repo_root_falls_back_to_project_dir"
 
 def _run(argv: list[str], env_extra: dict[str, str]) -> subprocess.CompletedProcess:
-    env = dict(os.environ)
+    """A subprocess whose environment this test states in full, on the axis under test.
+
+    The base is the parent's environment with every strippable name REMOVED before
+    `env_extra` is applied. Inheriting them instead would make the clean control depend on
+    the parent's own environment — which is exactly the coupling this file exists to close,
+    and it showed up as a failing control the first time the suite was run with
+    `--keep-operator-env`.
+    """
+    env = {k: v for k, v in os.environ.items()
+           if k not in set(operator_env_names_to_strip(os.environ))}
     env.update(env_extra)
     return subprocess.run(
         argv, cwd=_REPO_ROOT, env=env, capture_output=True, text=True, timeout=300)
@@ -68,10 +78,13 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
         import, so which of them are present depends on what has been collected. Running
         this file alone shows one; running the whole suite shows both.
         """
-        if "pytest" not in sys.modules:
+        if not suite_env_guard.CONFIGURED:
             # The subject is a pytest hook. Under plain `unittest` there is no conftest
             # and nothing to observe; asserting anyway would fail for the absence of the
-            # harness rather than for a defect.
+            # harness rather than for a defect. Asked of the module the hook WRITES TO,
+            # not of `sys.modules`: a reader that has ended up with a second copy of the
+            # rule sees False here and skips loudly instead of asserting over an empty
+            # record, which is the defect this flag exists for.
             self.skipTest("the suite's environment guard is not installed")
 
         for name, operator_value in STRIPPED_OPERATOR_ENV.items():
@@ -127,10 +140,10 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
         `CLAUDE_CONFIG_DIR` is its twin; it cost 0 in the same measurement and is covered
         by symmetry, so that a future test reading it cannot inherit the operator's.
         """
-        self.assertEqual(_BACKEND_CONFIG_HOME_ENV, ("CODEX_HOME", "CLAUDE_CONFIG_DIR"))
-        sample = {name: "/tmp/x" for name in _BACKEND_CONFIG_HOME_ENV}
+        self.assertEqual(BACKEND_CONFIG_HOME_ENV, ("CODEX_HOME", "CLAUDE_CONFIG_DIR"))
+        sample = {name: "/tmp/x" for name in BACKEND_CONFIG_HOME_ENV}
         self.assertEqual(operator_env_names_to_strip(sample),
-                         sorted(_BACKEND_CONFIG_HOME_ENV))
+                         sorted(BACKEND_CONFIG_HOME_ENV))
 
     def test_a_poisoned_environment_is_neutralized_end_to_end(self) -> None:
         """Through real processes, with the control that must fail.

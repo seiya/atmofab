@@ -121,10 +121,25 @@ class CpuBudgetCalibrationTests(unittest.TestCase):
     """
 
     def test_the_calibrator_prices_its_own_workload_at_about_one_unit(self) -> None:
+        """The SCALE. Wide on purpose — this is what the mutants are off by.
+
+        The numerator here is a single ~0.05s block, so its own scheduler and timer noise
+        divides straight into the quotient; smoothing the denominator does not help it.
+        The bound is therefore set from the measured spread and not from how close to 1.0
+        the median sits. Union of two independent measurements at `7487f5e`, 22 cores:
+        0.456-2.685 across solo, three concurrent pytest runs, and 44 spinners (2x
+        oversubscribed). 0.15/8.0 is ~3x outside that on each side.
+
+        It still kills what it is for, because the mutants are off by 20x, not by 2x: a
+        calibrator returning a constant prices this block at 0.05 units, and one that
+        does no work prices it at millions. A tighter bound buys no extra mutant and does
+        buy the flake this whole change exists to remove — measured at the 0.4/2.5 it
+        replaces, 2 violations in 200 samples under 44 spinners.
+        """
         with _CpuUnits() as measured:
             _cpu_calibration_unit()
-        self.assertGreater(measured.units, 0.4, measured.describe())
-        self.assertLess(measured.units, 2.5, measured.describe())
+        self.assertGreater(measured.units, 0.15, measured.describe())
+        self.assertLess(measured.units, 8.0, measured.describe())
 
     def test_the_calibration_is_taken_on_both_sides_and_averaged(self) -> None:
         """A single reading taken BEFORE misprices a block the load arrived during.
@@ -140,12 +155,29 @@ class CpuBudgetCalibrationTests(unittest.TestCase):
         self.assertAlmostEqual(measured.unit_seconds, 0.2, places=9)
 
     def test_the_price_tracks_the_amount_of_work(self) -> None:
-        """Three units of the same work cost about three units, not one."""
-        with _CpuUnits() as measured:
+        """PROPORTIONALITY, as a paired ratio rather than a second absolute bound.
+
+        Three units of the same work must cost about three times one unit. Measured as
+        `units(3) / units(1)` in the same process, because the pair share whatever the
+        host is doing and their quotient does not: at `7487f5e` the paired ratio held
+        2.142-4.261 across solo and 44 spinners, while the absolute figure for `units(3)`
+        alone moved 1.250-5.958 across the same conditions and crossed the 1.8/5.5 bound
+        this replaces 9 times in 200 samples.
+
+        The two calibration tests divide the work: the one above pins the SCALE and kills
+        a constant calibrator, which this one cannot — a constant denominator prices both
+        blocks proportionally and leaves the ratio at 3. What this one kills is a
+        `_CpuUnits` that stops reading the block at all.
+        """
+        with _CpuUnits() as one_unit:
+            _cpu_calibration_unit()
+        with _CpuUnits() as three_units:
             for _ in range(3):
                 _cpu_calibration_unit()
-        self.assertGreater(measured.units, 1.8, measured.describe())
-        self.assertLess(measured.units, 5.5, measured.describe())
+        ratio = three_units.units / one_unit.units
+        detail = f"{ratio:.2f}x  ({three_units.describe()} / {one_unit.describe()})"
+        self.assertGreater(ratio, 1.4, detail)
+        self.assertLess(ratio, 8.0, detail)
 
 
 class HookCommonTests(unittest.TestCase):
