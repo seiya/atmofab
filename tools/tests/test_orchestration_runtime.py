@@ -30696,6 +30696,83 @@ class GateResultTmpCopySurfaceTests(unittest.TestCase):
             with self.subTest(stale=stale):
                 self.assertIsNone(pattern.search(stale))
 
+    def test_the_leaf_is_warned_that_the_copy_is_the_last_COMPLETED_run(self) -> None:
+        """The warning that stops the S-F2 shortcut is prose a leaf ACTS on -- pin it.
+
+        Round 1's mutation check found this hunk surviving: reverting the warning left
+        the hint still naming the directory, so the render pin above stayed green while
+        the sentence that makes the directory safe to use was gone. A leaf told where the
+        file is and NOT told it can be stale is the shortcut this whole finding was about.
+
+        Asserted on the split half that governs the copy, because the hint states several
+        rules in one line and a substring pin over the whole of it would hold via another.
+        """
+        from tools.orchestration_runtime import _build_gate_runbook
+
+        rb = _build_gate_runbook(dict(GateRunbookTests.BASE, step="compile", substep="generate"))
+        self.assertTrue(rb.strip(), "compile.generate must emit a runbook")
+        tail = rb.split("gate_results/")[1]
+        self.assertIn("COMPLETED", tail, "the hint must say which run the file holds")
+        self.assertIn("args_json", tail, "the hint must name what identifies that run")
+        self.assertIn(
+            "command result", tail,
+            "the hint must say what IS authoritative for the attempt just made",
+        )
+
+    def test_the_write_authority_claim_the_documents_dropped_is_still_false(self) -> None:
+        """Pin the FACTS, not the corrected sentences.
+
+        Six surfaces used to say `gates/<arid>/<gate>.json` is a file "no leaf can write",
+        and round 1 established it is not. Anchoring a check on the corrected wording
+        would pin that my edit survived, not that the correction is still true -- the
+        first trap under `.claude/skills/metdsl-enforcement-change` rule 3-a. So this
+        pins the two tree facts the correction rests on. If either flips, the documents
+        become stale in the SAFE direction and this test is what says so.
+
+        The third fact -- that the Bash write refusal cannot see a writer inside a script
+        file handed to an interpreter -- is NOT pinned here. It is a declared residue of
+        another rule, recorded in `docs/HOOKS.md` §"Layer boundary" and in
+        `tools/hooks/cli.py`'s own docstring, and it is not this change's to own.
+        """
+        import inspect
+
+        import tools.orchestration_runtime as _rt
+        from tools.orchestration_runtime import _should_ignore_runtime_snapshot_path
+
+        # (a) the gates directory is bound READ-WRITE into the leaf's sandbox, because the
+        #     leaf runs `run-gate` itself. Read off the profile builder's source rather
+        #     than a rendered command, which needs a live orchestration to produce.
+        src = inspect.getsource(_rt)
+        # assertTrue, not assertIn: the haystack is the whole module, and unittest prints
+        # a failed assertIn's haystack -- 1.2 MB of source in place of the one sentence
+        # that says what to do. Measured while witnessing this test.
+        self.assertTrue(
+            '"runtime_rw_rel_paths": [gates_rel, hooks_rel, audit_rel]' in src,
+            "gates_rel left the writable-bind list in build_bwrap_profile; re-check the "
+            "documents that now say write authority does not separate the copy from the "
+            "record (docs/WORKSPACE_LAYOUT.md, docs/CLI_REFERENCE.md, docs/HOOKS.md, "
+            "docs/workflow/LAUNCH_PROMPT_REFERENCE.md, skills/workflow-audit-claude)",
+        )
+
+        # (b) a write there is exempt from the terminal FS-diff, so it is never attributed.
+        orch = "orch_rw_claim"
+        arid = "some_arid"
+        rel = f"workspace/orchestrations/{orch}/gates/{arid}/check_artifact_syntax.json"
+        self.assertTrue(
+            _should_ignore_runtime_snapshot_path(
+                rel, orchestration_id=orch, agent_run_id=arid
+            ),
+            "the gates/ prefix is no longer FS-diff exempt; the documents' correction "
+            "may now be stale",
+        )
+        # Control: an ordinary artifact path is NOT exempt, so a True above is a
+        # property of the prefix and not of a predicate that stopped looking.
+        self.assertFalse(
+            _should_ignore_runtime_snapshot_path(
+                "workspace/ir/p/spec.ir.yaml", orchestration_id=orch, agent_run_id=arid
+            )
+        )
+
     def test_a_pointer_and_the_runtimes_own_spelling_are_not_refused(self) -> None:
         """OVER-REFUSAL probe, kept because round 1 measured the first version failing it.
 
