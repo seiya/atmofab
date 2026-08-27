@@ -1,6 +1,39 @@
 # Delegating verifiable review work to sonnet: the experiment log
 
-Five data points. SKILL.md carries the operational conclusion; this is the evidence, newest first.
+Eight data points. SKILL.md carries the operational conclusion; this is the evidence, newest first.
+
+## Data points 6-8 (PR #107, rounds 1, 3 and 4) — three runs, two more premise refusals
+
+Run as the delegated mechanical-recomputation axis in three of the four rounds, in parallel with
+two up-model reviewers each time, same HEAD, checklist-driven.
+
+**Yield.** Round 1: one real finding out of one reported — a document count wrong in a commit
+message and in a test docstring, which the up-model reviewers both missed while disagreeing with
+each other about the number. Round 3: one real MISMATCH out of one reported (a key-order claim
+asserted in a comment with nothing observing it — the shape the branch had criticised an earlier
+round for). Round 4: nothing new; every number matched.
+
+**It refused a false premise in its checklist twice more**, which is now the axis's most
+reproducible behaviour rather than a one-off: in round 1 it reported that the phrase "eight
+surfaces" I asked it to verify appears in none of the commits, and in round 4 that the ceiling /
+headroom claim I asked about is not made by either commit under review. Both times I had written
+the premise myself. **Keep telling it to report what it cannot locate rather than account for it**
+— across four data points that instruction has now returned more value than any single finding.
+
+**Where it is weak, measured.** In round 3 and again in round 4 it returned MATCHES on
+code-path claims that were false, having traced the path rather than driven it: "every refusal
+invalidates the copy" and "callee raises are covered a fortiori" were both confirmed by reading
+and both refuted by the reviewers who ran the refusals. That is not a sonnet-specific failure —
+it is what a reading-based verdict is worth on any model — but the mechanical axis is the one most
+likely to produce one, because its checklist asks for verdicts on many claims cheaply. SKILL.md
+now carries the general rule ("verify a reviewer's POSITIVE claims by asking what it EXECUTED");
+the axis-specific version is: **for a claim about control flow, ask the checklist for the command,
+not the verdict.**
+
+**Overlap.** Near zero with the up-model axes in all three rounds — it found what they did not and
+missed what they found, which is row 3 of the table below (an independent eye), not row 1. Cost
+was again roughly comparable per run, so the standing conclusion holds: use it to free a slot, not
+because it is cheap.
 
 ## Data point 5 (PR #88 / TODO:269, round 1) — the axis paid, and it pushed back on a false premise
 
