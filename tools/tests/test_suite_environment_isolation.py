@@ -94,6 +94,21 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
                         "the conftest hook did not run, or wrote to a different module")
 
         for name, operator_value in STRIPPED_OPERATOR_ENV.items():
+            if name in SUITE_OWNED_ENV and os.environ.get(name) == operator_value:
+                # Undecidable by VALUE, and only for these two. The suite sets them itself
+                # AFTER the strip, so an operator who exported the value the suite happens
+                # to use — `METDSL_DEP_READINESS_ALLOW_PERSISTED_FALLBACK=1` is the suite's
+                # own — cannot be told apart here from the suite having set it.
+                #
+                # The exemption is narrow ON PURPOSE, and the first version of it was NOT.
+                # Skipping these names unconditionally is how a real defect got read as a
+                # collision: the guard was recording them without removing them, this loop
+                # failed under a poisoned whole-suite run exactly as it should have, and
+                # the exemption written to "fix" the collision would have silenced it. What
+                # decides the case now is `strip_operator_env`'s own removal check, which
+                # fails the session at the point of the strip where the question is not
+                # ambiguous, plus the synthetic drive below.
+                continue
             with self.subTest(name=name):
                 self.assertNotEqual(
                     os.environ.get(name), operator_value,
@@ -137,15 +152,20 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
                      suite_env_guard.STRIPPED_OPERATOR_ENV.update(record)))
         suite_env_guard.STRIPPED_OPERATOR_ENV.clear()
 
-        environ = {"METDSL_A_KNOB": "1", "CODEX_HOME": "/tmp/x", "PATH": "/b"}
+        owned = sorted(SUITE_OWNED_ENV)[0]
+        # A SUITE_OWNED_ENV name is in the mapping deliberately: the strip must remove
+        # those too — the table exempts them from the RATCHET, not from the guard — and a
+        # mutant that records one without popping it is the shape a reviewer found
+        # surviving. Here nothing else writes to the mapping, so it is decidable.
+        environ = {"METDSL_A_KNOB": "1", "CODEX_HOME": "/tmp/x", owned: "9", "PATH": "/b"}
         removed = suite_env_guard.strip_operator_env(environ)
-        self.assertEqual(removed, ["CODEX_HOME", "METDSL_A_KNOB"])
+        self.assertEqual(removed, sorted(["CODEX_HOME", "METDSL_A_KNOB", owned]))
         self.assertEqual(environ, {"PATH": "/b"})
         self.assertEqual(suite_env_guard.STRIPPED_OPERATOR_ENV,
-                         {"METDSL_A_KNOB": "1", "CODEX_HOME": "/tmp/x"})
+                         {"METDSL_A_KNOB": "1", "CODEX_HOME": "/tmp/x", owned: "9"})
         suite_env_guard.restore_operator_env(environ)
         self.assertEqual(environ, {"METDSL_A_KNOB": "1", "CODEX_HOME": "/tmp/x",
-                                   "PATH": "/b"})
+                                   owned: "9", "PATH": "/b"})
         self.assertEqual(suite_env_guard.STRIPPED_OPERATOR_ENV, {})
 
     def test_the_rule_is_read_from_the_leaf_env_prefix_constant_not_copied(self) -> None:

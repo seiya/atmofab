@@ -89,16 +89,25 @@ def strip_operator_env(environ) -> list[str]:
     """Remove the operator's per-run knobs; return the names removed.
 
     The name list is computed first — that is where the import lives and the only step that
-    can raise — so a failure happens before anything has been popped and leaves the
-    environment whole. The pops themselves cannot fail.
+    could raise for an ordinary reason — so such a failure happens before anything has been
+    popped and leaves the environment whole.
+
+    RECORDING AND REMOVING ARE VERIFIED TOGETHER, at the point of the strip. Doing one
+    without the other leaves the environment correct and the record empty, or the record
+    full and the environment poisoned, and each of those makes a different witness vacuous
+    while the other still passes. It is not a hypothetical: this repository shipped the
+    second shape for two commits, because a mutant applied in a worktree was carried back
+    into the checkout by a `cp` — the file was untracked there, so the `git checkout` meant
+    to revert it did nothing and said nothing. The check costs one dict lookup per name and
+    fails the session loudly rather than leaving a guard that reports success.
     """
     global CONFIGURED
     names = operator_env_names_to_strip(environ)
     for name in names:
-        if name in SUITE_OWNED_ENV:
-            STRIPPED_OPERATOR_ENV[name] = environ[name]
-            continue
         STRIPPED_OPERATOR_ENV[name] = environ.pop(name)
+        if name in environ:                       # see the docstring
+            raise RuntimeError(
+                f"the operator-environment guard recorded {name} without removing it")
     CONFIGURED = True
     return names
 
