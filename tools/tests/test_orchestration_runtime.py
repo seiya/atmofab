@@ -17058,6 +17058,46 @@ class TestPhase3RunGate(unittest.TestCase):
                 json.loads(copy_path.read_text(encoding="utf-8")), summary2
             )
 
+    def test_launch_record_ownership_strips_both_ids(self) -> None:
+        """Round-3 REGRESSION GUARD, from a defect the extraction introduced.
+
+        `_orchestration_holds_launch_record` was extracted from an inline expression in
+        `_cleanup_agent_tmp_root` that stripped both ids; `_orchestration_root` does not
+        strip. A padded `orchestration_id` therefore resolved to a directory that does not
+        exist, ownership silently failed, and cleanup refused -- leaving the run in
+        cleanup-pending with its tmp scratch on disk. No test observed the difference; it
+        was found by diffing the extraction against the code it replaced.
+        """
+        from tools.orchestration_runtime import (
+            _orchestration_holds_launch_record,
+            init_orchestration,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            orch = "orch_strip_probe"
+            arid = "step_run_strip_probe"
+            init_orchestration(repo_root=repo_root, orchestration_id=orch)
+            req = (
+                repo_root / "workspace" / "orchestrations" / orch
+                / "launches" / f"{arid}.request.json"
+            )
+            req.parent.mkdir(parents=True, exist_ok=True)
+            req.write_text("{}\n", encoding="utf-8")
+
+            self.assertTrue(_orchestration_holds_launch_record(repo_root, orch, arid))
+            for o, a in ((f"  {orch} ", arid), (orch, f" {arid}  "), (f" {orch} ", f" {arid} ")):
+                with self.subTest(orchestration_id=repr(o), agent_run_id=repr(a)):
+                    self.assertTrue(
+                        _orchestration_holds_launch_record(repo_root, o, a),
+                        "a padded id must resolve to the same launch record",
+                    )
+            # Control: a genuinely different id is still refused, so the strip did not
+            # turn the predicate into one that says yes to everything.
+            self.assertFalse(
+                _orchestration_holds_launch_record(repo_root, orch, "other_arid")
+            )
+
     def test_run_gate_invalidation_failure_does_not_fail_the_gate(self) -> None:
         """The pre-work unlink is best-effort, and round 3 found that branch untested.
 

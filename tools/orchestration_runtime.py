@@ -4212,8 +4212,13 @@ def _orchestration_holds_launch_record(
     orchestration agent is not launched via `record-launch`; `run_gate` needs no such case,
     since `_require_child_agent_role_for_step` refuses a non-child role outright.
     """
+    # `.strip()` on BOTH ids, because the inline form this replaced stripped both and
+    # `_orchestration_root` does not. Without it a padded `orchestration_id` resolves to a
+    # directory that does not exist, ownership silently fails, and `_cleanup_agent_tmp_root`
+    # refuses -- leaving the run in cleanup-pending and its tmp scratch on disk. Caught by
+    # diffing this extraction against the code it replaced, not by any test.
     return (
-        _orchestration_root(repo_root, orchestration_id)
+        _orchestration_root(repo_root, orchestration_id.strip())
         / "launches"
         / f"{agent_run_id.strip()}.request.json"
     ).is_file()
