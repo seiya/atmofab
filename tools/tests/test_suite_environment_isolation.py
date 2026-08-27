@@ -477,14 +477,24 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
         # to a value the inner block must restore and the strip must change.
         with suite_env_guard.isolated_record():
             suite_env_guard.CONFIGURED = False
+            # A SENTINEL, for the same reason as the flag: `__enter__` clears the record,
+            # so an outer state of `{}` is indistinguishable from a missing restore —
+            # measured, dropping the record restore survived a sweep once the DECLINED
+            # block was added, because a later `__enter__` cleared the residue the
+            # assertion at the end would have seen.
+            suite_env_guard.STRIPPED_OPERATOR_ENV["METDSL_SENTINEL"] = "outer"
             with suite_env_guard.isolated_record():
                 environ = {"METDSL_A_KNOB": "1", "PATH": "/b"}
                 suite_env_guard.strip_operator_env(environ)
                 self.assertTrue(suite_env_guard.CONFIGURED)
                 self.assertEqual(suite_env_guard.STRIPPED_OPERATOR_ENV,
                                  {"METDSL_A_KNOB": "1"})
+            self.assertEqual(suite_env_guard.STRIPPED_OPERATOR_ENV,
+                             {"METDSL_SENTINEL": "outer"},
+                             "isolated_record did not restore the record")
             self.assertFalse(suite_env_guard.CONFIGURED,
                              "isolated_record did not restore CONFIGURED")
+            del suite_env_guard.STRIPPED_OPERATOR_ENV["METDSL_SENTINEL"]
             # DECLINED too. It was left out of the first version and survived a sweep,
             # because nothing in the suite calls `decline_strip` — a latent leak that a
             # future test inside this context would turn into "the operator declined" for
