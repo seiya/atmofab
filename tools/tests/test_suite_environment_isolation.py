@@ -507,6 +507,25 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
         self.assertEqual(suite_env_guard.STRIPPED_OPERATOR_ENV, before_record)
         self.assertEqual(suite_env_guard.CONFIGURED, before_flag)
 
+    def test_only_a_name_the_guard_strips_counts_as_an_import_time_capture(self) -> None:
+        """The rule the import-spy assertion consumes, driven where it can say something.
+
+        On this tree nothing is reported, so the assertion that consumes it is green
+        whatever the rule computes — the mutant that made it always empty survived a
+        sweep. Both directions matter here: reporting too little is a hole, and reporting
+        too much is the false refusal this rule replaced.
+        """
+        self.assertEqual(
+            suite_env_guard.import_reads_that_would_be_stripped(
+                {"METDSL_A_KNOB", "CODEX_HOME"}),
+            {"METDSL_A_KNOB", "CODEX_HOME"})
+        self.assertEqual(
+            suite_env_guard.import_reads_that_would_be_stripped(
+                set(MUST_BE_INHERITED) | {"_PYTHON_SUBPROCESS_USE_POSIX_SPAWN"}),
+            set(),
+            "a name the guard never strips cannot be an import-time capture, and "
+            "refusing it is the over-refusal this rule was written to remove")
+
     def test_no_environment_read_during_the_hooks_own_import_caches_a_value(self) -> None:
         """The hook's import must not itself read the operator's environment.
 
@@ -545,8 +564,8 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
         # declare it in `MUST_BE_INHERITED`, where it already was: an instruction that
         # changes nothing is not a remedy. Asking the guard directly removes the
         # over-refusal AND the allowlist, whose one member was never stripped either.
-        offenders = {name: self._last_import_reads[name] for name in reads
-                     if operator_env_names_to_strip({name: "x"})}
+        offenders = {name: self._last_import_reads[name] for name in
+                     suite_env_guard.import_reads_that_would_be_stripped(reads)}
         self.assertEqual(
             offenders, {},
             "the hook's own import read a name the guard strips, so the operator's value "

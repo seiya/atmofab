@@ -109,6 +109,23 @@ def undecided_environment_names(read_names) -> set[str]:
     return set(read_names) - stripped - set(MUST_BE_INHERITED)
 
 
+def import_reads_that_would_be_stripped(reads) -> set[str]:
+    """Of the names read during an import, the ones the guard would have stripped.
+
+    ONLY those can be cached wrongly: a value read at import time is read before the
+    strip, so if the strip would have removed it the reader is holding the operator's.
+    For a name the guard never touches — `HOME`, `PYTHONPATH` — there is nothing to cache
+    wrongly and refusing the read is a false refusal. The first version subtracted a
+    hand-written allowlist instead and refused every import-time read, with a message
+    telling the reader to declare the name where it already was.
+
+    Here rather than inside the test that consumes it: on this tree the answer is the
+    empty set, so an expression in the test is green whatever it computes — measured, the
+    version that lived there survived a sweep.
+    """
+    return {name for name in reads if operator_env_names_to_strip({name: "x"})}
+
+
 @contextlib.contextmanager
 def isolated_record():
     """Drive the strip without leaving the session's own record or flags behind.
