@@ -29,6 +29,7 @@ from unittest import mock
 
 from tools.tests.suite_env_guard import (
     BACKEND_CONFIG_HOME_ENV,
+    MUST_BE_INHERITED,
     STRIPPED_OPERATOR_ENV,
     SUITE_OWNED_ENV,
     operator_env_names_to_strip,
@@ -44,16 +45,6 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SUBJECT_MODULE = "tools.tests.test_build_runtime_server"
 _SUBJECT_CLASS = "OrchestratedEnvAllowlistTests"
 _SUBJECT_TEST = "test_only_an_absent_repo_root_falls_back_to_project_dir"
-
-# Names the tree reads and the suite MUST inherit — process and interpreter facts, not
-# per-run knobs an operator would export to change what a run does. Stripping one of these
-# would break the suite rather than steady it.
-_MUST_BE_INHERITED = {
-    "HOME": "the home directory itself; the hook guards resolve paths against it",
-    "PYTHONPATH": "how `tools.` imports resolve at all under `python3 -m pytest`",
-    "PYTHONDONTWRITEBYTECODE": "an interpreter setting the mutation sweeps rely on",
-}
-
 
 def _environment_names_read_by(repo_root: Path) -> set[str]:
     """Every upper-case environment name READ in non-test `tools/` and `mcp_servers/`.
@@ -219,21 +210,9 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
         after, reached a second way. Driven on a synthetic mapping: on a clean host the
         real strip removes nothing, so there is nothing for an in-process assertion to see.
         """
-        record = dict(suite_env_guard.STRIPPED_OPERATOR_ENV)
-        configured = suite_env_guard.CONFIGURED
-
-        def restore() -> None:
-            # CONFIGURED too, and that is not tidiness: it is process-global, and the
-            # witness above uses it to detect "the hook never ran, or wrote to a different
-            # module". Left up by this test, that detection is satisfied by a SIBLING
-            # rather than by the hook, and the cross-module split it was added for becomes
-            # invisible again depending on execution order.
-            suite_env_guard.STRIPPED_OPERATOR_ENV.clear()
-            suite_env_guard.STRIPPED_OPERATOR_ENV.update(record)
-            suite_env_guard.CONFIGURED = configured
-
-        self.addCleanup(restore)
-        suite_env_guard.STRIPPED_OPERATOR_ENV.clear()
+        stack = suite_env_guard.isolated_record()
+        stack.__enter__()
+        self.addCleanup(stack.__exit__, None, None, None)
 
         owned = sorted(SUITE_OWNED_ENV)[0]
         # A SUITE_OWNED_ENV name is in the mapping deliberately: the strip must remove
@@ -313,17 +292,67 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
                             ("METDSL_ORCHESTRATION_ID", "mcp_servers/build_runtime_server.py"),
                             ("METDSL_ORCH_LIVENESS_TTL_SECONDS", "tools/validate_workspace_root.py"),
                             ("METDSL_START_CLAIM_ROOT", "tools/run_workflow.py")):
+            # NOT PINNED BY ANYTHING ITSELF: removing these four assertions survives a
+            # sweep, because an assertion inside a test is not a mechanism. The regress
+            # stops here — what it buys is that the walk's scope cannot shrink silently,
+            # which the previous version of this test allowed.
             self.assertIn(name, read, f"the walk no longer reaches {where}")
 
-        stripped = set(operator_env_names_to_strip({n: "x" for n in read}))
-        undecided = set(read) - stripped - set(_MUST_BE_INHERITED)
+        undecided = suite_env_guard.undecided_environment_names(read)
         self.assertEqual(
             undecided, set(),
             "an environment name is read by this tree and is neither stripped by the "
             "operator-environment guard nor declared as something the suite must inherit. "
             "Decide which it is: add it to the guard if it is a per-run knob an operator "
-            "may have exported, or to _MUST_BE_INHERITED with the reason it has to survive."
+            "may have exported, or to MUST_BE_INHERITED with the reason it has to survive."
             f" Names: {sorted(undecided)}")
+
+    def test_the_stripped_or_declared_decision_reports_an_undecided_name(self) -> None:
+        """The decision above, driven where the answer is not "nothing".
+
+        On this tree it returns the empty set, so the assertion that consumes it is green
+        whatever the decision does — including returning the empty set unconditionally,
+        which survived a sweep while it lived as an expression inside that test.
+        """
+        self.assertEqual(
+            suite_env_guard.undecided_environment_names(
+                {"METDSL_A_KNOB", "CODEX_HOME"} | set(MUST_BE_INHERITED)), set())
+        self.assertEqual(
+            suite_env_guard.undecided_environment_names({"GEMINI_CONFIG_DIR"}),
+            {"GEMINI_CONFIG_DIR"})
+        self.assertEqual(
+            suite_env_guard.undecided_environment_names({"METDSL2_NEW_KNOB"}),
+            {"METDSL2_NEW_KNOB"},
+            "a near-miss prefix is not the prefix")
+
+    def test_driving_the_strip_leaves_no_global_state_behind(self) -> None:
+        """`isolated_record` restores the record AND `CONFIGURED`.
+
+        Both are process-global. `CONFIGURED` left up by a sibling means the witness's
+        "the hook never ran, or wrote to a different module" check is satisfied by that
+        sibling rather than by the hook, depending on execution order.
+        """
+        before_record = dict(suite_env_guard.STRIPPED_OPERATOR_ENV)
+        before_flag = suite_env_guard.CONFIGURED
+
+        # TWO levels, and the outer one is what makes the flag half observable. Under
+        # pytest the session's `CONFIGURED` is already True, so comparing it before and
+        # after a single block passes whether or not the restore happens — measured, that
+        # is exactly how "isolated_record does not restore CONFIGURED" survived a sweep.
+        # The outer context puts the session's real value back; inside it the flag is set
+        # to a value the inner block must restore and the strip must change.
+        with suite_env_guard.isolated_record():
+            suite_env_guard.CONFIGURED = False
+            with suite_env_guard.isolated_record():
+                environ = {"METDSL_A_KNOB": "1", "PATH": "/b"}
+                suite_env_guard.strip_operator_env(environ)
+                self.assertTrue(suite_env_guard.CONFIGURED)
+                self.assertEqual(suite_env_guard.STRIPPED_OPERATOR_ENV,
+                                 {"METDSL_A_KNOB": "1"})
+            self.assertFalse(suite_env_guard.CONFIGURED,
+                             "isolated_record did not restore CONFIGURED")
+        self.assertEqual(suite_env_guard.STRIPPED_OPERATOR_ENV, before_record)
+        self.assertEqual(suite_env_guard.CONFIGURED, before_flag)
 
     def test_no_module_level_environment_read_defeats_the_guard(self) -> None:
         """The hook's import must not itself cache an operator value.
@@ -415,6 +444,24 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
             declined.returncode, 0,
             "--keep-operator-env did not leave the operator's value in place:\n"
             + declined.stdout)
+        self.assertIn("--keep-operator-env", declined.stdout,
+                      "the run did not say the environment was left alone")
+
+        # THE FLAG MUST NOT FAIL A CLEAN HOST. It failed one test with no knob set at all
+        # — `1 failed, 5293 passed, 1 skipped` — because the hook returned before setting
+        # CONFIGURED and the witness reads that flag to detect "the hook never ran". An
+        # escape hatch that manufactures a failure belonging to nothing is this branch's
+        # own subject, so it is driven here rather than trusted.
+        # ONE node, not this file: running the whole file here selects this test too, and
+        # the subprocess spawns another one. Measured as a 300s timeout the first time.
+        own_node = (f"tools/tests/{Path(__file__).name}::{type(self).__name__}"
+                    "::test_no_ambient_operator_name_survives_into_a_running_test")
+        clean_declined = _run(
+            [sys.executable, "-m", "pytest", own_node, "--keep-operator-env", "-q"], {})
+        self.assertEqual(
+            clean_declined.returncode, 0,
+            "--keep-operator-env fails on a host with nothing set:\n"
+            + clean_declined.stdout)
 
     def test_a_poisoned_environment_is_neutralized_end_to_end(self) -> None:
         """Through real processes, with the control that must fail.

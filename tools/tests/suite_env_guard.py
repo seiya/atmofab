@@ -18,6 +18,8 @@ touched, whatever the reason.
 
 from __future__ import annotations
 
+import contextlib
+
 # The backend configuration homes, which carry no `METDSL_` prefix. `CODEX_HOME` cost 10
 # failures when exported (measured on `165c26f` over `test_orchestration_runtime.py`);
 # `CLAUDE_CONFIG_DIR` is its twin and cost 0 in the same measurement, included by symmetry
@@ -79,6 +81,50 @@ def operator_env_names_to_strip(environ) -> list[str]:
     names = {n for n in present if n.startswith(tuple(LEAF_ENV_ALLOWED_PREFIXES))}
     names.update(n for n in BACKEND_CONFIG_HOME_ENV if n in present)
     return sorted(names)
+
+
+# Names the tree reads and the suite MUST inherit — process and interpreter facts, not
+# per-run knobs an operator would export to change what a run does. Stripping one of these
+# would break the suite rather than steady it.
+MUST_BE_INHERITED = {
+    "HOME": "the home directory itself; the hook guards resolve paths against it",
+    "PYTHONPATH": "how `tools.` imports resolve at all under `python3 -m pytest`",
+    "PYTHONDONTWRITEBYTECODE": "an interpreter setting the mutation sweeps rely on",
+}
+
+
+def undecided_environment_names(read_names) -> set[str]:
+    """Names the tree reads that are neither stripped nor declared inheritable.
+
+    Lives here, beside both tables, rather than as an expression inside the test that
+    consumes it — an expression there is an assertion, and neutering an assertion inside a
+    test survives every sweep by construction. As a function it is a mechanism with its own
+    synthetic witness.
+    """
+    stripped = set(operator_env_names_to_strip({n: "x" for n in read_names}))
+    return set(read_names) - stripped - set(MUST_BE_INHERITED)
+
+
+@contextlib.contextmanager
+def isolated_record():
+    """Drive the strip without leaving the session's own record or flags behind.
+
+    `STRIPPED_OPERATOR_ENV` and `CONFIGURED` are process-global. A test that drives the
+    strip on a synthetic mapping sets both as a side effect, and `CONFIGURED` left up means
+    the witness's "the hook never ran, or wrote to a different module" check can be
+    satisfied by a SIBLING rather than by the hook, depending on execution order. Restoring
+    both HERE makes that a mechanism with a witness instead of two lines of test cleanup
+    that a sweep cannot reach.
+    """
+    global CONFIGURED
+    record, configured = dict(STRIPPED_OPERATOR_ENV), CONFIGURED
+    STRIPPED_OPERATOR_ENV.clear()
+    try:
+        yield
+    finally:
+        STRIPPED_OPERATOR_ENV.clear()
+        STRIPPED_OPERATOR_ENV.update(record)
+        CONFIGURED = configured
 
 
 def undeclared_operator_env_names(environ) -> set[str]:
