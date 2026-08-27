@@ -51,12 +51,140 @@ this checkout's `orchestration_meta.json` still removes one belonging to a run i
 DIFFERENT checkout, whose metadata is not visible from here. Redirecting is what makes the
 question not arise — the suite never names the real root, so it never has to decide what
 inside it is safe to remove.
+
+THE SECOND SUBJECT: the operator's ambient environment (issue #84).
+
+Several dozen tests decide what they are asserting by READING `os.environ` — whether the
+server is "under a workflow", which configuration home a backend resolves, whether
+preflight probes for real. Every one of those names is a PER-RUN knob that
+`tools/run_workflow.py` sets in the node environment, so the shell most likely to have
+them exported is a shell used for this repository's own work. A suite that inherits them
+answers a question about the machine instead of about the code, and the cost is a
+reviewer's round: on PR #81 a reviewer reported 152 failures as a branch regression when
+143 were the branch's and the rest were this.
+
+Measured on `165c26f`, whole suite, one variable at a time unless noted:
+
+  clean                                              5280 passed / 114s
+  METDSL_ORCHESTRATION_ID + METDSL_CHILD_AGENT_RUN_ID    9 failed   (the pair issue #84 named)
+  every `METDSL_*` name found in the tree, plus
+    CODEX_HOME and CLAUDE_CONFIG_DIR, together         181 failed / 356s
+
+Attributed on `tools/tests/test_orchestration_runtime.py` alone (1242 tests, 20s clean):
+`METDSL_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT=1` 84 failed **and 482s**, because the tests
+then run the real probes; `CODEX_HOME` 10; `METDSL_HOME` 3; `METDSL_ENFORCE_REPLY_BUDGET`
+1; every other name measured that way 0. So the pair in the issue was a small part of the
+surface, and the expensive member was not in it.
+
+NO COUNT of those names appears here or anywhere else in the code, deliberately — and the
+sentence that replaced the first count was itself wrong, which is the argument. This
+paragraph said "the 17 `METDSL_*` names the tree reads" for four commits; its replacement
+credited the constant-resolving reader with 21, the figure that reader returns with its
+constant resolution REMOVED (it returns 27). Reviewers counting literals got 23 and 25.
+Every one of those is a right answer to a different question about which files and which
+spellings count, which is why the code states none of them:
+`test_every_environment_name_the_tree_reads_is_stripped_or_declared` asks the rule about
+whatever the tree currently reads.
+
+`pytest_configure` removes those names from `os.environ` before collection — before
+collection, because a module body that reads the environment at import runs earlier than
+any fixture. A test that wants one of them sets it itself (`patch.dict`), which is what
+every test already does.
+
+BY PREFIX, not by list: the names are taken from
+`orchestration_runtime.LEAF_ENV_ALLOWED_PREFIXES` — the same constant that decides which
+host names reach a leaf — so a `METDSL_*` knob added later is neutralized without anyone
+remembering this file. The two exact names beside it (`CODEX_HOME`, `CLAUDE_CONFIG_DIR`)
+are the backend configuration homes, which carry no such prefix; `CODEX_HOME` is the one
+measured above, and `CLAUDE_CONFIG_DIR` is its twin, included by symmetry rather than by
+measurement (it cost 0 failures on `165c26f`).
+
+What this does NOT do, stated so it is not read as more: it neutralizes the names above
+and nothing else. `PATH`, `HOME` and the locale family are still inherited, and a suite
+run under `env -i` is not covered — that is a different and much larger claim than the one
+measured here.
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
+
+from tools.tests import suite_env_guard
+
+# The rule, the declared table and the record all live in `suite_env_guard`, a PLAIN
+# module. Not here: `tools/tests` has no `__init__.py`, so pytest imports THIS file as
+# module `conftest` while a test's `from tools.tests.conftest import ...` re-executes it as
+# a second module object — the hook would populate one copy's record and the witness read
+# the other's, empty forever. Measured, and it had already made the witness's primary
+# assertion vacuous. A module reached only by its dotted name is imported once.
+
+
+def pytest_addoption(parser) -> None:
+    parser.addoption(
+        "--keep-operator-env", action="store_true", default=False,
+        help="do not strip the operator's METDSL_* / CODEX_HOME / CLAUDE_CONFIG_DIR "
+             "from the environment (issue #84). For deliberately running the suite "
+             "against a knob you have set; expect failures that belong to the knob.")
+
+
+def pytest_configure(config) -> None:
+    """Remove the operator's per-run knobs before anything is collected.
+
+    Before COLLECTION, not in a fixture: a module body that reads the environment at import
+    runs earlier than any fixture.
+
+    The removal is REPORTED. A knob discarded in silence is a check recorded as run and not
+    run — `METDSL_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT=1` is the sharp case, worth 84
+    failures and 482s of real probing on `165c26f`, and an operator who sets it now gets
+    1242 passed in 49s with nothing probed. `--keep-operator-env` is the way to mean it.
+    """
+    if config.getoption("--keep-operator-env"):
+        suite_env_guard.decline_strip()
+        return
+    stripped = suite_env_guard.strip_operator_env(os.environ)
+    if stripped:
+        config._metdsl_stripped_operator_env = stripped
+
+
+def _operator_env_disclosure(config) -> str | None:
+    """What this run did to the operator's environment, or None if it did nothing."""
+    if suite_env_guard.DECLINED:
+        return ("met-dsl: --keep-operator-env -- the operator's environment was NOT "
+                "stripped for this run (issue #84); failures may belong to a knob you set")
+    stripped = getattr(config, "_metdsl_stripped_operator_env", None)
+    if not stripped:
+        return None
+    return ("met-dsl: stripped the operator's environment for this run (issue #84): "
+            + ", ".join(stripped)
+            + " -- pass --keep-operator-env to run against them instead")
+
+
+def pytest_report_header(config) -> str | None:
+    return _operator_env_disclosure(config)
+
+
+def pytest_terminal_summary(terminalreporter, exitstatus, config) -> None:
+    """The same line again at the end, because the header does not survive `-q`.
+
+    `pytest_report_header` prints in the session preamble, which `-q` suppresses — and
+    `-q` is the ONLY form this repository documents (`README.md`, and two skills under
+    `.claude/`). So the disclosure added in round 1, on the ground that a silent strip is
+    a check recorded as run and not run, was invisible in every invocation anyone is told
+    to use, with its own witness green because that witness ran pytest without `-q`.
+
+    A terminal-summary line survives `-q` (measured). Printed in ADDITION to the header
+    rather than instead of it: under a full run both appear, which costs one duplicated
+    line and means no invocation loses it.
+    """
+    message = _operator_env_disclosure(config)
+    if message:
+        terminalreporter.write_line(message)
+
+
+def pytest_unconfigure(config) -> None:
+    suite_env_guard.restore_operator_env(os.environ)
 
 
 @pytest.fixture(autouse=True)
