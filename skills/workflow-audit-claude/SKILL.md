@@ -20,7 +20,7 @@ Investigate the logs of a completed or interrupted workflow execution across the
 | workflow hook history | `workspace/orchestrations/<orch_id>/hooks/workflow_hooks.jsonl` |
 | agent execution results | `workspace/orchestrations/<orch_id>/agent_runs.jsonl` |
 | phase state transitions | `workspace/orchestrations/<orch_id>/phase_state_log.jsonl` |
-| gate results | `workspace/orchestrations/<orch_id>/gates/<agent_run_id>/*.json` |
+| gate results | `workspace/orchestrations/<orch_id>/gates/<agent_run_id>/*.json`. **This is the only evidential copy.** `run-gate` also leaves its stderr summary at `workspace/tmp/<agent_run_id>/gate_results/<gate>.json` so a leaf can re-read a result later; that root is leaf-writable and is wiped at terminal status, so never audit from it — a mismatch between the two means the leaf overwrote its own copy, which gains it nothing and is not by itself a finding |
 | sandbox violations | `workspace/orchestrations/<orch_id>/violations/*.json` |
 | access logs | `workspace/orchestrations/<orch_id>/access_logs/<agent_run_id>.jsonl` |
 | failure analysis | `workspace/orchestrations/<orch_id>/failure_analysis.json` |

@@ -462,5 +462,5 @@ Run a validator gate across the capability_token. The canonical path in a contex
 
 The keys are converted into CLI flags (`pipeline_root` → `--pipeline-root`).
 
-The gate result JSON (`status`, `violations`, ...) is output on the last line of stderr, and stderr is returned in the command result; read it there. An appended redirect that captures it to a file is refused by the permission layer.
+The gate result JSON (`gate`, `status`, `violations`, `gate_result_ref`, `evaluated_at`) is output on the last line of stderr, and stderr is returned in the command result; read it there. An appended redirect that captures it to a file is refused by the permission layer, so `run-gate` writes the same object itself, at `workspace/tmp/<agent_run_id>/gate_results/<gate>.json` — one file per gate name, replaced on each run of that gate, inside the calling agent's `allowed_tmp_root` and therefore readable by it. That copy exists so a result survives past the command that produced it; it sits in an agent-writable root, so it is a convenience for the caller and never evidence about it. The evidential record stays `workspace/orchestrations/<orchestration_id>/gates/<agent_run_id>/<gate>.json` (the `gate_result_ref`), which the agent cannot write. A failure to write the tmp copy does not change the gate verdict, and removes any earlier copy rather than leaving a stale one.
 

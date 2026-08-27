@@ -16873,6 +16873,187 @@ class TestPhase3RunGate(unittest.TestCase):
             cli_out = json.loads(buf.getvalue())
             self.assertEqual(set(cli_out.keys()), {"violations", "gate_result_ref"})
 
+    # --- issue #77: the durable gate-result copy in the leaf's own tmp root ------
+    #
+    # The route the documents used to teach -- the leaf appending a `2>` redirect to
+    # the gate command -- is refused by the permission layer (docs/HOOKS.md §"Layer
+    # boundary"), so `run_gate` writes that file itself. These tests pin what the
+    # leaf is handed, not how it is spelled: the file must carry EXACTLY the object
+    # printed on the last line of stderr, because the whole claim of the artifact is
+    # "what the leaf was told, on disk".
+
+    _TMP_GATE_DIR = "workspace/tmp/build_child_rg1/gate_results"
+
+    def _run_gate_capturing_stderr(self, repo_root: Path, token: str, **over: Any):
+        """Return (result, parsed last stderr line) for one run_gate call.
+
+        The stderr line is PARSED and returned rather than respelled in each test:
+        the equality these tests assert is between the file and the line the leaf
+        actually saw, and a second spelling of the expected dict is exactly the
+        drift that would make that equality hold by construction.
+        """
+        kwargs = {
+            "orchestration_id": "rg1",
+            "gate_name": "check_artifact_syntax",
+            "agent_run_id": "build_child_rg1",
+            "args_json": {"paths": ["workspace/probe.json"]},
+            "capability_token": token,
+        }
+        kwargs.update(over)
+        err = io.StringIO()
+        with redirect_stderr(err):
+            result = run_gate(repo_root, **kwargs)
+        last_line = err.getvalue().strip().splitlines()[-1]
+        return result, json.loads(last_line)
+
+    def test_run_gate_tmp_copy_equals_the_stderr_line_on_pass_and_on_fail(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            token = self._setup_run_gate_fixture(repo_root)
+            # A second probe that is NOT valid JSON gives the failing case; the gate
+            # is otherwise identical, so status is the only thing that differs.
+            (repo_root / "workspace" / "broken.json").write_text("not json\n", encoding="utf-8")
+
+            for label, paths, expected_status in (
+                ("pass", ["workspace/probe.json"], "pass"),
+                ("fail", ["workspace/broken.json"], "fail"),
+            ):
+                with self.subTest(case=label):
+                    _result, summary = self._run_gate_capturing_stderr(
+                        repo_root, token, args_json={"paths": paths}
+                    )
+                    self.assertEqual(summary["status"], expected_status)
+                    copy_path = repo_root / self._TMP_GATE_DIR / "check_artifact_syntax.json"
+                    self.assertTrue(
+                        copy_path.exists(),
+                        "run-gate must leave its summary in the leaf's tmp root",
+                    )
+                    self.assertEqual(
+                        json.loads(copy_path.read_text(encoding="utf-8")),
+                        summary,
+                        "the file must carry exactly what the leaf was shown",
+                    )
+                    # The evidential record is untouched by any of this.
+                    self.assertEqual(
+                        json.loads(
+                            (repo_root / summary["gate_result_ref"]).read_text(encoding="utf-8")
+                        )["status"],
+                        expected_status,
+                    )
+
+    def test_run_gate_tmp_copy_carries_evaluated_at_so_a_stale_copy_is_visible(self) -> None:
+        """The point of the timestamp: a copy left by an EARLIER call is detectable.
+
+        Without it the file is indistinguishable from this call's result, which is the
+        failure mode a durable copy introduces that the read-once route did not have.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            token = self._setup_run_gate_fixture(repo_root)
+            _r1, first = self._run_gate_capturing_stderr(repo_root, token)
+            _r2, second = self._run_gate_capturing_stderr(repo_root, token)
+            self.assertIn("evaluated_at", first)
+            self.assertNotEqual(first["evaluated_at"], second["evaluated_at"])
+            copy_path = repo_root / self._TMP_GATE_DIR / "check_artifact_syntax.json"
+            self.assertEqual(
+                json.loads(copy_path.read_text(encoding="utf-8"))["evaluated_at"],
+                second["evaluated_at"],
+                "re-running a gate must replace its own copy, not leave the older one",
+            )
+
+    def test_run_gate_tmp_copy_is_one_file_per_gate_name(self) -> None:
+        """A second gate must not clobber the first: that is why the name is the key."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            token = self._setup_run_gate_fixture(repo_root)
+            _r1, syntax_summary = self._run_gate_capturing_stderr(repo_root, token)
+            _r2, root_summary = self._run_gate_capturing_stderr(
+                repo_root, token, gate_name="validate_workspace_root", args_json={}
+            )
+            gate_dir = repo_root / self._TMP_GATE_DIR
+            self.assertEqual(
+                sorted(q.name for q in gate_dir.iterdir()),
+                ["check_artifact_syntax.json", "validate_workspace_root.json"],
+            )
+            self.assertEqual(
+                json.loads((gate_dir / "check_artifact_syntax.json").read_text(encoding="utf-8")),
+                syntax_summary,
+            )
+            self.assertEqual(
+                json.loads((gate_dir / "validate_workspace_root.json").read_text(encoding="utf-8")),
+                root_summary,
+            )
+
+    def test_run_gate_tmp_copy_lands_under_the_manifest_allowed_tmp_root(self) -> None:
+        """The path is asserted against the MANIFEST, not against a literal f-string.
+
+        `allowed_tmp_root` is the value the read boundary and the write-attribution
+        exemption are both derived from; a literal here would pass even if the two
+        drifted apart.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            token = self._setup_run_gate_fixture(repo_root)
+            self._run_gate_capturing_stderr(repo_root, token)
+            manifest = json.loads(
+                (
+                    repo_root
+                    / "workspace/orchestrations/rg1/output_manifests/build_child_rg1.json"
+                ).read_text(encoding="utf-8")
+            )
+            tmp_root = manifest["allowed_tmp_root"]
+            self.assertTrue(tmp_root, "the fixture must declare an allowed_tmp_root")
+            copy_rel = f"{tmp_root}/gate_results/check_artifact_syntax.json"
+            self.assertTrue((repo_root / copy_rel).is_file(), copy_rel)
+
+    def test_run_gate_tmp_copy_write_failure_neither_fails_the_gate_nor_leaves_a_stale_file(
+        self,
+    ) -> None:
+        """A convenience artifact must not be able to decide a verdict, and a copy
+        that cannot be refreshed must not survive as this call's answer.
+
+        The `_write_json` patch raises for the TMP path only, so the canonical gate
+        document is still written by the same call -- which is what makes this a test
+        of the fallback rather than of a gate that failed early.
+        """
+        from tools import orchestration_runtime as _rt
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            token = self._setup_run_gate_fixture(repo_root)
+            copy_path = repo_root / self._TMP_GATE_DIR / "check_artifact_syntax.json"
+
+            # Round 1 succeeds, so there IS an older copy to go stale.
+            _r1, first = self._run_gate_capturing_stderr(repo_root, token)
+            self.assertTrue(copy_path.exists())
+
+            real_write_json = _rt._write_json
+
+            def _fail_for_tmp_copy(path: Path, payload: Any) -> None:
+                if Path(path) == copy_path:
+                    raise OSError("no space left on device")
+                real_write_json(path, payload)
+
+            with patch.object(_rt, "_write_json", _fail_for_tmp_copy):
+                result, second = self._run_gate_capturing_stderr(repo_root, token)
+
+            # The verdict is unchanged by the failed write.
+            self.assertEqual(second["status"], "pass")
+            self.assertEqual(result["violations"], [])
+            self.assertEqual(result["gate_result_ref"], first["gate_result_ref"])
+            # The canonical record was still written by this same call.
+            self.assertEqual(
+                json.loads(
+                    (repo_root / second["gate_result_ref"]).read_text(encoding="utf-8")
+                )["evaluated_at"],
+                second["evaluated_at"],
+            )
+            # And round 1's copy is gone rather than masquerading as round 2's.
+            self.assertFalse(
+                copy_path.exists(),
+                "a copy that could not be refreshed must be removed, not left stale",
+            )
+
     def test_run_gate_check_artifact_syntax_rejects_legacy_path_key(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
@@ -17429,6 +17610,7 @@ class TerminalUnauthorizedWriteDirectWriteTests(unittest.TestCase):
         write_roots: list[str],
         allowed_output_paths: list[str],
         allowed_file_tool_paths: list[str],
+        allowed_tmp_root: str | None = None,
     ) -> None:
         from tools.orchestration_runtime import (
             _capabilities_dir,
@@ -17456,8 +17638,60 @@ class TerminalUnauthorizedWriteDirectWriteTests(unittest.TestCase):
             agent_run_id=agent_run_id,
             allowed_output_paths=allowed_output_paths,
             allowed_file_tool_paths=allowed_file_tool_paths,
+            allowed_tmp_root=allowed_tmp_root,
         )
         _write_run_write_baseline(repo_root, orchestration_id, agent_run_id=agent_run_id)
+
+    def test_terminal_containment_authorizes_the_run_gate_copy_in_the_tmp_root(self) -> None:
+        """Issue #77: RUN the containment attack instead of reading the exemption.
+
+        `run_gate` writes `workspace/tmp/<arid>/gate_results/<gate>.json` and the whole
+        design rests on that path being exempt from the child-window FS-diff, which the
+        source claims at the `manifest_allowed_tmp_root` branch. A claim about an
+        enforcement layer is not established by reading it, so the file is placed on
+        disk and handed to the real terminalization check.
+
+        The second half is the over-refusal control: the SAME filename one directory
+        outside the tmp root must still be rejected, or a green first half would prove
+        only that the check had stopped looking.
+        """
+        from tools.orchestration_runtime import _validate_actual_write_paths
+
+        for label, rel, expect_raise in (
+            ("inside the tmp root", "workspace/tmp/{run_id}/gate_results/check_artifact_syntax.json", False),
+            ("outside it", "workspace/tmp/other_arid/gate_results/check_artifact_syntax.json", True),
+        ):
+            with self.subTest(case=label), tempfile.TemporaryDirectory() as tmp:
+                repo_root = Path(tmp)
+                orch = "orch_term_gate_copy"
+                run_id = "step_run_term_gate_copy"
+                yaml_rel = "workspace/ir/p/spec.ir.yaml"
+                self._setup_step_run_state(
+                    repo_root,
+                    orchestration_id=orch,
+                    agent_run_id=run_id,
+                    write_roots=["workspace/ir/"],
+                    allowed_output_paths=[yaml_rel],
+                    allowed_file_tool_paths=[yaml_rel],
+                    allowed_tmp_root=f"workspace/tmp/{run_id}",
+                )
+                copy_rel = rel.format(run_id=run_id)
+                copy_path = repo_root / copy_rel
+                copy_path.parent.mkdir(parents=True, exist_ok=True)
+                copy_path.write_text('{"gate": "check_artifact_syntax"}\n', encoding="utf-8")
+
+                payload = {
+                    "agent_run_id": run_id,
+                    "agent_role": "step",
+                    "status": "pass",
+                    "output_refs": [],
+                }
+                if expect_raise:
+                    with self.assertRaises(ValueError) as ctx:
+                        _validate_actual_write_paths(repo_root, orch, payload)
+                    self.assertIn(copy_rel, str(ctx.exception))
+                else:
+                    _validate_actual_write_paths(repo_root, orch, payload)
 
     def test_step_terminal_accepts_direct_write_yaml_without_gate(self) -> None:
         from tools.orchestration_runtime import _validate_actual_write_paths
@@ -29700,7 +29934,13 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # Raised again in round 11: at 19000 the file sat 14 bytes below the ceiling, which
         # is the tripwire this very comment says a ceiling must not be — the rule was
         # written and then not applied to the number beside it.
-        "docs/AGENT_CONTRACT.md": 19200,
+        # Raised again for issue #77: a gate result now survives its command as a file in
+        # the leaf's own tmp root, and a leaf that is not told the path cannot use it — the
+        # same "meets a refusal it cannot diagnose" class the paragraph above names. The
+        # rule from round 11 applies to the number as well as to the sentence: at 19200 the
+        # file again sat a few dozen bytes below its ceiling, which is a tripwire rather
+        # than a re-bloat catch, so the headroom is restored along with the raise.
+        "docs/AGENT_CONTRACT.md": 19700,
         # Consolidated runner-output contract (was duplicated across phase_02/04 +
         # PERF §2/§6); M3d: a validate.judge-only leaf must-read (generate dropped it).
         # Bumped 7600->8100: §3 disambiguated the guard-case snapshot rule (declared

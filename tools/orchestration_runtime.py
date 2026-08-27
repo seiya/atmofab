@@ -6494,20 +6494,68 @@ def run_gate(
     # outside most agents' read_manifests, causing read_manifest_read_guard
     # blocks when agents attempt to read it directly (observed in
     # orch_20260610T130256Z_ebe96a51).  Agents read this line out of the
-    # command result, which carries stderr; capturing it to a tmp file with an
-    # appended redirect was the documented route until the permission layer
-    # began refusing it. What was measured on Claude Code 2.1.234 is a redirect
-    # into the repository's own `workspace/tmp/<arid>/` in the `2>`, `>` and
-    # `>>` spellings, to a new and to an existing target; `2>/dev/null` is
+    # command result, which carries stderr. That is the CANONICAL route and the
+    # one always present.
+    #
+    # The SAME object is then written to the leaf's own tmp root, at
+    # `workspace/tmp/<arid>/gate_results/<gate>.json`, so a gate result outlives
+    # the tool call that produced it (issue #77) and so something on disk records
+    # what the leaf was told. One file per gate name: a second gate does not
+    # clobber the first, and re-running a gate replaces its own file.
+    #
+    # The runtime writes it because the route the documents used to teach -- the
+    # leaf appending `2>` plus a target under its tmp root to the gate command --
+    # is refused by the permission layer. What was measured on Claude Code 2.1.234
+    # is a redirect into the repository's own `workspace/tmp/<arid>/` in the `2>`,
+    # `>` and `>>` spellings, to a new and to an existing target; `2>/dev/null` is
     # unaffected and no out-of-repo target was tested. It executed on 2.1.223
-    # (docs/HOOKS.md §"Layer boundary").
+    # (docs/HOOKS.md §"Layer boundary"). Writing it here makes no CLI permission
+    # behaviour load-bearing, and adds no leaf-supplied input to this gate.
+    #
+    # Neither identifier in that path is validated again here, deliberately:
+    # `agent_run_id` already passed `_require_safe_gate_ids` inside
+    # `_validate_run_gate_permissions` above, and `gate` is a member of
+    # DEFAULT_ALLOWED_GATE_SERVICES by the guard at the top of this function --
+    # a closed set, not caller text. A redundant re-check here would be a second
+    # spelling of both rules, which is the drift this repository pays for.
+    #
+    # The tmp root is leaf-WRITABLE, so a leaf can overwrite this copy with a
+    # forged pass. What it gains by that is nothing: nothing but the leaf itself
+    # reads it. Every consumer that decides an outcome -- the conductor, the
+    # audit, step_result.json -- reads the canonical gates/<arid>/<gate>.json
+    # written above, which is outside the leaf's write authority. So this file is
+    # a convenience FOR the leaf, never evidence ABOUT it, and it must not be
+    # cited as evidence anywhere. (AGENTS.md §Development premises, decision
+    # criterion: the hole is out of scope because what the leaf would gain can be
+    # named and is nothing.)
     _gate_summary = {
         "gate": gate,
         "status": status,
         "violations": violations,
         "gate_result_ref": gate_ref,
+        # Carried so a stale copy left by an EARLIER call is distinguishable from
+        # this call's result. The stderr line carries it too, so the file and the
+        # line the leaf was shown stay byte-identical.
+        "evaluated_at": gate_doc["evaluated_at"],
     }
     print(json.dumps(_gate_summary), file=sys.stderr)
+    _tmp_gate_result = (
+        repo_root / "workspace" / "tmp" / agent_run_id.strip()
+        / "gate_results" / f"{gate}.json"
+    )
+    try:
+        _write_json(_tmp_gate_result, _gate_summary)
+    except OSError:
+        # Best-effort: the gate VERDICT must not depend on a convenience
+        # artifact, so a failed write neither raises nor changes status /
+        # exit_code / stdout / stderr. It must not leave an EARLIER call's file
+        # in place either -- a stale result that reads as this one's is worse
+        # than no file at all, and the leaf's fallback (the command result) is
+        # the canonical route regardless.
+        try:
+            _tmp_gate_result.unlink(missing_ok=True)
+        except OSError:
+            pass
     return result
 
 
@@ -11181,7 +11229,10 @@ def _build_gate_runbook(request_payload: dict[str, Any]) -> str:
             "returned to you in the command result — read it there. Do not append a "
             "redirect to capture it: the permission layer refuses a Bash redirect to a "
             f"file. `workspace/tmp/{arid}/` already exists and is writable with the "
-            "`Write` tool, so it needs no creating. `access_logs/` is runtime-managed "
+            "`Write` tool, so it needs no creating; the runtime also drops each gate's "
+            f"own summary there, one JSON file per gate name under `workspace/tmp/{arid}"
+            "/gate_results/`, so a later turn can re-read a result whose command output "
+            "has scrolled out of your context. `access_logs/` is runtime-managed "
             "audit (the read hook appends a line per read decision, and "
             "`orchestration_read` writes one too) — never read or write it yourself."
         )
