@@ -15462,6 +15462,168 @@ class DeterministicSyntaxTest(unittest.TestCase):
             self.assertTrue(
                 ev["stages"][0]["command_log_ref"].endswith("/src/command_log.jsonl"))
 
+    _M3C_NODE_KEY = "problem/adv1d@0.1.0"
+
+    def _m3c_refs(self) -> wc.NodeRefs:
+        return wc.NodeRefs(
+            node_key=self._M3C_NODE_KEY, spec_path="spec/problem/adv1d",
+            ir_id="i1", pipeline_id="p1", source_id="src_1", binary_id="bin_1")
+
+    def _seed_m3c(self, repo: Path, refs: wc.NodeRefs) -> None:
+        """A REAL M3c node, so the host-authored set comes from the live predicates.
+
+        The authorship predicates are NOT stubbed — issue #112's subject is which files the host
+        authors, and a test that mocked that answer would pin the probe arithmetic while leaving
+        the oracle unwitnessed. What the caller does stub is dependency STAGING, which needs a
+        certified harness on disk and is covered by its own rows; the syntax attribution's
+        question is about the node's own `src/`, not about the closure."""
+        ir_dir = repo / refs.ir_ref
+        ir_dir.mkdir(parents=True, exist_ok=True)
+        (ir_dir / "spec.ir.yaml").write_text(
+            "meta:\n  spec_id: adv1d\n  spec_kind: problem\n"
+            "impl_defaults:\n  toolchain:\n    language: fortran\n    standard: f2008\n"
+            "    build_system: make\n  target:\n    backend: serial\n"
+            "dependency:\n"
+            f'  node_key: "{self._M3C_NODE_KEY}"\n'
+            "  direct_deps:\n"
+            '    - node_key: "infrastructure/harness_fortran_cpu@0.7.0"\n',
+            encoding="utf-8")
+        src = repo / refs.source_dir() / "src"
+        src.mkdir(parents=True, exist_ok=True)
+        for name in ("adv1d_model.f90", "adv1d_checks.f90", "adv1d_runner.f90"):
+            (src / name).write_text(f"! {name}\n", encoding="utf-8")
+
+    def _attributing_syntax(self, leaf_probe_ok: bool):
+        """A compiler stand-in: the main stage fails, and the leaf-only probe answers as told.
+
+        The probe directories are told apart by `project_dir`, which is how the real code tells
+        them apart, so the stub answers the same question the compiler would."""
+        def _fn(args):
+            pd = str(args.get("project_dir", ""))
+            if pd.endswith("_leaf_probe"):
+                return {"ok": leaf_probe_ok, "return_code": 0 if leaf_probe_ok else 1,
+                        "command_id": "leaf-probe", "compiler": args["compiler"],
+                        "compiler_version": "GNU Fortran 13", "skipped": False,
+                        "stderr": "" if leaf_probe_ok else "Error: leaf-side diagnostic"}
+            if pd.endswith("_canary"):
+                return {"ok": True, "return_code": 0, "command_id": "canary",
+                        "compiler": args["compiler"], "compiler_version": "GNU Fortran 13",
+                        "skipped": False}
+            return {"ok": False, "return_code": 1, "command_id": "sid",
+                    "compiler": args["compiler"], "compiler_version": "GNU Fortran 13",
+                    "skipped": False,
+                    "stderr": "adv1d_runner.f90:12: Error: whole-run diagnostic"}
+        return _fn
+
+    def test_gate_syntax_check_records_a_leaf_attribution_without_changing_the_route(
+            self) -> None:
+        """The leaf's own files fail on their own: `attribution` says so, routing is unchanged."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            refs = self._m3c_refs()
+            self._seed_m3c(repo, refs)
+            c = self._conductor(repo)
+            c._stage_dependency_sources = lambda r, d: []  # type: ignore[assignment]
+            with self._patch_syntax(self._attributing_syntax(leaf_probe_ok=False)):
+                out = c._gate_syntax_check(refs, "child-1", "captok")
+        self.assertEqual(out["status"], "fail")
+        self.assertEqual(out["attribution"], "leaf")
+        self.assertEqual(out["failure_category"], "syntax_error")
+        self.assertEqual("retry", wc.classify_gate_failure([out["failure_category"]]).action)
+
+    def test_gate_syntax_check_records_an_unattributed_interaction_and_still_warm_retries(
+            self) -> None:
+        """THE DELIBERATE RESIDUAL OF ISSUE #112, pinned so it cannot change by accident.
+
+        The leaf's files pass alone while the whole staged set fails, so the failure needs the
+        host-rendered runner. That does NOT mean the host is at fault: the runner `use`s the
+        leaf-authored checks module, so the diagnostic can be the leaf having missed the fixed
+        ABI — repairable by exactly this warm retry. Unlike the lint checker, a compiler cannot
+        partition the files, so the gate records what it saw and keeps the retry.
+
+        The excerpt must stay the WHOLE-RUN output: an interaction diagnostic is printed at a
+        runner line and is precisely what the leaf needs in order to fix its own ABI. Narrowing
+        it here — which is right for lint — would delete the finding the leaf must act on."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            refs = self._m3c_refs()
+            self._seed_m3c(repo, refs)
+            c = self._conductor(repo)
+            c._stage_dependency_sources = lambda r, d: []  # type: ignore[assignment]
+            with self._patch_syntax(self._attributing_syntax(leaf_probe_ok=True)):
+                out = c._gate_syntax_check(refs, "child-1", "captok")
+        self.assertEqual(out["attribution"], "unattributed_interaction")
+        self.assertEqual(out["failure_category"], "syntax_error")
+        self.assertEqual("retry", wc.classify_gate_failure([out["failure_category"]]).action)
+        self.assertIn("whole-run diagnostic", out["failure_excerpt"])
+
+    def test_gate_syntax_check_needs_no_probe_when_the_host_authors_nothing(self) -> None:
+        """A node with no host-authored source: the answer is `leaf` without a probe run.
+
+        Spending a compiler run to learn what the authorship predicates already say would be
+        the same waste, one layer down."""
+        import tempfile
+        seen: list[str] = []
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            refs = self._refs()          # the plain fixture: no infra dep, no host-rendered file
+            self._seed(repo, refs)
+            c = self._conductor(repo)
+            base = self._attributing_syntax(leaf_probe_ok=True)
+
+            def _fn(args):
+                seen.append(str(args.get("project_dir", "")))
+                return base(args)
+
+            with self._patch_syntax(_fn):
+                out = c._gate_syntax_check(refs, "child-1", "captok")
+        self.assertEqual(out["attribution"], "leaf")
+        self.assertEqual([], [d for d in seen if d.endswith("_leaf_probe")])
+
+    def test_gate_syntax_check_attributes_a_refused_source_name_to_the_leaf(self) -> None:
+        """The early return for a source NAME the tool refuses already knows the answer.
+
+        The leaf authored that name and can rename it, so the section must carry the same
+        `attribution` shape as every other return rather than omitting the key."""
+        import tempfile
+        from build_runtime_server import SyntaxSourceNameError  # type: ignore
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            refs = self._m3c_refs()
+            self._seed_m3c(repo, refs)
+            c = self._conductor(repo)
+            c._stage_dependency_sources = lambda r, d: []  # type: ignore[assignment]
+
+            def _raise(args):
+                raise SyntaxSourceNameError("refused source name '-o.f90'")
+
+            with self._patch_syntax(_raise):
+                out = c._gate_syntax_check(refs, "child-1", "captok")
+        self.assertEqual(out["status"], "fail")
+        self.assertEqual(out["attribution"], "leaf")
+        self.assertEqual(out["failure_category"], "syntax_error")
+
+    def test_every_syntax_section_carries_an_attribution_key(self) -> None:
+        """The key is part of the section's shape, not something only the failure paths add.
+
+        `gate_meta.json` is read by an operator and by the resume path; a key that appears only
+        sometimes reads as a missing measurement rather than as `None`."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            refs = self._refs()
+            self._seed(repo, refs)
+            c = self._conductor(repo)
+            with self._patch_syntax(lambda args: {
+                    "ok": True, "return_code": 0, "command_id": "sid",
+                    "compiler": args["compiler"], "compiler_version": "GNU Fortran 13",
+                    "skipped": False}):
+                out = c._gate_syntax_check(refs, "child-1", "captok")
+        self.assertIn("attribution", out)
+        self.assertIsNone(out["attribution"])
+
     def test_gate_syntax_check_compile_error_is_content_fail(self) -> None:
         import tempfile
         from tools.hooks.syntax_evidence import read_syntax_evidence
