@@ -127,7 +127,17 @@ class _Spy(collections.abc.MutableMapping):
         self.reads = []
 
     def __getitem__(self, key):
-        self.reads.append(key)
+        # The FIRST frame under the repository, not the immediate caller: `os.getenv` and
+        # `MutableMapping.get` are stdlib frames between the read and whoever asked for
+        # it, so reporting the caller named `<frozen _collections_abc>` and told nobody
+        # anything. Falls back to the immediate caller if nothing is under the root.
+        root = os.getcwd()
+        frame = sys._getframe(1)
+        immediate = frame
+        while frame is not None and not frame.f_code.co_filename.startswith(root):
+            frame = frame.f_back
+        frame = frame if frame is not None else immediate
+        self.reads.append([key, frame.f_code.co_filename, frame.f_lineno])
         return self._real[key]
 
     def __setitem__(self, key, value):
@@ -152,7 +162,7 @@ sys.path.insert(0, os.getcwd())
 if len(sys.argv) > 2:
     sys.path.insert(0, sys.argv[2])
 __import__(sys.argv[1])
-print(json.dumps(sorted(set(spy.reads))))
+print(json.dumps(sorted({tuple(r) for r in spy.reads})))
 '''
 
 
@@ -184,7 +194,7 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
            there was nothing to strip — which is why the end-to-end case below drives a
            real poisoned process rather than relying on this one.
         2. Every `METDSL_*` name that IS set during a test is one the SUITE set, and is
-           declared in conftest's `SUITE_OWNED_ENV`. That is a ratchet: a new process-global environment dependence
+           declared in `suite_env_guard.SUITE_OWNED_ENV`. That is a ratchet: a new process-global environment dependence
            cannot appear without someone naming it here and saying who sets it.
 
         Subset, not equality: `SUITE_OWNED_ENV` holds names set at another module's
@@ -226,12 +236,24 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
                     f"{name} reached a test with the value the operator exported")
 
         undeclared = undeclared_operator_env_names(os.environ)
-        self.assertEqual(
-            undeclared, set(),
-            "an environment name is set during a test and nobody says who sets it. If "
-            "the suite sets it, declare it in SUITE_OWNED_ENV with the site that does; "
-            "if it leaked from the operator, the guard in tools/tests/conftest.py is "
-            f"broken. Values: {({n: os.environ[n] for n in undeclared})}")
+        if suite_env_guard.DECLINED:
+            # The operator ran with --keep-operator-env, so their names ARE present and
+            # that is what they asked for. Telling them the guard is broken sends them
+            # after a defect that is their own flag — and this is exactly when it fires,
+            # since the flag plus a knob set is the designed way to reach it.
+            self.assertEqual(
+                undeclared, set(),
+                "--keep-operator-env left these names in place, so this failure belongs "
+                "to the knob you set and not to the suite. Unset them, or drop the flag: "
+                f"{sorted(undeclared)}")
+        else:
+            self.assertEqual(
+                undeclared, set(),
+                "an environment name is set during a test and nobody says who sets it. If "
+                "the suite sets it, declare it in `suite_env_guard.SUITE_OWNED_ENV` with "
+                "the site that does; if it leaked from the operator, the guard in "
+                "tools/tests/suite_env_guard.py is broken. Values: "
+                f"{({n: os.environ[n] for n in undeclared})}")
 
     def test_the_ratchet_reports_a_name_nobody_has_claimed(self) -> None:
         """The ratchet's own witness — it fires on nothing this suite produces.
@@ -461,9 +483,13 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
         import-time read. The second excluded those NODES entirely, and thereby stopped
         seeing a class body, a decorator argument, a default argument and a class base —
         all of which execute at import — while still reporting a module-level `lambda`
-        body, which does not. Measured on `3052aa3`, five of eight shapes wrong; the two
-        files it scanned hold 29 class-body assignments, 10 decorators and 20 lambdas, so
-        neither error was hypothetical. It also scanned 2 files while the import pulls in
+        body, which does not. Replayed over the twelve shapes tabulated below, that reader is
+        wrong on FIVE: it misses the class body, the class base, the decorator argument and
+        the default argument, and it refuses the lambda. (An earlier version of this
+        sentence said "five of eight", which was the size of the probe set used when the
+        defect was found, not of the table beside it — no grouping of eight here contains
+        five.) The two files it scanned hold 29 class-body assignments, 10 decorators and
+        20 lambdas, so neither error was hypothetical. It also scanned 2 files while the import pulls in
         15, so an ordinary module-level constant in any of the other 13 was invisible.
 
         Deciding "what runs at import" from source is the wrong question to ask a reader.
@@ -473,10 +499,15 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
         static reader can see.
         """
         reads = self._names_read_during_import("tools.orchestration_runtime")
+        offenders = {name: self._last_import_reads[name]
+                     for name in reads - _IMPORT_READS_NOT_OURS}
         self.assertEqual(
-            reads - _IMPORT_READS_NOT_OURS, set(),
+            offenders, {},
             "something read the environment while the hook's own import ran, so the "
-            "operator's value for it was cached before the strip could remove it")
+            "operator's value for it was cached before the strip could remove it. WHERE "
+            "is recorded because the import reaches 15 modules and that is the whole "
+            "question: move the read inside a function, or declare the name in "
+            f"`suite_env_guard.MUST_BE_INHERITED` if the suite must inherit it. {offenders}")
 
     def test_the_import_spy_sees_every_shape_that_runs_at_import(self) -> None:
         """The instrument's own witness, in BOTH directions.
@@ -556,7 +587,49 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
             done = _run(argv, {})
             self.assertEqual(done.returncode, 0,
                              f"the import spy failed:\n{done.stdout}\n{done.stderr}")
-            return set(json.loads(done.stdout.strip().splitlines()[-1]))
+            rows = json.loads(done.stdout.strip().splitlines()[-1])
+            self._last_import_reads = {n: f"{p}:{ln}" for n, p, ln in rows}
+            return set(self._last_import_reads)
+
+    def test_every_test_this_change_cites_by_name_exists(self) -> None:
+        """A citation of a test that no longer exists, three times on one branch.
+
+        Round 2 deleted a test for being true by construction and two records still named
+        it two commits later. Round 3 replaced the module-scope-read detector and the
+        commit that did it left the OLD test's name in `suite_env_guard`'s most
+        load-bearing sentence — the one telling a maintainer what stands between the
+        snapshot and the operator's cached value. Both were caught by review, in
+        consecutive rounds, which is the definition of a discipline that has stopped
+        working; `.claude/skills/metdsl-enforcement-change` rule 3-a says to couple the
+        documents to the rule with a check at that point, and this is the check.
+
+        Scoped to the files this change owns, and to CODE — a document may legitimately
+        name a deleted test as deleted, and `TODO.md` does. A code comment pointing at a
+        test is telling the reader where to look, so it has to lead somewhere.
+        """
+        cited_names = set()
+        for rel in ("tools/tests/suite_env_guard.py", "tools/tests/conftest.py",
+                    "tools/tests/test_suite_environment_isolation.py",
+                    "tools/tests/test_hooks_common.py"):
+            text = (_REPO_ROOT / rel).read_text(encoding="utf-8")
+            cited_names.update(
+                (name, rel) for name in re.findall(r"`(test_[A-Za-z0-9_]+)`", text))
+        self.assertTrue(cited_names, "no citations found — the reader is broken")
+
+        defined = set()
+        for path in (_REPO_ROOT / "tools" / "tests").glob("test_*.py"):
+            for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+                if (isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                        and node.name.startswith("test_")):
+                    defined.add(node.name)
+        self.assertIn("test_every_test_this_change_cites_by_name_exists", defined,
+                      "the definition reader is broken — it cannot see this test")
+
+        dangling = sorted((n, where) for n, where in cited_names if n not in defined)
+        self.assertEqual(
+            dangling, [],
+            "a comment names a test that does not exist, so it points a maintainer at "
+            f"nothing. Rename the citation or drop it: {dangling}")
 
     def test_the_strip_is_reported_and_can_be_declined(self) -> None:
         """Silence here is a check recorded as run and not run — so both are witnessed.
@@ -570,11 +643,18 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
         node = f"tools/tests/{_SUBJECT_MODULE.rsplit('.', 1)[1]}.py" \
                f"::{_SUBJECT_CLASS}::{_SUBJECT_TEST}"
 
-        reported = _run([sys.executable, "-m", "pytest", node], poison)
-        self.assertIn("METDSL_ORCHESTRATION_ID", reported.stdout)
-        self.assertIn("--keep-operator-env", reported.stdout)
-        # The control: with nothing to strip there is no header to print.
-        quiet = _run([sys.executable, "-m", "pytest", node], {})
+        # BOTH verbosities, and `-q` is the one that matters: it is the only form this
+        # repository documents, and it suppresses the session preamble the header prints
+        # in. Asserting only the verbose form is how the disclosure came to be invisible
+        # in every invocation anyone is actually told to use.
+        for extra in ([], ["-q"]):
+            with self.subTest(verbosity=extra or ["default"]):
+                reported = _run([sys.executable, "-m", "pytest", node] + extra, poison)
+                self.assertIn("METDSL_ORCHESTRATION_ID", reported.stdout,
+                              f"the strip was not disclosed with {extra or 'no flag'}")
+                self.assertIn("--keep-operator-env", reported.stdout)
+        # The control: with nothing to strip there is no line to print.
+        quiet = _run([sys.executable, "-m", "pytest", node, "-q"], {})
         self.assertNotIn("stripped the operator's environment", quiet.stdout)
 
         # And the flag really declines the strip: the subject test asserts the OUTSIDE-a-run
@@ -587,6 +667,10 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
             + declined.stdout)
         self.assertIn("--keep-operator-env", declined.stdout,
                       "the run did not say the environment was left alone")
+        declined_quiet = _run(
+            [sys.executable, "-m", "pytest", node, "--keep-operator-env", "-q"], poison)
+        self.assertIn("NOT\nstripped".replace("\n", " "), declined_quiet.stdout,
+                      "declining was not disclosed under -q")
 
         # THE FLAG MUST NOT FAIL A CLEAN HOST. It failed one test with no knob set at all
         # — `1 failed, 5293 passed, 1 skipped` — because the hook returned before setting
@@ -603,6 +687,43 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
             clean_declined.returncode, 0,
             "--keep-operator-env fails on a host with nothing set:\n"
             + clean_declined.stdout)
+
+    def test_a_bare_pytest_at_the_repository_root_loads_the_guard(self) -> None:
+        """`testpaths` is what makes the bare invocation load conftest as an initial one.
+
+        Without it, `python3 -m pytest` with no path argument does not load
+        `tools/tests/conftest.py` early enough to register `--keep-operator-env` (a hard
+        argparse error) or to print the disclosure, while the strip still happens during
+        collection — round 1's defect in a second form. Deleting the `testpaths` lines
+        survived a sweep, so the fix had no witness of its own.
+
+        Driven with `--co -q` and a `-k` that matches nothing: the option has to be
+        ACCEPTED, and collection has to reach this file, without paying for a suite run.
+        """
+        accepted = _run(
+            [sys.executable, "-m", "pytest", "--keep-operator-env", "--co", "-q",
+             "-k", "metdsl_no_such_test_name"], {})
+        self.assertEqual(
+            accepted.returncode, 5,          # 5 = collected, nothing selected
+            "a bare `pytest` did not accept --keep-operator-env, so tools/tests/"
+            "conftest.py was not loaded as an initial conftest — check `testpaths` in "
+            f"pytest.ini:\n{accepted.stdout}\n{accepted.stderr}")
+        self.assertIn("tests collected", accepted.stdout + accepted.stderr)
+
+    def test_the_import_read_allowlist_never_covers_one_of_our_own_names(self) -> None:
+        """`_IMPORT_READS_NOT_OURS` is an exemption list, so it can be widened.
+
+        It exists for one CPython-internal read. Adding a name the guard is supposed to
+        strip would make the import-spy assertion pass over exactly the hazard it exists
+        for, and nothing else would notice. Pinned as a property rather than as members,
+        so a second genuine non-ours name does not have to come back here.
+        """
+        for name in _IMPORT_READS_NOT_OURS:
+            with self.subTest(name=name):
+                self.assertEqual(
+                    operator_env_names_to_strip({name: "x"}), [],
+                    f"{name} is exempted from the import spy AND stripped by the guard — "
+                    "one of the two is wrong, and the exemption is the dangerous one")
 
     def test_a_poisoned_environment_is_neutralized_end_to_end(self) -> None:
         """Through real processes, with the control that must fail.

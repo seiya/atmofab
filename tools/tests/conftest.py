@@ -148,7 +148,8 @@ def pytest_configure(config) -> None:
         config._metdsl_stripped_operator_env = stripped
 
 
-def pytest_report_header(config) -> str | None:
+def _operator_env_disclosure(config) -> str | None:
+    """What this run did to the operator's environment, or None if it did nothing."""
     if suite_env_guard.DECLINED:
         return ("met-dsl: --keep-operator-env -- the operator's environment was NOT "
                 "stripped for this run (issue #84); failures may belong to a knob you set")
@@ -158,6 +159,28 @@ def pytest_report_header(config) -> str | None:
     return ("met-dsl: stripped the operator's environment for this run (issue #84): "
             + ", ".join(stripped)
             + " -- pass --keep-operator-env to run against them instead")
+
+
+def pytest_report_header(config) -> str | None:
+    return _operator_env_disclosure(config)
+
+
+def pytest_terminal_summary(terminalreporter, exitstatus, config) -> None:
+    """The same line again at the end, because the header does not survive `-q`.
+
+    `pytest_report_header` prints in the session preamble, which `-q` suppresses — and
+    `-q` is the ONLY form this repository documents (`README.md`, and two skills under
+    `.claude/`). So the disclosure added in round 1, on the ground that a silent strip is
+    a check recorded as run and not run, was invisible in every invocation anyone is told
+    to use, with its own witness green because that witness ran pytest without `-q`.
+
+    A terminal-summary line survives `-q` (measured). Printed in ADDITION to the header
+    rather than instead of it: under a full run both appear, which costs one duplicated
+    line and means no invocation loses it.
+    """
+    message = _operator_env_disclosure(config)
+    if message:
+        terminalreporter.write_line(message)
 
 
 def pytest_unconfigure(config) -> None:

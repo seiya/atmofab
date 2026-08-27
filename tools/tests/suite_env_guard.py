@@ -66,8 +66,9 @@ def operator_env_names_to_strip(environ) -> list[str]:
     The candidate names are snapshotted BEFORE the import. What that guards against is the
     import DEFINING a strippable name, not the import CACHING an operator value. The second
     hazard has no defence in this function; what stands against it is
-    `test_no_module_level_environment_read_defeats_the_guard`, which fails if any module the
-    hook imports grows a module-scope environment read.
+    `test_no_environment_read_during_the_hooks_own_import_caches_a_value`, which IMPORTS the
+    module in a fresh interpreter with `os.environ` instrumented and fails if anything of
+    ours was read.
 
     NO COUNT is stated for how many names this covers, deliberately, and this paragraph
     has now been wrong twice for stating one. Three documents once said "the 17 METDSL_*
@@ -147,7 +148,10 @@ def decline_strip() -> None:
     two cost a failure belonging to nothing: with the flag and an EMPTY environment, the
     early return left `CONFIGURED` False and the witness failed on a host with no knob set
     at all, which is precisely the class this whole change exists to remove. Measured: `-q
-    --keep-operator-env` on a clean checkout gave `1 failed, 5293 passed, 1 skipped`.
+    --keep-operator-env` gave `1 failed, 5293 passed, 1 skipped` — measured in a `/tmp`
+    worktree, where the declared `needs the checkout under $HOME` skip fires; the primary
+    checkout gives the same failure and no skip. "Clean" here is about the ENVIRONMENT,
+    which had no knob set at all, not about the checkout.
 
     With the flag AND a knob set, what fails is the ratchet — and that failure does belong
     to the knob, which is what the flag's help promises.

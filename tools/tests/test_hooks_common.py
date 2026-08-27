@@ -132,8 +132,20 @@ class _CpuUnits:
         return False
 
     def describe(self) -> str:
+        """The failure message. It has to say what a unit IS and what to do next.
+
+        A bare "21.9 calibration units" tells a reader nothing: the unit is defined in
+        this file and nowhere they are looking, the bound is a bracket rather than a
+        round number, and the single most likely cause of a marginal failure is that the
+        host was busy — which is the one thing the quotient is only partly able to absorb.
+        """
         return (f"{self.units:.1f} calibration units "
-                f"({self.cpu_seconds:.2f}s CPU / {self.unit_seconds:.4f}s per unit)")
+                f"({self.cpu_seconds:.2f}s CPU / {self.unit_seconds:.4f}s per unit; one "
+                "unit is a fixed regex workload measured around this block, see the "
+                "comment above `_cpu_calibration_unit`). If this is close to the bound, "
+                "re-run on an idle host before reading it as a regression: the bound is "
+                "set above every figure ever observed and below the smallest regression "
+                "this family has caught, and the quotient absorbs load only partly.")
 
 
 class CpuBudgetCalibrationTests(unittest.TestCase):
