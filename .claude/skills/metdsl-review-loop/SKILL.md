@@ -104,7 +104,10 @@ when a rule does not obviously apply:
   instructions too
 - **Run the baseline for handwritten sweeps too, and read it before you trust `-x`** — the script
   refuses a red baseline (exit 2); a sweep you write yourself will not. Two causes, same false
-  green: a stale worktree (PR #67), and a suite that ALREADY has a failure unrelated to the change,
+  green: a stale worktree (PR #67), a sweep KILLED mid-run — a timeout or a Ctrl-C skips the
+  `finally` that restores the file, so the NEXT run measures a mutated baseline (PR #104; the
+  script caught it and exited 2, which is the behaviour to keep) — and a suite that ALREADY has a
+  failure unrelated to the change,
   where `-x` stops every mutant at that same failure so every mutant reads as `killed` — a false
   green over the whole run, not a per-hunk slip. met-dsl's standing instance is the two
   path-depth-coupled `ForbidBackendCredentialReadTests` cases, which fail in a worktree under
@@ -140,18 +143,26 @@ when a rule does not obviously apply:
   mutants that kill each decision of the new machinery one at a time
 - **Do not handwrite a mutation harness** (PR #53's `str.replace` rewrote all occurrences at
   once, hiding 2 reachable fail-opens). If you must: hit occurrences one at a time, **assert the
-  patch applied**, and **re-point a mutant list reused across rounds** — a stale target reports
-  as a survivor (PR #86, visible only because the harness printed `PATCH DID NOT APPLY` instead
-  of counting them green), and a not-applied patch is a failed run, not a finding. **The script is
+  patch applied AND that it changed behaviour**, and **re-point a mutant list reused across
+  rounds** — a stale target reports as a survivor (PR #86, visible only because the harness
+  printed `PATCH DID NOT APPLY` instead of counting them green), and a not-applied patch is a
+  failed run, not a finding — **report it as its own category and count it out of the denominator**.
+  "Applied" is not enough on its own; a semantically identical rewrite patches cleanly and proves
+  nothing. **And do not PATCH a mutant list between rounds — write it out**, and **read the RUN's
+  own output, not only the artifact it produces** (PR #104: three silent misses, two of them
+  reporting plausible totals for a sweep that measured nothing new). **The script is
   not universal either: one hunk can bundle a pinned and an unpinned change, so follow up at line
   granularity when one rule lives in N places**. **A handwritten sweep over a SINGLE file must run
   with `PYTHONDONTWRITEBYTECODE=1` and `-p no:cacheprovider`** — consecutive same-byte-length
   rewrites within one second reuse a stale `.pyc`, and the mutant that reports `killed` is the
   PREVIOUS one. Two reviewers hit it independently on PR #100, one of them reporting three live
   mutants as killed; the skill's own script is unaffected because each hunk gets its own worktree
-- **Never revert a mutation with `git checkout -- <file>`; it deletes uncommitted work too.** Use
-  a worktree (the script's default; `--keep` leaves it REGISTERED, and `git worktree prune` will NOT
-  unregister one whose directory still exists — `git worktree remove <path>` does) or a `cp` backup
+- **Never revert a mutation with `git checkout -- <file>`. TWO reasons, and the second is worse:
+  it deletes uncommitted work, and on an UNTRACKED file it is a SILENT NO-OP** — PR #104 shipped a
+  mutant for two commits that way. Use a worktree (the script's default; `--keep` leaves it
+  REGISTERED, and `git worktree prune` will NOT unregister one whose directory still exists —
+  `git worktree remove <path>` does) or a `cp` backup, and **never `cp` out of a worktree you have
+  been mutating without checking it is clean first**
 - **Mutation checking cannot detect a test spinning in neutral.** A live-but-unobserved hunk
   looks like a pass (L128: deleting the scope mechanism outright kept everything green and all 5
   tests meant to pin it were inert). Countermeasures — each with its episode in the reference:
@@ -173,6 +184,12 @@ when a rule does not obviously apply:
     the relationship in the fixture, not to unset the variable
   - **a mechanism that guards the HARNESS cannot be witnessed from inside the suite** — put the
     witness in a subprocess outside the runner
+  - **a rule whose answer on THIS tree is "nothing" cannot be observed through the assertion that
+    consumes it.** `assertEqual(rule(corpus), set())` is green whether the rule computes the right
+    empty set or returns one unconditionally, and mutating it mutates an assertion, which survives
+    by construction. **Move the rule into a module and drive it on synthetic input where the answer
+    is not nothing** — both directions, because for a rule that REFUSES something the over-refusing
+    direction is the one you will get wrong (PR #104, three mechanisms, same fix)
   - **when a comment JUSTIFIES a rule, mutate the property the justification names** — the rule
     has a witness, the property holding it up usually does not
   - **kill enumerations one element at a time** (regex alternatives, keyword tables); checked
@@ -203,6 +220,16 @@ when a rule does not obviously apply:
      pinned") — that is what the reader needs and what survives when the number is obsolete
    - **A count with no unit is not reproducible** — "14 hunks" came back as 19 and 16 because the
      figure depends on the diff CONTEXT WIDTH. Name the width, the command, and the exclusions
+   - **Name WHERE a suite figure was measured.** A number can be right and still be a defect if it
+     does not say which checkout produced it: met-dsl's suite is one lower in a `/tmp` worktree
+     than in the primary checkout, because a declared skip fires there. On PR #104 a reviewer
+     correctly reported a commit message as wrong for that reason, and the message was right —
+     it simply had not said where
+   - **A count that no method can reproduce is worse than no count.** PR #104 quoted five figures
+     for "the names this tree reads"; the two that named their reader re-derived exactly, and three
+     named no spelling, no file set and no reader — so the sentence claiming each answered a
+     different question could not be checked. **Either write the command beside the number, or
+     write the property instead and check it**
    - **Recording that a number "was right when written" does not stop the next rot.** Only
      changing the form stopped it
    - **And then verify the substitution RAN.** The remedy has its own failure mode: PR #98 escalated

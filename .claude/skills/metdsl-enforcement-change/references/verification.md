@@ -381,6 +381,39 @@ something else moves the count, so the ratchet fails and the mutant reads as kil
 that has nothing to do with behaviour. On TODO:269 that hid an exit-code mapping with no
 behavioural witness at all. When a mutant dies, read WHICH row died.
 
+## A CPU-time budget is still a machine fact
+
+Reach for this whenever a check asserts that something is FAST. Wall clock is obviously
+load-dependent; **`time.process_time()` is not the fix, and believing it is has a measured cost**.
+On PR #104, the same two hook blocks cost 1.13-1.21s of CPU solo, 1.40-1.48s under three
+concurrent pytest runs and 2.30-2.41s under 44 spinners on a 22-core host — 2.1-2.5x of movement
+against a 5.0s bound, and a reviewer independently measured one of them at 12.21s. CPU time
+inflates under contention because the work itself costs more cycles (cache and memory pressure,
+and WSL2 scheduling), so there is no absolute number that is safe.
+
+What the branch shipped, and what it is worth:
+
+- **A bound RELATIVE to a calibration workload measured in the same process, around the block.**
+  Across load levels this helps: seconds moved 5.5x while the quotient moved 2.1x in one
+  measurement, 5.0x and 3.0x in an independent one. **Within one load level it costs**, because a
+  ~0.1s denominator does not average out the way a 1-10s numerator does — a reviewer's heavy batch
+  moved 1.36x in seconds and 2.36x in units. **More samples do not fix that**: mean-of-2,
+  median-of-5 and median-of-9 estimators all spread 1.8-2.0x across fresh processes, quiet and
+  loaded alike, because what moves is the host between one process and the next.
+- **So do not justify the bound by the compensation.** Justify it by a BRACKET with both ends
+  measured: above every figure ever observed for that block, and below the smallest regression the
+  check has ever caught. State both figures. The first version of that comment argued a mechanism
+  ("1.4x of spread instead of 2.5x"), a reviewer refuted it in fresh processes, and what survived
+  review was deleting the argument and keeping the numbers.
+- **The calibrator needs its own witness, and an implausible constant is not enough.** `return 1.0`
+  was killed by the self-test; `elapsed = 0.05` — the number the calibrator usually returns on that
+  host — passed every bracket and silently turned the quotient back into raw seconds. Pin that the
+  price RESPONDS: quadruple the workload and require the measurement to follow.
+- **The failure message must say what a unit is and what to do.** A bare "21.9 calibration units"
+  names something defined only in the file the reader is not looking at. And do not put a claim
+  about the bound's derivation in a shared `describe()` — on that branch the sentence was true of
+  two of ten call sites, including two LOWER bounds where it was exactly backwards.
+
 ## Mutation check
 
 Use `.claude/skills/metdsl-review-loop/scripts/mutation_check.py`. The procedure is owned by

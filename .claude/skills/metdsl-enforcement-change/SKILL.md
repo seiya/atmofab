@@ -281,6 +281,15 @@ one.**
 - **There is one way to find this. Do not poke the validator in a unit test; drive the production
   entry point end to end and assert on the final product** (the rendered prompt, the persisted
   JSON)
+- **A SYNTHETIC input measures nothing for a value the production code resolves from somewhere
+  else.** Before building a fixture around an input, find out where the code under test actually
+  reads that value from. Two instances on PR #104, both of which produced a test that passed while
+  observing nothing: a witness drove the Bash guard with a synthetic `repo_root` in the payload,
+  but `~+` is `$PWD` and `tools/hooks/common.py` expands it from `os.getcwd()`, so the anchor
+  pointed at wherever pytest was started; and a spy's frame walk anchored on `os.getcwd()` was
+  handed probe modules written into a `tempfile` directory, so it missed on every self-test and
+  fell back silently. **The fix in both cases was to move the process, or to make the root an
+  argument** — not to make the fixture more elaborate
 
 ### 3. Decide the failure's attribution
 
