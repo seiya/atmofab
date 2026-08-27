@@ -30585,6 +30585,65 @@ class GateResultTmpCopySurfaceTests(unittest.TestCase):
             with self.subTest(stale=stale):
                 self.assertIsNone(pattern.search(stale))
 
+    def test_the_copy_is_removed_with_the_tmp_root_at_terminal_status(self) -> None:
+        """EXECUTE the lifetime claim the documents make about this file.
+
+        `docs/WORKSPACE_LAYOUT.md` §"tmp / TMPDIR" states the copy "is removed with the
+        rest of the root when the agent reaches a terminal status" -- an executable
+        sentence, and one written in the same commit that created the file, so nothing had
+        run it. It matters beyond tidiness: a copy that outlived its run would be readable
+        by whatever `agent_run_id` the flat `workspace/tmp/` namespace next handed the
+        same name to, and would be a gate verdict from another run presented as this one's.
+
+        Driven through `_cleanup_agent_tmp_root`, the function the terminal path calls,
+        rather than through an `rmtree` of my own. The control is the sibling scratch file:
+        both must go, so a green result cannot come from the directory never having had the
+        copy in it.
+        """
+        from tools.orchestration_runtime import (
+            _agent_tmp_gate_result_path,
+            _cleanup_agent_tmp_root,
+            init_orchestration,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            orch = "orch_gate_copy_cleanup"
+            run_id = "step_run_gate_copy_cleanup"
+            init_orchestration(repo_root=repo_root, orchestration_id=orch)
+            copy_path = _agent_tmp_gate_result_path(repo_root, run_id, "validate_workspace_root")
+            copy_path.parent.mkdir(parents=True, exist_ok=True)
+            copy_path.write_text('{"status": "pass"}\n', encoding="utf-8")
+            sibling = repo_root / "workspace" / "tmp" / run_id / "work.py"
+            sibling.write_text("print(1)\n", encoding="utf-8")
+
+            self.assertTrue(copy_path.is_file())
+            # CONTROL, run first: without the Adv-5 ownership proof the cleanup REFUSES,
+            # and a refusal deletes nothing. Asserting the deletion without this would
+            # have read a refusal as a pass -- which is how the first version of this
+            # test failed, and the reason the fixture below is not decoration.
+            self.assertFalse(
+                _cleanup_agent_tmp_root(repo_root, orch, agent_run_id=run_id),
+                "unowned arid must be refused, or the ownership guard is not live",
+            )
+            self.assertTrue(copy_path.is_file(), "a refusal must not delete")
+
+            # The ownership proof the guard actually reads: this orchestration holds the
+            # launch record for the arid (tools/orchestration_runtime.py, Adv-5).
+            request_path = (
+                repo_root / "workspace" / "orchestrations" / orch
+                / "launches" / f"{run_id}.request.json"
+            )
+            request_path.parent.mkdir(parents=True, exist_ok=True)
+            request_path.write_text("{}\n", encoding="utf-8")
+
+            done = _cleanup_agent_tmp_root(repo_root, orch, agent_run_id=run_id)
+
+            self.assertTrue(done, "cleanup refused; the claim cannot be read off a refusal")
+            self.assertFalse(copy_path.exists(), "the gate-result copy outlived its run")
+            self.assertFalse(sibling.exists(), "control: ordinary scratch must go too")
+            self.assertFalse((repo_root / "workspace" / "tmp" / run_id).exists())
+
     def test_the_rendered_gate_hint_sends_the_leaf_to_that_directory(self) -> None:
         """The hint is injected into the launch prompt, so it is pinned on the RENDER.
 
