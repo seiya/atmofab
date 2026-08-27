@@ -135,7 +135,7 @@
       "compiler-driver": 11,
       "compiler-syntax-only": 3,
       "fortran": 45,
-      "fortran-implicit-none": 6,
+      "fortran-implicit-none": 7,
       "fortran-intent": 15,
       "fortran-kind": 2,
       "fortran-module-file": 2,

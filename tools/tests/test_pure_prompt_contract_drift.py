@@ -136,6 +136,12 @@ PINNED: dict[str, str] = {
     # template used to mandate on every module is itself a finding (FORT005). A producer
     # following pure-18 would now fail the gate it was written to pass.
     "pure-19": "4feebc64731231031adf911097f23e1e3870b1a35e77ccc98f0a1cd810c09079",
+    # pure-20: rule (2) no longer promises the producer that an allow directive will be
+    # REPORTED. Measured: `FORT005` fires only for a code outside the declared set; a declared
+    # code earns `FORT002` on clean source and nothing at all on source that violates it — the
+    # case a producer would actually be in. Promising a diagnostic that does not arrive is the
+    # oscillation this rule exists to prevent, so the text states the finding fires anyway.
+    "pure-20": "0e9b74e2daebbbf24cb14d936bf1b6b356a15e92a1de6a4909fad61900a0a8e5",
 }
 
 

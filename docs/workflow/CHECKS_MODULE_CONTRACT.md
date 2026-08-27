@@ -204,9 +204,10 @@ node's self-test).
 - **`spec_id` ≤ 55 characters** so the derived `<spec_id>_checks` / `_runner` /
   `_model` identifiers stay within the f2008 63-character limit (on an M3c node the
   renderer fails closed above this).
-- Author lint-clean f2008 (`use ..., only:`, the inline `! allow(C003)` directive
-  before `implicit none`, ≤100-column lines) — the deterministic `Generate.gate` lint
-  check lints the whole `src/` tree, every leaf-authored source included.
+- Author lint-clean f2008 (`use ..., only:`, a plain `implicit none` with NO allow
+  directive above it, lines UNDER 100 columns — 99 is the longest that passes on every
+  supported linter build) — the deterministic `Generate.gate` lint check lints the whole
+  `src/` tree, every leaf-authored source included.
 - **Intentionally-unused dummy arguments.** The deterministic `Generate.gate` syntax check
   compiles the whole staged source set with
   `-Werror=unused-dummy-argument -Werror=unused-variable -Werror=ampersand`, so an
@@ -217,8 +218,8 @@ node's self-test).
   `associate (unused_<name> => <name>); end associate`. An arithmetic no-op (`0*<name>` and
   equivalents) is forbidden as the binding. `! allow(...)`
   does not suppress this class, and no allow directive is legitimate anywhere: the lint
-  gate runs with allow comments DISABLED, so one is reported as `FORT005` rather than
-  honoured (`tools/backends/linter/fortitude/lint.py`).
+  gate runs with allow comments DISABLED, so one is inert rather than honoured
+  (`tools/backends/linter/fortitude/lint.py`) — the finding it names fires regardless.
 - **A dummy argument no interface fixes is deleted, not bound.** The `associate` binding
   exists only to keep a signature no leaf owns intact. In a private helper the leaf itself
   declared, an unused dummy is removed from the signature and from every call site; binding

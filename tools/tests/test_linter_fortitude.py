@@ -51,9 +51,12 @@ contains
 end module metdsl_probe_model
 """
 
-#: One defect per family the leaf-read documents instruct a leaf about: no default accessibility
-#: statement (C131), a bare intrinsic `use` (C122), a literal kind (PORT011), a plain
-#: `implicit none` with no allow directive (C003), and a line past the column limit (S001).
+#: One defect per family the leaf-read documents instruct a leaf about, and ONLY families the
+#: declared set actually runs: no default accessibility statement (C131), a bare intrinsic `use`
+#: (C122), a literal kind (PORT011, twice — one per `real(8)` declaration), and a line past the
+#: column limit (S001). It deliberately does NOT probe `C003`, which left the declared set, nor
+#: `C061`: an earlier version of this comment named both and so described families that produce
+#: nothing here.
 _DEFECTIVE_SOURCE = """module metdsl_probe_bad
   use iso_fortran_env, only: real64
   implicit none
@@ -90,6 +93,18 @@ def _run(argv: list[str], cwd: Path) -> subprocess.CompletedProcess:
                           timeout=120, check=False)
 
 
+#: A finding line, as opposed to the source echo fortitude prints under it. The distinction is
+#: the whole of finding F1 of round 2: `assertIn("C122", stdout)` matched the ECHO of the
+#: `! allow(C122, ...)` comment inside another diagnostic's context block, so the row claiming to
+#: witness the closure passed with the closure removed.
+_DIAGNOSTIC_RE = re.compile(r"^\S+\.f90:\d+:\d+: ([A-Z]+[0-9]+)\b", re.M)
+
+
+def _reported_codes(completed: subprocess.CompletedProcess) -> set[str]:
+    """The rule codes fortitude REPORTED, read from the diagnostic lines alone."""
+    return set(_DIAGNOSTIC_RE.findall(completed.stdout))
+
+
 def _resolved_rule_codes(cwd: Path, target: str) -> tuple[str, ...]:
     """The rule codes the installed build ACTUALLY enables for the declared invocation.
 
@@ -113,8 +128,8 @@ class DeclarationTests(unittest.TestCase):
     def test_the_argv_imposes_the_declared_set_and_ignores_config_files(self) -> None:
         self.assertEqual(
             lint.check_argv("."),
-            (lint.EXECUTABLE, "check", "--isolated", "--ignore-allow-comments", "--select",
-             ",".join(lint.RULE_CODES), "."),
+            (lint.EXECUTABLE, "check", "--isolated", "--ignore-allow-comments",
+             "--no-respect-gitignore", "--select", ",".join(lint.RULE_CODES), "."),
         )
 
     def test_the_declared_set_is_sorted_and_free_of_repeats(self) -> None:
@@ -237,28 +252,66 @@ class ResolutionAgainstTheInstalledBuildTests(unittest.TestCase):
                          "the config file did not silence anything, so this case observes "
                          "nothing about --isolated")
 
-    def test_an_allow_directive_suppresses_nothing_and_is_reported(self) -> None:
-        """The `leaf shortcut` this configuration exists to close, driven in its worst shape.
+    def test_an_allow_directive_suppresses_nothing(self) -> None:
+        """The `leaf shortcut` this configuration exists to close, with a NEGATIVE CONTROL.
 
         A leaf AUTHORS its own source, so an in-source suppression directive is the one channel
         into the lint verdict it can actually reach — and one line above `module` covers the whole
-        module. Measured before the fix, under this very `--select`: five findings became
-        `All checks passed`. The check has both halves, because either alone is satisfiable by
-        something that is not the fix: the findings must survive the directive, AND the directive
-        must itself be reported, so a leaf learns its suppression did nothing instead of
-        oscillating against a silent no-op.
+        module. The assertion is over the codes fortitude REPORTS, parsed from its diagnostic
+        lines: the first version of this row matched raw stdout, which contains fortitude's ECHO
+        of the allow comment inside another finding's context block, so it passed with
+        `--ignore-allow-comments` REMOVED (measured — the whole closure reverted, one string
+        equality on the argv the only thing left standing).
+
+        The control is what makes the positive half mean something: the same source under the
+        same argv MINUS the flag must lose exactly those codes. Without it, a source the
+        directive never suppressed would satisfy the row.
         """
         blanket = "! allow(C122, C131, C061, PORT011, C003)\n" + _DEFECTIVE_SOURCE
         (self.dir / "metdsl_probe_bad.f90").write_text(blanket)
-        completed = _run(list(lint.check_argv("metdsl_probe_bad.f90")), self.dir)
-        self.assertEqual(completed.returncode, 1,
-                         "an allow comment above `module` suppressed the whole module")
-        for code in ("C122", "C131", "PORT011", "S001"):
-            self.assertIn(code, completed.stdout,
-                          f"{code} was suppressed by the allow directive")
-        self.assertIn("FORT005", completed.stdout,
-                      "the directive was ignored SILENTLY; a leaf gets no signal that its "
-                      "suppression did nothing")
+        suppressible = {"C122", "C131", "PORT011"}
+
+        declared = _run(list(lint.check_argv("metdsl_probe_bad.f90")), self.dir)
+        self.assertEqual(declared.returncode, 1)
+        self.assertEqual(
+            suppressible - _reported_codes(declared), set(),
+            "the allow directive suppressed a finding under the declared invocation")
+
+        without_flag = [a for a in lint.check_argv("metdsl_probe_bad.f90")
+                        if a != "--ignore-allow-comments"]
+        control = _run(without_flag, self.dir)
+        self.assertEqual(
+            suppressible & _reported_codes(control), set(),
+            "the directive suppressed nothing even WITHOUT the flag, so the case above "
+            "observes nothing about the flag")
+
+    def test_a_gitignore_beside_the_sources_cannot_hide_them(self) -> None:
+        """The third channel, with the same negative control as the other two.
+
+        Fortitude walks with `--respect-gitignore` by default, so a `.gitignore` INSIDE the
+        directory being checked removes files from the walk entirely — measured: a four-finding
+        tree becomes `0 files scanned. All checks passed!`, exit 0, with no diagnostic at all.
+        Quieter than the allow-comment channel, and reached by whatever can write one byte into
+        the node's own `src/`.
+
+        Only a git work tree is affected, which `workspace/orchestrations/.../src` always is; the
+        fixture therefore initialises one, or the case observes nothing on either side.
+        """
+        _run(["git", "init", "-q", "."], self.dir)
+        (self.dir / "metdsl_probe_bad.f90").write_text(_DEFECTIVE_SOURCE)
+        self.assertEqual(
+            _run(list(lint.check_argv(".")), self.dir).returncode, 1,
+            "the defective source must fail before the .gitignore is written")
+
+        (self.dir / ".gitignore").write_text("*.f90\n")
+        self.assertEqual(
+            _run(list(lint.check_argv(".")), self.dir).returncode, 1,
+            "a .gitignore beside the sources hid them from the declared invocation")
+        without_flag = [a for a in lint.check_argv(".") if a != "--no-respect-gitignore"]
+        self.assertEqual(
+            _run(without_flag, self.dir).returncode, 0,
+            "the .gitignore hid nothing even WITHOUT the flag, so the case above observes "
+            "nothing about it")
 
     def test_a_plain_implicit_none_needs_no_directive(self) -> None:
         """The other half of dropping `C003`, and the reason the two are one decision.
@@ -361,8 +414,12 @@ class ProseCouplingTests(unittest.TestCase):
         ("tools/prompt_templates/pure_generate_generate.txt",
          "(1) Style lint (the `Generate.gate` lint check", 1,
          "(3) Syntax gate (the `Generate.gate` syntax check"),
+        # Anchored at the bullet ABOVE the lint paragraph, not at the paragraph: round 2 found
+        # a MANDATE for the abolished directive one line above the old anchor, outside every
+        # region this class watched. Three axes reported it independently; none of them was this
+        # test.
         ("docs/workflow/CHECKS_MODULE_CONTRACT.md",
-         "- **Intentionally-unused dummy arguments.**", 12,
+         "- **`spec_id` \u2264 55 characters**", 19,
          "- **A dummy argument no interface fixes is deleted, not bound.**"),
     )
 
@@ -389,16 +446,52 @@ class ProseCouplingTests(unittest.TestCase):
         parsing the prose around it.
         """
         known = set(lint.RULE_CODES) | set(lint.EXCLUDED_RULE_CODES)
+        union: set[str] = set()
         for path, anchor, lines, _outside in self._SITES:
             with self.subTest(path=path):
                 named = set(self._CODE_RE.findall(self._region(path, anchor, lines)))
-                self.assertNotEqual(named, set(), f"{path}: the region named no rule code, so "
-                                                  f"this row observes nothing")
+                union |= named
                 self.assertEqual(
                     named - known, set(),
                     f"{path} instructs a leaf about a rule this repository has no position on; "
                     f"either add it to RULE_CODES or record why it is excluded, in "
                     f"tools/backends/linter/fortitude/lint.py")
+        # A single site may legitimately name none — `CHECKS_MODULE_CONTRACT.md` stopped naming
+        # any when its allow-directive prose was rewritten. What must not happen is the WHOLE row
+        # observing nothing, which is what a per-site emptiness check would have hidden the day
+        # every site went quiet.
+        self.assertNotEqual(union, set(), "no site named a rule code, so this row observes nothing")
+
+    def test_no_leaf_read_site_carries_a_copyable_allow_directive(self) -> None:
+        """WHOLE FILE, not a region — because the defect this row exists for lived outside one.
+
+        Round 2 found `docs/workflow/CHECKS_MODULE_CONTRACT.md` still MANDATING
+        `! allow(C003)` one line above the region this class watched, in a document every
+        agentic `generate` leaf is force-read. Three independent axes reported it; the coupling
+        class could not, and a mutant reinstating the mandate INSIDE a region survived too,
+        because `C003` is in `EXCLUDED_RULE_CODES` and the containment row deliberately does not
+        read which side of that union a mention is on.
+
+        The rule here is mechanical and needs no prose reading: a leaf-read document may DISCUSS
+        the directive family (`! allow(...)`), but must not contain a directive naming an actual
+        rule code, because that is the spelling a leaf copies. The gate runs with allow comments
+        disabled, so every such spelling is either inert or a finding — there is no correct one.
+        """
+        directive = re.compile(r"allow\(\s*[A-Z]{1,5}[0-9]{3}")
+        for path, _anchor, _lines, _outside in self._SITES:
+            with self.subTest(path=path):
+                text = (REPO_ROOT / path).read_text()
+                hits = directive.findall(text)
+                self.assertEqual(
+                    hits, [],
+                    f"{path} carries a copyable allow directive {hits}; the lint gate runs with "
+                    f"allow comments disabled, so a leaf following it fails the gate in a way no "
+                    f"regeneration can fix while the document still says it")
+        # Self-test the detector against the exact shape that shipped, or a rewrite of the regex
+        # leaves this row green over the defect it was written for.
+        self.assertEqual(
+            directive.findall("- Author lint-clean f2008 (the inline `! allow(C003)` directive)"),
+            ["allow(C003"])
 
     def test_the_region_bound_excludes_text_outside_it(self) -> None:
         """The bound is self-tested against real text, not against a probe string.

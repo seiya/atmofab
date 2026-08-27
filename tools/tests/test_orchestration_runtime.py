@@ -30339,7 +30339,12 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # line-anchored `!$omp` presence floor counted it and falsely rejected the node. This doc
         # is the canonical target every other copy of the promoted-class list points at, so the
         # rule cannot live anywhere else. The doc measures 14500.
-        "docs/workflow/CHECKS_MODULE_CONTRACT.md": 14600,
+        # Bumped 14600->14700: issue #111 — the lint bullet had to say what a leaf must write
+        # instead of the directive it used to mandate (a plain `implicit none`, no allow
+        # comment, lines UNDER 100 with the reason), and the allow paragraph had to stop
+        # promising a diagnostic that does not always arrive. Both are text a leaf ACTS on,
+        # and the shorter versions were the ones that were wrong. Measured 14664.
+        "docs/workflow/CHECKS_MODULE_CONTRACT.md": 14700,
         # Still force-read by compile.generate/verify (its IR schema is the contract
         # the compile SKILL defers to).
         # Bumped 17000->18200: documented the deterministic Compile.static substep (G2,
@@ -30736,7 +30741,11 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # the size before the last edit of the same commit — review caught it. A byte count in a
         # comment is exactly the kind of prose that goes stale silently, which is why the CHECK is
         # the ceiling below and not this sentence.)
-        "skills/workflow-generate-generate/SKILL.md": 38400,
+        # Bumped 38400->38500: issue #111 — the allow-directive clause had to state that a
+        # directive is inert AND that it does not always announce itself, replacing a
+        # shorter sentence that promised a `FORT005` a producer will usually not see.
+        # Measured 38479.
+        "skills/workflow-generate-generate/SKILL.md": 38500,
         # Bumped 21400->21700: the test/check target must invoke the runner with
         # `--cases $(SPEC) $(CASES)` (the runner aborts without it; make test must
         # match run_program's argv) after a validate.execute failure where a bare

@@ -33,8 +33,10 @@ in the backend document; the four facts that decided the shape of this file:
 * An old code is silently redirected to its new name (`S051` -> `MOD021`). A declared set is
   therefore checked by RESOLVING it (`--show-settings`) rather than by trusting the spelling.
 
-TWO CHANNELS decide the verdict from somewhere other than the source and this declaration, and
-both flags are load-bearing rather than cosmetic:
+THREE CHANNELS decide the verdict from somewhere other than the source and this declaration, and
+each flag is load-bearing rather than cosmetic. The count is stated because the first version of
+this module said TWO and was wrong: it enumerated the channels it had closed rather than the ones
+the tool has, which is how the third stayed open.
 
 * A `fortitude.toml` discovered beside the sources switches rules off — measured on 0.8.0 and
   0.9.2 alike, a neighbouring `[check] ignore=[...]` turns a failing tree green. `--isolated`
@@ -47,9 +49,20 @@ both flags are load-bearing rather than cosmetic:
   and 0.9.2 alike, under this very `--select`. That is a `leaf shortcut` in the plain sense — the
   shortest route from a failing gate to a reported-done substep runs through one comment — and
   the first version of this module left it open while closing the channel a leaf cannot reach.
-  `--ignore-allow-comments` closes it, and the closure is LOUD rather than silent: an allow
-  comment written anyway is reported as `FORT005` (`disabled-allow-comment`), so a leaf learns
-  its suppression did nothing instead of oscillating.
+  `--ignore-allow-comments` closes it. HOW LOUD the closure is depends on what the directive
+  names, and an earlier version of this docstring overstated it: a code OUTSIDE the declared set
+  earns `FORT005` (`disabled-allow-comment`), a declared code on otherwise clean source earns
+  `FORT002` (`unused-allow-comment`), and a declared code on source that actually violates it
+  earns NOTHING of its own — the suppressed finding simply fires. So the leaf-facing rule is
+  "write none", not "you will be told"; the suppressed finding firing is itself the signal in
+  the case a leaf would actually write one.
+* A `.gitignore` INSIDE the directory being checked hides files from the walk entirely. Measured
+  on 0.8.0 and 0.9.2: a `src/.gitignore` reading `*.f90` takes a four-finding tree to
+  `0 files scanned. All checks passed!`, exit 0 — quieter than the allow-comment channel, since
+  there is no diagnostic at all. `--no-respect-gitignore` closes it. An ANCESTOR `.gitignore`
+  does not apply (measured), so this is about a file inside the node's own `src/`. A leaf cannot
+  write one today — the manifest admits only the exact files it declares — but that is a
+  different layer's accident, not this declaration's doing.
 
 `C003` is excluded FOR that second flag. It is the one rule this repository's own toolchain makes
 unsatisfiable — it wants the F2018 spec-list `implicit none (type, external)`, which is a compile
@@ -80,9 +93,10 @@ EXECUTABLE = "fortitude"
 
 #: The rule set the `Generate.gate` lint check applies, and the only place it is written.
 #:
-#: Derived, not invented: it is 0.8.0's default set minus `OB001` (see the module docstring).
-#: Measured to RESOLVE to exactly these 40 codes on 0.8.0, 0.9.0 and 0.9.2 — i.e. no redirect
-#: and no silent drop anywhere in the supported range.
+#: Derived, not invented: it is 0.8.0's default set (41 codes) minus `OB001` and `C003`, both of
+#: which `EXCLUDED_RULE_CODES` below states a ground for. Measured to RESOLVE to exactly these 39
+#: codes on 0.8.0, 0.9.0 and 0.9.2 — i.e. no redirect and no silent drop anywhere in the
+#: supported range.
 #:
 #: Changing this set changes what a certification means. A new vendor default does NOT enter it
 #: by being released; someone adds the code here, and the documents that state the rule to a leaf
@@ -122,12 +136,14 @@ EXCLUDED_RULE_CODES: dict[str, str] = {
     ),
 }
 
-#: How the set is imposed. Both flags close a channel that decides the verdict from somewhere
-#: other than the source and this declaration: `--isolated` a configuration file discovered
-#: beside the sources, `--ignore-allow-comments` an in-source suppression directive. The second
-#: is the one a LEAF can write, and it is why the first alone was not enough (module docstring).
+#: How the set is imposed. Each flag closes one channel that would otherwise decide the verdict
+#: from somewhere other than the source and this declaration; the module docstring enumerates
+#: them and what each was measured to do.
 CHECK_FLAGS: tuple[str, ...] = (
-    "--isolated", "--ignore-allow-comments", "--select", ",".join(RULE_CODES),
+    "--isolated",
+    "--ignore-allow-comments",
+    "--no-respect-gitignore",
+    "--select", ",".join(RULE_CODES),
 )
 
 #: The versions `RULE_CODES` was measured to resolve identically on. Inclusive floor, exclusive

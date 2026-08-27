@@ -162,5 +162,8 @@ supported version — disabling the directives did not take their own diagnostic
 - **The leaf-facing documents** state individual rules of this set to the agent that must satisfy
   them (`docs/workflow/phases/phase_02_generate.md` §2-1,
   `skills/workflow-generate-generate/SKILL.md`, `tools/prompt_templates/pure_generate_generate.txt`,
-  `docs/workflow/CHECKS_MODULE_CONTRACT.md` §5). Each names a subset and cites this set; a code
-  named there that is not in `RULE_CODES` is a test failure, not a documentation nuance.
+  `docs/workflow/CHECKS_MODULE_CONTRACT.md` §5). Each names a subset and cites this set. A code
+  named there that this repository has no position on — neither in `RULE_CODES` nor in
+  `EXCLUDED_RULE_CODES` — is a test failure, not a documentation nuance; so is a copyable
+  `! allow(<code>)` directive anywhere in one of those files, whatever the surrounding prose says
+  about it.

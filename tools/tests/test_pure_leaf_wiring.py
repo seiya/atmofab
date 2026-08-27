@@ -399,7 +399,6 @@ class PureRenderTests(unittest.TestCase):
             # in its place is that the template still says so — a template that simply
             # dropped the subject would leave a producer to rediscover it at the gate.
             "allow comments DISABLED",
-            "FORT005",
             "-std=f2008",             # ... and why the F2018 spec-list is not the fix
             "use, intrinsic ::",      # fortitude C122
             # The C131 pair. The `public ::` half is what the syntax gate needs (a consumer

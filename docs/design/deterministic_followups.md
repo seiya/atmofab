@@ -2796,16 +2796,23 @@ stated where the producer can act on them and nowhere else. Four groups, in the 
 `pure_generate_generate.txt` (immediately after the output contract, still inside the byte-stable static prefix and
 ahead of the variable context):
 
-1. **fortitude idioms** (`Generate.gate` lint check): `S001` line length (stated as **under** 100 — `S001` compares `>=`, so a
-   line of exactly 100 fails; `phase_02_generate.md` §71's `≤ 100` was wrong and is corrected here too),
+1. **fortitude idioms** (`Generate.gate` lint check): `S001` line length (stated as **under** 100 — `S001` compares `>=` on
+   fortitude 0.8.x, so a line of exactly 100 fails there; it compares `>` from 0.9.0, so the same line passes, which is why
+   the leaf-facing rule stays "under 100" and `docs/backends/linter/fortitude/RULES.md` records the divergence.
+   `phase_02_generate.md` §71's `≤ 100` was wrong and is corrected here too),
    `C121` `use ... only:`, `C122` `use, intrinsic ::`, `PORT011` named kinds on reals *and* integers (with its
    cascade into `C122`), `C131` default accessibility — paired with the `public :: <spec_id>__<op>` lines, since a
    bare `private` alone publishes nothing and trades the lint failure for a `Generate.gate` syntax-check one (the consumer
    staged alongside it cannot resolve the symbol; no static check reads the MODEL module's published set) — and
    `C011` `case default`.
-2. **The `C003` ↔ `-std=f2008` trap**, stated at verbatim strength as the ONE correct form (`! allow(C003)` on its own
-   line above a plain `implicit none`) plus BOTH wrong forms named as wrong and an explicit "do not oscillate between
-   these two" — the measured failure was not ignorance of the rule but a two-attractor loop.
+2. **The `C003` ↔ `-std=f2008` trap.** SUPERSEDED by issue #111 and recorded rather than rewritten, because the record of
+   what the template carried when the measurement was taken is the point of this file. As written here, the template stated
+   the ONE correct form as a suppression directive naming `C003` on its own line above a plain `implicit none`, plus BOTH
+   wrong spec-list forms named as wrong and an explicit "do not oscillate between these two" — the measured failure was not
+   ignorance of the rule but a two-attractor loop. What issue #111 changed: `C003` left the gate's declared rule set and the
+   gate now runs with allow comments disabled, so the trap has no correct suppression form — the plain `implicit none` alone
+   is correct, and the template (`pure-19`) says so. The two-attractor observation stands and is why the replacement text
+   states one form rather than a choice.
 3. **`Generate.gate` syntax-check legality** (a real `gfortran -fsyntax-only -std=f2008` front-end, so `! allow(...)` suppresses
    nothing): 63-char identifiers *and* the "do not abbreviate an overlong `<spec_id>_model` — it is a spec-level
    problem" prohibition (§55), constant-only `stop` / `error stop` codes, the EMPTY `associate (unused_<name> =>
