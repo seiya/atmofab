@@ -3565,6 +3565,22 @@ def _ir_build_system(ir: Any) -> str:
     return str(_toolchain(ir).get("build_system") or "make").lower()
 
 
+#: The compiler the host uses when the IR pins no `impl_defaults.toolchain.compiler`. It is BOTH
+#: the `FC` the build control-file writer pins and the mandatory `Generate.gate` syntax stage,
+#: and it has to
+#: be one value for the two: the syntax gate certifies that stage and the build then runs this
+#: one, so a divergence would certify one compiler and build with another. It was seven
+#: independent spellings in this file.
+#:
+#: It must also equal `mcp_servers/build_runtime_server.MANDATORY_SYNTAX_COMPILER`, which is that
+#: module's own default for the same reason. The two are separate constants rather than one
+#: import because the server is standalone-runnable and does not import `tools/`, and this file
+#: reaches the server only lazily from inside the in-process gate bodies. The equality is pinned
+#: by `tools/tests/test_host_prerequisites.py` -- and it is what lets the launch-time host probe
+#: cover the BUILD compiler by probing the mandatory SYNTAX stage.
+DEFAULT_COMPILER = "gfortran"
+
+
 def _toolchain(ir: Any) -> dict[str, Any]:
     impl = (ir.get("impl_defaults") or {}) if isinstance(ir, dict) else {}
     tc = (impl.get("toolchain") or {}) if isinstance(impl, dict) else {}
@@ -6043,7 +6059,7 @@ class Conductor:
         backend = tc["backend"]
         # The optional toolchain.compiler pins FC (a Fujitsu frt build only needs this IR
         # field plus a run_syntax_check adapter); unset keeps the gfortran default.
-        fc = tc["compiler"] or "gfortran"
+        fc = tc["compiler"] or DEFAULT_COMPILER
 
         model = f"{refs.spec_id}_model"
         runner = f"{refs.spec_id}_runner"
@@ -6327,7 +6343,7 @@ clean:
         before make), a `bundle:` / `glue:` source is a filename in the src/ cwd. Objects live
         under `$(OBJDIR)`; the conservative total prerequisite order comes from the graph."""
         tc = self._read_toolchain(refs)
-        fc = tc["compiler"] or "gfortran"
+        fc = tc["compiler"] or DEFAULT_COMPILER
         flags = f"-std={tc['standard']} -O2"
         if tc["backend"] == "openmp":
             flags += " -fopenmp"
@@ -8564,13 +8580,15 @@ clean:
                     f"content error and loop — fail closed (this node is unbuildable anyway)")
             dep_files = [p for p in deps_dir.iterdir() if p.is_file()]
 
-            raw = self.env.get("METDSL_SYNTAX_COMPILERS", "gfortran")
+            raw = self.env.get("METDSL_SYNTAX_COMPILERS", DEFAULT_COMPILER)
             compilers = [c.strip().lower() for c in raw.split(",") if c.strip()]
-            # gfortran is the mandatory gate regardless of the env list's content/order:
-            # it is the one stage post_generate certification requires to have passed.
-            if "gfortran" in compilers:
-                compilers.remove("gfortran")
-            compilers.insert(0, "gfortran")
+            # The mandatory stage runs regardless of the env list's content/order: it is the one
+            # stage post_generate certification requires to have passed. Its identity is the
+            # module constant the build `FC` default above shares -- so the launch-time host
+            # probe covers both by probing one.
+            if DEFAULT_COMPILER in compilers:
+                compilers.remove(DEFAULT_COMPILER)
+            compilers.insert(0, DEFAULT_COMPILER)
             for compiler in compilers:
                 # An entry with no registered adapter (e.g. a future `frt` listed before its
                 # adapter ships) is recorded skipped, not crashed: the tool would raise
@@ -8578,7 +8596,7 @@ clean:
                 # installed" skip — would propagate as a transport fail_closed even though
                 # the mandatory gfortran stage passed. gfortran must always be registered.
                 if compiler not in _SYNTAX_COMPILER_ADAPTERS:
-                    if compiler == "gfortran":
+                    if compiler == DEFAULT_COMPILER:
                         raise RuntimeError(
                             "generate.gate syntax check: gfortran has no registered syntax-check "
                             "adapter (build-tooling bug)")
@@ -8645,7 +8663,7 @@ clean:
                         "failure_excerpt": str(exc),
                     }
                 if result.get("skipped"):
-                    if compiler == "gfortran":
+                    if compiler == DEFAULT_COMPILER:
                         raise RuntimeError(
                             f"generate.gate syntax check: mandatory gfortran stage unavailable "
                             f"({result.get('reason')})")

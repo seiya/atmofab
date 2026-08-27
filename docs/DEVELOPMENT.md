@@ -21,13 +21,13 @@ A fresh clone needs the host tools and the operator's own CLI state. Every file 
 
 | step | requirement | canonical source |
 |---|---|---|
-| 1 | Host CLI tools and Python packages | `docs/RUNBOOK.md` §0-1 |
+| 1 | Host CLI tools, Python packages, and the target `spec`'s toolchain and `static lint` tool | `docs/RUNBOOK.md` §0-1 |
 | 2 | Claude backend: server registration and the leaf's tool grant | `docs/RUNBOOK.md` §0-2 |
 | 3 | Codex backend: the CLI feature flag, the credential, the writable state home | `docs/RUNBOOK.md` §0-3 |
 | 4 | The leaf-`LLM` configuration file, created by copying a sample | `docs/RUNBOOK.md` §1-3, `README.md` §"Running a workflow" |
 | 5 | The sandbox runtime | `docs/BWRAP_ENABLEMENT.md` |
 
-Steps 1, 2, 3 and 5 all read machine-local state, and each is checked before the first billed leaf — though not all by the same mechanism. Step 1 fail-fasts when `tools/run_workflow.py` starts, before an orchestration exists; steps 2, 3 and 5 are `preflight.json` checks. One requirement is outside both and is called out where it lives: the Codex credential is checked when the first leaf is prepared, not at any gate (`docs/RUNBOOK.md` §0-3).
+Steps 1, 2, 3 and 5 all read machine-local state, and each is checked before the first billed leaf — though not all by the same mechanism. Step 1 fail-fasts when `tools/run_workflow.py` starts, before an orchestration exists — with one reason code per family (`missing_required_cli_tools` / `missing_required_python_modules` / `missing_required_host_tools`); steps 2, 3 and 5 are `preflight.json` checks. One requirement is outside both and is called out where it lives: the Codex credential is checked when the first leaf is prepared, not at any gate (`docs/RUNBOOK.md` §0-3).
 
 ## Configuration layers
 Two sessions run against this checkout, and they load disjoint configuration. An operator's own interactive session loads the DEV layer; a workflow leaf loads the LEAF layer and nothing else. Since issue #102 that disjointness reaches the HOOK as well as the file: the DEV rows name `tools/hooks/dev_cli.py`, which applies `tools/hooks/operator_safety.py` and nothing else, and the LEAF rows name `tools/hooks/cli.py`, which fails closed when it cannot name an orchestration. `docs/HOOKS.md` is canonical for the split.

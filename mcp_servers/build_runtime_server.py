@@ -890,6 +890,17 @@ def _build_command(
     raise ValueError(f"unsupported build_system: {build_system}")
 
 
+def build_system_executable(build_system: str) -> str:
+    """The host executable `build_system` builds through.
+
+    argv[0] of the same `_build_command` a build runs, so the launch-time host probe
+    (`tools/host_prerequisites.py`) cannot look for a different program than `compile_project`
+    later launches. An unsupported build system raises `_build_command`'s own ValueError rather
+    than a second refusal written here.
+    """
+    return _build_command(build_system, None, 1, [])[0]
+
+
 def tool_detect_build_system(args: dict[str, Any]) -> dict[str, Any]:
     project_dir = str(args.get("project_dir", "."))
     # Advisory and capability-free — it runs nothing and no substep is granted it — but
@@ -1116,6 +1127,86 @@ def tool_run_quality_checks(args: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+#: The argv each `static lint` preset runs. This table is the ONLY place a linter's invocation is
+#: spelled: `tool_run_linter` runs these rows, and `lint_preset_executables` answers the
+#: launch-time host probe (`tools/host_prerequisites.py`) out of the same rows, so what the probe
+#: looks for cannot drift from what the gate later launches. Adding a row here does NOT widen what
+#: the `Generate` lint evidence gate ACCEPTS — that set is `tools/backends/registry.py`'s `linter`
+#: axis, and the two remain separate declarations (TODO.md, compiler / linter adapters area).
+_LINT_PRESET_COMMANDS: dict[str, tuple[str, ...]] = {
+    "fortitude": ("fortitude", "check", "."),
+    "cppcheck": (
+        "cppcheck",
+        "--error-exitcode=1",
+        "--enable=warning,style,performance",
+        "--inline-suppr",
+        ".",
+    ),
+    "ruff": ("ruff", "check", "."),
+}
+
+#: A preset that runs several linters in order, named by the presets it COMPOSES rather than by
+#: their argv: the previous spelling restated `fortitude`'s and `cppcheck`'s command lines a
+#: second time inside the `mixed` branch, so a flag change reached one invocation and not the
+#: other.
+_LINT_PRESET_COMPOSITES: dict[str, tuple[str, ...]] = {
+    "mixed": ("fortitude", "cppcheck"),
+}
+
+#: The preset a caller that names none gets.
+DEFAULT_LINT_PRESET = "fortitude"
+
+
+def _check_lint_preset_declarations() -> None:
+    """Fail at import on a preset table these two readers would disagree about.
+
+    A name in both tables would make `lint_preset_sub_presets` and the result-shape branch in
+    `tool_run_linter` disagree about whether it is simple, so one preset would return two shapes
+    depending on which reader asked. A composite naming a preset with no command row would
+    `KeyError` mid-run, after its earlier sub-runs had already executed.
+
+    A raise rather than an `assert`, for the reason `tools/backends/registry._check_declarations`
+    gives: `python -O` strips an assert, and refusing the module is cheaper than either failure.
+    """
+    both = sorted(set(_LINT_PRESET_COMMANDS) & set(_LINT_PRESET_COMPOSITES))
+    if both:
+        raise ValueError(f"lint preset is either simple or composite, not both: {both}")
+    for preset, subs in _LINT_PRESET_COMPOSITES.items():
+        unknown = sorted(set(subs) - set(_LINT_PRESET_COMMANDS))
+        if unknown:
+            raise ValueError(f"lint preset {preset!r} composes unregistered presets: {unknown}")
+    if DEFAULT_LINT_PRESET not in _LINT_PRESET_COMMANDS:
+        raise ValueError(f"default lint preset {DEFAULT_LINT_PRESET!r} has no command row")
+
+
+_check_lint_preset_declarations()
+
+
+def lint_preset_sub_presets(preset: str) -> tuple[str, ...]:
+    """The simple presets `preset` runs, in order. A simple preset composes itself.
+
+    Raises for an unregistered preset with the same message the dispatch used to end in, so a
+    caller that names one still learns the supported set rather than getting an empty run.
+    """
+    if preset in _LINT_PRESET_COMMANDS:
+        return (preset,)
+    composite = _LINT_PRESET_COMPOSITES.get(preset)
+    if composite is not None:
+        return composite
+    supported = ", ".join(list(_LINT_PRESET_COMMANDS) + list(_LINT_PRESET_COMPOSITES))
+    raise ValueError(f"unsupported preset: {preset}. supported={supported}")
+
+
+def lint_preset_executables(preset: str) -> tuple[str, ...]:
+    """The host executables `preset` needs, in run order and without repeats."""
+    executables: list[str] = []
+    for sub in lint_preset_sub_presets(preset):
+        exe = _LINT_PRESET_COMMANDS[sub][0]
+        if exe not in executables:
+            executables.append(exe)
+    return tuple(executables)
+
+
 def tool_run_linter(args: dict[str, Any]) -> dict[str, Any]:
     """Run static analysis linters for generated sources (Generate stage only).
 
@@ -1140,7 +1231,7 @@ def tool_run_linter(args: dict[str, Any]) -> dict[str, Any]:
     _validate_env_overrides(
         env, "run_linter", orchestrated=_is_orchestrated_call(args),
         repo_root=_repo_root_for_call(args, project_dir))
-    preset = str(args.get("preset", "fortitude")).strip().lower()
+    preset = str(args.get("preset", DEFAULT_LINT_PRESET)).strip().lower()
 
     if "command" in args:
         raise ValueError("run_linter does not allow custom command; use preset")
@@ -1151,51 +1242,12 @@ def tool_run_linter(args: dict[str, Any]) -> dict[str, Any]:
     else:
         run_env = {str(k): str(v) for k, v in env.items()}
 
-    if preset == "fortitude":
-        command = ["fortitude", "check", "."]
-        return _run_command(
-            command=command,
-            cwd=project_dir,
-            tool_name="run_linter",
-            timeout_sec=timeout_sec,
-            env=run_env,
-            capture_limit=capture_limit,
-            command_log_path=command_log_path,
-        ) | {"preset": preset}
-
-    if preset == "cppcheck":
-        command = [
-            "cppcheck",
-            "--error-exitcode=1",
-            "--enable=warning,style,performance",
-            "--inline-suppr",
-            ".",
-        ]
-        return _run_command(
-            command=command,
-            cwd=project_dir,
-            tool_name="run_linter",
-            timeout_sec=timeout_sec,
-            env=run_env,
-            capture_limit=capture_limit,
-            command_log_path=command_log_path,
-        ) | {"preset": preset}
-
-    if preset == "ruff":
-        command = ["ruff", "check", "."]
-        return _run_command(
-            command=command,
-            cwd=project_dir,
-            tool_name="run_linter",
-            timeout_sec=timeout_sec,
-            env=run_env,
-            capture_limit=capture_limit,
-            command_log_path=command_log_path,
-        ) | {"preset": preset}
-
-    if preset == "mixed":
-        r1 = _run_command(
-            command=["fortitude", "check", "."],
+    # The unsupported-preset refusal comes first, out of the same table the runs come from, so
+    # it cannot drift from what is actually runnable.
+    sub_presets = lint_preset_sub_presets(preset)
+    runs = [
+        _run_command(
+            command=list(_LINT_PRESET_COMMANDS[sub]),
             cwd=project_dir,
             tool_name="run_linter",
             timeout_sec=timeout_sec,
@@ -1203,32 +1255,18 @@ def tool_run_linter(args: dict[str, Any]) -> dict[str, Any]:
             capture_limit=capture_limit,
             command_log_path=command_log_path,
         )
-        r2 = _run_command(
-            command=[
-                "cppcheck",
-                "--error-exitcode=1",
-                "--enable=warning,style,performance",
-                "--inline-suppr",
-                ".",
-            ],
-            cwd=project_dir,
-            tool_name="run_linter",
-            timeout_sec=timeout_sec,
-            env=run_env,
-            capture_limit=capture_limit,
-            command_log_path=command_log_path,
-        )
-        return {
-            "ok": bool(r1.get("ok")) and bool(r2.get("ok")),
-            "preset": "mixed",
-            "runs": [
-                {"sub_preset": "fortitude", **r1},
-                {"sub_preset": "cppcheck", **r2},
-            ],
-        }
-
-    supported = "fortitude, cppcheck, ruff, mixed"
-    raise ValueError(f"unsupported preset: {preset}. supported={supported}")
+        for sub in sub_presets
+    ]
+    # A simple preset keeps the FLAT result shape (the command's own keys plus `preset`); a
+    # composite keeps the `runs` shape, one entry per sub-run in order. Both are what the
+    # conductor's `_gate_lint_check` normalizes and what the lint evidence records.
+    if preset in _LINT_PRESET_COMMANDS:
+        return runs[0] | {"preset": preset}
+    return {
+        "ok": all(bool(run.get("ok")) for run in runs),
+        "preset": preset,
+        "runs": [{"sub_preset": sub, **run} for sub, run in zip(sub_presets, runs)],
+    }
 
 
 # --- run_syntax_check: compiler-frontend syntax gate (Generate stage only) ----------------
@@ -1287,6 +1325,31 @@ _SYNTAX_COMPILER_ADAPTERS: dict[str, dict[str, Any]] = {
         "version_argv": ["gfortran", "--version"],
     },
 }
+
+#: The syntax-only stage `Generate.gate` runs whatever `METDSL_SYNTAX_COMPILERS` lists, and the
+#: compiler `run_syntax_check` assumes when a caller names none. The conductor's build
+#: control-file writer takes the SAME value for `FC` when the IR pins no
+#: `impl_defaults.toolchain.compiler`, so the mandatory syntax stage and the default build
+#: compiler are one value rather than several independent spellings. That equality is what lets
+#: the launch-time host probe (`tools/host_prerequisites.py`) cover the Build compiler by probing
+#: the mandatory stage; `tools/tests/test_host_prerequisites.py` pins it against the conductor's
+#: own `DEFAULT_COMPILER`, which is the other half of the pair.
+MANDATORY_SYNTAX_COMPILER = "gfortran"
+
+
+def syntax_compiler_executable(compiler: str) -> str:
+    """The host executable a registered syntax-check adapter launches.
+
+    The same `exe` `tool_run_syntax_check` probes before it runs the stage, so the launch-time
+    host probe (`tools/host_prerequisites.py`) cannot look for a different program. Raises for a
+    compiler with no registered adapter, which is a build-tooling bug rather than a host one.
+    """
+    adapter = _SYNTAX_COMPILER_ADAPTERS.get(compiler)
+    if adapter is None:
+        supported = ", ".join(sorted(_SYNTAX_COMPILER_ADAPTERS))
+        raise ValueError(f"unsupported compiler: {compiler}. supported={supported}")
+    return str(adapter["exe"])
+
 
 # A source valid under every Fortran standard the adapters accept. `std` reaches the gate
 # from the LLM-authored IR (`impl_defaults.toolchain.standard`) and goes straight into
@@ -1408,7 +1471,7 @@ def tool_run_syntax_check(args: dict[str, Any]) -> dict[str, Any]:
     _validate_env_overrides(
         env, "run_syntax_check", orchestrated=_is_orchestrated_call(args),
         repo_root=_repo_root_for_call(args, project_dir))
-    compiler = str(args.get("compiler", "gfortran")).strip().lower()
+    compiler = str(args.get("compiler", MANDATORY_SYNTAX_COMPILER)).strip().lower()
     std = str(args.get("std", "f2008")).strip().lower()
     openmp = bool(args.get("openmp", False))
 

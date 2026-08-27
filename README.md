@@ -40,7 +40,7 @@ The deterministic `Compile.static` and `Generate.gate` substeps route a violatio
 
 ## Running a workflow
 
-Required CLI: `python3`, `jq`, `git`. Their absence stops the run at startup with `missing_required_cli_tools`. A run additionally requires PyYAML (imported by the workflow runtime; the repository declares no dependency manifest), the sandbox runtime `bwrap`, the CLI or API credentials of every provider the leaf-`LLM` configuration names, the toolchain the target `spec` declares (`gfortran` and `make` for the Fortran nodes in this tree), and the `static lint` tool for its language (`fortitude` for Fortran).
+The host prerequisites — the CLI tools, the Python packages, the target `spec`'s toolchain and `static lint` tool, the sandbox runtime, and the provider credentials — are one list in [docs/RUNBOOK.md](docs/RUNBOOK.md) §0-1, which also carries the install lines and the reason code each absence is refused with. Every one of them is refused before the first `LLM` leaf is launched. This paragraph used to be a second list, and it was the longer of the two while the one an operator setting up a machine reads was the shorter (issue #109).
 
 Create the leaf-`LLM` configuration once. It selects the provider, model, and reasoning effort of each `LLM` leaf, and is the only thing that says what a leaf launches: no flag overrides its contents, and `--llm-config` only selects which file is read. It is gitignored.
 
