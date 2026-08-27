@@ -189,7 +189,7 @@ workspace/
 | `child_returns/<arid>.txt` | `record-child-return` | runtime | runtime (consumed by `deactivate-child`) | with Adv-30 token verification |
 | `agents/<arid>/dialogs/agent.result.json` | `record-agent-run` (on pass) | runtime | runtime / validator / parent orchestration agent | the child agent's structured result, including the per-leaf `usage` (below) |
 | `agents/<arid>/dialogs/agent.summary.txt` | same as above | runtime | same as above | single-line forbidden, must include the basis |
-| `gates/<arid>/<gate>.json` | at gate execution | runtime | **self Read forbidden** (internal artifact). obtained via stderr, or from the agent-readable copy at `workspace/tmp/<arid>/gate_results/<gate>.json` | the gate command's stderr, returned in the command result. This file is the evidential record and no agent can write it; the tmp copy carries the same summary but sits in an agent-writable root, so it is a convenience for the agent only |
+| `gates/<arid>/<gate>.json` | at gate execution | runtime | **self Read forbidden** (internal artifact). obtained via stderr, or from the agent-readable copy at `workspace/tmp/<arid>/gate_results/<gate>.json` | the gate command's stderr, returned in the command result. This file is what the audit reads; the tmp copy is read by nothing. Write authority does NOT separate them -- `gates/<arid>/` is rw-bound into the leaf's own sandbox because the leaf runs `run-gate` itself, the terminal FS-diff exempts that whole prefix, and the interpreter route reaches both (`docs/HOOKS.md` §"Layer boundary"). The file tool is refused for both. The copy therefore adds no write authority a leaf did not already have |
 
 #### `usage` — the per-leaf token record
 

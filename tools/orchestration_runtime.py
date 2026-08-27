@@ -4172,10 +4172,19 @@ DEFAULT_ALLOWED_GATE_SERVICES: tuple[str, ...] = (
 
 # The subdirectory of a leaf's own `allowed_tmp_root` in which `run_gate` leaves the
 # summary it also prints on the last line of its stderr (issue #77), one file per gate
-# name. THE RULE IS DEFINED HERE AND THE DOCUMENTS ARE CHECKED AGAINST IT: ten surfaces
-# state this path -- the leaf-read contract, the rendered gate hint, the operator runbook,
-# the audit SKILL, four more documents -- and a sweep by hand over that many sites is the
-# failure mode `.claude/skills/metdsl-enforcement-change` rule 3-a exists for.
+# name. THE RULE IS DEFINED HERE AND THE DOCUMENTS ARE CHECKED AGAINST IT, because this
+# path is restated in many places -- the leaf-read contract, the rendered gate hint, the
+# operator runbook, the audit SKILL and four more documents -- and a sweep by hand over
+# that many sites is the failure mode `.claude/skills/metdsl-enforcement-change` rule 3-a
+# exists for. THE COUNT IS DELIBERATELY NOT WRITTEN HERE: three parties measured it in
+# round 1 and returned three different answers (7 files, 8 files, and an appositive that
+# enumerated 8 while the sentence said 10), because none of them stated a method. The
+# method, if you want the number:
+#     os.walk over docs/ + skills/ + tools/prompt_templates/ + TODO.md, counting
+#     occurrences of this constant's value; `grep` is shadowed in agent sessions by a
+#     ugrep wrapper that honours .gitignore, so it under-reports.
+# At the round-1 fix that command gave 8 files and 11 occurrences (7 documents plus
+# TODO.md, which is excluded from the check below as a historical record).
 # `GateResultTmpCopySurfaceTests` in tools/tests/test_orchestration_runtime.py resolves
 # this constant and requires each surface to name the path it produces, so renaming the
 # directory turns every stale document red rather than leaving them quietly wrong.
@@ -6556,12 +6565,24 @@ def run_gate(
     # The tmp root is leaf-WRITABLE, so a leaf can overwrite this copy with a
     # forged pass. What it gains by that is nothing: nothing but the leaf itself
     # reads it. Every consumer that decides an outcome -- the conductor, the
-    # audit, step_result.json -- reads the canonical gates/<arid>/<gate>.json
-    # written above, which is outside the leaf's write authority. So this file is
-    # a convenience FOR the leaf, never evidence ABOUT it, and it must not be
-    # cited as evidence anywhere. (AGENTS.md §Development premises, decision
-    # criterion: the hole is out of scope because what the leaf would gain can be
+    # audit, step_result.json -- reads gates/<arid>/<gate>.json, written above.
+    # So this file is a convenience FOR the leaf, never evidence ABOUT it, and it
+    # must not be cited as evidence anywhere. (AGENTS.md §Development premises,
+    # decision criterion: out of scope because what the leaf would gain can be
     # named and is nothing.)
+    #
+    # ROUND 1 CORRECTION, kept because the first draft of this comment got it
+    # wrong and the wrong version is the intuitive one: the sentence above is
+    # about which file is READ, NOT about write authority. gates/<arid>/ is
+    # rw-bound into the leaf's own sandbox -- it has to be, the leaf invokes
+    # run-gate itself (`runtime_rw_rel_paths`, rendered --bind) -- and
+    # `_should_ignore_runtime_snapshot_path` exempts the whole {orch_root}/gates/
+    # prefix from the terminal FS-diff, and the interpreter route reaches it
+    # (docs/HOOKS.md §"Layer boundary" records that route as the widest residue
+    # of the Bash write refusal). So gates/<arid>/<gate>.json is NOT a file "no
+    # leaf can write", and nothing here should be justified by saying it is.
+    # What this copy adds is a second place the same summary can be found; it
+    # adds no write authority a leaf did not already have.
     _gate_summary = {
         "gate": gate,
         "status": status,
@@ -6569,8 +6590,19 @@ def run_gate(
         "gate_result_ref": gate_ref,
         # Carried so a stale copy left by an EARLIER call is distinguishable from
         # this call's result. The stderr line carries it too, so the file and the
-        # line the leaf was shown stay byte-identical.
+        # line the leaf was shown are the SAME OBJECT -- equal once parsed, not
+        # byte-equal: `_write_json` renders indented with ensure_ascii=False and
+        # the stderr line is compact and ASCII-escaped, so a non-ASCII violation
+        # is spelled differently in the two. Compare them parsed, never as text.
         "evaluated_at": gate_doc["evaluated_at"],
+        # S-F2 (round 1): the copy is written only on a run that REACHES here, so
+        # a refused or raised re-run leaves the previous result in place. These
+        # two fields let a reader see WHAT passed rather than only that something
+        # did -- `args_json` names the inputs the verdict was taken on, and
+        # `exit_code` distinguishes a pass from a gate that never ran. The stderr
+        # line carries them too, so the two stay the same object.
+        "args_json": args_json,
+        "exit_code": exit_code,
     }
     print(json.dumps(_gate_summary), file=sys.stderr)
     _tmp_gate_result = _agent_tmp_gate_result_path(repo_root, agent_run_id, gate)
@@ -11263,7 +11295,11 @@ def _build_gate_runbook(request_payload: dict[str, Any]) -> str:
             "`Write` tool, so it needs no creating; the runtime also drops each gate's "
             "own summary there, one JSON file per gate name under "
             f"`{_agent_tmp_gate_result_dir_ref(arid)}`, so a later turn can re-read a "
-            "result whose command output has scrolled out of your context. "
+            "result whose command output has scrolled out of your context. That file is "
+            "the last run of that gate that COMPLETED: a run refused before the gate "
+            "executed leaves the previous one in place, so check its `args_json` and "
+            "`evaluated_at` against the run you mean. For the attempt you just made, the "
+            "command result is authoritative and the file is not. "
             "`access_logs/` is runtime-managed "
             "audit (the read hook appends a line per read decision, and "
             "`orchestration_read` writes one too) — never read or write it yourself."

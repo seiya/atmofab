@@ -16961,6 +16961,51 @@ class TestPhase3RunGate(unittest.TestCase):
                 "re-running a gate must replace its own copy, not leave the older one",
             )
 
+    def test_run_gate_tmp_copy_says_which_run_produced_it(self) -> None:
+        """S-F2 (round 1): a copy that cannot say WHAT passed is a shortcut waiting.
+
+        The copy is written only by a run that reaches the write; every refusal in
+        `run_gate` / `_validate_run_gate_permissions` raises before it. So a leaf whose
+        re-run was refused reads the path its launch prompt sent it to and finds the
+        PREVIOUS run's verdict. `evaluated_at` alone does not rescue that -- a leaf has no
+        reference clock -- so the summary carries `args_json` and `exit_code` too: the
+        inputs the verdict was taken on, and whether the gate ran at all.
+
+        The refusal half is the load-bearing assertion, and it is run, not assumed.
+        """
+        from tools.orchestration_runtime import run_gate as _run_gate
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            token = self._setup_run_gate_fixture(repo_root)
+            copy_path = repo_root / self._TMP_GATE_DIR / "check_artifact_syntax.json"
+
+            _r, summary = self._run_gate_capturing_stderr(
+                repo_root, token, args_json={"paths": ["workspace/probe.json"]}
+            )
+            self.assertEqual(summary["args_json"], {"paths": ["workspace/probe.json"]})
+            self.assertEqual(summary["exit_code"], 0)
+            self.assertEqual(json.loads(copy_path.read_text(encoding="utf-8")), summary)
+
+            # A REFUSED re-run raises before the write and leaves the earlier copy in
+            # place. This is the property the docs and the gate hint now warn about; if
+            # this assertion ever flips, those warnings became false and must go.
+            with self.assertRaises(RuntimeError):
+                _run_gate(
+                    repo_root,
+                    orchestration_id="rg1",
+                    gate_name="check_artifact_syntax",
+                    agent_run_id="build_child_rg1",
+                    args_json={"paths": ["workspace/probe.json"]},
+                    capability_token="not-the-token",
+                )
+            self.assertEqual(
+                json.loads(copy_path.read_text(encoding="utf-8")),
+                summary,
+                "a refused run must leave the previous copy untouched, which is exactly "
+                "why the leaf is told to check args_json / evaluated_at",
+            )
+
     def test_run_gate_tmp_copy_is_one_file_per_gate_name(self) -> None:
         """A second gate must not clobber the first: that is why the name is the key."""
         with tempfile.TemporaryDirectory() as tmp:
@@ -16985,11 +17030,13 @@ class TestPhase3RunGate(unittest.TestCase):
             )
 
     def test_run_gate_tmp_copy_lands_under_the_manifest_allowed_tmp_root(self) -> None:
-        """The path is asserted against the MANIFEST, not against a literal f-string.
+        """The tmp ROOT is asserted against the manifest, not against a literal.
 
         `allowed_tmp_root` is the value the read boundary and the write-attribution
-        exemption are both derived from; a literal here would pass even if the two
-        drifted apart.
+        exemption are both derived from; a literal root here would pass even if the two
+        drifted apart. The `gate_results/<gate>.json` tail below IS a literal, and saying
+        otherwise was a round-1 finding: what pins the tail is `GateResultTmpCopySurfaceTests`
+        resolving `GATE_RESULT_TMP_DIRNAME`, not this line.
         """
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
@@ -29940,7 +29987,14 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # rule from round 11 applies to the number as well as to the sentence: at 19200 the
         # file again sat a few dozen bytes below its ceiling, which is a tripwire rather
         # than a re-bloat catch, so the headroom is restored along with the raise.
-        "docs/AGENT_CONTRACT.md": 19700,
+        # Raised a third time in round 1 of that issue's review, and the reason is the
+        # SENTENCE, not the ceiling: the copy is only rewritten by a run that completes, so
+        # a leaf reading it after a refused re-run gets the previous verdict. Telling the
+        # leaf to check `args_json` / `evaluated_at`, and that the command result is
+        # authoritative for the attempt it just made, is what stops that shortcut — the
+        # most expensive place in the repository to add a sentence, and the only one where
+        # this one works. 19700 then left ~100 bytes, a tripwire again by the same rule.
+        "docs/AGENT_CONTRACT.md": 20100,
         # Consolidated runner-output contract (was duplicated across phase_02/04 +
         # PERF §2/§6); M3d: a validate.judge-only leaf must-read (generate dropped it).
         # Bumped 7600->8100: §3 disambiguated the guard-case snapshot rule (declared
@@ -30478,82 +30532,133 @@ class GateResultTmpCopySurfaceTests(unittest.TestCase):
 
     The path `workspace/tmp/<agent_run_id>/gate_results/<gate>.json` is stated in eight
     documents, in the gate hint injected into every leaf's launch prompt, and in the
-    runtime that writes it. Eight-plus statement sites of one rule is the count at which a
-    sweep by hand has already lost (`.claude/skills/metdsl-enforcement-change` rule 3-a),
-    and two of the sites are read by a leaf and by an operator, who ACT on them: a leaf
-    sent to a path the runtime no longer writes reads nothing and cannot tell that from a
-    gate that produced nothing.
+    runtime that writes it. That many statement sites of one rule is where a sweep by hand
+    has already lost (`.claude/skills/metdsl-enforcement-change` rule 3-a), and two of the
+    sites are read by a leaf and by an operator, who ACT on them: a leaf sent to a path the
+    runtime no longer writes reads nothing and cannot tell that from a gate that produced
+    nothing. NO COUNT IS WRITTEN HERE — three parties measured it in round 1 and returned
+    three answers, none having stated a method; the method and the figure it gave live
+    beside `GATE_RESULT_TMP_DIRNAME`, once.
 
     THE RULE IS DEFINED IN THE CODE AND THE DOCUMENTS ARE CHECKED AGAINST IT, never the
     reverse: every expectation below is resolved from `GATE_RESULT_TMP_DIRNAME` and the
     helpers beside it, so renaming the directory turns each stale surface red. Nothing
     here spells the directory name a second time.
 
-    WHAT IS PINNED: that each surface names a path with the directory the constant
-    produces. WHAT IS NOT: that the surface says the copy is a convenience rather than
-    evidence, or that it names the right placeholder for the agent id. Those are different
-    rules with no instrument here, and a green run is not evidence about them.
+    WHAT IS PINNED: that each listed surface either names a path with the directory the
+    constant produces, or cites the document that does. WHAT IS NOT, each measured rather
+    than supposed:
+
+    - that a surface says the copy is a convenience rather than evidence, or which
+      placeholder it spells the agent id with. Different rules, no instrument here.
+    - **that a surface added LATER tracks the constant.** The lists are fixed, so a new
+      document naming this path drifts silently after a rename; round 1 demonstrated it by
+      adding the sentence to `docs/ORCHESTRATION.md` and renaming the constant, and only
+      the listed surfaces reddened. The obvious closure — sweep `docs/` and `skills/` for
+      `workspace/tmp/<id>/<segment>/` and require the segment to be this constant — was
+      MEASURED to over-refuse before it was written: the same corpus already carries
+      `run/`, `syntax/` and `.../` as legitimate segments under a tmp root, so the sweep
+      needs a hand-maintained exclusion list that refuses every future tmp subdirectory
+      until someone appends to it. That is a worse instrument than a declared limit, so
+      this is the limit, declared.
     """
 
     REPO_ROOT = Path(__file__).resolve().parents[2]
 
-    # Asserted against a LITERAL list below rather than compared with the expression it
+    # Asserted against LITERAL lists below rather than compared with the expressions they
     # came from: `_REDIRECT_SURFACES` was once emptied and both the check reading it and
     # its self-test stayed green, because a derived tuple compared with its own derivation
     # holds by construction.
     #
-    # `TODO.md` is deliberately ABSENT. It records the decision as history ("issue #77
-    # shipped X"), and a historical record naming the path as it stood is correct after a
-    # rename; requiring it to track the constant would make the record follow the code,
-    # which is the opposite of what a record is for.
-    _SURFACES = (
+    # THE SET IS SPLIT BY WHAT THE SURFACE IS FOR, after round 1 measured the first
+    # version refusing three legitimate edits (see the over-refusal test below).
+    #
+    # `_MUST_NAME_IN_FULL` — a leaf-read contract has to be self-contained, and the
+    # canonical layout document is what a pointer would point AT, so neither can answer
+    # with a pointer.
+    #
+    # `_MAY_POINT` — everything else. `AGENTS.md` §Workflow document reference rules
+    # mandates citing the canonical source rather than restating it, and the sibling check
+    # this class is modelled on (`_NAMES_THE_ROUTE` in tools/tests/test_hooks_cli.py)
+    # admits a pointer for exactly that reason: "a pointer must remain a legal answer".
+    #
+    # NEITHER LIST HOLDS `docs/HOOKS.md` OR `TODO.md`. Both are RECORDS — of a
+    # measurement and of a decision — and a record naming the path as it stood is correct
+    # after a rename. Requiring them to track the constant would make the record follow
+    # the code, which is the opposite of what a record is for.
+    _MUST_NAME_IN_FULL = (
         "docs/AGENT_CONTRACT.md",
-        "docs/CLI_REFERENCE.md",
-        "docs/HOOKS.md",
-        "docs/RUNBOOK.md",
         "docs/WORKSPACE_LAYOUT.md",
+    )
+    _MAY_POINT = (
+        "docs/CLI_REFERENCE.md",
+        "docs/RUNBOOK.md",
         "docs/workflow/LAUNCH_PROMPT_REFERENCE.md",
         "skills/workflow-audit-claude/SKILL.md",
     )
 
     @staticmethod
     def _pattern() -> "re.Pattern[str]":
-        """`workspace/tmp/<any placeholder>/<the constant>/`, built from the constant.
+        """`workspace/tmp/<any agent-id spelling>/<the constant>/`, built from the constant.
 
-        The agent-id segment is left as an unconstrained `<...>` placeholder on purpose:
-        the surfaces spell it `<agent_run_id>` and `<arid>`, and WHICH placeholder a
-        document uses is a house-style question this check does not own.
+        The agent-id segment admits every spelling the tree actually uses, which round 1
+        found the first version refusing: an angle placeholder (`<agent_run_id>`,
+        `<arid>`, `<live-arid>`), a brace placeholder (`{agent_run_id}` — the spelling
+        `tools/hooks/common.py` and `tools/orchestration_runtime.py` use for this very
+        path), and a concrete id, which is the shape `docs/RUNBOOK.md` writes when it
+        gives a command an operator can paste. WHICH spelling a document picks is a
+        house-style question this check does not own; the directory name is the rule.
         """
         import re
 
         from tools.orchestration_runtime import GATE_RESULT_TMP_DIRNAME
 
+        agent_id = r"(?:<[^>]+>|\{[^}]+\}|[A-Za-z0-9._-]+)"
         return re.compile(
-            r"workspace/tmp/<[A-Za-z_]+>/" + re.escape(GATE_RESULT_TMP_DIRNAME) + r"/"
+            r"workspace/tmp/" + agent_id + "/" + re.escape(GATE_RESULT_TMP_DIRNAME) + r"/"
         )
 
-    def test_every_surface_names_the_directory_the_runtime_writes(self) -> None:
+    @staticmethod
+    def _pointer() -> "re.Pattern[str]":
+        """A citation of the canonical layout document, which is a legal answer."""
+        import re
+
+        return re.compile(r"WORKSPACE_LAYOUT\.md")
+
+    def test_every_surface_names_the_directory_or_cites_the_document_that_does(self) -> None:
         self.assertEqual(
-            set(self._SURFACES),
+            set(self._MUST_NAME_IN_FULL),
+            {"docs/AGENT_CONTRACT.md", "docs/WORKSPACE_LAYOUT.md"},
+        )
+        self.assertEqual(
+            set(self._MAY_POINT),
             {
-                "docs/AGENT_CONTRACT.md",
                 "docs/CLI_REFERENCE.md",
-                "docs/HOOKS.md",
                 "docs/RUNBOOK.md",
-                "docs/WORKSPACE_LAYOUT.md",
                 "docs/workflow/LAUNCH_PROMPT_REFERENCE.md",
                 "skills/workflow-audit-claude/SKILL.md",
             },
         )
         pattern = self._pattern()
-        for rel in self._SURFACES:
-            with self.subTest(surface=rel):
+        pointer = self._pointer()
+        for rel in self._MUST_NAME_IN_FULL:
+            with self.subTest(surface=rel, rule="must name in full"):
                 path = self.REPO_ROOT / rel
                 self.assertTrue(path.is_file(), f"{rel} missing; update the surface list")
                 self.assertIsNotNone(
                     pattern.search(path.read_text(encoding="utf-8")),
-                    f"{rel} does not state where run-gate leaves a gate result "
-                    f"(expected a path matching {pattern.pattern})",
+                    f"{rel} must state the path itself (a pointer is not enough here); "
+                    f"expected a path matching {pattern.pattern}",
+                )
+        for rel in self._MAY_POINT:
+            with self.subTest(surface=rel, rule="path or pointer"):
+                path = self.REPO_ROOT / rel
+                self.assertTrue(path.is_file(), f"{rel} missing; update the surface list")
+                text = path.read_text(encoding="utf-8")
+                self.assertTrue(
+                    pattern.search(text) or pointer.search(text),
+                    f"{rel} neither states where run-gate leaves a gate result "
+                    f"(a path matching {pattern.pattern}) nor cites the document that does",
                 )
 
     def test_the_detector_distinguishes_a_stated_rule_from_a_stale_one(self) -> None:
@@ -30566,12 +30671,18 @@ class GateResultTmpCopySurfaceTests(unittest.TestCase):
         from tools.orchestration_runtime import GATE_RESULT_TMP_DIRNAME
 
         pattern = self._pattern()
-        stated = f"read it at `workspace/tmp/<agent_run_id>/{GATE_RESULT_TMP_DIRNAME}/x.json`"
-        self.assertIsNotNone(pattern.search(stated))
-        # The `<arid>` spelling the layout table uses is admitted too.
-        self.assertIsNotNone(
-            pattern.search(f"`workspace/tmp/<arid>/{GATE_RESULT_TMP_DIRNAME}/<gate>.json`")
-        )
+        d = GATE_RESULT_TMP_DIRNAME
+        for stated in (
+            f"read it at `workspace/tmp/<agent_run_id>/{d}/x.json`",
+            f"`workspace/tmp/<arid>/{d}/<gate>.json`",
+            f"`workspace/tmp/<live-arid>/{d}/`",
+            # the brace spelling the runtime itself uses for this path
+            f"workspace/tmp/{{agent_run_id}}/{d}/{{gate}}.json",
+            # a concrete id, the shape RUNBOOK writes for a pasteable command
+            f"cat workspace/tmp/a0dca0b3-1f2e-4c5d-8899-aabbccddeeff/{d}/x.json",
+        ):
+            with self.subTest(stated=stated):
+                self.assertIsNotNone(pattern.search(stated))
         for stale in (
             # the retired route this whole change replaced
             "capture it with `2>workspace/tmp/<agent_run_id>/last_gate_stderr.txt`",
@@ -30579,19 +30690,59 @@ class GateResultTmpCopySurfaceTests(unittest.TestCase):
             "read it at `workspace/tmp/<agent_run_id>/gate_output/x.json`",
             # the tmp root named for an unrelated reason -- the scratch rule, not this one
             "`workspace/tmp/<agent_run_id>/` is writable with the `Write` tool",
-            # the CANONICAL record, which is a different path and must not satisfy this
+            # the record the audit reads, which is a different path and must not satisfy this
             "`workspace/orchestrations/<orchestration_id>/gates/<arid>/<gate>.json`",
         ):
             with self.subTest(stale=stale):
                 self.assertIsNone(pattern.search(stale))
 
-    def test_the_copy_is_removed_with_the_tmp_root_at_terminal_status(self) -> None:
+    def test_a_pointer_and_the_runtimes_own_spelling_are_not_refused(self) -> None:
+        """OVER-REFUSAL probe, kept because round 1 measured the first version failing it.
+
+        Three legitimate edits were refused: deferring to the canonical document (which
+        `AGENTS.md` §Workflow document reference rules MANDATES), the `{agent_run_id}`
+        placeholder the runtime itself uses for this path, and a concrete agent id of the
+        shape `docs/RUNBOOK.md` writes for a pasteable command. Each is asserted here on
+        the rule's own predicates rather than by editing the tree, so the probe survives a
+        rewording of any real document.
+        """
+        pattern = self._pattern()
+        pointer = self._pointer()
+
+        deferring = (
+            "the runtime writes the same summary into the agent's own `allowed_tmp_root` "
+            "— a convenience copy, not evidence; see `docs/WORKSPACE_LAYOUT.md` §\"tmp / "
+            "TMPDIR\" for the exact path"
+        )
+        self.assertIsNone(
+            pattern.search(deferring), "fixture drift: this text must NOT state the path"
+        )
+        self.assertIsNotNone(
+            pointer.search(deferring),
+            "a surface that cites the canonical document must be a legal answer",
+        )
+        # And the pointer must not be a way for a MUST-NAME surface to opt out: the two
+        # lists are read by different loops above, which this asserts by construction.
+        self.assertEqual(
+            set(self._MUST_NAME_IN_FULL) & set(self._MAY_POINT),
+            set(),
+            "a surface must be in exactly one list",
+        )
+
+    def test_the_copy_is_removed_when_the_tmp_root_is_cleaned_up(self) -> None:
         """EXECUTE the lifetime claim the documents make about this file.
 
         `docs/WORKSPACE_LAYOUT.md` §"tmp / TMPDIR" states the copy "is removed with the
         rest of the root when the agent reaches a terminal status" -- an executable
         sentence, and one written in the same commit that created the file, so nothing had
-        run it. It matters beyond tidiness: a copy that outlived its run would be readable
+        run it.
+
+        SCOPE, corrected in round 1 after the name overstated it: this drives
+        `_cleanup_agent_tmp_root` DIRECTLY and never reaches a terminal status, so what it
+        establishes is the second half of that sentence -- that the copy goes when the root
+        is cleaned. The first half, that reaching a terminal status is what calls the
+        cleanup, is pinned by the pre-existing `record_agent_run` tests, and the document's
+        claim holds by the union of the two rather than by this test alone. It matters beyond tidiness: a copy that outlived its run would be readable
         by whatever `agent_run_id` the flat `workspace/tmp/` namespace next handed the
         same name to, and would be a gate verdict from another run presented as this one's.
 
