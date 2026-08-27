@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """Minimal MCP server for build/run/quality operations.
 
-This server intentionally has no external dependencies so that it can be used
-in constrained environments.
+This server intentionally has no THIRD-PARTY dependencies so that it can be used
+in constrained environments. It does read two modules of this checkout:
+`tools/orchestration_runtime.py` (by file location) and `tools/backends/registry.py`
+(by dotted import, because the registry resolves a backend package by module path).
+Both are stdlib-only.
 """
 
 from __future__ import annotations
@@ -59,6 +62,32 @@ def _load_orchestration_runtime() -> Any:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+@lru_cache(maxsize=1)
+def _backend_registry() -> Any:
+    """Load `tools/backends/registry.py`, the one door to a backend package.
+
+    A DOTTED import, unlike `_load_orchestration_runtime`'s file-location load: the registry
+    resolves a backend by importing its dotted module path, so `tools` has to be importable as a
+    package here rather than merely readable as a file. `tools/` is a namespace package, so the
+    checkout root on `sys.path` is all that takes; the bootstrap mirrors
+    `tools/validate_pipeline_semantics.py`'s.
+
+    The registry is stdlib-only and imports no sibling at module level, so this costs no more
+    than the file-location load above and introduces no cycle (`tools/host_prerequisites.py`
+    imports THIS module; this module imports the registry; the registry imports nothing).
+    """
+    _disable_bytecode_writes()
+    try:
+        from tools.backends import registry
+    except ModuleNotFoundError:
+        root = str(Path(__file__).resolve().parent.parent)
+        if root not in sys.path:
+            sys.path.insert(0, root)
+        from tools.backends import registry
+
+    return registry
 
 
 _WORKFLOW_MODE_ENV_VARS = ("METDSL_WORKFLOW_MODE", "METDSL_ORCHESTRATION_ID")
@@ -1127,14 +1156,16 @@ def tool_run_quality_checks(args: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-#: The argv each `static lint` preset runs. This table is the ONLY place a linter's invocation is
-#: spelled: `tool_run_linter` runs these rows, and `lint_preset_executables` answers the
+#: The `static lint` presets whose argv is still SPELLED HERE, in the neutral core. Each row is
+#: one linter's invocation; `tool_run_linter` runs them and `lint_preset_executables` answers the
 #: launch-time host probe (`tools/host_prerequisites.py`) out of the same rows, so what the probe
 #: looks for cannot drift from what the gate later launches. Adding a row here does NOT widen what
 #: the `Generate` lint evidence gate ACCEPTS — that set is `tools/backends/registry.py`'s `linter`
 #: axis, and the two remain separate declarations (TODO.md, compiler / linter adapters area).
-_LINT_PRESET_COMMANDS: dict[str, tuple[str, ...]] = {
-    "fortitude": ("fortitude", "check", "."),
+#:
+#: A preset whose record declares `lint` in `backend_provides` is NOT here: its argv comes from
+#: its own package (`_lint_preset_command`). Today that is `fortitude` alone.
+_INLINE_LINT_PRESET_COMMANDS: dict[str, tuple[str, ...]] = {
     "cppcheck": (
         "cppcheck",
         "--error-exitcode=1",
@@ -1143,6 +1174,40 @@ _LINT_PRESET_COMMANDS: dict[str, tuple[str, ...]] = {
         ".",
     ),
     "ruff": ("ruff", "check", "."),
+}
+
+
+def _lint_preset_command(preset: str) -> tuple[str, ...]:
+    """One preset's argv, from whichever side of the boundary owns it.
+
+    Per (axis, value), which is what a partial migration looks like: the record's own package
+    where it declares the `lint` capability there, the inlined row otherwise. The preset NAME
+    survives in this module either way — naming an axis value is what the neutral core may do;
+    knowing what the value implies (here: a rule set) is what it may not
+    (`docs/BACKEND_BOUNDARY.md` §Design Policy).
+    """
+    registry = _backend_registry()
+    if "lint" in registry.get("linter", preset).backend_provides:
+        return tuple(registry.capability_module("linter", preset, "lint").check_argv())
+    return _INLINE_LINT_PRESET_COMMANDS[preset]
+
+
+#: The simple `static lint` presets, in one place. A preset is here whether its argv is inlined
+#: above or authored by its own backend package; the split between those two is a MIGRATION
+#: state, and the set of presets is not.
+#:
+#: Written as its own tuple rather than derived from `_INLINE_LINT_PRESET_COMMANDS`, because the
+#: package-backed ones are not in that table — and checked against it at import, because before
+#: the check an inline row whose name was left out of the tuple was invisible to every reader
+#: here (`lint_preset_sub_presets` would answer "unsupported preset" for a preset this file
+#: defines). That failure is closed rather than open, which is why it is a declaration check and
+#: not a gate.
+_SIMPLE_LINT_PRESETS: tuple[str, ...] = ("fortitude", "cppcheck", "ruff")
+
+#: The argv each simple preset runs, composed once at import. The KEYS are the set above — the
+#: set every reader below iterates — and are unchanged by where a row's argv is authored.
+_LINT_PRESET_COMMANDS: dict[str, tuple[str, ...]] = {
+    preset: _lint_preset_command(preset) for preset in _SIMPLE_LINT_PRESETS
 }
 
 #: A preset that runs several linters in order, named by the presets it COMPOSES rather than by
@@ -1177,6 +1242,11 @@ def _check_lint_preset_declarations() -> None:
             raise ValueError(f"lint preset {preset!r} composes unregistered presets: {unknown}")
     if DEFAULT_LINT_PRESET not in _LINT_PRESET_COMMANDS:
         raise ValueError(f"default lint preset {DEFAULT_LINT_PRESET!r} has no command row")
+    orphaned = sorted(set(_INLINE_LINT_PRESET_COMMANDS) - set(_SIMPLE_LINT_PRESETS))
+    if orphaned:
+        raise ValueError(
+            f"lint preset argv is spelled here but the preset is not declared in "
+            f"_SIMPLE_LINT_PRESETS, so no reader can reach it: {orphaned}")
 
 
 _check_lint_preset_declarations()

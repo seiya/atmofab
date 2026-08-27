@@ -700,7 +700,15 @@ class RenderShapeTest(unittest.TestCase):
         self.assertEqual(over, [], f"lines over 100 cols: {over}")
 
     def test_lint_shape_markers(self) -> None:
-        self.assertIn("! allow(C003)", self.txt)
+        """The runner must be lint-clean under the gate's DECLARED rule set, and the polarity of
+        the allow directive inverted when that set was declared (issue #111).
+
+        This file is host-rendered, so a finding in it routes a retry to a leaf with no write
+        authority over it — the unwinnable loop issue #110 recorded. The gate now runs with
+        `--ignore-allow-comments`, which makes any directive here a `FORT005` finding, and `C003`
+        is out of the declared set, so the bare form is the clean one. Asserted as an ABSENCE
+        because the old assertion was the presence of exactly the line that would break it."""
+        self.assertNotIn("allow(", self.txt)
         self.assertIn("implicit none", self.txt)
 
 

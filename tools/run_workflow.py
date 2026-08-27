@@ -141,6 +141,24 @@ def _check_required_host_tools() -> list[str]:
     return [item.executable for item in missing_host_executables()]
 
 
+def _check_host_tool_versions() -> list[Any]:
+    """The required host tools whose installed version this repository has not measured.
+
+    The second half of the check above, and it is checked SECOND for the same reason it is
+    written second: an absent program has no version, so the missing arm is the more reachable
+    failure and its message must be the one an operator on a bare machine sees. Both are launch
+    gates because both otherwise surface mid-run — a linter whose vendor default rule set moved
+    fails at the first `Generate.gate`, three billed leaves in, and burns the whole retry budget
+    on a finding no leaf can act on (issue #110 / #111).
+
+    Named nowhere in this file, like the executables: the range and the probe argv come from the
+    backend package that owns the tool (`tools/host_prerequisites.py`).
+    """
+    from tools.host_prerequisites import unsupported_host_tool_versions
+
+    return list(unsupported_host_tool_versions())
+
+
 def _check_required_python_modules() -> list[str]:
     """The distribution names of any `REQUIRED_PYTHON_MODULES` this interpreter cannot import.
 
@@ -2359,6 +2377,31 @@ def _run_main(
                 ),
                 "missing": missing_host_tools,
                 "required": [item.executable for item in required_host_executables()],
+                "docs_ref": "docs/RUNBOOK.md#0-1",
+            },
+            args.stdout_format,
+        )
+        return 2
+    unsupported_versions = _check_host_tool_versions()
+    if unsupported_versions:
+        _emit_unlogged_event(
+            {
+                "status": "fail",
+                "reason": "unsupported_required_host_tool_versions",
+                "detail": (
+                    "; ".join(item.reason for item in unsupported_versions)
+                    + " (see docs/RUNBOOK.md#0-1)"
+                ),
+                "unsupported": [
+                    {
+                        "executable": item.executable,
+                        "axis": item.axis,
+                        "backend_id": item.backend_id,
+                        "version": item.version,
+                        "reason": item.reason,
+                    }
+                    for item in unsupported_versions
+                ],
                 "docs_ref": "docs/RUNBOOK.md#0-1",
             },
             args.stdout_format,

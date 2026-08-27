@@ -23,7 +23,8 @@ Split of authorship on an M3c node:
 The rendered runner ``use``s two modules: ``harness_fortran_cpu_model`` (the
 certified plumbing) and ``<spec_id>_checks`` (the leaf's fixed-ABI callbacks,
 see ``docs/workflow/CHECKS_MODULE_CONTRACT.md``). It is authored lint-clean
-(``use only:``, ``! allow(C003)``, ≤100-column lines) so the deterministic
+(``use only:``, a bare ``implicit none`` with NO allow directive, ≤100-column
+lines) so the deterministic
 Generate.gate lint checker — which lints the whole ``src/`` tree — stays green.
 
 ``render_runner`` raises ``RenderError`` (→ transport fail_closed, NOT a Generate
@@ -615,7 +616,12 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str) -> str
     for i, sym in enumerate(checks_syms):
         sep = ", &" if i < len(checks_syms) - 1 else ""
         a(f"    {sym}{sep}")
-    a("  ! allow(C003)")
+    # No `! allow(C003)` above it, deliberately, and this is the file where getting it wrong
+    # is unrecoverable: the lint gate imposes its rule set with `--ignore-allow-comments`
+    # (`tools/backends/linter/fortitude/lint.py`), so a directive here would be reported as
+    # FORT005 in a file NO LEAF CAN EDIT — the retry loop would send a leaf to fix a finding
+    # it has no write authority over, which is exactly the shape issue #110 recorded. C003
+    # is not in the declared set, so a plain `implicit none` is lint-clean.
     a("  implicit none")
     a("")
     a("  integer, parameter :: dp = real64")

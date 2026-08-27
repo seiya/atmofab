@@ -11,6 +11,7 @@ from __future__ import annotations
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(REPO_ROOT) not in sys.path:
@@ -154,6 +155,217 @@ class ProbeShapeTests(unittest.TestCase):
         """A sanity row of the same kind as `test_check_required_cli_tools_returns_empty_when_all_present`:
         if this fails, the machine running the suite could not run a workflow."""
         self.assertEqual(hp.missing_host_executables(), ())
+
+
+class ToolVersionArmTests(unittest.TestCase):
+    """The second launch question: the tool is here, but is it a build we measured against?
+
+    Issue #111. The executables half above answers presence; a tool that is present and of an
+    unmeasured version decides a certification with a rule set nobody reviewed, which is the
+    failure that produced the incident (#110).
+    """
+
+    def test_every_version_gated_capability_carries_the_protocol(self) -> None:
+        """MANDATORY, not duck-typed-and-hope — and scoped to what it actually covers.
+
+        The arm reads two names off a capability module. If they were optional, renaming one in a
+        backend package would turn the whole launch check off SILENTLY and the next release of
+        that vendor's tool would land in a billed run again.
+
+        The first version of this row said "every package-implemented capability" and then
+        exempted everything but one of them with a `continue`, so the sentence was false in the
+        direction that matters: `runner_render` carries neither name, and the arm would have
+        raised `AttributeError` at launch the first time a language-axis executable reached it.
+        The obligation now has an explicit membership (`_VERSION_GATED_CAPABILITIES`) and this
+        asserts it over exactly that set, with no exemption inside the loop.
+        """
+        gated = set(hp._VERSION_GATED_CAPABILITIES)
+        self.assertNotEqual(gated, set(), "nothing is version-gated, so this row observes nothing")
+        seen = 0
+        for (axis, backend_id), record in backend_registry._BACKENDS.items():
+            for capability in sorted(record.backend_provides & gated):
+                with self.subTest(axis=axis, backend_id=backend_id, capability=capability):
+                    module = backend_registry.capability_module(axis, backend_id, capability)
+                    for name in ("version_argv", "unsupported_version_reason",
+                                 "self_check_argv", "self_check_reason"):
+                        self.assertTrue(callable(getattr(module, name, None)),
+                                        f"{axis}/{backend_id} does not answer {name}")
+                    seen += 1
+        self.assertGreater(seen, 0, "no record implements a version-gated capability in its own "
+                                    "package, so this row observes nothing")
+
+    def test_a_capability_outside_the_gated_set_is_not_asked_for_a_version(self) -> None:
+        """The other direction, and the one that was a latent launch traceback.
+
+        `runner_render` is implemented in a backend package and answers neither name. Driving the
+        seam with a language-axis item must yield nothing rather than reaching for `version_argv`.
+        """
+        module = backend_registry.capability_module("language", "fortran", "runner_render")
+        self.assertFalse(hasattr(module, "version_argv"))
+        item = hp.HostExecutable("language", "fortran", "gfortran")
+        self.assertEqual(list(hp._version_gated_capability_modules(item)), [])
+
+    def test_the_seam_reaches_the_real_backend_module_for_a_gated_capability(self) -> None:
+        """The wiring itself, with NO mock — the one thing the arm's other rows cannot see.
+
+        Measured: replacing the body of `_version_gated_capability_modules` with a bare `return`
+        left every other test green, because the two behavioural rows substitute this function
+        and the host row asserts `== ()`, which an always-empty generator satisfies. That is the
+        whole launch gate dead with a green suite.
+        """
+        from tools.backends.linter.fortitude import lint
+
+        item = hp.HostExecutable("linter", "fortitude", "fortitude")
+        self.assertEqual(list(hp._version_gated_capability_modules(item)), [lint])
+
+    def test_an_out_of_range_build_is_refused_through_the_real_seam(self) -> None:
+        """The arm end to end with only the PROBE substituted.
+
+        Everything else is production: the real record, the real capability module, the real
+        clause. Only the reading of the installed version is replaced, because this host has a
+        supported build and the refusal must be observable anyway.
+        """
+        with mock.patch.object(hp, "_tool_version_text", lambda argv: "fortitude 0.1.0"):
+            found = hp.unsupported_host_tool_versions()
+        self.assertEqual([item.executable for item in found], ["fortitude"])
+        self.assertIn("below the supported floor", found[0].reason)
+
+    def test_the_arm_reports_the_backends_own_clause(self) -> None:
+        """Driven with a synthetic capability module, not with the host's environment.
+
+        The refusal path has to be exercised on a machine where every real tool is fine, and
+        mocking `shutil.which` would answer a different question (that is the presence half).
+        What is substituted here is the DECLARATION the arm reads — the same seam a future
+        backend uses — so the arm itself, its message and its record shape all really run.
+        """
+        class _Refusing:
+            @staticmethod
+            def version_argv():
+                return (sys.executable, "-c", "print('probe 9.9.9')")
+
+            @staticmethod
+            def unsupported_version_reason(version_text):
+                return f"synthetic refusal for {version_text!r}"
+
+        item = hp.HostExecutable("linter", "fortitude", "fortitude")
+        with mock.patch.object(hp, "required_host_executables", lambda selection=None: (item,)), \
+             mock.patch.object(hp, "_version_gated_capability_modules",
+                               lambda _item: iter((_Refusing,))):
+            found = hp.unsupported_host_tool_versions()
+        self.assertEqual(len(found), 1)
+        self.assertEqual((found[0].axis, found[0].backend_id, found[0].executable),
+                         ("linter", "fortitude", "fortitude"))
+        self.assertEqual(found[0].version, "probe 9.9.9")
+        self.assertIn("synthetic refusal", found[0].reason)
+
+    def test_an_unreadable_probe_is_still_handed_to_the_backend(self) -> None:
+        """`None` reaches the clause rather than being swallowed as "fine".
+
+        The polarity is the backend's to decide and it decides refuse; what this pins is that the
+        arm ASKS. A version read that raises is the state a missing binary or a hung tool leaves,
+        and treating it as success is the fail-open this whole check exists against.
+        """
+        seen: list[str | None] = []
+
+        class _Unreadable:
+            @staticmethod
+            def version_argv():
+                return ("metdsl-no-such-program-nowhere",)
+
+            @staticmethod
+            def unsupported_version_reason(version_text):
+                seen.append(version_text)
+                return "unreadable"
+
+        item = hp.HostExecutable("linter", "x", "x")
+        with mock.patch.object(hp, "required_host_executables", lambda selection=None: (item,)), \
+             mock.patch.object(hp, "_version_gated_capability_modules",
+                               lambda _item: iter((_Unreadable,))):
+            found = hp.unsupported_host_tool_versions()
+        self.assertEqual(seen, [None])
+        self.assertEqual(found[0].version, None)
+
+    def test_the_probe_reads_the_FIRST_line_and_a_banner_does_not_hide_the_version(self) -> None:
+        """The first-line rule is a real decision with a real failure mode, and it had none.
+
+        Every fixture and the real tool print exactly one line, so last-line / whole-text /
+        stderr-first readers were all indistinguishable — corpus-dependent, measured on the
+        round-3 census. Driven here with a probe that prints a banner first: the reader must
+        return the BANNER, which the backend then refuses. Fail-closed is the right polarity —
+        an unidentified build must not decide a certification — and this pins that the polarity
+        is reached rather than accidentally skipped by a reader that scans for a version.
+        """
+        probe = (sys.executable, "-c", "print('warning: config ignored'); print('probe 0.9.1')")
+        self.assertEqual(hp._tool_version_text(probe), "warning: config ignored")
+
+    def test_a_probe_that_times_out_is_a_refusal_rather_than_a_traceback(self) -> None:
+        """`subprocess.TimeoutExpired` is NOT an `OSError`, so it needs its own except arm.
+
+        The census measured the arm as dead — removing it from the tuple kept the suite green —
+        which means a hung linter would have tracebacked out of the launch path instead of being
+        refused. Driven by raising it, rather than by hanging a real process for the timeout.
+        """
+        with mock.patch.object(hp.subprocess, "run",
+                               side_effect=hp.subprocess.TimeoutExpired("x", 30)):
+            self.assertIsNone(hp._tool_version_text(("x", "--version")))
+
+    def test_an_unstartable_probe_is_a_refusal_rather_than_a_traceback(self) -> None:
+        self.assertIsNone(hp._tool_version_text(("metdsl-no-such-program-nowhere",)))
+
+    def test_a_build_that_cannot_impose_the_declared_set_is_refused_at_launch(self) -> None:
+        """The second launch question, driven through the real arm.
+
+        A version inside the range does not imply the declared set is imposable on that build:
+        a code withdrawn in a patch release nobody measured makes the invocation fail without
+        judging anything. Left to the gate it arrives as a lint finding attributed to the leaf's
+        source — the failure a blank-slate reviewer reproduced. Only the self-check's verdict is
+        substituted here; the record, the module and the arm are production.
+        """
+        with mock.patch.object(hp, "_self_check_reason", lambda module: "synthetic refusal"):
+            found = hp.unsupported_host_tool_versions()
+        self.assertEqual([item.reason for item in found], ["synthetic refusal"])
+
+    def test_the_self_check_runs_the_backends_own_argv_over_an_empty_directory(self) -> None:
+        """No fixture, no parsing: the directory is empty, so a usable build has nothing to find.
+
+        Pinned because the emptiness is what makes the exit status unambiguous — a self-check
+        pointed at a directory with sources in it would confuse `there are findings` with
+        `the invocation was refused`, which is the distinction this whole arm exists to make.
+        """
+        seen: dict[str, object] = {}
+
+        class _Probe:
+            @staticmethod
+            def self_check_argv(empty_dir):
+                seen["dir"] = empty_dir
+                seen["listing"] = sorted(Path(empty_dir).iterdir())
+                return (sys.executable, "-c", "raise SystemExit(0)")
+
+            @staticmethod
+            def self_check_reason(returncode, stdout, stderr):
+                seen["rc"] = returncode
+                return None
+
+        self.assertIsNone(hp._self_check_reason(_Probe))
+        self.assertEqual(seen["listing"], [])
+        self.assertEqual(seen["rc"], 0)
+
+    def test_a_self_check_that_cannot_be_run_is_a_refusal(self) -> None:
+        class _Unrunnable:
+            @staticmethod
+            def self_check_argv(empty_dir):
+                return ("metdsl-no-such-program-nowhere",)
+
+            @staticmethod
+            def self_check_reason(returncode, stdout, stderr):  # pragma: no cover - not reached
+                return None
+
+        self.assertIsNotNone(hp._self_check_reason(_Unrunnable))
+
+    def test_this_development_host_satisfies_the_version_arm(self) -> None:
+        """The companion of `test_this_development_host_satisfies_the_probe`: if this fails, a
+        workflow started on this machine would be refused at launch."""
+        self.assertEqual(hp.unsupported_host_tool_versions(), ())
 
 
 class NeutralCoreTests(unittest.TestCase):

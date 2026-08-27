@@ -126,7 +126,33 @@ PINNED: dict[str, str] = {
     # counted it and falsely rejected the node. The producer is now told the rule it is judged
     # by, which is the same asymmetry correction pure-16 made for impl_defaults.
     "pure-17": "67de1716fdaa1c5a461015b869bf63e168a31136ea28ce246935678f74a176ec",
-}
+    # pure-18: rule (1) names the source of the lint rule set the `Generate.gate` applies. The
+    # gate no longer inherits the installed linter's default set — it imposes the set declared in
+    # `tools/backends/linter/fortitude/lint.py` (issue #111) — so a producer told "the linter's
+    # defaults" was being pointed at something that is no longer what judges it.
+    "pure-18": "95ba494864fe7d3042d30434e84fe2adcda80b5f76a190f9a2f08ef50e864e84",
+    # pure-19: the `! allow(C003)` workaround is GONE from rule (2) — the lint gate now runs
+    # with allow comments disabled and C003 is not in its declared set, so the directive the
+    # template used to mandate on every module is itself a finding (FORT005). A producer
+    # following pure-18 would now fail the gate it was written to pass.
+    "pure-19": "4feebc64731231031adf911097f23e1e3870b1a35e77ccc98f0a1cd810c09079",
+    # pure-20: rule (2) no longer promises the producer that an allow directive will be
+    # REPORTED. Measured: `FORT005` fires only for a code outside the declared set; a declared
+    # code earns `FORT002` on clean source and nothing at all on source that violates it — the
+    # case a producer would actually be in. Promising a diagnostic that does not arrive is the
+    # oscillation this rule exists to prevent, so the text states the finding fires anyway.
+    "pure-20": "0e9b74e2daebbbf24cb14d936bf1b6b356a15e92a1de6a4909fad61900a0a8e5",
+    # pure-21: rule (2) names the FLAG (`--ignore-allow-comments`) rather than describing it.
+    # The flag literal is what couples the four leaf-read statements of this rule to the code
+    # that imposes it: a rename now breaks both together. Measured before it: reversing the
+    # prohibition into its opposite in the three agentic sites passed 1294 tests.
+    "pure-21": "ce130490f66843a4adae34584710e4de5dba079706f5f5d5e6f0a7789f5cb272",
+    # pure-22: rule (1) stated the S001 boundary as a version-independent fact ("fires at exactly
+    # 100"). Measured: the comparison is `>=` on 0.8.x and `>` on 0.9.x, both inside the supported
+    # range, so the sentence was false on half of it. The instruction ("under 100") was already
+    # correct everywhere; what changed is that a producer checking the claim against its own host
+    # no longer finds the checklist wrong.
+    "pure-22": "771d0659d2341bb372d1dde2c7afd71b2a25d4383ce900ed94c20c828826e94d",}
 
 
 def _contract_tuple() -> dict[str, object]:

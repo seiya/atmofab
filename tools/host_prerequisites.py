@@ -44,7 +44,9 @@ The mid-run gates stay as the backstop. This is an earlier detector, not a repla
 from __future__ import annotations
 
 import shutil
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import NamedTuple
 
@@ -59,12 +61,28 @@ class HostExecutable(NamedTuple):
     executable: str
 
 
+class HostToolVersion(NamedTuple):
+    """One required program whose installed version is refused, and why.
+
+    `version` is what the program reported, or `None` when nothing could be read — both states
+    are refusals, and keeping the text lets the launch message say which one happened.
+    """
+
+    axis: str
+    backend_id: str
+    executable: str
+    version: str | None
+    reason: str
+
+
 def _build_runtime_server():
     """The MCP server module, reached the way the conductor's in-process gate bodies reach it.
 
-    It is stdlib-only and imports in milliseconds, so paying for it on the launch path costs
-    nothing measurable; the alternative — a second copy of the argv tables — is the drift this
-    module exists to prevent.
+    It pulls in no third-party package and imports in milliseconds, so paying for it on the
+    launch path costs nothing measurable; the alternative — a second copy of the argv tables — is
+    the drift this module exists to prevent. (It is no longer stdlib-ONLY: a `linter` row whose
+    argv has moved into its backend package is composed by reaching
+    `tools/backends/registry.py`. Both modules it reads are themselves stdlib-only.)
     """
     mcp_dir = str(_REPO_ROOT / "mcp_servers")
     if mcp_dir not in sys.path:
@@ -151,6 +169,112 @@ def required_host_executables(
     _require_implemented("compiler", compiler)
     add("compiler", compiler, server.syntax_compiler_executable(compiler))
 
+    return tuple(found)
+
+
+def _tool_version_text(version_argv: tuple[str, ...]) -> str | None:
+    """The first line the program prints for its own version, or `None` when it cannot be read.
+
+    Copied in shape from `_syntax_compiler_version` in `mcp_servers/build_runtime_server.py`,
+    including the failure polarity: a program that cannot be started, times out, or prints
+    nothing yields `None`, and the CALLER decides what an unreadable version means. Here the
+    caller is a launch gate, and the backend's own clause refuses it.
+    """
+    try:
+        completed = subprocess.run(
+            list(version_argv), text=True, capture_output=True, timeout=30, check=False
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    first_line = (completed.stdout or completed.stderr or "").strip().splitlines()
+    return first_line[0].strip() if first_line else None
+
+
+#: The capabilities whose backend package decides whether the installed build of its program may
+#: run at all. Membership here is what MAKES the two-name protocol below mandatory: a capability
+#: outside this tuple is not asked (its package need not answer, and a `runner_render` package
+#: does not), and one inside it that cannot answer fails the suite rather than the launch
+#: (`tools/tests/test_host_prerequisites.py`).
+#:
+#: An explicit tuple rather than "ask whichever module happens to have the names": duck-typing a
+#: MANDATORY protocol makes a rename in a backend package turn this whole arm off silently, which
+#: is the fail-open shape this repository keeps re-introducing. The first version of this module
+#: asked every `backend_provides` capability and would have raised `AttributeError` at launch the
+#: first time a language-axis executable reached it.
+#:
+#: These are capability names, not technology names — the property the module docstring states.
+_VERSION_GATED_CAPABILITIES = ("lint",)
+
+
+def _version_gated_capability_modules(item: HostExecutable):
+    """The capability modules of `item`'s record that gate on the installed version.
+
+    The protocol is two names — `version_argv` and `unsupported_version_reason` — mandatory for
+    every `_VERSION_GATED_CAPABILITIES` member a record implements in its own package.
+
+    A capability still inlined in the neutral core declares no package and is not reached here;
+    its version, if it ever needs one, is that area's to add when it migrates.
+    """
+    from tools.backends import registry as backend_registry
+
+    record = backend_registry.get(item.axis, item.backend_id)
+    for capability in sorted(record.backend_provides & set(_VERSION_GATED_CAPABILITIES)):
+        yield backend_registry.capability_module(item.axis, item.backend_id, capability)
+
+
+def _self_check_reason(module) -> str | None:
+    """Run a capability module's own launch self-check, or `None` when it has none to run.
+
+    The version arm answers "is this build one we measured against"; this answers the question
+    that survives a yes — "can this build actually run what we declare". They are different: a
+    supported version can still refuse the declared invocation if a code in it was withdrawn in
+    a patch release nobody measured. The check runs over an EMPTY directory, so the answer is a
+    bare exit status and nothing is parsed; the backend module that answers it states why.
+    """
+    build = getattr(module, "self_check_argv", None)
+    verdict = getattr(module, "self_check_reason", None)
+    if build is None or verdict is None:
+        return None
+    with tempfile.TemporaryDirectory() as empty:
+        try:
+            completed = subprocess.run(
+                list(build(empty)), text=True, capture_output=True, timeout=120, check=False)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return f"the launch self-check could not be run ({exc})"
+    return verdict(completed.returncode, completed.stdout or "", completed.stderr or "")
+
+
+def unsupported_host_tool_versions(
+    selection: dict[str, str] | None = None,
+) -> tuple[HostToolVersion, ...]:
+    """Those required programs whose installed version must not decide a certification.
+
+    The second half of the same launch-time question `missing_host_executables` asks. A tool that
+    is PRESENT but of an unmeasured version is the failure this half exists for, and it is not
+    hypothetical: a `linter` vendor turned 18 rules on by default in one minor release, which
+    made every node of that language uncertifiable on a freshly installed host while nothing in
+    this repository had changed (issue #110 / #111).
+
+    No version, range, or tool name is written in this module — the same property the executable
+    half has, for the same reason. Both the probe argv and the verdict come from the backend
+    package that declares the capability, so this file cannot look for a build the gate never
+    runs, and cannot disagree with the rule set that build will be handed.
+    """
+    found: list[HostToolVersion] = []
+    for item in required_host_executables(selection):
+        for module in _version_gated_capability_modules(item):
+            version_text = _tool_version_text(tuple(module.version_argv()))
+            reason = module.unsupported_version_reason(version_text)
+            # A supported version that still cannot run what this repository declares is refused
+            # here too, and for the same reason the version half exists: the alternative is that
+            # it surfaces mid-run as a gate failure attributed to a leaf's source.
+            if reason is None:
+                reason = _self_check_reason(module)
+            if reason is not None:
+                found.append(
+                    HostToolVersion(item.axis, item.backend_id, item.executable,
+                                    version_text, reason)
+                )
     return tuple(found)
 
 

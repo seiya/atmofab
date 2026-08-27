@@ -1843,7 +1843,10 @@ class PureColdRepairPromptTests(unittest.TestCase):
         text = ort._render_pure_repair_prompt(self._req())
         self.assertIn("Output contract", text)
         self.assertIn("Authoring rules", text)
-        self.assertIn("! allow(C003)", text)
+        # Rule (2)'s subject, which inverted with issue #111: the template used to MANDATE
+        # `! allow(C003)` and now forbids every allow directive, so the literal that pins the
+        # rule's presence is the prohibition rather than the directive.
+        self.assertIn("--ignore-allow-comments", text)
 
     def test_cold_repair_lifts_every_static_rule_paragraph(self) -> None:
         # The ABI paragraph was added to the launch template and silently not lifted, so a cold
@@ -1880,7 +1883,7 @@ class PureColdRepairPromptTests(unittest.TestCase):
         # The resumed session already holds the launch prompt's static prefix.
         text = ort._render_pure_repair_prompt(self._req(warm_resume=True))
         self.assertNotIn("Authoring rules", text)
-        self.assertNotIn("! allow(C003)", text)
+        self.assertNotIn("--ignore-allow-comments", text)
 
     def test_authoring_rules_lift_is_the_whole_paragraph(self) -> None:
         # An interior blank line introduced by a template edit would make `split("\n\n")` drop

@@ -70,7 +70,11 @@ env/
 .env
 .env.*
 .python-version
-fortitude
+# The linter binary, when an operator installs it INTO the checkout root. Anchored: the
+# pattern was unanchored, which silently swallowed `tools/backends/linter/fortitude/` and
+# `docs/backends/linter/fortitude/` — the backend package and its document — the moment that
+# axis value got a directory of its own (issue #111).
+/fortitude
 
 # Editor and OS noise
 .cursor/mcp.json

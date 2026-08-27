@@ -1698,9 +1698,10 @@ def _validate_problem_model_dependency_dataflow(
     name this file also declares as a constant; nothing in one file can see that. (b) An
     implicitly typed local is not declared at all, so it cannot disqualify a name — unreachable
     through `Generate.gate`, which requires `implicit none` (fortitude **C001**, verified by
-    running it; C003 is a different rule, the one `docs/workflow/phases/phase_02_generate.md`
-    instructs the leaf to SUPPRESS, so citing it would have pointed a future reader at a check
-    that is never enforced). (c) The candidate
+    running it; C003 is a different rule, and since issue #111 it is not in the
+    gate's declared rule set at all — when this note was written the phase document instructed
+    the leaf to suppress it, and either way citing it would have pointed a future reader at a
+    check that never fires). (c) The candidate
     rule still treats a variable written by an earlier `call` as a candidate, and the consumption
     closure still cannot cross a call; the measured instance is the
     `dynamics_shallow_water_profile_2d_rusanov_p0_ssprk2` model, latent only because of the

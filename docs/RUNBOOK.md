@@ -58,7 +58,7 @@ the set resolves to:
 
 | tool | purpose | when its absence used to surface |
 |---|---|---|
-| `fortitude` | the `static lint` tool the `Generate.gate` lint check runs via MCP `run_linter` | `Generate.gate`, after `Compile` and `Generate.generate` had been billed |
+| `fortitude` | the `static lint` tool the `Generate.gate` lint check runs via MCP `run_linter`. Supported versions: `>=0.8,<0.10` — see the version check below | `Generate.gate`, after `Compile` and `Generate.generate` had been billed |
 | `make` | the build system `Build` drives via MCP `compile_project` | `Build` — one phase later still |
 | `gfortran` | the compiler — both the mandatory `Generate.gate` syntax-only stage and the `FC` the build control file pins | `Generate.gate`, same as above: `run_syntax_check` reports a missing compiler as `skipped`, and the conductor turns a skipped MANDATORY stage into a fail_closed |
 
@@ -66,8 +66,28 @@ Install them with the platform's own package manager, e.g. on Debian/Ubuntu:
 
 ```
 sudo apt-get install gfortran make      # the toolchain
-pipx install fortitude-lint             # or: pip install fortitude-lint
+pipx install 'fortitude-lint>=0.8,<0.10'   # or: pip install 'fortitude-lint>=0.8,<0.10'
 ```
+
+### Refused at startup — `unsupported_required_host_tool_versions`
+
+The same executables, checked a second way: PRESENT but of a version this repository has not
+measured its gates against. Checked after the missing-tool arm, because an absent program has no
+version to read.
+
+Today one tool carries a range. The `Generate.gate` lint check applies a rule set this repository
+declares rather than the linter's own default, and that set is measured against the range in the
+`fortitude` row of the table above; the declaration and the measurement are
+[docs/backends/linter/fortitude/RULES.md](backends/linter/fortitude/RULES.md). Neither the tool
+name, the range, nor the probe argv is written in the launch check — all three come from the
+backend package that owns the tool, so the check cannot look for a build the gate never runs.
+
+Without this arm the failure surfaces at the first `Generate.gate` and consumes the whole
+`Generate` retry budget on findings no leaf can act on: the linter's vendor enabled 18 additional
+rules by default in 0.9.0, and on this tree every finding they produce lands in the host-rendered
+runner (issue #110). The refusal names the installed version and the supported range; the remedy
+is to install a version inside the range, or to re-measure and widen it per that document's
+Operations Rules.
 
 ### Refused at `preflight`, still before the first leaf
 
@@ -272,6 +292,17 @@ python3 tools/run_workflow.py <target spec_ref> validate --with-deps
 Without `--with-deps` a single-node run stops at `workflow-launch-check` with `dependency_not_ready`, and the `reason_detail` names the drifted node and the resolution it was certified against versus the one derived now. Staleness is detected at **version granularity only**: a content edit that does not move `spec_version` is not seen, which is why the respec discipline is "content change ⇒ `spec_version` bump".
 
 ## 3-1. Resuming a failed workflow (`--resume`)
+
+**One-time cost when resuming onto sources written before the declared lint rule set landed
+(issue #111).** A `source/<source_id>/src/` produced by an earlier run carries the
+`! allow(C003)` directive the leaf-read contracts used to mandate. The `Generate.gate` lint check
+now runs `--ignore-allow-comments`, so that directive is a finding (`FORT005`) rather than a
+suppression: such a resume fails its lint gate ONCE, warm-resumes `Generate.generate`, and the
+regenerated source carries no directive. Nothing to do — the message names the directive and the
+loop converges on the next attempt. Certified sources under `releases/` are not re-linted (the
+gate lints only the node's own `src/`), so this is confined to in-flight work.
+[docs/backends/linter/fortitude/RULES.md](backends/linter/fortitude/RULES.md) carries the
+measurement.
 
 The canonical path to resume a workflow that failed midway, from the failure point while reusing completed `step` (e.g. already-compiled), is `python3 tools/run_workflow.py --resume`.
 

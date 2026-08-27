@@ -15069,6 +15069,33 @@ class DeterministicLintTest(unittest.TestCase):
             assert ev is not None
             self.assertFalse(ev["ok"])
 
+    def test_gate_lint_check_refuses_an_invocation_that_judged_nothing(self) -> None:
+        """A refused INVOCATION is a transport fail_closed, not a content failure.
+
+        Declaring the rule set put `--select` in the argv, which the tool validates before it
+        reads a file, so a code it does not know exits without checking anything. Read as a
+        content failure that warm-resumes `generate.generate`, it sends a leaf to fix
+        `tools/backends/linter/fortitude/lint.py` — a file it cannot write, and the unwinnable
+        loop of issue #110 in a new place.
+
+        Pinned at the GATE, not at the classifier: the classifier has its own tests, and the
+        mutation sweep found that deleting the gate's CALL to it left the whole suite green.
+        """
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            refs = self._refs()
+            self._seed(repo, refs)
+            c = self._conductor(repo)
+            with self._patch_linter(
+                lambda args: {"ok": False, "return_code": 2, "command_id": "cid",
+                              "preset": "fortitude", "stdout": "",
+                              "stderr": "error: invalid value 'ZZZ999' for '--select'"}):
+                with self.assertRaises(RuntimeError) as caught:
+                    c._gate_lint_check(refs, "child-1", "captok")
+        self.assertIn("without checking anything", str(caught.exception))
+        self.assertIn("lint.py", str(caught.exception))
+
     def test_gate_lint_check_mixed_records_two_entries(self) -> None:
         import tempfile
         from tools.hooks.lint_evidence import read_lint_evidence

@@ -1440,10 +1440,15 @@ class RegistryConsistencyTests(unittest.TestCase):
         caller fails here until it is declared declaration-only; and none of it constrains what
         anyone registers.
         """
-        dispatched = {"control_file", "build_execute", "runner_render"}
+        dispatched = {"control_file", "build_execute", "runner_render", "lint"}
+        # `lint` joined them when the first linter's argv moved into its package (issue #111):
+        # `mcp_servers/build_runtime_server.py`'s `_lint_preset_command` asks `capability_module`
+        # for it. Note the asymmetry the instrument's own comment below records — the conductor's
+        # `{"lint": ...}` dict key is NOT what makes it dispatched, and never was.
+        #
         # The rest are declaration-only TODAY: they are how their records answer `implemented`,
-        # and they gain a dispatch when their ledger area lands (the compiler / linter adapters
-        # and the parallel knobs are still inlined in the neutral core).
+        # and they gain a dispatch when their ledger area lands (the compiler adapters and the
+        # parallel knobs are still inlined in the neutral core, as are the other three linters).
         declaration_only = set(registry.CAPABILITIES) - dispatched
         asked: set[str] = set()
         registry_path = Path(registry.__file__).resolve()

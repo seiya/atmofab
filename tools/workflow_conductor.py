@@ -8376,6 +8376,34 @@ clean:
                 "stdout": "",
                 "stderr": "" if gate_ok else (failure_excerpt or "")}
 
+    def _raise_on_unusable_lint_invocation(self, preset: str, result: dict[str, Any]) -> None:
+        """Refuse a lint run that never produced a verdict, before it is read as one.
+
+        The question is the backend's — what its tool's exit status MEANS is exactly the
+        knowledge that lives in the backend package — so this asks and carries the answer,
+        exactly as the gate's other refusals carry the registry's own clause. A preset with no
+        package, or one whose package does not answer, is left as it was: this narrows nothing
+        and adds no second opinion about what a finding is.
+        """
+        from tools.backends import registry as backend_registry
+
+        for sub in (result.get("runs") or [{**result, "sub_preset": preset}]):
+            sub_preset = str(sub.get("sub_preset") or sub.get("preset") or preset)
+            try:
+                record = backend_registry.get("linter", sub_preset)
+            except Exception:  # pragma: no cover - an unregistered preset is refused upstream
+                continue
+            if "lint" not in record.backend_provides:
+                continue
+            module = backend_registry.capability_module("linter", sub_preset, "lint")
+            classify = getattr(module, "unusable_invocation_reason", None)
+            if classify is None:
+                continue
+            reason = classify(int(sub.get("return_code", 0) or 0),
+                              str(sub.get("stdout") or ""), str(sub.get("stderr") or ""))
+            if reason is not None:
+                raise RuntimeError(f"generate.gate lint check: {reason}")
+
     def _gate_lint_check(self, refs: NodeRefs, child_arid: str,
                          cap_token: str) -> dict[str, Any]:
         """Generate.gate lint checker: in-process run_linter over source/<id>/src/, plus a
@@ -8422,6 +8450,17 @@ clean:
         })
 
         # Normalize single vs mixed (2 sub-runs) into a uniform run_linter entry list.
+        # Before anything is classified as a CONTENT failure, ask the linter's own backend
+        # whether the run produced a verdict at all. Declaring the rule set put `--select` in the
+        # argv, and the tool validates it before reading a file: a withdrawn or unknown code
+        # makes the invocation fail without judging anything. That is a defect in this
+        # repository, not in the leaf's source, so it is a transport fail_closed — routing it to
+        # `generate.generate` would send a leaf to fix a file it cannot write, which is the
+        # unwinnable loop of issue #110 in a new place (found by a blank-slate reviewer, whose
+        # reproduction drove exactly this path). Only a preset whose package declares `lint`
+        # answers; the still-inlined presets keep their previous behaviour.
+        self._raise_on_unusable_lint_invocation(preset, result)
+
         run_entries: list[dict[str, Any]] = []
         excerpts: list[str] = []
         if preset == "mixed":
