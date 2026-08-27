@@ -5,9 +5,9 @@
       "fortran": 3
     },
     "README.md": {
-      "compiler-driver": 4,
-      "fortran": 7,
-      "linter-fortitude": 2
+      "compiler-driver": 3,
+      "fortran": 4,
+      "linter-fortitude": 1
     },
     "docs/AGENT_CONTRACT.md": {
       "fortran-suffix": 1,
@@ -61,9 +61,11 @@
       "fortran-intent": 2
     },
     "docs/RUNBOOK.md": {
-      "fortran": 9,
+      "compiler-driver": 2,
+      "fortran": 12,
       "fortran-module-file": 2,
       "fortran-suffix": 2,
+      "linter-fortitude": 3,
       "make-control-file": 3
     },
     "docs/SPEC.md": {
@@ -178,7 +180,7 @@
       "fortran-standard": 3,
       "fortran-subroutine": 1,
       "fortran-suffix": 6,
-      "linter-fortitude": 9,
+      "linter-fortitude": 8,
       "make-control-file": 16,
       "make-variable": 8
     },
@@ -332,9 +334,9 @@
       "fortran": 1
     },
     "tools/workflow_conductor.py": {
-      "compiler-driver": 28,
+      "compiler-driver": 20,
       "compiler-syntax-only": 2,
-      "fortran": 79,
+      "fortran": 71,
       "fortran-implicit-none": 1,
       "fortran-kind": 1,
       "fortran-module-file": 4,

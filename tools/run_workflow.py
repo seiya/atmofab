@@ -114,6 +114,33 @@ def _check_required_cli_tools() -> list[str]:
     return [tool for tool in REQUIRED_CLI_TOOLS if shutil.which(tool) is None]
 
 
+# Host executables the run's own axis selection implies — the `static lint` tool of the node's
+# language, its build system, and its compiler. Checked here for the third time in this file for
+# the same reason as the two families above, and the reason is measured: an absent `static lint`
+# tool does not stop the run at launch, it stops it at the first `Generate` node's `Generate.gate`
+# lint check — after `Compile` and `Generate.generate` have been billed — and terminalizes
+# (issue #109). An absent COMPILER lands in the same place one check later — the gate turns a
+# skipped mandatory syntax stage into a fail_closed — and an absent BUILD SYSTEM one phase later
+# still, at `Build`.
+#
+# There is no tuple of names here, deliberately. Every name is argv[0] of the command that will
+# actually run it, read out of the table that runs it (`tools/host_prerequisites.py`), so this
+# `neutral core` file names no technology and the probe cannot look for a program the gate never
+# launches. `docs/RUNBOOK.md` §0-1 carries the install lines.
+
+
+def _check_required_host_tools() -> list[str]:
+    """The executables of `tools/host_prerequisites` this host cannot resolve on `PATH`.
+
+    Imported inside the function, like `_check_required_python_modules`'s `importlib`: the probe
+    reaches the MCP server's argv tables and the conductor's IR readers, and a startup path that
+    has not yet decided it is going to run should not pay for them.
+    """
+    from tools.host_prerequisites import missing_host_executables
+
+    return [item.executable for item in missing_host_executables()]
+
+
 def _check_required_python_modules() -> list[str]:
     """The distribution names of any `REQUIRED_PYTHON_MODULES` this interpreter cannot import.
 
@@ -2313,6 +2340,25 @@ def _run_main(
                 ),
                 "missing": missing_modules,
                 "required": [distribution for _module, distribution in REQUIRED_PYTHON_MODULES],
+                "docs_ref": "docs/RUNBOOK.md#0-1",
+            },
+            args.stdout_format,
+        )
+        return 2
+    missing_host_tools = _check_required_host_tools()
+    if missing_host_tools:
+        from tools.host_prerequisites import required_host_executables
+
+        _emit_unlogged_event(
+            {
+                "status": "fail",
+                "reason": "missing_required_host_tools",
+                "detail": (
+                    f"missing host tools: {','.join(missing_host_tools)} — install them and "
+                    f"re-run (see docs/RUNBOOK.md#0-1)"
+                ),
+                "missing": missing_host_tools,
+                "required": [item.executable for item in required_host_executables()],
                 "docs_ref": "docs/RUNBOOK.md#0-1",
             },
             args.stdout_format,

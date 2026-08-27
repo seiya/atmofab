@@ -6,9 +6,17 @@ This document defines the "minimal operational procedure for running trials". Th
 - From a `spec`'s `Controlled Spec` (physics definition) and `tests` (verification profile), perform execution and judgment, and evaluate physical validity and performance.
 - Isolate where a failure's cause lies among **Spec / Compile / Generate / Build / Validate**. The optional flows `Tune` / `Promote` are handled outside the core workflow.
 
-## 0-1. Required CLI tools and Python packages
+## 0-1. Host prerequisites
 
-Workflow execution and the repair procedures of this RUNBOOK presume the following CLI.
+This is the canonical list of what the HOST that runs a workflow must have. `README.md` points
+here rather than restating it: the two used to be separate lists, and the shorter of them was the
+one an operator setting up a machine reads (issue #109).
+
+Everything in the first three tables is refused at the point `tools/run_workflow.py` starts,
+before any `LLM` leaf is launched, with the reason code named in each table's heading. The last
+table is checked later, by `preflight`, still before the first leaf.
+
+### Refused at startup — `missing_required_cli_tools`
 
 | tool | purpose |
 |---|---|
@@ -16,15 +24,17 @@ Workflow execution and the repair procedures of this RUNBOOK presume the followi
 | `jq` | extracting shell variables from JSON such as output_manifest (`python3 -c` is blocked by `forbid_python_inline_write`, so it cannot be substituted) |
 | `git` | `write_scope_baseline` (FS-diff for terminal write authorization) / status check |
 
-The host interpreter additionally needs two Python packages, which this repository does not
-install for you:
+### Refused at startup — `missing_required_python_modules`
+
+The host interpreter needs these packages, which this repository does not install for you:
 
 ```
-pip install tree-sitter tree-sitter-fortran
+pip install PyYAML tree-sitter tree-sitter-fortran
 ```
 
 | package | purpose |
 |---|---|
+| `PyYAML` | every host-side reader of `spec.ir.yaml` and of the leaf-`LLM` configuration |
 | `tree-sitter` | the parser runtime behind `tools/backends/language/fortran/structure.py` |
 | `tree-sitter-fortran` | the Fortran grammar the three `problem` model gates read structure through (written against 0.6.0) |
 
@@ -33,7 +43,40 @@ They are needed by the HOST that runs the conductor, because `Generate.gate`'s s
 cannot read a Fortran source at all and fails closed — correctly, but only after lint and syntax
 have passed, i.e. part-way into a billed run — so their absence is checked at launch instead.
 
-When any of these is absent, it fail-fasts at the point `tools/run_workflow.py` starts.
+(`PyYAML` is listed here because a run needs it, but it is not a member of
+`REQUIRED_PYTHON_MODULES` and its absence does not carry this reason code: `tools/workflow_conductor.py`
+imports it at module top, and `tools/orchestration_runtime._require_yaml` raises its own
+"install PyYAML" message. Both are already launch-time and legible, which is the property the
+reason codes exist to give the other two families.)
+
+### Refused at startup — `missing_required_host_tools`
+
+The executables the run's own toolchain implies. They are **not** named in the check: it reads
+argv[0] out of the tables that will actually run them, so what it looks for cannot drift from
+what a gate later launches (`tools/host_prerequisites.py`). For the Fortran nodes in this tree
+the set resolves to:
+
+| tool | purpose | when its absence used to surface |
+|---|---|---|
+| `fortitude` | the `static lint` tool the `Generate.gate` lint check runs via MCP `run_linter` | `Generate.gate`, after `Compile` and `Generate.generate` had been billed |
+| `make` | the build system `Build` drives via MCP `compile_project` | `Build` — one phase later still |
+| `gfortran` | the compiler — both the mandatory `Generate.gate` syntax-only stage and the `FC` the build control file pins | `Generate.gate`, same as above: `run_syntax_check` reports a missing compiler as `skipped`, and the conductor turns a skipped MANDATORY stage into a fail_closed |
+
+Install them with the platform's own package manager, e.g. on Debian/Ubuntu:
+
+```
+sudo apt-get install gfortran make      # the toolchain
+pipx install fortitude-lint             # or: pip install fortitude-lint
+```
+
+### Refused at `preflight`, still before the first leaf
+
+| requirement | where it is checked |
+|---|---|
+| the agent CLI the leaf-`LLM` configuration names, its MCP registration, its tool permission, and its tool roster | §0-2 (Claude) / §0-3 (Codex) |
+| the CLI or API credentials of every provider that configuration names | `preflight.json#providers` |
+| the sandbox runtime `bwrap` | `docs/BWRAP_ENABLEMENT.md` |
+
 
 ## 0-2. Claude backend preflight requirements (operator setup)
 

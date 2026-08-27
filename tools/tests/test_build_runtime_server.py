@@ -1124,3 +1124,81 @@ class ToolSchemaDocumentParityTests(unittest.TestCase):
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
+
+
+class RunLinterPresetDispatchTests(unittest.TestCase):
+    """The preset -> argv table `tool_run_linter` runs and the launch-time host probe reads.
+
+    These were an if-chain with `mixed` restating `fortitude`'s and `cppcheck`'s command lines a
+    second time, and `mixed` had no test at all. The refactor that made the argv readable for the
+    probe (issue #109) rewrote that path, so the shapes are pinned here: a simple preset returns
+    the command's own keys plus `preset`, a composite returns `runs`, and both spellings are what
+    the conductor's `_gate_lint_check` normalizes and what the lint evidence records.
+    """
+
+    def setUp(self) -> None:
+        self.mod = _load_server_module()
+        self.calls: list[list[str]] = []
+
+        def fake_run_command(*, command, **kwargs):
+            self.calls.append(list(command))
+            return {"ok": True, "command_id": f"cid{len(self.calls)}", "return_code": 0,
+                    "stdout": "", "stderr": "", "command": list(command)}
+
+        self.patch = mock.patch.object(self.mod, "_run_command", fake_run_command)
+        self.patch.start()
+        self.addCleanup(self.patch.stop)
+
+    def test_a_simple_preset_returns_the_flat_shape_and_runs_one_command(self) -> None:
+        result = self.mod.tool_run_linter({"preset": "fortitude", "project_dir": "."})
+        self.assertEqual(result["preset"], "fortitude")
+        self.assertTrue(result["ok"])
+        self.assertNotIn("runs", result)
+        self.assertEqual(self.calls, [list(self.mod._LINT_PRESET_COMMANDS["fortitude"])])
+
+    def test_a_composite_preset_runs_each_sub_preset_in_order(self) -> None:
+        result = self.mod.tool_run_linter({"preset": "mixed", "project_dir": "."})
+        subs = self.mod._LINT_PRESET_COMPOSITES["mixed"]
+        self.assertEqual(result["preset"], "mixed")
+        self.assertEqual([entry["sub_preset"] for entry in result["runs"]], list(subs))
+        self.assertEqual(
+            self.calls, [list(self.mod._LINT_PRESET_COMMANDS[sub]) for sub in subs])
+        # each sub-run keeps its own command_id, which is what the lint evidence records
+        self.assertEqual(
+            len({entry["command_id"] for entry in result["runs"]}), len(subs))
+
+    def test_a_composite_is_not_ok_when_any_sub_run_is_not(self) -> None:
+        original = self.mod._run_command
+
+        def failing_second(*, command, **kwargs):
+            out = original(command=command, **kwargs)
+            if len(self.calls) == 2:
+                out["ok"] = False
+            return out
+
+        with mock.patch.object(self.mod, "_run_command", failing_second):
+            result = self.mod.tool_run_linter({"preset": "mixed", "project_dir": "."})
+        self.assertFalse(result["ok"])
+
+    def test_an_unsupported_preset_names_the_supported_set_before_running_anything(self) -> None:
+        with self.assertRaises(ValueError) as caught:
+            self.mod.tool_run_linter({"preset": "no_such_linter", "project_dir": "."})
+        message = str(caught.exception)
+        self.assertIn("unsupported preset: no_such_linter", message)
+        for preset in list(self.mod._LINT_PRESET_COMMANDS) + list(self.mod._LINT_PRESET_COMPOSITES):
+            self.assertIn(preset, message)
+        self.assertEqual(self.calls, [])
+
+    def test_a_custom_command_is_still_refused(self) -> None:
+        with self.assertRaises(ValueError):
+            self.mod.tool_run_linter(
+                {"preset": "fortitude", "project_dir": ".", "command": ["rm", "-rf", "/"]})
+        self.assertEqual(self.calls, [])
+
+    def test_a_composite_names_only_presets_the_command_table_defines(self) -> None:
+        """A composite that named an unknown sub-preset would `KeyError` mid-run, after its
+        earlier sub-runs had already executed."""
+        for preset, subs in self.mod._LINT_PRESET_COMPOSITES.items():
+            for sub in subs:
+                self.assertIn(sub, self.mod._LINT_PRESET_COMMANDS, f"{preset} -> {sub}")
+

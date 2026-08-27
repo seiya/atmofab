@@ -4023,6 +4023,91 @@ class RunWorkflowTests(unittest.TestCase):
         self.assertIn("tree-sitter", payload.get("required", []))
         self.assertIn("pip install tree-sitter-fortran", payload.get("detail", ""))
 
+    def test_main_fails_fast_when_a_required_host_tool_is_missing(self) -> None:
+        """The third family, and the one issue #109 reproduced: the executables the run's own
+        axis selection implies. Without this the run does not fail at launch — an absent
+        `static lint` tool fails the first `Generate` node's gate, after `Compile` and
+        `Generate.generate` have been BILLED, and `--resume` re-runs the whole `generate` phase.
+        An absent compiler lands in the same place one check later, and an absent build system
+        one phase later still, at `Build`.
+
+        The tool name is asserted through the probe rather than spelled here: this test must not
+        become the place a `neutral core` file learns a technology name either."""
+        from tools.host_prerequisites import required_host_executables
+
+        target = required_host_executables()[0].executable
+        original_which = run_workflow.shutil.which
+
+        def fake_which(name: str) -> str | None:
+            if name == target:
+                return None
+            return original_which(name)
+
+        observed_calls: list[list[str]] = []
+
+        def fake_runtime(repo_root, env, args):  # type: ignore[no-untyped-def]
+            observed_calls.append(list(args))
+            raise AssertionError("orchestration_runtime must not be invoked")
+
+        original_runtime = run_workflow._runtime_command
+        run_workflow.shutil.which = fake_which  # type: ignore[assignment]
+        run_workflow._runtime_command = fake_runtime  # type: ignore[assignment]
+        try:
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                code = run_workflow.main([
+                    "spec/problem/dummy.md",
+                    "Compile",
+                    "--stdout-format",
+                    "jsonl",
+                ])
+        finally:
+            run_workflow.shutil.which = original_which  # type: ignore[assignment]
+            run_workflow._runtime_command = original_runtime  # type: ignore[assignment]
+
+        self.assertEqual(code, 2)
+        self.assertFalse(observed_calls)
+        payload = json.loads(buf.getvalue().strip())
+        self.assertEqual(payload.get("status"), "fail")
+        self.assertEqual(payload.get("reason"), "missing_required_host_tools")
+        self.assertEqual(payload.get("missing"), [target])
+        self.assertIn(target, payload.get("required", []))
+        self.assertIn(target, payload.get("detail", ""))
+        self.assertEqual(payload.get("docs_ref"), "docs/RUNBOOK.md#0-1")
+
+    def test_the_host_tool_rejection_enumerates_every_missing_tool(self) -> None:
+        """Same format contract the CLI-tool rejection has: comma-separated, no spaces, so a
+        separator change cannot drift away from what an operator is told to install."""
+        from tools.host_prerequisites import required_host_executables
+
+        targets = [item.executable for item in required_host_executables()]
+        self.assertGreater(len(targets), 1)
+        original_which = run_workflow.shutil.which
+        run_workflow.shutil.which = lambda name: (  # type: ignore[assignment]
+            None if name in targets else original_which(name)
+        )
+        original_runtime = run_workflow._runtime_command
+        run_workflow._runtime_command = lambda *a, **k: (_ for _ in ()).throw(  # type: ignore[assignment]
+            AssertionError("orchestration_runtime must not be invoked"))
+        try:
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                code = run_workflow.main([
+                    "spec/problem/dummy.md", "Compile", "--stdout-format", "jsonl"])
+        finally:
+            run_workflow.shutil.which = original_which  # type: ignore[assignment]
+            run_workflow._runtime_command = original_runtime  # type: ignore[assignment]
+
+        self.assertEqual(code, 2)
+        payload = json.loads(buf.getvalue().strip())
+        self.assertEqual(payload.get("missing"), targets)
+        self.assertIn(f"missing host tools: {','.join(targets)}", payload.get("detail", ""))
+
+    def test_check_required_host_tools_returns_empty_when_all_present(self) -> None:
+        """Sanity check of the same kind as the CLI-tool one below: if this fails, the machine
+        running the suite could not run a workflow."""
+        self.assertEqual(run_workflow._check_required_host_tools(), [])
+
     def test_main_fails_fast_when_required_cli_tool_missing(self) -> None:
         """If jq (or any REQUIRED_CLI_TOOLS entry) is not on PATH, main() must
         return 2 with status=fail/reason=missing_required_cli_tools BEFORE
@@ -6251,7 +6336,10 @@ class StartupEnvelopeStdoutFormatTests(unittest.TestCase):
         # 17 -> 18: the missing-Python-package startup rejection (the Fortran structure front
         # end's packages, checked at launch so their absence is not discovered part-way into a
         # billed run).
-        self.assertEqual(len(helper_calls), 18)
+        # 18 -> 19: the missing-host-tool startup rejection (issue #109 — the `static lint` tool
+        # and the toolchain the run's own axis selection implies, for the same reason and one
+        # phase earlier than where they used to surface).
+        self.assertEqual(len(helper_calls), 19)
         # Every one of them is handed the parsed flag — a hardcoded "jsonl"/"human" at any
         # site would silently pin that site to one format.
         for call in helper_calls:
