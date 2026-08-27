@@ -165,23 +165,69 @@ class ToolVersionArmTests(unittest.TestCase):
     failure that produced the incident (#110).
     """
 
-    def test_every_package_implemented_capability_carries_the_version_protocol(self) -> None:
-        """MANDATORY, not duck-typed-and-hope.
+    def test_every_version_gated_capability_carries_the_protocol(self) -> None:
+        """MANDATORY, not duck-typed-and-hope — and scoped to what it actually covers.
 
-        The arm reads two names off a capability module. If they were optional, renaming one in
-        a backend package would turn the whole launch check off SILENTLY and the next release of
-        that vendor's tool would land in a billed run again. Making it an obligation moves that
-        failure from a live run to this suite.
+        The arm reads two names off a capability module. If they were optional, renaming one in a
+        backend package would turn the whole launch check off SILENTLY and the next release of
+        that vendor's tool would land in a billed run again.
+
+        The first version of this row said "every package-implemented capability" and then
+        exempted everything but one of them with a `continue`, so the sentence was false in the
+        direction that matters: `runner_render` carries neither name, and the arm would have
+        raised `AttributeError` at launch the first time a language-axis executable reached it.
+        The obligation now has an explicit membership (`_VERSION_GATED_CAPABILITIES`) and this
+        asserts it over exactly that set, with no exemption inside the loop.
         """
+        gated = set(hp._VERSION_GATED_CAPABILITIES)
+        self.assertNotEqual(gated, set(), "nothing is version-gated, so this row observes nothing")
+        seen = 0
         for (axis, backend_id), record in backend_registry._BACKENDS.items():
-            for capability in sorted(record.backend_provides):
+            for capability in sorted(record.backend_provides & gated):
                 with self.subTest(axis=axis, backend_id=backend_id, capability=capability):
                     module = backend_registry.capability_module(axis, backend_id, capability)
-                    if capability != "lint":
-                        continue
                     self.assertTrue(callable(getattr(module, "version_argv", None)))
                     self.assertTrue(
                         callable(getattr(module, "unsupported_version_reason", None)))
+                    seen += 1
+        self.assertGreater(seen, 0, "no record implements a version-gated capability in its own "
+                                    "package, so this row observes nothing")
+
+    def test_a_capability_outside_the_gated_set_is_not_asked_for_a_version(self) -> None:
+        """The other direction, and the one that was a latent launch traceback.
+
+        `runner_render` is implemented in a backend package and answers neither name. Driving the
+        seam with a language-axis item must yield nothing rather than reaching for `version_argv`.
+        """
+        module = backend_registry.capability_module("language", "fortran", "runner_render")
+        self.assertFalse(hasattr(module, "version_argv"))
+        item = hp.HostExecutable("language", "fortran", "gfortran")
+        self.assertEqual(list(hp._version_gated_capability_modules(item)), [])
+
+    def test_the_seam_reaches_the_real_backend_module_for_a_gated_capability(self) -> None:
+        """The wiring itself, with NO mock — the one thing the arm's other rows cannot see.
+
+        Measured: replacing the body of `_version_gated_capability_modules` with a bare `return`
+        left every other test green, because the two behavioural rows substitute this function
+        and the host row asserts `== ()`, which an always-empty generator satisfies. That is the
+        whole launch gate dead with a green suite.
+        """
+        from tools.backends.linter.fortitude import lint
+
+        item = hp.HostExecutable("linter", "fortitude", "fortitude")
+        self.assertEqual(list(hp._version_gated_capability_modules(item)), [lint])
+
+    def test_an_out_of_range_build_is_refused_through_the_real_seam(self) -> None:
+        """The arm end to end with only the PROBE substituted.
+
+        Everything else is production: the real record, the real capability module, the real
+        clause. Only the reading of the installed version is replaced, because this host has a
+        supported build and the refusal must be observable anyway.
+        """
+        with mock.patch.object(hp, "_tool_version_text", lambda argv: "fortitude 0.1.0"):
+            found = hp.unsupported_host_tool_versions()
+        self.assertEqual([item.executable for item in found], ["fortitude"])
+        self.assertIn("below the supported floor", found[0].reason)
 
     def test_the_arm_reports_the_backends_own_clause(self) -> None:
         """Driven with a synthetic capability module, not with the host's environment.

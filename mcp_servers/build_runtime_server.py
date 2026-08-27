@@ -1192,12 +1192,22 @@ def _lint_preset_command(preset: str) -> tuple[str, ...]:
     return _INLINE_LINT_PRESET_COMMANDS[preset]
 
 
-#: The argv each `static lint` preset runs, composed once at import. The KEYS are the simple
-#: presets — the set every reader below iterates — and are unchanged by where a row's argv is
-#: authored.
+#: The simple `static lint` presets, in one place. A preset is here whether its argv is inlined
+#: above or authored by its own backend package; the split between those two is a MIGRATION
+#: state, and the set of presets is not.
+#:
+#: Written as its own tuple rather than derived from `_INLINE_LINT_PRESET_COMMANDS`, because the
+#: package-backed ones are not in that table — and checked against it at import, because before
+#: the check an inline row whose name was left out of the tuple was invisible to every reader
+#: here (`lint_preset_sub_presets` would answer "unsupported preset" for a preset this file
+#: defines). That failure is closed rather than open, which is why it is a declaration check and
+#: not a gate.
+_SIMPLE_LINT_PRESETS: tuple[str, ...] = ("fortitude", "cppcheck", "ruff")
+
+#: The argv each simple preset runs, composed once at import. The KEYS are the set above — the
+#: set every reader below iterates — and are unchanged by where a row's argv is authored.
 _LINT_PRESET_COMMANDS: dict[str, tuple[str, ...]] = {
-    preset: _lint_preset_command(preset)
-    for preset in ("fortitude", "cppcheck", "ruff")
+    preset: _lint_preset_command(preset) for preset in _SIMPLE_LINT_PRESETS
 }
 
 #: A preset that runs several linters in order, named by the presets it COMPOSES rather than by
@@ -1232,6 +1242,11 @@ def _check_lint_preset_declarations() -> None:
             raise ValueError(f"lint preset {preset!r} composes unregistered presets: {unknown}")
     if DEFAULT_LINT_PRESET not in _LINT_PRESET_COMMANDS:
         raise ValueError(f"default lint preset {DEFAULT_LINT_PRESET!r} has no command row")
+    orphaned = sorted(set(_INLINE_LINT_PRESET_COMMANDS) - set(_SIMPLE_LINT_PRESETS))
+    if orphaned:
+        raise ValueError(
+            f"lint preset argv is spelled here but the preset is not declared in "
+            f"_SIMPLE_LINT_PRESETS, so no reader can reach it: {orphaned}")
 
 
 _check_lint_preset_declarations()

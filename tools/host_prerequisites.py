@@ -189,14 +189,27 @@ def _tool_version_text(version_argv: tuple[str, ...]) -> str | None:
     return first_line[0].strip() if first_line else None
 
 
+#: The capabilities whose backend package decides whether the installed build of its program may
+#: run at all. Membership here is what MAKES the two-name protocol below mandatory: a capability
+#: outside this tuple is not asked (its package need not answer, and a `runner_render` package
+#: does not), and one inside it that cannot answer fails the suite rather than the launch
+#: (`tools/tests/test_host_prerequisites.py`).
+#:
+#: An explicit tuple rather than "ask whichever module happens to have the names": duck-typing a
+#: MANDATORY protocol makes a rename in a backend package turn this whole arm off silently, which
+#: is the fail-open shape this repository keeps re-introducing. The first version of this module
+#: asked every `backend_provides` capability and would have raised `AttributeError` at launch the
+#: first time a language-axis executable reached it.
+#:
+#: These are capability names, not technology names — the property the module docstring states.
+_VERSION_GATED_CAPABILITIES = ("lint",)
+
+
 def _version_gated_capability_modules(item: HostExecutable):
     """The capability modules of `item`'s record that gate on the installed version.
 
-    The protocol is two names — `version_argv` and `unsupported_version_reason` — and it is
-    MANDATORY for a capability implemented in a backend package, not optional: an optional one
-    would make a rename in the package silently turn this whole arm off, which is the shape of
-    fail-open this repository keeps re-introducing. `tools/tests/test_host_prerequisites.py`
-    pins the obligation, so a package that drops a name fails the suite rather than the launch.
+    The protocol is two names — `version_argv` and `unsupported_version_reason` — mandatory for
+    every `_VERSION_GATED_CAPABILITIES` member a record implements in its own package.
 
     A capability still inlined in the neutral core declares no package and is not reached here;
     its version, if it ever needs one, is that area's to add when it migrates.
@@ -204,7 +217,7 @@ def _version_gated_capability_modules(item: HostExecutable):
     from tools.backends import registry as backend_registry
 
     record = backend_registry.get(item.axis, item.backend_id)
-    for capability in sorted(record.backend_provides):
+    for capability in sorted(record.backend_provides & set(_VERSION_GATED_CAPABILITIES)):
         yield backend_registry.capability_module(item.axis, item.backend_id, capability)
 
 
