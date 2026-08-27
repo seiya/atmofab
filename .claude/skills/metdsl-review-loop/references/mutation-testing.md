@@ -371,3 +371,60 @@ the fixture imports the module under test to build the expected value.** Check (
 applies unchanged: name an input for which this test could fail. If the answer requires the
 constant to be self-inconsistent, it cannot fail.
 
+## Additions from PR #104 (issue #84, 2026-08-27)
+
+### A mutant survived a "revert" and shipped for two commits
+
+The file was UNTRACKED in the worktree where the mutation was applied, so
+`git checkout -- <path>` exited 0 and did nothing, and the `|| true` beside it swallowed even
+that signal. A later `cp` of that worktree's files into the checkout carried the mutant in, where
+it was committed and survived a whole-suite run, a poisoned whole-suite run and a 24-mutant sweep.
+
+Three things would each have caught it, and the third is the general one:
+
+- the sweep that followed re-applied the same mutation and printed `PATCH-FAIL (count=0)`. **That
+  is the tell, and it was read as an anchor typo.** A patch whose anchor has vanished is either a
+  stale mutant list or a mutation already present.
+- the poisoned run's own witness DID fail, correctly. It was misdiagnosed as a value collision —
+  the poison value happened to equal the value the suite's own `setdefault` uses — and the first
+  fix drafted was an exemption that would have silenced that witness permanently. **When a test
+  fails, read WHY before deciding it is the test's fault.**
+- what closed it structurally: the function now verifies its own postcondition (`pop` the name,
+  then raise if it is still present) so the shape cannot be present and quiet whatever carries it
+  in. **Discipline lost twice here; a postcondition does not.**
+
+### The sweep list is not a place to patch
+
+Three consecutive attempts to insert new mutants into an existing list by string anchor missed
+silently. Two of them reported plausible totals — 32 mutants, 28 killed — for a sweep that
+contained none of the round's new mechanisms. The third had an `assert`, which fired into a
+background log that was not read while the artifact log was. **Write the list out explicitly, and
+read the run's own output rather than only the file it produces.**
+
+### A killed sweep leaves its mutation behind
+
+A sweep stopped by a timeout skips the `finally` that restores the file. The next run then
+measures a mutated baseline. The script's `exit 2` on a red baseline is what turns that into a
+visible stop instead of a plausible-looking result on a dirty tree — keep it, and re-create the
+worktree rather than debugging the baseline.
+
+### A rule whose answer is "nothing" cannot be witnessed through its own assertion
+
+Three mechanisms on this branch survived a sweep for the same reason: each was an expression
+inside the test that consumed it, and on this tree each evaluates to the empty set. Neutering
+them changed nothing observable, because mutating an expression inside an assertion is mutating
+the assertion. Each was closed the same way — move the rule into a module beside the tables it
+asks about, and drive it on synthetic input where the answer is not nothing, in BOTH directions.
+For a rule that refuses something, the over-refusing direction is the one that was wrong: the
+import-capture rule refused every import-time read, including `HOME`, which the guard never
+strips, with a message telling the reader to declare it where it already was.
+
+### A neighbouring mechanism can hide a missing restore
+
+`isolated_record()`'s witness asserted the record was back after the block. Adding a second
+`isolated_record()` later in the same test made dropping the restore invisible: the later
+`__enter__` clears the record, so it wiped the residue the closing assertion would have seen, and
+a mutant killed since two rounds earlier came back green. **An outer state of "empty" cannot be
+told from a missing restore** — write a sentinel into it first. The same shape had already been
+paid for once in that test, for the flag half, and was reintroduced for the record half.
+
