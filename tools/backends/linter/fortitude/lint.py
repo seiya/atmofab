@@ -33,12 +33,37 @@ in the backend document; the four facts that decided the shape of this file:
 * An old code is silently redirected to its new name (`S051` -> `MOD021`). A declared set is
   therefore checked by RESOLVING it (`--show-settings`) rather than by trusting the spelling.
 
-`--isolated` is load-bearing and not cosmetic: without it the tool discovers a `fortitude.toml`
-next to the sources it is checking, and that file can switch rules off. Measured on 0.8.0 and
-0.9.2 alike, a neighbouring `[check] ignore=[...]` turns a failing tree green. A leaf cannot
-write one today (the output manifest refuses a `.toml` under a directory entry —
-`tools/hooks/common.py`'s `_ALLOWED_BYPRODUCT_EXTENSIONS`), so this closes an operator-side and
-future-leaf-side channel rather than a reachable `leaf shortcut`.
+TWO CHANNELS decide the verdict from somewhere other than the source and this declaration, and
+both flags are load-bearing rather than cosmetic:
+
+* A `fortitude.toml` discovered beside the sources switches rules off — measured on 0.8.0 and
+  0.9.2 alike, a neighbouring `[check] ignore=[...]` turns a failing tree green. `--isolated`
+  closes it. A leaf cannot write that file today (the output manifest refuses a `.toml` under a
+  directory entry — `tools/hooks/common.py`'s `_ALLOWED_BYPRODUCT_EXTENSIONS`), so this half is
+  an operator-side and future-leaf-side closure rather than a reachable `leaf shortcut`.
+* An in-source `! allow(<codes>)` comment suppresses whatever it names, and the leaf AUTHORS the
+  source. Measured: one line reading `! allow(C122, C131, C061, PORT011, C003)` immediately above
+  a `module` statement takes the whole module from five findings to `All checks passed`, on 0.8.0
+  and 0.9.2 alike, under this very `--select`. That is a `leaf shortcut` in the plain sense — the
+  shortest route from a failing gate to a reported-done substep runs through one comment — and
+  the first version of this module left it open while closing the channel a leaf cannot reach.
+  `--ignore-allow-comments` closes it, and the closure is LOUD rather than silent: an allow
+  comment written anyway is reported as `FORT005` (`disabled-allow-comment`), so a leaf learns
+  its suppression did nothing instead of oscillating.
+
+`C003` is excluded FOR that second flag. It is the one rule this repository's own toolchain makes
+unsatisfiable — it wants the F2018 spec-list `implicit none (type, external)`, which is a compile
+error under `-std=f2008` — so four leaf-read documents used to MANDATE an `! allow(C003)`
+directive on every module, i.e. the rule set required the very channel that had to be closed.
+Selecting a rule that must always be suppressed buys nothing and costs the channel. Measured:
+with `C003` out of the set, a plain `implicit none` passes on every supported version.
+
+LIMIT of that exclusion, stated rather than implied: a node targeting f2018 would want `C003`
+back, and the route is `--target-std <toolchain.standard>` (measured to stop `C003` firing under
+`f2008` without dropping it). It is not taken here because it makes the argv node-dependent —
+`run_linter` would gain a caller-supplied input — and because the corpus has no such node:
+measured over every `spec.ir.yaml` in the tree, `toolchain.standard` is `f2008` (185 documents,
+plus 3 spelling it `2008`) and nothing else. `TODO.md` carries it.
 
 What this module deliberately does NOT do: decide the verdict, read findings, or know about the
 gate. It states the invocation; `mcp_servers/build_runtime_server.py` runs it and
@@ -63,7 +88,7 @@ EXECUTABLE = "fortitude"
 #: by being released; someone adds the code here, and the documents that state the rule to a leaf
 #: are checked against this tuple (`tools/tests/test_linter_fortitude.py`).
 RULE_CODES: tuple[str, ...] = (
-    "C001", "C002", "C003", "C011", "C051", "C061", "C071", "C072", "C081", "C091",
+    "C001", "C002", "C011", "C051", "C061", "C071", "C072", "C081", "C091",
     "C092", "C101", "C121", "C122", "C131", "C141",
     "E000", "E001",
     "FORT001", "FORT002", "FORT003", "FORT004", "FORT005",
@@ -77,6 +102,14 @@ RULE_CODES: tuple[str, ...] = (
 #: not checked" gets an answer here instead of re-deriving it. Not machine-consulted; the set
 #: above is what runs.
 EXCLUDED_RULE_CODES: dict[str, str] = {
+    "C003": (
+        "unsatisfiable under this repository's own toolchain — it wants the F2018 spec-list "
+        "`implicit none (type, external)`, which is a compile error under `-std=f2008`, the "
+        "standard every node in the corpus declares. Selecting it forced an `! allow(C003)` "
+        "directive onto every module, which is to say it forced the suppression channel "
+        "`--ignore-allow-comments` exists to close. See the module docstring for the route back "
+        "(`--target-std`) if an f2018 node ever appears."
+    ),
     "OB001": (
         "default-enabled on every supported version and impossible to select — the tool answers "
         "`Rule 'OB001' was removed and cannot be selected`. A removed rule finds nothing, so its "
@@ -89,9 +122,13 @@ EXCLUDED_RULE_CODES: dict[str, str] = {
     ),
 }
 
-#: How the set is imposed. `--isolated` first: it is what makes the verdict independent of a
-#: config file that happens to sit next to the sources (module docstring).
-CHECK_FLAGS: tuple[str, ...] = ("--isolated", "--select", ",".join(RULE_CODES))
+#: How the set is imposed. Both flags close a channel that decides the verdict from somewhere
+#: other than the source and this declaration: `--isolated` a configuration file discovered
+#: beside the sources, `--ignore-allow-comments` an in-source suppression directive. The second
+#: is the one a LEAF can write, and it is why the first alone was not enough (module docstring).
+CHECK_FLAGS: tuple[str, ...] = (
+    "--isolated", "--ignore-allow-comments", "--select", ",".join(RULE_CODES),
+)
 
 #: The versions `RULE_CODES` was measured to resolve identically on. Inclusive floor, exclusive
 #: ceiling, compared as tuples of integers.

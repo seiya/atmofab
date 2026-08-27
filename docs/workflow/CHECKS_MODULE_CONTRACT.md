@@ -216,10 +216,9 @@ node's self-test).
   bound immediately after its declarations with
   `associate (unused_<name> => <name>); end associate`. An arithmetic no-op (`0*<name>` and
   equivalents) is forbidden as the binding. `! allow(...)`
-  does not suppress this class: fortitude has no unused-symbol rule, and an unknown-rule
-  allow is itself rejected under FORT001 / FORT002, both in the gate's declared rule set
-  (`tools/backends/linter/fortitude/lint.py`). `! allow(C003)` is the only legitimate
-  allow directive.
+  does not suppress this class, and no allow directive is legitimate anywhere: the lint
+  gate runs with allow comments DISABLED, so one is reported as `FORT005` rather than
+  honoured (`tools/backends/linter/fortitude/lint.py`).
 - **A dummy argument no interface fixes is deleted, not bound.** The `associate` binding
   exists only to keep a signature no leaf owns intact. In a private helper the leaf itself
   declared, an unused dummy is removed from the signature and from every call site; binding

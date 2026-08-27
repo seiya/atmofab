@@ -393,7 +393,13 @@ class PureRenderTests(unittest.TestCase):
         prepared = ort.prepare_launch_request_payload(_pure_request("generate"))
         prompt = prepared["launch_prompt_full"]
         for token in (
-            "! allow(C003)",          # the C003 <-> f2008 escape, verbatim
+            # The C003 <-> f2008 escape used to be pinned here verbatim. It is gone: the lint
+            # gate runs with allow comments disabled and C003 is not in its rule set, so the
+            # directive the template used to mandate is now itself a finding. What is pinned
+            # in its place is that the template still says so — a template that simply
+            # dropped the subject would leave a producer to rediscover it at the gate.
+            "allow comments DISABLED",
+            "FORT005",
             "-std=f2008",             # ... and why the F2018 spec-list is not the fix
             "use, intrinsic ::",      # fortitude C122
             # The C131 pair. The `public ::` half is what the syntax gate needs (a consumer

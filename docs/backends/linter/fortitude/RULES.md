@@ -25,13 +25,20 @@ statement of that set for a reader; the machine-readable definition is
 - The set is imposed with `--select`, which REPLACES the build's default set rather than
   adjusting it. Suppressing individual rules with `--ignore` was rejected: it answers one release
   and leaves the next default addition to enter unreviewed.
-- The invocation carries `--isolated`, so a configuration file discovered next to the sources
-  cannot change the verdict. Measured on 0.8.0 and 0.9.2: a neighbouring `fortitude.toml`
-  carrying `[check] ignore = [...]` turns a failing tree green without it.
+- The invocation closes both channels that decide the verdict from outside the source and this
+  declaration. `--isolated` closes a configuration file discovered next to the sources (measured
+  on 0.8.0 and 0.9.2: a neighbouring `fortitude.toml` carrying `[check] ignore = [...]` turns a
+  failing tree green without it). `--ignore-allow-comments` closes an in-source `! allow(<codes>)`
+  directive — the channel a leaf can actually write, since a leaf authors the source. Measured:
+  one line reading `! allow(C122, C131, C061, PORT011, C003)` above a `module` statement took a
+  five-finding module to `All checks passed` under this very `--select`.
+- The second closure is LOUD. A directive written anyway is reported as `FORT005`
+  (`disabled-allow-comment`), so a leaf learns its suppression did nothing instead of oscillating
+  against a silent no-op.
 - `--select ALL` is not used. It is not a superset of the default set on any measured version.
 
 ## Declared set
-The 40 codes below. The DEFINITION is `RULE_CODES` in
+The 39 codes below. The DEFINITION is `RULE_CODES` in
 `tools/backends/linter/fortitude/lint.py`; this table is checked against it by
 `tools/tests/test_linter_fortitude.py`, in that direction only — the code is the authority and
 this document is what is compared to it. Both sides are edited in the same change, which is the
@@ -41,7 +48,6 @@ point: widening or narrowing what a certification means is a reviewable edit, no
 | --- | --- |
 | `C001` | implicit-typing |
 | `C002` | interface-implicit-typing |
-| `C003` | implicit-external-procedures |
 | `C011` | missing-default-case |
 | `C051` | trailing-backslash |
 | `C061` | missing-intent |
@@ -84,6 +90,7 @@ Codes deliberately excluded, with the ground:
 
 | code | ground |
 | --- | --- |
+| `C003` | Unsatisfiable under this repository's own toolchain: it wants the F2018 spec-list `implicit none (type, external)`, which is a compile error under `-std=f2008`, the standard every node in the corpus declares. Selecting it forced an `! allow(C003)` directive onto every module — that is, the rule set required the very suppression channel the invocation exists to close. With it excluded, a plain `implicit none` passes on every supported version. LIMIT: a node targeting f2018 would want it back, and the route is `--target-std <toolchain.standard>` (measured to stop it firing under `f2008` without dropping it), not taken here because it makes the argv node-dependent. Measured over every `spec.ir.yaml` in the tree, `toolchain.standard` is `f2008` (185 documents, plus 3 spelling it `2008`) and nothing else. |
 | `OB001` | default-enabled on every supported version and impossible to select — the tool answers `Rule 'OB001' was removed and cannot be selected`. A removed rule finds nothing, so its absence changes no verdict. |
 | `S241` | The rule of the incident (issue #110). Preview-only on 0.8.0, default-enabled from 0.9.0. Every finding it produces on this tree is in the host-rendered runner, which no leaf can edit. Making the renderer satisfy it is separate work and is not a ground for enabling it here. |
 
@@ -97,34 +104,50 @@ Codes deliberately excluded, with the ground:
 - The ceiling states what was measured. A build at or above it is refused rather than trusted;
   widening the range requires re-running the measurement below and recording the result here.
 
-## Measurement (2026-08-27, four builds installed side by side)
+## Measurement (2026-08-27 / 2026-08-28, four builds installed side by side)
+
+Reproduce with `python3 -m pip install --target <dir> fortitude-lint==<version>`; the executable
+is `<dir>/bin/fortitude` and the host's own install is not modified.
 
 Resolved rule sets, read from `fortitude check --isolated --show-settings <file>`:
 
 | version | default set | declared set resolves to |
 | --- | --- | --- |
 | 0.7.5 | not readable (`--isolated` absent) | invocation unavailable |
-| 0.8.0 | 41 codes | the declared 40, exactly |
-| 0.9.0 | 59 codes (0.8.0's 41 plus its 18 preview rules) | the declared 40, exactly |
-| 0.9.2 | 59 codes | the declared 40, exactly |
+| 0.8.0 | 41 codes | the declared 39, exactly |
+| 0.9.0 | 59 codes (0.8.0's 41 plus its 18 preview rules) | the declared 39, exactly |
+| 0.9.2 | 59 codes | the declared 39, exactly |
 
-Verdicts, over the source of the incident (three files, one of them the host-rendered runner) and
-over a control tree carrying one defect per rule family:
+Verdicts. The subjects are reproducible: the SOURCE OF THE INCIDENT is the three files of
+`workspace/pipelines/component__dynamics_advection_diffusion_boundary_1d_periodic_copy__0.1.0/
+dynamics-advection-diffusion-boundary-1d-periodic-copy_20260827_001/source/src_20260827_005/src`,
+and the CONTROL is built from the two fixtures `_CLEAN_SOURCE` and `_DEFECTIVE_SOURCE` in
+`tools/tests/test_linter_fortitude.py`, the defective one prefixed with the blanket allow line
+`! allow(C122, C131, C061, PORT011, C003)`. An earlier version of this table reported a control
+count taken from a fixture that was never checked in, which no reader could re-take.
 
 | version | `fortitude check .` (inherited default) | declared invocation |
 | --- | --- | --- |
-| 0.8.0 | incident source: pass; control: 6 findings | incident source: pass; control: the same 6 |
-| 0.9.0 | incident source: **58 × S241**; control: 6 findings | incident source: pass; control: the same 6 |
-| 0.9.2 | incident source: **58 × S241**; control: 6 findings | incident source: pass; control: the same 6 |
+| 0.8.0 | incident: pass | incident: 3 × `FORT005` |
+| 0.9.0 | incident: **58 × `S241`** | incident: 3 × `FORT005` |
+| 0.9.2 | incident: **58 × `S241`** | incident: 3 × `FORT005` |
+| 0.8.0 / 0.9.0 / 0.9.2 | — | control: `C122` 1, `C131` 1, `FORT002` 1, `FORT005` 1, `PORT011` 2, `S001` 1 — **identical on all three** |
 
-The control's 6 findings are `C003`, `C122`, `C131`, `FORT001`, `PORT011`, `S001` — one per
-family the leaf-facing documents instruct a leaf about, plus the unknown-code allow comment. They
-are identical across all three versions and both invocations, which is what distinguishes a rule
-set that is genuinely applied from one that has been switched off.
+Two readings of that table, both load-bearing:
 
-The allow-comment machinery survives the explicit selection: `! allow(C003)` on its own line
-above a plain `implicit none` suppresses `C003`, and `! allow(ZZZ999)` is reported as `FORT001`
-on every supported version.
+- **The vendor-drift incident is closed.** The 58 `S241` findings do not occur under the declared
+  set on any version, and every version reaches the same verdict on the same source. That is the
+  requirement of issue #111.
+- **The incident source itself now fails, for a different and correct reason.** Its three files
+  carry the `! allow(C003)` directive the leaf-read documents used to mandate, and a directive is
+  now a finding. New sources do not carry it (the documents no longer teach it, and the
+  host-rendered runner no longer emits it — `tools/backends/language/fortran/runner.py`). What an
+  OPERATOR sees: a run resumed onto a `source/<id>/src/` written before this change fails its
+  lint gate once and warm-resumes `Generate.generate`, which regenerates without the directive.
+  That is a recoverable one-time cost with a message naming the directive.
+
+`FORT001` still fires on an unknown code inside a directive (`! allow(ZZZ999)`), measured on every
+supported version — disabling the directives did not take their own diagnostics with them.
 
 ## Operations Rules
 - **Re-measuring** requires the supported versions installed side by side, not the host's one

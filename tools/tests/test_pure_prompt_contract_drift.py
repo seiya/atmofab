@@ -131,6 +131,11 @@ PINNED: dict[str, str] = {
     # `tools/backends/linter/fortitude/lint.py` (issue #111) — so a producer told "the linter's
     # defaults" was being pointed at something that is no longer what judges it.
     "pure-18": "95ba494864fe7d3042d30434e84fe2adcda80b5f76a190f9a2f08ef50e864e84",
+    # pure-19: the `! allow(C003)` workaround is GONE from rule (2) — the lint gate now runs
+    # with allow comments disabled and C003 is not in its declared set, so the directive the
+    # template used to mandate on every module is itself a finding (FORT005). A producer
+    # following pure-18 would now fail the gate it was written to pass.
+    "pure-19": "4feebc64731231031adf911097f23e1e3870b1a35e77ccc98f0a1cd810c09079",
 }
 
 

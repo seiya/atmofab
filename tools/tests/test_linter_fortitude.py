@@ -34,12 +34,11 @@ if str(REPO_ROOT) not in sys.path:
 
 from tools.backends.linter.fortitude import lint  # noqa: E402
 
-#: A source that satisfies the declared set, used as the subject of the resolution checks. The
-#: `! allow(C003)` pair is the form the leaf-read documents mandate, so its presence here is also
-#: the witness that the mandated form still works under an explicit selection.
+#: A source that satisfies the declared set, used as the subject of the resolution checks. It
+#: carries a plain `implicit none` with NO allow directive above it — the form the leaf-read
+#: documents now require, and one that only passes because `C003` is out of the declared set.
 _CLEAN_SOURCE = """module metdsl_probe_model
   use, intrinsic :: iso_fortran_env, only: real64
-  ! allow(C003)
   implicit none
   private
   public :: metdsl_probe__op
@@ -114,7 +113,7 @@ class DeclarationTests(unittest.TestCase):
     def test_the_argv_imposes_the_declared_set_and_ignores_config_files(self) -> None:
         self.assertEqual(
             lint.check_argv("."),
-            (lint.EXECUTABLE, "check", "--isolated", "--select",
+            (lint.EXECUTABLE, "check", "--isolated", "--ignore-allow-comments", "--select",
              ",".join(lint.RULE_CODES), "."),
         )
 
@@ -129,10 +128,14 @@ class DeclarationTests(unittest.TestCase):
         """`S241` is the rule of issue #110 and must not re-enter by a careless widening.
 
         Paired with the ground, because a bare exclusion is indistinguishable from an oversight
-        the next reader "fixes".
+        the next reader "fixes". `C003` is here for a second reason: re-selecting it would make
+        every plain `implicit none` a finding again, and the only escape from that is the allow
+        directive `--ignore-allow-comments` exists to disable — so the two decisions are one.
         """
         self.assertNotIn("S241", lint.RULE_CODES)
+        self.assertNotIn("C003", lint.RULE_CODES)
         self.assertIn("S241", lint.EXCLUDED_RULE_CODES)
+        self.assertIn("C003", lint.EXCLUDED_RULE_CODES)
         self.assertIn("OB001", lint.EXCLUDED_RULE_CODES)
         self.assertEqual(set(lint.EXCLUDED_RULE_CODES) & set(lint.RULE_CODES), set())
 
@@ -234,27 +237,54 @@ class ResolutionAgainstTheInstalledBuildTests(unittest.TestCase):
                          "the config file did not silence anything, so this case observes "
                          "nothing about --isolated")
 
-    def test_the_mandated_allow_directive_still_suppresses(self) -> None:
-        """`! allow(C003)` is the form four leaf-read documents mandate.
+    def test_an_allow_directive_suppresses_nothing_and_is_reported(self) -> None:
+        """The `leaf shortcut` this configuration exists to close, driven in its worst shape.
 
-        An explicit `--select` replaces the default set outright, so the allow machinery is not
-        implied to survive it — the clean source above carries the directive, and this asserts
-        the pair works: remove the directive and the same source must fail.
+        A leaf AUTHORS its own source, so an in-source suppression directive is the one channel
+        into the lint verdict it can actually reach — and one line above `module` covers the whole
+        module. Measured before the fix, under this very `--select`: five findings became
+        `All checks passed`. The check has both halves, because either alone is satisfiable by
+        something that is not the fix: the findings must survive the directive, AND the directive
+        must itself be reported, so a leaf learns its suppression did nothing instead of
+        oscillating against a silent no-op.
+        """
+        blanket = "! allow(C122, C131, C061, PORT011, C003)\n" + _DEFECTIVE_SOURCE
+        (self.dir / "metdsl_probe_bad.f90").write_text(blanket)
+        completed = _run(list(lint.check_argv("metdsl_probe_bad.f90")), self.dir)
+        self.assertEqual(completed.returncode, 1,
+                         "an allow comment above `module` suppressed the whole module")
+        for code in ("C122", "C131", "PORT011", "S001"):
+            self.assertIn(code, completed.stdout,
+                          f"{code} was suppressed by the allow directive")
+        self.assertIn("FORT005", completed.stdout,
+                      "the directive was ignored SILENTLY; a leaf gets no signal that its "
+                      "suppression did nothing")
+
+    def test_a_plain_implicit_none_needs_no_directive(self) -> None:
+        """The other half of dropping `C003`, and the reason the two are one decision.
+
+        The clean fixture carries no allow comment. Before this configuration it could not: C003
+        fired on every plain `implicit none`, which is why four leaf-read documents mandated a
+        directive — the rule set required the channel. Add the old mandated directive back and
+        the source must now FAIL, or the documents that stopped teaching it are lying.
         """
         self.assertEqual(
             _run(list(lint.check_argv("metdsl_probe_model.f90")), self.dir).returncode, 0)
         (self.dir / "metdsl_probe_model.f90").write_text(
-            _CLEAN_SOURCE.replace("  ! allow(C003)\n", ""))
-        self.assertEqual(
-            _run(list(lint.check_argv("metdsl_probe_model.f90")), self.dir).returncode, 1,
-            "C003 did not fire without its allow directive, so the directive's effect above is "
-            "not evidence of anything")
+            _CLEAN_SOURCE.replace("  implicit none", "  ! allow(C003)\n  implicit none", 1))
+        completed = _run(list(lint.check_argv("metdsl_probe_model.f90")), self.dir)
+        self.assertEqual(completed.returncode, 1)
+        self.assertIn("FORT005", completed.stdout)
 
     def test_an_unknown_allow_code_is_reported(self) -> None:
-        """`FORT001` is in the declared set precisely so a leaf cannot invent a suppression."""
+        """`FORT001` still fires with allow comments disabled, and that is worth pinning.
+
+        Disabling a directive family could plausibly have taken its diagnostics with it, which
+        would leave an invented code silent. Measured: it does not — the code is reported, on top
+        of the `FORT005` the directive itself earns.
+        """
         (self.dir / "metdsl_probe_model.f90").write_text(
-            _CLEAN_SOURCE.replace("  ! allow(C003)\n",
-                                  "  ! allow(ZZZ999)\n  ! allow(C003)\n"))
+            "! allow(ZZZ999)\n" + _CLEAN_SOURCE)
         completed = _run(list(lint.check_argv("metdsl_probe_model.f90")), self.dir)
         self.assertEqual(completed.returncode, 1)
         self.assertIn("FORT001", completed.stdout)
@@ -311,19 +341,29 @@ class ProseCouplingTests(unittest.TestCase):
     would fail on every legitimate widening.
     """
 
-    #: (path, the byte-identical anchor that PRECEDES the rule statement, how far the region runs)
+    #: (path, an anchor that PRECEDES the rule statement, region length in lines, a marker that
+    #: sits OUTSIDE the region in the same file).
     #:
-    #: The anchor is chosen to be text this change did NOT write. Anchoring on the corrected
-    #: sentence would pin that the correction survived, which is not the same claim.
+    #: The anchor is text this work did not write, and in particular not the sentence being
+    #: corrected: anchoring on the correction pins that the correction survived, which is a
+    #: different claim, and it BREAKS the moment the sentence is reworded again — measured, twice.
+    #:
+    #: The outside marker is what bounds the region. Without it the bound is unobserved: widening
+    #: every entry below to 5000 lines was measured to leave this whole class green, because the
+    #: only bound assertion was a probe string that occurs nowhere in the tree.
     _SITES = (
         ("docs/workflow/phases/phase_02_generate.md",
-         "- `static lint` is NOT run by the `Generate.generate` leaf.", 12),
+         "- `static lint` is NOT run by the `Generate.generate` leaf.", 12,
+         "- **The `Generate.gate` static check traces the dependency dataflow"),
         ("skills/workflow-generate-generate/SKILL.md",
-         "- **Write source that passes `static lint` AND the compiler syntax gate", 1),
+         "- **Write source that passes `static lint` AND the compiler syntax gate", 1,
+         "- The `verification_status` of `source_meta.json` presumes `fail_closed`"),
         ("tools/prompt_templates/pure_generate_generate.txt",
-         "(1) Style lint (the `Generate.gate` lint check", 1),
+         "(1) Style lint (the `Generate.gate` lint check", 1,
+         "(3) Syntax gate (the `Generate.gate` syntax check"),
         ("docs/workflow/CHECKS_MODULE_CONTRACT.md",
-         "does not suppress this class:", 6),
+         "- **Intentionally-unused dummy arguments.**", 12,
+         "- **A dummy argument no interface fixes is deleted, not bound.**"),
     )
 
     _CODE_RE = re.compile(r"\b([A-Z]{1,5}[0-9]{3})\b")
@@ -338,30 +378,44 @@ class ProseCouplingTests(unittest.TestCase):
         return "\n".join(text[index:].splitlines()[:lines])
 
     def test_every_rule_code_a_leaf_read_site_names_is_in_the_declared_set(self) -> None:
-        for path, anchor, lines in self._SITES:
+        """A leaf-read document may name a code the gate RUNS, or one this repository has
+        explicitly decided not to run. It may not name a third thing.
+
+        The union is the honest bound: `docs/…/phase_02_generate.md` names `C003` in order to say
+        it is no longer checked, and refusing that would force the document to teach a rule
+        change without naming the rule. What the check still catches is a code the repository has
+        no position on at all — including one the vendor enables by default and nobody reviewed.
+        WHAT IT DOES NOT PIN: which side of the union a mention is on. Reading that would mean
+        parsing the prose around it.
+        """
+        known = set(lint.RULE_CODES) | set(lint.EXCLUDED_RULE_CODES)
+        for path, anchor, lines, _outside in self._SITES:
             with self.subTest(path=path):
                 named = set(self._CODE_RE.findall(self._region(path, anchor, lines)))
                 self.assertNotEqual(named, set(), f"{path}: the region named no rule code, so "
                                                   f"this row observes nothing")
                 self.assertEqual(
-                    named - set(lint.RULE_CODES), set(),
-                    f"{path} instructs a leaf about a rule the gate does not run; either add it "
-                    f"to tools/backends/linter/fortitude/lint.py or stop stating it")
+                    named - known, set(),
+                    f"{path} instructs a leaf about a rule this repository has no position on; "
+                    f"either add it to RULE_CODES or record why it is excluded, in "
+                    f"tools/backends/linter/fortitude/lint.py")
 
     def test_the_region_bound_excludes_text_outside_it(self) -> None:
-        """The bound is self-tested, or an unrelated sentence elsewhere keeps a site green.
+        """The bound is self-tested against real text, not against a probe string.
 
-        `S241` is the ideal probe: it appears nowhere in the tree, so a region that swallowed the
-        whole file would still pass the containment row above. This asserts the opposite
-        property — that the region is SHORT — by checking it against the file's own length.
+        Each site names a marker that lives in the same file, after the region. It must be
+        present in the file (or the marker itself has rotted and the row observes nothing) and
+        absent from the region. Widen a bound and the marker comes inside, which is exactly the
+        loosening that would otherwise make the containment and citation rows above pass on
+        anything anywhere in the file.
         """
-        for path, anchor, lines in self._SITES:
+        for path, anchor, lines, outside in self._SITES:
             with self.subTest(path=path):
                 whole = (REPO_ROOT / path).read_text()
-                region = self._region(path, anchor, lines)
-                self.assertLess(len(region), len(whole),
-                                f"{path}: the region is the whole file")
-                self.assertNotIn("METDSL_REGION_BOUND_PROBE", region)
+                self.assertIn(outside, whole,
+                              f"{path}: the out-of-region marker is gone; re-point it")
+                self.assertNotIn(outside, self._region(path, anchor, lines),
+                                 f"{path}: the region reaches past what it is meant to cover")
 
     def test_every_leaf_read_site_cites_where_the_set_is_defined(self) -> None:
         """A leaf-read contract has to be self-contained, so it repeats part of the rule.
@@ -369,7 +423,7 @@ class ProseCouplingTests(unittest.TestCase):
         What it must not do is leave a reader with no way back to the definition — that is how
         four sites drift into four different rule sets.
         """
-        for path, anchor, lines in self._SITES:
+        for path, anchor, lines, _outside in self._SITES:
             with self.subTest(path=path):
                 self.assertIn("tools/backends/linter/fortitude/lint.py",
                               self._region(path, anchor, lines))
