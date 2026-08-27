@@ -152,6 +152,13 @@ the binding. A neutral document must not state the binding itself.
   - `MAKE_QUALITY_CHECK_REQUIRED_LANGUAGES` remains a neutral-core policy set over language
     families (`fortran`, `c`, `cpp`, `mixed`), not an implemented set; it migrates with the
     compiler / linter adapters area, alongside `FORTRAN_C_FAMILY` in `mcp_servers/`.
+  - The `static lint` step reaches a registered linter's argv through `capability_module` only
+    where that record declares `lint` in `backend_provides` — one value does today, and the rest
+    are still rows of a table in `mcp_servers/build_runtime_server.py`. Registering a fifth
+    linter therefore widens the evidence gate (which asks the registry) and not the server, which
+    keeps its own accepted set. What forced the first of them out is worth stating as the
+    criterion: the argv carries the RULE SET the gate applies, and a lint rule id is knowledge
+    this document forbids the neutral core, so an argv that selects rules cannot stay there.
 
   Stated this way because the first version of this section claimed the procedure was sufficient,
   and following it produced a backend nothing accepted — and then, after a partial fix, a backend

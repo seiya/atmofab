@@ -58,7 +58,7 @@ the set resolves to:
 
 | tool | purpose | when its absence used to surface |
 |---|---|---|
-| `fortitude` | the `static lint` tool the `Generate.gate` lint check runs via MCP `run_linter` | `Generate.gate`, after `Compile` and `Generate.generate` had been billed |
+| `fortitude` | the `static lint` tool the `Generate.gate` lint check runs via MCP `run_linter`. Supported versions: `>=0.8,<0.10` — see the version check below | `Generate.gate`, after `Compile` and `Generate.generate` had been billed |
 | `make` | the build system `Build` drives via MCP `compile_project` | `Build` — one phase later still |
 | `gfortran` | the compiler — both the mandatory `Generate.gate` syntax-only stage and the `FC` the build control file pins | `Generate.gate`, same as above: `run_syntax_check` reports a missing compiler as `skipped`, and the conductor turns a skipped MANDATORY stage into a fail_closed |
 
@@ -66,8 +66,28 @@ Install them with the platform's own package manager, e.g. on Debian/Ubuntu:
 
 ```
 sudo apt-get install gfortran make      # the toolchain
-pipx install fortitude-lint             # or: pip install fortitude-lint
+pipx install 'fortitude-lint>=0.8,<0.10'   # or: pip install 'fortitude-lint>=0.8,<0.10'
 ```
+
+### Refused at startup — `unsupported_required_host_tool_versions`
+
+The same executables, checked a second way: PRESENT but of a version this repository has not
+measured its gates against. Checked after the missing-tool arm, because an absent program has no
+version to read.
+
+Today one tool carries a range. The `Generate.gate` lint check applies a rule set this repository
+declares rather than the linter's own default, and that set is measured against the versions
+above; the declaration and the measurement are
+[docs/backends/linter/fortitude/RULES.md](backends/linter/fortitude/RULES.md). Neither the tool
+name, the range, nor the probe argv is written in the launch check — all three come from the
+backend package that owns the tool, so the check cannot look for a build the gate never runs.
+
+Without this arm the failure surfaces at the first `Generate.gate` and consumes the whole
+`Generate` retry budget on findings no leaf can act on: the linter's vendor enabled 18 additional
+rules by default in 0.9.0, and on this tree every finding they produce lands in the host-rendered
+runner (issue #110). The refusal names the installed version and the supported range; the remedy
+is to install a version inside the range, or to re-measure and widen it per that document's
+Operations Rules.
 
 ### Refused at `preflight`, still before the first leaf
 

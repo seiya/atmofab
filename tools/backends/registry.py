@@ -198,6 +198,7 @@ CAPABILITIES: dict[str, tuple[tuple[str, ...], str]] = {
 #: checkable here; see `docs/BACKEND_BOUNDARY.md` §Design Policy for where it IS caught.
 CAPABILITY_MODULE_ATTR: dict[str, str] = {
     "runner_render": "runner",
+    "lint": "lint",
 }
 
 
@@ -264,7 +265,15 @@ _BACKENDS: dict[tuple[str, str], Backend] = {
         # asks `unimplemented_reason("linter", ...)` and holds no set of its own, so this is the
         # only place the accepted presets are written. Listing only `fortitude` here would
         # narrow the live gate.
-        Backend("linter", "fortitude", None, core_provides=frozenset({"lint"})),
+        # The one linter whose invocation has left the neutral core. Its argv is no longer a row
+        # of `mcp_servers/build_runtime_server.py`'s table but a call into the package, because
+        # the argv now carries the RULE SET the gate applies — and a lint rule id is the example
+        # `docs/BACKEND_BOUNDARY.md` §Design Policy gives of knowledge the neutral core may not
+        # hold (issue #111). The other three rows below are still inlined there.
+        Backend(
+            "linter", "fortitude", "tools.backends.linter.fortitude",
+            backend_provides=frozenset({"lint"}),
+        ),
         Backend("linter", "cppcheck", None, core_provides=frozenset({"lint"})),
         Backend("linter", "ruff", None, core_provides=frozenset({"lint"})),
         Backend("linter", "mixed", None, core_provides=frozenset({"lint"})),

@@ -30339,7 +30339,11 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # line-anchored `!$omp` presence floor counted it and falsely rejected the node. This doc
         # is the canonical target every other copy of the promoted-class list points at, so the
         # rule cannot live anywhere else. The doc measures 14500.
-        "docs/workflow/CHECKS_MODULE_CONTRACT.md": 14600,
+        # Bumped 14600->14700: issue #111 — FORT001 / FORT002 are named as MEMBERS of the rule
+        # set the gate declares, with the citation. The sentence used to read as a fact about
+        # the linter's own defaults, which is what stopped being true: a leaf that took it that
+        # way would look for the rule where it is no longer decided. Measured 14622.
+        "docs/workflow/CHECKS_MODULE_CONTRACT.md": 14700,
         # Still force-read by compile.generate/verify (its IR schema is the contract
         # the compile SKILL defers to).
         # Bumped 17000->18200: documented the deterministic Compile.static substep (G2,

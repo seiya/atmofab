@@ -4108,6 +4108,91 @@ class RunWorkflowTests(unittest.TestCase):
         running the suite could not run a workflow."""
         self.assertEqual(run_workflow._check_required_host_tools(), [])
 
+    def test_main_fails_fast_when_a_required_host_tool_is_of_an_unmeasured_version(self) -> None:
+        """The VERSION half of the same family (issue #111).
+
+        The tool is present, so the arm above says nothing; what it is, is a build this
+        repository has not measured its gate's rule set against. Left to the gate, that surfaces
+        at the first `Generate.gate` and burns the whole `Generate` retry budget on findings no
+        leaf can act on.
+
+        The refusal is driven through the probe rather than by installing a second build: the
+        version verdict is the backend's, and substituting it here is what keeps this
+        `neutral core` test from learning a tool name or a version number.
+        """
+        from tools import host_prerequisites
+
+        refusal = host_prerequisites.HostToolVersion(
+            "linter", "probe_backend", "probe_tool", "probe_tool 0.0.1",
+            "probe_tool 0.0.1 is outside the measured range")
+        original_arm = host_prerequisites.unsupported_host_tool_versions
+        original_runtime = run_workflow._runtime_command
+        host_prerequisites.unsupported_host_tool_versions = (  # type: ignore[assignment]
+            lambda selection=None: (refusal,))
+        run_workflow._runtime_command = lambda *a, **k: (_ for _ in ()).throw(  # type: ignore[assignment]
+            AssertionError("orchestration_runtime must not be invoked"))
+        try:
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                code = run_workflow.main([
+                    "spec/problem/dummy.md", "Compile", "--stdout-format", "jsonl"])
+        finally:
+            host_prerequisites.unsupported_host_tool_versions = original_arm  # type: ignore[assignment]
+            run_workflow._runtime_command = original_runtime  # type: ignore[assignment]
+
+        self.assertEqual(code, 2)
+        payload = json.loads(buf.getvalue().strip())
+        self.assertEqual(payload.get("status"), "fail")
+        self.assertEqual(payload.get("reason"), "unsupported_required_host_tool_versions")
+        self.assertIn(refusal.reason, payload.get("detail", ""))
+        self.assertEqual(payload.get("unsupported"), [{
+            "executable": "probe_tool",
+            "axis": "linter",
+            "backend_id": "probe_backend",
+            "version": "probe_tool 0.0.1",
+            "reason": refusal.reason,
+        }])
+        self.assertEqual(payload.get("docs_ref"), "docs/RUNBOOK.md#0-1")
+
+    def test_the_version_arm_is_checked_after_the_presence_arm(self) -> None:
+        """Ordered by reachability: an absent program has no version to read.
+
+        A machine with nothing installed must be told to install the tools, not handed a version
+        clause about a program it does not have. Driven by making BOTH arms refuse and asserting
+        which message comes out.
+        """
+        from tools import host_prerequisites
+        from tools.host_prerequisites import required_host_executables
+
+        target = required_host_executables()[0].executable
+        original_which = run_workflow.shutil.which
+        original_arm = host_prerequisites.unsupported_host_tool_versions
+        original_runtime = run_workflow._runtime_command
+        run_workflow.shutil.which = lambda name: (  # type: ignore[assignment]
+            None if name == target else original_which(name))
+        host_prerequisites.unsupported_host_tool_versions = (  # type: ignore[assignment]
+            lambda selection=None: (host_prerequisites.HostToolVersion(
+                "linter", "probe_backend", target, None, "must not be reported"),))
+        run_workflow._runtime_command = lambda *a, **k: (_ for _ in ()).throw(  # type: ignore[assignment]
+            AssertionError("orchestration_runtime must not be invoked"))
+        try:
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                code = run_workflow.main([
+                    "spec/problem/dummy.md", "Compile", "--stdout-format", "jsonl"])
+        finally:
+            run_workflow.shutil.which = original_which  # type: ignore[assignment]
+            host_prerequisites.unsupported_host_tool_versions = original_arm  # type: ignore[assignment]
+            run_workflow._runtime_command = original_runtime  # type: ignore[assignment]
+
+        self.assertEqual(code, 2)
+        payload = json.loads(buf.getvalue().strip())
+        self.assertEqual(payload.get("reason"), "missing_required_host_tools")
+
+    def test_check_host_tool_versions_returns_empty_when_the_host_is_supported(self) -> None:
+        """The companion sanity row: a workflow started on this machine is not refused here."""
+        self.assertEqual(run_workflow._check_host_tool_versions(), [])
+
     def test_main_fails_fast_when_required_cli_tool_missing(self) -> None:
         """If jq (or any REQUIRED_CLI_TOOLS entry) is not on PATH, main() must
         return 2 with status=fail/reason=missing_required_cli_tools BEFORE
@@ -6339,7 +6424,9 @@ class StartupEnvelopeStdoutFormatTests(unittest.TestCase):
         # 18 -> 19: the missing-host-tool startup rejection (issue #109 — the `static lint` tool
         # and the toolchain the run's own axis selection implies, for the same reason and one
         # phase earlier than where they used to surface).
-        self.assertEqual(len(helper_calls), 19)
+        # 19 -> 20: the same family's VERSION half (issue #111) — a required tool that is present
+        # but of a build this repository has not measured its gate's rule set against.
+        self.assertEqual(len(helper_calls), 20)
         # Every one of them is handed the parsed flag — a hardcoded "jsonl"/"human" at any
         # site would silently pin that site to one format.
         for call in helper_calls:

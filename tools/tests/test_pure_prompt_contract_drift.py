@@ -126,6 +126,11 @@ PINNED: dict[str, str] = {
     # counted it and falsely rejected the node. The producer is now told the rule it is judged
     # by, which is the same asymmetry correction pure-16 made for impl_defaults.
     "pure-17": "67de1716fdaa1c5a461015b869bf63e168a31136ea28ce246935678f74a176ec",
+    # pure-18: rule (1) names the source of the lint rule set the `Generate.gate` applies. The
+    # gate no longer inherits the installed linter's default set — it imposes the set declared in
+    # `tools/backends/linter/fortitude/lint.py` (issue #111) — so a producer told "the linter's
+    # defaults" was being pointed at something that is no longer what judges it.
+    "pure-18": "95ba494864fe7d3042d30434e84fe2adcda80b5f76a190f9a2f08ef50e864e84",
 }
 
 
