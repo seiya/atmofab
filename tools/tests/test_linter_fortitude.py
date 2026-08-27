@@ -172,6 +172,60 @@ class DeclarationTests(unittest.TestCase):
         self.assertEqual(lint.SUPPORTED_VERSION_SPEC, f">={floor},<{ceiling}")
 
 
+class UnusableInvocationTests(unittest.TestCase):
+    """An invocation that judged nothing must not be read as a verdict about the source.
+
+    Declaring the rule set put `--select` in the argv, and the tool validates it before reading a
+    file — so this change created an exit status that says "the invocation was refused", where
+    before there was none. Routed to `generate.generate` as a lint finding it is issue #110's
+    unwinnable loop in a new place: the leaf would be sent to fix `lint.py`.
+    """
+
+    def test_a_refused_invocation_is_not_a_verdict(self) -> None:
+        reason = lint.unusable_invocation_reason(2, "", "error: invalid value 'ZZZ999'")
+        self.assertIsNotNone(reason)
+        self.assertIn("tools/backends/linter/fortitude/lint.py", reason)
+
+    def test_an_ordinary_findings_run_is_a_verdict(self) -> None:
+        """Exit 1 is left alone, deliberately, and this row is why.
+
+        The first version of this function ALSO refused an exit 1 that printed no diagnostic
+        line — the withdrawn-code case — and it immediately false-refused a legitimate content
+        failure whose output shape it had not been measured against. That case is caught at
+        launch instead (`self_check_*`), where the answer is a bare exit status.
+        """
+        self.assertIsNone(lint.unusable_invocation_reason(1, "a.f90:1:1: C131 x", ""))
+        self.assertIsNone(lint.unusable_invocation_reason(1, "anything at all", ""))
+        self.assertIsNone(lint.unusable_invocation_reason(0, "All checks passed!", ""))
+
+    def test_the_launch_self_check_accepts_this_host(self) -> None:
+        _linter_path()
+        with tempfile.TemporaryDirectory() as empty:
+            completed = _run(list(lint.self_check_argv(empty)), Path(empty))
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        self.assertIsNone(
+            lint.self_check_reason(completed.returncode, completed.stdout, completed.stderr))
+
+    def test_the_launch_self_check_refuses_a_set_this_build_cannot_impose(self) -> None:
+        """Driven with a real withdrawn code rather than a synthetic exit status.
+
+        `OB001` is default-enabled on every supported build and cannot be selected — the exact
+        shape a vendor's patch release would produce for a code we declare. Over an EMPTY
+        directory a usable build exits 0, so the refusal needs no output parsing.
+        """
+        _linter_path()
+        with tempfile.TemporaryDirectory() as empty:
+            argv = [a if a != ",".join(lint.RULE_CODES)
+                    else ",".join(lint.RULE_CODES) + ",OB001"
+                    for a in lint.self_check_argv(empty)]
+            completed = _run(argv, Path(empty))
+        self.assertNotEqual(completed.returncode, 0)
+        reason = lint.self_check_reason(
+            completed.returncode, completed.stdout, completed.stderr)
+        self.assertIsNotNone(reason)
+        self.assertIn("re-measure", reason)
+
+
 class VersionGateTests(unittest.TestCase):
     def test_a_build_below_the_floor_is_refused(self) -> None:
         below = (lint.MIN_VERSION[0], lint.MIN_VERSION[1] - 1, 0)
@@ -517,6 +571,14 @@ class ProseCouplingTests(unittest.TestCase):
         "dynamics_shallow_water_time_update_2d_ssprk2/controlled_spec.md",
     )
 
+    #: The EXCLUDED codes a leaf-read document may still name. `C003` must be nameable: the
+    #: documents changed what they say about it, and a rule change stated without naming the rule
+    #: is not a statement. The others must not be — a leaf-read region naming `S241` was measured
+    #: to pass the containment row, and instructing a leaf to satisfy `S241` sends it to fix the
+    #: host-rendered runner, which is the exclusion's own recorded ground and issue #110's shape.
+    #: Kept here rather than in `lint.py` because it is a rule about DOCUMENTS, not about the gate.
+    _NAMEABLE_EXCLUSIONS = ("C003",)
+
     _CODE_RE = re.compile(r"\b([A-Z]{1,5}[0-9]{3})\b")
 
     def test_the_code_detector_matches_every_prefix_width_in_use(self) -> None:
@@ -548,7 +610,7 @@ class ProseCouplingTests(unittest.TestCase):
         WHAT IT DOES NOT PIN: which side of the union a mention is on. Reading that would mean
         parsing the prose around it.
         """
-        known = set(lint.RULE_CODES) | set(lint.EXCLUDED_RULE_CODES)
+        known = set(lint.RULE_CODES) | set(self._NAMEABLE_EXCLUSIONS)
         union: set[str] = set()
         for path, anchor, lines, _outside in self._SITES:
             with self.subTest(path=path):
@@ -564,6 +626,12 @@ class ProseCouplingTests(unittest.TestCase):
         # observing nothing, which is what a per-site emptiness check would have hidden the day
         # every site went quiet.
         self.assertNotEqual(union, set(), "no site named a rule code, so this row observes nothing")
+        # The narrowing is real: at least one excluded code must be refusable, or this row is the
+        # union rule under another name.
+        self.assertTrue(set(lint.EXCLUDED_RULE_CODES) - set(self._NAMEABLE_EXCLUSIONS))
+        self.assertEqual(
+            set(self._NAMEABLE_EXCLUSIONS) - set(lint.EXCLUDED_RULE_CODES), set(),
+            "a code named here is no longer excluded; drop it from the allowance")
 
     def test_no_leaf_read_site_carries_a_copyable_allow_directive(self) -> None:
         """WHOLE FILE, not a region — because the defect this row exists for lived outside one.
@@ -678,15 +746,20 @@ class ProseCouplingTests(unittest.TestCase):
                          set(lint.EXCLUDED_RULE_CODES))
         self.assertIn(lint.SUPPORTED_VERSION_SPEC, doc)
         self.assertIn("RULE_CODES", doc)
-        # Every flag, derived — the row that would have caught the drift that produced it.
-        # Round 2 rewrote this document's channel enumeration and the edit never landed (the
-        # script that made it died on a later assertion before writing), so the commit message
-        # said three channels while the canonical document still said two and never named
-        # `--no-respect-gitignore`. Nothing compared the document to `CHECK_FLAGS`; now it does.
+        # Every flag, derived, and read from the ENUMERATION rather than from the file.
+        # Round 2 rewrote this document's channel list and the edit never landed, so the commit
+        # message said three channels while the document still described two. The first fix
+        # asserted the flag literal appeared ANYWHERE in the file — and a reviewer deleted a whole
+        # channel bullet with the row still green, because the flag names also occur in the
+        # reproduce command and the floor bullet. What is read now is the §Design Policy section,
+        # and each flag must OPEN a bullet there, so a deleted or inverted entry fails.
+        policy = doc[doc.index("## Design Policy"):doc.index("## Declared set")]
         for flag in lint.CHECK_FLAGS:
             if flag.startswith("--") and flag != "--select":
-                self.assertIn(flag, doc,
-                              f"the canonical document does not name {flag}, which the gate runs")
+                self.assertIn(
+                    f"- `{flag}`", policy,
+                    f"§Design Policy has no bullet opening with {flag}, which the gate runs; a "
+                    f"flag mentioned in passing elsewhere is not an enumeration of the channels")
 
     def test_the_backend_package_is_not_gitignored(self) -> None:
         """`.gitignore` carried a bare, unanchored `fortitude` — the linter binary, when an

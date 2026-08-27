@@ -35,21 +35,29 @@ statement of that set for a reader; the machine-readable definition is
 - The set is imposed with `--select`, which REPLACES the build's default set rather than
   adjusting it. Suppressing individual rules with `--ignore` was rejected: it answers one release
   and leaves the next default addition to enter unreviewed.
-- The invocation closes THREE channels that decide the verdict from outside the source and this
-  declaration, one flag each. The count is stated because it has been wrong once: the module
+- The invocation closes one channel per flag. Each is a bullet below, and the flags are checked
+  against `CHECK_FLAGS` by test, so a flag that leaves the code leaves this list. The count is stated because it has been wrong once: the module
   docstring of `tools/backends/linter/fortitude/lint.py` is canonical for the enumeration, and it
   records that an earlier version counted the channels it had closed rather than the ones the
   tool has.
-  - `--isolated` closes a configuration file discovered next to the sources (measured on 0.8.0
+  - `--isolated` — closes a configuration file discovered next to the sources (measured on 0.8.0
     and 0.9.2: a neighbouring `fortitude.toml` carrying `[check] ignore = [...]` turns a failing
     tree green without it).
-  - `--ignore-allow-comments` closes an in-source `! allow(<codes>)` directive — the channel a
+  - `--ignore-allow-comments` — closes an in-source `! allow(<codes>)` directive, the channel a
     leaf can actually write, since a leaf authors the source. Measured: one line reading
     `! allow(C122, C131, C061, PORT011, C003)` above a `module` statement took a five-finding
     module to `All checks passed` under this very `--select`.
-  - `--no-respect-gitignore` closes an ignore file. Measured on 0.8.0 and 0.9.2: a `.gitignore`
+  - `--no-respect-gitignore` — closes an ignore file. Measured on 0.8.0 and 0.9.2: a `.gitignore`
     whose pattern matches the sources takes a five-finding tree to `0 files scanned. All checks
     passed!`, exit 0 — with no diagnostic at all, so it is quieter than either of the other two.
+- **What the flags do NOT close is the FILE SET.** The walk still skips `build/` / `dist/` /
+  `venv/` / `.venv/` / `.git/` subdirectories (measured on 0.8.0 and 0.9.2; `docs/`,
+  `node_modules/`, `target/`, `__pycache__/` and a plain hidden directory are scanned), and it
+  reads `.f90` only — a `body.inc` pulled in by an `include` line is compiled by the compiler
+  and never linted. Neither is reachable today: an agentic leaf's manifest admits only the exact
+  files it declares, and the pure path's `logical_path` allowlist is `.f90` alone. `TODO.md`
+  carries it as a bound on growth. It is named here because this section states a COUNT, and a
+  count of closed channels is not a claim that nothing else decides the verdict.
 - **How loud the allow-comment closure is depends on what the directive names.** A code OUTSIDE
   the declared set earns `FORT005` (`disabled-allow-comment`); a declared code on otherwise clean
   source earns `FORT002` (`unused-allow-comment`); a declared code on source that actually

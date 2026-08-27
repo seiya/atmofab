@@ -46,6 +46,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import NamedTuple
 
@@ -221,6 +222,28 @@ def _version_gated_capability_modules(item: HostExecutable):
         yield backend_registry.capability_module(item.axis, item.backend_id, capability)
 
 
+def _self_check_reason(module) -> str | None:
+    """Run a capability module's own launch self-check, or `None` when it has none to run.
+
+    The version arm answers "is this build one we measured against"; this answers the question
+    that survives a yes — "can this build actually run what we declare". They are different: a
+    supported version can still refuse the declared invocation if a code in it was withdrawn in
+    a patch release nobody measured. The check runs over an EMPTY directory, so the answer is a
+    bare exit status and nothing is parsed; the backend module that answers it states why.
+    """
+    build = getattr(module, "self_check_argv", None)
+    verdict = getattr(module, "self_check_reason", None)
+    if build is None or verdict is None:
+        return None
+    with tempfile.TemporaryDirectory() as empty:
+        try:
+            completed = subprocess.run(
+                list(build(empty)), text=True, capture_output=True, timeout=120, check=False)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return f"the launch self-check could not be run ({exc})"
+    return verdict(completed.returncode, completed.stdout or "", completed.stderr or "")
+
+
 def unsupported_host_tool_versions(
     selection: dict[str, str] | None = None,
 ) -> tuple[HostToolVersion, ...]:
@@ -242,6 +265,11 @@ def unsupported_host_tool_versions(
         for module in _version_gated_capability_modules(item):
             version_text = _tool_version_text(tuple(module.version_argv()))
             reason = module.unsupported_version_reason(version_text)
+            # A supported version that still cannot run what this repository declares is refused
+            # here too, and for the same reason the version half exists: the alternative is that
+            # it surfaces mid-run as a gate failure attributed to a leaf's source.
+            if reason is None:
+                reason = _self_check_reason(module)
             if reason is not None:
                 found.append(
                     HostToolVersion(item.axis, item.backend_id, item.executable,

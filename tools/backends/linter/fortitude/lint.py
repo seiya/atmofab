@@ -170,6 +170,60 @@ VERSION_ARGV: tuple[str, ...] = (EXECUTABLE, "--version")
 _VERSION_RE = re.compile(r"(\d+)\.(\d+)\.(\d+)")
 
 
+def unusable_invocation_reason(returncode: int, stdout: str, stderr: str) -> str | None:
+    """Why this run judged nothing, or `None` when its exit status is a verdict.
+
+    Declaring the rule set made `--select` part of the argv, and the tool validates it before it
+    reads a file: a code the installed build does not know is an argument error — exit 2, nothing
+    checked. Before the declared set the argv carried no `--select` and that exit was
+    unreachable. Left unclassified it arrives at the gate as `ok=false` and routes to the leaf as
+    lint findings, sending it to fix a file it has no write authority over: the unwinnable loop
+    of issue #110 in a new place.
+
+    ONLY THE EXIT STATUS IS READ, and only where it is unambiguous. Exit 1 is the ordinary "there
+    are findings" status, so it is left alone here — the first version of this function also
+    refused an exit 1 that printed no diagnostic line, which is the WITHDRAWN-code case
+    (`Rule ... was removed and cannot be selected`), and that arm immediately false-refused a
+    legitimate content failure whose output shape it had not been measured against. The withdrawn
+    code is caught instead by `self_check_argv` below, at launch, where the answer is a bare exit
+    status over an empty directory and nothing has to be parsed at all.
+    """
+    if returncode in (0, 1):
+        return None
+    return (
+        f"{EXECUTABLE} exited {returncode} without checking anything — the invocation was "
+        f"refused, not the source. The declared rule set is imposed with `--select`, which the "
+        f"tool validates before it reads a file, so this is a defect in "
+        f"tools/backends/linter/fortitude/lint.py (or a build outside the supported range), "
+        f"never in the source under it: {(stderr or stdout).strip()[:400]}"
+    )
+
+
+def self_check_argv(empty_dir: str) -> tuple[str, ...]:
+    """The declared invocation, pointed at a directory holding no source.
+
+    A valid argv over an empty directory exits 0 (`0 files scanned`). An unknown code exits 2 and
+    a WITHDRAWN one exits 1 — neither of which an empty directory can otherwise produce, since
+    there is nothing to find. So one run answers "is this build able to impose the declared set"
+    with a bare exit status: no output parsing, no fixture, and no dependence on how findings are
+    formatted. Run at launch, before any leaf, by `tools/host_prerequisites.py`.
+    """
+    return check_argv(empty_dir)
+
+
+def self_check_reason(returncode: int, stdout: str, stderr: str) -> str | None:
+    """`None` when the declared set is imposable on this build; the refusal clause otherwise."""
+    if returncode == 0:
+        return None
+    return (
+        f"{EXECUTABLE} cannot impose the declared rule set on this host: the invocation exited "
+        f"{returncode} over a directory with no source in it, where a usable build reports "
+        f"`0 files scanned` and exits 0. A code this build does not know, or one it has "
+        f"withdrawn, is the measured cause — re-measure the set against this build and record it "
+        f"in docs/backends/linter/fortitude/RULES.md: {(stdout or stderr).strip()[:400]}"
+    )
+
+
 def check_argv(target: str = ".") -> tuple[str, ...]:
     """The full argv the static-lint step runs over `target`."""
     return (EXECUTABLE, "check", *CHECK_FLAGS, target)

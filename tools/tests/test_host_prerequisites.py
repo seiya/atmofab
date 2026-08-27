@@ -186,9 +186,10 @@ class ToolVersionArmTests(unittest.TestCase):
             for capability in sorted(record.backend_provides & gated):
                 with self.subTest(axis=axis, backend_id=backend_id, capability=capability):
                     module = backend_registry.capability_module(axis, backend_id, capability)
-                    self.assertTrue(callable(getattr(module, "version_argv", None)))
-                    self.assertTrue(
-                        callable(getattr(module, "unsupported_version_reason", None)))
+                    for name in ("version_argv", "unsupported_version_reason",
+                                 "self_check_argv", "self_check_reason"):
+                        self.assertTrue(callable(getattr(module, name, None)),
+                                        f"{axis}/{backend_id} does not answer {name}")
                     seen += 1
         self.assertGreater(seen, 0, "no record implements a version-gated capability in its own "
                                     "package, so this row observes nothing")
@@ -310,6 +311,56 @@ class ToolVersionArmTests(unittest.TestCase):
 
     def test_an_unstartable_probe_is_a_refusal_rather_than_a_traceback(self) -> None:
         self.assertIsNone(hp._tool_version_text(("metdsl-no-such-program-nowhere",)))
+
+    def test_a_build_that_cannot_impose_the_declared_set_is_refused_at_launch(self) -> None:
+        """The second launch question, driven through the real arm.
+
+        A version inside the range does not imply the declared set is imposable on that build:
+        a code withdrawn in a patch release nobody measured makes the invocation fail without
+        judging anything. Left to the gate it arrives as a lint finding attributed to the leaf's
+        source — the failure a blank-slate reviewer reproduced. Only the self-check's verdict is
+        substituted here; the record, the module and the arm are production.
+        """
+        with mock.patch.object(hp, "_self_check_reason", lambda module: "synthetic refusal"):
+            found = hp.unsupported_host_tool_versions()
+        self.assertEqual([item.reason for item in found], ["synthetic refusal"])
+
+    def test_the_self_check_runs_the_backends_own_argv_over_an_empty_directory(self) -> None:
+        """No fixture, no parsing: the directory is empty, so a usable build has nothing to find.
+
+        Pinned because the emptiness is what makes the exit status unambiguous — a self-check
+        pointed at a directory with sources in it would confuse `there are findings` with
+        `the invocation was refused`, which is the distinction this whole arm exists to make.
+        """
+        seen: dict[str, object] = {}
+
+        class _Probe:
+            @staticmethod
+            def self_check_argv(empty_dir):
+                seen["dir"] = empty_dir
+                seen["listing"] = sorted(Path(empty_dir).iterdir())
+                return (sys.executable, "-c", "raise SystemExit(0)")
+
+            @staticmethod
+            def self_check_reason(returncode, stdout, stderr):
+                seen["rc"] = returncode
+                return None
+
+        self.assertIsNone(hp._self_check_reason(_Probe))
+        self.assertEqual(seen["listing"], [])
+        self.assertEqual(seen["rc"], 0)
+
+    def test_a_self_check_that_cannot_be_run_is_a_refusal(self) -> None:
+        class _Unrunnable:
+            @staticmethod
+            def self_check_argv(empty_dir):
+                return ("metdsl-no-such-program-nowhere",)
+
+            @staticmethod
+            def self_check_reason(returncode, stdout, stderr):  # pragma: no cover - not reached
+                return None
+
+        self.assertIsNotNone(hp._self_check_reason(_Unrunnable))
 
     def test_this_development_host_satisfies_the_version_arm(self) -> None:
         """The companion of `test_this_development_host_satisfies_the_probe`: if this fails, a
