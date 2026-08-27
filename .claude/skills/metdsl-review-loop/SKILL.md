@@ -361,6 +361,17 @@ nor resets the two-consecutive-clean-security-rounds condition.**
 
 Episodes for the last three bullets, and the three accidents in full: `references/round-conduct.md`.
 
+**Mid-round mutation is where the round-0 rules actually bite, and they read as if they do not.**
+Everything under "Before you hand it over" is written for the round-0 sweep, but you will mutate
+by hand in every round after it — to reproduce a finding, to check a fix, to see whether a
+reviewer's mutant is real. The two that cost the most are the two easiest to read as round-0-only:
+**never revert with `git checkout -- <file>`** (it deletes uncommitted work, and is a silent
+no-op on an untracked file), and **run the baseline before trusting a green result**. PR #107 hit
+the first in round 2, on the fix commit's own tests — four uncommitted test edits destroyed, redone
+from context, an hour lost — with the rule sitting in this file in those words. `cp` the file to a
+scratch path first and restore from that, or mutate in a worktree; the discipline is the same at
+every point in the loop, not just at round 0.
+
 **Reproduce a finding yourself before classifying it.** Real / false positive / residual /
 **real but out of scope** (below) are decided only with a record of a reproduction you ran. Treat
 "the implementation is right but the test is weak" as real. (`metdsl-enforcement-change` judgment
@@ -373,9 +384,21 @@ ratchet kills this hunk"; a test in another file caught it correctly and was sim
 sweep's gate. **When told "only X caught it", check whether the files holding the other guards
 were inside that reviewer's test command.** If not, it is a report about the measurement scope.
 
+**And verify a reviewer's POSITIVE claims by asking what it EXECUTED.** A "verified true" is
+worth exactly the run behind it, and a reviewer that traces a code path instead of driving it
+will report MATCHES on a claim that is false. PR #107, twice in one round: the mechanical axis
+read `run_gate` top to bottom and confirmed "every refusal invalidates the copy" and "callee
+raises are covered a fortiori" — both false, because two guards sat above the invalidation and
+an ownership guard returned silently, and both were found by the reviewers who RAN the refusals.
+**The tell is a verdict justified by structure** ("X runs before Y, so Y is covered") **rather
+than by an observation** ("I called it with a blank token and the file survived"). Ask for the
+command; a claim that cannot name one is a reading. This is not a reason to distrust the
+axis — the same reviewer refused two false premises I had planted in its own checklist in the
+same run — it is a reason to re-run the positive verdicts your change actually rests on.
+
 ## Delegate verifiable work to sonnet
 
-**Operational conclusion (5 data points; the confound resolved in PR #72 by giving both models
+**Operational conclusion (8 data points; the confound resolved in PR #72 by giving both models
 the same checklist, the axis run as delegated in PR #88): sonnet ⊂ opus, with real misses.** Move **the mechanical-recomputation axis**
 permanently to sonnet and keep judgment on the up-model. Costs came out roughly equal, so "it is
 cheap, so run more" does not hold — **use it only to free up a slot**. Run one via `Agent` with
@@ -403,7 +426,8 @@ arithmetic).
 numbers" does not give "it matches on parser semantics". **Measure per axis.**
 
 **Tell it to report claims it cannot locate rather than accounting for them** — refusing a false
-premise I had put in its prompt is the most valuable thing this axis has done (data point 5).
+premise I had put in its prompt is the most valuable thing this axis has done — and the most
+reproducible, having now happened in three of the eight data points (5, and twice on PR #107).
 **This stays an experiment**: collect real/total findings, elapsed time and the overlap count,
 add a data point each time, and delete this section if it stops paying. How to read overlap, how
 not to confound the comparison, and why the reverse (opus reviewing sonnet's implementation) is

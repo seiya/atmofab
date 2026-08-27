@@ -141,6 +141,57 @@ above are for.
 - Measure changes in the fail-closed direction (more refusals) the same way. L128 showed **the
   module dep map for 357 directories byte-identical and 103/103 Makefile verdicts unchanged**
 
+## Extraction diff: what a refactor silently changed (AST, per function)
+
+**A helper extracted from an inline expression is the one change shape where a green suite
+proves nothing**, because both sides are meant to behave identically — so nothing new is
+exercised and nothing old fails. PR #107 shipped one: extracting an ownership predicate out of
+`_cleanup_agent_tmp_root` dropped an `orchestration_id.strip()` that the inline form had, and a
+padded id then resolved to a directory that does not exist, ownership silently failed, cleanup
+refused, and the run kept its tmp scratch. **The whole suite was green on both sides.** It was
+found by diffing the extraction against the text it replaced, and by nothing else.
+
+Read the functions, not the diff. A `git diff` of a refactor is mostly motion, and the one
+changed token sits inside it looking like motion too.
+
+```bash
+git show <base>:tools/orchestration_runtime.py > /tmp/old_rt.py
+git show HEAD:tools/orchestration_runtime.py  > /tmp/new_rt.py
+python3 - <<'EOF'
+import ast, difflib
+def bodies(path):
+    tree = ast.parse(open(path).read())
+    out = {}
+    for n in ast.walk(tree):
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            f = ast.parse(ast.unparse(n)).body[0]
+            if (f.body and isinstance(f.body[0], ast.Expr)
+                    and isinstance(f.body[0].value, ast.Constant)
+                    and isinstance(f.body[0].value.value, str)):
+                f.body = f.body[1:] or [ast.Pass()]      # docstrings are not behaviour
+            out[n.name] = ast.unparse(f)
+    return out
+old, new = bodies("/tmp/old_rt.py"), bodies("/tmp/new_rt.py")
+for name in sorted(set(old) | set(new)):
+    if old.get(name) != new.get(name):
+        print("=== " + name)
+        print("\n".join(difflib.unified_diff(
+            old.get(name, "").splitlines(), new.get(name, "").splitlines(), lineterm="", n=1)))
+EOF
+```
+
+- **`ast.unparse` normalises formatting**, so a reflow, a comment, or a docstring rewrite cannot
+  hide a token. Stripping the docstring is what makes the output short enough to read — on PR
+  #107 it reduced a 1449-line branch diff to **exactly four changed functions**, which is the
+  half that matters: it bounded what else could have been dropped
+- **Run it over the test file too.** Same command, and it answers "which tests changed behaviour"
+  rather than "which lines moved"
+- **This does not replace mutation.** It says what changed; mutation says whether anything
+  notices. An extraction needs both, and needs them in this order: the diff tells you which
+  mutants are worth building
+- **The base is the commit before the refactor**, not `origin/main`, when the branch has several
+  commits — otherwise the refactor's own delta is buried in the feature's
+
 ## ruff shows "identical to the baseline"
 
 Compare per file, not by count. **Add a file to the comparison and the baseline must be retaken**
