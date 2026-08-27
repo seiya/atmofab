@@ -76,12 +76,15 @@ then run the real probes; `CODEX_HOME` 10; `METDSL_HOME` 3; `METDSL_ENFORCE_REPL
 1; every other name measured that way 0. So the pair in the issue was a small part of the
 surface, and the expensive member was not in it.
 
-NO COUNT of those names appears here or anywhere else in the code, deliberately. This
-paragraph said "the 17 `METDSL_*` names the tree reads" for four commits; a reviewer
-counting literals got 23, a third enumeration got 25, and an AST reader that resolves
-reads through module constants gets 21 — three right answers to three different questions.
+NO COUNT of those names appears here or anywhere else in the code, deliberately — and the
+sentence that replaced the first count was itself wrong, which is the argument. This
+paragraph said "the 17 `METDSL_*` names the tree reads" for four commits; its replacement
+credited the constant-resolving reader with 21, the figure that reader returns with its
+constant resolution REMOVED (it returns 27). Reviewers counting literals got 23 and 25.
+Every one of those is a right answer to a different question about which files and which
+spellings count, which is why the code states none of them:
 `test_every_environment_name_the_tree_reads_is_stripped_or_declared` asks the rule about
-whatever the tree currently reads instead.
+whatever the tree currently reads.
 
 `pytest_configure` removes those names from `os.environ` before collection — before
 collection, because a module body that reads the environment at import runs earlier than

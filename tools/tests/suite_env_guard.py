@@ -69,11 +69,14 @@ def operator_env_names_to_strip(environ) -> list[str]:
     `test_no_module_level_environment_read_defeats_the_guard`, which fails if any module the
     hook imports grows a module-scope environment read.
 
-    NO COUNT is stated for how many names this covers, deliberately. Three documents once
-    said "the 17 METDSL_* names the tree reads"; a reviewer counted 23, and both are
-    answers to different questions about which files and which spellings count. The
-    property — that the prefix rule covers every METDSL_ name the tree names — is pinned by
-    `test_the_prefix_rule_covers_every_name_the_tree_uses` instead, which cannot rot.
+    NO COUNT is stated for how many names this covers, deliberately, and this paragraph
+    has now been wrong twice for stating one. Three documents once said "the 17 METDSL_*
+    names the tree reads"; reviewers counting differently got 21, 23, 25 and 27, each a
+    correct answer to a different question about which files and which spellings count.
+    What is checked instead is a PROPERTY, by
+    `test_every_environment_name_the_tree_reads_is_stripped_or_declared`: every name the
+    tree reads is either stripped here or declared in `MUST_BE_INHERITED`. That question
+    can fail — verified on three uncovered names — which the count-shaped one could not.
     """
     present = list(environ)
     from tools.orchestration_runtime import LEAF_ENV_ALLOWED_PREFIXES

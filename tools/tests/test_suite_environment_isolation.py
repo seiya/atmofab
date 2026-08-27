@@ -19,9 +19,11 @@ the environment rather than on the runner).
 from __future__ import annotations
 
 import ast
+import json
 import os
 import re
 import subprocess
+import tempfile
 import sys
 import unittest
 from pathlib import Path
@@ -107,6 +109,51 @@ def _environment_names_read_by(repo_root: Path) -> set[str]:
                 if target and target.isupper():
                     found.add(target)
     return found
+
+
+# Read by CPython's own `subprocess` module at import, on every Linux interpreter. Not
+# ours, not an operator knob, and it is declared here rather than filtered by a prefix so
+# that a SECOND such name has to be looked at rather than silently swallowed.
+_IMPORT_READS_NOT_OURS = {"_PYTHON_SUBPROCESS_USE_POSIX_SPAWN"}
+
+# Runs in a fresh interpreter: instrument `os.environ`, import, print what was read.
+_IMPORT_SPY_SOURCE = '''\
+import collections.abc, json, os, sys
+
+
+class _Spy(collections.abc.MutableMapping):
+    def __init__(self, real):
+        self._real = real
+        self.reads = []
+
+    def __getitem__(self, key):
+        self.reads.append(key)
+        return self._real[key]
+
+    def __setitem__(self, key, value):
+        self._real[key] = value
+
+    def __delitem__(self, key):
+        del self._real[key]
+
+    def __iter__(self):
+        return iter(self._real)
+
+    def __len__(self):
+        return len(self._real)
+
+    def copy(self):
+        return self._real.copy()
+
+
+spy = _Spy(os.environ)
+os.environ = spy
+sys.path.insert(0, os.getcwd())
+if len(sys.argv) > 2:
+    sys.path.insert(0, sys.argv[2])
+__import__(sys.argv[1])
+print(json.dumps(sorted(set(spy.reads))))
+'''
 
 
 def _run(argv: list[str], env_extra: dict[str, str]) -> subprocess.CompletedProcess:
@@ -307,6 +354,51 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
             "may have exported, or to MUST_BE_INHERITED with the reason it has to survive."
             f" Names: {sorted(undecided)}")
 
+    def test_the_environment_name_reader_sees_all_three_spellings(self) -> None:
+        """Each spelling the docstring claims, driven on a synthetic tree.
+
+        Deleting the `ast.Subscript` clause survived a reviewer's sweep: this tree spells
+        `os.environ["X"]` exactly once and the one name it loses is already declared
+        inheritable, so the ratchet that consumes the reader stayed green. A branch the
+        corpus exercises once is a branch a corpus measurement cannot pin.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            pkg = Path(td) / "tools"
+            pkg.mkdir()
+            (pkg / "probe.py").write_text(
+                'import os\n'
+                '_VIA_CONSTANT = "PROBE_CONSTANT"\n'
+                'a = os.environ.get("PROBE_GET")\n'
+                'b = os.environ["PROBE_SUBSCRIPT"]\n'
+                'c = os.getenv("PROBE_GETENV")\n'
+                'd = os.environ.get(_VIA_CONSTANT)\n'
+                'def f(name):\n    return os.environ.get(name)\n',
+                encoding="utf-8")
+            found = _environment_names_read_by(Path(td))
+        self.assertEqual(
+            found,
+            {"PROBE_GET", "PROBE_SUBSCRIPT", "PROBE_GETENV", "PROBE_CONSTANT"},
+            "one of the spellings the reader claims to cover is not covered — or a "
+            "runtime-computed name, which it states it cannot see, was reported")
+
+    def test_the_strip_refuses_to_report_success_without_removing(self) -> None:
+        """`strip_operator_env`'s own removal check, driven where it can fire.
+
+        It exists because this branch shipped a mutant that recorded names without
+        removing them, and survived a whole-suite run. On a real `os.environ` the check
+        cannot fire — `pop` either removes the key or raises — so it is driven with a
+        mapping whose `pop` does not, which is what the check is a backstop against: a
+        future caller handing it something layered.
+        """
+        class _KeepsWhatItPops(dict):
+            def pop(self, key, *args):
+                return self[key]
+
+        with suite_env_guard.isolated_record():
+            with self.assertRaisesRegex(RuntimeError, "without removing it"):
+                suite_env_guard.strip_operator_env(
+                    _KeepsWhatItPops({"METDSL_A_KNOB": "1"}))
+
     def test_the_stripped_or_declared_decision_reports_an_undecided_name(self) -> None:
         """The decision above, driven where the answer is not "nothing".
 
@@ -354,68 +446,117 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
         self.assertEqual(suite_env_guard.STRIPPED_OPERATOR_ENV, before_record)
         self.assertEqual(suite_env_guard.CONFIGURED, before_flag)
 
-    def test_no_module_level_environment_read_defeats_the_guard(self) -> None:
-        """The hook's import must not itself cache an operator value.
+    def test_no_environment_read_during_the_hooks_own_import_caches_a_value(self) -> None:
+        """The hook's import must not itself read the operator's environment.
 
-        `strip_operator_env` snapshots the candidate names, then imports
-        `orchestration_runtime` to learn the prefix, then pops. A module-scope
-        `os.environ` read anywhere in that import chain would read the operator's value
-        BEFORE the pop and keep it for the whole session, with every test still green —
-        the docstring asserted this could not happen and nothing checked it.
+        `strip_operator_env` snapshots the candidate names, imports
+        `tools.orchestration_runtime` to learn the prefix, then pops. Anything read during
+        that import happens BEFORE the pop, so the value is the operator's and it is kept
+        for the whole session with every test still green.
 
-        Read by AST, over the modules the hook's own import reaches directly.
+        MEASURED, NOT PARSED, and the change of instrument is the point. Two static
+        readers were written for this question and both were wrong, in opposite
+        directions, in consecutive review rounds. The first excluded only top-level
+        `def`/`class`, so a fallback `def` inside a module-level `try:` was reported as an
+        import-time read. The second excluded those NODES entirely, and thereby stopped
+        seeing a class body, a decorator argument, a default argument and a class base —
+        all of which execute at import — while still reporting a module-level `lambda`
+        body, which does not. Measured on `3052aa3`, five of eight shapes wrong; the two
+        files it scanned hold 29 class-body assignments, 10 decorators and 20 lambdas, so
+        neither error was hypothetical. It also scanned 2 files while the import pulls in
+        15, so an ordinary module-level constant in any of the other 13 was invisible.
+
+        Deciding "what runs at import" from source is the wrong question to ask a reader.
+        Running the import with `os.environ` instrumented answers it exactly, needs no
+        grammar, and covers every spelling at once — including a name assembled at runtime
+        and a read made by another module on this one's behalf, neither of which any
+        static reader can see.
         """
-        def module_scope_env_reads(source: str) -> list[int]:
-            """Lines where the environment is read while the module is being imported.
-
-            A read inside ANY function or class body is not one, however deeply nested.
-            The first version excluded only top-level `def`/`class`, which reported a
-            perfectly ordinary fallback — a `def` inside a module-level `try: … except
-            ImportError:` — as a module-scope read. Both files under test already have
-            module-level `try:` blocks, so that over-refusal was one edit away, and the
-            self-test below did not catch it because it only exercised a TOP-LEVEL `def`.
-            """
-            offenders = []
-
-            def visit(node, inside_body: bool) -> None:
-                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                    inside_body = True
-                if (not inside_body and isinstance(node, ast.Attribute)
-                        and node.attr in ("environ", "getenv")):
-                    offenders.append(getattr(node, "lineno", -1))
-                for child in ast.iter_child_nodes(node):
-                    visit(child, inside_body)
-
-            for top in ast.parse(source).body:
-                visit(top, False)
-            return sorted(offenders)
-
-        # SELF-TEST FIRST, and it has to include the NESTING cases. A negative assertion is
-        # green when its detector is broken, and it is equally wrong when the detector
-        # refuses legitimate code — the previous self-test proved only the easy direction.
-        self.assertEqual(module_scope_env_reads("X = os.environ.get('A')\n"), [1])
-        self.assertEqual(module_scope_env_reads("X = os.getenv('A')\n"), [1])
+        reads = self._names_read_during_import("tools.orchestration_runtime")
         self.assertEqual(
-            module_scope_env_reads("if True:\n    X = os.environ.get('A')\n"), [2],
-            "a read under a module-level `if` still runs at import")
-        self.assertEqual(
-            module_scope_env_reads("def f():\n    return os.environ['A']\n"), [],
-            "a read inside a function is not a module-scope read")
-        self.assertEqual(
-            module_scope_env_reads(
-                "try:\n    import x\nexcept ImportError:\n"
-                "    def f():\n        return os.environ.get('A')\n"), [],
-            "a fallback `def` inside a module-level `try` is not a module-scope read")
-        self.assertEqual(
-            module_scope_env_reads(
-                "class C:\n    def m(self):\n        return os.getenv('A')\n"), [],
-            "a read inside a method is not a module-scope read")
+            reads - _IMPORT_READS_NOT_OURS, set(),
+            "something read the environment while the hook's own import ran, so the "
+            "operator's value for it was cached before the strip could remove it")
 
-        for rel in ("tools/orchestration_runtime.py", "tools/hooks/common.py"):
-            found = module_scope_env_reads(
-                (_REPO_ROOT / rel).read_text(encoding="utf-8"))
-            self.assertEqual(found, [],
-                             f"{rel} reads the environment at module scope, lines {found}")
+    def test_the_import_spy_sees_every_shape_that_runs_at_import(self) -> None:
+        """The instrument's own witness, in BOTH directions.
+
+        A negative assertion is green when its detector is broken, and the two readers
+        this replaces were each defeated by a shape their self-test did not contain. So
+        the shapes go in explicitly, and the ones that must NOT be reported go in beside
+        them.
+        """
+        # (label, source, the name that must be reported). The expected name is carried
+        # rather than derived from the label: deriving it made one row assert a name no
+        # probe could ever produce, which is a row that cannot fail for the right reason.
+        runs_at_import = (
+            ("plain",
+             'X = os.environ.get("PROBE_PLAIN")', "PROBE_PLAIN"),
+            ("class body",
+             'class C:\n    X = os.environ.get("PROBE_CLASS")', "PROBE_CLASS"),
+            ("class base",
+             'def mk(v): return object\n'
+             'class C(mk(os.environ.get("PROBE_BASE"))): pass', "PROBE_BASE"),
+            ("decorator argument",
+             'def dec(v):\n    def w(f): return f\n    return w\n'
+             '@dec(os.environ.get("PROBE_DECORATOR"))\n'
+             'def f(): pass', "PROBE_DECORATOR"),
+            ("default argument",
+             'def f(x=os.environ.get("PROBE_DEFAULT")): pass', "PROBE_DEFAULT"),
+            ("subscript",
+             'X = os.environ["HOME"] if "HOME" in os.environ else None\n'
+             'Y = os.environ.get("PROBE_SUBSCRIPT")', "PROBE_SUBSCRIPT"),
+            ("runtime-computed name",
+             'N = "PROBE_" + "COMPUTED"\nX = os.environ.get(N)', "PROBE_COMPUTED"),
+            ("read through another module",
+             'X = __import__("os").environ.get("PROBE_INDIRECT")', "PROBE_INDIRECT"),
+        )
+        for label, body, expected in runs_at_import:
+            with self.subTest(shape=label):
+                self.assertIn(expected, self._names_read_during_import_of_source(body))
+
+        never_runs_at_import = {
+            "function body": 'def f():\n    return os.environ.get("PROBE_FUNC")',
+            "method body": ('class C:\n    def m(self):\n'
+                            '        return os.environ.get("PROBE_METHOD")'),
+            "lambda body": 'F = lambda: os.environ.get("PROBE_LAMBDA")',
+            "def in a module-level try": ('try:\n    import zzz_no_such\n'
+                                          'except ImportError:\n    def f():\n'
+                                          '        return os.environ.get("PROBE_TRY")'),
+        }
+        for label, body in never_runs_at_import.items():
+            with self.subTest(shape=label):
+                seen = self._names_read_during_import_of_source(body)
+                self.assertEqual(
+                    {n for n in seen if n.startswith("PROBE_")}, set(),
+                    f"{label} does not run at import and must not be reported")
+
+    def _names_read_during_import_of_source(self, body: str) -> set[str]:
+        """Run the spy over a synthetic module built from `body`."""
+        with tempfile.TemporaryDirectory() as td:
+            module = Path(td) / "metdsl_probe_module.py"
+            module.write_text("import os\n" + body + "\n", encoding="utf-8")
+            return self._names_read_during_import(
+                "metdsl_probe_module", extra_path=td)
+
+    def _names_read_during_import(self, module: str,
+                                  extra_path: str | None = None) -> set[str]:
+        """Every environment name read while `module` is imported, in a fresh process.
+
+        `os.environ` is replaced with a recording mapping BEFORE the import. A subprocess
+        because the modules under test are already imported in this one, and an import
+        that does not happen reads nothing.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            spy = Path(td) / "metdsl_import_spy.py"
+            spy.write_text(_IMPORT_SPY_SOURCE, encoding="utf-8")
+            argv = [sys.executable, str(spy), module]
+            if extra_path:
+                argv.append(extra_path)
+            done = _run(argv, {})
+            self.assertEqual(done.returncode, 0,
+                             f"the import spy failed:\n{done.stdout}\n{done.stderr}")
+            return set(json.loads(done.stdout.strip().splitlines()[-1]))
 
     def test_the_strip_is_reported_and_can_be_declined(self) -> None:
         """Silence here is a check recorded as run and not run — so both are witnessed.
