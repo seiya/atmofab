@@ -4170,6 +4170,40 @@ DEFAULT_ALLOWED_GATE_SERVICES: tuple[str, ...] = (
     "orchestration_read",
 )
 
+# The subdirectory of a leaf's own `allowed_tmp_root` in which `run_gate` leaves the
+# summary it also prints on the last line of its stderr (issue #77), one file per gate
+# name. THE RULE IS DEFINED HERE AND THE DOCUMENTS ARE CHECKED AGAINST IT: ten surfaces
+# state this path -- the leaf-read contract, the rendered gate hint, the operator runbook,
+# the audit SKILL, four more documents -- and a sweep by hand over that many sites is the
+# failure mode `.claude/skills/metdsl-enforcement-change` rule 3-a exists for.
+# `GateResultTmpCopySurfaceTests` in tools/tests/test_orchestration_runtime.py resolves
+# this constant and requires each surface to name the path it produces, so renaming the
+# directory turns every stale document red rather than leaving them quietly wrong.
+GATE_RESULT_TMP_DIRNAME = "gate_results"
+
+
+def _agent_tmp_gate_result_path(repo_root: Path, agent_run_id: str, gate: str) -> Path:
+    """Absolute path of the leaf-readable copy of one gate's result summary.
+
+    Takes no caller text: `agent_run_id` has passed `_require_safe_gate_ids` by the time
+    `run_gate` calls this, and `gate` is a member of DEFAULT_ALLOWED_GATE_SERVICES. The
+    relative form is `_agent_tmp_gate_result_ref`, which is what the documents state and
+    what the launch-prompt hint renders.
+    """
+    return repo_root / _agent_tmp_gate_result_ref(agent_run_id, gate)
+
+
+def _agent_tmp_gate_result_ref(agent_run_id: str, gate: str) -> str:
+    """Repo-relative POSIX form of `_agent_tmp_gate_result_path`."""
+    return (
+        f"workspace/tmp/{agent_run_id.strip()}/{GATE_RESULT_TMP_DIRNAME}/{gate}.json"
+    )
+
+
+def _agent_tmp_gate_result_dir_ref(agent_run_id: str) -> str:
+    """Repo-relative POSIX form of the directory holding those copies (trailing slash)."""
+    return f"workspace/tmp/{agent_run_id.strip()}/{GATE_RESULT_TMP_DIRNAME}/"
+
 STEP_REQUIRED_CHILD_AGENT: dict[str, str] = {
     "compile": "substep",
     "generate": "substep",
@@ -6539,10 +6573,7 @@ def run_gate(
         "evaluated_at": gate_doc["evaluated_at"],
     }
     print(json.dumps(_gate_summary), file=sys.stderr)
-    _tmp_gate_result = (
-        repo_root / "workspace" / "tmp" / agent_run_id.strip()
-        / "gate_results" / f"{gate}.json"
-    )
+    _tmp_gate_result = _agent_tmp_gate_result_path(repo_root, agent_run_id, gate)
     try:
         _write_json(_tmp_gate_result, _gate_summary)
     except OSError:
@@ -11230,9 +11261,10 @@ def _build_gate_runbook(request_payload: dict[str, Any]) -> str:
             "redirect to capture it: the permission layer refuses a Bash redirect to a "
             f"file. `workspace/tmp/{arid}/` already exists and is writable with the "
             "`Write` tool, so it needs no creating; the runtime also drops each gate's "
-            f"own summary there, one JSON file per gate name under `workspace/tmp/{arid}"
-            "/gate_results/`, so a later turn can re-read a result whose command output "
-            "has scrolled out of your context. `access_logs/` is runtime-managed "
+            "own summary there, one JSON file per gate name under "
+            f"`{_agent_tmp_gate_result_dir_ref(arid)}`, so a later turn can re-read a "
+            "result whose command output has scrolled out of your context. "
+            "`access_logs/` is runtime-managed "
             "audit (the read hook appends a line per read decision, and "
             "`orchestration_read` writes one too) — never read or write it yourself."
         )

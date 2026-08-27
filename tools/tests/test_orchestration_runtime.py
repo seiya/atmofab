@@ -30473,6 +30473,139 @@ class ChildContextDocSizeTests(unittest.TestCase):
             )
 
 
+class GateResultTmpCopySurfaceTests(unittest.TestCase):
+    """COUPLING check for issue #77's leaf-readable gate-result copy.
+
+    The path `workspace/tmp/<agent_run_id>/gate_results/<gate>.json` is stated in eight
+    documents, in the gate hint injected into every leaf's launch prompt, and in the
+    runtime that writes it. Eight-plus statement sites of one rule is the count at which a
+    sweep by hand has already lost (`.claude/skills/metdsl-enforcement-change` rule 3-a),
+    and two of the sites are read by a leaf and by an operator, who ACT on them: a leaf
+    sent to a path the runtime no longer writes reads nothing and cannot tell that from a
+    gate that produced nothing.
+
+    THE RULE IS DEFINED IN THE CODE AND THE DOCUMENTS ARE CHECKED AGAINST IT, never the
+    reverse: every expectation below is resolved from `GATE_RESULT_TMP_DIRNAME` and the
+    helpers beside it, so renaming the directory turns each stale surface red. Nothing
+    here spells the directory name a second time.
+
+    WHAT IS PINNED: that each surface names a path with the directory the constant
+    produces. WHAT IS NOT: that the surface says the copy is a convenience rather than
+    evidence, or that it names the right placeholder for the agent id. Those are different
+    rules with no instrument here, and a green run is not evidence about them.
+    """
+
+    REPO_ROOT = Path(__file__).resolve().parents[2]
+
+    # Asserted against a LITERAL list below rather than compared with the expression it
+    # came from: `_REDIRECT_SURFACES` was once emptied and both the check reading it and
+    # its self-test stayed green, because a derived tuple compared with its own derivation
+    # holds by construction.
+    #
+    # `TODO.md` is deliberately ABSENT. It records the decision as history ("issue #77
+    # shipped X"), and a historical record naming the path as it stood is correct after a
+    # rename; requiring it to track the constant would make the record follow the code,
+    # which is the opposite of what a record is for.
+    _SURFACES = (
+        "docs/AGENT_CONTRACT.md",
+        "docs/CLI_REFERENCE.md",
+        "docs/HOOKS.md",
+        "docs/RUNBOOK.md",
+        "docs/WORKSPACE_LAYOUT.md",
+        "docs/workflow/LAUNCH_PROMPT_REFERENCE.md",
+        "skills/workflow-audit-claude/SKILL.md",
+    )
+
+    @staticmethod
+    def _pattern() -> "re.Pattern[str]":
+        """`workspace/tmp/<any placeholder>/<the constant>/`, built from the constant.
+
+        The agent-id segment is left as an unconstrained `<...>` placeholder on purpose:
+        the surfaces spell it `<agent_run_id>` and `<arid>`, and WHICH placeholder a
+        document uses is a house-style question this check does not own.
+        """
+        import re
+
+        from tools.orchestration_runtime import GATE_RESULT_TMP_DIRNAME
+
+        return re.compile(
+            r"workspace/tmp/<[A-Za-z_]+>/" + re.escape(GATE_RESULT_TMP_DIRNAME) + r"/"
+        )
+
+    def test_every_surface_names_the_directory_the_runtime_writes(self) -> None:
+        self.assertEqual(
+            set(self._SURFACES),
+            {
+                "docs/AGENT_CONTRACT.md",
+                "docs/CLI_REFERENCE.md",
+                "docs/HOOKS.md",
+                "docs/RUNBOOK.md",
+                "docs/WORKSPACE_LAYOUT.md",
+                "docs/workflow/LAUNCH_PROMPT_REFERENCE.md",
+                "skills/workflow-audit-claude/SKILL.md",
+            },
+        )
+        pattern = self._pattern()
+        for rel in self._SURFACES:
+            with self.subTest(surface=rel):
+                path = self.REPO_ROOT / rel
+                self.assertTrue(path.is_file(), f"{rel} missing; update the surface list")
+                self.assertIsNotNone(
+                    pattern.search(path.read_text(encoding="utf-8")),
+                    f"{rel} does not state where run-gate leaves a gate result "
+                    f"(expected a path matching {pattern.pattern})",
+                )
+
+    def test_the_detector_distinguishes_a_stated_rule_from_a_stale_one(self) -> None:
+        """SELF-TEST: the check above is an existence assertion over a regex.
+
+        An existence assertion is green whenever its pattern is too loose, and this
+        pattern is built at run time from a constant, so a rename must be observable
+        here rather than only in the tree. The fixtures drive `_pattern()` itself.
+        """
+        from tools.orchestration_runtime import GATE_RESULT_TMP_DIRNAME
+
+        pattern = self._pattern()
+        stated = f"read it at `workspace/tmp/<agent_run_id>/{GATE_RESULT_TMP_DIRNAME}/x.json`"
+        self.assertIsNotNone(pattern.search(stated))
+        # The `<arid>` spelling the layout table uses is admitted too.
+        self.assertIsNotNone(
+            pattern.search(f"`workspace/tmp/<arid>/{GATE_RESULT_TMP_DIRNAME}/<gate>.json`")
+        )
+        for stale in (
+            # the retired route this whole change replaced
+            "capture it with `2>workspace/tmp/<agent_run_id>/last_gate_stderr.txt`",
+            # a document left behind by a rename of the constant
+            "read it at `workspace/tmp/<agent_run_id>/gate_output/x.json`",
+            # the tmp root named for an unrelated reason -- the scratch rule, not this one
+            "`workspace/tmp/<agent_run_id>/` is writable with the `Write` tool",
+            # the CANONICAL record, which is a different path and must not satisfy this
+            "`workspace/orchestrations/<orchestration_id>/gates/<arid>/<gate>.json`",
+        ):
+            with self.subTest(stale=stale):
+                self.assertIsNone(pattern.search(stale))
+
+    def test_the_rendered_gate_hint_sends_the_leaf_to_that_directory(self) -> None:
+        """The hint is injected into the launch prompt, so it is pinned on the RENDER.
+
+        A leaf never reads `_build_gate_runbook`; it reads the string the conductor
+        substituted into its prompt. The expectation is `_agent_tmp_gate_result_dir_ref`
+        resolved for this leaf's own agent_run_id -- the same helper `run_gate` writes
+        through -- so a hint naming any other directory fails here.
+        """
+        from tools.orchestration_runtime import (
+            _build_gate_runbook,
+            _agent_tmp_gate_result_dir_ref,
+        )
+
+        arid = "arid-RUNBOOK"
+        payload = dict(GateRunbookTests.BASE, step="compile", substep="generate")
+        rb = _build_gate_runbook(payload)
+        self.assertTrue(rb.strip(), "compile.generate must emit a runbook")
+        self.assertEqual(payload["agent_run_id"], arid, "fixture drift: arid moved")
+        self.assertIn(_agent_tmp_gate_result_dir_ref(arid), rb)
+
+
 class ReplyBudgetTests(unittest.TestCase):
     """record_agent_run's child-reply budget guard (_evaluate_reply_budget)."""
 
