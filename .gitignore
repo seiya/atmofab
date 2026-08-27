@@ -39,6 +39,16 @@ plans/
 workspace/
 workspace_*/
 workspace_backup_*/
+
+# The operator's own Claude Code session transcripts, copied from the machine that ran the
+# orchestrations this checkout carries. `skills/workflow-timing-audit/` reads them: a leaf's
+# token record is not written into `workspace*/` at all (no orchestration_meta.json carries a
+# `claude_workflow_home`), so the transcript under the operator's own `~/.claude/projects/`
+# is the only source, and it is machine-local and expires on the CLI's cleanup schedule.
+# Personal working aid, not a canonical record (`AGENTS.md` §Canonical record placement).
+# ANCHORED, like /llm.yaml: this names one directory the operator created at the repository
+# root, and an unanchored pattern would silently ignore a committed transcript_data/ anywhere.
+/transcript_data/
 .serena/
 package-lock.json
 
