@@ -6471,6 +6471,31 @@ def _validate_run_gate_permissions(
         )
 
 
+def _assert_under_agent_tmp_root(repo_root: Path, target: Path) -> None:
+    """Refuse a durable-gate-result path that escapes `workspace/tmp/`.
+
+    Belt to `_require_safe_gate_ids`' braces. That check makes an escape unreachable
+    today, so this raises for no input the callers can currently produce -- which is the
+    point: it is a tripwire on a future change to `_agent_tmp_gate_result_path`, not a
+    second gate on caller text, and it can never become an exception to the invalidation
+    rule the documents state.
+
+    CONSEQUENCE, stated rather than discovered later: deleting the CALL is invisible to
+    the suite, because no reachable input makes it fire. The function's own behaviour is
+    pinned by `AgentTmpRootContainmentTests`; the call site is not, and cannot be without
+    a defect to reach it. Kept under `.claude/skills/metdsl-enforcement-change` rule 1-b --
+    a surviving mutation is not grounds for deletion, and "there is no test" and "the code
+    is unnecessary" are different claims.
+    """
+    tmp_root = (repo_root / "workspace" / "tmp").resolve(strict=False)
+    resolved = target.resolve(strict=False)
+    if not (resolved == tmp_root or tmp_root in resolved.parents):
+        raise ValueError(
+            f"durable gate-result path escapes the tmp namespace: {resolved} "
+            f"is not under {tmp_root}"
+        )
+
+
 def _invalidate_durable_gate_result(
     repo_root: Path, orchestration_id: str, agent_run_id: str, gate: str
 ) -> None:
@@ -6485,9 +6510,14 @@ def _invalidate_durable_gate_result(
 
     WHAT THIS DOES AND DOES NOT ESTABLISH, stated because round 2 shipped it as an
     unconditional "the file is present iff a run completed since your last attempt" and
-    round 3 measured that false in four ways. This runs after the gate-name check and
-    before everything else in `run_gate`, so it covers every refusal `run_gate` itself
-    raises. It CANNOT cover an attempt that never reaches this code:
+    round 3 measured that false in four ways. This runs immediately after the gate-name
+    check and before everything else in `run_gate`, so it covers every refusal raised from
+    that point on -- both argument guards, and everything `_validate_run_gate_permissions`
+    and the gate itself raise. "Every refusal `run_gate` itself raises" is what the first
+    version said, and round 4 measured it false by one: the unsupported-gate-name
+    `ValueError` is raised BEFORE this, and is moot only because a name outside
+    DEFAULT_ALLOWED_GATE_SERVICES can key no copy that was ever written. It CANNOT cover
+    an attempt that never reaches this code:
 
       - a command line argparse rejects (a malformed `--args-json`, a bad `--gate`);
       - a Bash command the permission layer refuses before the process starts;
@@ -6501,15 +6531,26 @@ def _invalidate_durable_gate_result(
     `args_json` / `evaluated_at` against the run it means. The mechanism narrows the
     window; it does not close it, and no surface may say that it does.
 
-    OWNERSHIP. `workspace/tmp/` is a flat namespace, so this asks the same Adv-5 question
-    `_cleanup_agent_tmp_root` asks before deleting under it: does this orchestration hold
-    the launch record for the arid? Round 3 measured the round-2 version without that
-    check deleting another leaf's copy, and an out-of-checkout file via a caller-chosen
-    `--repo-root`, on a call with no valid capability at all. What a leaf GAINS by either
-    is nothing -- nothing but the owning leaf reads its copy -- so the hole was out of
-    scope by the decision criterion, but the comment justifying it claimed a per-caller
-    blast radius that did not exist, and it contradicted the guard this repository already
-    applies to this very directory. Both are now true instead.
+    BLAST RADIUS, stated as what it is. The deletable set is
+    `<repo_root>/workspace/tmp/<safe-id>/gate_results/<one of DEFAULT_ALLOWED_GATE_SERVICES>.json`
+    for a caller-chosen `repo_root` -- so a caller CAN delete a copy belonging to another
+    agent_run_id, and `repo_root` is argv. What a leaf gains by either is nothing: nothing
+    but the owning leaf reads its own copy, and the copy decides nothing. Round 3 and round
+    4 reviewers reached that verdict independently, and the premises' decision criterion
+    puts it out of scope on the second branch.
+
+    ROUND 4 REMOVED AN Adv-5 OWNERSHIP GUARD FROM HERE, and deleting a defense is a
+    classification, so here is the evidence. The guard required this orchestration to hold
+    the arid's launch record, and returned SILENTLY when it did not -- which made it a
+    fourth exception to the rule every surface states, reachable by passing a wrong
+    `--orchestration-id` (argv the leaf types): the probe misses, nothing is invalidated,
+    `run_gate` refuses anyway, and the leaf reads a previous run's `status: pass` at the
+    path its launch prompt names. That is the shortcut this whole function exists to close,
+    reintroduced by a guard against something that gains a leaf nothing. The Adv-5 analogy
+    that justified it does not transfer either: that guard protects an `rmtree` of a whole
+    directory tree in `_cleanup_agent_tmp_root`, not the unlink of one file at a fixed
+    name. What replaces it is `_assert_under_agent_tmp_root`, which cannot fail for a valid
+    id and therefore adds no exception.
     """
     # BEFORE ANY PATH IS BUILT. `agent_run_id` is caller text at this point -- this runs
     # ahead of `_validate_run_gate_permissions`, which is where the ids used to be checked
@@ -6518,10 +6559,14 @@ def _invalidate_durable_gate_result(
     # interpolates anything. It raises rather than returning: an unsafe id is a refusal in
     # its own right, and `_validate_run_gate_permissions` would refuse it moments later.
     _require_safe_gate_ids(orchestration_id, agent_run_id, "run-gate phase gate")
-    if not _orchestration_holds_launch_record(repo_root, orchestration_id, agent_run_id):
-        return
+    target = _agent_tmp_gate_result_path(repo_root, agent_run_id, gate)
+    # Containment, not ownership: this holds for every value `_require_safe_gate_ids`
+    # admits, so it can never become an exception to the rule the documents state. It is
+    # here to fail loudly if a later change to `_agent_tmp_gate_result_path` ever makes the
+    # target escape the tmp namespace -- the traversal this function's own test attacks.
+    _assert_under_agent_tmp_root(repo_root, target)
     try:
-        _agent_tmp_gate_result_path(repo_root, agent_run_id, gate).unlink(missing_ok=True)
+        target.unlink(missing_ok=True)
     except OSError:
         # Best-effort, for the same reason the write is: a convenience artifact must not
         # decide a verdict, so a failed unlink does not fail the gate. It leaves a stale
