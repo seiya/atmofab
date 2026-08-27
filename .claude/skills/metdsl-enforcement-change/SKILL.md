@@ -150,6 +150,15 @@ copying as the starting point. The four traps, each of which cost a round:
   turn a true statement red — resolve a named constant before giving up, and make the failure name
   the repair. This is the easiest one to reintroduce, because pinning the spelling is three lines
   and pinning the members is fifteen
+- **When the rule is an ENUMERATION, couple element by element AT ITS STATEMENT POSITION, and
+  derive the count from the code.** "Does this token appear in the document" couples nothing the
+  moment the token appears for another reason — on PR #116 the check asserted each of three flags
+  appeared in the canonical document, and a reviewer deleted a whole channel bullet with the row
+  green, because the flag names also occur in that document's reproduce command and in an
+  unrelated bullet. What closed it was reading the section that HOLDS the enumeration and
+  requiring each element to OPEN its own bullet there. The count is the other half: a document
+  that says "three channels" and lists two is only wrong if something compares the two, and the
+  number belongs to the code
 
 **Before adding a check, ask whether the sites should exist.** The cheaper fix is this
 repository's ordinary practice — one canonical statement, everyone else cites it (`AGENTS.md`
