@@ -18,7 +18,9 @@ the environment rather than on the runner).
 
 from __future__ import annotations
 
+import ast
 import os
+import re
 import subprocess
 import sys
 import unittest
@@ -78,14 +80,18 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
         import, so which of them are present depends on what has been collected. Running
         this file alone shows one; running the whole suite shows both.
         """
-        if not suite_env_guard.CONFIGURED:
+        if "pytest" not in sys.modules:
             # The subject is a pytest hook. Under plain `unittest` there is no conftest
             # and nothing to observe; asserting anyway would fail for the absence of the
-            # harness rather than for a defect. Asked of the module the hook WRITES TO,
-            # not of `sys.modules`: a reader that has ended up with a second copy of the
-            # rule sees False here and skips loudly instead of asserting over an empty
-            # record, which is the defect this flag exists for.
+            # harness rather than for a defect.
             self.skipTest("the suite's environment guard is not installed")
+        # Under pytest the flag is an ASSERTION, not a skip condition. Skipping on it
+        # instead let "the hook never set CONFIGURED" pass as "not applicable" — measured,
+        # that mutant survived a sweep by turning this test into a skip. Read from the
+        # module the hook WRITES TO, so a reader that has ended up with a second copy of
+        # the rule fails here rather than asserting over an empty record.
+        self.assertTrue(suite_env_guard.CONFIGURED,
+                        "the conftest hook did not run, or wrote to a different module")
 
         for name, operator_value in STRIPPED_OPERATOR_ENV.items():
             with self.subTest(name=name):
@@ -117,6 +123,31 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
             undeclared_operator_env_names({**declared, "CODEX_HOME": "/tmp/x"}),
             {"CODEX_HOME"})
 
+    def test_the_strip_removes_the_name_and_records_what_it_removed(self) -> None:
+        """Both halves, because a mutant that does one and not the other survives.
+
+        Dropping the record while still popping leaves the environment correct and the
+        WITNESS above vacuous — the same shape as the module split this file was written
+        after, reached a second way. Driven on a synthetic mapping: on a clean host the
+        real strip removes nothing, so there is nothing for an in-process assertion to see.
+        """
+        record = dict(suite_env_guard.STRIPPED_OPERATOR_ENV)
+        self.addCleanup(
+            lambda: (suite_env_guard.STRIPPED_OPERATOR_ENV.clear(),
+                     suite_env_guard.STRIPPED_OPERATOR_ENV.update(record)))
+        suite_env_guard.STRIPPED_OPERATOR_ENV.clear()
+
+        environ = {"METDSL_A_KNOB": "1", "CODEX_HOME": "/tmp/x", "PATH": "/b"}
+        removed = suite_env_guard.strip_operator_env(environ)
+        self.assertEqual(removed, ["CODEX_HOME", "METDSL_A_KNOB"])
+        self.assertEqual(environ, {"PATH": "/b"})
+        self.assertEqual(suite_env_guard.STRIPPED_OPERATOR_ENV,
+                         {"METDSL_A_KNOB": "1", "CODEX_HOME": "/tmp/x"})
+        suite_env_guard.restore_operator_env(environ)
+        self.assertEqual(environ, {"METDSL_A_KNOB": "1", "CODEX_HOME": "/tmp/x",
+                                   "PATH": "/b"})
+        self.assertEqual(suite_env_guard.STRIPPED_OPERATOR_ENV, {})
+
     def test_the_rule_is_read_from_the_leaf_env_prefix_constant_not_copied(self) -> None:
         """Coupled by POINTER: the prefix is defined once, in the production constant.
 
@@ -144,6 +175,96 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
         sample = {name: "/tmp/x" for name in BACKEND_CONFIG_HOME_ENV}
         self.assertEqual(operator_env_names_to_strip(sample),
                          sorted(BACKEND_CONFIG_HOME_ENV))
+
+    def test_the_prefix_rule_covers_every_name_the_tree_uses(self) -> None:
+        """A property, in place of the count three documents used to state.
+
+        Enumerated with `os.walk` and not with `grep`, which in an agent session may be a
+        shell function running `ugrep --ignore-files` and therefore respects `.gitignore`.
+        Every `METDSL_*` literal in non-test `tools/` and `mcp_servers/` must be a name the
+        strip removes when it is present. A count would have to be re-taken every time a
+        knob is added and was wrong in three places; this cannot go stale, because it asks
+        the rule about whatever the tree currently names.
+        """
+        found = set()
+        for root, dirs, files in os.walk(_REPO_ROOT):
+            dirs[:] = [d for d in dirs
+                       if d not in (".git", "__pycache__", "tests")
+                       and not d.startswith("workspace")]
+            rel = Path(root).relative_to(_REPO_ROOT)
+            if rel.parts and rel.parts[0] not in ("tools", "mcp_servers"):
+                continue
+            for name in files:
+                if not name.endswith(".py"):
+                    continue
+                text = (Path(root) / name).read_text(encoding="utf-8", errors="replace")
+                found.update(re.findall(r"[\"']([A-Z]*METDSL_[A-Z0-9_]+)[\"']", text))
+        self.assertTrue(found, "the enumeration found nothing — the walk is broken")
+        sample = {name: "x" for name in found}
+        self.assertEqual(set(operator_env_names_to_strip(sample)), found)
+
+    def test_no_module_level_environment_read_defeats_the_guard(self) -> None:
+        """The hook's import must not itself cache an operator value.
+
+        `strip_operator_env` snapshots the candidate names, then imports
+        `orchestration_runtime` to learn the prefix, then pops. A module-scope
+        `os.environ` read anywhere in that import chain would read the operator's value
+        BEFORE the pop and keep it for the whole session, with every test still green —
+        the docstring asserted this could not happen and nothing checked it.
+
+        Read by AST, over the modules the hook's own import reaches directly.
+        """
+        def module_scope_env_reads(source: str) -> list[int]:
+            offenders = []
+            for node in ast.parse(source).body:      # module scope only
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    continue
+                for sub in ast.walk(node):
+                    if isinstance(sub, ast.Attribute) and sub.attr in ("environ", "getenv"):
+                        offenders.append(getattr(sub, "lineno", -1))
+            return offenders
+
+        # SELF-TEST FIRST. A negative assertion is green when its detector is broken, and
+        # this one reports the empty list for any reader that fails to walk.
+        self.assertEqual(module_scope_env_reads("X = os.environ.get('A')\n"), [1])
+        self.assertEqual(module_scope_env_reads("X = os.getenv('A')\n"), [1])
+        self.assertEqual(
+            module_scope_env_reads("def f():\n    return os.environ['A']\n"), [],
+            "a read inside a function is not a module-scope read")
+
+        for rel in ("tools/orchestration_runtime.py", "tools/hooks/common.py"):
+            found = module_scope_env_reads(
+                (_REPO_ROOT / rel).read_text(encoding="utf-8"))
+            self.assertEqual(found, [],
+                             f"{rel} reads the environment at module scope, lines {found}")
+
+    def test_the_strip_is_reported_and_can_be_declined(self) -> None:
+        """Silence here is a check recorded as run and not run — so both are witnessed.
+
+        `METDSL_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT=1` was 84 failures and 482s of real
+        probing on `165c26f`; with the strip it is 1242 passed in 49s and nothing probed.
+        An operator who set it deliberately has to be able to see that, and to say they
+        meant it. Neither the header nor the flag had a witness; both mutants survived.
+        """
+        poison = {"METDSL_ORCHESTRATION_ID": "orch_header_witness"}
+        node = f"tools/tests/{_SUBJECT_MODULE.rsplit('.', 1)[1]}.py" \
+               f"::{_SUBJECT_CLASS}::{_SUBJECT_TEST}"
+
+        reported = _run([sys.executable, "-m", "pytest", node], poison)
+        self.assertIn("METDSL_ORCHESTRATION_ID", reported.stdout)
+        self.assertIn("--keep-operator-env", reported.stdout)
+        # The control: with nothing to strip there is no header to print.
+        quiet = _run([sys.executable, "-m", "pytest", node], {})
+        self.assertNotIn("stripped the operator's environment", quiet.stdout)
+
+        # And the flag really declines the strip: the subject test asserts the OUTSIDE-a-run
+        # branch, so keeping the name is what makes it fail.
+        declined = _run(
+            [sys.executable, "-m", "pytest", node, "--keep-operator-env"], poison)
+        self.assertNotEqual(
+            declined.returncode, 0,
+            "--keep-operator-env did not leave the operator's value in place:\n"
+            + declined.stdout)
 
     def test_a_poisoned_environment_is_neutralized_end_to_end(self) -> None:
         """Through real processes, with the control that must fail.

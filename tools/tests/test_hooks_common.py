@@ -25,38 +25,59 @@ from tools.hooks.common import (
     validate_pipeline_semantics_stage,
 )
 
-# --- The CPU budget the two hook-cost assertions are held to (issue #84) --------------
+# --- The CPU budget the hook-cost assertions are held to (issue #84) ------------------
 #
-# Those two tests guard against a super-linear blowup in a hook that runs SYNCHRONOUSLY on
-# every tool call; every regression the family caught cost 8-135x the baseline. The budget
-# used to be an absolute `assertLess(process_time() - t0, 5.0)`. CPU time was already
-# chosen over wall clock for exactly this reason, and it is NOT enough: CPU time itself
-# inflates under contention (cache and memory pressure, and WSL2 scheduling). Measured on
-# `165c26f`, 22 cores, 2-3 samples per condition:
+# EIGHT assertions in this file bound the CPU a hook spends on one command. The hook runs
+# SYNCHRONOUSLY on every tool call, and the regressions this family caught cost 8-135
+# SECONDS against blocks that cost about one second (the two large ones) or a few
+# hundredths (the six small ones). They were absolute — `assertLess(process_time() - t0,
+# 5.0)`. CPU time was already chosen over wall clock for exactly this reason, and it is NOT
+# enough, because CPU time itself inflates under contention.
 #
-#   condition                          test_expansion…      test_glob…
-#   solo                             1.13-1.21s            0.78-0.82s
-#   3 concurrent pytest runs         1.40-1.48s            0.92-1.01s
-#   44 spinners (2x oversubscribed)  2.30-2.41s            1.85-1.91s
+# Measured at `7487f5e`, 22 cores, one fresh process per sample:
 #
-# 2.1-2.5x of movement for a machine fact, against a 5.0s bound. A separate prototype run
-# on the same host reached 4.29s, and issue #84 reports 9.36s at three concurrent pytest
-# runs (their measurement, not re-observed here) — the ceiling is whatever the host is
-# doing, so no absolute number is safe.
+#                                    test_expansion…        test_glob…
+#   quiet (n=8)          seconds    1.27-1.78s             0.83-1.17s
+#                        units     20.6-23.8              12.6-15.7
+#   44 spinners (n=6)    seconds    2.75-7.01s             2.26-5.21s
+#                        units     11.5-17.6               7.4-13.0
 #
-# The budget is therefore RELATIVE to a calibration workload measured in the same process,
-# immediately around the block being measured. Both inflate together, so the quotient is a
-# fact about the code. The same samples, in units:
+# A reviewer measured the expansion block independently on the same host, 12 fresh
+# processes across two load levels: seconds 2.44-12.21s, units 11.3-34.3.
 #
-#   solo                            18.8-22.6            10.6-15.2
-#   3 concurrent pytest runs        20.4-22.1            14.0-15.0
-#   44 spinners                     15.9-18.1            13.3-14.3
+# WHAT THE QUOTIENT DOES AND DOES NOT BUY, given as the two measurements rather than as a
+# summary, because a summary of a spread is a claim with no witness and these two disagree
+# if you read only one of them:
 #
-# 1.4x of spread instead of 2.5x, and what movement remains drifts DOWNWARD under load —
-# the compensating direction for an upper bound, because a budget that tightens cannot
-# produce the flake this is fixing. The bounds below are ~5x the highest figure observed,
-# the same headroom the 5.0s bound had over its ~1s measurement; the smallest regression
-# this family ever caught (8x) is 175 units against a 110-unit bound.
+#   ACROSS load levels it helps. Mine: seconds move 5.5x (1.27-7.01) while units move 2.1x
+#   (11.5-23.8). The reviewer's: seconds 5.0x, units 3.0x. Both agree on the direction.
+#
+#   WITHIN one load level it costs. The reviewer's heavy batch alone: seconds 1.36x, the
+#   calibration denominator 3.02x, units 2.36x — worse than the raw figure. The denominator
+#   is ~0.1s of sampling against a 1-10s numerator, so its own variation does not average
+#   out the way the numerator's does. Measured: that is NOT sampling noise and more samples
+#   do not fix it — mean-of-2, median-of-5 and median-of-9 estimators all spread 1.8-2.0x
+#   across fresh processes, quiet and loaded alike, because what moves is the host between
+#   one process and the next.
+#
+# So the bound is NOT justified by a compensation mechanism. It is justified by a bracket
+# with both ends measured: above every figure ever observed for the block, and below the
+# smallest regression the family has ever caught. Expansion block: observed max 34.3 units,
+# smallest recorded regression 8x its ~22-unit baseline = ~176 units; 110 sits between them
+# with 3.2x of headroom. Glob block: observed max 15.7, 8x its ~14-unit baseline = ~112; 80
+# sits between them. The absolute bound they replace had NEITHER end — the reviewer
+# measured the expansion block at 12.21s against its own 5.0s bound, so it was already
+# failing for the machine's reasons rather than the code's.
+#
+# The six small blocks (`test_the_directory_option_scan_is_linear`,
+# `test_blanking_persisted_paths_is_linear`, and four in `ForbidOperatorSecretReadTests`)
+# cost 0.0-1.0 units each — 0-0.05s, measured, and NOT the "~1s of CPU for these shapes"
+# their previous comments claimed. Their bound of 40 units is ~2s, which is what their
+# original 2.0s/5.0s meant: they are DoS guards, and what they catch is a jump to whole
+# seconds.
+#
+# One of the eight was DEAD, and converting the family is what found it — see
+# `test_brace_expansion_is_bounded_no_dos`.
 
 _CPU_CALIBRATION_REPEATS = 2500
 _CPU_CALIBRATION_PATTERN = re.compile(r"(?:[A-Za-z_][A-Za-z0-9_]*|\$\{[^}]*\}|\S)")
@@ -64,15 +85,22 @@ _CPU_CALIBRATION_SAMPLE = ("V=" + "a" * 200 + "; cat ${V##*a*b} x/y ") * 20
 
 
 def _cpu_calibration_unit() -> float:
-    """CPU seconds for one fixed unit of work on this host, measured NOW.
+    """CPU seconds for one fixed unit of userspace work on this host, measured NOW.
 
-    Deliberately the SAME KIND of work the hook does — compiled-regex scanning over
-    shell-command text — so that whatever slows one down slows the other. A pure
-    arithmetic loop would not track it: the shapes under measurement are dominated by
-    regex and by string building, not by integer work.
+    A REFERENCE WORKLOAD, not a model of the hook. An earlier version of this docstring
+    said it was "the SAME KIND of work the hook does — compiled-regex scanning over
+    shell-command text"; a reviewer profiled the two large blocks and that is false.
+    `test_expansion_candidates_do_not_hang_the_hook` spends its time in
+    `_command_reads_protected_host_path`, `pathlib._parse_path`, `_is_path_under_root`,
+    `sys.intern` and 114,647 `lstat` syscalls, with `re.findall` at 2.2% — and all of those
+    calls are this calibrator's own. `test_glob_matching_cannot_backtrack` is hand-written
+    character loops, `findall` 3.9%, again all calibrator. One block is syscall-bound and
+    the other pure userspace, so nothing here tracks both, and the comment above states
+    what the quotient was MEASURED to buy rather than arguing from a resemblance.
 
-    ~0.05s solo. Small enough that two of them per assertion are not worth noticing
-    against the block they bracket, large enough not to be reading timer noise.
+    0.053s in a quiet fresh process (over the first six calls of each of 8 processes:
+    0.0513-0.0891s, with no cold-start step); up to 1.08s under 2x oversubscription. Each
+    bracketed block pays two of them.
     """
     start = time.process_time()
     total = 0
@@ -119,6 +147,35 @@ class CpuBudgetCalibrationTests(unittest.TestCase):
     and is NOT pinned here — a suite cannot manufacture the load to check it without
     becoming the flake it is fixing.
     """
+
+    def test_a_failure_inside_a_measured_block_is_not_swallowed(self) -> None:
+        """`__exit__` returning True would make every budget assertion unconditional.
+
+        A context manager's `__exit__` suppresses the exception when it returns truthy, so
+        one word turns all eight bracketed blocks into unconditional passes — every
+        assertion INSIDE them included, since those raise `AssertionError` through the same
+        path. It is the fail-open shape of this whole change, and it survived a reviewer's
+        sweep with the suite green.
+        """
+        with self.assertRaises(ZeroDivisionError):
+            with _CpuUnits():
+                1 / 0
+        # And the same for the failures the blocks actually contain.
+        with self.assertRaises(AssertionError):
+            with _CpuUnits():
+                self.fail("inside the block")
+
+    def test_a_calibrator_that_measures_nothing_cannot_divide_by_zero(self) -> None:
+        """The `max(elapsed, 1e-6)` floor, which no workload on this host reaches.
+
+        `time.process_time()` is coarse on some platforms, and a calibration that lands
+        inside one tick returns 0.0 — which would make every `units` a `ZeroDivisionError`
+        rather than a verdict. Not reachable here (the workload is sized at ~0.05s), so it
+        is driven through the clock rather than through the workload.
+        """
+        with patch("tools.tests.test_hooks_common.time.process_time",
+                   side_effect=[1.0, 1.0]):
+            self.assertGreater(_cpu_calibration_unit(), 0.0)
 
     def test_the_calibrator_prices_its_own_workload_at_about_one_unit(self) -> None:
         """The SCALE. Wide on purpose — this is what the mutants are off by.
@@ -2879,7 +2936,7 @@ class ForbidBackendCredentialReadTests(unittest.TestCase):
     def _policy(self, command: str, backend: str = "claude") -> str:
         return (self._call(command, backend).audit_detail or {}).get("policy", "")
 
-    def _relative_route_home(self, base: str | None = None) -> str:
+    def _relative_route_home(self) -> str:
         """The `..`-and-back route from `repo_root` to `$HOME`, for THIS checkout.
 
         The cases below that exercise a relative escape used to spell it `../..`, which
@@ -2904,7 +2961,7 @@ class ForbidBackendCredentialReadTests(unittest.TestCase):
         neither — which is how the first version of the depth witness below failed in a
         worktree while testing nothing about depth.
         """
-        return os.path.relpath(str(Path.home()), base or os.getcwd())
+        return os.path.relpath(str(Path.home()), os.getcwd())
 
     def _repo_root(self) -> str:
         """The root `_call` hands the hook — one spelling for both."""
@@ -3016,8 +3073,10 @@ class ForbidBackendCredentialReadTests(unittest.TestCase):
         Two depths outside `$HOME`, where the route runs up to a common ancestor and back
         down. Both fail with `../..` hard-coded, in the primary checkout as well as in a
         worktree, which is what makes the mutant visible from anywhere. Measured: EITHER
-        depth alone kills that mutant, so the pair is redundancy over route length (2
-        segments against 7), not two independent pins — dropping one survives the sweep.
+        depth alone kills that mutant, so the pair is redundancy over route length, not two
+        independent pins — dropping one survives the sweep. The lengths are printed by the
+        `subTest` rather than stated here; an earlier version of this sentence gave two
+        numbers ("2 segments against 7") that matched neither route.
         """
         with tempfile.TemporaryDirectory() as td:
             for depth in (1, 6):
@@ -3381,19 +3440,17 @@ class ForbidBackendCredentialReadTests(unittest.TestCase):
 
     def test_the_directory_option_scan_is_linear(self) -> None:
         """One forward pass, not a backward scan per token."""
-        import time
-        t0 = time.process_time()
-        self._policy(" ".join(["ls"] + ["-C", "x"] * 6400))
-        self.assertLess(time.process_time() - t0, 2.0)
+        with _CpuUnits() as measured:
+            self._policy(" ".join(["ls"] + ["-C", "x"] * 6400))
+        self.assertLess(measured.units, 40, measured.describe())
 
     def test_blanking_persisted_paths_is_linear(self) -> None:
         """A `[^\\s'\"]+` component could swallow slashes, and the backtracking
         that followed cost 6s of CPU on a 120 KB command."""
-        import time
         persisted = "/home/x/.claude/projects/-slug/s/tool-results/a.txt "
-        t0 = time.process_time()
-        self._policy("cat " + persisted * 1000)
-        self.assertLess(time.process_time() - t0, 2.0)
+        with _CpuUnits() as measured:
+            self._policy("cat " + persisted * 1000)
+        self.assertLess(measured.units, 40, measured.describe())
 
     def test_a_quoted_root_operand_still_blocks(self) -> None:
         """The prose rule must key on what is an OPERAND, not on what is quoted:
@@ -3534,8 +3591,8 @@ class ForbidBackendCredentialReadTests(unittest.TestCase):
             self._policy(
                 "; ".join(f"V{i}=" + "a" * 400 for i in range(400))
                 + "; cat " + " ".join("${V" + str(i) + "//[a-z]/_}" for i in range(400)) + "/x")
-        # 80 units against a 10.6-15.2 measurement — the headroom argument is the
-        # same as the sibling assertion's.
+        # 80 units, against 7.4-15.7 observed; 8x this block's ~14-unit baseline is
+        # ~112. The bracket argument is the sibling assertion's.
         self.assertLess(measured.units, 80, measured.describe())
 
     def test_transformations_match_bash_shortest_and_longest(self) -> None:
@@ -3816,10 +3873,12 @@ class ForbidBackendCredentialReadTests(unittest.TestCase):
             # attacker-chosen, and every combination is a `.resolve()` syscall.
             self._policy(" ".join(f"cd d{i}" for i in range(800))
                          + " && " + " ".join(f"cat ../g{i}.txt" for i in range(800)))
-        # 110 units against a 15.9-22.6 measurement: the point of the assertion
-        # is that nothing here is quadratic or exponential — every regression
-        # this family caught cost 8-135x, i.e. 175 units or more. The headroom
-        # is what stops the bound from reading a machine's load as a defect.
+        # 110 units, against 11.3-34.3 observed across two people's measurements
+        # and two load levels. The point of the assertion is that nothing here is
+        # quadratic or exponential: the regressions this family caught cost 8-135
+        # SECONDS (the figure the sibling comments in this file give) against a
+        # block that costs about one, so the smallest of them lands at 8x the
+        # ~22-unit baseline = ~176 units. 110 is the bracket between the two.
         self.assertLess(measured.units, 110, measured.describe())
 
     def test_a_root_containing_repo_root_is_dropped_not_enforced(self) -> None:
@@ -4491,59 +4550,36 @@ class ForbidOperatorSecretReadTests(unittest.TestCase):
     def test_multi_wildcard_glob_no_dos(self) -> None:
         """`~/*/*/*` patterns must not trigger an unbounded glob.glob walk of
         $HOME in this synchronous hook — the cheap lexical check fires first."""
-        import time
-        # CPU time, not wall clock: these are budget assertions about the hook's
-        # own work, and a wall-clock version flaked when the suite ran under
-        # load beside other processes.
-        t0 = time.process_time()
-        # `*` at the protected roots' depth lexically targets ALL of them (the
-        # secret root and every backend credential home) → blocks, but crucially
-        # must do so WITHOUT a multi-second filesystem walk. Which root the
-        # message names is genuinely ambiguous for such a pattern; only the block
-        # is asserted.
-        self.assertIn(
-            self._policy("echo ~/*/*/*/x"),
-            {"forbid_operator_secret_direct_read", "forbid_backend_credential_direct_read"})
-        self._policy("cat " + " ".join(["~/*/*/*/q"] * 40))
-        # 5s, not 2s: measured ~1s of CPU for these shapes, and the point of
-        # the assertion is that nothing here is quadratic or exponential —
-        # every regression this family caught cost 8-135s. A tight bound on
-        # a ~1s measurement only buys flakes when the suite runs under load.
-        self.assertLess(time.process_time() - t0, 5.0)
+        with _CpuUnits() as measured:
+            # `*` at the protected roots' depth lexically targets ALL of them (the
+            # secret root and every backend credential home) → blocks, but crucially
+            # must do so WITHOUT a multi-second filesystem walk. Which root the
+            # message names is genuinely ambiguous for such a pattern; only the block
+            # is asserted.
+            self.assertIn(
+                self._policy("echo ~/*/*/*/x"),
+                {"forbid_operator_secret_direct_read",
+                 "forbid_backend_credential_direct_read"})
+            self._policy("cat " + " ".join(["~/*/*/*/q"] * 40))
+        self.assertLess(measured.units, 40, measured.describe())
 
     def test_single_wildcard_glob_allowed_fast(self) -> None:
         """A single-wildcard glob not targeting the secret root is allowed and fast."""
-        import time
-        # CPU time, not wall clock: these are budget assertions about the hook's
-        # own work, and a wall-clock version flaked when the suite ran under
-        # load beside other processes.
-        t0 = time.process_time()
-        self.assertNotEqual(
-            self._policy("ls ~/.config/*"),
-            "forbid_operator_secret_direct_read")
-        # 5s, not 2s: measured ~1s of CPU for these shapes, and the point of
-        # the assertion is that nothing here is quadratic or exponential —
-        # every regression this family caught cost 8-135s. A tight bound on
-        # a ~1s measurement only buys flakes when the suite runs under load.
-        self.assertLess(time.process_time() - t0, 5.0)
+        with _CpuUnits() as measured:
+            self.assertNotEqual(
+                self._policy("ls ~/.config/*"),
+                "forbid_operator_secret_direct_read")
+        self.assertLess(measured.units, 40, measured.describe())
 
     def test_giant_brace_sequence_no_dos(self) -> None:
         """A huge single `{0..N}` sequence must not allocate/hang the hook,
         and a met-dsl-targeting one must still block."""
-        import time
-        # CPU time, not wall clock: these are budget assertions about the hook's
-        # own work, and a wall-clock version flaked when the suite ran under
-        # load beside other processes.
-        t0 = time.process_time()
-        self.assertEqual(
-            self._policy("cat ~/.met-ds{0..999999999}/operator_tokens/x.txt"),
-            "forbid_operator_secret_direct_read")
-        self._policy("cat ~/x{0..999999999}/y")  # non-secret, must also be fast
-        # 5s, not 2s: measured ~1s of CPU for these shapes, and the point of
-        # the assertion is that nothing here is quadratic or exponential —
-        # every regression this family caught cost 8-135s. A tight bound on
-        # a ~1s measurement only buys flakes when the suite runs under load.
-        self.assertLess(time.process_time() - t0, 5.0)
+        with _CpuUnits() as measured:
+            self.assertEqual(
+                self._policy("cat ~/.met-ds{0..999999999}/operator_tokens/x.txt"),
+                "forbid_operator_secret_direct_read")
+            self._policy("cat ~/x{0..999999999}/y")  # non-secret, must also be fast
+        self.assertLess(measured.units, 40, measured.describe())
 
     def test_blocks_embedded_quote_backslash_fallback(self) -> None:
         """When shlex parse fails and evaluate_common_policy falls back to
@@ -4564,15 +4600,14 @@ class ForbidOperatorSecretReadTests(unittest.TestCase):
 
     def test_brace_expansion_is_bounded_no_dos(self) -> None:
         """A crafted many-group brace token must not hang the hook."""
-        import time
         c = "cat " + "{a,b}" * 25 + "x"
-        t0 = time.time()
-        self._policy(c)  # must return quickly
-        # 5s, not 2s: measured ~1s of CPU for these shapes, and the point of
-        # the assertion is that nothing here is quadratic or exponential —
-        # every regression this family caught cost 8-135s. A tight bound on
-        # a ~1s measurement only buys flakes when the suite runs under load.
-        self.assertLess(time.process_time() - t0, 5.0)
+        with _CpuUnits() as measured:
+            self._policy(c)  # must return quickly
+        # This assertion was DEAD until issue #84: it read
+        # `assertLess(time.process_time() - t0, 5.0)` with `t0 = time.time()`, a
+        # wall-clock epoch, so the difference was about -1.79e9 and no input could
+        # ever fail it. Found while converting the family, not by anything failing.
+        self.assertLess(measured.units, 40, measured.describe())
 
     def test_blocks_home_var_and_absolute_and_traversal(self) -> None:
         from pathlib import Path
