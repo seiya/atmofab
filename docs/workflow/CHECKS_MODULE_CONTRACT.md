@@ -218,7 +218,7 @@ node's self-test).
   `associate (unused_<name> => <name>); end associate`. An arithmetic no-op (`0*<name>` and
   equivalents) is forbidden as the binding. `! allow(...)`
   does not suppress this class, and no allow directive is legitimate anywhere: the lint
-  gate runs with allow comments DISABLED, so one is inert rather than honoured
+  gate runs `--ignore-allow-comments`, so one is inert rather than honoured
   (`tools/backends/linter/fortitude/lint.py`) — the finding it names fires regardless.
 - **A dummy argument no interface fixes is deleted, not bound.** The `associate` binding
   exists only to keep a signature no leaf owns intact. In a private helper the leaf itself

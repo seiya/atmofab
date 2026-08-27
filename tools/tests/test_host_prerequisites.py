@@ -284,6 +284,33 @@ class ToolVersionArmTests(unittest.TestCase):
         self.assertEqual(seen, [None])
         self.assertEqual(found[0].version, None)
 
+    def test_the_probe_reads_the_FIRST_line_and_a_banner_does_not_hide_the_version(self) -> None:
+        """The first-line rule is a real decision with a real failure mode, and it had none.
+
+        Every fixture and the real tool print exactly one line, so last-line / whole-text /
+        stderr-first readers were all indistinguishable — corpus-dependent, measured on the
+        round-3 census. Driven here with a probe that prints a banner first: the reader must
+        return the BANNER, which the backend then refuses. Fail-closed is the right polarity —
+        an unidentified build must not decide a certification — and this pins that the polarity
+        is reached rather than accidentally skipped by a reader that scans for a version.
+        """
+        probe = (sys.executable, "-c", "print('warning: config ignored'); print('probe 0.9.1')")
+        self.assertEqual(hp._tool_version_text(probe), "warning: config ignored")
+
+    def test_a_probe_that_times_out_is_a_refusal_rather_than_a_traceback(self) -> None:
+        """`subprocess.TimeoutExpired` is NOT an `OSError`, so it needs its own except arm.
+
+        The census measured the arm as dead — removing it from the tuple kept the suite green —
+        which means a hung linter would have tracebacked out of the launch path instead of being
+        refused. Driven by raising it, rather than by hanging a real process for the timeout.
+        """
+        with mock.patch.object(hp.subprocess, "run",
+                               side_effect=hp.subprocess.TimeoutExpired("x", 30)):
+            self.assertIsNone(hp._tool_version_text(("x", "--version")))
+
+    def test_an_unstartable_probe_is_a_refusal_rather_than_a_traceback(self) -> None:
+        self.assertIsNone(hp._tool_version_text(("metdsl-no-such-program-nowhere",)))
+
     def test_this_development_host_satisfies_the_version_arm(self) -> None:
         """The companion of `test_this_development_host_satisfies_the_probe`: if this fails, a
         workflow started on this machine would be refused at launch."""

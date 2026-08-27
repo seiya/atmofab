@@ -132,6 +132,17 @@ class DeclarationTests(unittest.TestCase):
              "--no-respect-gitignore", "--select", ",".join(lint.RULE_CODES), "."),
         )
 
+    def test_the_default_target_is_the_directory_the_gate_points_at(self) -> None:
+        """`check_argv()` with no argument must lint the whole `project_dir`.
+
+        Unwitnessed until the round-3 census: the server's table row is compared against
+        `lint.check_argv()`, i.e. against itself, so changing the default from `.` to any other
+        path kept the whole suite green while the gate would have linted somewhere else — or
+        nothing, which is the same `All checks passed!` a clean tree gives.
+        """
+        self.assertEqual(lint.check_argv()[-1], ".")
+        self.assertEqual(lint.check_argv("src")[-1], "src")
+
     def test_the_declared_set_is_sorted_and_free_of_repeats(self) -> None:
         # Not cosmetic: the set is compared against a resolved listing and against the codes the
         # documents name, and both comparisons are over sets — a duplicate would make the
@@ -169,8 +180,15 @@ class VersionGateTests(unittest.TestCase):
         self.assertIn("below the supported floor", reason)
 
     def test_a_build_at_or_above_the_ceiling_is_refused(self) -> None:
-        at = lint.BELOW_VERSION
-        self.assertIsNotNone(lint.unsupported_version_reason(f"x {at[0]}.{at[1]}.{at[2]}"))
+        """The probe is BUILT from the ceiling's first two components, like the floor row.
+
+        It used to interpolate `BELOW_VERSION` verbatim, which made it true of whatever the
+        constant said: the census measured that raising the ceiling's PATCH component to
+        `(0, 10, 5)` kept the suite green while `SUPPORTED_VERSION_SPEC` still promised `<0.10`,
+        so 0.10.0 through 0.10.4 were silently accepted.
+        """
+        ceiling = f"x {lint.BELOW_VERSION[0]}.{lint.BELOW_VERSION[1]}.0"
+        self.assertIsNotNone(lint.unsupported_version_reason(ceiling))
 
     def test_an_unreadable_version_is_refused_rather_than_assumed_good(self) -> None:
         """The fail-CLOSED polarity, driven in both of its shapes.
@@ -343,6 +361,62 @@ class ResolutionAgainstTheInstalledBuildTests(unittest.TestCase):
         self.assertIn("FORT001", completed.stdout)
 
 
+class HostRenderedRunnerTests(unittest.TestCase):
+    """The file the retry loop cannot fix, linted with the argv the gate actually runs.
+
+    This is the class issue #110 is: a finding in the host-rendered runner routes a
+    `Generate.generate` retry to a leaf with no write authority over that file, so the loop
+    cannot converge and burns the whole budget. The renderer is therefore held to the gate's
+    rule set — and until this class existed, nothing checked that. Measured on the round-3
+    census: making the renderer emit a trailing space (`S101`) or a bare intrinsic `use`
+    (`C122`) left the ENTIRE suite green while producing a real gate failure in that file.
+
+    `tools/tests/test_fortran_runner.py` pins the runner's SHAPE; this pins that the shape the
+    gate judges it by is satisfied. The two are different questions and the second is the one
+    that costs a billed run.
+    """
+
+    def setUp(self) -> None:
+        _linter_path()
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.dir = Path(self._tmp.name)
+
+    def _render(self, ir_name: str) -> str:
+        from tools.tests import test_fortran_runner as fixtures
+
+        return fixtures.render_runner(
+            getattr(fixtures, ir_name)(), fixtures.BOUNDARY_SID, fixtures.HARNESS)
+
+    def test_the_rendered_runner_passes_the_declared_rule_set(self) -> None:
+        for ir_name in ("_boundary_ir", "_metrics_ir"):
+            with self.subTest(ir=ir_name):
+                target = self.dir / f"{ir_name.strip('_')}_runner.f90"
+                target.write_text(self._render(ir_name))
+                completed = _run(list(lint.check_argv(target.name)), self.dir)
+                self.assertEqual(
+                    completed.returncode, 0,
+                    "the host-rendered runner does not satisfy the rule set the gate applies; "
+                    "a leaf would be sent to fix a file it cannot write:\n"
+                    + completed.stdout[:2000])
+                target.unlink()
+
+    def test_the_check_would_notice_a_renderer_regression(self) -> None:
+        """The negative control, because the row above is an `assertEqual(rc, 0)`.
+
+        A green `rc == 0` is what a lint run over ZERO files also produces, and what a runner
+        that stopped being rendered at all would produce. Perturbing the rendered text the way
+        a renderer bug would must make the same command fail — otherwise the row above observes
+        the absence of a file rather than the cleanliness of one.
+        """
+        text = self._render("_boundary_ir")
+        target = self.dir / "regressed_runner.f90"
+        target.write_text(text.replace("  implicit none", "  implicit none   ", 1))
+        completed = _run(list(lint.check_argv(target.name)), self.dir)
+        self.assertEqual(completed.returncode, 1)
+        self.assertIn("S101", _reported_codes(completed))
+
+
 class WiringTests(unittest.TestCase):
     def test_the_registry_reaches_this_module_as_the_lint_capability(self) -> None:
         from tools.backends import registry
@@ -411,9 +485,12 @@ class ProseCouplingTests(unittest.TestCase):
         ("skills/workflow-generate-generate/SKILL.md",
          "- **Write source that passes `static lint` AND the compiler syntax gate", 1,
          "- The `verification_status` of `source_meta.json` presumes `fail_closed`"),
+        # Three lines, not one: the template's lint contract is rules (1)-(3), and line 7
+        # already named a rule code OUTSIDE the one-line region — the same shape as the round-2
+        # defect, one file over, found by the round-3 attack axis.
         ("tools/prompt_templates/pure_generate_generate.txt",
-         "(1) Style lint (the `Generate.gate` lint check", 1,
-         "(3) Syntax gate (the `Generate.gate` syntax check"),
+         "(1) Style lint (the `Generate.gate` lint check", 3,
+         "(4) Dependency-dataflow gate"),
         # Anchored at the bullet ABOVE the lint paragraph, not at the paragraph: round 2 found
         # a MANDATE for the abolished directive one line above the old anchor, outside every
         # region this class watched. Three axes reported it independently; none of them was this
@@ -423,7 +500,31 @@ class ProseCouplingTests(unittest.TestCase):
          "- **A dummy argument no interface fixes is deleted, not bound.**"),
     )
 
+    #: Every file a leaf is handed that could carry the directive, which is WIDER than the four
+    #: regioned sites above: the force-read contract set for a `generate` leaf also includes
+    #: `docs/AGENT_CONTRACT.md` and `docs/workflow/RUNNER_OUTPUT_CONTRACT.md`, the `verify`
+    #: reviewer reads its own SKILL, and a node's `controlled_spec.md` is read by the reviewer
+    #: and inlined for some producers. The round-3 census found the abolished idiom taught in
+    #: exactly such a file, outside the four this class watched. The regioned rows stay on the
+    #: four sites that STATE the rule; the whole-file row below covers everything a leaf reads.
+    _LEAF_READ_FILES = tuple(path for path, _a, _l, _o in _SITES) + (
+        "docs/AGENT_CONTRACT.md",
+        "docs/workflow/RUNNER_OUTPUT_CONTRACT.md",
+        "skills/workflow-generate-verify/SKILL.md",
+        "spec/component/dynamics/shallow_water/"
+        "dynamics_shallow_water_time_update_2d_ssprk2/controlled_spec.md",
+    )
+
     _CODE_RE = re.compile(r"\b([A-Z]{1,5}[0-9]{3})\b")
+
+    def test_the_code_detector_matches_every_prefix_width_in_use(self) -> None:
+        """Narrowing the prefix width is a silent fail-open: the census measured `{4,5}` keeping
+        the whole class green while every `C…` / `S…` / `E…` mention stopped being checked, the
+        surviving `FORT…` / `PORT…` matches holding the row up. Pinned against the widths the
+        declared set actually uses, and against a standard name that must NOT match."""
+        for code in ("E000", "C003", "S001", "MOD011", "PORT011", "FORT005"):
+            self.assertEqual(self._CODE_RE.findall(f"see {code} here"), [code])
+        self.assertEqual(self._CODE_RE.findall("standard-conforming f2008 / F2018"), [])
 
     def _region(self, path: str, anchor: str, lines: int) -> str:
         text = (REPO_ROOT / path).read_text()
@@ -510,6 +611,33 @@ class ProseCouplingTests(unittest.TestCase):
                 self.assertNotIn(outside, self._region(path, anchor, lines),
                                  f"{path}: the region reaches past what it is meant to cover")
 
+    def test_every_leaf_read_site_states_that_the_directive_is_disabled(self) -> None:
+        """The RULE, not just the absence of a copyable spelling.
+
+        Round 2 hardened these documents against CARRYING a directive a leaf could copy. It did
+        not hold them to SAYING what the rule is — measured on the round-3 attack: replacing the
+        prohibition with its exact opposite ("an allow comment is the accepted way to clear a
+        stubborn style finding") in all three agentic sites passed 1294 tests. The pure path was
+        pinned by a token literal in `test_pure_leaf_wiring.py`; the agentic path, including the
+        document every `generate` leaf is force-read, was not.
+
+        The literal is DERIVED from `CHECK_FLAGS`, so renaming the flag breaks the code and the
+        documents together rather than leaving the prose asserting a flag that is gone.
+        """
+        flag = next(f for f in lint.CHECK_FLAGS if "allow" in f)
+        for path, anchor, lines, _outside in self._SITES:
+            with self.subTest(path=path):
+                self.assertIn(
+                    flag, self._region(path, anchor, lines),
+                    f"{path} no longer states that allow directives are disabled; a document "
+                    f"that stops saying it is one edit from saying the opposite, which is what "
+                    f"sends a leaf to write the line that fails the gate")
+        # The detector is not vacuous: the reversal that passed the suite does not contain it.
+        self.assertNotIn(
+            flag,
+            "an `! allow(...)` comment above the offending line is the accepted way to clear a "
+            "stubborn style finding")
+
     def test_every_leaf_read_site_cites_where_the_set_is_defined(self) -> None:
         """A leaf-read contract has to be self-contained, so it repeats part of the rule.
 
@@ -535,8 +663,11 @@ class ProseCouplingTests(unittest.TestCase):
         mentions a code (the measurement section names `S241` and `S051`) does not satisfy it.
         """
         doc = (REPO_ROOT / "docs" / "backends" / "linter" / "fortitude" / "RULES.md").read_text()
-        rows = re.findall(r"^\| `([A-Z]+[0-9]+)` \| (.*?) \|", doc, re.M)
-        declared_rows = {code for code, rest in rows if "|" not in rest}
+        # The `"|" not in rest` filter this line used to carry dropped 0 of 42 rows and, measured
+        # on the round-3 census, ADMITTED a bogus row whose text contains a pipe with no preceding
+        # space. The `^| `CODE` |` anchor is what separates a table row from prose; the filter was
+        # an escape hatch, not a discriminator.
+        declared_rows = set(re.findall(r"^\| `([A-Z]+[0-9]+)` \|", doc, re.M))
         self.assertEqual(
             declared_rows - set(lint.EXCLUDED_RULE_CODES), set(lint.RULE_CODES),
             "docs/backends/linter/fortitude/RULES.md and RULE_CODES disagree about what the "
@@ -545,6 +676,25 @@ class ProseCouplingTests(unittest.TestCase):
                          set(lint.EXCLUDED_RULE_CODES))
         self.assertIn(lint.SUPPORTED_VERSION_SPEC, doc)
         self.assertIn("RULE_CODES", doc)
+
+    def test_the_backend_package_is_not_gitignored(self) -> None:
+        """`.gitignore` carried a bare, unanchored `fortitude` — the linter binary, when an
+        operator installs it into the checkout root.
+
+        Unanchored, it silently swallowed this backend's package and document directories the
+        moment that axis value got a directory of its own. `git add -A` skips an ignored path
+        with NO warning (an explicit `git add` warns), so the failure mode is a commit that
+        looks complete and is missing the module the whole change is about. Nothing observed
+        the anchoring until the round-3 census constructed the consequence.
+        """
+        for rel in ("tools/backends/linter/fortitude/lint.py",
+                    "docs/backends/linter/fortitude/RULES.md"):
+            with self.subTest(path=rel):
+                completed = subprocess.run(
+                    ["git", "check-ignore", "-q", rel], cwd=str(REPO_ROOT),
+                    capture_output=True, text=True, timeout=60)
+                self.assertEqual(completed.returncode, 1,
+                                 f"{rel} is gitignored; `git add -A` would skip it silently")
 
     def test_every_version_range_the_runbook_states_is_the_declared_one(self) -> None:
         """EVERY spelling, not "the range appears somewhere".

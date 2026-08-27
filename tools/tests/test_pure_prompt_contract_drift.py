@@ -142,6 +142,11 @@ PINNED: dict[str, str] = {
     # case a producer would actually be in. Promising a diagnostic that does not arrive is the
     # oscillation this rule exists to prevent, so the text states the finding fires anyway.
     "pure-20": "0e9b74e2daebbbf24cb14d936bf1b6b356a15e92a1de6a4909fad61900a0a8e5",
+    # pure-21: rule (2) names the FLAG (`--ignore-allow-comments`) rather than describing it.
+    # The flag literal is what couples the four leaf-read statements of this rule to the code
+    # that imposes it: a rename now breaks both together. Measured before it: reversing the
+    # prohibition into its opposite in the three agentic sites passed 1294 tests.
+    "pure-21": "ce130490f66843a4adae34584710e4de5dba079706f5f5d5e6f0a7789f5cb272",
 }
 
 
