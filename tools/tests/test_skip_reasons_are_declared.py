@@ -88,6 +88,11 @@ TESTS_DIR = REPO_ROOT / "tools" / "tests"
 _DECLARED_ENVIRONMENT_SKIPS = {
     "gfortran not available":
         "the Fortran front end is not installed on this host",
+    "the declared lint invocation's linter is not installed":
+        "the static linter the Generate.gate lint check declares is absent from this host",
+    "the installed linter is outside the measured version range":
+        "a linter is installed, but not a build the declared rule set was measured on, so it "
+        "must not decide a verdict (the launch probe refuses it for the same reason)",
     "bwrap / user namespaces not available":
         "the sandbox runtime is absent or unprivileged user namespaces are disabled",
     "symlink not supported on this filesystem":

@@ -619,6 +619,23 @@ class DecisionTableTest(unittest.TestCase):
         # An absent Fortran structure front end is terminal for the same reason and a different
         # owner: the machine running the gate lacks `tree-sitter` / `tree-sitter-fortran`, so no
         # source the leaf can author makes the three `problem` gates readable again.
+        # A finding whose SUBJECT is a file this repository authors is terminal for the third
+        # version of the same reason (issue #112): re-authoring the leaf's own source cannot
+        # change a verdict about a file the leaf has no write authority over. All three lint /
+        # static attribution categories dominate a co-occurring warm one, because the warm one
+        # cannot be repaired while the unrepairable one is still there.
+        for cat in ("host_rendered_lint_findings", "gate_finding_unattributed",
+                    "host_authored_artifact_violation"):
+            self.assertIn(cat, wc.GATE_FAILURE_TERMINAL, cat)
+            self.assertNotIn(cat, wc.GATE_FAILURE_ROUTING, cat)
+            self.assertIn(cat, wc._GATE_CATEGORY_CANON_ORDER, cat)
+            self.assertEqual(wc.classify_gate_failure([cat]).action, "fail_closed", cat)
+            self.assertEqual(
+                wc.classify_gate_failure(["lint_findings", cat]).action, "fail_closed", cat)
+        # The reason string is the canonical order, so a repair reader keys on a stable value.
+        self.assertEqual(
+            wc.classify_gate_failure(["host_rendered_lint_findings", "syntax_error"]).reason,
+            "gate_syntax_error+host_rendered_lint_findings")
         d = wc.classify_gate_failure(["static_frontend_unavailable"])
         self.assertEqual(d.action, "fail_closed")
         d = wc.classify_gate_failure(["lint_findings", "static_frontend_unavailable"])
@@ -1466,6 +1483,54 @@ class ConductRoutingTest(unittest.TestCase):
         self.assertEqual(len(gen_launches), 2)
         self.assertNotIn("repair_findings", gen_launches[0])
         self.assertEqual(gen_launches[1].get("repair_findings"), "C061 argument 'u_l'")
+
+    def test_host_authored_gate_finding_terminalizes_without_a_second_generate_launch(
+            self) -> None:
+        """ISSUE #112's ACCEPTANCE CRITERION, stated as a launch count.
+
+        The measured incident (`orch_20260827T105454Z_99f63b7e`) spent FOUR `generate.generate`
+        launches on findings that were all in the host-rendered runner, and ended
+        `generate exceeded 3`. Every one of those launches after the first was the defect: the
+        leaf has no write authority over that file, so the loop could not converge, and
+        re-presenting an unsatisfiable verdict is what invites a `leaf shortcut`.
+
+        The counter-image of `test_gate_finding_warm_reopens_generate_same_phase` above, which
+        asserts TWO launches for a leaf-authored finding. Here it must be exactly ONE: the node
+        fails closed on the first attempt, no `reopen-phase` is issued, and the retry budget is
+        untouched. Both rows use the same scaffold on purpose, so the pair reads as the one
+        decision it is.
+
+        It also pins that NO repair findings are threaded anywhere: `_read_repair_findings` keys
+        on the `gate_` reason prefix, which this reason carries, so a route that terminalized but
+        still assembled a repair payload would leave the excerpt about an unwritable file in the
+        record as if a leaf were meant to act on it."""
+        c = self._conductor()
+
+        def status_fn(phase, substep, n):
+            return "fail" if (phase == "generate" and substep == "gate") else "pass"
+
+        c.status_fn = status_fn
+        c.decision_fn = lambda phase, outcomes: wc.RouteDecision(
+            "fail_closed", reason="gate_host_rendered_lint_findings")
+        status = c.conduct(self._refs(), "generate")
+        self.assertNotEqual(status, "pass")
+        self.assertEqual([], [cap for s, cap in c.calls if s == "reopen-phase"])
+        gen_launches = [cap["--request-json"] for s, cap in c.calls
+                        if s == "record-launch"
+                        and cap.get("--request-json", {}).get("step") == "generate"
+                        and cap["--request-json"].get("substep") == "generate"]
+        self.assertEqual(len(gen_launches), 1)
+        self.assertNotIn("repair_findings", gen_launches[0])
+        gen_writes = [cap for s, cap in c.calls
+                      if s == "write-step-result" and cap["--step"] == "generate"]
+        self.assertEqual(len(gen_writes), 1)
+        # The reason the classifier actually produces for this category is the one used above,
+        # so the row cannot pass on a hand-picked string the route never emits.
+        self.assertEqual(
+            wc.classify_gate_failure(["host_rendered_lint_findings"]).reason,
+            "gate_host_rendered_lint_findings")
+        self.assertEqual(
+            wc.classify_gate_failure(["host_rendered_lint_findings"]).action, "fail_closed")
 
     def test_structural_execute_failure_warm_reopens_generate_cross_phase(self) -> None:
         # B1 end to end (prod): a structural validate.execute failure cross-phase reopens
@@ -14411,7 +14476,18 @@ class DeterministicBuildTest(unittest.TestCase):
         # (as the first version of this row did) left the consulted set unwitnessed: admitting
         # both terminal categories into the VERDICT set kept all 1910 rows of this file plus
         # test_orchestration_runtime.py green.
-        self.assertEqual(wc.VALIDATE_EXECUTE_FAILURE_TERMINAL, wc.GATE_FAILURE_TERMINAL)
+        # The two sets DIVERGED in issue #112 and the difference is itself a definition
+        # (`GATE_ONLY_TERMINAL_CATEGORIES`), so this row compares two constants rather than
+        # restating either. Equality of the remainder is what used to be pinned; the difference
+        # is pinned by name, so adding a category to `GATE_FAILURE_TERMINAL` without deciding
+        # which side it belongs on still fails here.
+        self.assertEqual(
+            wc.GATE_FAILURE_TERMINAL - wc.GATE_ONLY_TERMINAL_CATEGORIES,
+            wc.VALIDATE_EXECUTE_FAILURE_TERMINAL)
+        self.assertEqual(
+            frozenset(),
+            wc.GATE_ONLY_TERMINAL_CATEGORIES & wc.VALIDATE_EXECUTE_FAILURE_TERMINAL)
+        self.assertLess(wc.GATE_ONLY_TERMINAL_CATEGORIES, wc.GATE_FAILURE_TERMINAL)
         self.assertEqual(
             frozenset(), wc.VALIDATE_EXECUTE_FAILURE_TERMINAL
             & frozenset(wc.VALIDATE_EXECUTE_FAILURE_ROUTING))
@@ -14727,16 +14803,20 @@ class DeterministicBuildTest(unittest.TestCase):
         # The post_execute validator answers dedicated exit codes for the two conditions no leaf
         # can repair by re-authoring source. `_execute_inproc` classifies on those codes, so the
         # gate's TEXT never decides. rc 3 is reachable here (the `problem` model gates raise the
-        # front-end error); rc 4 is not reachable from post_execute today — it is wired so the day
-        # a post_execute gate reports a stale IR it fails closed rather than arriving warm.
+        # front-end error); rc 4 and rc 5 are not reachable from post_execute today — both are
+        # wired so the day a post_execute gate reports one it fails closed rather than arriving
+        # warm. rc 5 (issue #112) is a violation whose subject is a file this repository authors.
         import tempfile
         from tools.validate_pipeline_semantics import (
             FORTRAN_STRUCTURE_UNAVAILABLE_EXIT_CODE,
+            HOST_AUTHORED_ARTIFACT_EXIT_CODE,
             STALE_DEPENDENCY_IR_EXIT_CODE,
         )
         for rc, expected in ((FORTRAN_STRUCTURE_UNAVAILABLE_EXIT_CODE,
                               "static_frontend_unavailable"),
-                             (STALE_DEPENDENCY_IR_EXIT_CODE, "stale_dependency_ir")):
+                             (STALE_DEPENDENCY_IR_EXIT_CODE, "stale_dependency_ir"),
+                             (HOST_AUTHORED_ARTIFACT_EXIT_CODE,
+                              "host_authored_artifact_violation")):
             with tempfile.TemporaryDirectory() as td:
                 out, meta = self._b1_execute(
                     Path(td), self._B1_IR_MINIMAL,
@@ -15023,6 +15103,182 @@ class DeterministicLintTest(unittest.TestCase):
         sys.path.insert(0, str(Path("mcp_servers").resolve()))
         import build_runtime_server  # type: ignore
         return mock.patch.object(build_runtime_server, "tool_run_linter", fn)
+
+    _M3C_NODE_KEY = "problem/adv1d@0.1.0"
+
+    def _m3c_refs(self) -> wc.NodeRefs:
+        return wc.NodeRefs(
+            node_key=self._M3C_NODE_KEY, spec_path="spec/problem/adv1d",
+            ir_id="i1", pipeline_id="p1", source_id="src_1", binary_id="bin_1")
+
+    def _seed_m3c(self, repo: Path, refs: wc.NodeRefs) -> Path:
+        """A REAL M3c node, so `_host_rendered_src_names` answers from the live predicates.
+
+        Nothing about authorship is stubbed here on purpose: issue #112's whole subject is which
+        files the host authors, and a test that mocked that answer would pin the attribution
+        arithmetic while leaving the oracle unwitnessed."""
+        ir_dir = repo / refs.ir_ref
+        ir_dir.mkdir(parents=True, exist_ok=True)
+        (ir_dir / "spec.ir.yaml").write_text(
+            "meta:\n  spec_id: adv1d\n  spec_kind: problem\n"
+            "impl_defaults:\n  toolchain:\n    language: fortran\n    standard: f2008\n"
+            "    build_system: make\n  target:\n    backend: serial\n"
+            "dependency:\n"
+            f'  node_key: "{self._M3C_NODE_KEY}"\n'
+            "  direct_deps:\n"
+            '    - node_key: "infrastructure/harness_fortran_cpu@0.7.0"\n',
+            encoding="utf-8")
+        src = repo / refs.source_dir() / "src"
+        src.mkdir(parents=True, exist_ok=True)
+        (src / "adv1d_model.f90").write_text("! model\n", encoding="utf-8")
+        (src / "adv1d_checks.f90").write_text("! checks\n", encoding="utf-8")
+        (src / "adv1d_runner.f90").write_text("! runner\n", encoding="utf-8")
+        (src / "Makefile").write_text("all:\n", encoding="utf-8")
+        (src / "command_log.jsonl").write_text("", encoding="utf-8")
+        return src
+
+    def _attributing_linter(self, failing_dirs: "set[str]"):
+        """A linter stand-in that fails for the probe directories named in `failing_dirs`.
+
+        Keys are `whole` / `leaf` / `host`, resolved from the call's `project_dir`, which is how
+        the real attribution distinguishes its runs — so the stub answers the same question the
+        tool would."""
+        def _fn(args):
+            pd = str(args.get("project_dir", ""))
+            which = ("leaf" if pd.endswith("/lint/leaf")
+                     else "host" if pd.endswith("/lint/host") else "whole")
+            failing = which in failing_dirs
+            return {"ok": not failing, "return_code": 1 if failing else 0,
+                    "command_id": f"cid-{which}", "preset": "fortitude",
+                    "stdout": f"FINDING in the {which} set" if failing else ""}
+        return _fn
+
+    def test_gate_lint_check_attributes_a_leaf_finding_to_the_leaf(self) -> None:
+        """The measured incident's GOOD case: the leaf's own files fail, so it keeps its retry.
+
+        The excerpt must be the LEAF probe's output, not the whole-directory run's: handing a
+        warm repair a diagnostic about a file it cannot write is the invitation issue #112
+        exists to remove."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            refs = self._m3c_refs()
+            self._seed_m3c(repo, refs)
+            c = self._conductor(repo)
+            with self._patch_linter(self._attributing_linter({"whole", "leaf"})):
+                out = c._gate_lint_check(refs, "child-1", "captok")
+        self.assertEqual(out["status"], "fail")
+        self.assertEqual(out["failure_category"], "lint_findings")
+        self.assertIn("leaf set", out["failure_excerpt"])
+        self.assertNotIn("host set", out["failure_excerpt"])
+        self.assertNotIn("whole set", out["failure_excerpt"])
+
+    def test_gate_lint_check_attributes_a_host_finding_terminally(self) -> None:
+        """The measured incident itself: every finding is in a file the leaf cannot write.
+
+        `orch_20260827T105454Z_99f63b7e` spent four `generate.generate` launches here. The
+        category must be one `GATE_FAILURE_TERMINAL` holds, and the excerpt must name the
+        producer so the record points at this repository rather than at the leaf."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            refs = self._m3c_refs()
+            self._seed_m3c(repo, refs)
+            c = self._conductor(repo)
+            with self._patch_linter(self._attributing_linter({"whole", "host"})):
+                out = c._gate_lint_check(refs, "child-1", "captok")
+        self.assertEqual(out["status"], "fail")
+        self.assertEqual(out["failure_category"], "host_rendered_lint_findings")
+        self.assertIn(out["failure_category"], wc.GATE_FAILURE_TERMINAL)
+        self.assertIn("adv1d_runner.f90", out["failure_excerpt"])
+        self.assertIn("host-authored", out["failure_excerpt"])
+        self.assertIn("host set", out["failure_excerpt"])
+
+    def test_gate_lint_check_lets_the_host_side_dominate_a_co_occurring_leaf_finding(
+            self) -> None:
+        """Terminal dominates, and the leaf-side findings are still reported.
+
+        Dominance is `classify_gate_failure`'s existing rule and the reason is the same one: the
+        leaf cannot clear the host finding, so a warm retry would spend the whole budget and
+        still fail. The operator fixing the producer wants to see everything the gate found, so
+        both sections stay in the excerpt."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            refs = self._m3c_refs()
+            self._seed_m3c(repo, refs)
+            c = self._conductor(repo)
+            with self._patch_linter(self._attributing_linter({"whole", "leaf", "host"})):
+                out = c._gate_lint_check(refs, "child-1", "captok")
+        self.assertEqual(out["failure_category"], "host_rendered_lint_findings")
+        self.assertIn("leaf set", out["failure_excerpt"])
+        self.assertIn("host set", out["failure_excerpt"])
+
+    def test_gate_lint_check_fails_closed_when_it_can_attribute_neither_side(self) -> None:
+        """Neither half reproduces the whole directory's verdict -> terminal, NOT `lint_findings`.
+
+        "Assume the leaf" is how this class hides (issue #112): it spends the retry budget and
+        reports the leaf as the cause of something nothing showed the leaf caused."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            refs = self._m3c_refs()
+            self._seed_m3c(repo, refs)
+            c = self._conductor(repo)
+            with self._patch_linter(self._attributing_linter({"whole"})):
+                out = c._gate_lint_check(refs, "child-1", "captok")
+        self.assertEqual(out["failure_category"], "gate_finding_unattributed")
+        self.assertIn(out["failure_category"], wc.GATE_FAILURE_TERMINAL)
+        self.assertIn("unattributed", out["failure_excerpt"])
+
+    def test_gate_lint_probe_runs_do_not_touch_the_nodes_command_log(self) -> None:
+        """The probes certify nothing, so they must stay out of `<src>/command_log.jsonl`.
+
+        Same rule the syntax checker's `_sub_check` states. A probe recorded there would put a
+        command id in the node's canonical evidence log that no certificate refers to."""
+        import tempfile
+        seen: list[Any] = []
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            refs = self._m3c_refs()
+            self._seed_m3c(repo, refs)
+            c = self._conductor(repo)
+            base = self._attributing_linter({"whole", "host"})
+
+            def _fn(args):
+                seen.append(args)
+                return base(args)
+
+            with self._patch_linter(_fn):
+                c._gate_lint_check(refs, "child-1", "captok")
+        self.assertEqual(len(seen), 3)  # whole directory, then the two probes
+        self.assertIn("command_log_path", seen[0])
+        for probe in seen[1:]:
+            self.assertNotIn("command_log_path", probe)
+
+    def test_host_rendered_src_names_comes_from_the_authorship_predicates(self) -> None:
+        """The origin oracle is derived, not restated.
+
+        `_host_rendered_src_names` must answer exactly what `_conductor_authors_runner` /
+        `_conductor_authors_makefile` say, so it cannot become a fourth spelling of a predicate
+        that has already drifted once between the conductor and the validator."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            refs = self._m3c_refs()
+            self._seed_m3c(repo, refs)
+            c = self._conductor(repo)
+            self.assertTrue(c._conductor_authors_runner(refs))
+            self.assertTrue(c._conductor_authors_makefile(refs))
+            self.assertEqual(
+                c._host_rendered_src_names(refs),
+                frozenset({c._runner_basename(refs), c.CONTROL_FILE_BASENAME}))
+            # A non-M3c node (the default fixture: no infra dep, no meta) renders no runner, so
+            # the runner must drop out of the set rather than be assumed present.
+            plain = self._refs()
+            self._seed(repo, plain, language="fortran")
+            self.assertFalse(c._conductor_authors_runner(plain))
+            self.assertNotIn(c._runner_basename(plain), c._host_rendered_src_names(plain))
 
     def test_gate_lint_check_pass_returns_section_and_writes_evidence(self) -> None:
         import tempfile
@@ -15731,6 +15987,75 @@ class DeterministicStaticTest(unittest.TestCase):
         self.assertEqual(out["failure_category"], "stale_dependency_ir")
         self.assertEqual("fail_closed",
                          wc.classify_gate_failure([out["failure_category"]]).action)
+
+    def test_gate_static_check_maps_the_host_authored_exit_code_to_a_terminal_category(
+            self) -> None:
+        """A post_generate violation about a file this repository authors is TERMINAL (#112).
+
+        The channel is the validator's exit code, imported from the module that sets it — never
+        the literal 5, and never the output text (the marker below is in the text on purpose, so
+        a mapping that regressed to scanning would still pass this row; the forgery rows are what
+        catch that)."""
+        import tempfile
+        from tools.validate_pipeline_semantics import (
+            HOST_AUTHORED_ARTIFACT_EXIT_CODE,
+            HOST_AUTHORED_ARTIFACT_MARKER,
+        )
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            refs = self._refs()
+            self._seed(repo, refs)
+            c = self._conductor(repo)
+
+            def run(cmd, **kwargs):
+                script = next((x for x in cmd if x.endswith(".py")), "")
+                if script.endswith("validate_workspace_root.py"):
+                    return wc.subprocess.CompletedProcess(cmd, 0, "ws-out", "ws-err")
+                if script.endswith("validate_pipeline_semantics.py"):
+                    return wc.subprocess.CompletedProcess(
+                        cmd, HOST_AUTHORED_ARTIFACT_EXIT_CODE,
+                        "pipeline semantic validation: FAIL\n"
+                        f"- x_runner.f90: forbidden runner output write detected — "
+                        f"{HOST_AUTHORED_ARTIFACT_MARKER} this file is authored by THIS "
+                        "REPOSITORY", "")
+                raise AssertionError(f"unexpected subprocess: {cmd}")
+
+            with self._patch_run(run):
+                out = c._gate_static_check(refs, "child-1", "captok")
+        self.assertEqual(out["status"], "fail")
+        self.assertEqual(out["failure_category"], "host_authored_artifact_violation")
+        self.assertEqual("fail_closed",
+                         wc.classify_gate_failure([out["failure_category"]]).action)
+
+    def test_no_gate_output_text_can_forge_the_host_authored_classification(self) -> None:
+        """The marker in a LEAF-CHOSEN path must not terminalize an ordinary content failure.
+
+        The twin of the stale-IR forgery row below, and the reason is identical: a violation
+        interpolates a path the leaf wrote, so a model source named after the marker would let a
+        leaf convert its own warm-repairable finding into a dead run. rc 1 is the whole answer."""
+        import tempfile
+        from tools.validate_pipeline_semantics import HOST_AUTHORED_ARTIFACT_MARKER
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            refs = self._refs()
+            self._seed(repo, refs)
+            c = self._conductor(repo)
+            forged = ("pipeline semantic validation: FAIL\n"
+                      f"- src/{HOST_AUTHORED_ARTIFACT_MARKER}_model.f90: literal metric value\n")
+            def run(cmd, **kwargs):
+                script = next((x for x in cmd if x.endswith(".py")), "")
+                if script.endswith("validate_workspace_root.py"):
+                    return wc.subprocess.CompletedProcess(cmd, 0, "ws-out", "ws-err")
+                if script.endswith("validate_pipeline_semantics.py"):
+                    # rc 1: an ORDINARY violation run. The marker is in the text and decides
+                    # nothing.
+                    return wc.subprocess.CompletedProcess(cmd, 1, forged, "")
+                raise AssertionError(f"unexpected subprocess: {cmd}")
+
+            with self._patch_run(run):
+                out = c._gate_static_check(refs, "child-1", "captok")
+        self.assertEqual(out["failure_category"], "post_generate_violation")
+        self.assertEqual("retry", wc.classify_gate_failure([out["failure_category"]]).action)
 
     def test_no_gate_output_text_can_forge_the_stale_ir_classification(self) -> None:
         # THE DEFECT THIS BRANCH REPAIRS. The gate used to classify on `[stale-dependency-ir]`
@@ -16609,6 +16934,7 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
         import tempfile
         from tools.validate_pipeline_semantics import (
             FORTRAN_STRUCTURE_UNAVAILABLE_EXIT_CODE,
+            HOST_AUTHORED_ARTIFACT_EXIT_CODE,
             STALE_DEPENDENCY_IR_EXIT_CODE,
         )
         recoverable_bullet = ("pipeline semantic validation: FAIL\n"
@@ -16616,7 +16942,9 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
                               "llm_semantic_review\n")
         for rc, expected in ((FORTRAN_STRUCTURE_UNAVAILABLE_EXIT_CODE,
                               "static_frontend_unavailable"),
-                             (STALE_DEPENDENCY_IR_EXIT_CODE, "stale_dependency_ir")):
+                             (STALE_DEPENDENCY_IR_EXIT_CODE, "stale_dependency_ir"),
+                             (HOST_AUTHORED_ARTIFACT_EXIT_CODE,
+                              "host_authored_artifact_violation")):
             with tempfile.TemporaryDirectory() as td:
                 repo, refs = Path(td), self._refs()
                 (repo / refs.run_node_dir()).mkdir(parents=True, exist_ok=True)

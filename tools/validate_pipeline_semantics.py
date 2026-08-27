@@ -5247,14 +5247,34 @@ def _validate_generate_outputs_for_generation(
     # and the toolchain is a compile.static violation (`_validate_toolchain_backend_supported`).
     # Removing the heuristics accepts that fabrication in the harness self-test runner is caught
     # by the LLM verify/judge + these deterministic backstops, not by the two deleted ones.)
-    runner_files = sorted(src_dir.glob("*_runner.f90"))
-    _validate_runner_source_files(
-        execution, runner_files, violations,
-        known_case_ids=_case_ids_for_execution(repo_root, execution),
-    )
-    # R1/M3c-β: the leaf-authored checks module (fixed ABI) is gated only on an M3c node.
+    # R1/M3c-β: the leaf-authored checks module (fixed ABI) is gated only on an M3c node. Read
+    # ONCE, and read here rather than below, because the runner gates underneath need the same
+    # answer: on an M3c node the runner is HOST-RENDERED and every finding against it is this
+    # repository's defect (issue #112). One reader, `_execution_m3c_language`, which is already
+    # the validator's kept-in-lockstep mirror of `workflow_conductor._conductor_authors_runner` —
+    # a fourth spelling of the predicate is exactly how this pair drifted before (see its
+    # docstring).
     m3c_language = _execution_m3c_language(repo_root, execution)
     is_m3c = m3c_language is not None
+    runner_files = sorted(src_dir.glob("*_runner.f90"))
+    # ATTRIBUTION IS POSITIONAL: `_validate_runner_source_files` is handed nothing but
+    # `runner_files` to talk about, so on an M3c node every string it appends is about the
+    # host-rendered runner. Collect into its own sink and wrap the whole sink — no violation
+    # string is inspected to decide this. A non-M3c node keeps the plain list: its runner is the
+    # `infrastructure` harness self-test, which the leaf really does author, and wrapping that
+    # would turn a warm-repairable finding into a permanent fail_closed.
+    runner_violations: list[str] = []
+    _validate_runner_source_files(
+        execution, runner_files, runner_violations,
+        known_case_ids=_case_ids_for_execution(repo_root, execution),
+    )
+    if is_m3c:
+        violations.extend(
+            _as_host_authored(v, "tools/host_render.render_runner, via "
+                                 "workflow_conductor.Conductor._write_runner")
+            for v in runner_violations)
+    else:
+        violations.extend(runner_violations)
     if is_m3c:
         _validate_checks_source_files(
             execution, m3c_language, src_dir, model_files, violations)
@@ -12988,6 +13008,59 @@ class StaleDependencyIRViolation(str):
     """
 
 
+#: Sentinel embedded in a host-authored-artifact violation so a HUMAN reader sees, in the message
+#: itself, why re-running Generate is futile. It carries NO decision — the conductor routes this
+#: failure as TERMINAL on `HOST_AUTHORED_ARTIFACT_EXIT_CODE` and on nothing in the text.
+HOST_AUTHORED_ARTIFACT_MARKER = "[host-authored-artifact]"
+
+#: `main`'s exit code when a violation's SUBJECT is a file this repository authors rather than the
+#: Generate leaf — today the host-rendered runner glue (`tools/host_render.render_runner`, through
+#: `workflow_conductor._write_runner`). The leaf has no write authority over it, so a warm
+#: `generate.generate` retry re-authors the files that were never the cause and meets the identical
+#: verdict: issue #110 measured four launches ending in `generate exceeded 3`. Distinct from
+#: 0/1/2/3/4, so a caller tells all six apart without reading the output. (Issue #112.)
+HOST_AUTHORED_ARTIFACT_EXIT_CODE = 5
+
+
+class HostAuthoredArtifactViolation(str):
+    """A violation string whose TYPE says its subject is a file this repository authors.
+
+    Same channel design as :class:`StaleDependencyIRViolation`, for the same reason: violations
+    embed a leaf-chosen path (``f"{loc}: ..."``), so any classification that scans the validator's
+    output text is forgeable by naming a model file after the marker. The failure's type is not —
+    a leaf writes bytes into the message, never a Python class. ``main`` maps the presence of an
+    instance in ``violations`` to :data:`HOST_AUTHORED_ARTIFACT_EXIT_CODE`, and that exit code is
+    the only thing the conductor reads.
+
+    ATTRIBUTION IS POSITIONAL, NOT LEXICAL. An instance is constructed only where the caller
+    already knows, from the node's shape, that the gate it just ran was given nothing but a
+    host-authored file to talk about. Nothing anywhere parses a violation string to decide this.
+
+    Subclassing ``str`` keeps the message byte-identical and equal to the plain string it wraps,
+    so every existing message pin and every consumer that formats violations is unaffected.
+
+    LIMIT: the channel lives in the object, so REBUILDING the ``violations`` list (``[str(v) for v
+    in violations]``, a JSON round-trip, ``sorted`` into new strings) silently drops it back to
+    exit code 1. ``test_host_authored_runner_finding_answers_the_dedicated_exit_code_in_a_real_subprocess``
+    drives the real CLI end to end, so such a rebuild fails loudly rather than degrading in
+    production.
+    """
+
+
+def _as_host_authored(violation: str, producer: str) -> HostAuthoredArtifactViolation:
+    """Wrap one violation as host-authored and append the sentence that says what to do.
+
+    ONE owner for the wrap and the wording together, so a caller cannot mark a violation terminal
+    without also telling its reader why re-running Generate would not help. The added text is a
+    SUFFIX: the leading ``f"{path}: "`` prefix and every existing substring pin survive it.
+    """
+    return HostAuthoredArtifactViolation(
+        f"{violation} — {HOST_AUTHORED_ARTIFACT_MARKER} this file is authored by THIS "
+        f"REPOSITORY ({producer}), not by the Generate leaf, which has no write authority over "
+        f"it. Re-running Generate cannot change this finding. The defect is in the producer, or "
+        f"in the IR it renders from: fix it (or re-compile the IR), then --resume.")
+
+
 def _validate_infrastructure_generated_signatures(
     repo_root: Path, execution: NodeExecution, model_files: list[Path], violations: list[str]
 ) -> None:
@@ -14152,10 +14225,12 @@ def main(argv: list[str] | None = None) -> int:
             "available on this machine — an OPERATOR problem\n"
             f"  {STALE_DEPENDENCY_IR_EXIT_CODE}  a violation reports a stale/corrupt certified "
             "IR — re-certify, do not re-author\n"
+            f"  {HOST_AUTHORED_ARTIFACT_EXIT_CODE}  a violation's subject is a file this "
+            "repository authors, not the leaf — fix the producer\n"
             "\n"
-            "Codes 3 and 4 name conditions no re-authored source can clear, so a caller routes\n"
-            "them TERMINAL. They are answered by the branch that knows; nothing in the output\n"
-            "text carries the decision.\n"
+            "Codes 3, 4 and 5 name conditions no re-authored source can clear, so a caller\n"
+            "routes them TERMINAL. They are answered by the branch that knows; nothing in the\n"
+            "output text carries the decision.\n"
         ),
     )
     parser.add_argument("--repo-root", default=".")
@@ -14411,6 +14486,17 @@ def _main_dispatch(args: argparse.Namespace, repo_root: Path) -> int:
         # TERMINAL: the ordinary ones cannot be repaired either while the IR is stale.
         if any(isinstance(v, StaleDependencyIRViolation) for v in violations):
             return STALE_DEPENDENCY_IR_EXIT_CODE
+        # Same channel, one rung lower, and the ORDER is deliberate: a stale certified IR
+        # invalidates the renderer's own INPUT, so a host-authored artifact being wrong is
+        # plausibly a consequence of it. Answering 4 first means an operator is never sent to fix
+        # a renderer when the real recovery is a re-certification (which re-renders anyway).
+        # Like the arm above, this precedes `return 1` so a host-authored violation co-occurring
+        # with ordinary leaf-repairable ones still routes TERMINAL — the leaf cannot clear the
+        # host one, so a warm retry would spend the whole budget and still fail. The accepted
+        # cost is that the leaf-repairable co-findings lose their warm repair; they are still
+        # PRINTED, so they reach `gate_meta.failure_excerpt` and the operator.
+        if any(isinstance(v, HostAuthoredArtifactViolation) for v in violations):
+            return HOST_AUTHORED_ARTIFACT_EXIT_CODE
         return 1
 
     print("pipeline semantic validation: PASS")
