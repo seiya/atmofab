@@ -4195,6 +4195,30 @@ DEFAULT_ALLOWED_GATE_SERVICES: tuple[str, ...] = (
 GATE_RESULT_TMP_DIRNAME = "gate_results"
 
 
+def _orchestration_holds_launch_record(
+    repo_root: Path, orchestration_id: str, agent_run_id: str
+) -> bool:
+    """Adv-5 ownership proof: did THIS orchestration launch `agent_run_id`?
+
+    `workspace/tmp/` is a FLAT namespace with no orchestration prefix, so two
+    orchestrations that reuse an agent_run_id share the directory. Anything that deletes
+    under it has to establish ownership first, or terminating one run wipes another's live
+    scratch. `_cleanup_agent_tmp_root` has enforced that since Adv-5; the durable
+    gate-result unlink in `run_gate` reads the same proof through this function rather
+    than spelling the rule a second time.
+
+    This is the LAUNCH-RECORD half only. `_cleanup_agent_tmp_root` accepts a second proof
+    (the orchestration agent's own arid, from `orchestration_meta.json`) because an
+    orchestration agent is not launched via `record-launch`; `run_gate` needs no such case,
+    since `_require_child_agent_role_for_step` refuses a non-child role outright.
+    """
+    return (
+        _orchestration_root(repo_root, orchestration_id)
+        / "launches"
+        / f"{agent_run_id.strip()}.request.json"
+    ).is_file()
+
+
 def _agent_tmp_gate_result_path(repo_root: Path, agent_run_id: str, gate: str) -> Path:
     """Absolute path of the leaf-readable copy of one gate's result summary.
 
@@ -6442,6 +6466,65 @@ def _validate_run_gate_permissions(
         )
 
 
+def _invalidate_durable_gate_result(
+    repo_root: Path, orchestration_id: str, agent_run_id: str, gate: str
+) -> None:
+    """Remove the leaf-readable copy of one gate's result, before that gate is attempted.
+
+    The copy at `workspace/tmp/<arid>/gate_results/<gate>.json` is written only by a
+    `run_gate` call that reaches the write at the very end. Without this, a refused attempt
+    leaves the PREVIOUS run's verdict exactly where the launch prompt tells the leaf to
+    look, and a leaf that reads it reports its substep done on a verdict obtained for an
+    earlier artifact -- a `leaf shortcut` in the sense `AGENTS.md` §Development premises
+    defends against.
+
+    WHAT THIS DOES AND DOES NOT ESTABLISH, stated because round 2 shipped it as an
+    unconditional "the file is present iff a run completed since your last attempt" and
+    round 3 measured that false in four ways. This runs after the gate-name check and
+    before everything else in `run_gate`, so it covers every refusal `run_gate` itself
+    raises. It CANNOT cover an attempt that never reaches this code:
+
+      - a command line argparse rejects (a malformed `--args-json`, a bad `--gate`);
+      - a Bash command the permission layer refuses before the process starts;
+      - an `OSError` on the unlink itself, swallowed below;
+      - and it says nothing about the ARTIFACT: a completed pass stays valid-looking after
+        the leaf edits the file the gate ran on. That last one is a property of the
+        persisted gate document too, and predates this change -- what is new is that a
+        leaf can now READ it. TODO.md carries it.
+
+    So the documents state a rule with its exceptions, and keep telling the leaf to check
+    `args_json` / `evaluated_at` against the run it means. The mechanism narrows the
+    window; it does not close it, and no surface may say that it does.
+
+    OWNERSHIP. `workspace/tmp/` is a flat namespace, so this asks the same Adv-5 question
+    `_cleanup_agent_tmp_root` asks before deleting under it: does this orchestration hold
+    the launch record for the arid? Round 3 measured the round-2 version without that
+    check deleting another leaf's copy, and an out-of-checkout file via a caller-chosen
+    `--repo-root`, on a call with no valid capability at all. What a leaf GAINS by either
+    is nothing -- nothing but the owning leaf reads its copy -- so the hole was out of
+    scope by the decision criterion, but the comment justifying it claimed a per-caller
+    blast radius that did not exist, and it contradicted the guard this repository already
+    applies to this very directory. Both are now true instead.
+    """
+    # BEFORE ANY PATH IS BUILT. `agent_run_id` is caller text at this point -- this runs
+    # ahead of `_validate_run_gate_permissions`, which is where the ids used to be checked
+    # first. `_require_safe_gate_ids` -> `_is_safe_path_id` is a `[A-Za-z0-9_-]` fullmatch,
+    # so `..`, a separator and an empty value are all refused before `_agent_tmp_gate_result_path`
+    # interpolates anything. It raises rather than returning: an unsafe id is a refusal in
+    # its own right, and `_validate_run_gate_permissions` would refuse it moments later.
+    _require_safe_gate_ids(orchestration_id, agent_run_id, "run-gate phase gate")
+    if not _orchestration_holds_launch_record(repo_root, orchestration_id, agent_run_id):
+        return
+    try:
+        _agent_tmp_gate_result_path(repo_root, agent_run_id, gate).unlink(missing_ok=True)
+    except OSError:
+        # Best-effort, for the same reason the write is: a convenience artifact must not
+        # decide a verdict, so a failed unlink does not fail the gate. It leaves a stale
+        # copy behind, which is one of the exceptions the docstring above enumerates and
+        # the documents describe.
+        pass
+
+
 def run_gate(
     repo_root: Path,
     *,
@@ -6454,49 +6537,13 @@ def run_gate(
     gate = gate_name.strip()
     if gate not in DEFAULT_ALLOWED_GATE_SERVICES:
         raise ValueError(f"unsupported gate name: {gate_name!r}")
+
+    _invalidate_durable_gate_result(repo_root, orchestration_id, agent_run_id, gate)
+
     if not capability_token.strip():
         raise ValueError("capability_token is required for run-gate")
     if not isinstance(args_json, dict):
         raise ValueError("args_json must be object")
-
-    # INVALIDATE THE DURABLE COPY BEFORE DOING ANY WORK (issue #77, round 2).
-    #
-    # The copy at `workspace/tmp/<arid>/gate_results/<gate>.json` is written only by a
-    # call that REACHES the write at the end of this function. Every refusal --
-    # capability expired, token mismatch, gate outside the access policy, node no longer
-    # child_running -- raises before it, and so does process death. Without this unlink
-    # the previous run's verdict stays where the launch prompt tells the leaf to look,
-    # and a leaf that reads it reports its substep done on a verdict never obtained for
-    # the current artifact: a `leaf shortcut` in the sense AGENTS.md §Development
-    # premises defends against. The first fix for it was three prose warnings, which is
-    # the weaker half under a premise that says a leaf takes shortcuts.
-    #
-    # With the unlink here the file's EXISTENCE carries the invariant: present iff a run
-    # of this gate COMPLETED since the leaf's last attempt at it. The stale state is
-    # unrepresentable rather than warned about.
-    #
-    # Placement is load-bearing and was measured: put after `_validate_run_gate_permissions`
-    # the whole suite stays green, because the token and policy refusals raise INSIDE that
-    # call -- exactly the cases this defends. So the id check has to run first.
-    # `_require_safe_gate_ids` is called here AND stays the first line of
-    # `_validate_run_gate_permissions`: that is one rule called twice, not two spellings
-    # of it, and removing it from the validator would weaken it for its own direct
-    # callers.
-    #
-    # Not a new destructive action on caller text: `gate` is a member of
-    # DEFAULT_ALLOWED_GATE_SERVICES by the guard at the top of this function, and
-    # `agent_run_id` is a safe path id by the line below, so the deletable set is one
-    # file per allowed gate name inside the caller's OWN tmp root -- a root the leaf can
-    # already delete itself. It gains a leaf nothing it did not already have.
-    _require_safe_gate_ids(orchestration_id, agent_run_id, "run-gate phase gate")
-    try:
-        _agent_tmp_gate_result_path(repo_root, agent_run_id, gate).unlink(missing_ok=True)
-    except OSError:
-        # Same reasoning as the write below: a convenience artifact must not decide a
-        # verdict, so a failed unlink does not fail the gate. It leaves the one state
-        # this cannot close -- a stale copy whose removal was refused -- which the
-        # documents still describe.
-        pass
 
     _validate_run_gate_permissions(
         repo_root,
@@ -6606,9 +6653,16 @@ def run_gate(
     # spelling of both rules, which is the drift this repository pays for.
     #
     # The tmp root is leaf-WRITABLE, so a leaf can overwrite this copy with a
-    # forged pass. What it gains by that is nothing: nothing but the leaf itself
-    # reads it. Every consumer that decides an outcome -- the conductor, the
-    # audit, step_result.json -- reads gates/<arid>/<gate>.json, written above.
+    # forged pass. What it gains by that is still nothing, but the reason is
+    # narrower than "nothing reads it" -- round 3 caught that phrasing, because
+    # skills/workflow-audit-claude/SKILL.md now tells an auditor to cross-check
+    # the copy's six shared fields against the persisted document when the copy
+    # survives. The accurate reason: the copy DECIDES nothing. Every consumer
+    # that reaches a verdict -- the conductor, step_result.json -- reads
+    # gates/<arid>/<gate>.json, written above. Forging only the copy creates a
+    # disagreement the audit is told to investigate, which is worse for the leaf
+    # than leaving it alone; forging both is the interpreter route, a residue
+    # already recorded in docs/HOOKS.md and not this change's to own.
     # So this file is a convenience FOR the leaf, never evidence ABOUT it, and it
     # must not be cited as evidence anywhere. (AGENTS.md §Development premises,
     # decision criterion: out of scope because what the leaf would gain can be
@@ -6626,12 +6680,17 @@ def run_gate(
     # leaf can write", and nothing here should be justified by saying it is.
     # What this copy adds is a second place the same summary can be found; it
     # adds no write authority a leaf did not already have.
-    # KEY ORDER IS DELIBERATE. `violations` is the only unbounded member, and this dict
-    # is emitted as ONE stderr line; whether a harness truncates that line at the tail is
-    # a declared unmeasured residue (TODO.md). Everything that identifies WHICH run
-    # produced the verdict therefore sits AHEAD of `violations`, so a truncated line
-    # loses violation text rather than identity, instead of leaving a reassuring
-    # `status: pass` as the last thing standing.
+    # KEY ORDER IS DELIBERATE, and the claim is smaller than the first version of this
+    # comment made it. `violations` is the only unbounded member and this dict is emitted
+    # as ONE stderr line, so everything identifying WHICH run produced the verdict sits
+    # AHEAD of it. That helps ONLY a truncation which cuts inside the final line: under a
+    # head-preserving truncation a long `violations[]` costs the whole line whatever the
+    # order, and whether any harness truncates either way is a declared UNMEASURED residue
+    # (TODO.md). So this is cheap insurance with an unmeasured payoff, not a fix -- the
+    # real answer to that residue is the untruncated copy on disk. Pinned by
+    # `test_run_gate_summary_puts_identity_ahead_of_the_unbounded_field`, because round 3
+    # found the first version asserting this in prose with nothing observing it, which is
+    # the shape this branch criticised round 1 for.
     _gate_summary = {
         "gate": gate,
         "status": status,
@@ -9714,7 +9773,7 @@ def _cleanup_agent_tmp_root(
     # that happens to reuse the same arid (the workspace/tmp/ namespace is flat)
     # may be using the directory as live scratch.
     orch_root_dir = repo_root / "workspace" / "orchestrations" / orchestration_id.strip()
-    is_owner_via_launch = (orch_root_dir / "launches" / f"{arid}.request.json").is_file()
+    is_owner_via_launch = _orchestration_holds_launch_record(repo_root, orchestration_id, arid)
     is_owner_via_orchestration = False
     if not is_owner_via_launch:
         meta_path = orch_root_dir / "orchestration_meta.json"
@@ -11342,11 +11401,14 @@ def _build_gate_runbook(request_payload: dict[str, Any]) -> str:
             "`Write` tool, so it needs no creating; the runtime also drops each gate's "
             "own summary there, one JSON file per gate name under "
             f"`{_agent_tmp_gate_result_dir_ref(arid)}`, so a later turn can re-read a "
-            "result whose command output has scrolled out of your context. The file is "
-            "present iff a run of that gate COMPLETED since your last attempt at it -- a "
-            "refused run removes it rather than leaving the previous verdict -- and its "
-            "`args_json` / `exit_code` / `evaluated_at` say which run it was. For the "
-            "attempt you just made, the command result is authoritative. "
+            "result whose command output has scrolled out of your context. It holds the "
+            "last run of that gate that COMPLETED: a run that reached the runtime and was "
+            "refused removes it first, but one refused BEFORE that (a malformed command "
+            "line, a command the permission layer refused) never ran at all, so CHECK its "
+            "`args_json` / `exit_code` / `evaluated_at` against the run you mean. It also "
+            "says nothing about whether the files it names have changed since. For the "
+            "attempt you just made the command result is authoritative and the file is "
+            "not. "
             "`access_logs/` is runtime-managed "
             "audit (the read hook appends a line per read decision, and "
             "`orchestration_read` writes one too) — never read or write it yourself."

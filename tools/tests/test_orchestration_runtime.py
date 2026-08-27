@@ -17008,10 +17008,37 @@ class TestPhase3RunGate(unittest.TestCase):
                 "a refused run must invalidate the copy; leaving the previous verdict "
                 "where the leaf is told to look is the shortcut this closes",
             )
-            # The refusal above raises INSIDE `_validate_run_gate_permissions`, which is
-            # why the unlink sits ahead of that call -- a placement after it was measured
-            # leaving the whole suite green. This control checks the blast radius in the
-            # other direction: a refusal for ANOTHER arid must not touch this leaf's copy.
+            # EVERY refusal `run_gate` itself raises must invalidate, not just the one
+            # above. Round 3 measured the round-2 placement covering only refusals raised
+            # after it: a blank token and a non-dict `args_json` are checked EARLIER in the
+            # function, so both left the previous verdict on disk while the documents said
+            # a refused run removes it. The invalidation now runs directly after the
+            # gate-name check, and these are the two cases that proves.
+            for label, kwargs in (
+                ("blank capability_token", {"capability_token": "  "}),
+                ("args_json not an object", {"args_json": ["not", "a", "dict"]}),
+            ):
+                with self.subTest(refusal=label):
+                    _r, summary_n = self._run_gate_capturing_stderr(repo_root, token)
+                    self.assertTrue(copy_path.exists())
+                    call = dict(
+                        orchestration_id="rg1",
+                        gate_name="check_artifact_syntax",
+                        agent_run_id="build_child_rg1",
+                        args_json={"paths": ["workspace/probe.json"]},
+                        capability_token=token,
+                    )
+                    call.update(kwargs)
+                    with self.assertRaises(ValueError):
+                        _run_gate(repo_root, **call)
+                    self.assertFalse(
+                        copy_path.exists(),
+                        f"a run refused for {label} left the previous verdict where the "
+                        "launch prompt sends the leaf",
+                    )
+
+            # Blast radius, the other direction: a refusal for ANOTHER arid must not touch
+            # this leaf's copy.
             _r2, summary2 = self._run_gate_capturing_stderr(repo_root, token)
             self.assertTrue(copy_path.exists())
             with self.assertRaises((RuntimeError, ValueError)):
@@ -17030,6 +17057,186 @@ class TestPhase3RunGate(unittest.TestCase):
             self.assertEqual(
                 json.loads(copy_path.read_text(encoding="utf-8")), summary2
             )
+
+    def test_run_gate_invalidation_failure_does_not_fail_the_gate(self) -> None:
+        """The pre-work unlink is best-effort, and round 3 found that branch untested.
+
+        A convenience artifact must not decide a verdict in either direction: a copy that
+        cannot be removed must not turn a runnable gate into a refusal. The cost is a
+        stale copy surviving a refused run -- one of the exceptions
+        `_invalidate_durable_gate_result` enumerates and the documents state, which is why
+        no surface says the window is closed.
+        """
+        from tools import orchestration_runtime as _rt
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            token = self._setup_run_gate_fixture(repo_root)
+            real_unlink = Path.unlink
+
+            def _refuse(self_path, *a, **kw):
+                if self_path.name == "check_artifact_syntax.json" and \
+                        "gate_results" in str(self_path):
+                    raise OSError("read-only parent")
+                return real_unlink(self_path, *a, **kw)
+
+            with patch.object(Path, "unlink", _refuse):
+                _r, summary = self._run_gate_capturing_stderr(repo_root, token)
+            self.assertEqual(summary["status"], "pass", "a failed unlink failed the gate")
+            self.assertEqual(summary["exit_code"], 0)
+
+    def test_run_gate_invalidation_needs_the_adv5_ownership_proof(self) -> None:
+        """The unlink runs before any capability check, so ownership is what bounds it.
+
+        Round 3 measured the round-2 version deleting a file under ANOTHER agent_run_id --
+        and, with a caller-chosen `--repo-root`, outside the checkout -- on a call carrying
+        no valid capability. What a leaf gains by that is nothing (nothing but the owning
+        leaf reads its copy), so the hole was out of scope; the comment claiming the blast
+        radius was "the caller's own tmp root" was not, and neither was contradicting the
+        Adv-5 guard `_cleanup_agent_tmp_root` applies to this same flat namespace.
+
+        Driven through `run_gate`, not through the helper, so it observes the wiring.
+        """
+        from tools.orchestration_runtime import run_gate as _run_gate
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            token = self._setup_run_gate_fixture(repo_root)
+
+            # A victim copy under an arid THIS orchestration never launched.
+            victim = (
+                repo_root / "workspace" / "tmp" / "some_other_leaf"
+                / "gate_results" / "check_artifact_syntax.json"
+            )
+            victim.parent.mkdir(parents=True, exist_ok=True)
+            victim.write_text('{"status": "pass"}\n', encoding="utf-8")
+
+            with self.assertRaises((RuntimeError, ValueError)):
+                _run_gate(
+                    repo_root,
+                    orchestration_id="rg1",
+                    gate_name="check_artifact_syntax",
+                    agent_run_id="some_other_leaf",
+                    args_json={"paths": ["workspace/probe.json"]},
+                    capability_token=token,
+                )
+            self.assertTrue(
+                victim.is_file(),
+                "an arid this orchestration never launched must not have its copy deleted",
+            )
+            # Control: the owned arid IS invalidated by the same route, so the assertion
+            # above is a property of ownership and not of an unlink that never fires.
+            owned = repo_root / self._TMP_GATE_DIR / "check_artifact_syntax.json"
+            self._run_gate_capturing_stderr(repo_root, token)
+            self.assertTrue(owned.is_file())
+            with self.assertRaises(ValueError):
+                _run_gate(
+                    repo_root,
+                    orchestration_id="rg1",
+                    gate_name="check_artifact_syntax",
+                    agent_run_id="build_child_rg1",
+                    args_json={"paths": ["workspace/probe.json"]},
+                    capability_token="  ",
+                )
+            self.assertFalse(owned.exists())
+
+    def test_run_gate_invalidation_refuses_an_unsafe_agent_run_id(self) -> None:
+        """The unlink builds a path, and it now runs before the id used to be checked.
+
+        Hoisting it above the capability guards moved it ahead of the first
+        `_require_safe_gate_ids` call, so the helper does that check itself, before
+        `_agent_tmp_gate_result_path` interpolates anything. Without it a traversal
+        spelling would reach a path join.
+        """
+        from tools.orchestration_runtime import run_gate as _run_gate
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            token = self._setup_run_gate_fixture(repo_root)
+            outside = repo_root / "outside.json"
+            outside.write_text('{"keep": true}\n', encoding="utf-8")
+
+            for unsafe in ("../../outside", "a/b", "", "  ", ".."):
+                with self.subTest(agent_run_id=unsafe):
+                    with self.assertRaises((ValueError, RuntimeError)):
+                        _run_gate(
+                            repo_root,
+                            orchestration_id="rg1",
+                            gate_name="check_artifact_syntax",
+                            agent_run_id=unsafe,
+                            args_json={"paths": ["workspace/probe.json"]},
+                            capability_token=token,
+                        )
+            self.assertTrue(outside.is_file(), "nothing outside the tmp root may be touched")
+
+            # RUN THE ATTACK that reaches PAST the ownership guard, because without it the
+            # id check is shadowed: deleting `_require_safe_gate_ids` from the helper left
+            # every assertion above green, since an unsafe id has no launch record and the
+            # guard returns first. A traversal that lands on a launch record someone else
+            # planted defeats that, so the id check is what actually holds the path safe.
+            #
+            # `../../evil` makes the ownership probe read
+            # `workspace/orchestrations/rg1/launches/../../evil.request.json`, i.e.
+            # `workspace/orchestrations/evil.request.json`. Plant it, and plant the file
+            # the unlink would then compute, and assert the second one survives.
+            planted_record = repo_root / "workspace" / "orchestrations" / "evil.request.json"
+            planted_record.write_text("{}\n", encoding="utf-8")
+            # Computed, not guessed: `workspace/tmp/../../evil/...` normalises to
+            # `<repo_root>/evil/...`, one level ABOVE `workspace/` entirely.
+            would_delete = (
+                repo_root / "evil" / "gate_results" / "check_artifact_syntax.json"
+            )
+            would_delete.parent.mkdir(parents=True, exist_ok=True)
+            would_delete.write_text('{"status": "pass"}\n', encoding="utf-8")
+            with self.assertRaises((ValueError, RuntimeError)):
+                _run_gate(
+                    repo_root,
+                    orchestration_id="rg1",
+                    gate_name="check_artifact_syntax",
+                    agent_run_id="../../evil",
+                    args_json={"paths": ["workspace/probe.json"]},
+                    capability_token=token,
+                )
+            self.assertTrue(
+                would_delete.is_file(),
+                "a traversal agent_run_id with a reachable launch record deleted a file "
+                "outside the tmp namespace; the id check is what prevents this",
+            )
+
+    def test_run_gate_summary_puts_identity_ahead_of_the_unbounded_field(self) -> None:
+        """The key order was asserted in a comment with nothing observing it (round 3).
+
+        `violations` is the only unbounded member of the summary, so the fields that say
+        WHICH run produced the verdict are ordered ahead of it. Asserted on the SERIALIZED
+        stderr line, which is the only place order is observable at all -- every other
+        assertion in this class compares parsed dicts and is order-blind, which is exactly
+        why reverting the order left them all green.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            token = self._setup_run_gate_fixture(repo_root)
+            err = io.StringIO()
+            with redirect_stderr(err):
+                run_gate(
+                    repo_root,
+                    orchestration_id="rg1",
+                    gate_name="check_artifact_syntax",
+                    agent_run_id="build_child_rg1",
+                    args_json={"paths": ["workspace/probe.json"]},
+                    capability_token=token,
+                )
+            line = err.getvalue().strip().splitlines()[-1]
+            positions = {k: line.index(f'"{k}"') for k in
+                         ("gate", "status", "args_json", "exit_code", "evaluated_at",
+                          "gate_result_ref", "violations")}
+            self.assertEqual(
+                positions["violations"], max(positions.values()),
+                "`violations` is unbounded and must be serialized LAST, so a truncation "
+                "inside the line loses violation text rather than the fields that say "
+                f"which run this was (order was {sorted(positions, key=positions.get)})",
+            )
+            for identifying in ("args_json", "exit_code", "evaluated_at"):
+                self.assertLess(positions[identifying], positions["violations"])
 
     def test_run_gate_tmp_copy_is_one_file_per_gate_name(self) -> None:
         """A second gate must not clobber the first: that is why the name is the key."""
@@ -30595,37 +30802,39 @@ class GateResultTmpCopySurfaceTests(unittest.TestCase):
 
     REPO_ROOT = Path(__file__).resolve().parents[2]
 
-    # Asserted against LITERAL lists below rather than compared with the expressions they
-    # came from: `_REDIRECT_SURFACES` was once emptied and both the check reading it and
-    # its self-test stayed green, because a derived tuple compared with its own derivation
-    # holds by construction.
+    # `_MAY_POINT` IS GONE, and the rule is now the weaker question that can be answered:
+    # does every listed surface NAME the path?
     #
-    # THE SET IS SPLIT BY WHAT THE SURFACE IS FOR, after round 1 measured the first
-    # version refusing three legitimate edits (see the over-refusal test below).
+    # The pointer concept broke FOUR times, in a new shape each round. Round 0 had none and
+    # refused a mandated deferral. Round 2 admitted any mention of one filename anywhere in
+    # the file. Round 3 measured a 400-character window admitting an unrelated citation
+    # five lines away, leaving one surface stale through a rename. The paragraph-scoped
+    # replacement broke on MARKDOWN TABLES, which contain no blank lines -- a whole table is
+    # one paragraph, so `docs/RUNBOOK.md` passed on a citation in an unrelated row.
     #
-    # `_MUST_NAME_IN_FULL` — a leaf-read contract has to be self-contained, and the
-    # canonical layout document is what a pointer would point AT, so neither can answer
-    # with a pointer.
+    # "Is this citation ABOUT this rule?" is a question about meaning, decided from nearby
+    # words, and this repository has a recorded history of losing exactly that question --
+    # `_command_spans` in tools/tests/test_hooks_cli.py says so in its own docstring, after
+    # three rounds of the same. So the QUESTION changed rather than the threshold.
     #
-    # `_MAY_POINT` — everything else. `AGENTS.md` §Workflow document reference rules
-    # mandates citing the canonical source rather than restating it, and the sibling check
-    # this class is modelled on (`_NAMES_THE_ROUTE` in tools/tests/test_hooks_cli.py)
-    # admits a pointer for exactly that reason: "a pointer must remain a legal answer".
-    #
-    # NEITHER LIST HOLDS `docs/HOOKS.md` OR `TODO.md`. Both are RECORDS — of a
-    # measurement and of a decision — and a record naming the path as it stood is correct
-    # after a rename. Requiring them to track the constant would make the record follow
-    # the code, which is the opposite of what a record is for.
-    _MUST_NAME_IN_FULL = (
+    # WHAT IT COSTS, stated because it is a real cost and not a free simplification: a
+    # surface may no longer defer to the canonical document for this path, which
+    # `AGENTS.md` §Workflow document reference rules generally prefers. Two things make it
+    # payable. A PATH is not a rule -- restating `workspace/tmp/<arid>/gate_results/` is not
+    # the twin-document problem that section prevents, it is one token a reader needs in
+    # hand. And no document in the tree ever wanted the deferral: it was constructed by a
+    # reviewer as an over-refusal probe, and all six surfaces state the path today. If a
+    # real document ever wants to defer, move it to `_DECLARED_RECORDS` with a reason
+    # rather than reintroducing a meaning test.
+    _MUST_NAME_THE_PATH = (
         "docs/AGENT_CONTRACT.md",
-        "docs/WORKSPACE_LAYOUT.md",
-    )
-    _MAY_POINT = (
         "docs/CLI_REFERENCE.md",
         "docs/RUNBOOK.md",
+        "docs/WORKSPACE_LAYOUT.md",
         "docs/workflow/LAUNCH_PROMPT_REFERENCE.md",
         "skills/workflow-audit-claude/SKILL.md",
     )
+
 
     @staticmethod
     def _pattern() -> "re.Pattern[str]":
@@ -30648,74 +30857,29 @@ class GateResultTmpCopySurfaceTests(unittest.TestCase):
             r"workspace/tmp/" + agent_id + "/" + re.escape(GATE_RESULT_TMP_DIRNAME) + r"/"
         )
 
-    # A pointer is a legal answer only when it is a pointer ABOUT THIS RULE. Round 2
-    # measured the first version admitting `docs/CLI_REFERENCE.md` on the strength of its
-    # generic related-documents list, which cites the layout document for reasons that
-    # have nothing to do with gate results -- so that surface was passing whatever it said
-    # about this path, and three of the four `_MAY_POINT` entries were one ordinary edit
-    # away from the same hole. The citation must therefore sit near a gate-result mention.
-    _POINTER_WINDOW = 400
-
-    # Both `_MUST_NAME_IN_FULL` surfaces state the path in full, so a citation of EITHER
-    # resolves for a reader. Round 2 found the first version hard-coding one filename and
-    # refusing a legitimate citation of the other.
-    _CANONICAL_TARGETS = ("WORKSPACE_LAYOUT.md", "AGENT_CONTRACT.md")
-
-    # What makes a passage be ABOUT this rule. Deliberately not the directory name: a
-    # surface that already names the directory is answering by path, not by pointer.
-    _GATE_RESULT_ANCHOR = ("run-gate", "run_gate", "gate result", "gate's result")
-
-    @classmethod
-    def _points_at_the_canonical_document(cls, text: str) -> bool:
-        """True iff a canonical document is cited near a passage about gate results."""
-        low = text.lower()
-        for anchor in cls._GATE_RESULT_ANCHOR:
-            start = 0
-            while True:
-                i = low.find(anchor, start)
-                if i < 0:
-                    break
-                window = text[max(0, i - cls._POINTER_WINDOW): i + cls._POINTER_WINDOW]
-                if any(t in window for t in cls._CANONICAL_TARGETS):
-                    return True
-                start = i + 1
-        return False
-
-    def test_every_surface_names_the_directory_or_cites_the_document_that_does(self) -> None:
+    def test_every_surface_names_the_path_the_runtime_writes(self) -> None:
         self.assertEqual(
-            set(self._MUST_NAME_IN_FULL),
-            {"docs/AGENT_CONTRACT.md", "docs/WORKSPACE_LAYOUT.md"},
-        )
-        self.assertEqual(
-            set(self._MAY_POINT),
+            set(self._MUST_NAME_THE_PATH),
             {
+                "docs/AGENT_CONTRACT.md",
                 "docs/CLI_REFERENCE.md",
                 "docs/RUNBOOK.md",
+                "docs/WORKSPACE_LAYOUT.md",
                 "docs/workflow/LAUNCH_PROMPT_REFERENCE.md",
                 "skills/workflow-audit-claude/SKILL.md",
             },
         )
         pattern = self._pattern()
-        for rel in self._MUST_NAME_IN_FULL:
-            with self.subTest(surface=rel, rule="must name in full"):
+        for rel in self._MUST_NAME_THE_PATH:
+            with self.subTest(surface=rel):
                 path = self.REPO_ROOT / rel
                 self.assertTrue(path.is_file(), f"{rel} missing; update the surface list")
                 self.assertIsNotNone(
                     pattern.search(path.read_text(encoding="utf-8")),
-                    f"{rel} must state the path itself (a pointer is not enough here); "
-                    f"expected a path matching {pattern.pattern}",
+                    f"{rel} does not state where run-gate leaves a gate result "
+                    f"(expected a path matching {pattern.pattern})",
                 )
-        for rel in self._MAY_POINT:
-            with self.subTest(surface=rel, rule="path or pointer"):
-                path = self.REPO_ROOT / rel
-                self.assertTrue(path.is_file(), f"{rel} missing; update the surface list")
-                text = path.read_text(encoding="utf-8")
-                self.assertTrue(
-                    pattern.search(text) or self._points_at_the_canonical_document(text),
-                    f"{rel} neither states where run-gate leaves a gate result "
-                    f"(a path matching {pattern.pattern}) nor cites {self._CANONICAL_TARGETS} "
-                    "anywhere near a passage about gate results",
-                )
+
 
     # The two RECORDS: a measurement record and a decision record. Both name the path as
     # it stood when written, and that stays correct after a rename -- making a record
@@ -30766,23 +30930,31 @@ class GateResultTmpCopySurfaceTests(unittest.TestCase):
         This keys on the constant instead, and refuses only a DISAGREEMENT: a file that
         names this path and that no list accounts for. A file saying nothing about the
         path is not refused, and a new tmp subdirectory is not this check's business. It
-        also closes the second-order hole in the literal-set assertions above -- emptying
-        both lists now contradicts the tree rather than silently checking nothing.
+        also closes the second-order hole in the literal-set assertion above -- emptying
+        the list now contradicts the tree rather than silently checking nothing.
+
+        SCOPE, corrected in round 3, where the commit called this an unqualified closure:
+        the walk covers `docs/`, `skills/`, `tools/prompt_templates/` and `TODO.md`. A
+        surface in `AGENTS.md`, `README.md`, `mcp_servers/README.md` or `.claude/skills/`
+        is invisible to it. Nothing in the tree sits there today; widening the roots is a
+        one-line change if one ever does.
+
+        Deliberate consequence, measured: `.gitignore` is NOT consulted, so an untracked
+        scratch file containing the constant's value dropped under one of those roots
+        reddens the suite. That is the trade against the shadowed-`grep` problem, and the
+        noise is preferable to an enumeration that silently skips ignored files.
         """
         classified = (
-            set(self._MUST_NAME_IN_FULL)
-            | set(self._MAY_POINT)
-            | set(self._DECLARED_RECORDS)
+            set(self._MUST_NAME_THE_PATH) | set(self._DECLARED_RECORDS)
         )
         unclassified = self._files_naming_the_path() - classified
         self.assertEqual(
             unclassified,
             set(),
             "these files name the gate-result path but no list accounts for them, so a "
-            "rename would leave them stale: add each to _MUST_NAME_IN_FULL (a leaf-read "
-            "contract or the canonical layout document), _MAY_POINT (may cite the "
-            "canonical document instead), or _DECLARED_RECORDS (a measurement or decision "
-            "record, correct as written after a rename)",
+            "rename would leave them stale: add each to _MUST_NAME_THE_PATH (an instruction "
+            "surface, which must state the current path) or to _DECLARED_RECORDS (a "
+            "measurement or decision record, correct as written after a rename)",
         )
 
     def test_the_classification_sweep_sees_a_new_surface(self) -> None:
@@ -30864,11 +31036,23 @@ class GateResultTmpCopySurfaceTests(unittest.TestCase):
         Asserted on the split half that governs the copy, because the hint states several
         rules in one line and a substring pin over the whole of it would hold via another.
         """
-        from tools.orchestration_runtime import _build_gate_runbook
+        from tools.orchestration_runtime import (
+            _agent_tmp_gate_result_dir_ref,
+            _build_gate_runbook,
+        )
 
+        arid = GateRunbookTests.BASE["agent_run_id"]
         rb = _build_gate_runbook(dict(GateRunbookTests.BASE, step="compile", substep="generate"))
         self.assertTrue(rb.strip(), "compile.generate must emit a runbook")
-        tail = rb.split("gate_results/")[1]
+        # Split on the RESOLVED directory reference, not on a second spelling of the
+        # constant: the class docstring promises the name appears once, and the literal
+        # version raised IndexError instead of its remedy message under a rename mutant.
+        # `rsplit` so a hint that mentions the directory twice still hands back the half
+        # that governs the copy -- round 3 measured the `split(...)[1]` version reading
+        # the segment BETWEEN two mentions.
+        marker = _agent_tmp_gate_result_dir_ref(arid)
+        self.assertIn(marker, rb, "the hint must name the directory at least once")
+        tail = rb.rsplit(marker, 1)[1]
         self.assertIn("COMPLETED", tail, "the hint must say which run the file holds")
         self.assertIn("args_json", tail, "the hint must name what identifies that run")
         self.assertIn(
@@ -30985,41 +31169,17 @@ class GateResultTmpCopySurfaceTests(unittest.TestCase):
         """
         pattern = self._pattern()
 
-        deferring = (
-            "obtain the run-gate result from the command's own stderr; the runtime also "
-            "writes it into the agent's own `allowed_tmp_root` — a convenience copy, not "
-            "evidence; see `docs/WORKSPACE_LAYOUT.md` §\"tmp / TMPDIR\" for the exact path"
-        )
-        self.assertIsNone(
-            pattern.search(deferring), "fixture drift: this text must NOT state the path"
-        )
-        self.assertTrue(
-            self._points_at_the_canonical_document(deferring),
-            "a surface that cites the canonical document must be a legal answer",
-        )
-        # Citing the OTHER canonical document is equally legal; hard-coding one filename
-        # refused this in round 2.
-        self.assertTrue(
-            self._points_at_the_canonical_document(
-                "for the run-gate result contract see `docs/AGENT_CONTRACT.md`"
-            )
-        )
-        # And the pointer must be ABOUT this rule. A generic related-documents list that
-        # cites the layout document for unrelated reasons must NOT satisfy it -- that is
-        # the hole round 2 found, and `docs/CLI_REFERENCE.md` really carries such a line.
-        self.assertFalse(
-            self._points_at_the_canonical_document(
-                "- workspace artifact placement: `docs/WORKSPACE_LAYOUT.md`\n"
-                "- hook implementation: `docs/HOOKS.md`\n"
-            ),
-            "an unrelated citation must not stand in for stating this rule",
-        )
-        # And the pointer must not be a way for a MUST-NAME surface to opt out: the two
-        # lists are read by different loops above, which this asserts by construction.
+        # The pointer half of this probe is GONE with `_MAY_POINT` (see the rationale
+        # above the surface list): there is no longer a deferral to admit, so probing for
+        # one would assert a rule this class no longer has. What remains is the SPELLING
+        # half, which is still live -- the agent-id segment must admit every form the tree
+        # uses, and round 1 measured the first version refusing three of them.
+        # An instruction surface and a declared record are different answers, so a file
+        # must not be in both -- the sweep's `classified` union would hide the mistake.
         self.assertEqual(
-            set(self._MUST_NAME_IN_FULL) & set(self._MAY_POINT),
+            set(self._MUST_NAME_THE_PATH) & set(self._DECLARED_RECORDS),
             set(),
-            "a surface must be in exactly one list",
+            "a surface must be an instruction surface or a record, not both",
         )
 
     def test_the_copy_is_removed_when_the_tmp_root_is_cleaned_up(self) -> None:
