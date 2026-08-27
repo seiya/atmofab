@@ -4181,8 +4181,12 @@ DEFAULT_ALLOWED_GATE_SERVICES: tuple[str, ...] = (
 # enumerated 8 while the sentence said 10), because none of them stated a method. The
 # method, if you want the number:
 #     os.walk over docs/ + skills/ + tools/prompt_templates/ + TODO.md, counting
-#     occurrences of this constant's value; `grep` is shadowed in agent sessions by a
-#     ugrep wrapper that honours .gitignore, so it under-reports.
+#     occurrences of this constant's value. `os.walk` rather than `grep` because in an
+#     agent session `grep` is a shell function exec'ing `ugrep --ignore-files`, which
+#     honours .gitignore -- measured NOT to change the answer here (identical counts;
+#     none of these files is ignored), so it is a reason to fix the method, not an
+#     explanation of anyone's wrong count. `GateResultTmpCopySurfaceTests` runs this
+#     enumeration as a check, so the corpus is no longer counted by hand at all.
 # At the round-1 fix that command gave 8 files and 11 occurrences (7 documents plus
 # TODO.md, which is excluded from the check below as a historical record).
 # `GateResultTmpCopySurfaceTests` in tools/tests/test_orchestration_runtime.py resolves
@@ -6455,6 +6459,45 @@ def run_gate(
     if not isinstance(args_json, dict):
         raise ValueError("args_json must be object")
 
+    # INVALIDATE THE DURABLE COPY BEFORE DOING ANY WORK (issue #77, round 2).
+    #
+    # The copy at `workspace/tmp/<arid>/gate_results/<gate>.json` is written only by a
+    # call that REACHES the write at the end of this function. Every refusal --
+    # capability expired, token mismatch, gate outside the access policy, node no longer
+    # child_running -- raises before it, and so does process death. Without this unlink
+    # the previous run's verdict stays where the launch prompt tells the leaf to look,
+    # and a leaf that reads it reports its substep done on a verdict never obtained for
+    # the current artifact: a `leaf shortcut` in the sense AGENTS.md §Development
+    # premises defends against. The first fix for it was three prose warnings, which is
+    # the weaker half under a premise that says a leaf takes shortcuts.
+    #
+    # With the unlink here the file's EXISTENCE carries the invariant: present iff a run
+    # of this gate COMPLETED since the leaf's last attempt at it. The stale state is
+    # unrepresentable rather than warned about.
+    #
+    # Placement is load-bearing and was measured: put after `_validate_run_gate_permissions`
+    # the whole suite stays green, because the token and policy refusals raise INSIDE that
+    # call -- exactly the cases this defends. So the id check has to run first.
+    # `_require_safe_gate_ids` is called here AND stays the first line of
+    # `_validate_run_gate_permissions`: that is one rule called twice, not two spellings
+    # of it, and removing it from the validator would weaken it for its own direct
+    # callers.
+    #
+    # Not a new destructive action on caller text: `gate` is a member of
+    # DEFAULT_ALLOWED_GATE_SERVICES by the guard at the top of this function, and
+    # `agent_run_id` is a safe path id by the line below, so the deletable set is one
+    # file per allowed gate name inside the caller's OWN tmp root -- a root the leaf can
+    # already delete itself. It gains a leaf nothing it did not already have.
+    _require_safe_gate_ids(orchestration_id, agent_run_id, "run-gate phase gate")
+    try:
+        _agent_tmp_gate_result_path(repo_root, agent_run_id, gate).unlink(missing_ok=True)
+    except OSError:
+        # Same reasoning as the write below: a convenience artifact must not decide a
+        # verdict, so a failed unlink does not fail the gate. It leaves the one state
+        # this cannot close -- a stale copy whose removal was refused -- which the
+        # documents still describe.
+        pass
+
     _validate_run_gate_permissions(
         repo_root,
         orchestration_id=orchestration_id,
@@ -6583,26 +6626,30 @@ def run_gate(
     # leaf can write", and nothing here should be justified by saying it is.
     # What this copy adds is a second place the same summary can be found; it
     # adds no write authority a leaf did not already have.
+    # KEY ORDER IS DELIBERATE. `violations` is the only unbounded member, and this dict
+    # is emitted as ONE stderr line; whether a harness truncates that line at the tail is
+    # a declared unmeasured residue (TODO.md). Everything that identifies WHICH run
+    # produced the verdict therefore sits AHEAD of `violations`, so a truncated line
+    # loses violation text rather than identity, instead of leaving a reassuring
+    # `status: pass` as the last thing standing.
     _gate_summary = {
         "gate": gate,
         "status": status,
-        "violations": violations,
-        "gate_result_ref": gate_ref,
-        # Carried so a stale copy left by an EARLIER call is distinguishable from
-        # this call's result. The stderr line carries it too, so the file and the
-        # line the leaf was shown are the SAME OBJECT -- equal once parsed, not
-        # byte-equal: `_write_json` renders indented with ensure_ascii=False and
-        # the stderr line is compact and ASCII-escaped, so a non-ASCII violation
-        # is spelled differently in the two. Compare them parsed, never as text.
-        "evaluated_at": gate_doc["evaluated_at"],
-        # S-F2 (round 1): the copy is written only on a run that REACHES here, so
-        # a refused or raised re-run leaves the previous result in place. These
-        # two fields let a reader see WHAT passed rather than only that something
-        # did -- `args_json` names the inputs the verdict was taken on, and
-        # `exit_code` distinguishes a pass from a gate that never ran. The stderr
-        # line carries them too, so the two stay the same object.
+        # `args_json` names the inputs the verdict was taken on and `exit_code`
+        # distinguishes a pass from a gate that never ran, so a reader can tell WHICH
+        # invocation a copy belongs to. Both are shared with the persisted gate document,
+        # which is what makes an audit cross-check between the two possible;
+        # skills/workflow-audit-claude/SKILL.md names the comparable set.
         "args_json": args_json,
         "exit_code": exit_code,
+        # The stderr line carries this too, so the file and the line the leaf was shown
+        # are the SAME OBJECT -- equal once parsed, not byte-equal: `_write_json` renders
+        # indented with ensure_ascii=False and the stderr line is compact and
+        # ASCII-escaped, so a non-ASCII violation is spelled differently in the two.
+        # Compare them parsed, never as text.
+        "evaluated_at": gate_doc["evaluated_at"],
+        "gate_result_ref": gate_ref,
+        "violations": violations,
     }
     print(json.dumps(_gate_summary), file=sys.stderr)
     _tmp_gate_result = _agent_tmp_gate_result_path(repo_root, agent_run_id, gate)
@@ -11295,11 +11342,11 @@ def _build_gate_runbook(request_payload: dict[str, Any]) -> str:
             "`Write` tool, so it needs no creating; the runtime also drops each gate's "
             "own summary there, one JSON file per gate name under "
             f"`{_agent_tmp_gate_result_dir_ref(arid)}`, so a later turn can re-read a "
-            "result whose command output has scrolled out of your context. That file is "
-            "the last run of that gate that COMPLETED: a run refused before the gate "
-            "executed leaves the previous one in place, so check its `args_json` and "
-            "`evaluated_at` against the run you mean. For the attempt you just made, the "
-            "command result is authoritative and the file is not. "
+            "result whose command output has scrolled out of your context. The file is "
+            "present iff a run of that gate COMPLETED since your last attempt at it -- a "
+            "refused run removes it rather than leaving the previous verdict -- and its "
+            "`args_json` / `exit_code` / `evaluated_at` say which run it was. For the "
+            "attempt you just made, the command result is authoritative. "
             "`access_logs/` is runtime-managed "
             "audit (the read hook appends a line per read decision, and "
             "`orchestration_read` writes one too) — never read or write it yourself."
