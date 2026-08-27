@@ -113,15 +113,19 @@ def undecided_environment_names(read_names) -> set[str]:
 def isolated_record():
     """Drive the strip without leaving the session's own record or flags behind.
 
-    `STRIPPED_OPERATOR_ENV` and `CONFIGURED` are process-global. A test that drives the
+    `STRIPPED_OPERATOR_ENV`, `CONFIGURED` and `DECLINED` are process-global. `DECLINED`
+    was left out of the first version and nothing reached it — no test calls
+    `decline_strip` — but a future one inside this context would leak "the operator
+    declined" into a session where nobody passed the flag, flipping both the witness's
+    branch and the terminal disclosure. A test that drives the
     strip on a synthetic mapping sets both as a side effect, and `CONFIGURED` left up means
     the witness's "the hook never ran, or wrote to a different module" check can be
     satisfied by a SIBLING rather than by the hook, depending on execution order. Restoring
     both HERE makes that a mechanism with a witness instead of two lines of test cleanup
     that a sweep cannot reach.
     """
-    global CONFIGURED
-    record, configured = dict(STRIPPED_OPERATOR_ENV), CONFIGURED
+    global CONFIGURED, DECLINED
+    record, configured, declined = dict(STRIPPED_OPERATOR_ENV), CONFIGURED, DECLINED
     STRIPPED_OPERATOR_ENV.clear()
     try:
         yield
@@ -129,6 +133,7 @@ def isolated_record():
         STRIPPED_OPERATOR_ENV.clear()
         STRIPPED_OPERATOR_ENV.update(record)
         CONFIGURED = configured
+        DECLINED = declined
 
 
 def undeclared_operator_env_names(environ) -> set[str]:

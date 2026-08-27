@@ -19,6 +19,7 @@ the environment rather than on the runner).
 from __future__ import annotations
 
 import ast
+import collections
 import json
 import os
 import re
@@ -40,6 +41,14 @@ from tools.tests.suite_env_guard import (
 import tools.tests.suite_env_guard as suite_env_guard
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
+
+# The files whose comments this change owns, and whose test citations must lead somewhere.
+_CITATION_SOURCES = (
+    "tools/tests/suite_env_guard.py",
+    "tools/tests/conftest.py",
+    "tools/tests/test_suite_environment_isolation.py",
+    "tools/tests/test_hooks_common.py",
+)
 
 # The regression issue #84 opens with: under the workflow the MCP server refuses a
 # caller-named `repo_root`, and this test asserts the OUTSIDE-a-run branch. An operator
@@ -111,11 +120,6 @@ def _environment_names_read_by(repo_root: Path) -> set[str]:
     return found
 
 
-# Read by CPython's own `subprocess` module at import, on every Linux interpreter. Not
-# ours, not an operator knob, and it is declared here rather than filtered by a prefix so
-# that a SECOND such name has to be looked at rather than silently swallowed.
-_IMPORT_READS_NOT_OURS = {"_PYTHON_SUBPROCESS_USE_POSIX_SPAWN"}
-
 # Runs in a fresh interpreter: instrument `os.environ`, import, print what was read.
 _IMPORT_SPY_SOURCE = '''\
 import collections.abc, json, os, sys
@@ -127,11 +131,15 @@ class _Spy(collections.abc.MutableMapping):
         self.reads = []
 
     def __getitem__(self, key):
-        # The FIRST frame under the repository, not the immediate caller: `os.getenv` and
+        # The FIRST frame under the root, not the immediate caller: `os.getenv` and
         # `MutableMapping.get` are stdlib frames between the read and whoever asked for
         # it, so reporting the caller named `<frozen _collections_abc>` and told nobody
         # anything. Falls back to the immediate caller if nothing is under the root.
-        root = os.getcwd()
+        # The root is an ARGUMENT, not `os.getcwd()`: the synthetic probes live in a
+        # temporary directory, so a cwd-anchored walk always missed and always fell back
+        # — every self-test reported `<frozen _collections_abc>`, the very string this
+        # walk exists to stop printing, and deleting the walk survived a sweep.
+        root = sys.argv[3] if len(sys.argv) > 3 else os.getcwd()
         frame = sys._getframe(1)
         immediate = frame
         while frame is not None and not frame.f_code.co_filename.startswith(root):
@@ -241,11 +249,18 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
             # that is what they asked for. Telling them the guard is broken sends them
             # after a defect that is their own flag — and this is exactly when it fires,
             # since the flag plus a knob set is the designed way to reach it.
+            # Which side owns it is decidable: a name the operator exported is in the
+            # process environment the flag preserved, and one the suite added is not
+            # anything the operator set. Saying "the knob you set" for a name the SUITE
+            # introduced is the mirror image of the misdirection this branch fixed one
+            # round ago, so both possibilities are named rather than one asserted.
             self.assertEqual(
                 undeclared, set(),
-                "--keep-operator-env left these names in place, so this failure belongs "
-                "to the knob you set and not to the suite. Unset them, or drop the flag: "
-                f"{sorted(undeclared)}")
+                "--keep-operator-env left the operator's environment in place, so a name "
+                "you exported belongs to the knob and not to the suite — unset it or drop "
+                "the flag. If you did NOT export it, the suite grew a new process-global "
+                "environment dependence and it needs declaring in "
+                f"`suite_env_guard.SUITE_OWNED_ENV`: {sorted(undeclared)}")
         else:
             self.assertEqual(
                 undeclared, set(),
@@ -357,8 +372,13 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
         # filter to one module, left the previous version of this test green. These four
         # names live in four different files under both scanned roots, so a scope that
         # stops covering one of them fails here instead of quietly shrinking the question.
+        # `PYTHONPATH` is the anchor for the `mcp_servers` root because it is read ONLY
+        # there (measured: of the 27 names, only it and PYTHONDONTWRITEBYTECODE are). The
+        # first version anchored that root on `METDSL_ORCHESTRATION_ID`, which is also read
+        # under `tools/`, so dropping the whole `mcp_servers` root survived — the exact
+        # silent shrinkage this block exists to stop.
         for name, where in (("METDSL_HOOK_REPO_ROOT", "tools/hooks/cli.py"),
-                            ("METDSL_ORCHESTRATION_ID", "mcp_servers/build_runtime_server.py"),
+                            ("PYTHONPATH", "mcp_servers/build_runtime_server.py"),
                             ("METDSL_ORCH_LIVENESS_TTL_SECONDS", "tools/validate_workspace_root.py"),
                             ("METDSL_START_CLAIM_ROOT", "tools/run_workflow.py")):
             # NOT PINNED BY ANYTHING ITSELF: removing these four assertions survives a
@@ -465,6 +485,15 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
                                  {"METDSL_A_KNOB": "1"})
             self.assertFalse(suite_env_guard.CONFIGURED,
                              "isolated_record did not restore CONFIGURED")
+            # DECLINED too. It was left out of the first version and survived a sweep,
+            # because nothing in the suite calls `decline_strip` — a latent leak that a
+            # future test inside this context would turn into "the operator declined" for
+            # a whole session where nobody passed the flag.
+            with suite_env_guard.isolated_record():
+                suite_env_guard.decline_strip()
+                self.assertTrue(suite_env_guard.DECLINED)
+            self.assertFalse(suite_env_guard.DECLINED,
+                             "isolated_record did not restore DECLINED")
         self.assertEqual(suite_env_guard.STRIPPED_OPERATOR_ENV, before_record)
         self.assertEqual(suite_env_guard.CONFIGURED, before_flag)
 
@@ -499,15 +528,22 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
         static reader can see.
         """
         reads = self._names_read_during_import("tools.orchestration_runtime")
-        offenders = {name: self._last_import_reads[name]
-                     for name in reads - _IMPORT_READS_NOT_OURS}
+        # ONLY a name the guard would strip can be cached wrongly. The first version
+        # subtracted a hand-written allowlist instead and so refused any import-time read
+        # at all — including `HOME`, which is in `MUST_BE_INHERITED` and is never stripped,
+        # so nothing about it can be cached wrongly. Worse, the message told the reader to
+        # declare it in `MUST_BE_INHERITED`, where it already was: an instruction that
+        # changes nothing is not a remedy. Asking the guard directly removes the
+        # over-refusal AND the allowlist, whose one member was never stripped either.
+        offenders = {name: self._last_import_reads[name] for name in reads
+                     if operator_env_names_to_strip({name: "x"})}
         self.assertEqual(
             offenders, {},
-            "something read the environment while the hook's own import ran, so the "
-            "operator's value for it was cached before the strip could remove it. WHERE "
-            "is recorded because the import reaches 15 modules and that is the whole "
-            "question: move the read inside a function, or declare the name in "
-            f"`suite_env_guard.MUST_BE_INHERITED` if the suite must inherit it. {offenders}")
+            "the hook's own import read a name the guard strips, so the operator's value "
+            "for it was cached before the strip could remove it. The location is recorded "
+            "because the import reaches 15 modules and that is the whole question. Move "
+            "the read inside a function — a value read at call time is read after the "
+            f"strip. {offenders}")
 
     def test_the_import_spy_sees_every_shape_that_runs_at_import(self) -> None:
         """The instrument's own witness, in BOTH directions.
@@ -545,6 +581,15 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
         for label, body, expected in runs_at_import:
             with self.subTest(shape=label):
                 self.assertIn(expected, self._names_read_during_import_of_source(body))
+                # AND the location must be the probe file. Without this the frame walk is
+                # unexercised — every probe reported `<frozen _collections_abc>`, which is
+                # exactly what the walk was added to stop printing.
+                self.assertTrue(
+                    self._last_import_reads[expected].endswith(
+                        "metdsl_probe_module.py:" + str(body.count("\n") + 2))
+                    or "metdsl_probe_module.py:" in self._last_import_reads[expected],
+                    f"the spy did not attribute the read to the probe file: "
+                    f"{self._last_import_reads[expected]}")
 
         never_runs_at_import = {
             "function body": 'def f():\n    return os.environ.get("PROBE_FUNC")',
@@ -583,7 +628,7 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
             spy.write_text(_IMPORT_SPY_SOURCE, encoding="utf-8")
             argv = [sys.executable, str(spy), module]
             if extra_path:
-                argv.append(extra_path)
+                argv.extend([extra_path, extra_path])   # sys.path entry, and the walk root
             done = _run(argv, {})
             self.assertEqual(done.returncode, 0,
                              f"the import spy failed:\n{done.stdout}\n{done.stderr}")
@@ -608,9 +653,7 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
         test is telling the reader where to look, so it has to lead somewhere.
         """
         cited_names = set()
-        for rel in ("tools/tests/suite_env_guard.py", "tools/tests/conftest.py",
-                    "tools/tests/test_suite_environment_isolation.py",
-                    "tools/tests/test_hooks_common.py"):
+        for rel in _CITATION_SOURCES:
             text = (_REPO_ROOT / rel).read_text(encoding="utf-8")
             cited_names.update(
                 (name, rel) for name in re.findall(r"`(test_[A-Za-z0-9_]+)`", text))
@@ -625,11 +668,38 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
         self.assertIn("test_every_test_this_change_cites_by_name_exists", defined,
                       "the definition reader is broken — it cannot see this test")
 
-        dangling = sorted((n, where) for n, where in cited_names if n not in defined)
+        # A citation is DANGLING only if the name is not a test, not a test module, and
+        # not part of this tree's vocabulary. That last clause is what stops the check
+        # refusing legitimate work: `test_id`, `test_profile_version`, `test_predicates`
+        # and their kin are spec/IR FIELD names, backticked in 27-42 files each, and the
+        # first version of this ratchet reported them as tests that do not exist — with a
+        # message telling the maintainer to rename something that has no other name.
+        # Measured: on this rule the three field names pass, `test_orchestration_runtime`
+        # (a module) passes, and the two test names this branch actually deleted are
+        # still reported. The cost is a false NEGATIVE for a deleted test whose name
+        # survives elsewhere in the tree; that is the safe direction for a ratchet.
+        stems = {p.stem for p in (_REPO_ROOT / "tools" / "tests").glob("test_*.py")}
+        vocabulary = collections.Counter()
+        for path in _REPO_ROOT.rglob("*"):
+            if path.suffix not in (".py", ".md", ".yaml", ".json", ".ini"):
+                continue
+            rel = str(path.relative_to(_REPO_ROOT))
+            if rel.startswith((".git/", "workspace")) or rel in _CITATION_SOURCES:
+                continue
+            try:
+                text = path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            vocabulary.update(set(re.findall(r"\btest_[A-Za-z0-9_]+\b", text)))
+
+        dangling = sorted(
+            (n, where) for n, where in cited_names
+            if n not in defined and n not in stems and vocabulary[n] < 2)
         self.assertEqual(
             dangling, [],
-            "a comment names a test that does not exist, so it points a maintainer at "
-            f"nothing. Rename the citation or drop it: {dangling}")
+            "a comment names a test that does not exist and is not part of this tree's "
+            "vocabulary, so it points a maintainer at nothing. Rename the citation or "
+            f"drop it: {dangling}")
 
     def test_the_strip_is_reported_and_can_be_declined(self) -> None:
         """Silence here is a check recorded as run and not run — so both are witnessed.
@@ -647,11 +717,21 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
         # repository documents, and it suppresses the session preamble the header prints
         # in. Asserting only the verbose form is how the disclosure came to be invisible
         # in every invocation anyone is actually told to use.
-        for extra in ([], ["-q"]):
+        # BOTH PRODUCERS, by COUNT. There are two — `pytest_report_header` (session
+        # preamble, suppressed by `-q`) and `pytest_terminal_summary` (survives `-q`) —
+        # and asserting only that the line APPEARS is satisfied by the summary alone at
+        # every verbosity, which is how deleting the header survived a sweep. The header
+        # is the one that survives `-p no:terminal`, so it is not redundant.
+        for extra, expected in (([], 2), (["-q"], 1)):
             with self.subTest(verbosity=extra or ["default"]):
                 reported = _run([sys.executable, "-m", "pytest", node] + extra, poison)
-                self.assertIn("METDSL_ORCHESTRATION_ID", reported.stdout,
-                              f"the strip was not disclosed with {extra or 'no flag'}")
+                seen = reported.stdout.count("stripped the operator's environment")
+                self.assertEqual(
+                    seen, expected,
+                    f"with {extra or 'no flag'} the strip was disclosed {seen} times, "
+                    f"expected {expected} (header + summary at default verbosity, summary "
+                    f"alone under -q):\n{reported.stdout[:2000]}")
+                self.assertIn("METDSL_ORCHESTRATION_ID", reported.stdout)
                 self.assertIn("--keep-operator-env", reported.stdout)
         # The control: with nothing to strip there is no line to print.
         quiet = _run([sys.executable, "-m", "pytest", node, "-q"], {})
@@ -708,22 +788,23 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
             "a bare `pytest` did not accept --keep-operator-env, so tools/tests/"
             "conftest.py was not loaded as an initial conftest — check `testpaths` in "
             f"pytest.ini:\n{accepted.stdout}\n{accepted.stderr}")
-        self.assertIn("tests collected", accepted.stdout + accepted.stderr)
 
-    def test_the_import_read_allowlist_never_covers_one_of_our_own_names(self) -> None:
-        """`_IMPORT_READS_NOT_OURS` is an exemption list, so it can be widened.
-
-        It exists for one CPython-internal read. Adding a name the guard is supposed to
-        strip would make the import-spy assertion pass over exactly the hazard it exists
-        for, and nothing else would notice. Pinned as a property rather than as members,
-        so a second genuine non-ours name does not have to come back here.
-        """
-        for name in _IMPORT_READS_NOT_OURS:
-            with self.subTest(name=name):
-                self.assertEqual(
-                    operator_env_names_to_strip({name: "x"}), [],
-                    f"{name} is exempted from the import spy AND stripped by the guard — "
-                    "one of the two is wrong, and the exemption is the dangerous one")
+        # And it must collect the WHOLE suite. `assertIn("tests collected", ...)` was the
+        # first version and pinned nothing: the real line is "no tests collected", which
+        # contains that substring whether 5303 items were collected or 17. A `testpaths`
+        # narrowed to one file therefore survived, while README says a bare `pytest` runs
+        # the suite. Compared against the explicit form rather than a constant, so adding
+        # a test does not make this fail.
+        explicit = _run(
+            [sys.executable, "-m", "pytest", "tools/tests/", "--co", "-q",
+             "-k", "metdsl_no_such_test_name"], {})
+        deselected = re.search(r"(\d+) deselected", accepted.stdout)
+        expected = re.search(r"(\d+) deselected", explicit.stdout)
+        self.assertTrue(deselected and expected, accepted.stdout + explicit.stdout)
+        self.assertEqual(
+            deselected.group(1), expected.group(1),
+            "a bare `pytest` collected a different set from `pytest tools/tests/` — "
+            "`testpaths` is not pointing at the whole suite")
 
     def test_a_poisoned_environment_is_neutralized_end_to_end(self) -> None:
         """Through real processes, with the control that must fail.

@@ -150,8 +150,8 @@ leaf deadline / abandon / teardown guards executed by nobody.
 variables** (issue #84). They are per-run knobs that `tools/run_workflow.py` sets in every
 node's environment, so the shell most likely to have them exported is one used for this
 repository's own work — and a suite that inherits them answers a question about the machine
-instead of about the code. Measured: nineteen such names exported together took a clean run
-of 5280 passed to 181 failed, none of the failures belonging to any change. Every run says
+instead of about the code. Measured at `165c26f`: exporting every such name the tree reads took a clean run of
+5280 passed to 181 failed, none of the failures belonging to any change. Every run says
 which names it removed. To run against a knob you set on purpose, pass
 `--keep-operator-env`; expect failures that belong to the knob. `tools/tests/conftest.py`
 and `tools/tests/suite_env_guard.py` are canonical.

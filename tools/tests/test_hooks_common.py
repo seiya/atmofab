@@ -139,13 +139,18 @@ class _CpuUnits:
         round number, and the single most likely cause of a marginal failure is that the
         host was busy — which is the one thing the quotient is only partly able to absorb.
         """
+        # NO CLAIM ABOUT THE BOUND HERE. The first version said the bound "is set above
+        # every figure ever observed and below the smallest regression this family has
+        # caught" — true of the two large blocks and false at the other eight call sites,
+        # which include two LOWER bounds and six DoS guards whose 40 units is a
+        # translation of their old 2s, not a bracket. Where each bound comes from is
+        # stated at the bound, and this says only what was measured and what to do.
         return (f"{self.units:.1f} calibration units "
                 f"({self.cpu_seconds:.2f}s CPU / {self.unit_seconds:.4f}s per unit; one "
                 "unit is a fixed regex workload measured around this block, see the "
-                "comment above `_cpu_calibration_unit`). If this is close to the bound, "
-                "re-run on an idle host before reading it as a regression: the bound is "
-                "set above every figure ever observed and below the smallest regression "
-                "this family has caught, and the quotient absorbs load only partly.")
+                "comment above `_cpu_calibration_unit`). The quotient absorbs load only "
+                "partly, so re-run on an idle host before reading a marginal figure as a "
+                "regression.")
 
 
 class CpuBudgetCalibrationTests(unittest.TestCase):
@@ -189,6 +194,26 @@ class CpuBudgetCalibrationTests(unittest.TestCase):
         with patch("tools.tests.test_hooks_common.time.process_time",
                    side_effect=[1.0, 1.0]):
             self.assertGreater(_cpu_calibration_unit(), 0.0)
+
+    def test_the_calibrator_actually_measures_rather_than_returning_a_number(self) -> None:
+        """Quadruple the work; the price must follow. Nothing else catches a PLAUSIBLE constant.
+
+        `return 1.0` is caught by the scale test below, because 1.0 is twenty times this
+        host's real unit. `elapsed = 0.05` — the number the calibrator usually returns on
+        this host — is not: it lands inside every bracket and the whole file stays green,
+        which a reviewer demonstrated. That mutant silently turns `units` back into raw
+        seconds and reinstates the absolute bound this change exists to remove.
+
+        Bounded loosely on purpose: the assertion is that the measurement responds AT ALL,
+        so 4x the work must cost more than 2x. A constant costs exactly 1x.
+        """
+        with patch(f"{__name__}._CPU_CALIBRATION_REPEATS", _CPU_CALIBRATION_REPEATS * 4):
+            quadrupled = _cpu_calibration_unit()
+        single = _cpu_calibration_unit()
+        self.assertGreater(
+            quadrupled, single * 2,
+            f"four times the work priced at {quadrupled:.4f}s against {single:.4f}s for "
+            "one — the calibrator is not measuring what it is given")
 
     def test_the_calibrator_prices_its_own_workload_at_about_one_unit(self) -> None:
         """The SCALE. Wide on purpose — this is what the mutants are off by.
@@ -3100,6 +3125,15 @@ class ForbidBackendCredentialReadTests(unittest.TestCase):
                 try:
                     route = self._relative_route_home()
                     with self.subTest(depth=depth, route=route):
+                        # The ROUTE ITSELF, not only the policy it produces. `..` clamps
+                        # at `/`, so a route anchored on the wrong base can still land on
+                        # `$HOME` and block — measured: anchoring on the repo root instead
+                        # of the cwd survives this test in a `/tmp` worktree, which is
+                        # where every mutation sweep of this repository runs.
+                        self.assertEqual(
+                            route, os.path.relpath(str(Path.home()), str(root)),
+                            "the route was not computed from the directory the process "
+                            "is in, which is what `~+` expands to")
                         self.assertEqual(
                             self._policy(f"cat ~+/{route}/.claude.json"),
                             "forbid_backend_credential_direct_read")
