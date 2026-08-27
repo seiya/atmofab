@@ -42,8 +42,13 @@ SUITE_OWNED_ENV = {
 # side effect. Name -> the value the operator had exported.
 STRIPPED_OPERATOR_ENV: dict[str, str] = {}
 
-# Set by the hook. False means the reader is not the module the hook wrote to.
+# Set by the hook, whether or not it stripped. False means the reader is not the module the
+# hook wrote to — which is the defect this flag exists for, so it must not double as "the
+# operator declined". That is `DECLINED`.
 CONFIGURED = False
+
+# Set when `--keep-operator-env` told the hook not to strip.
+DECLINED = False
 
 
 def operator_env_names_to_strip(environ) -> list[str]:
@@ -83,6 +88,24 @@ def undeclared_operator_env_names(environ) -> set[str]:
     dependence without saying who sets it.
     """
     return set(operator_env_names_to_strip(environ)) - set(SUITE_OWNED_ENV)
+
+
+def decline_strip() -> None:
+    """The hook ran and was told not to strip (`--keep-operator-env`).
+
+    `CONFIGURED` still goes up, because the question it answers is "did the hook run and
+    write to the module I am reading" — a cross-module split, not a policy. Conflating the
+    two cost a failure belonging to nothing: with the flag and an EMPTY environment, the
+    early return left `CONFIGURED` False and the witness failed on a host with no knob set
+    at all, which is precisely the class this whole change exists to remove. Measured: `-q
+    --keep-operator-env` on a clean checkout gave `1 failed, 5293 passed, 1 skipped`.
+
+    With the flag AND a knob set, what fails is the ratchet — and that failure does belong
+    to the knob, which is what the flag's help promises.
+    """
+    global CONFIGURED, DECLINED
+    CONFIGURED = True
+    DECLINED = True
 
 
 def strip_operator_env(environ) -> list[str]:

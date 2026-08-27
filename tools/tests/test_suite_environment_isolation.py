@@ -45,6 +45,79 @@ _SUBJECT_MODULE = "tools.tests.test_build_runtime_server"
 _SUBJECT_CLASS = "OrchestratedEnvAllowlistTests"
 _SUBJECT_TEST = "test_only_an_absent_repo_root_falls_back_to_project_dir"
 
+# Names the tree reads and the suite MUST inherit — process and interpreter facts, not
+# per-run knobs an operator would export to change what a run does. Stripping one of these
+# would break the suite rather than steady it.
+_MUST_BE_INHERITED = {
+    "HOME": "the home directory itself; the hook guards resolve paths against it",
+    "PYTHONPATH": "how `tools.` imports resolve at all under `python3 -m pytest`",
+    "PYTHONDONTWRITEBYTECODE": "an interpreter setting the mutation sweeps rely on",
+}
+
+
+def _environment_names_read_by(repo_root: Path) -> set[str]:
+    """Every upper-case environment name READ in non-test `tools/` and `mcp_servers/`.
+
+    By AST, not by regex: `os.environ["X"]`, `os.environ.get("X")` and `os.getenv("X")` all
+    count, and a name that only appears in a comment, a docstring or an assignment does
+    not. That distinction is why three hand-counts of "the names the tree reads"
+    disagreed — 17, 23 and 25 — each answering a different question about spellings.
+
+    A read through a MODULE CONSTANT counts too — `_LIVENESS_TTL_ENV =
+    "METDSL_ORCH_LIVENESS_TTL_SECONDS"` then `os.environ.get(_LIVENESS_TTL_ENV)`. Six names
+    in this tree are spelled that way and a literal-only reader misses every one of them,
+    which is one of the reasons the hand-counts disagreed. Resolved one level, against
+    module-scope assignments in the same file; a name computed at runtime or imported from
+    elsewhere is beyond a static reader and is NOT covered — stated rather than implied.
+    """
+    found: set[str] = set()
+    for root, dirs, files in os.walk(repo_root):
+        dirs[:] = [d for d in dirs
+                   if d not in (".git", "__pycache__", "tests")
+                   and not d.startswith("workspace")]
+        rel = Path(root).relative_to(repo_root)
+        if not rel.parts or rel.parts[0] not in ("tools", "mcp_servers"):
+            continue
+        for name in files:
+            if not name.endswith(".py"):
+                continue
+            try:
+                tree = ast.parse((Path(root) / name).read_text(
+                    encoding="utf-8", errors="replace"))
+            except SyntaxError:                      # not this test's subject
+                continue
+            constants = {}
+            for node in tree.body:
+                if (isinstance(node, ast.Assign) and len(node.targets) == 1
+                        and isinstance(node.targets[0], ast.Name)
+                        and isinstance(node.value, ast.Constant)
+                        and isinstance(node.value.value, str)):
+                    constants[node.targets[0].id] = node.value.value
+
+            def literal(expr) -> str | None:
+                if isinstance(expr, ast.Constant) and isinstance(expr.value, str):
+                    return expr.value
+                if isinstance(expr, ast.Name):
+                    return constants.get(expr.id)
+                return None
+
+            for node in ast.walk(tree):
+                target = None
+                if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                        and node.func.attr in ("get", "getenv", "pop") and node.args):
+                    base = node.func.value
+                    if ((isinstance(base, ast.Attribute) and base.attr == "environ")
+                            or (isinstance(base, ast.Name) and base.id in ("os", "environ"))):
+                        target = literal(node.args[0])
+                if (isinstance(node, ast.Subscript)
+                        and isinstance(node.value, ast.Attribute)
+                        and node.value.attr == "environ"):
+                    target = literal(node.slice)
+                if target and target.isupper():
+                    found.add(target)
+    return found
+
+
 def _run(argv: list[str], env_extra: dict[str, str]) -> subprocess.CompletedProcess:
     """A subprocess whose environment this test states in full, on the axis under test.
 
@@ -147,9 +220,19 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
         real strip removes nothing, so there is nothing for an in-process assertion to see.
         """
         record = dict(suite_env_guard.STRIPPED_OPERATOR_ENV)
-        self.addCleanup(
-            lambda: (suite_env_guard.STRIPPED_OPERATOR_ENV.clear(),
-                     suite_env_guard.STRIPPED_OPERATOR_ENV.update(record)))
+        configured = suite_env_guard.CONFIGURED
+
+        def restore() -> None:
+            # CONFIGURED too, and that is not tidiness: it is process-global, and the
+            # witness above uses it to detect "the hook never ran, or wrote to a different
+            # module". Left up by this test, that detection is satisfied by a SIBLING
+            # rather than by the hook, and the cross-module split it was added for becomes
+            # invisible again depending on execution order.
+            suite_env_guard.STRIPPED_OPERATOR_ENV.clear()
+            suite_env_guard.STRIPPED_OPERATOR_ENV.update(record)
+            suite_env_guard.CONFIGURED = configured
+
+        self.addCleanup(restore)
         suite_env_guard.STRIPPED_OPERATOR_ENV.clear()
 
         owned = sorted(SUITE_OWNED_ENV)[0]
@@ -196,32 +279,51 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
         self.assertEqual(operator_env_names_to_strip(sample),
                          sorted(BACKEND_CONFIG_HOME_ENV))
 
-    def test_the_prefix_rule_covers_every_name_the_tree_uses(self) -> None:
-        """A property, in place of the count three documents used to state.
+    def test_every_environment_name_the_tree_reads_is_stripped_or_declared(self) -> None:
+        """The ratchet that replaces a count three enumerations disagreed on.
 
-        Enumerated with `os.walk` and not with `grep`, which in an agent session may be a
-        shell function running `ugrep --ignore-files` and therefore respects `.gitignore`.
-        Every `METDSL_*` literal in non-test `tools/` and `mcp_servers/` must be a name the
-        strip removes when it is present. A count would have to be re-taken every time a
-        knob is added and was wrong in three places; this cannot go stale, because it asks
-        the rule about whatever the tree currently names.
+        The first version of this test collected `METDSL_*` LITERALS with a regex and
+        asked whether the strip covers them. Two reviewers found the same thing from
+        different angles: the regex harvests only names beginning with `METDSL_` and the
+        rule covers exactly names beginning with `METDSL_`, so the equality was true by
+        construction. Adding `GEMINI_CONFIG_DIR` or `METDSL2_NEW_KNOB` to the tree — both
+        uncovered — left it green. It pinned nothing about the tree, and its docstring
+        said it could not go stale.
+
+        What can actually go stale is the half that is HAND-WRITTEN:
+        `BACKEND_CONFIG_HOME_ENV`. `CODEX_HOME` and `CLAUDE_CONFIG_DIR` carry no prefix, so
+        a knob added tomorrow under a third spelling — another backend's configuration
+        home, a new vendor variable — is covered by nothing and nobody is told.
+
+        So the question asked here is the one that can fail: every name the tree READS from
+        the environment must be either stripped, or declared below as something the suite
+        must inherit. Read by AST rather than by regex, so `os.environ["X"]`,
+        `os.environ.get("X")` and `os.getenv("X")` all count and a mention in a comment
+        does not.
         """
-        found = set()
-        for root, dirs, files in os.walk(_REPO_ROOT):
-            dirs[:] = [d for d in dirs
-                       if d not in (".git", "__pycache__", "tests")
-                       and not d.startswith("workspace")]
-            rel = Path(root).relative_to(_REPO_ROOT)
-            if rel.parts and rel.parts[0] not in ("tools", "mcp_servers"):
-                continue
-            for name in files:
-                if not name.endswith(".py"):
-                    continue
-                text = (Path(root) / name).read_text(encoding="utf-8", errors="replace")
-                found.update(re.findall(r"[\"']([A-Z]*METDSL_[A-Z0-9_]+)[\"']", text))
-        self.assertTrue(found, "the enumeration found nothing — the walk is broken")
-        sample = {name: "x" for name in found}
-        self.assertEqual(set(operator_env_names_to_strip(sample)), found)
+        read = _environment_names_read_by(_REPO_ROOT)
+        self.assertTrue(read, "the enumeration found nothing — the walk is broken")
+
+        # BREADTH. The walk's scope is an input to the answer, and nothing else pins it:
+        # measured, pruning `tools/hooks` and `tools/backends`, or narrowing the file
+        # filter to one module, left the previous version of this test green. These four
+        # names live in four different files under both scanned roots, so a scope that
+        # stops covering one of them fails here instead of quietly shrinking the question.
+        for name, where in (("METDSL_HOOK_REPO_ROOT", "tools/hooks/cli.py"),
+                            ("METDSL_ORCHESTRATION_ID", "mcp_servers/build_runtime_server.py"),
+                            ("METDSL_ORCH_LIVENESS_TTL_SECONDS", "tools/validate_workspace_root.py"),
+                            ("METDSL_START_CLAIM_ROOT", "tools/run_workflow.py")):
+            self.assertIn(name, read, f"the walk no longer reaches {where}")
+
+        stripped = set(operator_env_names_to_strip({n: "x" for n in read}))
+        undecided = set(read) - stripped - set(_MUST_BE_INHERITED)
+        self.assertEqual(
+            undecided, set(),
+            "an environment name is read by this tree and is neither stripped by the "
+            "operator-environment guard nor declared as something the suite must inherit. "
+            "Decide which it is: add it to the guard if it is a per-run knob an operator "
+            "may have exported, or to _MUST_BE_INHERITED with the reason it has to survive."
+            f" Names: {sorted(undecided)}")
 
     def test_no_module_level_environment_read_defeats_the_guard(self) -> None:
         """The hook's import must not itself cache an operator value.
@@ -235,22 +337,50 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
         Read by AST, over the modules the hook's own import reaches directly.
         """
         def module_scope_env_reads(source: str) -> list[int]:
-            offenders = []
-            for node in ast.parse(source).body:      # module scope only
-                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                    continue
-                for sub in ast.walk(node):
-                    if isinstance(sub, ast.Attribute) and sub.attr in ("environ", "getenv"):
-                        offenders.append(getattr(sub, "lineno", -1))
-            return offenders
+            """Lines where the environment is read while the module is being imported.
 
-        # SELF-TEST FIRST. A negative assertion is green when its detector is broken, and
-        # this one reports the empty list for any reader that fails to walk.
+            A read inside ANY function or class body is not one, however deeply nested.
+            The first version excluded only top-level `def`/`class`, which reported a
+            perfectly ordinary fallback — a `def` inside a module-level `try: … except
+            ImportError:` — as a module-scope read. Both files under test already have
+            module-level `try:` blocks, so that over-refusal was one edit away, and the
+            self-test below did not catch it because it only exercised a TOP-LEVEL `def`.
+            """
+            offenders = []
+
+            def visit(node, inside_body: bool) -> None:
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    inside_body = True
+                if (not inside_body and isinstance(node, ast.Attribute)
+                        and node.attr in ("environ", "getenv")):
+                    offenders.append(getattr(node, "lineno", -1))
+                for child in ast.iter_child_nodes(node):
+                    visit(child, inside_body)
+
+            for top in ast.parse(source).body:
+                visit(top, False)
+            return sorted(offenders)
+
+        # SELF-TEST FIRST, and it has to include the NESTING cases. A negative assertion is
+        # green when its detector is broken, and it is equally wrong when the detector
+        # refuses legitimate code — the previous self-test proved only the easy direction.
         self.assertEqual(module_scope_env_reads("X = os.environ.get('A')\n"), [1])
         self.assertEqual(module_scope_env_reads("X = os.getenv('A')\n"), [1])
         self.assertEqual(
+            module_scope_env_reads("if True:\n    X = os.environ.get('A')\n"), [2],
+            "a read under a module-level `if` still runs at import")
+        self.assertEqual(
             module_scope_env_reads("def f():\n    return os.environ['A']\n"), [],
             "a read inside a function is not a module-scope read")
+        self.assertEqual(
+            module_scope_env_reads(
+                "try:\n    import x\nexcept ImportError:\n"
+                "    def f():\n        return os.environ.get('A')\n"), [],
+            "a fallback `def` inside a module-level `try` is not a module-scope read")
+        self.assertEqual(
+            module_scope_env_reads(
+                "class C:\n    def m(self):\n        return os.getenv('A')\n"), [],
+            "a read inside a method is not a module-scope read")
 
         for rel in ("tools/orchestration_runtime.py", "tools/hooks/common.py"):
             found = module_scope_env_reads(

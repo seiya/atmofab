@@ -67,14 +67,21 @@ Measured on `165c26f`, whole suite, one variable at a time unless noted:
 
   clean                                              5280 passed / 114s
   METDSL_ORCHESTRATION_ID + METDSL_CHILD_AGENT_RUN_ID    9 failed   (the pair issue #84 named)
-  the 17 `METDSL_*` names the tree reads + CODEX_HOME
-    + CLAUDE_CONFIG_DIR, together                      181 failed / 356s
+  every `METDSL_*` name found in the tree, plus
+    CODEX_HOME and CLAUDE_CONFIG_DIR, together         181 failed / 356s
 
 Attributed on `tools/tests/test_orchestration_runtime.py` alone (1242 tests, 20s clean):
 `METDSL_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT=1` 84 failed **and 482s**, because the tests
 then run the real probes; `CODEX_HOME` 10; `METDSL_HOME` 3; `METDSL_ENFORCE_REPLY_BUDGET`
-1; the other ten names 0. So the pair in the issue was 5% of the surface, and the
-expensive member was not in it.
+1; every other name measured that way 0. So the pair in the issue was a small part of the
+surface, and the expensive member was not in it.
+
+NO COUNT of those names appears here or anywhere else in the code, deliberately. This
+paragraph said "the 17 `METDSL_*` names the tree reads" for four commits; a reviewer
+counting literals got 23, a third enumeration got 25, and an AST reader that resolves
+reads through module constants gets 21 — three right answers to three different questions.
+`test_every_environment_name_the_tree_reads_is_stripped_or_declared` asks the rule about
+whatever the tree currently reads instead.
 
 `pytest_configure` removes those names from `os.environ` before collection — before
 collection, because a module body that reads the environment at import runs earlier than
@@ -131,6 +138,7 @@ def pytest_configure(config) -> None:
     1242 passed in 49s with nothing probed. `--keep-operator-env` is the way to mean it.
     """
     if config.getoption("--keep-operator-env"):
+        suite_env_guard.decline_strip()
         return
     stripped = suite_env_guard.strip_operator_env(os.environ)
     if stripped:
@@ -138,6 +146,9 @@ def pytest_configure(config) -> None:
 
 
 def pytest_report_header(config) -> str | None:
+    if suite_env_guard.DECLINED:
+        return ("met-dsl: --keep-operator-env -- the operator's environment was NOT "
+                "stripped for this run (issue #84); failures may belong to a knob you set")
     stripped = getattr(config, "_metdsl_stripped_operator_env", None)
     if not stripped:
         return None

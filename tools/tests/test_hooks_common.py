@@ -98,9 +98,10 @@ def _cpu_calibration_unit() -> float:
     the other pure userspace, so nothing here tracks both, and the comment above states
     what the quotient was MEASURED to buy rather than arguing from a resemblance.
 
-    0.053s in a quiet fresh process (over the first six calls of each of 8 processes:
-    0.0513-0.0891s, with no cold-start step); up to 1.08s under 2x oversubscription. Each
-    bracketed block pays two of them.
+    ~0.05s in a quiet fresh process; up to 1.08s under 2x oversubscription. Each bracketed
+    block pays two of them. Two independent samplings of the quiet figure give
+    0.0513-0.0891s and 0.0472-0.0594s — the point of the range is that it MOVES, which is
+    the whole reason the bound above is a bracket rather than a number derived from it.
     """
     start = time.process_time()
     total = 0
