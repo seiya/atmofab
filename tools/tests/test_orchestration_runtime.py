@@ -16873,6 +16873,510 @@ class TestPhase3RunGate(unittest.TestCase):
             cli_out = json.loads(buf.getvalue())
             self.assertEqual(set(cli_out.keys()), {"violations", "gate_result_ref"})
 
+    # --- issue #77: the durable gate-result copy in the leaf's own tmp root ------
+    #
+    # The route the documents used to teach -- the leaf appending a `2>` redirect to
+    # the gate command -- is refused by the permission layer (docs/HOOKS.md §"Layer
+    # boundary"), so `run_gate` writes that file itself. These tests pin what the
+    # leaf is handed, not how it is spelled: the file must carry EXACTLY the object
+    # printed on the last line of stderr, because the whole claim of the artifact is
+    # "what the leaf was told, on disk".
+
+    _TMP_GATE_DIR = "workspace/tmp/build_child_rg1/gate_results"
+
+    def _run_gate_capturing_stderr(self, repo_root: Path, token: str, **over: Any):
+        """Return (result, parsed last stderr line) for one run_gate call.
+
+        The stderr line is PARSED and returned rather than respelled in each test:
+        the equality these tests assert is between the file and the line the leaf
+        actually saw, and a second spelling of the expected dict is exactly the
+        drift that would make that equality hold by construction.
+        """
+        kwargs = {
+            "orchestration_id": "rg1",
+            "gate_name": "check_artifact_syntax",
+            "agent_run_id": "build_child_rg1",
+            "args_json": {"paths": ["workspace/probe.json"]},
+            "capability_token": token,
+        }
+        kwargs.update(over)
+        err = io.StringIO()
+        with redirect_stderr(err):
+            result = run_gate(repo_root, **kwargs)
+        last_line = err.getvalue().strip().splitlines()[-1]
+        return result, json.loads(last_line)
+
+    def test_run_gate_tmp_copy_equals_the_stderr_line_on_pass_and_on_fail(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            token = self._setup_run_gate_fixture(repo_root)
+            # A second probe that is NOT valid JSON gives the failing case; the gate
+            # is otherwise identical, so status is the only thing that differs.
+            (repo_root / "workspace" / "broken.json").write_text("not json\n", encoding="utf-8")
+
+            for label, paths, expected_status in (
+                ("pass", ["workspace/probe.json"], "pass"),
+                ("fail", ["workspace/broken.json"], "fail"),
+            ):
+                with self.subTest(case=label):
+                    _result, summary = self._run_gate_capturing_stderr(
+                        repo_root, token, args_json={"paths": paths}
+                    )
+                    self.assertEqual(summary["status"], expected_status)
+                    copy_path = repo_root / self._TMP_GATE_DIR / "check_artifact_syntax.json"
+                    self.assertTrue(
+                        copy_path.exists(),
+                        "run-gate must leave its summary in the leaf's tmp root",
+                    )
+                    self.assertEqual(
+                        json.loads(copy_path.read_text(encoding="utf-8")),
+                        summary,
+                        "the file must carry exactly what the leaf was shown",
+                    )
+                    # The evidential record is untouched by any of this.
+                    self.assertEqual(
+                        json.loads(
+                            (repo_root / summary["gate_result_ref"]).read_text(encoding="utf-8")
+                        )["status"],
+                        expected_status,
+                    )
+
+    def test_run_gate_tmp_copy_carries_evaluated_at_so_a_stale_copy_is_visible(self) -> None:
+        """The point of the timestamp: a copy left by an EARLIER call is detectable.
+
+        Without it the file is indistinguishable from this call's result, which is the
+        failure mode a durable copy introduces that the read-once route did not have.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            token = self._setup_run_gate_fixture(repo_root)
+            _r1, first = self._run_gate_capturing_stderr(repo_root, token)
+            _r2, second = self._run_gate_capturing_stderr(repo_root, token)
+            self.assertIn("evaluated_at", first)
+            self.assertNotEqual(first["evaluated_at"], second["evaluated_at"])
+            copy_path = repo_root / self._TMP_GATE_DIR / "check_artifact_syntax.json"
+            self.assertEqual(
+                json.loads(copy_path.read_text(encoding="utf-8"))["evaluated_at"],
+                second["evaluated_at"],
+                "re-running a gate must replace its own copy, not leave the older one",
+            )
+
+    def test_run_gate_tmp_copy_says_which_run_produced_it(self) -> None:
+        """S-F2 (round 1): a copy that cannot say WHAT passed is a shortcut waiting.
+
+        The copy is written only by a run that reaches the write; every refusal in
+        `run_gate` / `_validate_run_gate_permissions` raises before it. So a leaf whose
+        re-run was refused reads the path its launch prompt sent it to and finds the
+        PREVIOUS run's verdict. `evaluated_at` alone does not rescue that -- a leaf has no
+        reference clock -- so the summary carries `args_json` and `exit_code` too: the
+        inputs the verdict was taken on, and whether the gate ran at all.
+
+        The refusal half is the load-bearing assertion, and it is run, not assumed.
+        """
+        from tools.orchestration_runtime import run_gate as _run_gate
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            token = self._setup_run_gate_fixture(repo_root)
+            copy_path = repo_root / self._TMP_GATE_DIR / "check_artifact_syntax.json"
+
+            _r, summary = self._run_gate_capturing_stderr(
+                repo_root, token, args_json={"paths": ["workspace/probe.json"]}
+            )
+            self.assertEqual(summary["args_json"], {"paths": ["workspace/probe.json"]})
+            self.assertEqual(summary["exit_code"], 0)
+            self.assertEqual(json.loads(copy_path.read_text(encoding="utf-8")), summary)
+
+            # A REFUSED re-run must REMOVE the copy, not leave the previous verdict where
+            # the launch prompt sends the leaf. Round 1 shipped the weaker version of this
+            # -- three prose warnings, with this assertion PINNING the staleness rather
+            # than closing it. Round 2 made the state unrepresentable: the file exists iff
+            # a run of this gate COMPLETED since the last attempt, so the invariant is
+            # carried by the filesystem instead of by a leaf's willingness to read a
+            # caution.
+            with self.assertRaises(RuntimeError):
+                _run_gate(
+                    repo_root,
+                    orchestration_id="rg1",
+                    gate_name="check_artifact_syntax",
+                    agent_run_id="build_child_rg1",
+                    args_json={"paths": ["workspace/probe.json"]},
+                    capability_token="not-the-token",
+                )
+            self.assertFalse(
+                copy_path.exists(),
+                "a refused run must invalidate the copy; leaving the previous verdict "
+                "where the leaf is told to look is the shortcut this closes",
+            )
+            # EVERY refusal `run_gate` itself raises must invalidate, not just the one
+            # above. Round 3 measured the round-2 placement covering only refusals raised
+            # after it: a blank token and a non-dict `args_json` are checked EARLIER in the
+            # function, so both left the previous verdict on disk while the documents said
+            # a refused run removes it. The invalidation now runs directly after the
+            # gate-name check, and these are the two cases that proves.
+            for label, kwargs in (
+                ("blank capability_token", {"capability_token": "  "}),
+                ("args_json not an object", {"args_json": ["not", "a", "dict"]}),
+            ):
+                with self.subTest(refusal=label):
+                    _r, summary_n = self._run_gate_capturing_stderr(repo_root, token)
+                    self.assertTrue(copy_path.exists())
+                    call = dict(
+                        orchestration_id="rg1",
+                        gate_name="check_artifact_syntax",
+                        agent_run_id="build_child_rg1",
+                        args_json={"paths": ["workspace/probe.json"]},
+                        capability_token=token,
+                    )
+                    call.update(kwargs)
+                    with self.assertRaises(ValueError):
+                        _run_gate(repo_root, **call)
+                    self.assertFalse(
+                        copy_path.exists(),
+                        f"a run refused for {label} left the previous verdict where the "
+                        "launch prompt sends the leaf",
+                    )
+
+            # Blast radius, the other direction: a refusal for ANOTHER arid must not touch
+            # this leaf's copy.
+            _r2, summary2 = self._run_gate_capturing_stderr(repo_root, token)
+            self.assertTrue(copy_path.exists())
+            with self.assertRaises((RuntimeError, ValueError)):
+                _run_gate(
+                    repo_root,
+                    orchestration_id="rg1",
+                    gate_name="validate_workspace_root",
+                    agent_run_id="no_such_child_arid",
+                    args_json={},
+                    capability_token=token,
+                )
+            self.assertTrue(
+                copy_path.exists(),
+                "a refusal for ANOTHER arid must not touch this leaf's copy",
+            )
+            self.assertEqual(
+                json.loads(copy_path.read_text(encoding="utf-8")), summary2
+            )
+
+    def test_launch_record_ownership_strips_both_ids(self) -> None:
+        """Round-3 REGRESSION GUARD, from a defect the extraction introduced.
+
+        `_orchestration_holds_launch_record` was extracted from an inline expression in
+        `_cleanup_agent_tmp_root` that stripped both ids; `_orchestration_root` does not
+        strip. A padded `orchestration_id` therefore resolved to a directory that does not
+        exist, ownership silently failed, and cleanup refused -- leaving the run in
+        cleanup-pending with its tmp scratch on disk. No test observed the difference; it
+        was found by diffing the extraction against the code it replaced.
+        """
+        from tools.orchestration_runtime import (
+            _orchestration_holds_launch_record,
+            init_orchestration,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            orch = "orch_strip_probe"
+            arid = "step_run_strip_probe"
+            init_orchestration(repo_root=repo_root, orchestration_id=orch)
+            req = (
+                repo_root / "workspace" / "orchestrations" / orch
+                / "launches" / f"{arid}.request.json"
+            )
+            req.parent.mkdir(parents=True, exist_ok=True)
+            req.write_text("{}\n", encoding="utf-8")
+
+            self.assertTrue(_orchestration_holds_launch_record(repo_root, orch, arid))
+            for o, a in ((f"  {orch} ", arid), (orch, f" {arid}  "), (f" {orch} ", f" {arid} ")):
+                with self.subTest(orchestration_id=repr(o), agent_run_id=repr(a)):
+                    self.assertTrue(
+                        _orchestration_holds_launch_record(repo_root, o, a),
+                        "a padded id must resolve to the same launch record",
+                    )
+            # Control: a genuinely different id is still refused, so the strip did not
+            # turn the predicate into one that says yes to everything.
+            self.assertFalse(
+                _orchestration_holds_launch_record(repo_root, orch, "other_arid")
+            )
+
+    def test_run_gate_invalidation_failure_does_not_fail_the_gate(self) -> None:
+        """The pre-work unlink is best-effort, and round 3 found that branch untested.
+
+        A convenience artifact must not decide a verdict in either direction: a copy that
+        cannot be removed must not turn a runnable gate into a refusal. The cost is a
+        stale copy surviving a refused run -- one of the exceptions
+        `_invalidate_durable_gate_result` enumerates and the documents state, which is why
+        no surface says the window is closed.
+        """
+        from tools import orchestration_runtime as _rt
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            token = self._setup_run_gate_fixture(repo_root)
+            real_unlink = Path.unlink
+
+            def _refuse(self_path, *a, **kw):
+                if self_path.name == "check_artifact_syntax.json" and \
+                        "gate_results" in str(self_path):
+                    raise OSError("read-only parent")
+                return real_unlink(self_path, *a, **kw)
+
+            with patch.object(Path, "unlink", _refuse):
+                _r, summary = self._run_gate_capturing_stderr(repo_root, token)
+            self.assertEqual(summary["status"], "pass", "a failed unlink failed the gate")
+            self.assertEqual(summary["exit_code"], 0)
+
+    def test_run_gate_invalidation_fires_for_every_refusal_it_precedes(self) -> None:
+        """The invalidation must have NO exception `run_gate` can reach.
+
+        Round 4 found the Adv-5 ownership guard that round 3 added being exactly that: it
+        returned SILENTLY when this orchestration held no launch record for the arid, so a
+        wrong `--orchestration-id` -- argv the leaf types -- left the previous run's
+        `status: pass` at the path the launch prompt names, while six surfaces told the
+        leaf a refusal that reached the runtime removes it. The guard was defending
+        something that gains a leaf nothing, at the cost of reopening the shortcut this
+        function exists to close, so it is gone.
+
+        This pins the property that replaced it: every refusal reachable AFTER the
+        invalidation invalidates, including one raised for a wrong orchestration id.
+        """
+        from tools.orchestration_runtime import run_gate as _run_gate
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            token = self._setup_run_gate_fixture(repo_root)
+            copy_path = repo_root / self._TMP_GATE_DIR / "check_artifact_syntax.json"
+
+            for label, call in (
+                ("wrong orchestration id", dict(orchestration_id="rg_not_this_one")),
+                ("blank capability token", dict(capability_token="  ")),
+                ("args_json not an object", dict(args_json=["nope"])),
+                ("unlaunched arid", dict(agent_run_id="never_launched_arid")),
+            ):
+                with self.subTest(refusal=label):
+                    self._run_gate_capturing_stderr(repo_root, token)
+                    self.assertTrue(copy_path.is_file(), "fixture: a completed run first")
+                    kwargs = dict(
+                        orchestration_id="rg1",
+                        gate_name="check_artifact_syntax",
+                        agent_run_id="build_child_rg1",
+                        args_json={"paths": ["workspace/probe.json"]},
+                        capability_token=token,
+                    )
+                    kwargs.update(call)
+                    with self.assertRaises((RuntimeError, ValueError)):
+                        _run_gate(repo_root, **kwargs)
+                    if label == "unlaunched arid":
+                        # That call names a DIFFERENT arid, so this leaf's own copy is not
+                        # its target and must survive -- the blast-radius control.
+                        self.assertTrue(copy_path.is_file())
+                    else:
+                        self.assertFalse(
+                            copy_path.exists(),
+                            f"a run refused for {label} left the previous verdict where "
+                            "the launch prompt sends the leaf",
+                        )
+
+    def test_run_gate_invalidation_refuses_an_unsafe_agent_run_id(self) -> None:
+        """The unlink builds a path, and it now runs before the id used to be checked.
+
+        Hoisting it above the capability guards moved it ahead of the first
+        `_require_safe_gate_ids` call, so the helper does that check itself, before
+        `_agent_tmp_gate_result_path` interpolates anything. Without it a traversal
+        spelling would reach a path join.
+        """
+        from tools.orchestration_runtime import run_gate as _run_gate
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            token = self._setup_run_gate_fixture(repo_root)
+            outside = repo_root / "outside.json"
+            outside.write_text('{"keep": true}\n', encoding="utf-8")
+
+            for unsafe in ("../../outside", "a/b", "", "  ", ".."):
+                with self.subTest(agent_run_id=unsafe):
+                    with self.assertRaises((ValueError, RuntimeError)):
+                        _run_gate(
+                            repo_root,
+                            orchestration_id="rg1",
+                            gate_name="check_artifact_syntax",
+                            agent_run_id=unsafe,
+                            args_json={"paths": ["workspace/probe.json"]},
+                            capability_token=token,
+                        )
+            self.assertTrue(outside.is_file(), "nothing outside the tmp root may be touched")
+
+            # RUN THE ATTACK that reaches PAST the ownership guard, because without it the
+            # id check is shadowed: deleting `_require_safe_gate_ids` from the helper left
+            # every assertion above green, since an unsafe id has no launch record and the
+            # guard returns first. A traversal that lands on a launch record someone else
+            # planted defeats that, so the id check is what actually holds the path safe.
+            #
+            # `../../evil` makes the ownership probe read
+            # `workspace/orchestrations/rg1/launches/../../evil.request.json`, i.e.
+            # `workspace/orchestrations/evil.request.json`. Plant it, and plant the file
+            # the unlink would then compute, and assert the second one survives.
+            planted_record = repo_root / "workspace" / "orchestrations" / "evil.request.json"
+            planted_record.write_text("{}\n", encoding="utf-8")
+            # Computed, not guessed: `workspace/tmp/../../evil/...` normalises to
+            # `<repo_root>/evil/...`, one level ABOVE `workspace/` entirely.
+            would_delete = (
+                repo_root / "evil" / "gate_results" / "check_artifact_syntax.json"
+            )
+            would_delete.parent.mkdir(parents=True, exist_ok=True)
+            would_delete.write_text('{"status": "pass"}\n', encoding="utf-8")
+            with self.assertRaises((ValueError, RuntimeError)):
+                _run_gate(
+                    repo_root,
+                    orchestration_id="rg1",
+                    gate_name="check_artifact_syntax",
+                    agent_run_id="../../evil",
+                    args_json={"paths": ["workspace/probe.json"]},
+                    capability_token=token,
+                )
+            self.assertTrue(
+                would_delete.is_file(),
+                "a traversal agent_run_id with a reachable launch record deleted a file "
+                "outside the tmp namespace; the id check is what prevents this",
+            )
+
+    def test_run_gate_summary_puts_identity_ahead_of_the_unbounded_field(self) -> None:
+        """The key order was asserted in a comment with nothing observing it (round 3).
+
+        `violations` is the only unbounded member of the summary, so the fields that say
+        WHICH run produced the verdict are ordered ahead of it. Asserted on the SERIALIZED
+        stderr line, which is the only place order is observable at all -- every other
+        assertion in this class compares parsed dicts and is order-blind, which is exactly
+        why reverting the order left them all green.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            token = self._setup_run_gate_fixture(repo_root)
+            err = io.StringIO()
+            with redirect_stderr(err):
+                run_gate(
+                    repo_root,
+                    orchestration_id="rg1",
+                    gate_name="check_artifact_syntax",
+                    agent_run_id="build_child_rg1",
+                    args_json={"paths": ["workspace/probe.json"]},
+                    capability_token=token,
+                )
+            line = err.getvalue().strip().splitlines()[-1]
+            positions = {k: line.index(f'"{k}"') for k in
+                         ("gate", "status", "args_json", "exit_code", "evaluated_at",
+                          "gate_result_ref", "violations")}
+            self.assertEqual(
+                positions["violations"], max(positions.values()),
+                "`violations` is unbounded and must be serialized LAST, so a truncation "
+                "inside the line loses violation text rather than the fields that say "
+                f"which run this was (order was {sorted(positions, key=positions.get)})",
+            )
+            for identifying in ("args_json", "exit_code", "evaluated_at"):
+                self.assertLess(positions[identifying], positions["violations"])
+
+    def test_run_gate_tmp_copy_is_one_file_per_gate_name(self) -> None:
+        """A second gate must not clobber the first: that is why the name is the key."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            token = self._setup_run_gate_fixture(repo_root)
+            _r1, syntax_summary = self._run_gate_capturing_stderr(repo_root, token)
+            _r2, root_summary = self._run_gate_capturing_stderr(
+                repo_root, token, gate_name="validate_workspace_root", args_json={}
+            )
+            gate_dir = repo_root / self._TMP_GATE_DIR
+            self.assertEqual(
+                sorted(q.name for q in gate_dir.iterdir()),
+                ["check_artifact_syntax.json", "validate_workspace_root.json"],
+            )
+            self.assertEqual(
+                json.loads((gate_dir / "check_artifact_syntax.json").read_text(encoding="utf-8")),
+                syntax_summary,
+            )
+            self.assertEqual(
+                json.loads((gate_dir / "validate_workspace_root.json").read_text(encoding="utf-8")),
+                root_summary,
+            )
+
+    def test_run_gate_tmp_copy_lands_under_the_manifest_allowed_tmp_root(self) -> None:
+        """The tmp ROOT is asserted against the manifest, not against a literal.
+
+        `allowed_tmp_root` is the value the read boundary and the write-attribution
+        exemption are both derived from; a literal root here would pass even if the two
+        drifted apart. The `gate_results/<gate>.json` tail below IS a literal, and saying
+        otherwise was a round-1 finding: what pins the tail is `GateResultTmpCopySurfaceTests`
+        resolving `GATE_RESULT_TMP_DIRNAME`, not this line.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            token = self._setup_run_gate_fixture(repo_root)
+            self._run_gate_capturing_stderr(repo_root, token)
+            manifest = json.loads(
+                (
+                    repo_root
+                    / "workspace/orchestrations/rg1/output_manifests/build_child_rg1.json"
+                ).read_text(encoding="utf-8")
+            )
+            tmp_root = manifest["allowed_tmp_root"]
+            self.assertTrue(tmp_root, "the fixture must declare an allowed_tmp_root")
+            copy_rel = f"{tmp_root}/gate_results/check_artifact_syntax.json"
+            self.assertTrue((repo_root / copy_rel).is_file(), copy_rel)
+
+    def test_run_gate_tmp_copy_write_failure_neither_fails_the_gate_nor_leaves_a_stale_file(
+        self,
+    ) -> None:
+        """A convenience artifact must not be able to decide a verdict, and a copy
+        that cannot be refreshed must not survive as this call's answer.
+
+        The `_write_json` patch raises for the TMP path only, so the canonical gate
+        document is still written by the same call -- which is what makes this a test
+        of the fallback rather than of a gate that failed early.
+        """
+        from tools import orchestration_runtime as _rt
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            token = self._setup_run_gate_fixture(repo_root)
+            copy_path = repo_root / self._TMP_GATE_DIR / "check_artifact_syntax.json"
+
+            # Round 1 succeeds, so there IS an older copy to go stale.
+            _r1, first = self._run_gate_capturing_stderr(repo_root, token)
+            self.assertTrue(copy_path.exists())
+
+            real_write_json = _rt._write_json
+
+            def _fail_for_tmp_copy(path: Path, payload: Any) -> None:
+                if Path(path) == copy_path:
+                    raise OSError("no space left on device")
+                real_write_json(path, payload)
+
+            # The pre-work invalidation is disabled for THIS call only. Round 4 measured
+            # the assertion below being satisfied by that unlink instead of by the fallback
+            # this test is named for: deleting the fallback entirely left the test green.
+            # A second path in the fixture producing the asserted outcome is the shape this
+            # repository calls "spinning in neutral", and it mattered here because the
+            # fallback is the only code that rescues a copy the pre-work unlink skipped.
+            with patch.object(_rt, "_write_json", _fail_for_tmp_copy), patch.object(
+                _rt, "_invalidate_durable_gate_result", lambda *a, **k: None
+            ):
+                result, second = self._run_gate_capturing_stderr(repo_root, token)
+
+            # The verdict is unchanged by the failed write.
+            self.assertEqual(second["status"], "pass")
+            self.assertEqual(result["violations"], [])
+            self.assertEqual(result["gate_result_ref"], first["gate_result_ref"])
+            # The canonical record was still written by this same call.
+            self.assertEqual(
+                json.loads(
+                    (repo_root / second["gate_result_ref"]).read_text(encoding="utf-8")
+                )["evaluated_at"],
+                second["evaluated_at"],
+            )
+            # And round 1's copy is gone rather than masquerading as round 2's.
+            self.assertFalse(
+                copy_path.exists(),
+                "a copy that could not be refreshed must be removed, not left stale",
+            )
+
     def test_run_gate_check_artifact_syntax_rejects_legacy_path_key(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
@@ -17429,6 +17933,7 @@ class TerminalUnauthorizedWriteDirectWriteTests(unittest.TestCase):
         write_roots: list[str],
         allowed_output_paths: list[str],
         allowed_file_tool_paths: list[str],
+        allowed_tmp_root: str | None = None,
     ) -> None:
         from tools.orchestration_runtime import (
             _capabilities_dir,
@@ -17456,8 +17961,60 @@ class TerminalUnauthorizedWriteDirectWriteTests(unittest.TestCase):
             agent_run_id=agent_run_id,
             allowed_output_paths=allowed_output_paths,
             allowed_file_tool_paths=allowed_file_tool_paths,
+            allowed_tmp_root=allowed_tmp_root,
         )
         _write_run_write_baseline(repo_root, orchestration_id, agent_run_id=agent_run_id)
+
+    def test_terminal_containment_authorizes_the_run_gate_copy_in_the_tmp_root(self) -> None:
+        """Issue #77: RUN the containment attack instead of reading the exemption.
+
+        `run_gate` writes `workspace/tmp/<arid>/gate_results/<gate>.json` and the whole
+        design rests on that path being exempt from the child-window FS-diff, which the
+        source claims at the `manifest_allowed_tmp_root` branch. A claim about an
+        enforcement layer is not established by reading it, so the file is placed on
+        disk and handed to the real terminalization check.
+
+        The second half is the over-refusal control: the SAME filename one directory
+        outside the tmp root must still be rejected, or a green first half would prove
+        only that the check had stopped looking.
+        """
+        from tools.orchestration_runtime import _validate_actual_write_paths
+
+        for label, rel, expect_raise in (
+            ("inside the tmp root", "workspace/tmp/{run_id}/gate_results/check_artifact_syntax.json", False),
+            ("outside it", "workspace/tmp/other_arid/gate_results/check_artifact_syntax.json", True),
+        ):
+            with self.subTest(case=label), tempfile.TemporaryDirectory() as tmp:
+                repo_root = Path(tmp)
+                orch = "orch_term_gate_copy"
+                run_id = "step_run_term_gate_copy"
+                yaml_rel = "workspace/ir/p/spec.ir.yaml"
+                self._setup_step_run_state(
+                    repo_root,
+                    orchestration_id=orch,
+                    agent_run_id=run_id,
+                    write_roots=["workspace/ir/"],
+                    allowed_output_paths=[yaml_rel],
+                    allowed_file_tool_paths=[yaml_rel],
+                    allowed_tmp_root=f"workspace/tmp/{run_id}",
+                )
+                copy_rel = rel.format(run_id=run_id)
+                copy_path = repo_root / copy_rel
+                copy_path.parent.mkdir(parents=True, exist_ok=True)
+                copy_path.write_text('{"gate": "check_artifact_syntax"}\n', encoding="utf-8")
+
+                payload = {
+                    "agent_run_id": run_id,
+                    "agent_role": "step",
+                    "status": "pass",
+                    "output_refs": [],
+                }
+                if expect_raise:
+                    with self.assertRaises(ValueError) as ctx:
+                        _validate_actual_write_paths(repo_root, orch, payload)
+                    self.assertIn(copy_rel, str(ctx.exception))
+                else:
+                    _validate_actual_write_paths(repo_root, orch, payload)
 
     def test_step_terminal_accepts_direct_write_yaml_without_gate(self) -> None:
         from tools.orchestration_runtime import _validate_actual_write_paths
@@ -29700,7 +30257,20 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # Raised again in round 11: at 19000 the file sat 14 bytes below the ceiling, which
         # is the tripwire this very comment says a ceiling must not be — the rule was
         # written and then not applied to the number beside it.
-        "docs/AGENT_CONTRACT.md": 19200,
+        # Raised again for issue #77: a gate result now survives its command as a file in
+        # the leaf's own tmp root, and a leaf that is not told the path cannot use it — the
+        # same "meets a refusal it cannot diagnose" class the paragraph above names. The
+        # rule from round 11 applies to the number as well as to the sentence: at 19200 the
+        # file again sat a few dozen bytes below its ceiling, which is a tripwire rather
+        # than a re-bloat catch, so the headroom is restored along with the raise.
+        # Raised a third time in round 1 of that issue's review, and the reason is the
+        # SENTENCE, not the ceiling: the copy is only rewritten by a run that completes, so
+        # a leaf reading it after a refused re-run gets the previous verdict. Telling the
+        # leaf to check `args_json` / `evaluated_at`, and that the command result is
+        # authoritative for the attempt it just made, is what stops that shortcut — the
+        # most expensive place in the repository to add a sentence, and the only one where
+        # this one works. 19700 then left ~100 bytes, a tripwire again by the same rule.
+        "docs/AGENT_CONTRACT.md": 20100,
         # Consolidated runner-output contract (was duplicated across phase_02/04 +
         # PERF §2/§6); M3d: a validate.judge-only leaf must-read (generate dropped it).
         # Bumped 7600->8100: §3 disambiguated the guard-case snapshot rule (declared
@@ -30231,6 +30801,580 @@ class ChildContextDocSizeTests(unittest.TestCase):
             self.assertLessEqual(
                 size, ceiling, f"{rel} grew to {size} bytes (ceiling {ceiling}); trim or justify"
             )
+
+
+class AgentTmpRootContainmentTests(unittest.TestCase):
+    """`_assert_under_agent_tmp_root`, the tripwire under the durable-gate-result unlink.
+
+    Its call site is unreachable by construction — `_require_safe_gate_ids` admits only
+    `[A-Za-z0-9_-]`, so no caller input escapes — which means deleting the CALL is
+    invisible to the suite. That is declared where the call lives. What can be pinned is
+    the function, so it is: if a later change to `_agent_tmp_gate_result_path` ever makes
+    a target escape, this is the thing that has to still work.
+    """
+
+    def test_a_path_inside_the_tmp_root_is_accepted(self) -> None:
+        from tools.orchestration_runtime import _assert_under_agent_tmp_root
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            inside = repo_root / "workspace" / "tmp" / "arid1" / "gate_results" / "g.json"
+            _assert_under_agent_tmp_root(repo_root, inside)
+
+    def test_an_escaping_path_is_refused(self) -> None:
+        from tools.orchestration_runtime import _assert_under_agent_tmp_root
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            for label, target in (
+                ("traversal out of the tmp root",
+                 repo_root / "workspace" / "tmp" / ".." / ".." / "evil" / "g.json"),
+                ("a sibling workspace directory",
+                 repo_root / "workspace" / "ir" / "p" / "g.json"),
+                ("outside the checkout entirely", Path("/etc") / "g.json"),
+            ):
+                with self.subTest(case=label):
+                    with self.assertRaises(ValueError) as ctx:
+                        _assert_under_agent_tmp_root(repo_root, target)
+                    self.assertIn("escapes the tmp namespace", str(ctx.exception))
+
+
+class GateResultTmpCopySurfaceTests(unittest.TestCase):
+    """COUPLING check for issue #77's leaf-readable gate-result copy.
+
+    The path `workspace/tmp/<agent_run_id>/gate_results/<gate>.json` is stated across the
+    instruction corpus, in the gate hint injected into every leaf's launch prompt, and in
+    the runtime that writes it. That many statement sites of one rule is where a sweep by
+    hand has already lost (`.claude/skills/metdsl-enforcement-change` rule 3-a), and two of
+    the sites are read by a leaf and by an operator, who ACT on them: a leaf sent to a path
+    the runtime no longer writes reads nothing and cannot tell that from a gate that
+    produced nothing.
+
+    NO COUNT IS WRITTEN IN THIS DOCSTRING. Three parties measured "how many surfaces" in
+    round 1 and returned three answers, none having stated a method, and the first version
+    of this paragraph then contradicted itself twice over — saying "eight documents" six
+    lines above "no count is written here", while counting `TODO.md` as a document that the
+    same class excludes for being a record. `test_every_file_that_names_the_path_is_classified`
+    below computes the set instead, so no prose here has to be right about it.
+
+    THE RULE IS DEFINED IN THE CODE AND THE DOCUMENTS ARE CHECKED AGAINST IT, never the
+    reverse: every expectation below is resolved from `GATE_RESULT_TMP_DIRNAME` and the
+    helpers beside it, so renaming the directory turns each stale surface red. Nothing
+    here spells the directory name a second time.
+
+    WHAT IS PINNED: that each listed surface either names a path with the directory the
+    constant produces, or cites the document that does. WHAT IS NOT, each measured rather
+    than supposed:
+
+    - that a surface says the copy is a convenience rather than evidence, or which
+      placeholder it spells the agent id with. Different rules, no instrument here.
+    - **that a surface added LATER tracks the constant.** The lists are fixed, so a new
+      document naming this path drifts silently after a rename; round 1 demonstrated it by
+      adding the sentence to `docs/ORCHESTRATION.md` and renaming the constant, and only
+      the listed surfaces reddened. The obvious closure — sweep `docs/` and `skills/` for
+      `workspace/tmp/<id>/<segment>/` and require the segment to be this constant — was
+      MEASURED to over-refuse before it was written: the same corpus already carries
+      `run/`, `syntax/` and `.../` as legitimate segments under a tmp root, so the sweep
+      needs a hand-maintained exclusion list that refuses every future tmp subdirectory
+      until someone appends to it. That is a worse instrument than a declared limit, so
+      this is the limit, declared.
+    """
+
+    REPO_ROOT = Path(__file__).resolve().parents[2]
+
+    # `_MAY_POINT` IS GONE, and the rule is now the weaker question that can be answered:
+    # does every listed surface NAME the path?
+    #
+    # The pointer concept broke FOUR times, in a new shape each round. Round 0 had none and
+    # refused a mandated deferral. Round 2 admitted any mention of one filename anywhere in
+    # the file. Round 3 measured a 400-character window admitting an unrelated citation
+    # five lines away, leaving one surface stale through a rename. The paragraph-scoped
+    # replacement broke on MARKDOWN TABLES, which contain no blank lines -- a whole table is
+    # one paragraph, so `docs/RUNBOOK.md` passed on a citation in an unrelated row.
+    #
+    # "Is this citation ABOUT this rule?" is a question about meaning, decided from nearby
+    # words, and this repository has a recorded history of losing exactly that question --
+    # `_command_spans` in tools/tests/test_hooks_cli.py says so in its own docstring, after
+    # three rounds of the same. So the QUESTION changed rather than the threshold.
+    #
+    # WHAT IT COSTS, against the rule that actually governs. Round 4 measured the first
+    # version of this paragraph citing `AGENTS.md` §Workflow document reference rules for a
+    # preference that section does not state -- the word "twin" appears there zero times.
+    # The governing rule is `docs/DEVELOPMENT.md` §Record placement: "One fact has one
+    # canonical home. A restatement elsewhere is a twin document, and a twin is a future
+    # disagreement rather than a convenience -- cite the owner instead." Its subject is a
+    # FACT, and a path is a fact, so the first version's "a PATH is not a rule" answered a
+    # question the real rule does not turn on.
+    #
+    # So the cost is paid, not argued away. These six surfaces ARE twins of one fact. What
+    # `docs/DEVELOPMENT.md` objects to in a twin is that it becomes a future DISAGREEMENT,
+    # and that is exactly what `test_every_surface_names_the_path_the_runtime_writes`
+    # removes: a rename reddens all six, each individually. A twin that cannot drift is
+    # not the failure that rule describes.
+    #
+    # The over-refusal is real and is NOT hypothetical, which the first version also got
+    # wrong: `docs/RUNBOOK.md`'s remedy table already answers other facts by citing their
+    # canonical document, so requiring the path inline there refuses that table's own house
+    # style. And `docs/AGENT_CONTRACT.md` carries a byte ceiling whose purpose is bounding
+    # leaf context, so this permanently forbids trading ~55 bytes of path for a citation.
+    # Both are accepted deliberately: for THIS fact, a reader who has to follow a pointer
+    # to learn where its own gate result went is the worse outcome. If a document ever
+    # genuinely should not carry the path, move it to `_DECLARED_RECORDS` with a reason
+    # rather than reintroducing a test that asks what a citation MEANS.
+    _MUST_NAME_THE_PATH = (
+        "docs/AGENT_CONTRACT.md",
+        "docs/CLI_REFERENCE.md",
+        "docs/HOOKS.md",
+        "docs/RUNBOOK.md",
+        "docs/WORKSPACE_LAYOUT.md",
+        "docs/workflow/LAUNCH_PROMPT_REFERENCE.md",
+        "skills/workflow-audit-claude/SKILL.md",
+    )
+
+
+    @staticmethod
+    def _pattern() -> "re.Pattern[str]":
+        """`workspace/tmp/<any agent-id spelling>/<the constant>/`, built from the constant.
+
+        The agent-id segment admits every spelling the tree actually uses, which round 1
+        found the first version refusing: an angle placeholder (`<agent_run_id>`,
+        `<arid>`, `<live-arid>`), a brace placeholder (`{agent_run_id}` — the spelling
+        `tools/hooks/common.py` and `tools/orchestration_runtime.py` use for this very
+        path), and a concrete id, which is the shape `docs/RUNBOOK.md` writes when it
+        gives a command an operator can paste. WHICH spelling a document picks is a
+        house-style question this check does not own; the directory name is the rule.
+        """
+        import re
+
+        from tools.orchestration_runtime import GATE_RESULT_TMP_DIRNAME
+
+        agent_id = r"(?:<[^>]+>|\{[^}]+\}|[A-Za-z0-9._-]+)"
+        return re.compile(
+            r"workspace/tmp/" + agent_id + "/" + re.escape(GATE_RESULT_TMP_DIRNAME) + r"/"
+        )
+
+    def test_every_surface_names_the_path_the_runtime_writes(self) -> None:
+        self.assertEqual(
+            set(self._MUST_NAME_THE_PATH),
+            {
+                "docs/AGENT_CONTRACT.md",
+                "docs/CLI_REFERENCE.md",
+                "docs/HOOKS.md",
+                "docs/RUNBOOK.md",
+                "docs/WORKSPACE_LAYOUT.md",
+                "docs/workflow/LAUNCH_PROMPT_REFERENCE.md",
+                "skills/workflow-audit-claude/SKILL.md",
+            },
+        )
+        pattern = self._pattern()
+        for rel in self._MUST_NAME_THE_PATH:
+            with self.subTest(surface=rel):
+                path = self.REPO_ROOT / rel
+                self.assertTrue(path.is_file(), f"{rel} missing; update the surface list")
+                self.assertIsNotNone(
+                    pattern.search(path.read_text(encoding="utf-8")),
+                    f"{rel} does not state where run-gate leaves a gate result "
+                    f"(expected a path matching {pattern.pattern})",
+                )
+
+
+    # THE RECORD. `TODO.md` names the path as it stood when the decision was taken, and
+    # that stays correct after a rename -- making a record follow the code is the opposite
+    # of what a record is for.
+    #
+    # `docs/HOOKS.md` WAS exempted here on the same reasoning and round 4 showed it does
+    # not fit: its sentence is present tense about current runtime behaviour ("`run_gate`
+    # now writes its own stderr summary to ..."), so a rename makes it false rather than
+    # historical, and nothing reddened. Per `docs/DEVELOPMENT.md`'s placement table a
+    # `docs/` file is a finished specification, not a record. It is an instruction surface.
+    _DECLARED_RECORDS = ("TODO.md",)
+
+    @classmethod
+    def _files_naming_the_path(cls) -> set:
+        """Every file in the instruction corpus that names the directory, by `os.walk`.
+
+        NOT by `grep`: in an agent session `grep` is a shell function exec'ing `ugrep
+        --ignore-files`, which honours `.gitignore`. Measured, that changes nothing for
+        THIS corpus (identical counts, and none of these files is ignored) -- but an
+        enumeration a check depends on should not vary with which `grep` is on the path.
+        """
+        import os
+
+        from tools.orchestration_runtime import GATE_RESULT_TMP_DIRNAME
+
+        found = set()
+        for root in ("docs", "skills", "tools/prompt_templates"):
+            for dirpath, dirnames, filenames in os.walk(cls.REPO_ROOT / root):
+                dirnames[:] = [d for d in dirnames if d != "__pycache__"]
+                for fn in filenames:
+                    fp = Path(dirpath) / fn
+                    try:
+                        text = fp.read_text(encoding="utf-8")
+                    except (OSError, UnicodeDecodeError):
+                        continue
+                    if GATE_RESULT_TMP_DIRNAME in text:
+                        found.add(str(fp.relative_to(cls.REPO_ROOT)))
+        top = cls.REPO_ROOT / "TODO.md"
+        if top.is_file() and GATE_RESULT_TMP_DIRNAME in top.read_text(encoding="utf-8"):
+            found.add("TODO.md")
+        return found
+
+    def test_every_file_that_names_the_path_is_classified(self) -> None:
+        """Close the hole a fixed allowlist leaves: a surface added LATER.
+
+        Round 1 declared this as a limit and round 2 demonstrated it -- a sentence added
+        to `docs/ORCHESTRATION.md` kept a stale path through a rename because no list
+        named that file. The closure first proposed (sweep for
+        `workspace/tmp/<id>/<segment>/` and require the segment to be this constant) was
+        MEASURED over-refusing before it was written: the corpus already carries `run/`,
+        `syntax/` and `.../` as legitimate segments under a tmp root, so it would refuse
+        every future tmp subdirectory until someone appended to an exclusion list.
+
+        This keys on the constant instead, and refuses only a DISAGREEMENT: a file that
+        names this path and that no list accounts for. A file saying nothing about the
+        path is not refused, and a new tmp subdirectory is not this check's business. It
+        also closes the second-order hole in the literal-set assertion above -- emptying
+        the list now contradicts the tree rather than silently checking nothing.
+
+        SCOPE, corrected in round 3, where the commit called this an unqualified closure:
+        the walk covers `docs/`, `skills/`, `tools/prompt_templates/` and `TODO.md`. A
+        surface in `AGENTS.md`, `README.md`, `mcp_servers/README.md` or `.claude/skills/`
+        is invisible to it. Nothing in the tree sits there today; widening the roots is a
+        one-line change if one ever does.
+
+        Deliberate consequence, measured: `.gitignore` is NOT consulted, so an untracked
+        scratch file containing the constant's value dropped under one of those roots
+        reddens the suite. That is the trade against the shadowed-`grep` problem, and the
+        noise is preferable to an enumeration that silently skips ignored files.
+        """
+        classified = (
+            set(self._MUST_NAME_THE_PATH) | set(self._DECLARED_RECORDS)
+        )
+        unclassified = self._files_naming_the_path() - classified
+        self.assertEqual(
+            unclassified,
+            set(),
+            "these files name the gate-result path but no list accounts for them, so a "
+            "rename would leave them stale: add each to _MUST_NAME_THE_PATH (an instruction "
+            "surface, which must state the current path) or to _DECLARED_RECORDS (a "
+            "measurement or decision record, correct as written after a rename)",
+        )
+
+    def test_the_classification_sweep_sees_a_new_surface(self) -> None:
+        """SELF-TEST for the sweep, which is an emptiness assertion over a computed set.
+
+        An emptiness assertion is green when its enumeration is broken, and this one walks
+        the tree. Driven on a SYNTHETIC root so it does not depend on today's corpus, and
+        in both directions -- the over-refusing one is where this repository errs.
+        """
+        from tools.orchestration_runtime import GATE_RESULT_TMP_DIRNAME
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "docs").mkdir()
+            (root / "skills").mkdir()
+            (root / "tools" / "prompt_templates").mkdir(parents=True)
+            (root / "TODO.md").write_text("no mention here\n", encoding="utf-8")
+            (root / "docs" / "quiet.md").write_text(
+                "this document says nothing about it\n", encoding="utf-8"
+            )
+            (root / "docs" / "loud.md").write_text(
+                f"read `workspace/tmp/<arid>/{GATE_RESULT_TMP_DIRNAME}/<gate>.json`\n",
+                encoding="utf-8",
+            )
+
+            class _Probe(GateResultTmpCopySurfaceTests):
+                REPO_ROOT = root
+
+            found = _Probe._files_naming_the_path()
+            self.assertEqual(
+                found, {"docs/loud.md"},
+                "the sweep must see a file that names the path, and only that file",
+            )
+            self.assertNotIn("docs/quiet.md", found)
+
+    def test_the_detector_distinguishes_a_stated_rule_from_a_stale_one(self) -> None:
+        """SELF-TEST: the check above is an existence assertion over a regex.
+
+        An existence assertion is green whenever its pattern is too loose, and this
+        pattern is built at run time from a constant, so a rename must be observable
+        here rather than only in the tree. The fixtures drive `_pattern()` itself.
+        """
+        from tools.orchestration_runtime import GATE_RESULT_TMP_DIRNAME
+
+        pattern = self._pattern()
+        d = GATE_RESULT_TMP_DIRNAME
+        for stated in (
+            f"read it at `workspace/tmp/<agent_run_id>/{d}/x.json`",
+            f"`workspace/tmp/<arid>/{d}/<gate>.json`",
+            f"`workspace/tmp/<live-arid>/{d}/`",
+            # the brace spelling the runtime itself uses for this path
+            f"workspace/tmp/{{agent_run_id}}/{d}/{{gate}}.json",
+            # a concrete id, the shape RUNBOOK writes for a pasteable command
+            f"cat workspace/tmp/a0dca0b3-1f2e-4c5d-8899-aabbccddeeff/{d}/x.json",
+        ):
+            with self.subTest(stated=stated):
+                self.assertIsNotNone(pattern.search(stated))
+        for stale in (
+            # the retired route this whole change replaced
+            "capture it with `2>workspace/tmp/<agent_run_id>/last_gate_stderr.txt`",
+            # a document left behind by a rename of the constant
+            "read it at `workspace/tmp/<agent_run_id>/gate_output/x.json`",
+            # the tmp root named for an unrelated reason -- the scratch rule, not this one
+            "`workspace/tmp/<agent_run_id>/` is writable with the `Write` tool",
+            # the record the audit reads, which is a different path and must not satisfy this
+            "`workspace/orchestrations/<orchestration_id>/gates/<arid>/<gate>.json`",
+        ):
+            with self.subTest(stale=stale):
+                self.assertIsNone(pattern.search(stale))
+
+    def test_the_leaf_is_warned_that_the_copy_is_the_last_COMPLETED_run(self) -> None:
+        """The warning that stops the S-F2 shortcut is prose a leaf ACTS on -- pin it.
+
+        Round 1's mutation check found this hunk surviving: reverting the warning left
+        the hint still naming the directory, so the render pin above stayed green while
+        the sentence that makes the directory safe to use was gone. A leaf told where the
+        file is and NOT told it can be stale is the shortcut this whole finding was about.
+
+        Asserted on the split half that governs the copy, because the hint states several
+        rules in one line and a substring pin over the whole of it would hold via another.
+        """
+        from tools.orchestration_runtime import (
+            _agent_tmp_gate_result_dir_ref,
+            _build_gate_runbook,
+        )
+
+        arid = GateRunbookTests.BASE["agent_run_id"]
+        rb = _build_gate_runbook(dict(GateRunbookTests.BASE, step="compile", substep="generate"))
+        self.assertTrue(rb.strip(), "compile.generate must emit a runbook")
+        # Split on the RESOLVED directory reference, not on a second spelling of the
+        # constant: the class docstring promises the name appears once, and the literal
+        # version raised IndexError instead of its remedy message under a rename mutant.
+        # `rsplit` so a hint that mentions the directory twice still hands back the half
+        # that governs the copy -- round 3 measured the `split(...)[1]` version reading
+        # the segment BETWEEN two mentions.
+        marker = _agent_tmp_gate_result_dir_ref(arid)
+        self.assertIn(marker, rb, "the hint must name the directory at least once")
+        tail = rb.rsplit(marker, 1)[1]
+        self.assertIn("COMPLETED", tail, "the hint must say which run the file holds")
+        self.assertIn("args_json", tail, "the hint must name what identifies that run")
+        self.assertIn(
+            "evaluated_at", tail,
+            "the hint must name the second field that identifies the run",
+        )
+        self.assertIn(
+            "command result", tail,
+            "the hint must say what IS authoritative for the attempt just made",
+        )
+
+    def test_the_write_authority_claim_the_documents_dropped_is_still_false(self) -> None:
+        """Pin the FACTS, not the corrected sentences.
+
+        Six surfaces used to say `gates/<arid>/<gate>.json` is a file "no leaf can write",
+        and round 1 established it is not. Anchoring a check on the corrected wording
+        would pin that my edit survived, not that the correction is still true -- the
+        first trap under `.claude/skills/metdsl-enforcement-change` rule 3-a. So this
+        pins the two tree facts the correction rests on. If either flips, the documents
+        become stale in the SAFE direction and this test is what says so.
+
+        The third fact -- that the Bash write refusal cannot see a writer inside a script
+        file handed to an interpreter -- is NOT pinned here. It is a declared residue of
+        another rule, recorded in `docs/HOOKS.md` §"Layer boundary" and in
+        `tools/hooks/cli.py`'s own docstring, and it is not this change's to own.
+        """
+        from tools.orchestration_runtime import (
+            _should_ignore_runtime_snapshot_path,
+            build_bwrap_profile,
+            render_bwrap_command,
+        )
+
+        # (a) the gates directory is bound READ-WRITE into the leaf's sandbox, because the
+        #     leaf runs `run-gate` itself.
+        #
+        #     Read off the BUILT PROFILE and the RENDERED argv, not off the module's source
+        #     text. Round 2 measured the source-text version failing in both directions: a
+        #     semantics-preserving reformat of the list reddened it with a message telling
+        #     the reader to go and edit five documents, and its own docstring justified the
+        #     spelling by claiming a rendered command "needs a live orchestration to
+        #     produce" -- contradicted by the sibling uses of `build_bwrap_profile`
+        #     elsewhere in this module, which need only a TemporaryDirectory. This is the
+        #     "pin the members, not the source line" rule, learned the expensive way.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            orch = "orch_rw_claim"
+            arid = "step_run_rw_claim"
+            # Reuse the sibling class's fixture rather than growing a twin of it: this
+            # repository treats a duplicated fixture as a document that drifts.
+            BwrapProfileFilePinTests._write_cap_and_manifest(
+                self,
+                repo_root,
+                orchestration_id=orch,
+                agent_run_id=arid,
+                write_roots=["workspace/out/"],
+            )
+            profile = build_bwrap_profile(
+                repo_root=repo_root,
+                orchestration_id=orch,
+                agent_run_id=arid,
+                backend_command="python3 agent.py",
+            )
+            gates_rel = f"workspace/orchestrations/{orch}/gates/{arid}/"
+            self.assertIn(
+                gates_rel, profile["runtime_rw_rel_paths"],
+                "the gates directory left the writable-bind list; re-check the documents "
+                "that now say write authority does not separate the copy from the record",
+            )
+            # Control: an artifact root is NOT in that list, so membership is a property
+            # of this path rather than of a list that swallowed everything.
+            self.assertNotIn("workspace/pipelines/", profile["runtime_rw_rel_paths"])
+
+            # The MODE is the half the documents actually assert, and round 2 measured it
+            # unpinned anywhere in the suite: flipping this loop to `--ro-bind` left every
+            # test green while five documents went on saying the directory is writable.
+            argv = render_bwrap_command(profile=profile, command_argv=["true"])
+            gates_abs = str((repo_root / gates_rel).resolve())
+            self.assertIn(gates_abs, argv, "the gates dir is not bound at all")
+            flag = argv[argv.index(gates_abs) - 1]
+            self.assertEqual(
+                flag, "--bind",
+                f"the gates dir is bound {flag}, not --bind; if it is now read-only the "
+                "documents saying a leaf can write it are stale",
+            )
+
+        # (b) a write there is exempt from the terminal FS-diff, so it is never attributed.
+        orch = "orch_rw_claim"
+        arid = "some_arid"
+        rel = f"workspace/orchestrations/{orch}/gates/{arid}/check_artifact_syntax.json"
+        self.assertTrue(
+            _should_ignore_runtime_snapshot_path(
+                rel, orchestration_id=orch, agent_run_id=arid
+            ),
+            "the gates/ prefix is no longer FS-diff exempt; the documents' correction "
+            "may now be stale",
+        )
+        # Control: an ordinary artifact path is NOT exempt, so a True above is a
+        # property of the prefix and not of a predicate that stopped looking.
+        self.assertFalse(
+            _should_ignore_runtime_snapshot_path(
+                "workspace/ir/p/spec.ir.yaml", orchestration_id=orch, agent_run_id=arid
+            )
+        )
+
+    def test_a_surface_is_an_instruction_surface_or_a_record_not_both(self) -> None:
+        """Renamed and cut to what it actually asserts (round 4).
+
+        It was the over-refusal probe for `_MAY_POINT`, and when that rule was deleted the
+        body lost the deferral and spelling assertions but kept a docstring describing
+        them, plus a `pattern = self._pattern()` nothing read. Prose asserting something
+        nothing observes is the shape this branch has now flagged three times; keeping it
+        in the check that exists to catch that shape would be the worst place for it.
+
+        The spelling half it used to claim lives, and is exercised, in
+        `test_the_detector_distinguishes_a_stated_rule_from_a_stale_one`.
+
+        What remains here is one real property: the two lists are answers to DIFFERENT
+        questions, so a file in both would be silently absorbed by the sweep's `classified`
+        union and never checked by either rule.
+        """
+        self.assertEqual(
+            set(self._MUST_NAME_THE_PATH) & set(self._DECLARED_RECORDS),
+            set(),
+            "a surface must be an instruction surface or a record, not both",
+        )
+
+    def test_the_copy_is_removed_when_the_tmp_root_is_cleaned_up(self) -> None:
+        """EXECUTE the lifetime claim the documents make about this file.
+
+        `docs/WORKSPACE_LAYOUT.md` §"tmp / TMPDIR" states the copy "is removed with the
+        rest of the root when the agent reaches a terminal status" -- an executable
+        sentence, and one written in the same commit that created the file, so nothing had
+        run it.
+
+        SCOPE, corrected in round 1 after the name overstated it: this drives
+        `_cleanup_agent_tmp_root` DIRECTLY and never reaches a terminal status, so what it
+        establishes is the second half of that sentence -- that the copy goes when the root
+        is cleaned. The first half, that reaching a terminal status is what calls the
+        cleanup, is pinned by the pre-existing `record_agent_run` tests, and the document's
+        claim holds by the union of the two rather than by this test alone. It matters beyond tidiness: a copy that outlived its run would be readable
+        by whatever `agent_run_id` the flat `workspace/tmp/` namespace next handed the
+        same name to, and would be a gate verdict from another run presented as this one's.
+
+        Driven through `_cleanup_agent_tmp_root`, the function the terminal path calls,
+        rather than through an `rmtree` of my own. The control is the sibling scratch file:
+        both must go, so a green result cannot come from the directory never having had the
+        copy in it.
+        """
+        from tools.orchestration_runtime import (
+            _agent_tmp_gate_result_path,
+            _cleanup_agent_tmp_root,
+            init_orchestration,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            orch = "orch_gate_copy_cleanup"
+            run_id = "step_run_gate_copy_cleanup"
+            init_orchestration(repo_root=repo_root, orchestration_id=orch)
+            copy_path = _agent_tmp_gate_result_path(repo_root, run_id, "validate_workspace_root")
+            copy_path.parent.mkdir(parents=True, exist_ok=True)
+            copy_path.write_text('{"status": "pass"}\n', encoding="utf-8")
+            sibling = repo_root / "workspace" / "tmp" / run_id / "work.py"
+            sibling.write_text("print(1)\n", encoding="utf-8")
+
+            self.assertTrue(copy_path.is_file())
+            # CONTROL, run first: without the Adv-5 ownership proof the cleanup REFUSES,
+            # and a refusal deletes nothing. Asserting the deletion without this would
+            # have read a refusal as a pass -- which is how the first version of this
+            # test failed, and the reason the fixture below is not decoration.
+            self.assertFalse(
+                _cleanup_agent_tmp_root(repo_root, orch, agent_run_id=run_id),
+                "unowned arid must be refused, or the ownership guard is not live",
+            )
+            self.assertTrue(copy_path.is_file(), "a refusal must not delete")
+
+            # The ownership proof the guard actually reads: this orchestration holds the
+            # launch record for the arid (tools/orchestration_runtime.py, Adv-5).
+            request_path = (
+                repo_root / "workspace" / "orchestrations" / orch
+                / "launches" / f"{run_id}.request.json"
+            )
+            request_path.parent.mkdir(parents=True, exist_ok=True)
+            request_path.write_text("{}\n", encoding="utf-8")
+
+            done = _cleanup_agent_tmp_root(repo_root, orch, agent_run_id=run_id)
+
+            self.assertTrue(done, "cleanup refused; the claim cannot be read off a refusal")
+            self.assertFalse(copy_path.exists(), "the gate-result copy outlived its run")
+            self.assertFalse(sibling.exists(), "control: ordinary scratch must go too")
+            self.assertFalse((repo_root / "workspace" / "tmp" / run_id).exists())
+
+    def test_the_rendered_gate_hint_sends_the_leaf_to_that_directory(self) -> None:
+        """The hint is injected into the launch prompt, so it is pinned on the RENDER.
+
+        The expectation is `_agent_tmp_gate_result_dir_ref` resolved for this leaf's own
+        agent_run_id -- the same helper `run_gate` writes through -- so a hint naming any
+        other directory fails here.
+
+        SCOPE, corrected in round 2. The first docstring said "a leaf never reads
+        `_build_gate_runbook`; it reads the string the conductor substituted into its
+        prompt", which described a method this test does not use: it calls
+        `_build_gate_runbook` directly, exactly like its siblings. Deleting `<gate_runbook>`
+        from both prompt templates leaves this class green. That substitution IS pinned --
+        by `GateRunbookTests.test_rendered_prompt_substitutes_runbook_and_passes_lint`, a
+        neighbouring check -- so the property holds by the pair, and only the claim about
+        which of them observes it was wrong.
+        """
+        from tools.orchestration_runtime import (
+            _build_gate_runbook,
+            _agent_tmp_gate_result_dir_ref,
+        )
+
+        arid = "arid-RUNBOOK"
+        payload = dict(GateRunbookTests.BASE, step="compile", substep="generate")
+        rb = _build_gate_runbook(payload)
+        self.assertTrue(rb.strip(), "compile.generate must emit a runbook")
+        self.assertEqual(payload["agent_run_id"], arid, "fixture drift: arid moved")
+        self.assertIn(_agent_tmp_gate_result_dir_ref(arid), rb)
 
 
 class ReplyBudgetTests(unittest.TestCase):

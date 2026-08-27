@@ -112,6 +112,11 @@ workspace/
 │
 ├── tmp/
 │   └── <agent_run_id>/                            each agent's allowed_tmp_root (referenced directly by literal path)
+│       ├── gate_results/
+│       │   └── <gate>.json                        (runtime-written: the same summary run-gate prints on the last line of its
+│       │                                           stderr, so a gate result survives past the command. One file per gate name.
+│       │                                           The agent may write this root, so this copy is a convenience for it and
+│       │                                           NOT evidence about it — the evidential record is gates/<arid>/<gate>.json)
 │       └── ...                                    (the place for intermediate scripts and scratch files, written with the `Write` tool)
 │       # note: place it directly under workspace/, not under orchestration_id. The
 │       # allowed_tmp_root the manifest declares is "workspace/tmp/<agent_run_id>", and
@@ -184,7 +189,7 @@ workspace/
 | `child_returns/<arid>.txt` | `record-child-return` | runtime | runtime (consumed by `deactivate-child`) | with Adv-30 token verification |
 | `agents/<arid>/dialogs/agent.result.json` | `record-agent-run` (on pass) | runtime | runtime / validator / parent orchestration agent | the child agent's structured result, including the per-leaf `usage` (below) |
 | `agents/<arid>/dialogs/agent.summary.txt` | same as above | runtime | same as above | single-line forbidden, must include the basis |
-| `gates/<arid>/<gate>.json` | at gate execution | runtime | **self Read forbidden** (internal artifact). obtained via stderr | the gate command's stderr, returned in the command result |
+| `gates/<arid>/<gate>.json` | at gate execution | runtime | **self Read forbidden** (internal artifact). obtained via stderr, or from the agent-readable copy at `workspace/tmp/<arid>/gate_results/<gate>.json` | the gate command's stderr, returned in the command result. This file is what DECIDES; the tmp copy decides nothing, though `skills/workflow-audit-claude` cross-checks the six fields they share when the copy survives. Write authority does NOT separate them -- `gates/<arid>/` is rw-bound into the leaf's own sandbox because the leaf runs `run-gate` itself, the terminal FS-diff exempts that whole prefix, and the interpreter route reaches both (`docs/HOOKS.md` §"Layer boundary"). The file tool is refused for the RECORD and ALLOWED for the copy, which is under the agent's own `allowed_tmp_root` — so the copy needs no residue at all to overwrite. What separates the two is which one the audit reads, not what it takes to write them |
 
 #### `usage` — the per-leaf token record
 
@@ -234,5 +239,7 @@ Example: `component/dynamics_shallow_water_flux_2d_rusanov_p0@0.1.0` → `compon
 ## tmp / TMPDIR
 
 Each agent's `allowed_tmp_root` is **`workspace/tmp/<agent_run_id>/`** (directly under workspace, not under orchestration_id). The runtime canonical source is `init_orchestration` (for the orchestration agent) and `record_launch` (for the child agent) of `tools/orchestration_runtime.py`, both of which write `workspace/tmp/<agent_run_id>` into `output_manifests/<agent_run_id>.json#allowed_tmp_root`.
+
+`run-gate` also writes into that root, at `workspace/tmp/<agent_run_id>/gate_results/<gate>.json`: the same summary it prints on the last line of its stderr, so a gate result outlives the command that produced it (issue #77 — the redirect that used to capture it is refused by the permission layer, see `docs/HOOKS.md` §"Layer boundary"). The root stays agent-writable, so that copy is a convenience for the agent and never evidence about it; `gates/<agent_run_id>/<gate>.json` is the evidential record. It is removed with the rest of the root when the agent reaches a terminal status.
 
 The agent directly specifies that literal path (`workspace/tmp/<agent_run_id>/...`). Because `output_manifest_write_guard` judges only the write-target path and does not reference the `$TMPDIR` env, bootstrap Bash such as `export TMPDIR=...` / `jq -er ...` is unnecessary (see the tmp-area rules in `docs/AGENT_CONTRACT.md`). These Bash commands are forbidden because they cause the workflow to stop with a Claude Code session sandbox approval request. Using a path other than the one the manifest declares (`/tmp/`, `/dev/shm/`, `workspace/orchestrations/<orch>/tmp/...` etc.) as tmp is blocked by `output_manifest_write_guard`.
