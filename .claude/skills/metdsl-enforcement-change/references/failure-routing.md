@@ -69,6 +69,38 @@ reading and confirming, not something known when it was written**.
   the handler, or **decide to ship the mismatch and write down why** (PR #57 took the third; a
   reviewer asked for it to be flagged as a conscious decision)
 
+## A branch a check gains when it starts DECLARING its tool's configuration (2026-08-28, PR #116)
+
+Adding a declared configuration to a tool invocation creates an exit status that did not exist
+before: **the invocation was refused**, as distinct from **the source was judged and failed**. The
+lint gate's `--select` is validated by the linter's own argument parser, so a rule code the
+installed build does not know exits without reading a file. Before the declared set the argv had
+no `--select` and the exit was unreachable.
+
+The routing table above sends "what the leaf can fix" to a content failure and everything else to
+a transport fail_closed — and the defect was that the gate never asked the question. `ok=false`
+became `failure_category="lint_findings"`, so a leaf was warm-resumed with an argv error as its
+excerpt and a file it has no write authority over as the thing to fix: the unwinnable loop of
+issue #110, in a place the fix for #110 created. A blank-slate reviewer found it in the last round
+of the loop.
+
+Three things worth keeping from how it was closed:
+
+- **The discriminator must not be an error string.** The obvious test — "exit 1 and the output
+  says `Error:`" — is a classification channel the checked source contributes text to, since file
+  names appear in diagnostics. What was used instead is the PRESENCE OF A VERDICT: an exit status
+  that cannot mean "there are findings".
+- **The first version over-refused, immediately.** It also refused an exit 1 that printed no
+  diagnostic line, and that false-refused a legitimate content-failure fixture whose output shape
+  it had not been measured against — one test run to surface, and the default error direction this
+  repository keeps recording.
+- **The half that could not be classified safely moved to LAUNCH.** A withdrawn code (the tool
+  knows it and refuses to select it) exits 1 like an ordinary findings run. Rather than parse
+  output, the declared invocation is run once over an EMPTY directory before the first leaf, where
+  a usable build reports `0 files scanned` and exits 0 — the whole answer is a bare exit status.
+  That is §3's "decide when it should surface" applied: whose fault, then where is the earliest
+  place it can be detected reliably, then keep the gate's refusal as the backstop.
+
 ## Attribution detail moved from SKILL.md (2026-08-25)
 
 The fuller statement of two rules `SKILL.md` §3 now carries compressed — when a correct

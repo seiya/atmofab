@@ -109,3 +109,29 @@ the case history that tells you how it closed.
   probe is individually fine, and only the SET is wrong — nothing in any one of them looks off, so
   it survives review by anyone who reads the test rather than asking what the family spans
 
+- **Your assertion searches a TOOL'S OUTPUT for a code, a name, or a marker** → PR #116, and the
+  most expensive single test defect this loop has produced. The change closed a `leaf shortcut`: a
+  leaf could put `! allow(C122, C131, C061, PORT011, C003)` above a `module` statement and take a
+  five-finding module to `All checks passed`. The fix added `--ignore-allow-comments`; the witness
+  asserted `assertIn("C122", completed.stdout)` for each suppressed code, plus a non-zero exit.
+  **Every one of those substrings is present when the fix is REVERTED**, because the linter prints
+  the offending source line under each diagnostic — and the offending line here is the allow
+  comment itself, which names all five codes. The exit stayed 1 through an unrelated finding the
+  directive did not name. So reverting the security half of the fix left one `assertEqual` on the
+  argv as the only failure, and a reviewer reproduced exactly that. The rewrite parses
+  `path:line:col: CODE` and adds the control the sibling row already had — the same input without
+  the flag must LOSE those codes. Two rows in that file now carry such a control; the one that did
+  not is the one that broke
+- **You added a prose pin: construct the document SAYING THE OPPOSITE and run it** → PR #116 again,
+  one round later. Four leaf-read contracts were coupled by three rows: no copyable
+  `! allow(<code>)` spelling anywhere in the file, every rule code named must be one the repository
+  has a position on, and each region must cite where the set is defined. A blank-slate reviewer
+  replaced each prohibition with its reversal — "an `! allow(...)` comment above the offending line
+  is the accepted way to clear a stubborn style finding" — and **1294 tests passed**. All three
+  rows are about what the document CARRIES; none is about what it ASSERTS. The fix requires each
+  region to contain the flag that makes the rule true, derived from `CHECK_FLAGS` so a rename
+  breaks the code and the documents together, and self-tests the detector against the reversal that
+  passed. Note which side of the tree was already safe: the PURE prompt template was pinned by a
+  token literal in `tools/tests/test_pure_leaf_wiring.py` and its reversal died there. The agentic
+  path — including the one document every `generate` leaf is force-read — had no counterpart
+

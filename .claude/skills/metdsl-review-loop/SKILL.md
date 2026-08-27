@@ -232,6 +232,16 @@ when a rule does not obviously apply:
      write the property instead and check it**
    - **Recording that a number "was right when written" does not stop the next rot.** Only
      changing the form stopped it
+   - **A BATCH EDIT THAT RAISES BEFORE IT WRITES LOSES THE EDITS THAT SUCCEEDED, and the commit
+     message then describes work that did not happen.** On PR #116 one script made three
+     corrections to a canonical document and asserted its way to a fourth; the fourth assertion
+     failed, the process exited before `write_text`, and I read the traceback as being about the
+     fourth alone — so three corrections the commit message claimed were never applied, and the
+     document shipped two rounds later still stating what the code had explicitly retracted. Two
+     rules, both cheap: **one write per edit, verified after the write** (re-read the file and
+     assert the new text is in it, not that the old text was in it), and **never let an assertion
+     for edit N+1 sit between edit N and its write**. A review round found it; nothing else could
+     have, because every symptom was in a document no test read
    - **And then verify the substitution RAN.** The remedy has its own failure mode: PR #98 escalated
      to scripted substitution after four hand-typed numbers came out wrong, and the very next commit
      shipped with **eight unsubstituted `{PLACEHOLDER}` tokens in its message**, directly under the
@@ -398,7 +408,7 @@ same run — it is a reason to re-run the positive verdicts your change actually
 
 ## Delegate verifiable work to sonnet
 
-**Operational conclusion (8 data points; the confound resolved in PR #72 by giving both models
+**Operational conclusion (9 data points; the confound resolved in PR #72 by giving both models
 the same checklist, the axis run as delegated in PR #88): sonnet ⊂ opus, with real misses.** Move **the mechanical-recomputation axis**
 permanently to sonnet and keep judgment on the up-model. Costs came out roughly equal, so "it is
 cheap, so run more" does not hold — **use it only to free up a slot**. Run one via `Agent` with
@@ -427,7 +437,9 @@ numbers" does not give "it matches on parser semantics". **Measure per axis.**
 
 **Tell it to report claims it cannot locate rather than accounting for them** — refusing a false
 premise I had put in its prompt is the most valuable thing this axis has done — and the most
-reproducible, having now happened in three of the eight data points (5, and twice on PR #107).
+reproducible, having now happened in four of the nine data points (5, twice on PR #107, and on
+PR #116, where it reported that the ten-item mutant list a commit message referenced was recorded
+nowhere it could find — true, and the thing I would least have checked myself).
 **This stays an experiment**: collect real/total findings, elapsed time and the overlap count,
 add a data point each time, and delete this section if it stops paying. How to read overlap, how
 not to confound the comparison, and why the reverse (opus reviewing sonnet's implementation) is
@@ -832,6 +844,23 @@ that tells you how it closed.
 - **A witness test's probe value contains the implemented value as a substring** → the assertion is
   automatically true via another clause (`"cmake"` contains `"make"`). **Assert inside the test
   that the probe has the property it needs**
+- **Your assertion searches a TOOL'S OUTPUT for a code, a name, or a marker** → check what else
+  that output carries. A linter, a compiler and a test runner all ECHO THE SOURCE LINE under the
+  diagnostic, so `assertIn("C122", stdout)` matches the very `! allow(C122, …)` comment whose
+  suppression the test is meant to disprove. On PR #116 that made the single behavioural witness
+  for a security fix pass with the fix REVERTED, leaving one string equality on the argv between a
+  reproduced `leaf shortcut` and a green suite. **Parse the structured form** (the diagnostic
+  line's `path:line:col: CODE` shape, or `--output-format json`) **and add the negative control**:
+  the same input WITHOUT the mechanism must lose exactly what the mechanism was supposed to keep.
+  This is `metdsl-enforcement-change`'s surface 5 — caller-controlled data mixed into a
+  classification channel — asked of a TEST rather than of a gate
+- **You added a prose pin: construct the document SAYING THE OPPOSITE and run it** → a pin that a
+  document mentions the rule is not a pin that it states the rule. On PR #116 three leaf-read
+  contracts were held to not CARRYING a forbidden directive and to citing where the rule lives;
+  replacing each prohibition with its exact reversal ("… is the accepted way to clear a stubborn
+  style finding") passed 1294 tests. **The reversal is the mutation for a prose pin**, and the
+  literal you require should be DERIVED from the code (the flag, the constant) so a rename breaks
+  both together
 - **You measured a family and reported the conclusion** → ask whether the family could have come
   out the other way. **Two checks, and the second is the one that finds things.** (a) Name a member
   for which the measurement could have failed; if you cannot, you measured a family that

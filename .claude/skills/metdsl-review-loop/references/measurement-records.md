@@ -61,3 +61,24 @@ The corpus sweep that would have caught it is one loop: every `workspace*/orches
 with a `launches/*.http_response.txt`, run through the instrument. It found two runs, and took
 under a minute.
 
+## PR #116 — three corrections a script reported as made, and never wrote
+
+One `python3 - <<PY` block made three replacements in a canonical document and then asserted the
+presence of a fourth. The fourth assertion failed, the process exited, and `write_text` — the last
+statement in the block — never ran. The traceback named the fourth replacement, so I fixed that one
+in a follow-up script and moved on. The three that had "succeeded" were discarded with the process.
+
+What shipped for two more rounds: a document stating that the invocation closed TWO channels while
+the code closed three and its own module docstring said the count was stated *because an earlier
+version said two and was wrong*; a paragraph promising a diagnostic the same commit had measured
+false and removed from four other documents; and an unqualified requirement whose measured
+counter-example two other files cited THAT document as recording. The commit message described all
+three as done. A disclosure round found it by reading the document.
+
+The rules this produces are in `SKILL.md` §"Before you hand it over" item 2. Both are mechanical:
+**one write per edit, verified by re-reading the file after the write** — asserting the OLD text was
+present proves nothing about whether the new text landed — and **never place an assertion for edit
+N+1 between edit N and its write**. The general form is the same one the placeholder episode above
+teaches: the remedy for hand-typed numbers has its own failure mode, and so does the remedy for
+hand-edited prose. Verify the write, not the intent.
+
