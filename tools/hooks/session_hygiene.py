@@ -99,6 +99,10 @@ def polling_wait_violation(command: str) -> tuple[str, dict[str, Any]] | None:
     A pure function of its argument, like `operator_safety_violation`, so a test drives it
     without a process and the DEV entrypoint stays stdlib-only.
     """
+    # NOT PINNED, and kept anyway: an empty command finds no match either, so a mechanism
+    # sweep cannot distinguish this guard from its absence. It mirrors
+    # `operator_safety_violation`'s first line, and "the mutation survives" is not grounds for
+    # deleting a defense in this repository — what it is grounds for is saying so here.
     if not command:
         return None
     match = _SLEEP_INVOCATION.search(command)

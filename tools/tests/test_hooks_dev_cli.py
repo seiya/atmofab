@@ -116,6 +116,12 @@ class DevCliRefusesASleepBasedWait(unittest.TestCase):
                         f"rg -n '{self._W}' docs/",
                         f"ls {self._W}y_dir",
                         f"{self._W}less 5",
+                        # A longer word ENDING in the wait, which is what the pattern's
+                        # separator class exists to stop matching. A mechanism sweep found
+                        # that class survivable — no row distinguished it — so these two are
+                        # the rows it was missing, not decoration.
+                        f"over{self._W} 5",
+                        f"my_{self._W} 10",
                         "python3 -m pytest -q"):
             with self.subTest(command=command):
                 self.assertEqual(0, self._run(command))
