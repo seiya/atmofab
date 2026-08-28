@@ -113,7 +113,7 @@ alone (`origin/main...HEAD` equals stage B's diff). That is the shape the stagin
       while its purpose was not. Prefixing with `command` does the same to a shell function.
     - **The prompt forbade background polling, in those words.** That is the fourth data point
       for "handing over the rules is not enough", and what justified moving the rule into the DEV
-      hook (`tools/hooks/session_hygiene.py`, PR #118) rather than rewording the prompt again.
+      hook (`tools/hooks/dev_session_hygiene.py`, PR #118) rather than rewording the prompt again.
       The hook refuses the wait only when a DURATION follows it, in command position; the bare
       word is not matched, so `pkill -f`, `grep` and `ps | grep` over it — the commands you run
       while CLEANING UP after this accident — still work. That carve-out is the point: a rule

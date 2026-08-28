@@ -20,7 +20,7 @@ cannot drift silently.
 What it enforces is two stdlib-only rule modules and nothing else.
 `tools/hooks/operator_safety.py` guards the operator's own checkout (the hard-reset
 command, the verify-bypass flags in dev mode) and is applied from the LEAF path too.
-`tools/hooks/session_hygiene.py` is DEV-ONLY and guards the session's own process table:
+`tools/hooks/dev_session_hygiene.py` is DEV-ONLY and guards the session's own process table:
 an agent session must not wait by sleeping. Everything else in `tools/hooks/` decides
 what a LEAF may do and does not apply to the operator, who owns the machine.
 
@@ -39,7 +39,7 @@ import sys
 from typing import Any
 
 from tools.hooks.operator_safety import operator_safety_violation
-from tools.hooks.session_hygiene import polling_wait_violation
+from tools.hooks.dev_session_hygiene import polling_wait_violation
 
 # The event spellings that carry a command. Both backends' names, normalized the way
 # `tools/hooks/common.py::normalize_hook_event_name` does, but spelled here so this
