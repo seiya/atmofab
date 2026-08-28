@@ -93,13 +93,38 @@ alone (`origin/main...HEAD` equals stage B's diff). That is the shape the stagin
 
 ## Process and shared-resource discipline (orphan waits, /tmp, pkill)
 
-- **Spell out the process and shared-resource rules.** Three accidents happened for real, each
+- **Spell out the process and shared-resource rules.** FOUR accidents happened for real, each
   spilling into other sessions: an unscoped `pkill -f "pytest tools/tests/"` took out my run and
   another session's; a `until ! kill -0 $(pgrep -f "pytest tools/tests")` wait **matched its own
   cmdline** and left four orphans spinning for 45 minutes; agents left 4.6GB in `/tmp` and 14.7GB in
   `~/.cache`, and the next reviewer hit `0 bytes free`. So the prompt says: no unscoped `pkill`;
   **create only waits whose exit condition can be satisfied, and no background polling**; `/tmp` is
   a shared tmpfs, delete the trees you create.
+  - **The fourth, and the one that produced a hook (issue #112's review, 2026-08-28).** A review
+    subagent polled a background job with ONE `Bash` call per poll, each leaving a shell and a
+    waiting child behind. After ~36 minutes there were **144** of them and the agent had produced
+    no report; the OPERATOR noticed before the session did. Killing the agent reaped every
+    process, so no `pkill` was needed — worth knowing, because they were children of live
+    wrappers rather than true orphans, and `TaskStop` is the first thing to try. Three details
+    make this one different from the three above:
+    - **It was not a loop, so no loop-detector would have seen it.** One wait per tool call.
+    - **It was a bypass of the harness's own block on a foreground wait.** The harness refuses
+      that wait in the foreground; the wrapper is what waits, so the letter of the rule was kept
+      while its purpose was not. Prefixing with `command` does the same to a shell function.
+    - **The prompt forbade background polling, in those words.** That is the fourth data point
+      for "handing over the rules is not enough", and what justified moving the rule into the DEV
+      hook (`tools/hooks/session_hygiene.py`, PR #118) rather than rewording the prompt again.
+      The hook refuses the wait only when a DURATION follows it, in command position; the bare
+      word is not matched, so `pkill -f`, `grep` and `ps | grep` over it — the commands you run
+      while CLEANING UP after this accident — still work. That carve-out is the point: a rule
+      that blocks its own cleanup gets turned off. It keeps the same known over-refusal
+      `operator_safety.py` records, and demonstrated it immediately by refusing two commands of
+      the very commit that introduced it.
+    - What replaced the prompt wording is in `SKILL.md` §Running a round: forbid the MECHANISM by
+      name, require the foreground with a bounded `timeout`, forbid running the whole suite in
+      one command, and say what to do when the work does not fit. Measured over the two rounds
+      after the change: zero orphans, and both reviewers that cut their sweeps still found real
+      defects.
   - **Handing over the rules is not enough. At the end of the round, check for orphans and kill
     them by PID.** All three were written explicitly in the prompt and broken anyway, in the shape
     this skill gives as its example (`until ! pgrep -f mut5.py` matching its own zsh command line).

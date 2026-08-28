@@ -19,7 +19,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
-from tools.hooks import dev_cli
+from tools.hooks import dev_cli, session_hygiene
 from tools.hooks.adapters.claude import ClaudeHookAdapter
 from tools.hooks.adapters.codex import CodexHookAdapter
 from tools.hooks.common import HookDecision, HookDecisionAction, HookEventName
@@ -57,6 +57,99 @@ class DevCliRefusesTheTwoOperatorSafetyCommands(unittest.TestCase):
             "claude", "PreToolUse", "python3 tools/x.py --force-pass",
             extra_env={"METDSL_WORKFLOW_EXEC_MODE": "workflow"})
         self.assertEqual(code, 0)
+
+
+class DevCliRefusesASleepBasedWait(unittest.TestCase):
+    """The DEV-only session-hygiene rule (`tools/hooks/session_hygiene.py`).
+
+    A review subagent that had been told in its own prompt not to poll left 144 shells and
+    `sleep` children on a shared machine in 36 minutes and returned no report. The prompt
+    already said it; three earlier accidents happened with the rule in the prompt too. So it
+    moved into the layer that can refuse.
+
+    Driven through the ENTRYPOINT, not only the predicate, because the mutation sweep on this
+    repository has twice found a gate whose helper was pinned while the call was deletable.
+    """
+
+    #: Split so this FILE never carries a refusable command literal — the rule matches raw text,
+    #: and a test file quoting it would be refused if it were ever read as a command.
+    _W = "sl" + "eep"
+
+    def _run(self, command: str) -> int:
+        return dev_cli.main([
+            "--backend", "claude", "--event", "PreToolUse",
+            "--input-json", json.dumps({"tool_input": {"command": command}})])
+
+    def test_the_shapes_that_actually_appeared_are_refused(self) -> None:
+        """Every row is a spelling observed in the incident or an obvious neighbour of one.
+
+        `command <wait>` is the one that matters most: it is how the harness's own block on a
+        foreground wait was got past, so a rule that missed it would refuse only the spelling
+        nobody used."""
+        for command in (f"{self._W} 60",
+                        f"command {self._W} 10",
+                        f"eval '{self._W} 1799; true'",
+                        f"/bin/{self._W} 30",
+                        f"/usr/bin/{self._W} 30",
+                        # A leading backslash defeats a shell function or alias and is the one
+                        # prefix the separator branch cannot reach — measured, and the row exists
+                        # because the sweep found that group unwitnessed.
+                        f"\\{self._W} 2",
+                        f"nohup {self._W} 100 &",
+                        f"until [ -s out ]; do {self._W} 5; done",
+                        f"for i in $(seq 1 30); do {self._W} 10; done",
+                        f"cat f; {self._W} $N"):
+            with self.subTest(command=command):
+                self.assertEqual(2, self._run(command))
+
+    def test_the_word_without_a_duration_is_not_refused(self) -> None:
+        """THE OVER-REFUSING DIRECTION, which is this repository's recorded default error.
+
+        Every row here is a command an operator or a reviewer runs while dealing with the very
+        problem the rule exists for — inspecting or killing the processes. A rule that refused
+        them would block the cleanup, and the first version of a rule like this would have: a
+        bare substring match on the word catches all of them."""
+        for command in (f"pkill -f {self._W}",
+                        f"grep {self._W} tools/hooks/session_hygiene.py",
+                        f'ps -eo args | grep -cE "^{self._W} [0-9]"',
+                        f"ps aux | grep {self._W}",
+                        f"rg -n '{self._W}' docs/",
+                        f"ls {self._W}y_dir",
+                        f"{self._W}less 5",
+                        "python3 -m pytest -q"):
+            with self.subTest(command=command):
+                self.assertEqual(0, self._run(command))
+
+    def test_the_refusal_names_the_alternatives_in_reachability_order(self) -> None:
+        """A remedy is read in order and the first line is the one followed.
+
+        The most likely truth is that the session is polling work the harness already tracks, so
+        that comes first; the tool for a condition it cannot see comes second; the escape hatch
+        for a genuine pause comes last. Pinned by ORDER, not by presence, because a message
+        carrying all three in the wrong order sends the reader to the rarest cause."""
+        reason = session_hygiene.polling_wait_violation(f"{self._W} 60")
+        assert reason is not None
+        text = reason[0]
+        self.assertLess(text.index("DO NOT POLL"), text.index("Monitor tool"))
+        self.assertLess(text.index("Monitor tool"), text.index("another terminal"))
+
+    def test_the_audit_detail_names_the_policy(self) -> None:
+        """The record has to say which rule fired, or a refusal is unattributable after the
+        fact — the same reason `operator_safety` carries a `policy` key."""
+        violation = session_hygiene.polling_wait_violation(f"{self._W} 5")
+        assert violation is not None
+        self.assertEqual(violation[1]["policy"], "forbid_sleep_wait_in_agent_session")
+
+    def test_the_leaf_path_does_not_carry_this_rule(self) -> None:
+        """DEV-ONLY, and that is a decision rather than an omission.
+
+        A leaf that sleeps wastes its own budget and gets no closer to reporting its task done,
+        which `AGENTS.md` §Development premises puts out of the defended set. Pinned by reading
+        the leaf-facing sources, so importing it there fails here rather than silently widening
+        a leaf policy."""
+        for rel in ("tools/hooks/cli.py", "tools/hooks/common.py"):
+            source = (REPO_ROOT / rel).read_text(encoding="utf-8")
+            self.assertNotIn("session_hygiene", source, rel)
 
 
 class DevCliReadsTheCodexPayloadShape(unittest.TestCase):
@@ -234,6 +327,21 @@ class DevCliWrapperCommandsExecute(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, msg=(rel, event, proc.stderr))
 
 
+def _dev_cli_repo_imports() -> set[str]:
+    """The `tools.` modules the DEV entrypoint imports, read from its SOURCE.
+
+    Source, not a loaded module: another test may already have imported something, which would
+    make an import-observing read answer for the wrong reason."""
+    tree = ast.parse((REPO_ROOT / "tools" / "hooks" / "dev_cli.py").read_text(encoding="utf-8"))
+    found: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            found.update(a.name for a in node.names if a.name.startswith("tools."))
+        elif isinstance(node, ast.ImportFrom) and node.module and node.module.startswith("tools."):
+            found.add(node.module)
+    return found
+
+
 class DevCliImportBoundary(unittest.TestCase):
     """The boundary is the module's purpose, so it is pinned rather than asked for.
 
@@ -254,26 +362,34 @@ class DevCliImportBoundary(unittest.TestCase):
                 imported.update(alias.name for alias in node.names)
             elif isinstance(node, ast.ImportFrom) and node.module:
                 imported.add(node.module)
-        repo_imports = {name for name in imported if name.startswith("tools.")}
-        self.assertEqual(repo_imports, {"tools.hooks.operator_safety"})
+        repo_imports = _dev_cli_repo_imports()
+        self.assertEqual(
+            repo_imports,
+            {"tools.hooks.operator_safety", "tools.hooks.session_hygiene"},
+            "the DEV entrypoint may import only its stdlib-only rule modules; anything else "
+            "can refuse the operator out of the session they are editing in")
         for name in self.FORBIDDEN:
             for spelling in imported:
                 self.assertFalse(
                     spelling == name or spelling.startswith(name + "."),
                     f"dev_cli must not import {spelling}")
 
-    def test_operator_safety_imports_only_stdlib(self) -> None:
-        """The one module `dev_cli` does import carries the same obligation, or the
-        boundary is one hop long."""
-        tree = ast.parse((REPO_ROOT / "tools" / "hooks" / "operator_safety.py").read_text(
-            encoding="utf-8"))
-        imported = set()
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                imported.update(alias.name for alias in node.names)
-            elif isinstance(node, ast.ImportFrom) and node.module:
-                imported.add(node.module)
-        self.assertEqual({n for n in imported if n.startswith("tools.")}, set())
+    def test_the_rule_modules_import_only_stdlib(self) -> None:
+        """Every module `dev_cli` imports carries the same obligation, or the boundary is
+        one hop long. Enumerated from the entrypoint's OWN imports rather than listed here,
+        so a third rule module cannot be added without arriving in this check."""
+        modules = _dev_cli_repo_imports()
+        self.assertTrue(modules)
+        for module in sorted(modules):
+            rel = Path(*module.split(".")).with_suffix(".py")
+            tree = ast.parse((REPO_ROOT / rel).read_text(encoding="utf-8"))
+            imported = set()
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    imported.update(alias.name for alias in node.names)
+                elif isinstance(node, ast.ImportFrom) and node.module:
+                    imported.add(node.module)
+            self.assertEqual({n for n in imported if n.startswith("tools.")}, set(), module)
 
     def test_dev_cli_runs_with_the_leaf_entrypoint_unimportable(self) -> None:
         """The property the boundary buys, executed rather than argued: with
@@ -283,8 +399,16 @@ class DevCliImportBoundary(unittest.TestCase):
         import tempfile
         with tempfile.TemporaryDirectory() as tmp:
             fake = Path(tmp)
-            for rel in ("tools/__init__.py", "tools/hooks/__init__.py",
-                        "tools/hooks/dev_cli.py", "tools/hooks/operator_safety.py"):
+            # The rule modules are DERIVED from the entrypoint's own imports, not listed: a
+            # third one added without arriving here would make this row fail on an import
+            # error and read as a boundary breach rather than a stale fixture, which is how
+            # it failed once.
+            rule_modules = [
+                str(Path(*m.split("."))) + ".py"
+                for m in _dev_cli_repo_imports()
+            ]
+            for rel in ["tools/__init__.py", "tools/hooks/__init__.py",
+                        "tools/hooks/dev_cli.py", *rule_modules]:
                 (fake / rel).parent.mkdir(parents=True, exist_ok=True)
                 # `tools/` is a namespace package here - no `__init__.py` on disk.
                 if (REPO_ROOT / rel).exists():

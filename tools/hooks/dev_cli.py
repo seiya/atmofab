@@ -17,9 +17,17 @@ protocol encoding instead of importing the adapters;
 `tools/tests/test_hooks_dev_cli.py` pins its output against the real adapters so the two
 cannot drift silently.
 
-What it enforces is `tools/hooks/operator_safety.py`, and only that: `git reset --hard`,
-and the verify-bypass flags in dev mode. Everything else in `tools/hooks/` decides what
-a LEAF may do and does not apply to the operator, who owns the machine.
+What it enforces is two stdlib-only rule modules and nothing else.
+`tools/hooks/operator_safety.py` guards the operator's own checkout (the hard-reset
+command, the verify-bypass flags in dev mode) and is applied from the LEAF path too.
+`tools/hooks/session_hygiene.py` is DEV-ONLY and guards the session's own process table:
+an agent session must not wait by sleeping. Everything else in `tools/hooks/` decides
+what a LEAF may do and does not apply to the operator, who owns the machine.
+
+The two modules stay separate because their AUDIENCES differ, not for tidiness. A leaf
+that sleeps gets no closer to reporting its task done, so `AGENTS.md` §Development
+premises puts it out of the defended set; importing the hygiene rule on the leaf path
+would be a refusal that buys nothing.
 """
 
 from __future__ import annotations
@@ -31,6 +39,7 @@ import sys
 from typing import Any
 
 from tools.hooks.operator_safety import operator_safety_violation
+from tools.hooks.session_hygiene import polling_wait_violation
 
 # The event spellings that carry a command. Both backends' names, normalized the way
 # `tools/hooks/common.py::normalize_hook_event_name` does, but spelled here so this
@@ -106,9 +115,11 @@ def main(argv: list[str] | None = None) -> int:
         if event not in _PRE_COMMAND_EVENTS and event not in _PERMISSION_REQUEST_EVENTS:
             return 0
         command = _extract_command(payload)
+        # Order is not load-bearing — both refuse — but the checkout-guarding rule is asked
+        # first so a command that trips both reports the more serious cause.
         violation = operator_safety_violation(
             command, workflow_exec_mode=os.environ.get("METDSL_WORKFLOW_EXEC_MODE")
-        )
+        ) or polling_wait_violation(command)
         if violation is None:
             return 0
         reason = violation[0]
