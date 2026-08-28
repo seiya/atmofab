@@ -3083,6 +3083,487 @@ class TransportFailureTest(unittest.TestCase):
         self.assertEqual(sup[0]["--run-ids"], ["child-1"])  # the build step agent
 
 
+class ValidateGateReasonFromMetaTest(unittest.TestCase):
+    """Issue #114: the terminal reason for a failed `Validate.pre_judge` / `post_judge` is
+    derived from the substep's OWN meta, not from its index in `SUBSTEPS["validate"]`.
+
+    The measured incident (`orch_20260827T105454Z_99f63b7e`) was a `pre_judge` whose meta
+    recorded `status: "pass"` / `failure_category: null` — it failed the deliverable freshness
+    gate, not the DAG readiness check — yet was reported as `validate_pre_judge_dag_incomplete`,
+    naming a dependency closure the same record showed complete. Each substep is driven to fail
+    three ways here (a recorded category, a meta with no category, no meta at all) and the three
+    reasons must be distinct, so `failure_analysis.json` says which of the three it was."""
+
+    class _C(_FakeConductor):
+        def _write_lineage(self, refs):  # type: ignore[override]
+            return []
+
+        def _ensure_fresh_producer_id(self, refs, phase):  # type: ignore[override]
+            return None  # keep run_id stable so the seeded run-node dir is read back
+
+    def _refs(self) -> wc.NodeRefs:
+        return wc.NodeRefs(
+            node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
+            ir_id="x_1_001", pipeline_id="x_1_001", source_id="src_1_001",
+            binary_id="bin_1_001", run_id="run_1_001", source_binary_id="bin_1_001")
+
+    def _run(self, repo: Path, substep: str, meta: dict | None) -> wc.PhaseOutcome:
+        """Run the validate phase with `substep` failing and `meta` as its authored meta
+        (None -> the substep writes no meta at all)."""
+        c = self._C(repo_root=repo, orchestration_id="orch_x",
+                    orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
+        c.calls = []
+        if meta is not None:
+            setattr(c, f"{substep}_meta_fn", lambda n, m=meta: m)
+        c.status_fn = lambda phase, sub, n: (
+            "fail" if (phase == "validate" and sub == substep) else "pass")
+        return c.run_phase(self._refs(), "validate")
+
+    # The four meta shapes, and what each one MEANS. `stale_deliverable` is the state the
+    # measured incident was in and the only category-less state any writer produces today;
+    # `no_category` (a non-`pass` status with no category) is the honest fallback if one ever
+    # does; `no_meta` is corruption. Kept as data so every test below drives the same four.
+    _SHAPES: tuple[tuple[str, object], ...] = (
+        ("category", {"status": "fail", "failure_excerpt": "boom",
+                      "disposition": "fail_closed"}),          # `failure_category` filled in
+        ("stale_deliverable", {"status": "pass", "failure_category": None,
+                               "failure_excerpt": None}),
+        ("no_category", {"status": "fail", "failure_category": None}),
+        ("no_meta", None),
+    )
+
+    def _reasons(self, substep: str, category: str) -> dict[str, str]:
+        import tempfile
+        out = {}
+        for label, shape in self._SHAPES:
+            meta = None if shape is None else dict(shape)  # type: ignore[arg-type]
+            if label == "category":
+                meta["failure_category"] = category  # type: ignore[index]
+            with tempfile.TemporaryDirectory() as td:
+                oc = self._run(Path(td), substep, meta)
+                self.assertEqual(oc.decision.action, "fail_closed", label)
+                out[label] = oc.decision.reason
+        return out
+
+    def test_pre_judge_four_failure_shapes_get_four_reasons(self) -> None:
+        r = self._reasons("pre_judge", "pre_judge_dag_incomplete")
+        # The one case the historic label actually names keeps it verbatim.
+        self.assertEqual(r["category"], "validate_pre_judge_dag_incomplete")
+        self.assertEqual(r["stale_deliverable"],
+                         "validate_pre_judge_deliverable_not_freshly_written")
+        self.assertEqual(r["no_category"], "validate_pre_judge_failed_without_category")
+        self.assertEqual(r["no_meta"], "validate_pre_judge_meta_missing")
+        self.assertEqual(len(set(r.values())), 4)
+
+    def test_post_judge_four_failure_shapes_get_four_reasons(self) -> None:
+        r = self._reasons("post_judge", "pre_judge_violation")
+        # (The `post_judge` substep runs the validator stage literally named `pre_judge`, so
+        # its violation category — and the reason built from it — carry that spelling.)
+        self.assertEqual(r["category"], "validate_pre_judge_violation")
+        self.assertEqual(r["stale_deliverable"],
+                         "validate_post_judge_deliverable_not_freshly_written")
+        self.assertEqual(r["no_category"], "validate_post_judge_failed_without_category")
+        self.assertEqual(r["no_meta"], "validate_post_judge_meta_missing")
+        self.assertEqual(len(set(r.values())), 4)
+
+    def test_no_shape_is_reported_as_a_dag_gap_it_is_not(self) -> None:
+        # The defect itself, stated as an invariant: `validate_pre_judge_dag_incomplete` appears
+        # ONLY for a meta that recorded that category.
+        for substep, cat in (("pre_judge", "pre_judge_dag_incomplete"),
+                             ("post_judge", "pre_judge_violation")):
+            r = self._reasons(substep, cat)
+            for label, _ in self._SHAPES:
+                if label == "category":
+                    continue
+                self.assertNotIn("dag_incomplete", r[label], f"{substep}/{label}")
+
+    def test_a_non_string_category_is_no_category_not_a_reason_naming_it(self) -> None:
+        # Round 2: a `failure_category` that is not a string used to be coerced with `str()`,
+        # spelling terminal reasons like `validate_['a']` — a record naming a category that does
+        # not exist. It is now treated as no category, so the status branch answers instead.
+        f = wc.classify_validate_gate_failure
+        for raw in (["a"], 7, {"x": 1}, True):
+            self.assertEqual(f("pre_judge", {"failure_category": raw, "status": "pass"}),
+                             "validate_pre_judge_deliverable_not_freshly_written", raw)
+            self.assertEqual(f("pre_judge", {"failure_category": raw, "status": "fail"}),
+                             "validate_pre_judge_failed_without_category", raw)
+
+    def test_orphan_tombstone_carries_the_same_reason_except_on_the_escalate_arm(self) -> None:
+        # The skip-write branch tombstones the attempt's arids; on the terminal arms its reason
+        # must not disagree with the terminal reason (both are read by an operator
+        # reconstructing a dead run). Round 1 established that the property does NOT hold
+        # unconditionally, and an earlier commit message asserted it as if it did: the tombstone
+        # is written from `gate_reason`, and the dev-escalate arm then OVERRIDES
+        # `decision.reason` with `escalate_reason`, so the two differ there. `origin/main`
+        # differed on that arm too, so this is the pre-existing behaviour, pinned rather than
+        # changed — what changed is that the claim now matches it. The second half of this test
+        # is what stops the claim from drifting back.
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            c = self._C(repo_root=Path(td), orchestration_id="orch_x",
+                        orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
+            c.calls = []
+            c.pre_judge_meta_fn = lambda n: {"status": "pass", "failure_category": None}
+            c.status_fn = lambda phase, sub, n: (
+                "fail" if (phase == "validate" and sub == "pre_judge") else "pass")
+            oc = c.run_phase(self._refs(), "validate")
+            self.assertEqual(oc.decision.reason,
+                             "validate_pre_judge_deliverable_not_freshly_written")
+            self.assertNotIn("write-step-result", [s for s, _ in c.calls])
+            sup = [cap for s, cap in c.calls if s == "add-superseded-runs"]
+            self.assertEqual(len(sup), 1)
+            self.assertIn(oc.decision.reason, sup[0]["--reason"])
+        # The escalate arm, in dev (prod returns an escalate decision without tombstoning at
+        # all). The terminal reason is the escalate reason; the tombstone keeps the gate reason.
+        with tempfile.TemporaryDirectory() as td:
+            c = self._C(repo_root=Path(td), orchestration_id="orch_x",
+                        orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"),
+                        env={}, workflow_mode="dev")
+            c.calls = []
+            c.post_judge_meta_fn = lambda n: {"status": "fail",
+                                              "failure_category": "pre_judge_violation",
+                                              "disposition": "escalate"}
+            c.status_fn = lambda phase, sub, n: (
+                "fail" if (phase == "validate" and sub == "post_judge") else "pass")
+            oc = c.run_phase(self._refs(), "validate")
+            # fail_closed, not escalate: that is what makes this the DEV arm (prod returns an
+            # escalate decision and tombstones nothing, so the assertions below would not hold).
+            self.assertEqual(oc.decision.action, "fail_closed")
+            self.assertEqual(oc.decision.reason, "validate_post_judge_unknown")
+            sup = [cap for s, cap in c.calls if s == "add-superseded-runs"]
+            self.assertEqual(len(sup), 1)
+            self.assertEqual(sup[0]["--reason"],
+                             "validate_gate_fail_orphan: validate_pre_judge_violation")
+            self.assertNotIn(oc.decision.reason, sup[0]["--reason"])
+
+    def test_only_post_judge_reads_the_escalate_disposition(self) -> None:
+        """Round 2's census: the `failed_sub == "post_judge"` conjunct of `is_escalate` was
+        unwitnessed, and deleting it produces exactly the defect #114 exists to fix — a
+        `pre_judge` meta carrying `disposition: "escalate"` reported as
+        `validate_post_judge_unknown`, a reason naming a substep that did not fail. `disposition`
+        is a post_judge field; a pre_judge meta carrying one is a corrupt record, and it must not
+        steer the terminal reason."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            c = self._C(repo_root=Path(td), orchestration_id="orch_x",
+                        orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"),
+                        env={}, workflow_mode="dev")
+            c.calls = []
+            c.pre_judge_meta_fn = lambda n: {"status": "fail",
+                                             "failure_category": "pre_judge_dag_incomplete",
+                                             "disposition": "escalate"}
+            c.status_fn = lambda phase, sub, n: (
+                "fail" if (phase == "validate" and sub == "pre_judge") else "pass")
+            oc = c.run_phase(self._refs(), "validate")
+            self.assertEqual(oc.decision.reason, "validate_pre_judge_dag_incomplete")
+            self.assertNotIn("post_judge", oc.decision.reason)
+
+    def test_the_conformance_arm_tombstone_spelling(self) -> None:
+        """The judge-conformance arm's tombstone changed spelling on this branch, from
+        `judge_conformance_violation` (origin/main) to `validate_judge_conformance_violation`,
+        so that every arm of the skip-write branch labels its tombstone with the same string it
+        terminalizes under. Round 2's census found the change unwitnessed and undocumented — an
+        operator-read record altered with nothing observing it. Pinned here; the terminal reason
+        on this arm is unchanged from main."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            c = self._C(repo_root=Path(td), orchestration_id="orch_x",
+                        orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"),
+                        env={}, workflow_mode="dev")
+            c.calls = []
+            c.judge_semantic_decision_value = "pass"  # decision != "fail" -> conformance block
+            c.status_fn = lambda phase, sub, n: (
+                "fail" if (phase == "validate" and sub == "judge") else "pass")
+            oc = c.run_phase(self._refs(), "validate")
+            self.assertEqual(oc.decision.reason, "validate_judge_conformance_violation")
+            sup = [cap for s, cap in c.calls if s == "add-superseded-runs"]
+            self.assertEqual(len(sup), 1)
+            self.assertEqual(sup[0]["--reason"],
+                             "validate_gate_fail_orphan: validate_judge_conformance_violation")
+
+    def test_run_phase_terminalizes_before_classify_failure_is_consulted(self) -> None:
+        # The claim that `classify_failure`'s gate branches are DEFENSIVE, established by
+        # execution rather than by reading the control flow: drive a real pre_judge and a real
+        # post_judge failure through run_phase with classify_failure replaced by a tripwire.
+        #
+        # ONE tripwire class serves all three cases, `execute` included. That is the whole point
+        # of the control: round 1 found the earlier version defining a SECOND class for it, so
+        # unwiring the first one (renaming the override) left the control green and both
+        # assertions on the gate substeps vacuous — the test passed with nothing observing
+        # anything. Sharing the class means the control cannot be green unless the same override
+        # the gate cases rely on is live.
+        import tempfile
+        consulted: list[str] = []
+
+        class _T(self._C):  # type: ignore[misc]
+            def classify_failure(self, refs, phase, outcomes):  # type: ignore[override]
+                consulted.append(phase)
+                return wc.RouteDecision("fail_closed", reason="tripwire")
+
+        def _drive(td: str, substep: str, meta: dict | None) -> wc.PhaseOutcome:
+            consulted.clear()
+            c = _T(repo_root=Path(td), orchestration_id="orch_x",
+                   orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
+            c.calls = []
+            if meta is not None:
+                setattr(c, f"{substep}_meta_fn", lambda n, m=meta: m)
+            c.status_fn = lambda phase, sub, n, want=substep: (
+                "fail" if (phase == "validate" and sub == want) else "pass")
+            return c.run_phase(self._refs(), "validate")
+
+        # Positive control FIRST, so a dead tripwire fails here before the two claims below can
+        # be read as evidence: `execute` is a validate substep run_phase does NOT terminalize.
+        with tempfile.TemporaryDirectory() as td:
+            oc = _drive(td, "execute", None)
+            self.assertEqual(consulted, ["validate"])
+            self.assertEqual(oc.decision.reason, "tripwire")
+        gate_meta = {"status": "fail", "failure_category": "pre_judge_dag_incomplete",
+                     "disposition": "fail_closed"}
+        for substep in ("pre_judge", "post_judge"):
+            with tempfile.TemporaryDirectory() as td:
+                oc = _drive(td, substep, gate_meta)
+                self.assertEqual(consulted, [], substep)
+                # Assert the reason POSITIVELY. `assertNotEqual(..., "tripwire")` was the other
+                # half of the round-1 finding: it is satisfied by any string at all, including
+                # one produced with the tripwire gone.
+                self.assertEqual(oc.decision.reason, "validate_pre_judge_dag_incomplete", substep)
+
+    def test_a_non_dict_gate_meta_terminalizes_instead_of_crashing(self) -> None:
+        # Round 1, both axes: the classifier's own `isinstance` guard was unreachable for
+        # `post_judge`, because `_maybe_warm_resume_post_judge` reads the same file first with
+        # `or {}` — which passes a truthy non-dict straight through to `.get`. Driven through
+        # run_phase (NOT the helper), which is the only place that ordering is visible.
+        # The three payloads are INTERCHANGEABLE, not three witnesses: each serializes to a
+        # non-object JSON value and takes the identical path through `_read_gate_meta`. They are
+        # kept because the reason the guard exists is "whatever a corrupt file parses to", and
+        # naming three of them says that better than one does (round 2 flagged the implication
+        # that they were three independent probes — they are not).
+        import tempfile
+        for substep in ("pre_judge", "post_judge"):
+            for payload in (["not", "an", "object"], "oops", 7):
+                with tempfile.TemporaryDirectory() as td:
+                    c = self._C(repo_root=Path(td), orchestration_id="orch_x",
+                                orchestration_agent_run_id="ORCH",
+                                llm_config=_cfg("claude"), env={})
+                    c.calls = []
+                    setattr(c, f"{substep}_meta_fn", lambda n, pl=payload: pl)
+                    c.status_fn = lambda phase, sub, n, want=substep: (
+                        "fail" if (phase == "validate" and sub == want) else "pass")
+                    oc = c.run_phase(self._refs(), "validate")
+                    self.assertEqual(oc.decision.action, "fail_closed", (substep, payload))
+                    self.assertEqual(oc.decision.reason,
+                                     f"validate_{substep}_meta_missing", (substep, payload))
+
+    # --- rule 3-a coupling: three sites state this rule (the code that computes the reason,
+    # the operator's RUNBOOK entry, and the phase contract). The code is the one definition;
+    # the two documents are checked AGAINST it, never the reverse. RUNBOOK is coupled by
+    # MEMBERS because it names all four reasons in full; phase_04 is coupled by POINTER
+    # because it states the rule as a template and defers to RUNBOOK for the spellings.
+    # Paths are resolved from REPO_ROOT, not from the CWD: a bare relative path makes the two
+    # checks fail with FileNotFoundError when pytest is started from anywhere but the checkout
+    # root, which reads as a missing document rather than as a harness problem (round 1).
+    _RUNBOOK = "docs/RUNBOOK.md"
+    # The SECTION each rule is stated in, and a string that exists in the same file but OUTSIDE
+    # that section — the control that proves the reader is actually bounded.
+    _RUNBOOK_SECTION = "## 3-1. Resuming a failed workflow"
+    _RUNBOOK_CONTROL = "## 3-0. Auto-running dependencies"
+
+    def _section(self, rel: str, heading: str, control: str) -> str:
+        """The one section of `rel` that opens with `heading`, up to the next `## ` heading.
+
+        A SECTION, not a line. Three rounds running, a line-bounded reader refused ordinary
+        maintenance and said the wrong thing about it: first `assertEqual(len(lines), 1)`
+        refused a second anchored line, then the all-anchored-lines form refused any edit that
+        moved content onto a line the anchor did not travel to — a plain markdown reflow, a
+        second issue reference, splitting one bullet into sub-bullets — and reported the moved
+        text as MISSING FROM THE DOCUMENT. Nothing the rule is about cares where the line breaks
+        fall; it cares that the section states the rule. So the bound moved up one level, which
+        is the last level that still is a bound (the file is not one — over the whole file these
+        reason names occur in neighbouring entries, and the check would pass on those).
+        """
+        text = (REPO_ROOT / rel).read_text(encoding="utf-8")
+        self.assertIn(heading, text, f"{rel}: section {heading!r} is gone")
+        body = text.split(heading, 1)[1]
+        nxt = re.search(r"^## ", body, re.MULTILINE)
+        section = body[:nxt.start()] if nxt else body
+        # Self-test the bound: the section must be a PROPER part of the file, and the control
+        # heading — which precedes this section — must be outside it. The second half is weak by
+        # construction (a control that precedes the section cannot be inside a forward-running
+        # split), so it catches a reader that widened BACKWARD, not one that ran past the end;
+        # the length check is what bounds the forward side. Without this the assertions
+        # below could be passing on the whole document.
+        self.assertLess(len(section), len(text))
+        self.assertIn(control, text,
+                      f"{rel}: {control!r} is this check's BOUND CONTROL — it must exist in the "
+                      f"file and outside {heading!r}. If you renamed that heading, update "
+                      f"`_RUNBOOK_CONTROL`; nothing else here depends on it")
+        self.assertNotIn(control, section,
+                         f"{rel}: the bound control {control!r} is inside {heading!r}, so this "
+                         f"check can no longer tell a bounded read from reading the whole file")
+        return section
+
+    def test_the_runbook_documents_every_record_shaped_reason_family(self) -> None:
+        """The ONE document coupling this branch keeps. `docs/RUNBOOK.md` §3-1 is the operator's
+        procedure for these reasons, and a family missing from it is a reason with no reading.
+
+        Coupled by the SUFFIX CONSTANTS, which is the form the prose states the rule in
+        (`validate_<substep>_meta_missing`, not the two expanded spellings) — rule 3-a couples by
+        members only where the prose names members. A fourth constant fails here by name.
+
+        Limit, stated rather than machined around: moving the bullet out of §3-1 fails this
+        check, and `_RUNBOOK_SECTION` is then what to update. Three earlier versions of this
+        reader tried to be robust to that by widening the bound (one line -> all anchored lines
+        -> the section) and each one refused ordinary maintenance and reported the moved text as
+        missing. The bound stops here; the failure message names the constant so the maintainer
+        can see what is actually being asked for."""
+        suffixes = {k: v for k, v in vars(wc).items()
+                    if k.startswith("VALIDATE_GATE_") and k.endswith("_SUFFIX")
+                    and isinstance(v, str)}
+        self.assertTrue(suffixes)
+        # Each constant IS a reason family: the classifier must build a reason ending in it.
+        produced = {wc.classify_validate_gate_failure(sub, meta)
+                    for sub in ("pre_judge", "post_judge")
+                    for meta in ({"status": "fail"}, {"status": "pass"}, None)}
+        section = self._section(self._RUNBOOK, self._RUNBOOK_SECTION, self._RUNBOOK_CONTROL)
+        for name, suffix in sorted(suffixes.items()):
+            self.assertTrue(
+                any(r.endswith(suffix) for r in produced),
+                f"{name} = {suffix!r} is not the tail of any reason the classifier builds")
+            # AT ITS STATEMENT POSITION — the family must OPEN its own bullet, not merely
+            # occur somewhere in the section. A plain `assertIn` passed with the defining
+            # bullet renamed, satisfied by the incidental mention of the same suffix in the
+            # bullet below it; that is the substring trap the round-2 tripwire fix already
+            # closed once, at document level this time.
+            # The placeholder spelling the prose uses, or EITHER literal reason: a document
+            # that names them in full states the rule at least as well, and refusing that
+            # would be this check dictating prose rather than checking coverage. Bold
+            # emphasis is allowed on the opener because four sibling bullets in the same
+            # section already use it — a check that refuses the section's own dominant
+            # formatting is refusing maintenance, not catching a regression. (Rounds 4 and 5
+            # each found one of these three forms wrongly refused.)
+            reason = "(?:<substep>|pre_judge|post_judge)" + re.escape(suffix)
+            opener = re.compile(r"^\s*- \*{0,2}`validate_" + reason + r"`", re.MULTILINE)
+            self.assertTrue(
+                opener.search(section),
+                f"{self._RUNBOOK} {self._RUNBOOK_SECTION} has no bullet OPENING with "
+                f"`validate_<substep>{suffix}` ({name}) — an operator hitting that reason has "
+                f"no procedure to read. The opener may name `<substep>` or either substep in "
+                f"full, and may be bold. Three things make this fail: the family is not "
+                f"documented; it is mentioned only in prose rather than opening its own "
+                f"bullet; or the entry moved to another section, which is what "
+                f"`_RUNBOOK_SECTION` in this test names.")
+
+    def test_the_real_determine_substep_status_survives_a_corrupt_gate_meta(self) -> None:
+        """The two gate reads that run FIRST, driven on the REAL `Conductor` method.
+
+        Round 2 guarded these two sites and round 3 established they still had no behavioural
+        coverage: every other test here drives `run_phase` through `_FakeConductor`, which
+        overrides `determine_substep_status` wholesale, so a crash at those lines is invisible
+        to all of them. Round 2's substitute was an AST scan refusing a `_read_json` that names
+        either meta; round 3 defeated it in one line by passing the filename through the
+        module's own filename constant, and it also refused a legitimate diagnostic helper. A
+        spelling pin was the wrong instrument — this is the behaviour it stood for, and it holds
+        however the read is spelled."""
+        import tempfile
+        for substep, fname in (("pre_judge", "pre_judge_meta.json"),
+                               ("post_judge", "post_judge_meta.json")):
+            for payload in ("[\"not\", \"an\", \"object\"]", '"oops"', "7", "not json at all"):
+                with tempfile.TemporaryDirectory() as td:
+                    repo, refs = Path(td), self._refs()
+                    c = wc.Conductor(repo_root=repo, orchestration_id="orch_x",
+                                     orchestration_agent_run_id="ORCH",
+                                     llm_config=_cfg("claude"), env={})
+                    node_dir = repo / refs.run_node_dir()
+                    node_dir.mkdir(parents=True, exist_ok=True)
+                    (node_dir / fname).write_text(payload, encoding="utf-8")
+                    status, _ = c.determine_substep_status(
+                        refs, "validate", substep, [f"{refs.run_node_dir()}/{fname}"])
+                    self.assertEqual(status, "fail", (substep, payload))
+        # Positive control: the same call on a WELL-FORMED passing meta must be able to return
+        # "pass", or the assertions above are green because the method fails on everything.
+        with tempfile.TemporaryDirectory() as td:
+            repo, refs = Path(td), self._refs()
+            c = wc.Conductor(repo_root=repo, orchestration_id="orch_x",
+                             orchestration_agent_run_id="ORCH",
+                             llm_config=_cfg("claude"), env={})
+            node_dir = repo / refs.run_node_dir()
+            node_dir.mkdir(parents=True, exist_ok=True)
+            rel = f"{refs.run_node_dir()}/pre_judge_meta.json"
+            (node_dir / "pre_judge_meta.json").write_text(
+                json.dumps({"status": "pass"}), encoding="utf-8")
+            status, _ = c.determine_substep_status(refs, "validate", "pre_judge", [rel])
+            self.assertEqual(status, "pass")
+
+    def test_a_below_window_mtime_on_a_pass_meta_is_what_builds_the_freshness_reason(self) -> None:
+        """The exhibit for `validate_<substep>_deliverable_not_freshly_written`.
+
+        Round 4 challenged the family as naming a mechanism the code cannot produce, reasoning
+        that `min_mtime` is `launched_at`, taken just BEFORE the in-process body, and the body
+        writes its meta after — so `mtime >= launched_at` should hold structurally. The premise
+        is wrong, measured on this machine: the kernel stamps inode times from a coarse clock
+        that LAGS `time.time()`, so a file written immediately after an instant records an mtime
+        BELOW it (600/600 writes, median 5.2 ms behind, on both `/tmp` (xfs) and `$HOME`). A
+        deterministic body that completes inside that lag therefore fails its own freshness gate
+        having written its deliverable correctly, and the substep fails with `status: "pass"` in
+        the meta — which is the shape the measured incident is in.
+
+        The exhibit here is deterministic (`os.utime`), not clock-dependent, and the name says
+        only what it pins: a below-window mtime on a `pass` meta is what produces this reason,
+        whatever put the mtime there. REACHABILITY rests on the clock measurement above, not on
+        this test. The CAUSE of that lag is not this branch's to fix — it is a property of the
+        freshness gate, which every deterministic substep shares — and is reported to issue #113,
+        which is open on the incident's cause.
+        """
+        import os
+        import tempfile
+        for substep, fname in (("pre_judge", "pre_judge_meta.json"),
+                               ("post_judge", "post_judge_meta.json")):
+            with tempfile.TemporaryDirectory() as td:
+                repo, refs = Path(td), self._refs()
+                c = wc.Conductor(repo_root=repo, orchestration_id="orch_x",
+                                 orchestration_agent_run_id="ORCH",
+                                 llm_config=_cfg("claude"), env={})
+                node_dir = repo / refs.run_node_dir()
+                node_dir.mkdir(parents=True, exist_ok=True)
+                rel = f"{refs.run_node_dir()}/{fname}"
+                (node_dir / fname).write_text(json.dumps({"status": "pass",
+                                                          "failure_category": None}),
+                                              encoding="utf-8")
+                launched_at = 1_000_000.0
+                os.utime(node_dir / fname, (launched_at - 1, launched_at - 1))
+                status, _ = c.determine_substep_status(
+                    refs, "validate", substep, [rel], min_mtime=launched_at)
+                self.assertEqual(status, "fail", substep)
+                # ... and THAT pair — a `pass` meta on a failed substep — is the reason.
+                self.assertEqual(
+                    wc.classify_validate_gate_failure(
+                        substep, wc._read_gate_meta(node_dir / fname)),
+                    f"validate_{substep}_deliverable_not_freshly_written")
+                # Control: the same meta INSIDE the window passes, so the assertion above is
+                # about the mtime and not about the method failing on everything.
+                os.utime(node_dir / fname, (launched_at + 1, launched_at + 1))
+                status, _ = c.determine_substep_status(
+                    refs, "validate", substep, [rel], min_mtime=launched_at)
+                self.assertEqual(status, "pass", substep)
+
+    def test_classifier_is_a_pure_function_of_the_meta(self) -> None:
+        # The defensive classify_failure branches route from the same helper, so the two sites
+        # can never disagree about what a gate failure was.
+        f = wc.classify_validate_gate_failure
+        self.assertEqual(f("pre_judge", {"failure_category": "pre_judge_dag_incomplete"}),
+                         "validate_pre_judge_dag_incomplete")
+        self.assertEqual(f("post_judge", {"failure_category": "post_judge_gate_error"}),
+                         "validate_post_judge_gate_error")
+        self.assertEqual(f("post_judge", {"failure_category": "  "}),
+                         "validate_post_judge_failed_without_category")
+        self.assertEqual(f("pre_judge", {}), "validate_pre_judge_failed_without_category")
+        self.assertEqual(f("post_judge", None), "validate_post_judge_meta_missing")
+        # A non-object meta records no category by construction; it must yield a reason,
+        # not an AttributeError inside the conductor's terminalization path.
+        self.assertEqual(f("pre_judge", ["not", "an", "object"]),
+                         "validate_pre_judge_meta_missing")
+
+
 class UsageResetEpochParseTests(unittest.TestCase):
     """`_parse_usage_reset_epoch` reads the MACHINE-FORM reset epoch a usage-limit leaf may carry
     as a trailing `|<10-digit>`. It is a separate scan from the classifier (whose evidence is
@@ -14243,6 +14724,49 @@ class DeterministicBuildTest(unittest.TestCase):
             self.assertEqual(decision.action, "retry")
             self.assertEqual(decision.target_phase, "generate")
             self.assertEqual(decision.repair_strategy, "restart")
+
+    def test_classify_failure_gate_branches_read_the_meta_not_the_index(self) -> None:
+        # Issue #114: `classify_failure`'s pre_judge / post_judge branches are DEFENSIVE
+        # (run_phase's skip-write branch terminalizes both before classify_failure is called —
+        # driven and asserted in ValidateGateReasonFromMetaTest), but a defensive branch that
+        # names a violation the meta does not record is the very defect #114 is about. Drive
+        # the branches directly, one meta shape at a time.
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            c = wc.Conductor(repo_root=repo, orchestration_id="o",
+                             orchestration_agent_run_id="O", llm_config=_cfg("claude"), env={})
+            refs = self._refs()
+            node_dir = repo / refs.run_node_dir()
+            node_dir.mkdir(parents=True, exist_ok=True)
+            pj_fail = [wc.SubstepOutcome("pj", "fail", [], 0)]           # index 0 -> pre_judge
+            post_fail = [wc.SubstepOutcome("pj", "pass", [], 0),
+                         wc.SubstepOutcome("ex", "pass", [], 0),
+                         wc.SubstepOutcome("jd", "pass", [], 0),
+                         wc.SubstepOutcome("po", "fail", [], 0)]         # index 3 -> post_judge
+            for outcomes, fname, category, expected in (
+                    (pj_fail, "pre_judge_meta.json", "pre_judge_dag_incomplete",
+                     "validate_pre_judge_dag_incomplete"),
+                    (pj_fail, "pre_judge_meta.json", None,
+                     "validate_pre_judge_failed_without_category"),
+                    (post_fail, "post_judge_meta.json", "pre_judge_violation",
+                     "validate_pre_judge_violation"),
+                    (post_fail, "post_judge_meta.json", None,
+                     "validate_post_judge_failed_without_category")):
+                (node_dir / fname).write_text(
+                    json.dumps({"status": "fail", "failure_category": category}),
+                    encoding="utf-8")
+                d = c.classify_failure(refs, "validate", outcomes)
+                self.assertEqual(d.action, "fail_closed", (fname, category))
+                self.assertEqual(d.reason, expected, (fname, category))
+                (node_dir / fname).unlink()
+            # ... and with no meta on disk at all (the state the `or {}` used to hide).
+            self.assertEqual(
+                c.classify_failure(refs, "validate", pj_fail).reason,
+                "validate_pre_judge_meta_missing")
+            self.assertEqual(
+                c.classify_failure(refs, "validate", post_fail).reason,
+                "validate_post_judge_meta_missing")
 
     def _predicate_ir(self) -> dict:
         return {"io_contract": {"test_predicates": [
