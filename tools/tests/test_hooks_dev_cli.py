@@ -59,6 +59,143 @@ class DevCliRefusesTheTwoOperatorSafetyCommands(unittest.TestCase):
         self.assertEqual(code, 0)
 
 
+class DevCliRefusesASleepBasedWait(unittest.TestCase):
+    """The DEV-only session-hygiene rule (`tools/hooks/dev_session_hygiene.py`).
+
+    A review subagent that had been told in its own prompt not to poll left 144 shells and
+    `sleep` children on a shared machine in 36 minutes and returned no report. The prompt
+    already said it; three earlier accidents happened with the rule in the prompt too. So it
+    moved into the layer that can refuse.
+
+    Driven through the ENTRYPOINT, not only the predicate, because the mutation sweep on this
+    repository has twice found a gate whose helper was pinned while the call was deletable.
+
+    The rule module is imported LAZILY inside the two rows that need it. At module level, a
+    mutant that renames it turns the whole file into a COLLECTION ERROR, and the naming row in
+    `DevCliImportBoundary` — the row whose entire job is to notice that rename — never runs.
+    Measured: it read as "killed" while observing nothing, which is the shape this repository's
+    review skill warns a `FAILED`-line scorer reads as green.
+    """
+
+    #: Split so this FILE never carries a refusable command literal — the rule matches raw text,
+    #: and a test file quoting it would be refused if it were ever read as a command.
+    _W = "sl" + "eep"
+
+    def _run(self, command: str) -> int:
+        return dev_cli.main([
+            "--backend", "claude", "--event", "PreToolUse",
+            "--input-json", json.dumps({"tool_input": {"command": command}})])
+
+    def test_the_shapes_that_actually_appeared_are_refused(self) -> None:
+        """Every row is a spelling observed in the incident or an obvious neighbour of one.
+
+        `command <wait>` is the one that matters most: it is how the harness's own block on a
+        foreground wait was got past, so a rule that missed it would refuse only the spelling
+        nobody used."""
+        for command in (f"{self._W} 60",
+                        f"command {self._W} 10",
+                        f"eval '{self._W} 1799; true'",
+                        f"/bin/{self._W} 30",
+                        f"/usr/bin/{self._W} 30",
+                        # A leading backslash defeats a shell function or alias and is the one
+                        # prefix the separator branch cannot reach — measured, and the row exists
+                        # because the sweep found that group unwitnessed.
+                        f"\\{self._W} 2",
+                        f"nohup {self._W} 100 &",
+                        f"until [ -s out ]; do {self._W} 5; done",
+                        f"for i in $(seq 1 30); do {self._W} 10; done",
+                        f"cat f; {self._W} $N",
+                        # A sub-second pause is the natural spelling INSIDE a fast poll loop —
+                        # this rule's own subject — and `[0-9$]` alone missed the leading dot
+                        # while catching `0.5`. Found by a reviewer.
+                        f"{self._W} .5",
+                        f"{self._W} 0.5"):
+            with self.subTest(command=command):
+                self.assertEqual(2, self._run(command))
+
+    def test_the_word_without_a_duration_is_not_refused(self) -> None:
+        """THE OVER-REFUSING DIRECTION, which is this repository's recorded default error.
+
+        Every row here is a command an operator or a reviewer runs while dealing with the very
+        problem the rule exists for — inspecting or killing the processes. A rule that refused
+        them would block the cleanup, and the first version of a rule like this would have: a
+        bare substring match on the word catches all of them."""
+        for command in (f"pkill -f {self._W}",
+                        f"grep {self._W} tools/hooks/dev_session_hygiene.py",
+                        f'ps -eo args | grep -cE "^{self._W} [0-9]"',
+                        f"ps aux | grep {self._W}",
+                        f"rg -n '{self._W}' docs/",
+                        f"ls {self._W}y_dir",
+                        f"{self._W}less 5",
+                        # The MANDATORY whitespace between the word and the duration. With
+                        # `\s*` these are refused, and a mechanism sweep found no row that
+                        # noticed — the same shape as the separator class one commit earlier.
+                        f"cat {self._W}5.log",
+                        f"tail -f {self._W}30s.txt",
+                        # A longer word ENDING in the wait, which is what the pattern's
+                        # separator class exists to stop matching. A mechanism sweep found
+                        # that class survivable — no row distinguished it — so these two are
+                        # the rows it was missing, not decoration.
+                        f"over{self._W} 5",
+                        f"my_{self._W} 10",
+                        "python3 -m pytest -q"):
+            with self.subTest(command=command):
+                self.assertEqual(0, self._run(command))
+
+    def test_the_refusal_names_the_alternatives_in_reachability_order(self) -> None:
+        """A remedy is read in order and the first line is the one followed.
+
+        The most likely truth is that the session is polling work the harness already tracks, so
+        that comes first; the tool for a condition it cannot see comes second; the escape hatch
+        for a genuine pause comes last. Pinned by ORDER, not by presence, because a message
+        carrying all three in the wrong order sends the reader to the rarest cause."""
+        from tools.hooks import dev_session_hygiene  # lazy: see the class docstring
+        reason = dev_session_hygiene.polling_wait_violation(f"{self._W} 60")
+        assert reason is not None
+        text = reason[0]
+        self.assertLess(text.index("DO NOT POLL"), text.index("Monitor tool"))
+        self.assertLess(text.index("Monitor tool"), text.index("another terminal"))
+
+    def test_the_audit_detail_names_the_policy(self) -> None:
+        """Carried for symmetry with `operator_safety`, and pinned so the two stay alike.
+
+        NOT because the DEV path records it: `dev_cli.main` reads `violation[0]` and writes no
+        audit line at all, so on this layer the detail is consumed by this row alone. An earlier
+        version of this docstring said "a refusal is unattributable after the fact", which is a
+        true sentence about the LEAF path and a false one about this one."""
+        from tools.hooks import dev_session_hygiene  # lazy: see the class docstring
+        violation = dev_session_hygiene.polling_wait_violation(f"{self._W} 5")
+        assert violation is not None
+        self.assertEqual(violation[1]["policy"], "forbid_sleep_wait_in_agent_session")
+
+    def test_the_leaf_path_does_not_carry_this_rule(self) -> None:
+        """DEV-ONLY, and that is a decision rather than an omission.
+
+        A leaf that sleeps wastes its own budget and gets no closer to reporting its task done,
+        which `AGENTS.md` §Development premises puts out of the defended set. Pinned by reading
+        the leaf-facing sources, so importing it there fails here rather than silently widening
+        a leaf policy."""
+        # The TRANSITIVE closure, not the two obvious files: a reviewer's leak into
+        # `tools/hooks/adapters/claude.py` — one hop from `cli.py` — left this row green.
+        for module in sorted(_leaf_reachable_modules()):
+            self.assertNotIn(
+                "dev_session_hygiene", module,
+                f"{module} is reachable from the LEAF entrypoint and names the DEV-only rule "
+                f"module; that widens a leaf policy with a rule a leaf gains nothing from")
+        rel_paths = [Path(*m.split(".")).with_suffix(".py") for m in _leaf_reachable_modules()]
+        read = 0
+        for rel in rel_paths:
+            path = REPO_ROOT / rel
+            if not path.exists():
+                path = REPO_ROOT / Path(*rel.with_suffix("").parts) / "__init__.py"
+            if not path.exists():
+                continue
+            read += 1
+            self.assertNotIn("dev_session_hygiene", path.read_text(encoding="utf-8"), str(rel))
+        self.assertGreaterEqual(read, 4, "the leaf closure collapsed to almost nothing; a walk "
+                                         "that reads no files cannot notice a leak")
+
+
 class DevCliReadsTheCodexPayloadShape(unittest.TestCase):
     """The nested payload shape, which every other test in this file skips.
 
@@ -234,6 +371,60 @@ class DevCliWrapperCommandsExecute(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, msg=(rel, event, proc.stderr))
 
 
+def _leaf_reachable_modules() -> set[str]:
+    """The TRANSITIVE `tools.hooks.*` closure of the LEAF entrypoint, read from source.
+
+    Two files were not enough. A reviewer appended the dev-only rule module's import to
+    `tools/hooks/adapters/claude.py` — which `tools/hooks/cli.py` imports — and the whole file
+    stayed green: the leak was one hop away from the pair being read, so the module was still
+    classified dev-only and the "leaf path does not carry this rule" row still passed. A leak INTO
+    `cli.py` was killed; a leak one module deeper was not.
+
+    So the closure is walked. Source, not `sys.modules`: another test may already have imported
+    something, which would answer for the wrong reason.
+    """
+    seen: set[str] = set()
+    queue = ["tools.hooks.cli"]
+    while queue:
+        module = queue.pop()
+        if module in seen:
+            continue
+        seen.add(module)
+        rel = Path(*module.split("."))
+        for candidate in (REPO_ROOT / rel.with_suffix(".py"),
+                          REPO_ROOT / rel / "__init__.py"):
+            if not candidate.exists():
+                continue
+            tree = ast.parse(candidate.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    queue.extend(a.name for a in node.names
+                                 if a.name.startswith("tools.hooks"))
+                elif isinstance(node, ast.ImportFrom) and node.module and (
+                        node.module.startswith("tools.hooks")):
+                    queue.append(node.module)
+                    # `from tools.hooks.adapters import ClaudeHookAdapter` — the name may be a
+                    # SUBMODULE rather than an attribute, so follow both readings.
+                    queue.extend(f"{node.module}.{a.name}" for a in node.names)
+            break
+    return seen
+
+
+def _dev_cli_repo_imports() -> set[str]:
+    """The `tools.` modules the DEV entrypoint imports, read from its SOURCE.
+
+    Source, not a loaded module: another test may already have imported something, which would
+    make an import-observing read answer for the wrong reason."""
+    tree = ast.parse((REPO_ROOT / "tools" / "hooks" / "dev_cli.py").read_text(encoding="utf-8"))
+    found: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            found.update(a.name for a in node.names if a.name.startswith("tools."))
+        elif isinstance(node, ast.ImportFrom) and node.module and node.module.startswith("tools."):
+            found.add(node.module)
+    return found
+
+
 class DevCliImportBoundary(unittest.TestCase):
     """The boundary is the module's purpose, so it is pinned rather than asked for.
 
@@ -245,7 +436,7 @@ class DevCliImportBoundary(unittest.TestCase):
     FORBIDDEN = ("tools.hooks.cli", "tools.hooks.common", "tools.hooks.adapters",
                  "tools.orchestration_runtime")
 
-    def test_dev_cli_imports_only_stdlib_and_operator_safety(self) -> None:
+    def test_dev_cli_imports_only_stdlib_and_its_rule_modules(self) -> None:
         tree = ast.parse((REPO_ROOT / "tools" / "hooks" / "dev_cli.py").read_text(
             encoding="utf-8"))
         imported = set()
@@ -254,26 +445,66 @@ class DevCliImportBoundary(unittest.TestCase):
                 imported.update(alias.name for alias in node.names)
             elif isinstance(node, ast.ImportFrom) and node.module:
                 imported.add(node.module)
-        repo_imports = {name for name in imported if name.startswith("tools.")}
-        self.assertEqual(repo_imports, {"tools.hooks.operator_safety"})
+        repo_imports = _dev_cli_repo_imports()
+        self.assertEqual(
+            repo_imports,
+            {"tools.hooks.operator_safety", "tools.hooks.dev_session_hygiene"},
+            "the DEV entrypoint may import only its stdlib-only rule modules; anything else "
+            "can refuse the operator out of the session they are editing in")
         for name in self.FORBIDDEN:
             for spelling in imported:
                 self.assertFalse(
                     spelling == name or spelling.startswith(name + "."),
                     f"dev_cli must not import {spelling}")
 
-    def test_operator_safety_imports_only_stdlib(self) -> None:
-        """The one module `dev_cli` does import carries the same obligation, or the
-        boundary is one hop long."""
-        tree = ast.parse((REPO_ROOT / "tools" / "hooks" / "operator_safety.py").read_text(
-            encoding="utf-8"))
-        imported = set()
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                imported.update(alias.name for alias in node.names)
-            elif isinstance(node, ast.ImportFrom) and node.module:
-                imported.add(node.module)
-        self.assertEqual({n for n in imported if n.startswith("tools.")}, set())
+    def test_a_dev_only_rule_module_is_named_dev_something(self) -> None:
+        """The naming convention, checked rather than remembered.
+
+        `dev_cli.py` already carried the prefix; the second dev-only module did not until it was
+        renamed, and by then five files spelled the old name. The rule is derivable, so it is
+        derived: a module the DEV entrypoint imports and the LEAF entrypoint does not is dev-only
+        and must say so in its name. A module BOTH import (`operator_safety`) must not, because
+        the prefix would then be a lie about its audience — that half is what makes this a check
+        and not a substring rule.
+
+        Read from source on both sides for the same reason the boundary rows do: another test may
+        already have imported something, which would answer for the wrong reason."""
+        leaf_imports = _leaf_reachable_modules()
+        dev_only = _dev_cli_repo_imports() - leaf_imports
+        shared = _dev_cli_repo_imports() & leaf_imports
+        self.assertTrue(dev_only, "the DEV entrypoint has no module of its own any more; if that "
+                                  "is deliberate, delete this row and say why")
+        for module in sorted(dev_only):
+            name = module.rsplit(".", 1)[-1]
+            self.assertTrue(
+                name.startswith("dev_"),
+                f"{module} is imported by tools/hooks/dev_cli.py and by no leaf entrypoint, so it "
+                f"is DEV-ONLY and its file name must start with `dev_` (see docs/HOOKS.md). "
+                f"Rename it, or — if it is meant to be shared — import it from the leaf path too.")
+        for module in sorted(shared):
+            name = module.rsplit(".", 1)[-1]
+            self.assertFalse(
+                name.startswith("dev_"),
+                f"{module} is imported by BOTH entrypoints, so a `dev_` prefix misstates its "
+                f"audience: a reader would take a rule that also binds a leaf for one that does "
+                f"not.")
+
+    def test_the_rule_modules_import_only_stdlib(self) -> None:
+        """Every module `dev_cli` imports carries the same obligation, or the boundary is
+        one hop long. Enumerated from the entrypoint's OWN imports rather than listed here,
+        so a third rule module cannot be added without arriving in this check."""
+        modules = _dev_cli_repo_imports()
+        self.assertTrue(modules)
+        for module in sorted(modules):
+            rel = Path(*module.split(".")).with_suffix(".py")
+            tree = ast.parse((REPO_ROOT / rel).read_text(encoding="utf-8"))
+            imported = set()
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    imported.update(alias.name for alias in node.names)
+                elif isinstance(node, ast.ImportFrom) and node.module:
+                    imported.add(node.module)
+            self.assertEqual({n for n in imported if n.startswith("tools.")}, set(), module)
 
     def test_dev_cli_runs_with_the_leaf_entrypoint_unimportable(self) -> None:
         """The property the boundary buys, executed rather than argued: with
@@ -283,8 +514,16 @@ class DevCliImportBoundary(unittest.TestCase):
         import tempfile
         with tempfile.TemporaryDirectory() as tmp:
             fake = Path(tmp)
-            for rel in ("tools/__init__.py", "tools/hooks/__init__.py",
-                        "tools/hooks/dev_cli.py", "tools/hooks/operator_safety.py"):
+            # The rule modules are DERIVED from the entrypoint's own imports, not listed: a
+            # third one added without arriving here would make this row fail on an import
+            # error and read as a boundary breach rather than a stale fixture, which is how
+            # it failed once.
+            rule_modules = [
+                str(Path(*m.split("."))) + ".py"
+                for m in _dev_cli_repo_imports()
+            ]
+            for rel in ["tools/__init__.py", "tools/hooks/__init__.py",
+                        "tools/hooks/dev_cli.py", *rule_modules]:
                 (fake / rel).parent.mkdir(parents=True, exist_ok=True)
                 # `tools/` is a namespace package here - no `__init__.py` on disk.
                 if (REPO_ROOT / rel).exists():

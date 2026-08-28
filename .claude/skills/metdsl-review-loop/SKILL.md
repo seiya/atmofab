@@ -310,9 +310,27 @@ nor resets the two-consecutive-clean-security-rounds condition.**
   survivors"**
 - **Spell out the process and shared-resource rules**: no unscoped `pkill`; **create only waits
   whose exit condition can be satisfied, and no background polling**; `/tmp` is a shared tmpfs,
-  delete the trees you create. Three accidents happened for real, each spilling into other
-  sessions. **Handing over the rules is not enough** — all three were in the prompt and broken
-  anyway, and I have broken them myself for 5.7 hours at a stretch:
+  delete the trees you create. Four accidents happened for real, each spilling into other
+  sessions. **Handing over the rules is not enough** — all four were in the prompt and broken
+  anyway, and I have broken them myself for 5.7 hours at a stretch. **The DEV hook now
+  refuses a sleep-based wait outright** (`tools/hooks/dev_session_hygiene.py`, added 2026-08-28),
+  which is the only
+  countermeasure in this section that does not depend on the reviewer reading it; the wording
+  below is what to hand over anyway, because a refusal that arrives after the agent has already
+  chosen to poll still costs the round:
+  - **Forbid the MECHANISM, not the behaviour, and forbid it by name.** "No background polling"
+    was in the prompt of the agent that produced 144 orphaned shells in 36 minutes and returned
+    no report. What worked, measured over the two rounds after it — zero orphans — was four
+    concrete sentences: do not use the Bash tool's `run_in_background`; do not write `sleep`,
+    `until`, `while … done` polling, `pgrep` loops, or `&`; run every command in the FOREGROUND
+    with a bounded `timeout` and a narrow scope; **do not run the whole suite in one command** —
+    per-file, one at a time. The last one is what makes the third affordable, and leaving it out
+    is what makes an agent reach for a background job in the first place.
+  - **Say what to do when the work does not fit**, or the rules above just get broken quietly:
+    "if a sweep would take too long, SHRINK IT and say what you cut — a smaller sweep you ran
+    beats a large one you waited on." Two reviewers cut their sweeps and said so; both still
+    found real defects, and one of them found the largest gap of its round inside the part it
+    kept.
   - **A wait must not carry the name of what it waits for in its own command line.** Safe forms:
     (a) for work the harness tracks, **do not poll — the completion notification arrives**,
     (b) **wait on the PID**, (c) split the matching string
@@ -369,7 +387,7 @@ nor resets the two-consecutive-clean-security-rounds condition.**
   refusal into a floor, name the legitimate input it rejects** — if you cannot, you have not
   looked; if you can, that input is the test
 
-Episodes for the last three bullets, and the three accidents in full: `references/round-conduct.md`.
+Episodes for the last three bullets, and the four accidents in full: `references/round-conduct.md`.
 
 **Mid-round mutation is where the round-0 rules actually bite, and they read as if they do not.**
 Everything under "Before you hand it over" is written for the round-0 sweep, but you will mutate

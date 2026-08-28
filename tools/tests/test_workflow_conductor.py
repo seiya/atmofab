@@ -15448,7 +15448,7 @@ class DeterministicLintTest(unittest.TestCase):
         Same rule the syntax checker's `_sub_check` states. A probe recorded there would put a
         command id in the node's canonical evidence log that no certificate refers to."""
         import tempfile
-        seen: list[Any] = []
+        seen: list[dict] = []
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
             refs = self._m3c_refs()
@@ -15890,7 +15890,7 @@ class DeterministicSyntaxTest(unittest.TestCase):
                         "command_id": "leaf-probe", "compiler": args["compiler"],
                         "compiler_version": "GNU Fortran 13", "skipped": False,
                         "stderr": "" if leaf_probe_ok else "Error: leaf-side diagnostic"}
-            if pd.endswith("_canary") or pd.endswith("_deps_probe"):
+            if pd.endswith(("_canary", "_deps_probe")):
                 # Both attribution probes that run BEFORE the leaf one must pass, or the gate
                 # raises there and the leaf probe is never reached.
                 return {"ok": True, "return_code": 0, "command_id": "pre-probe",
@@ -16055,7 +16055,7 @@ class DeterministicSyntaxTest(unittest.TestCase):
                 pd = str(args.get("project_dir", ""))
                 if pd.endswith("_leaf_probe"):
                     return {"skipped": True, "reason": "no adapter on this host"}
-                if pd.endswith("_canary") or pd.endswith("_deps_probe"):
+                if pd.endswith(("_canary", "_deps_probe")):
                     return {"ok": True, "return_code": 0, "command_id": "c",
                             "compiler": args["compiler"], "compiler_version": "GNU Fortran 13",
                             "skipped": False}
