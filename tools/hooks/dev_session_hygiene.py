@@ -39,10 +39,34 @@ itself on 2026-08-26. What IS narrowed
 is the shape: a bare word `sleep` is not matched, so `pkill sleep`, `grep sleep`, `ps | grep -c
 "^sleep "` and prose about sleeping all pass. A DURATION has to follow.
 
+THREE OVER-REFUSALS A REVIEWER MEASURED, listed because the paragraph above used to promise the
+first two could not happen:
+
+* **A cleanup command SCOPED BY THE DURATION is refused**: `pkill -f "sleep 1799"`, `pgrep -af
+  "sleep 1799"`. The duration sits in a quoted argument, which raw text cannot tell from a wait —
+  and quoting cannot be the discriminator either, since the incident's own spelling was
+  `eval '<wait>; true'`. What keeps this from blocking cleanup is that `metdsl-review-loop`
+  ALREADY forbids `pkill -f` for this job and mandates killing by PID after reading `ps`:
+  `pkill -P <ppid>` and `kill <pid>` are unaffected, and stopping the agent reaps its children
+  anyway. The prescribed route is open; the forbidden one is not. An earlier version of this
+  docstring asserted the scoped form still worked, and that was simply false.
+* **A search with an UNQUOTED variable is refused**: `grep sleep $FILE`, `grep sleep $(ls)`. The
+  `$` is in the duration class because `sleep $N` is a real polling spelling, and in raw text the
+  two are the same shape. Quoting the variable passes.
+* **On the CODEX dev layer the rule reaches file CONTENT.** `.codex/hooks.json` matches
+  `apply_patch`, Codex's only editing route, so a Codex session cannot write a file containing
+  the refused literal without splitting the string; the Claude layer's `Write` / `Edit` are not
+  matched. The two dev layers therefore differ in REACH. Inherited from what `operator_safety`
+  already did to patch text rather than introduced here, and left alone — but it belongs in this
+  list rather than in a reader's surprise.
+
 LIMIT, so nobody reads this as a detector: it is a bound on the ordinary spellings, not a barrier.
-`python3 -c 'import time; time.sleep(60)'`, a busy `until` loop with no sleep in it, and a wait
-spelled by a helper script are all outside it. The operator owns the machine and can always run a
-wait in another terminal; the point is that the SESSION stops producing them by reflex.
+Measured escapes: `usleep`, `sleep +5`, `python3 -c 'import time; time.sleep(60)'`, a helper
+script, and — the ones that matter, because a polling agent reaches for them BY ACCIDENT rather
+than to evade — a **busy loop** with no sleep in it, `timeout 300 tail -f`, and `read -t 60`. The
+refusal message names the busy loop for exactly that reason. The operator owns the machine and can
+always run a wait in another terminal; the point is that the SESSION stops producing them without
+thinking.
 """
 
 from __future__ import annotations
@@ -71,7 +95,12 @@ _SLEEP_INVOCATION = re.compile(
     (?:\\)?                         # a leading backslash defeats an alias
     (?:/(?:usr/)?bin/)?             # an absolute path is the same program
     sleep\s+
-    [0-9$]                          # a duration: a literal, or a variable holding one
+    [0-9$.]                         # a duration: a literal, a leading-dot fraction, or a
+                                    # variable holding one. The `.` is there because `sleep .5`
+                                    # — a sub-second pause, the natural spelling INSIDE a fast
+                                    # poll loop, which is this rule's own subject — was missed
+                                    # while `sleep 0.5` was caught. Found by a reviewer, not by
+                                    # the author's own case list.
     """,
     re.VERBOSE,
 )
@@ -87,6 +116,9 @@ _REMEDY = (
     "watches without leaving a process per check behind; "
     "(3) if you genuinely need a pause, run it in another terminal — this refusal is about what "
     "the SESSION spawns, not about what the machine may do. "
+    "WHAT IS NOT THE ANSWER: a busy loop that spins instead of sleeping is worse for a shared "
+    "machine, not better, and so is any other spelling of the same wait — this rule catches the "
+    "one shape it can see, and going around it defeats the point rather than the check. "
     "Each poll leaves a shell and a sleep child behind: a subagent that was told not to poll "
     "produced 144 of them in 36 minutes on this machine and returned no result, which is why "
     "this is a hook and not a paragraph in a prompt."

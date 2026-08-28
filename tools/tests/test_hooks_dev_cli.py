@@ -104,7 +104,12 @@ class DevCliRefusesASleepBasedWait(unittest.TestCase):
                         f"nohup {self._W} 100 &",
                         f"until [ -s out ]; do {self._W} 5; done",
                         f"for i in $(seq 1 30); do {self._W} 10; done",
-                        f"cat f; {self._W} $N"):
+                        f"cat f; {self._W} $N",
+                        # A sub-second pause is the natural spelling INSIDE a fast poll loop —
+                        # this rule's own subject — and `[0-9$]` alone missed the leading dot
+                        # while catching `0.5`. Found by a reviewer.
+                        f"{self._W} .5",
+                        f"{self._W} 0.5"):
             with self.subTest(command=command):
                 self.assertEqual(2, self._run(command))
 
@@ -122,6 +127,11 @@ class DevCliRefusesASleepBasedWait(unittest.TestCase):
                         f"rg -n '{self._W}' docs/",
                         f"ls {self._W}y_dir",
                         f"{self._W}less 5",
+                        # The MANDATORY whitespace between the word and the duration. With
+                        # `\s*` these are refused, and a mechanism sweep found no row that
+                        # noticed — the same shape as the separator class one commit earlier.
+                        f"cat {self._W}5.log",
+                        f"tail -f {self._W}30s.txt",
                         # A longer word ENDING in the wait, which is what the pattern's
                         # separator class exists to stop matching. A mechanism sweep found
                         # that class survivable — no row distinguished it — so these two are
@@ -147,8 +157,12 @@ class DevCliRefusesASleepBasedWait(unittest.TestCase):
         self.assertLess(text.index("Monitor tool"), text.index("another terminal"))
 
     def test_the_audit_detail_names_the_policy(self) -> None:
-        """The record has to say which rule fired, or a refusal is unattributable after the
-        fact — the same reason `operator_safety` carries a `policy` key."""
+        """Carried for symmetry with `operator_safety`, and pinned so the two stay alike.
+
+        NOT because the DEV path records it: `dev_cli.main` reads `violation[0]` and writes no
+        audit line at all, so on this layer the detail is consumed by this row alone. An earlier
+        version of this docstring said "a refusal is unattributable after the fact", which is a
+        true sentence about the LEAF path and a false one about this one."""
         from tools.hooks import dev_session_hygiene  # lazy: see the class docstring
         violation = dev_session_hygiene.polling_wait_violation(f"{self._W} 5")
         assert violation is not None
@@ -161,9 +175,25 @@ class DevCliRefusesASleepBasedWait(unittest.TestCase):
         which `AGENTS.md` §Development premises puts out of the defended set. Pinned by reading
         the leaf-facing sources, so importing it there fails here rather than silently widening
         a leaf policy."""
-        for rel in ("tools/hooks/cli.py", "tools/hooks/common.py"):
-            source = (REPO_ROOT / rel).read_text(encoding="utf-8")
-            self.assertNotIn("dev_session_hygiene", source, rel)
+        # The TRANSITIVE closure, not the two obvious files: a reviewer's leak into
+        # `tools/hooks/adapters/claude.py` — one hop from `cli.py` — left this row green.
+        for module in sorted(_leaf_reachable_modules()):
+            self.assertNotIn(
+                "dev_session_hygiene", module,
+                f"{module} is reachable from the LEAF entrypoint and names the DEV-only rule "
+                f"module; that widens a leaf policy with a rule a leaf gains nothing from")
+        rel_paths = [Path(*m.split(".")).with_suffix(".py") for m in _leaf_reachable_modules()]
+        read = 0
+        for rel in rel_paths:
+            path = REPO_ROOT / rel
+            if not path.exists():
+                path = REPO_ROOT / Path(*rel.with_suffix("").parts) / "__init__.py"
+            if not path.exists():
+                continue
+            read += 1
+            self.assertNotIn("dev_session_hygiene", path.read_text(encoding="utf-8"), str(rel))
+        self.assertGreaterEqual(read, 4, "the leaf closure collapsed to almost nothing; a walk "
+                                         "that reads no files cannot notice a leak")
 
 
 class DevCliReadsTheCodexPayloadShape(unittest.TestCase):
@@ -341,6 +371,45 @@ class DevCliWrapperCommandsExecute(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, msg=(rel, event, proc.stderr))
 
 
+def _leaf_reachable_modules() -> set[str]:
+    """The TRANSITIVE `tools.hooks.*` closure of the LEAF entrypoint, read from source.
+
+    Two files were not enough. A reviewer appended the dev-only rule module's import to
+    `tools/hooks/adapters/claude.py` — which `tools/hooks/cli.py` imports — and the whole file
+    stayed green: the leak was one hop away from the pair being read, so the module was still
+    classified dev-only and the "leaf path does not carry this rule" row still passed. A leak INTO
+    `cli.py` was killed; a leak one module deeper was not.
+
+    So the closure is walked. Source, not `sys.modules`: another test may already have imported
+    something, which would answer for the wrong reason.
+    """
+    seen: set[str] = set()
+    queue = ["tools.hooks.cli"]
+    while queue:
+        module = queue.pop()
+        if module in seen:
+            continue
+        seen.add(module)
+        rel = Path(*module.split("."))
+        for candidate in (REPO_ROOT / rel.with_suffix(".py"),
+                          REPO_ROOT / rel / "__init__.py"):
+            if not candidate.exists():
+                continue
+            tree = ast.parse(candidate.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    queue.extend(a.name for a in node.names
+                                 if a.name.startswith("tools.hooks"))
+                elif isinstance(node, ast.ImportFrom) and node.module and (
+                        node.module.startswith("tools.hooks")):
+                    queue.append(node.module)
+                    # `from tools.hooks.adapters import ClaudeHookAdapter` — the name may be a
+                    # SUBMODULE rather than an attribute, so follow both readings.
+                    queue.extend(f"{node.module}.{a.name}" for a in node.names)
+            break
+    return seen
+
+
 def _dev_cli_repo_imports() -> set[str]:
     """The `tools.` modules the DEV entrypoint imports, read from its SOURCE.
 
@@ -367,7 +436,7 @@ class DevCliImportBoundary(unittest.TestCase):
     FORBIDDEN = ("tools.hooks.cli", "tools.hooks.common", "tools.hooks.adapters",
                  "tools.orchestration_runtime")
 
-    def test_dev_cli_imports_only_stdlib_and_operator_safety(self) -> None:
+    def test_dev_cli_imports_only_stdlib_and_its_rule_modules(self) -> None:
         tree = ast.parse((REPO_ROOT / "tools" / "hooks" / "dev_cli.py").read_text(
             encoding="utf-8"))
         imported = set()
@@ -400,14 +469,7 @@ class DevCliImportBoundary(unittest.TestCase):
 
         Read from source on both sides for the same reason the boundary rows do: another test may
         already have imported something, which would answer for the wrong reason."""
-        leaf_imports: set[str] = set()
-        for rel in ("tools/hooks/cli.py", "tools/hooks/common.py"):
-            tree = ast.parse((REPO_ROOT / rel).read_text(encoding="utf-8"))
-            for node in ast.walk(tree):
-                if isinstance(node, ast.Import):
-                    leaf_imports.update(a.name for a in node.names)
-                elif isinstance(node, ast.ImportFrom) and node.module:
-                    leaf_imports.add(node.module)
+        leaf_imports = _leaf_reachable_modules()
         dev_only = _dev_cli_repo_imports() - leaf_imports
         shared = _dev_cli_repo_imports() & leaf_imports
         self.assertTrue(dev_only, "the DEV entrypoint has no module of its own any more; if that "

@@ -113,7 +113,10 @@ alone (`origin/main...HEAD` equals stage B's diff). That is the shape the stagin
       while its purpose was not. Prefixing with `command` does the same to a shell function.
     - **The prompt forbade background polling, in those words.** That is the fourth data point
       for "handing over the rules is not enough", and what justified moving the rule into the DEV
-      hook (`tools/hooks/dev_session_hygiene.py`, PR #118) rather than rewording the prompt again.
+      hook (`tools/hooks/dev_session_hygiene.py`, added 2026-08-28) rather than rewording the prompt
+      again. (An earlier version of this line credited PR #118 — that is the issue-112 PR whose
+      REVIEW produced the incident, and it contains no hook; a reader following the citation
+      would have found nothing.)
       The hook refuses the wait only when a DURATION follows it, in command position; the bare
       word is not matched, so `pkill -f`, `grep` and `ps | grep` over it — the commands you run
       while CLEANING UP after this accident — still work. That carve-out is the point: a rule
@@ -122,11 +125,19 @@ alone (`origin/main...HEAD` equals stage B's diff). That is the shape the stagin
       the very commit that introduced it.
     - What replaced the prompt wording is in `SKILL.md` §Running a round: forbid the MECHANISM by
       name, require the foreground with a bounded `timeout`, forbid running the whole suite in
-      one command, and say what to do when the work does not fit. Measured over the two rounds
-      after the change: zero orphans, and both reviewers that cut their sweeps still found real
-      defects.
+      one command, and say what to do when the work does not fit. Over the two rounds after the
+      change: zero orphans, and both reviewers that cut their sweeps still found real defects.
+    - **PROVENANCE, because an episode in a skill is read as evidence and this one leaves no
+      artifact.** The count, the elapsed time, the observed spelling, "the prompt said it in
+      those words", "stopping the agent reaped every process", and the zero-orphan result after
+      the change are all OPERATOR OBSERVATIONS of one session's process table. Nothing in the
+      repository or in `git` records them, and a reviewer checking this file said so plainly
+      rather than accounting for them. Treat the SHAPE as the durable part — a wait per tool
+      call, invisible to a loop-detector, bypassing the harness's own block, with the rule
+      already in the prompt — and the numbers as one report. What IS re-checkable is the hook:
+      `tools/hooks/dev_session_hygiene.py` and its rows in `tools/tests/test_hooks_dev_cli.py`.
   - **Handing over the rules is not enough. At the end of the round, check for orphans and kill
-    them by PID.** All three were written explicitly in the prompt and broken anyway, in the shape
+    them by PID.** All four were written explicitly in the prompt and broken anyway, in the shape
     this skill gives as its example (`until ! pgrep -f mut5.py` matching its own zsh command line).
     Pick them up with `ps -eo pid,ppid,etimes,args | grep -E "sleep|until|pgrep"` and `kill` by PID
     — `pkill -f` re-enacts the first accident. **Before killing anything, confirm no process doing

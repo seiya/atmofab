@@ -38,8 +38,8 @@ import os
 import sys
 from typing import Any
 
-from tools.hooks.operator_safety import operator_safety_violation
 from tools.hooks.dev_session_hygiene import polling_wait_violation
+from tools.hooks.operator_safety import operator_safety_violation
 
 # The event spellings that carry a command. Both backends' names, normalized the way
 # `tools/hooks/common.py::normalize_hook_event_name` does, but spelled here so this

@@ -312,8 +312,9 @@ nor resets the two-consecutive-clean-security-rounds condition.**
   whose exit condition can be satisfied, and no background polling**; `/tmp` is a shared tmpfs,
   delete the trees you create. Four accidents happened for real, each spilling into other
   sessions. **Handing over the rules is not enough** — all four were in the prompt and broken
-  anyway, and I have broken them myself for 5.7 hours at a stretch. **Since PR #118 the DEV hook
-  refuses a sleep-based wait outright** (`tools/hooks/dev_session_hygiene.py`), which is the only
+  anyway, and I have broken them myself for 5.7 hours at a stretch. **The DEV hook now
+  refuses a sleep-based wait outright** (`tools/hooks/dev_session_hygiene.py`, added 2026-08-28),
+  which is the only
   countermeasure in this section that does not depend on the reviewer reading it; the wording
   below is what to hand over anyway, because a refusal that arrives after the agent has already
   chosen to poll still costs the round:
