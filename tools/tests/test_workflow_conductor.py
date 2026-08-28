@@ -3083,6 +3083,121 @@ class TransportFailureTest(unittest.TestCase):
         self.assertEqual(sup[0]["--run-ids"], ["child-1"])  # the build step agent
 
 
+class ValidateGateReasonFromMetaTest(unittest.TestCase):
+    """Issue #114: the terminal reason for a failed `Validate.pre_judge` / `post_judge` is
+    derived from the substep's OWN meta, not from its index in `SUBSTEPS["validate"]`.
+
+    The measured incident (`orch_20260827T105454Z_99f63b7e`) was a `pre_judge` whose meta
+    recorded `status: "pass"` / `failure_category: null` — it failed the deliverable freshness
+    gate, not the DAG readiness check — yet was reported as `validate_pre_judge_dag_incomplete`,
+    naming a dependency closure the same record showed complete. Each substep is driven to fail
+    three ways here (a recorded category, a meta with no category, no meta at all) and the three
+    reasons must be distinct, so `failure_analysis.json` says which of the three it was."""
+
+    class _C(_FakeConductor):
+        def _write_lineage(self, refs):  # type: ignore[override]
+            return []
+
+        def _ensure_fresh_producer_id(self, refs, phase):  # type: ignore[override]
+            return None  # keep run_id stable so the seeded run-node dir is read back
+
+    def _refs(self) -> wc.NodeRefs:
+        return wc.NodeRefs(
+            node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
+            ir_id="x_1_001", pipeline_id="x_1_001", source_id="src_1_001",
+            binary_id="bin_1_001", run_id="run_1_001", source_binary_id="bin_1_001")
+
+    def _run(self, repo: Path, substep: str, meta: dict | None) -> "wc.PhaseOutcome":
+        """Run the validate phase with `substep` failing and `meta` as its authored meta
+        (None -> the substep writes no meta at all)."""
+        c = self._C(repo_root=repo, orchestration_id="orch_x",
+                    orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
+        c.calls = []
+        if meta is not None:
+            setattr(c, f"{substep}_meta_fn", lambda n, m=meta: m)
+        c.status_fn = lambda phase, sub, n: (
+            "fail" if (phase == "validate" and sub == substep) else "pass")
+        return c.run_phase(self._refs(), "validate")
+
+    def _reasons(self, substep: str, category: str) -> dict[str, str]:
+        import tempfile
+        out = {}
+        for label, meta in (
+                ("category", {"status": "fail", "failure_category": category,
+                              "failure_excerpt": "boom", "disposition": "fail_closed"}),
+                # The measured shape: the substep failed, its own meta names no failure.
+                ("no_category", {"status": "pass", "failure_category": None,
+                                 "failure_excerpt": None}),
+                ("no_meta", None)):
+            with tempfile.TemporaryDirectory() as td:
+                oc = self._run(Path(td), substep, meta)
+                self.assertEqual(oc.decision.action, "fail_closed", label)
+                out[label] = oc.decision.reason
+        return out
+
+    def test_pre_judge_three_failure_shapes_get_three_reasons(self) -> None:
+        r = self._reasons("pre_judge", "pre_judge_dag_incomplete")
+        # The one case the historic label actually names keeps it verbatim.
+        self.assertEqual(r["category"], "validate_pre_judge_dag_incomplete")
+        self.assertEqual(r["no_category"], "validate_pre_judge_failed_without_category")
+        self.assertEqual(r["no_meta"], "validate_pre_judge_meta_missing")
+        self.assertEqual(len(set(r.values())), 3)
+
+    def test_post_judge_three_failure_shapes_get_three_reasons(self) -> None:
+        r = self._reasons("post_judge", "pre_judge_violation")
+        # (The `post_judge` substep runs the validator stage literally named `pre_judge`, so
+        # its violation category — and the reason built from it — carry that spelling.)
+        self.assertEqual(r["category"], "validate_pre_judge_violation")
+        self.assertEqual(r["no_category"], "validate_post_judge_failed_without_category")
+        self.assertEqual(r["no_meta"], "validate_post_judge_meta_missing")
+        self.assertEqual(len(set(r.values())), 3)
+
+    def test_no_shape_is_reported_as_a_dag_gap_it_is_not(self) -> None:
+        # The defect itself, stated as an invariant: `validate_pre_judge_dag_incomplete` appears
+        # ONLY for a meta that recorded that category.
+        for substep, cat in (("pre_judge", "pre_judge_dag_incomplete"),
+                             ("post_judge", "pre_judge_violation")):
+            r = self._reasons(substep, cat)
+            for label in ("no_category", "no_meta"):
+                self.assertNotIn("dag_incomplete", r[label], f"{substep}/{label}")
+
+    def test_orphan_tombstone_carries_the_same_reason(self) -> None:
+        # The skip-write branch tombstones the attempt's arids; its reason must not disagree
+        # with the terminal reason (both are read by an operator reconstructing a dead run).
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            c = self._C(repo_root=Path(td), orchestration_id="orch_x",
+                        orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
+            c.calls = []
+            c.pre_judge_meta_fn = lambda n: {"status": "pass", "failure_category": None}
+            c.status_fn = lambda phase, sub, n: (
+                "fail" if (phase == "validate" and sub == "pre_judge") else "pass")
+            oc = c.run_phase(self._refs(), "validate")
+            self.assertEqual(oc.decision.reason,
+                             "validate_pre_judge_failed_without_category")
+            self.assertNotIn("write-step-result", [s for s, _ in c.calls])
+            sup = [cap for s, cap in c.calls if s == "add-superseded-runs"]
+            self.assertEqual(len(sup), 1)
+            self.assertIn(oc.decision.reason, sup[0]["--reason"])
+
+    def test_classifier_is_a_pure_function_of_the_meta(self) -> None:
+        # The defensive classify_failure branches route from the same helper, so the two sites
+        # can never disagree about what a gate failure was.
+        f = wc.classify_validate_gate_failure
+        self.assertEqual(f("pre_judge", {"failure_category": "pre_judge_dag_incomplete"}),
+                         "validate_pre_judge_dag_incomplete")
+        self.assertEqual(f("post_judge", {"failure_category": "post_judge_gate_error"}),
+                         "validate_post_judge_gate_error")
+        self.assertEqual(f("post_judge", {"failure_category": "  "}),
+                         "validate_post_judge_failed_without_category")
+        self.assertEqual(f("pre_judge", {}), "validate_pre_judge_failed_without_category")
+        self.assertEqual(f("post_judge", None), "validate_post_judge_meta_missing")
+        # A non-object meta records no category by construction; it must yield a reason,
+        # not an AttributeError inside the conductor's terminalization path.
+        self.assertEqual(f("pre_judge", ["not", "an", "object"]),
+                         "validate_pre_judge_meta_missing")
+
+
 class UsageResetEpochParseTests(unittest.TestCase):
     """`_parse_usage_reset_epoch` reads the MACHINE-FORM reset epoch a usage-limit leaf may carry
     as a trailing `|<10-digit>`. It is a separate scan from the classifier (whose evidence is

@@ -693,6 +693,47 @@ def classify_compile_static_failure(failure_category: str | None) -> RouteDecisi
                          reason=f"compile_static_{failure_category}")
 
 
+# Reason returned for a `Validate.pre_judge` / `Validate.post_judge` failure whose OWN meta
+# records no failure category (issue #114). Both substeps can fail for a reason their meta does
+# not name — the measured case is a `pre_judge` whose meta says `status: "pass"` but whose
+# deliverable failed the freshness gate in `determine_substep_status` — and naming that failure
+# after the one violation the substep DOES classify (`pre_judge_dag_incomplete`) writes a record
+# that is false, and points the operator at a dependency closure the same record shows complete.
+VALIDATE_GATE_NO_CATEGORY_SUFFIX = "_failed_without_category"
+# ... and when the meta is absent or unreadable altogether: the substep failed and left no record
+# of why. Distinct from the above so the two are greppable apart (an absent meta usually means the
+# in-process body never reached its write; a category-less one means it wrote a non-failure).
+VALIDATE_GATE_META_MISSING_SUFFIX = "_meta_missing"
+
+
+def classify_validate_gate_failure(substep: str, meta: dict[str, Any] | None) -> str:
+    """Terminal fail_closed reason for a failed deterministic Validate gate substep
+    (`pre_judge` / `post_judge`), derived from that substep's OWN meta rather than from its
+    index in `SUBSTEPS["validate"]` (issue #114).
+
+    `meta` is the parsed `pre_judge_meta.json` / `post_judge_meta.json`, or None when the file
+    is absent or unreadable (a non-dict payload counts as unreadable — a meta that is not an
+    object records no category by construction, and reading it as one would raise here, turning
+    a bad record into a conductor crash instead of a terminal reason). Three outcomes,
+    deliberately distinguishable:
+      - a recorded `failure_category` -> the reason names it (`pre_judge_dag_incomplete` keeps
+        its historic `validate_pre_judge_dag_incomplete` spelling; every other category takes
+        the `validate_<category>` shape the run_phase branch already used);
+      - a meta with no category -> `validate_<substep>_failed_without_category`;
+      - no meta at all -> `validate_<substep>_meta_missing`.
+    The last two invent no violation: they say the substep failed and its own record does not
+    say why, which is what the operator needs to read next.
+    """
+    if not isinstance(meta, dict):
+        return f"validate_{substep}{VALIDATE_GATE_META_MISSING_SUFFIX}"
+    category = str(meta.get("failure_category") or "").strip()
+    if not category:
+        return f"validate_{substep}{VALIDATE_GATE_NO_CATEGORY_SUFFIX}"
+    if category == "pre_judge_dag_incomplete":
+        return "validate_pre_judge_dag_incomplete"
+    return f"validate_{category}"
+
+
 def classify_validate_judge(failure_class: str | None, attribution: str | None) -> RouteDecision:
     if failure_class == "pass":
         return RouteDecision("advance")
@@ -11533,21 +11574,23 @@ clean:
                 judge_conformance_block = self._judge_semantic_decision(refs) != "fail"
             if failed_sub in ("pre_judge", "post_judge") or judge_conformance_block:
                 if judge_conformance_block:
-                    cat = "judge_conformance_violation"
+                    gate_reason = "validate_judge_conformance_violation"
                     # A judge-authored conformance violation is routed to the escalate
                     # diagnostician in prod (it reads verdict.json + semantic_review.json).
                     is_escalate = True
                 else:
                     fname = ("pre_judge_meta.json" if failed_sub == "pre_judge"
                              else "post_judge_meta.json")
-                    gate_meta = _read_json(self.repo_root / refs.run_node_dir() / fname) or {}
-                    cat = gate_meta.get("failure_category") or (
-                        "pre_judge_dag_incomplete" if failed_sub == "pre_judge"
-                        else "pre_judge_violation")
+                    # Issue #114: derive the terminal reason from the substep's OWN meta, never
+                    # from its index. `_read_json` returns None for an absent/unreadable file,
+                    # which is a DIFFERENT state than a meta that records no failure category —
+                    # keep them apart here (no `or {}`) so the classifier can name each.
+                    gate_meta = _read_json(self.repo_root / refs.run_node_dir() / fname)
+                    gate_reason = classify_validate_gate_failure(failed_sub, gate_meta)
                     # G5: a prod post_judge `unknown` (disposition="escalate") routes to the
                     # unified escalate LLM.
                     is_escalate = (failed_sub == "post_judge"
-                                   and gate_meta.get("disposition") == "escalate")
+                                   and (gate_meta or {}).get("disposition") == "escalate")
                 escalate_reason = ("validate_judge_conformance_violation"
                                    if judge_conformance_block else "validate_post_judge_unknown")
                 # Return the escalate decision WITHOUT pre-tombstoning the orphan arids:
@@ -11567,13 +11610,11 @@ clean:
                 orphan_arids = [oc.agent_run_id for oc in outcomes]
                 if orphan_arids:
                     self._add_superseded_run_ids(
-                        orphan_arids, reason=f"validate_gate_fail_orphan: {cat}")
+                        orphan_arids, reason=f"validate_gate_fail_orphan: {gate_reason}")
                 if is_escalate:  # dev fail-fast (no billed escalate leaf)
                     decision = RouteDecision("fail_closed", reason=escalate_reason)
                 else:
-                    reason = ("validate_pre_judge_dag_incomplete"
-                              if cat == "pre_judge_dag_incomplete" else f"validate_{cat}")
-                    decision = RouteDecision("fail_closed", reason=reason)
+                    decision = RouteDecision("fail_closed", reason=gate_reason)
                 return PhaseOutcome(phase, status, substep_arids, failed, decision)
 
         self.write_step_result(node_key, phase, executor, result)
@@ -11747,17 +11788,21 @@ clean:
             # breaks on first failure (a recovered post_judge warm-resume passes and never
             # reaches here), so the failed substep is index len-1.
             failed_substep = SUBSTEPS["validate"][len(outcomes) - 1]
-            if failed_substep == "pre_judge":
-                # Deterministic DAG-readiness failure: a non-physics integrity blocker (a
-                # --with-deps closure not built+validated in its own pipeline). No judge ran,
-                # so a normal fail step_result is legal (the launch_request_ref points at the
-                # pre_judge deterministic substep, so the judge completion hook is skipped).
-                return RouteDecision("fail_closed", reason="validate_pre_judge_dag_incomplete")
-            if failed_substep == "post_judge":
-                # Defensive: a post_judge gate failure is terminalized fail_closed in run_phase
-                # (the post_judge_meta.status==fail branch) BEFORE classify_failure. Reaching
-                # here would mean a post_judge failure with no meta — treat as integrity blocker.
-                return RouteDecision("fail_closed", reason="validate_post_judge_violation")
+            if failed_substep in ("pre_judge", "post_judge"):
+                # Both deterministic gate substeps are terminalized fail_closed by run_phase's
+                # skip-write branch BEFORE classify_failure is called, so this is defensive.
+                # It classifies the same way that branch does — from the substep's OWN meta
+                # (issue #114) — so the two can never disagree about what a failure was: a
+                # DAG-readiness failure keeps `validate_pre_judge_dag_incomplete`, a gate
+                # violation keeps `validate_pre_judge_violation`, and a failure whose meta
+                # records no category (or leaves no meta at all) is reported as exactly that
+                # rather than under the one violation the substep happens to classify.
+                fname = ("pre_judge_meta.json" if failed_substep == "pre_judge"
+                         else "post_judge_meta.json")
+                gate_meta = _read_json(self.repo_root / refs.run_node_dir() / fname)
+                return RouteDecision(
+                    "fail_closed",
+                    reason=classify_validate_gate_failure(failed_substep, gate_meta))
             if failed_substep == "execute":
                 # R2: an execute failure now has two kinds, disambiguated by whether execute
                 # authored a verdict.json with a failure_class:
