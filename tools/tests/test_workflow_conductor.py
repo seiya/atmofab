@@ -3119,38 +3119,52 @@ class ValidateGateReasonFromMetaTest(unittest.TestCase):
             "fail" if (phase == "validate" and sub == substep) else "pass")
         return c.run_phase(self._refs(), "validate")
 
+    # The four meta shapes, and what each one MEANS. `stale_deliverable` is the state the
+    # measured incident was in and the only category-less state any writer produces today;
+    # `no_category` (a non-`pass` status with no category) is the honest fallback if one ever
+    # does; `no_meta` is corruption. Kept as data so every test below drives the same four.
+    _SHAPES: tuple[tuple[str, object], ...] = (
+        ("category", {"status": "fail", "failure_excerpt": "boom",
+                      "disposition": "fail_closed"}),          # `failure_category` filled in
+        ("stale_deliverable", {"status": "pass", "failure_category": None,
+                               "failure_excerpt": None}),
+        ("no_category", {"status": "fail", "failure_category": None}),
+        ("no_meta", None),
+    )
+
     def _reasons(self, substep: str, category: str) -> dict[str, str]:
         import tempfile
         out = {}
-        for label, meta in (
-                ("category", {"status": "fail", "failure_category": category,
-                              "failure_excerpt": "boom", "disposition": "fail_closed"}),
-                # The measured shape: the substep failed, its own meta names no failure.
-                ("no_category", {"status": "pass", "failure_category": None,
-                                 "failure_excerpt": None}),
-                ("no_meta", None)):
+        for label, shape in self._SHAPES:
+            meta = None if shape is None else dict(shape)  # type: ignore[arg-type]
+            if label == "category":
+                meta["failure_category"] = category  # type: ignore[index]
             with tempfile.TemporaryDirectory() as td:
                 oc = self._run(Path(td), substep, meta)
                 self.assertEqual(oc.decision.action, "fail_closed", label)
                 out[label] = oc.decision.reason
         return out
 
-    def test_pre_judge_three_failure_shapes_get_three_reasons(self) -> None:
+    def test_pre_judge_four_failure_shapes_get_four_reasons(self) -> None:
         r = self._reasons("pre_judge", "pre_judge_dag_incomplete")
         # The one case the historic label actually names keeps it verbatim.
         self.assertEqual(r["category"], "validate_pre_judge_dag_incomplete")
+        self.assertEqual(r["stale_deliverable"],
+                         "validate_pre_judge_deliverable_not_freshly_written")
         self.assertEqual(r["no_category"], "validate_pre_judge_failed_without_category")
         self.assertEqual(r["no_meta"], "validate_pre_judge_meta_missing")
-        self.assertEqual(len(set(r.values())), 3)
+        self.assertEqual(len(set(r.values())), 4)
 
-    def test_post_judge_three_failure_shapes_get_three_reasons(self) -> None:
+    def test_post_judge_four_failure_shapes_get_four_reasons(self) -> None:
         r = self._reasons("post_judge", "pre_judge_violation")
         # (The `post_judge` substep runs the validator stage literally named `pre_judge`, so
         # its violation category — and the reason built from it — carry that spelling.)
         self.assertEqual(r["category"], "validate_pre_judge_violation")
+        self.assertEqual(r["stale_deliverable"],
+                         "validate_post_judge_deliverable_not_freshly_written")
         self.assertEqual(r["no_category"], "validate_post_judge_failed_without_category")
         self.assertEqual(r["no_meta"], "validate_post_judge_meta_missing")
-        self.assertEqual(len(set(r.values())), 3)
+        self.assertEqual(len(set(r.values())), 4)
 
     def test_no_shape_is_reported_as_a_dag_gap_it_is_not(self) -> None:
         # The defect itself, stated as an invariant: `validate_pre_judge_dag_incomplete` appears
@@ -3158,8 +3172,21 @@ class ValidateGateReasonFromMetaTest(unittest.TestCase):
         for substep, cat in (("pre_judge", "pre_judge_dag_incomplete"),
                              ("post_judge", "pre_judge_violation")):
             r = self._reasons(substep, cat)
-            for label in ("no_category", "no_meta"):
+            for label, _ in self._SHAPES:
+                if label == "category":
+                    continue
                 self.assertNotIn("dag_incomplete", r[label], f"{substep}/{label}")
+
+    def test_a_non_string_category_is_no_category_not_a_reason_naming_it(self) -> None:
+        # Round 2: a `failure_category` that is not a string used to be coerced with `str()`,
+        # spelling terminal reasons like `validate_['a']` — a record naming a category that does
+        # not exist. It is now treated as no category, so the status branch answers instead.
+        f = wc.classify_validate_gate_failure
+        for raw in (["a"], 7, {"x": 1}, True):
+            self.assertEqual(f("pre_judge", {"failure_category": raw, "status": "pass"}),
+                             "validate_pre_judge_deliverable_not_freshly_written", raw)
+            self.assertEqual(f("pre_judge", {"failure_category": raw, "status": "fail"}),
+                             "validate_pre_judge_failed_without_category", raw)
 
     def test_orphan_tombstone_carries_the_same_reason_except_on_the_escalate_arm(self) -> None:
         # The skip-write branch tombstones the attempt's arids; on the terminal arms its reason
@@ -3181,7 +3208,7 @@ class ValidateGateReasonFromMetaTest(unittest.TestCase):
                 "fail" if (phase == "validate" and sub == "pre_judge") else "pass")
             oc = c.run_phase(self._refs(), "validate")
             self.assertEqual(oc.decision.reason,
-                             "validate_pre_judge_failed_without_category")
+                             "validate_pre_judge_deliverable_not_freshly_written")
             self.assertNotIn("write-step-result", [s for s, _ in c.calls])
             sup = [cap for s, cap in c.calls if s == "add-superseded-runs"]
             self.assertEqual(len(sup), 1)
@@ -3208,6 +3235,51 @@ class ValidateGateReasonFromMetaTest(unittest.TestCase):
             self.assertEqual(sup[0]["--reason"],
                              "validate_gate_fail_orphan: validate_pre_judge_violation")
             self.assertNotIn(oc.decision.reason, sup[0]["--reason"])
+
+    def test_only_post_judge_reads_the_escalate_disposition(self) -> None:
+        """Round 2's census: the `failed_sub == "post_judge"` conjunct of `is_escalate` was
+        unwitnessed, and deleting it produces exactly the defect #114 exists to fix — a
+        `pre_judge` meta carrying `disposition: "escalate"` reported as
+        `validate_post_judge_unknown`, a reason naming a substep that did not fail. `disposition`
+        is a post_judge field; a pre_judge meta carrying one is a corrupt record, and it must not
+        steer the terminal reason."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            c = self._C(repo_root=Path(td), orchestration_id="orch_x",
+                        orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"),
+                        env={}, workflow_mode="dev")
+            c.calls = []
+            c.pre_judge_meta_fn = lambda n: {"status": "fail",
+                                             "failure_category": "pre_judge_dag_incomplete",
+                                             "disposition": "escalate"}
+            c.status_fn = lambda phase, sub, n: (
+                "fail" if (phase == "validate" and sub == "pre_judge") else "pass")
+            oc = c.run_phase(self._refs(), "validate")
+            self.assertEqual(oc.decision.reason, "validate_pre_judge_dag_incomplete")
+            self.assertNotIn("post_judge", oc.decision.reason)
+
+    def test_the_conformance_arm_tombstone_spelling(self) -> None:
+        """The judge-conformance arm's tombstone changed spelling on this branch, from
+        `judge_conformance_violation` (origin/main) to `validate_judge_conformance_violation`,
+        so that every arm of the skip-write branch labels its tombstone with the same string it
+        terminalizes under. Round 2's census found the change unwitnessed and undocumented — an
+        operator-read record altered with nothing observing it. Pinned here; the terminal reason
+        on this arm is unchanged from main."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            c = self._C(repo_root=Path(td), orchestration_id="orch_x",
+                        orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"),
+                        env={}, workflow_mode="dev")
+            c.calls = []
+            c.judge_semantic_decision_value = "pass"  # decision != "fail" -> conformance block
+            c.status_fn = lambda phase, sub, n: (
+                "fail" if (phase == "validate" and sub == "judge") else "pass")
+            oc = c.run_phase(self._refs(), "validate")
+            self.assertEqual(oc.decision.reason, "validate_judge_conformance_violation")
+            sup = [cap for s, cap in c.calls if s == "add-superseded-runs"]
+            self.assertEqual(len(sup), 1)
+            self.assertEqual(sup[0]["--reason"],
+                             "validate_gate_fail_orphan: validate_judge_conformance_violation")
 
     def test_run_phase_terminalizes_before_classify_failure_is_consulted(self) -> None:
         # The claim that `classify_failure`'s gate branches are DEFENSIVE, established by
@@ -3261,6 +3333,11 @@ class ValidateGateReasonFromMetaTest(unittest.TestCase):
         # `post_judge`, because `_maybe_warm_resume_post_judge` reads the same file first with
         # `or {}` — which passes a truthy non-dict straight through to `.get`. Driven through
         # run_phase (NOT the helper), which is the only place that ordering is visible.
+        # The three payloads are INTERCHANGEABLE, not three witnesses: each serializes to a
+        # non-object JSON value and takes the identical path through `_read_gate_meta`. They are
+        # kept because the reason the guard exists is "whatever a corrupt file parses to", and
+        # naming three of them says that better than one does (round 2 flagged the implication
+        # that they were three independent probes — they are not).
         import tempfile
         for substep in ("pre_judge", "post_judge"):
             for payload in (["not", "an", "object"], "oops", 7):
@@ -3287,29 +3364,38 @@ class ValidateGateReasonFromMetaTest(unittest.TestCase):
     # root, which reads as a missing document rather than as a harness problem (round 1).
     _RUNBOOK = "docs/RUNBOOK.md"
     _PHASE_DOC = "docs/workflow/phases/phase_04_validate.md"
-    # Anchors chosen so they are NOT part of what is being asserted: the issue marker for
-    # RUNBOOK, the code symbol for the phase doc (renaming the function breaks that anchor,
-    # which is the point — the doc has to be revisited with the code).
-    _RUNBOOK_ANCHOR = "(issue #114)"
-    _PHASE_ANCHOR = "`classify_validate_gate_failure`"
+    # The SECTION each rule is stated in, and a string that exists in the same file but OUTSIDE
+    # that section — the control that proves the reader is actually bounded.
+    _RUNBOOK_SECTION = "## 3-1. Resuming a failed workflow"
+    _RUNBOOK_CONTROL = "## 3-0. Auto-running dependencies"
+    _PHASE_SECTION = "## substep structure"
+    _PHASE_CONTROL = "## `run_id` format"
 
-    def _anchored(self, rel: str, anchor: str) -> str:
-        """EVERY line of `rel` carrying `anchor`, joined. Bounding the reader to the anchored
-        lines is load-bearing: over the whole file these reason names also occur in
-        neighbouring entries, and the check would then pass on an unrelated sentence.
+    def _section(self, rel: str, heading: str, control: str) -> str:
+        """The one section of `rel` that opens with `heading`, up to the next `## ` heading.
 
-        It admits SEVERAL anchored lines on purpose. Round 1's over-refusal probe drove three
-        legitimate maintenance edits into the earlier `assertEqual(len(lines), 1)` form and all
-        three were wrongly refused: splitting the phase bullet in two, mentioning the anchor a
-        second time, and adding a second RUNBOOK line about the same issue. The worst of them
-        reported the citation as MISSING when it had merely moved one line down. Nothing the
-        rule is about needs the statement to live on exactly one line — only that it live on a
-        line that announces itself with the anchor."""
-        lines = [ln for ln in (REPO_ROOT / rel).read_text(encoding="utf-8").splitlines()
-                 if anchor in ln]
-        self.assertTrue(lines, f"{rel}: no line carries {anchor!r} — the rule is not stated "
-                               f"anywhere this check can find it")
-        return "\n".join(lines)
+        A SECTION, not a line. Three rounds running, a line-bounded reader refused ordinary
+        maintenance and said the wrong thing about it: first `assertEqual(len(lines), 1)`
+        refused a second anchored line, then the all-anchored-lines form refused any edit that
+        moved content onto a line the anchor did not travel to — a plain markdown reflow, a
+        second issue reference, splitting one bullet into sub-bullets — and reported the moved
+        text as MISSING FROM THE DOCUMENT. Nothing the rule is about cares where the line breaks
+        fall; it cares that the section states the rule. So the bound moved up one level, which
+        is the last level that still is a bound (the file is not one — over the whole file these
+        reason names occur in neighbouring entries, and the check would pass on those).
+        """
+        text = (REPO_ROOT / rel).read_text(encoding="utf-8")
+        self.assertIn(heading, text, f"{rel}: section {heading!r} is gone")
+        body = text.split(heading, 1)[1]
+        nxt = re.search(r"^## ", body, re.MULTILINE)
+        section = body[:nxt.start()] if nxt else body
+        # Self-test the bound, both halves: the section must be a PROPER part of the file, and a
+        # heading that exists elsewhere in it must not be inside. Without this the assertions
+        # below could be passing on the whole document.
+        self.assertLess(len(section), len(text))
+        self.assertIn(control, text)
+        self.assertNotIn(control, section)
+        return section
 
     def test_the_two_documents_state_the_reasons_the_code_computes(self) -> None:
         f = wc.classify_validate_gate_failure
@@ -3318,43 +3404,102 @@ class ValidateGateReasonFromMetaTest(unittest.TestCase):
         # added to the module is required in the document by construction. (Round 1: the earlier
         # form enumerated four hardcoded probes, so a fifth family would never have been
         # required, while the comment claimed the members were derived.)
-        members = sorted({f(sub, meta) for sub in ("pre_judge", "post_judge")
-                          for meta in ({}, None)})
-        # The line above is a PROBE, not an enumeration — it drives the two meta shapes that
-        # exist today. What makes it grow with the code is the tripwire below: every
-        # `VALIDATE_GATE_*_SUFFIX` the module exports must be accounted for by some member, so
-        # adding a third reason family fails HERE, naming the constant, instead of silently
-        # leaving the new family undocumented. (Round 1: the earlier form hardcoded four probe
-        # shapes while its comment claimed the members were derived.)
+        substeps = ("pre_judge", "post_judge")
+        # Every `VALIDATE_GATE_*_SUFFIX` the module exports, spelled EXACTLY as the reason the
+        # function builds from it, for both substeps. Exact, not `endswith`: round 2 defeated the
+        # `endswith` form with a constant whose value (`_missing`) is a suffix of an existing
+        # member (`validate_pre_judge_meta_missing`), so the new family was satisfied by the
+        # WRONG member and never required in the document. A generated family has to be checked
+        # against its own other members, not only against the implementation.
         suffixes = {k: v for k, v in vars(wc).items()
                     if k.startswith("VALIDATE_GATE_") and k.endswith("_SUFFIX")
                     and isinstance(v, str)}
         self.assertTrue(suffixes)
+        members = sorted({f"validate_{sub}{suf}" for sub in substeps for suf in suffixes.values()})
+        # ... and the spelling is checked against what the function actually returns, over a probe
+        # covering every meta shape that reaches a suffix-built reason. A constant that stops
+        # being a reason suffix, or a family the probe no longer reaches, fails here by name.
+        produced = {f(sub, meta) for sub in substeps
+                    for meta in ({"status": "fail"}, {"status": "pass"}, None)}
         for name, suffix in sorted(suffixes.items()):
-            self.assertTrue(
-                any(m.endswith(suffix) for m in members),
-                f"{name} = {suffix!r} is a reason suffix no probed member carries — extend the "
-                f"probe shapes above so this check still covers every reason family, then name "
-                f"the new reasons in {self._RUNBOOK}")
-        bullet = self._anchored(self._RUNBOOK, self._RUNBOOK_ANCHOR)
+            for sub in substeps:
+                self.assertIn(
+                    f"validate_{sub}{suffix}", produced,
+                    f"{name} = {suffix!r} builds no reason the probe reaches for {sub!r} — "
+                    f"extend the probe shapes above so this check still covers every reason "
+                    f"family, then name the new reasons in {self._RUNBOOK}")
+        bullet = self._section(self._RUNBOOK, self._RUNBOOK_SECTION, self._RUNBOOK_CONTROL)
         for reason in members:
             self.assertIn(reason, bullet, f"{self._RUNBOOK} does not name {reason}")
-        # Self-test the bound: a sentence that exists elsewhere in RUNBOOK must NOT be inside
-        # the window, or "the reader is bounded" is an untested claim and the assertions above
-        # could be passing on the rest of the file.
-        whole = (REPO_ROOT / self._RUNBOOK).read_text(encoding="utf-8")
-        control = "leaf_transient_retry_declined"
-        self.assertIn(control, whole)
-        self.assertNotIn(control, bullet)
 
     def test_the_phase_contract_points_at_the_code_and_the_runbook(self) -> None:
         # Coupled by POINTER: the phase doc states the derivation rule as a template, so it
         # cannot be checked member by member. What it must not lose is the two citations that
         # let a reader reach the definition and the operator procedure.
-        bullet = self._anchored(self._PHASE_DOC, self._PHASE_ANCHOR)
+        bullet = self._section(self._PHASE_DOC, self._PHASE_SECTION, self._PHASE_CONTROL)
         self.assertIn("`docs/RUNBOOK.md`", bullet)
-        self.assertIn(wc.VALIDATE_GATE_NO_CATEGORY_SUFFIX, bullet)
-        self.assertIn(wc.VALIDATE_GATE_META_MISSING_SUFFIX, bullet)
+        self.assertIn("`classify_validate_gate_failure`", bullet)
+        # Every suffix constant, read from the module — so a new reason family has to be
+        # reflected here too, not only in the RUNBOOK members check.
+        for name, suffix in sorted((k, v) for k, v in vars(wc).items()
+                                   if k.startswith("VALIDATE_GATE_") and k.endswith("_SUFFIX")
+                                   and isinstance(v, str)):
+            self.assertIn(suffix, bullet, f"{self._PHASE_DOC} does not state {name}")
+
+    def test_every_gate_meta_read_goes_through_the_one_reader(self) -> None:
+        """Rule 3-a, applied to a coverage claim instead of to prose. Round 2 found the previous
+        shape — `isinstance` at the call sites, the coverage asserted in a docstring — wrong for
+        the third round running: the claim said two sites, there were six, and the one that runs
+        FIRST was not among them. The rule is now computed: no `_read_json` in the conductor may
+        name either gate meta; they all go through `_read_gate_meta`, which is where the
+        non-object case is answered once."""
+        import ast
+        src = (REPO_ROOT / "tools" / "workflow_conductor.py").read_text(encoding="utf-8")
+        tree = ast.parse(src)
+        offenders = []
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                    and node.func.id == "_read_json"):
+                continue
+            text = " ".join(ast.dump(a) for a in node.args)
+            for fname in wc.GATE_META_FILENAMES:
+                if fname in text:
+                    offenders.append((node.lineno, fname))
+        self.assertEqual(
+            offenders, [],
+            "these `_read_json` calls name a Validate gate meta directly; use `_read_gate_meta`, "
+            "which is the one place the absent / undecodable / non-object cases are answered "
+            "(a bare `_read_json(...) or {}` passes a JSON array through to `.get` and raises)")
+        # Self-test the reader: it must be able to SEE such a call, or the empty list above is
+        # green because the scan is broken rather than because the rule holds.
+        probe = ast.parse('x = _read_json(d / "pre_judge_meta.json") or {}')
+        seen = [n for n in ast.walk(probe)
+                if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+                and n.func.id == "_read_json"
+                and any("pre_judge_meta.json" in ast.dump(a) for a in n.args)]
+        self.assertEqual(len(seen), 1)
+
+    def test_no_gate_category_collides_with_a_prefix_another_reader_keys_on(self) -> None:
+        """The reason is `validate_<category>`, and other readers key on `validate_<something>`
+        prefixes — `_DEV_VALIDATE_EXECUTE_REASON_PREFIX` is `validate_execute_`. A category the
+        conductor starts writing that begins with `execute_` would synthesize a dev resume
+        directive that reopens Generate over a Validate gate failure. No writer produces one
+        today; this is the growth guard, since nothing else would notice."""
+        from tools.orchestration_runtime import (
+            _DEV_VALIDATE_EXECUTE_REASON_PREFIX as EXEC_PREFIX,
+        )
+        src = (REPO_ROOT / "tools" / "workflow_conductor.py").read_text(encoding="utf-8")
+        categories = sorted(set(re.findall(r'"failure_category":\s*(?:\()?\s*"([^"]+)"', src)))
+        self.assertTrue(categories, "no literal failure_category writers found — the scan broke")
+        stem = EXEC_PREFIX[len("validate_"):]          # "execute_"
+        for cat in categories:
+            self.assertFalse(
+                f"validate_{cat}".startswith(EXEC_PREFIX),
+                f"failure_category {cat!r} makes the terminal reason validate_{cat}, which "
+                f"{EXEC_PREFIX!r} matches — rename the category, or give the gate reasons a "
+                f"prefix of their own")
+        # Self-test: the assertion must be able to fail.
+        self.assertTrue(f"validate_{stem}boom".startswith(EXEC_PREFIX))
 
     def test_classifier_is_a_pure_function_of_the_meta(self) -> None:
         # The defensive classify_failure branches route from the same helper, so the two sites
