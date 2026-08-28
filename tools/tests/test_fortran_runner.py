@@ -1445,6 +1445,58 @@ class HarnessPinTest(unittest.TestCase):
         self.assertIn("model source signature", str(cm.exception))
 
 
+class DeclaredLintRuleHoldTest(unittest.TestCase):
+    """Hold the RENDERED runner to the rule set the `Generate.gate` lint check imposes.
+
+    A CLASS OF ITS OWN, because these rows render and lint and never compile: inside
+    `GfortranSmokeTest` they inherited its `skipUnless(_HAVE_GFORTRAN)` and could not run
+    on a host with a linter and no compiler — the two skip reasons they declare for
+    themselves could never fire, because the class guard won first. A review round found
+    it, and the consequence was in the commit message: "a renderer edit that introduces a
+    finding fails in an unbilled unit test rather than at a node's gate" held only where
+    gfortran happened to be installed.
+    """
+
+    def _assert_runner_clean_under_the_declared_lint_rules(
+            self, ir: dict, sid: str) -> None:
+        """The rendered runner passes the rule set the `Generate.gate` lint check imposes.
+
+        Issue #112's "worth deciding at the same time": hold the host-authored artifact to the
+        gate's rules AT THE POINT IT IS RENDERED, so a renderer edit that introduces a finding
+        fails here — in an unbilled unit test — instead of at a node's gate, where the finding
+        terminalizes the run.
+
+        THIS IS A SAMPLE, NOT A PIN. It renders the IR fixtures this module happens to carry, so
+        it cannot claim that every IR renders a clean runner; a shape none of these fixtures
+        reaches could still produce one. The gate's `host_rendered_lint_findings` arm remains the
+        backstop, and it is what makes the residual visible rather than silent.
+
+        The invocation is the backend's own `check_argv`, never a hand-spelled command line: a
+        copy here would be a second declaration of the rule set, and the whole point of that
+        declaration is that there is one.
+        """
+        reason = _linter_skip_reason()
+        if reason == _LINTER_ABSENT_SKIP:
+            self.skipTest("the declared lint invocation's linter is not installed")
+        if reason == _LINTER_UNMEASURED_SKIP:
+            self.skipTest("the installed linter is outside the measured version range")
+        from tools.backends.linter.fortitude import lint as _lint
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            (d / f"{sid}_runner.f90").write_text(render_runner(ir, sid, HARNESS))
+            r = subprocess.run(list(_lint.check_argv(".")), cwd=d,
+                               capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_rendered_runner_clean_under_the_declared_lint_rules(self) -> None:
+        self._assert_runner_clean_under_the_declared_lint_rules(
+            _boundary_ir(), BOUNDARY_SID)
+
+    def test_rendered_metrics_runner_clean_under_the_declared_lint_rules(self) -> None:
+        self._assert_runner_clean_under_the_declared_lint_rules(
+            _rank34_metrics_ir(), RANK_SID)
+
+
 @unittest.skipUnless(_HAVE_GFORTRAN, "gfortran not available")
 class GfortranSmokeTest(unittest.TestCase):
     def test_rendered_runner_compiles_and_runs(self) -> None:
@@ -1609,45 +1661,6 @@ class GfortranSmokeTest(unittest.TestCase):
                  "-J", str(mods), "-I", str(mods), f"{sid}_runner.f90"],
                 cwd=d, capture_output=True, text=True)
             self.assertEqual(r.returncode, 0, r.stderr)
-
-    def _assert_runner_clean_under_the_declared_lint_rules(
-            self, ir: dict, sid: str) -> None:
-        """The rendered runner passes the rule set the `Generate.gate` lint check imposes.
-
-        Issue #112's "worth deciding at the same time": hold the host-authored artifact to the
-        gate's rules AT THE POINT IT IS RENDERED, so a renderer edit that introduces a finding
-        fails here — in an unbilled unit test — instead of at a node's gate, where the finding
-        terminalizes the run.
-
-        THIS IS A SAMPLE, NOT A PIN. It renders the IR fixtures this module happens to carry, so
-        it cannot claim that every IR renders a clean runner; a shape none of these fixtures
-        reaches could still produce one. The gate's `host_rendered_lint_findings` arm remains the
-        backstop, and it is what makes the residual visible rather than silent.
-
-        The invocation is the backend's own `check_argv`, never a hand-spelled command line: a
-        copy here would be a second declaration of the rule set, and the whole point of that
-        declaration is that there is one.
-        """
-        reason = _linter_skip_reason()
-        if reason == _LINTER_ABSENT_SKIP:
-            self.skipTest("the declared lint invocation's linter is not installed")
-        if reason == _LINTER_UNMEASURED_SKIP:
-            self.skipTest("the installed linter is outside the measured version range")
-        from tools.backends.linter.fortitude import lint as _lint
-        with tempfile.TemporaryDirectory() as td:
-            d = Path(td)
-            (d / f"{sid}_runner.f90").write_text(render_runner(ir, sid, HARNESS))
-            r = subprocess.run(list(_lint.check_argv(".")), cwd=d,
-                               capture_output=True, text=True)
-            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-
-    def test_rendered_runner_clean_under_the_declared_lint_rules(self) -> None:
-        self._assert_runner_clean_under_the_declared_lint_rules(
-            _boundary_ir(), BOUNDARY_SID)
-
-    def test_rendered_metrics_runner_clean_under_the_declared_lint_rules(self) -> None:
-        self._assert_runner_clean_under_the_declared_lint_rules(
-            _rank34_metrics_ir(), RANK_SID)
 
     def test_rendered_runner_clean_under_promoted_unused_warnings(self) -> None:
         self._assert_runner_clean_under_promoted_warnings(

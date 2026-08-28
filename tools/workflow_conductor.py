@@ -255,12 +255,12 @@ GATE_FAILURE_ROUTING: dict[str, tuple[str, str]] = {
 # below routes the same shape at Validate.execute to a COMPILE REOPEN, on the ground that the
 # runner is a pure function of the IR. `classify_gate_failure` has no reopen arm, and issue #112
 # asks for a fail_closed that names the producer, so that route is left for a later change.)
-# `gate_finding_unattributed` — the gate could not place a finding on either side of that
+# `lint_finding_unattributed` — the gate could not place a finding on either side of that
 # partition. Assuming the leaf is how this whole class hides, so it fails closed instead.
 GATE_FAILURE_TERMINAL: frozenset[str] = frozenset(
     {"stale_dependency_ir", "static_frontend_unavailable",
      "host_rendered_lint_findings", "host_authored_artifact_violation",
-     "gate_finding_unattributed"}
+     "lint_finding_unattributed"}
 )
 
 # Canonical ordering of gate failure categories in the route reason and the composed excerpt
@@ -272,7 +272,7 @@ _GATE_CATEGORY_CANON_ORDER: tuple[str, ...] = (
     "syntax_error",
     "lint_findings",
     "host_rendered_lint_findings",
-    "gate_finding_unattributed",
+    "lint_finding_unattributed",
     "workspace_root_violation",
     "post_generate_violation",
     "stale_dependency_ir",
@@ -406,7 +406,7 @@ VALIDATE_EXECUTE_FAILURE_ROUTING: dict[str, tuple[str, str]] = {
 # #112, which is what the separation was for. This set gains
 # `host_authored_artifact_violation`, because `_execute_inproc` reads the same validator exit
 # code (5) and must fail closed on it; it does NOT gain `host_rendered_lint_findings` or
-# `gate_finding_unattributed`, which are produced by the Generate.gate LINT attribution and have
+# `lint_finding_unattributed`, which are produced by the Generate.gate LINT attribution and have
 # no Validate.execute counterpart — nothing at execute runs a linter. The relationship is now
 # pinned as a strict subset plus the named difference, so a category added to either is still a
 # decision about the other rather than a silent drift.
@@ -434,7 +434,7 @@ VALIDATE_EXECUTE_FAILURE_TERMINAL: frozenset[str] = frozenset(
 # so). Both are produced by the Generate.gate lint attribution (issue #112); execute runs no
 # linter, so neither can reach `_execute_inproc`.
 GATE_ONLY_TERMINAL_CATEGORIES: frozenset[str] = frozenset(
-    {"host_rendered_lint_findings", "gate_finding_unattributed"}
+    {"host_rendered_lint_findings", "lint_finding_unattributed"}
 )
 
 # Route-reason prefix for the table above: `<prefix><failure_category>`. Also the prefix of the
@@ -8476,11 +8476,28 @@ clean:
                 continue
             if "lint" not in record.backend_provides:
                 continue
+            # A run with NO EXIT STATUS never reached a verdict, and that is decided HERE
+            # rather than by the backend: the backend classifies an exit status, and the absence
+            # of one is not an exit status. The live cause is a timeout — `_run_command` records
+            # `return_code: None` on `TimeoutExpired` — and coercing that to 0 handed the
+            # backend the CLEANEST possible status for a run that produced nothing, which it
+            # duly called a verdict. Harmless while the whole-directory run was the only caller
+            # (`ok=False` routed warm either way); not harmless once the ATTRIBUTION PROBES read
+            # the same field, because a timed-out host probe then answers
+            # `host_rendered_lint_findings` and fail_closes a node whose finding is the leaf's.
+            # A timeout is the machine's, not the source's, so it is a transport fail_closed.
+            raw_rc = sub.get("return_code")
+            if not isinstance(raw_rc, int) or isinstance(raw_rc, bool):
+                raise RuntimeError(
+                    f"generate.gate lint check: the {sub_preset} run reported no exit status "
+                    f"(return_code={raw_rc!r}), so it reached no verdict about this source. The "
+                    f"measured cause is a timeout; the run's own report is: "
+                    f"{str(sub.get('error') or sub.get('stderr') or sub.get('stdout') or '').strip()[:400]}")
             module = backend_registry.capability_module("linter", sub_preset, "lint")
             classify = getattr(module, "unusable_invocation_reason", None)
             if classify is None:
                 continue
-            reason = classify(int(sub.get("return_code", 0) or 0),
+            reason = classify(raw_rc,
                               str(sub.get("stdout") or ""), str(sub.get("stderr") or ""))
             if reason is not None:
                 raise RuntimeError(f"generate.gate lint check: {reason}")
@@ -8495,7 +8512,7 @@ clean:
         `lint_findings` (the leaf can fix it — the excerpt is the LEAF run's output, so a warm
         repair is never handed a diagnostic about a file it cannot write),
         `host_rendered_lint_findings` (this repository's renderer produced it), and
-        `gate_finding_unattributed` (neither side reproduced it). Only the first is a warm retry;
+        `lint_finding_unattributed` (neither side reproduced it). Only the first is a warm retry;
         `GATE_FAILURE_TERMINAL` holds the other two.
 
         DECIDED BY THE LINTER'S OWN VERDICT over two isolated copies of `src/`, never by reading a
@@ -8518,7 +8535,7 @@ clean:
         (measured on the supported build: a tree whose only finding sits in a NESTED source
         reports `2 files scanned` and exits 1). A finding below the top level was then in the run
         and in NEITHER probe, so both halves came back clean and an ordinary leaf-repairable
-        finding was terminalized as `gate_finding_unattributed`. The construct is at zero
+        finding was terminalized as `lint_finding_unattributed`. The construct is at zero
         occurrences in today's corpus (3 of 263 source trees hold a subdirectory, all of them
         holding only `.jsonl`), which is why nothing caught it; a review round did.
 
@@ -8529,6 +8546,16 @@ clean:
         premise this partition rests on; a linter that resolved across files would break it. The
         build the measurement was taken on is recorded in the commit message and in the linter
         backend's own document, which is where a version belongs.
+
+        A SECOND SHAPE THE MEASUREMENT ABOVE DOES NOT COVER, and it is live: on a node where the
+        host writes the control file but renders no runner — an `infrastructure` node, which the
+        corpus has — the host set is that one file and the host probe runs over a directory the
+        linter reads no source from. If a "no files matched" run exited non-zero, `not leaf_ok and
+        not host_ok` would fire and EVERY ordinary leaf finding on such a node would come back
+        terminal on the first attempt. Measured on the same build rather than assumed: the
+        declared invocation over a control-file-only directory, and over an empty one, both
+        report `0 files scanned` and exit 0. Found by a review round asking what the recorded
+        measurement did not reach.
 
         The probe runs pass NO `command_log_path`, exactly as `_gate_syntax_check`'s `_sub_check`
         does: they certify nothing, so keeping them out of `<src>/command_log.jsonl` leaves that
@@ -8611,7 +8638,7 @@ clean:
         # Neither isolated half reproduced the failure the whole directory produced. Something
         # decided this verdict that the partition does not model. "Assume the leaf" is how this
         # class hides, so it fails closed instead, and says what it could not place.
-        return ("gate_finding_unattributed",
+        return ("lint_finding_unattributed",
                 "[unattributed] the lint run over source/<source_id>/src/ failed, but neither "
                 "isolated half of that directory reproduces it: the leaf-authored files pass on "
                 "their own and so do the host-authored ones ("
@@ -9107,6 +9134,17 @@ clean:
                         else:
                             leaf_dir = (self.repo_root / "workspace" / "tmp" / child_arid
                                         / "syntax" / f"{compiler}_leaf_probe")
+                            # Reset, for the reason its LINT twin does (`_attribute_lint_findings`)
+                            # — `workspace/tmp/<agent_run_id>/` is a flat namespace with a
+                            # documented collision risk, and a residue here makes the probe fail,
+                            # which records `attribution="leaf"` where the truth is
+                            # `unattributed_interaction`. This arm routes nothing, so the cost is
+                            # a FALSE RECORD rather than a wrong verdict — but the record is what
+                            # a later change to this arm would decide on, so it has to be true.
+                            # The two probes were added by one change and only one got the reset;
+                            # a review round found the twin.
+                            if leaf_dir.exists():
+                                shutil.rmtree(leaf_dir)
                             leaf_dir.mkdir(parents=True, exist_ok=True)
                             for p in leaf_only:
                                 shutil.copy2(p, leaf_dir / p.name)

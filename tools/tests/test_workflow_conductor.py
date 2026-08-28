@@ -624,7 +624,7 @@ class DecisionTableTest(unittest.TestCase):
         # change a verdict about a file the leaf has no write authority over. All three lint /
         # static attribution categories dominate a co-occurring warm one, because the warm one
         # cannot be repaired while the unrepairable one is still there.
-        for cat in ("host_rendered_lint_findings", "gate_finding_unattributed",
+        for cat in ("host_rendered_lint_findings", "lint_finding_unattributed",
                     "host_authored_artifact_violation"):
             self.assertIn(cat, wc.GATE_FAILURE_TERMINAL, cat)
             self.assertNotIn(cat, wc.GATE_FAILURE_ROUTING, cat)
@@ -14488,14 +14488,22 @@ class DeterministicBuildTest(unittest.TestCase):
             frozenset(),
             wc.GATE_ONLY_TERMINAL_CATEGORIES & wc.VALIDATE_EXECUTE_FAILURE_TERMINAL)
         self.assertLess(wc.GATE_ONLY_TERMINAL_CATEGORIES, wc.GATE_FAILURE_TERMINAL)
+        # QUANTIFIED OVER BOTH SETS, not over the execute one alone. Splitting the terminal
+        # categories in two made the gate-only half exempt from every assertion below, and a
+        # review round measured it: adding `quality_check_mismatch` — a key of
+        # VALIDATE_EXECUTE_FAILURE_ROUTING and a member of a dev reuse set — to
+        # GATE_FAILURE_TERMINAL *and* GATE_ONLY_TERMINAL_CATEGORIES left 1989 rows green. One
+        # name would then route warm at Validate.execute and fail_closed at Generate.gate, which
+        # is the silent drift the split's own comment says it exists to prevent.
+        every_terminal = wc.VALIDATE_EXECUTE_FAILURE_TERMINAL | wc.GATE_FAILURE_TERMINAL
         self.assertEqual(
-            frozenset(), wc.VALIDATE_EXECUTE_FAILURE_TERMINAL
-            & frozenset(wc.VALIDATE_EXECUTE_FAILURE_ROUTING))
+            frozenset(), every_terminal & frozenset(wc.VALIDATE_EXECUTE_FAILURE_ROUTING))
+        self.assertEqual(
+            frozenset(), every_terminal & frozenset(wc.GATE_FAILURE_ROUTING))
         for dev_set_name in ("_DEV_VALIDATE_EXECUTE_REUSE_CATEGORIES",
                              "_DEV_VALIDATE_EXECUTE_VERDICT_CATEGORIES"):
             self.assertEqual(
-                frozenset(), wc.VALIDATE_EXECUTE_FAILURE_TERMINAL
-                & getattr(wc_runtime, dev_set_name), dev_set_name)
+                frozenset(), every_terminal & getattr(wc_runtime, dev_set_name), dev_set_name)
 
     def test_read_repair_findings_returns_none_for_a_terminal_execute_reason(self) -> None:
         # A terminal reason shares the `validate_execute_` prefix with the warm categories, so a
@@ -15227,7 +15235,7 @@ class DeterministicLintTest(unittest.TestCase):
             c = self._conductor(repo)
             with self._patch_linter(self._attributing_linter({"whole"})):
                 out = c._gate_lint_check(refs, "child-1", "captok")
-        self.assertEqual(out["failure_category"], "gate_finding_unattributed")
+        self.assertEqual(out["failure_category"], "lint_finding_unattributed")
         self.assertIn(out["failure_category"], wc.GATE_FAILURE_TERMINAL)
         self.assertIn("unattributed", out["failure_excerpt"])
 
@@ -15238,7 +15246,7 @@ class DeterministicLintTest(unittest.TestCase):
         `sub/dirty.f90` reports `2 files scanned` and exits 1). A partition built from
         `iterdir()` is total over the flat listing only, so such a finding was in the full run
         and in neither half — both halves clean — and an ordinary leaf-repairable finding came
-        back `gate_finding_unattributed`, terminal.
+        back `lint_finding_unattributed`, terminal.
 
         This drives the real copy and asserts on the FILE SETS the probes were handed, because
         that is where the defect lived; the categories are covered by the rows above."""
@@ -15276,7 +15284,7 @@ class DeterministicLintTest(unittest.TestCase):
              "command_log.jsonl", "sub/nested.f90"})
         # Both halves clean while the whole directory failed is the arm that must stay reachable
         # only when the partition genuinely reproduces nothing.
-        self.assertEqual(out["failure_category"], "gate_finding_unattributed")
+        self.assertEqual(out["failure_category"], "lint_finding_unattributed")
 
     def test_a_nested_file_cannot_borrow_the_host_attribution(self) -> None:
         """The host-authored set is BASENAMES, and the host writes them at the top level.
@@ -15372,6 +15380,46 @@ class DeterministicLintTest(unittest.TestCase):
                         with self.assertRaises(RuntimeError) as caught:
                             c._gate_lint_check(refs, "child-1", "captok")
                 self.assertIn("without checking anything", str(caught.exception))
+
+    def test_a_run_with_no_exit_status_is_a_transport_fail_closed(self) -> None:
+        """A TIMEOUT reached no verdict, and must not be read as one.
+
+        `_run_command` records `return_code: None` on `TimeoutExpired`. Coercing that to 0 handed
+        the backend the CLEANEST exit status for a run that produced nothing, and the backend
+        duly called it a verdict. That was harmless while the whole-directory run was the only
+        caller — `ok=False` routed warm either way — and stopped being harmless once the probes
+        decide terminal-vs-warm: a timed-out HOST probe answers `host_rendered_lint_findings` and
+        fail_closes a node whose finding is the leaf's.
+
+        Driven on the whole run and on each probe, because the consequence differs by which one
+        times out and all three go through the same classifier."""
+        import tempfile
+        for timing_out in ("whole", "leaf", "host"):
+            with self.subTest(run=timing_out):
+                with tempfile.TemporaryDirectory() as td:
+                    repo = Path(td)
+                    refs = self._m3c_refs()
+                    self._seed_m3c(repo, refs)
+                    c = self._conductor(repo)
+
+                    def _fn(args, _t=timing_out):
+                        pd = str(args.get("project_dir", ""))
+                        which = ("leaf" if pd.endswith("/lint/leaf")
+                                 else "host" if pd.endswith("/lint/host") else "whole")
+                        if which == _t:
+                            return {"ok": False, "return_code": None, "command_id": "cid",
+                                    "preset": "fortitude", "stdout": "", "stderr": "",
+                                    "error": "timeout: exceeded 1800 sec"}
+                        return {"ok": which != "whole",
+                                "return_code": 0 if which != "whole" else 1,
+                                "command_id": "cid", "preset": "fortitude",
+                                "stdout": "" if which != "whole" else "FINDING"}
+
+                    with self._patch_linter(_fn):
+                        with self.assertRaises(RuntimeError) as caught:
+                            c._gate_lint_check(refs, "child-1", "captok")
+                self.assertIn("no exit status", str(caught.exception))
+                self.assertIn("timeout", str(caught.exception))
 
     def test_the_probe_directories_are_emptied_before_each_run(self) -> None:
         """A probe must judge THIS attempt's source set, not a residue of an earlier one.
@@ -15511,11 +15559,16 @@ class DeterministicLintTest(unittest.TestCase):
             refs = self._refs()
             self._seed(repo, refs, language="mixed")
             c = self._conductor(repo)
+            # `return_code` is present because the real `_run_command` always sets it; a
+            # fixture that omitted it was measuring nothing about exit statuses, and the
+            # no-verdict refusal (which reads exactly that field) made that visible.
             mixed = {
                 "ok": True, "preset": "mixed",
                 "runs": [
-                    {"sub_preset": "fortitude", "ok": True, "command_id": "f1"},
-                    {"sub_preset": "cppcheck", "ok": True, "command_id": "c1"},
+                    {"sub_preset": "fortitude", "ok": True, "command_id": "f1",
+                     "return_code": 0},
+                    {"sub_preset": "cppcheck", "ok": True, "command_id": "c1",
+                     "return_code": 0},
                 ],
             }
             with self._patch_linter(lambda args: mixed):
