@@ -3161,9 +3161,16 @@ class ValidateGateReasonFromMetaTest(unittest.TestCase):
             for label in ("no_category", "no_meta"):
                 self.assertNotIn("dag_incomplete", r[label], f"{substep}/{label}")
 
-    def test_orphan_tombstone_carries_the_same_reason(self) -> None:
-        # The skip-write branch tombstones the attempt's arids; its reason must not disagree
-        # with the terminal reason (both are read by an operator reconstructing a dead run).
+    def test_orphan_tombstone_carries_the_same_reason_except_on_the_escalate_arm(self) -> None:
+        # The skip-write branch tombstones the attempt's arids; on the terminal arms its reason
+        # must not disagree with the terminal reason (both are read by an operator
+        # reconstructing a dead run). Round 1 established that the property does NOT hold
+        # unconditionally, and an earlier commit message asserted it as if it did: the tombstone
+        # is written from `gate_reason`, and the dev-escalate arm then OVERRIDES
+        # `decision.reason` with `escalate_reason`, so the two differ there. `origin/main`
+        # differed on that arm too, so this is the pre-existing behaviour, pinned rather than
+        # changed — what changed is that the claim now matches it. The second half of this test
+        # is what stops the claim from drifting back.
         import tempfile
         with tempfile.TemporaryDirectory() as td:
             c = self._C(repo_root=Path(td), orchestration_id="orch_x",
@@ -3179,59 +3186,105 @@ class ValidateGateReasonFromMetaTest(unittest.TestCase):
             sup = [cap for s, cap in c.calls if s == "add-superseded-runs"]
             self.assertEqual(len(sup), 1)
             self.assertIn(oc.decision.reason, sup[0]["--reason"])
+        # The escalate arm, in dev (prod returns an escalate decision without tombstoning at
+        # all). The terminal reason is the escalate reason; the tombstone keeps the gate reason.
+        with tempfile.TemporaryDirectory() as td:
+            c = self._C(repo_root=Path(td), orchestration_id="orch_x",
+                        orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"),
+                        env={}, workflow_mode="dev")
+            c.calls = []
+            c.post_judge_meta_fn = lambda n: {"status": "fail",
+                                              "failure_category": "pre_judge_violation",
+                                              "disposition": "escalate"}
+            c.status_fn = lambda phase, sub, n: (
+                "fail" if (phase == "validate" and sub == "post_judge") else "pass")
+            oc = c.run_phase(self._refs(), "validate")
+            # fail_closed, not escalate: that is what makes this the DEV arm (prod returns an
+            # escalate decision and tombstones nothing, so the assertions below would not hold).
+            self.assertEqual(oc.decision.action, "fail_closed")
+            self.assertEqual(oc.decision.reason, "validate_post_judge_unknown")
+            sup = [cap for s, cap in c.calls if s == "add-superseded-runs"]
+            self.assertEqual(len(sup), 1)
+            self.assertEqual(sup[0]["--reason"],
+                             "validate_gate_fail_orphan: validate_pre_judge_violation")
+            self.assertNotIn(oc.decision.reason, sup[0]["--reason"])
 
     def test_run_phase_terminalizes_before_classify_failure_is_consulted(self) -> None:
         # The claim that `classify_failure`'s gate branches are DEFENSIVE, established by
         # execution rather than by reading the control flow: drive a real pre_judge and a real
         # post_judge failure through run_phase with classify_failure replaced by a tripwire.
+        #
+        # ONE tripwire class serves all three cases, `execute` included. That is the whole point
+        # of the control: round 1 found the earlier version defining a SECOND class for it, so
+        # unwiring the first one (renaming the override) left the control green and both
+        # assertions on the gate substeps vacuous — the test passed with nothing observing
+        # anything. Sharing the class means the control cannot be green unless the same override
+        # the gate cases rely on is live.
         import tempfile
-        for substep in ("pre_judge", "post_judge"):
-            with tempfile.TemporaryDirectory() as td:
-                consulted: list[str] = []
+        consulted: list[str] = []
 
-                class _T(self._C):  # type: ignore[misc]
-                    def classify_failure(self, refs, phase, outcomes,  # type: ignore[override]
-                                         _seen=consulted):
-                        _seen.append(phase)
-                        return wc.RouteDecision("fail_closed", reason="tripwire")
+        class _T(self._C):  # type: ignore[misc]
+            def classify_failure(self, refs, phase, outcomes):  # type: ignore[override]
+                consulted.append(phase)
+                return wc.RouteDecision("fail_closed", reason="tripwire")
 
-                c = _T(repo_root=Path(td), orchestration_id="orch_x",
-                       orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
-                c.calls = []
-                setattr(c, f"{substep}_meta_fn",
-                        lambda n: {"status": "fail",
-                                   "failure_category": "pre_judge_dag_incomplete",
-                                   "disposition": "fail_closed"})
-                c.status_fn = lambda phase, sub, n, want=substep: (
-                    "fail" if (phase == "validate" and sub == want) else "pass")
-                oc = c.run_phase(self._refs(), "validate")
-                self.assertEqual(consulted, [], substep)
-                self.assertNotEqual(oc.decision.reason, "tripwire", substep)
-        # Positive control for the tripwire itself: `execute` is a validate substep run_phase
-        # does NOT terminalize, so the same harness must see classify_failure consulted. Without
-        # this the two assertions above are green whenever the tripwire is simply not wired.
-        with tempfile.TemporaryDirectory() as td:
-            consulted = []
-
-            class _T2(self._C):  # type: ignore[misc]
-                def classify_failure(self, refs, phase, outcomes):  # type: ignore[override]
-                    consulted.append(phase)
-                    return wc.RouteDecision("fail_closed", reason="tripwire")
-
-            c = _T2(repo_root=Path(td), orchestration_id="orch_x",
-                    orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
+        def _drive(td: str, substep: str, meta: dict | None) -> wc.PhaseOutcome:
+            consulted.clear()
+            c = _T(repo_root=Path(td), orchestration_id="orch_x",
+                   orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
             c.calls = []
-            c.status_fn = lambda phase, sub, n: (
-                "fail" if (phase == "validate" and sub == "execute") else "pass")
-            oc = c.run_phase(self._refs(), "validate")
+            if meta is not None:
+                setattr(c, f"{substep}_meta_fn", lambda n, m=meta: m)
+            c.status_fn = lambda phase, sub, n, want=substep: (
+                "fail" if (phase == "validate" and sub == want) else "pass")
+            return c.run_phase(self._refs(), "validate")
+
+        # Positive control FIRST, so a dead tripwire fails here before the two claims below can
+        # be read as evidence: `execute` is a validate substep run_phase does NOT terminalize.
+        with tempfile.TemporaryDirectory() as td:
+            oc = _drive(td, "execute", None)
             self.assertEqual(consulted, ["validate"])
             self.assertEqual(oc.decision.reason, "tripwire")
+        gate_meta = {"status": "fail", "failure_category": "pre_judge_dag_incomplete",
+                     "disposition": "fail_closed"}
+        for substep in ("pre_judge", "post_judge"):
+            with tempfile.TemporaryDirectory() as td:
+                oc = _drive(td, substep, gate_meta)
+                self.assertEqual(consulted, [], substep)
+                # Assert the reason POSITIVELY. `assertNotEqual(..., "tripwire")` was the other
+                # half of the round-1 finding: it is satisfied by any string at all, including
+                # one produced with the tripwire gone.
+                self.assertEqual(oc.decision.reason, "validate_pre_judge_dag_incomplete", substep)
+
+    def test_a_non_dict_gate_meta_terminalizes_instead_of_crashing(self) -> None:
+        # Round 1, both axes: the classifier's own `isinstance` guard was unreachable for
+        # `post_judge`, because `_maybe_warm_resume_post_judge` reads the same file first with
+        # `or {}` — which passes a truthy non-dict straight through to `.get`. Driven through
+        # run_phase (NOT the helper), which is the only place that ordering is visible.
+        import tempfile
+        for substep in ("pre_judge", "post_judge"):
+            for payload in (["not", "an", "object"], "oops", 7):
+                with tempfile.TemporaryDirectory() as td:
+                    c = self._C(repo_root=Path(td), orchestration_id="orch_x",
+                                orchestration_agent_run_id="ORCH",
+                                llm_config=_cfg("claude"), env={})
+                    c.calls = []
+                    setattr(c, f"{substep}_meta_fn", lambda n, pl=payload: pl)
+                    c.status_fn = lambda phase, sub, n, want=substep: (
+                        "fail" if (phase == "validate" and sub == want) else "pass")
+                    oc = c.run_phase(self._refs(), "validate")
+                    self.assertEqual(oc.decision.action, "fail_closed", (substep, payload))
+                    self.assertEqual(oc.decision.reason,
+                                     f"validate_{substep}_meta_missing", (substep, payload))
 
     # --- rule 3-a coupling: three sites state this rule (the code that computes the reason,
     # the operator's RUNBOOK entry, and the phase contract). The code is the one definition;
     # the two documents are checked AGAINST it, never the reverse. RUNBOOK is coupled by
     # MEMBERS because it names all four reasons in full; phase_04 is coupled by POINTER
     # because it states the rule as a template and defers to RUNBOOK for the spellings.
+    # Paths are resolved from REPO_ROOT, not from the CWD: a bare relative path makes the two
+    # checks fail with FileNotFoundError when pytest is started from anywhere but the checkout
+    # root, which reads as a missing document rather than as a harness problem (round 1).
     _RUNBOOK = "docs/RUNBOOK.md"
     _PHASE_DOC = "docs/workflow/phases/phase_04_validate.md"
     # Anchors chosen so they are NOT part of what is being asserted: the issue marker for
@@ -3240,27 +3293,56 @@ class ValidateGateReasonFromMetaTest(unittest.TestCase):
     _RUNBOOK_ANCHOR = "(issue #114)"
     _PHASE_ANCHOR = "`classify_validate_gate_failure`"
 
-    def _bullet(self, rel: str, anchor: str) -> str:
-        """The ONE line of `rel` carrying `anchor`. Bounding the reader to a single bullet is
-        load-bearing: over the whole file these reason names also occur in neighbouring
-        entries, and the check would then pass on an unrelated sentence."""
-        lines = [ln for ln in Path(rel).read_text(encoding="utf-8").splitlines()
+    def _anchored(self, rel: str, anchor: str) -> str:
+        """EVERY line of `rel` carrying `anchor`, joined. Bounding the reader to the anchored
+        lines is load-bearing: over the whole file these reason names also occur in
+        neighbouring entries, and the check would then pass on an unrelated sentence.
+
+        It admits SEVERAL anchored lines on purpose. Round 1's over-refusal probe drove three
+        legitimate maintenance edits into the earlier `assertEqual(len(lines), 1)` form and all
+        three were wrongly refused: splitting the phase bullet in two, mentioning the anchor a
+        second time, and adding a second RUNBOOK line about the same issue. The worst of them
+        reported the citation as MISSING when it had merely moved one line down. Nothing the
+        rule is about needs the statement to live on exactly one line — only that it live on a
+        line that announces itself with the anchor."""
+        lines = [ln for ln in (REPO_ROOT / rel).read_text(encoding="utf-8").splitlines()
                  if anchor in ln]
-        self.assertEqual(len(lines), 1, f"{rel}: expected exactly one {anchor!r} line")
-        return lines[0]
+        self.assertTrue(lines, f"{rel}: no line carries {anchor!r} — the rule is not stated "
+                               f"anywhere this check can find it")
+        return "\n".join(lines)
 
     def test_the_two_documents_state_the_reasons_the_code_computes(self) -> None:
         f = wc.classify_validate_gate_failure
-        # Derived from the code, not respelled here.
-        members = [f(sub, meta) for sub in ("pre_judge", "post_judge") for meta in ({}, None)]
-        self.assertEqual(len(set(members)), 4)
-        bullet = self._bullet(self._RUNBOOK, self._RUNBOOK_ANCHOR)
+        # Derived from the code, not respelled here — and derived over the SUFFIX CONSTANTS the
+        # module exports rather than over a fixed list of probe shapes, so a fifth reason family
+        # added to the module is required in the document by construction. (Round 1: the earlier
+        # form enumerated four hardcoded probes, so a fifth family would never have been
+        # required, while the comment claimed the members were derived.)
+        members = sorted({f(sub, meta) for sub in ("pre_judge", "post_judge")
+                          for meta in ({}, None)})
+        # The line above is a PROBE, not an enumeration — it drives the two meta shapes that
+        # exist today. What makes it grow with the code is the tripwire below: every
+        # `VALIDATE_GATE_*_SUFFIX` the module exports must be accounted for by some member, so
+        # adding a third reason family fails HERE, naming the constant, instead of silently
+        # leaving the new family undocumented. (Round 1: the earlier form hardcoded four probe
+        # shapes while its comment claimed the members were derived.)
+        suffixes = {k: v for k, v in vars(wc).items()
+                    if k.startswith("VALIDATE_GATE_") and k.endswith("_SUFFIX")
+                    and isinstance(v, str)}
+        self.assertTrue(suffixes)
+        for name, suffix in sorted(suffixes.items()):
+            self.assertTrue(
+                any(m.endswith(suffix) for m in members),
+                f"{name} = {suffix!r} is a reason suffix no probed member carries — extend the "
+                f"probe shapes above so this check still covers every reason family, then name "
+                f"the new reasons in {self._RUNBOOK}")
+        bullet = self._anchored(self._RUNBOOK, self._RUNBOOK_ANCHOR)
         for reason in members:
             self.assertIn(reason, bullet, f"{self._RUNBOOK} does not name {reason}")
         # Self-test the bound: a sentence that exists elsewhere in RUNBOOK must NOT be inside
-        # the window, or "the reader is bounded" is an untested claim and the four assertions
-        # above could be passing on the rest of the file.
-        whole = Path(self._RUNBOOK).read_text(encoding="utf-8")
+        # the window, or "the reader is bounded" is an untested claim and the assertions above
+        # could be passing on the rest of the file.
+        whole = (REPO_ROOT / self._RUNBOOK).read_text(encoding="utf-8")
         control = "leaf_transient_retry_declined"
         self.assertIn(control, whole)
         self.assertNotIn(control, bullet)
@@ -3269,7 +3351,7 @@ class ValidateGateReasonFromMetaTest(unittest.TestCase):
         # Coupled by POINTER: the phase doc states the derivation rule as a template, so it
         # cannot be checked member by member. What it must not lose is the two citations that
         # let a reader reach the definition and the operator procedure.
-        bullet = self._bullet(self._PHASE_DOC, self._PHASE_ANCHOR)
+        bullet = self._anchored(self._PHASE_DOC, self._PHASE_ANCHOR)
         self.assertIn("`docs/RUNBOOK.md`", bullet)
         self.assertIn(wc.VALIDATE_GATE_NO_CATEGORY_SUFFIX, bullet)
         self.assertIn(wc.VALIDATE_GATE_META_MISSING_SUFFIX, bullet)

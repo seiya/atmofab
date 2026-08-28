@@ -714,11 +714,14 @@ def classify_validate_gate_failure(substep: str, meta: dict[str, Any] | None) ->
     `meta` is the parsed `pre_judge_meta.json` / `post_judge_meta.json`, or None when the file
     is absent or unreadable (a non-dict payload counts as unreadable — a meta that is not an
     object records no category by construction, and reading it as one would raise here, turning
-    a bad record into a conductor crash instead of a terminal reason). Three outcomes,
+    a bad record into a conductor crash instead of a terminal reason — the two OTHER reads of
+    the same file, in `_maybe_warm_resume_post_judge` and in run_phase's escalate check, carry
+    the same guard for the same reason, and without theirs this one is unreachable for
+    `post_judge`). Three outcomes,
     deliberately distinguishable:
-      - a recorded `failure_category` -> the reason names it (`pre_judge_dag_incomplete` keeps
-        its historic `validate_pre_judge_dag_incomplete` spelling; every other category takes
-        the `validate_<category>` shape the run_phase branch already used);
+      - a recorded `failure_category` -> `validate_<category>`, the shape the run_phase branch
+        already used, which is also what preserves the one historic spelling
+        (`pre_judge_dag_incomplete` -> `validate_pre_judge_dag_incomplete`);
       - a meta with no category -> `validate_<substep>_failed_without_category`;
       - no meta at all -> `validate_<substep>_meta_missing`.
     The last two invent no violation: they say the substep failed and its own record does not
@@ -729,8 +732,9 @@ def classify_validate_gate_failure(substep: str, meta: dict[str, Any] | None) ->
     category = str(meta.get("failure_category") or "").strip()
     if not category:
         return f"validate_{substep}{VALIDATE_GATE_NO_CATEGORY_SUFFIX}"
-    if category == "pre_judge_dag_incomplete":
-        return "validate_pre_judge_dag_incomplete"
+    # `validate_pre_judge_dag_incomplete`, the one historic spelling this function has to
+    # preserve, is what this line already produces for that category — an explicit branch for
+    # it would be an equivalent mutant (round 1 confirmed: deleting one left every test green).
     return f"validate_{category}"
 
 
@@ -11142,8 +11146,12 @@ clean:
         if SUBSTEPS["validate"][len(outcomes) - 1] != "post_judge":
             return outcomes
         node_dir = self.repo_root / refs.run_node_dir()
-        meta = _read_json(node_dir / "post_judge_meta.json") or {}
-        if meta.get("disposition") != "warm_resume":
+        # Same `isinstance` reason as the escalate read in run_phase: `or {}` passes a truthy
+        # non-dict straight through to `.get`. This read runs BEFORE run_phase's gate branch, so
+        # without the guard here a corrupt post_judge_meta crashes the conductor before the
+        # classifier's own guard is ever reached (measured in round 1).
+        meta = _read_json(node_dir / "post_judge_meta.json")
+        if not isinstance(meta, dict) or meta.get("disposition") != "warm_resume":
             return outcomes
 
         for attempt in range(MAX_ATTEMPTS_PER_PHASE):
@@ -11589,8 +11597,13 @@ clean:
                     gate_reason = classify_validate_gate_failure(failed_sub, gate_meta)
                     # G5: a prod post_judge `unknown` (disposition="escalate") routes to the
                     # unified escalate LLM.
+                    # `isinstance`, not `or {}`: a meta that parsed to a truthy NON-dict (a JSON
+                    # array, a bare string) survives `or {}` and then raises on `.get`, turning a
+                    # corrupt record into a conductor crash — the same hazard the classifier's own
+                    # guard answers, at the one site that reads the meta a second time.
                     is_escalate = (failed_sub == "post_judge"
-                                   and (gate_meta or {}).get("disposition") == "escalate")
+                                   and isinstance(gate_meta, dict)
+                                   and gate_meta.get("disposition") == "escalate")
                 escalate_reason = ("validate_judge_conformance_violation"
                                    if judge_conformance_block else "validate_post_judge_unknown")
                 # Return the escalate decision WITHOUT pre-tombstoning the orphan arids:
