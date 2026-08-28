@@ -3363,13 +3363,10 @@ class ValidateGateReasonFromMetaTest(unittest.TestCase):
     # checks fail with FileNotFoundError when pytest is started from anywhere but the checkout
     # root, which reads as a missing document rather than as a harness problem (round 1).
     _RUNBOOK = "docs/RUNBOOK.md"
-    _PHASE_DOC = "docs/workflow/phases/phase_04_validate.md"
     # The SECTION each rule is stated in, and a string that exists in the same file but OUTSIDE
     # that section — the control that proves the reader is actually bounded.
     _RUNBOOK_SECTION = "## 3-1. Resuming a failed workflow"
     _RUNBOOK_CONTROL = "## 3-0. Auto-running dependencies"
-    _PHASE_SECTION = "## substep structure"
-    _PHASE_CONTROL = "## `run_id` format"
 
     def _section(self, rel: str, heading: str, control: str) -> str:
         """The one section of `rel` that opens with `heading`, up to the next `## ` heading.
@@ -3393,113 +3390,94 @@ class ValidateGateReasonFromMetaTest(unittest.TestCase):
         # heading that exists elsewhere in it must not be inside. Without this the assertions
         # below could be passing on the whole document.
         self.assertLess(len(section), len(text))
-        self.assertIn(control, text)
-        self.assertNotIn(control, section)
+        self.assertIn(control, text,
+                      f"{rel}: {control!r} is this check's BOUND CONTROL — it must exist in the "
+                      f"file and outside {heading!r}. If you renamed that heading, update "
+                      f"`_RUNBOOK_CONTROL`; nothing else here depends on it")
+        self.assertNotIn(control, section,
+                         f"{rel}: the bound control {control!r} is inside {heading!r}, so this "
+                         f"check can no longer tell a bounded read from reading the whole file")
         return section
 
-    def test_the_two_documents_state_the_reasons_the_code_computes(self) -> None:
-        f = wc.classify_validate_gate_failure
-        # Derived from the code, not respelled here — and derived over the SUFFIX CONSTANTS the
-        # module exports rather than over a fixed list of probe shapes, so a fifth reason family
-        # added to the module is required in the document by construction. (Round 1: the earlier
-        # form enumerated four hardcoded probes, so a fifth family would never have been
-        # required, while the comment claimed the members were derived.)
-        substeps = ("pre_judge", "post_judge")
-        # Every `VALIDATE_GATE_*_SUFFIX` the module exports, spelled EXACTLY as the reason the
-        # function builds from it, for both substeps. Exact, not `endswith`: round 2 defeated the
-        # `endswith` form with a constant whose value (`_missing`) is a suffix of an existing
-        # member (`validate_pre_judge_meta_missing`), so the new family was satisfied by the
-        # WRONG member and never required in the document. A generated family has to be checked
-        # against its own other members, not only against the implementation.
+    def test_the_runbook_documents_every_record_shaped_reason_family(self) -> None:
+        """The ONE document coupling this branch keeps. `docs/RUNBOOK.md` §3-1 is the operator's
+        procedure for these reasons, and a family missing from it is a reason with no reading.
+
+        Coupled by the SUFFIX CONSTANTS, which is the form the prose states the rule in
+        (`validate_<substep>_meta_missing`, not the two expanded spellings) — rule 3-a couples by
+        members only where the prose names members. A fourth constant fails here by name.
+
+        Limit, stated rather than machined around: moving the bullet out of §3-1 fails this
+        check, and `_RUNBOOK_SECTION` is then what to update. Three earlier versions of this
+        reader tried to be robust to that by widening the bound (one line -> all anchored lines
+        -> the section) and each one refused ordinary maintenance and reported the moved text as
+        missing. The bound stops here; the failure message names the constant so the maintainer
+        can see what is actually being asked for."""
         suffixes = {k: v for k, v in vars(wc).items()
                     if k.startswith("VALIDATE_GATE_") and k.endswith("_SUFFIX")
                     and isinstance(v, str)}
         self.assertTrue(suffixes)
-        members = sorted({f"validate_{sub}{suf}" for sub in substeps for suf in suffixes.values()})
-        # ... and the spelling is checked against what the function actually returns, over a probe
-        # covering every meta shape that reaches a suffix-built reason. A constant that stops
-        # being a reason suffix, or a family the probe no longer reaches, fails here by name.
-        produced = {f(sub, meta) for sub in substeps
+        # Each constant IS a reason family: the classifier must build a reason ending in it.
+        produced = {wc.classify_validate_gate_failure(sub, meta)
+                    for sub in ("pre_judge", "post_judge")
                     for meta in ({"status": "fail"}, {"status": "pass"}, None)}
+        section = self._section(self._RUNBOOK, self._RUNBOOK_SECTION, self._RUNBOOK_CONTROL)
         for name, suffix in sorted(suffixes.items()):
-            for sub in substeps:
-                self.assertIn(
-                    f"validate_{sub}{suffix}", produced,
-                    f"{name} = {suffix!r} builds no reason the probe reaches for {sub!r} — "
-                    f"extend the probe shapes above so this check still covers every reason "
-                    f"family, then name the new reasons in {self._RUNBOOK}")
-        bullet = self._section(self._RUNBOOK, self._RUNBOOK_SECTION, self._RUNBOOK_CONTROL)
-        for reason in members:
-            self.assertIn(reason, bullet, f"{self._RUNBOOK} does not name {reason}")
+            self.assertTrue(
+                any(r.endswith(suffix) for r in produced),
+                f"{name} = {suffix!r} is not the tail of any reason the classifier builds")
+            # AT ITS STATEMENT POSITION — the family must OPEN its own bullet, not merely
+            # occur somewhere in the section. A plain `assertIn` passed with the defining
+            # bullet renamed, satisfied by the incidental mention of the same suffix in the
+            # bullet below it; that is the substring trap the round-2 tripwire fix already
+            # closed once, at document level this time.
+            opener = re.compile(r"^\s*- `validate_<substep>" + re.escape(suffix) + r"`", re.MULTILINE)
+            self.assertTrue(
+                opener.search(section),
+                f"{self._RUNBOOK} {self._RUNBOOK_SECTION} has no bullet OPENING with "
+                f"`validate_<substep>{suffix}` ({name}) — an operator hitting that reason has "
+                f"no procedure to read. A mention elsewhere in the section does not count.")
 
-    def test_the_phase_contract_points_at_the_code_and_the_runbook(self) -> None:
-        # Coupled by POINTER: the phase doc states the derivation rule as a template, so it
-        # cannot be checked member by member. What it must not lose is the two citations that
-        # let a reader reach the definition and the operator procedure.
-        bullet = self._section(self._PHASE_DOC, self._PHASE_SECTION, self._PHASE_CONTROL)
-        self.assertIn("`docs/RUNBOOK.md`", bullet)
-        self.assertIn("`classify_validate_gate_failure`", bullet)
-        # Every suffix constant, read from the module — so a new reason family has to be
-        # reflected here too, not only in the RUNBOOK members check.
-        for name, suffix in sorted((k, v) for k, v in vars(wc).items()
-                                   if k.startswith("VALIDATE_GATE_") and k.endswith("_SUFFIX")
-                                   and isinstance(v, str)):
-            self.assertIn(suffix, bullet, f"{self._PHASE_DOC} does not state {name}")
+    def test_the_real_determine_substep_status_survives_a_corrupt_gate_meta(self) -> None:
+        """The two gate reads that run FIRST, driven on the REAL `Conductor` method.
 
-    def test_every_gate_meta_read_goes_through_the_one_reader(self) -> None:
-        """Rule 3-a, applied to a coverage claim instead of to prose. Round 2 found the previous
-        shape — `isinstance` at the call sites, the coverage asserted in a docstring — wrong for
-        the third round running: the claim said two sites, there were six, and the one that runs
-        FIRST was not among them. The rule is now computed: no `_read_json` in the conductor may
-        name either gate meta; they all go through `_read_gate_meta`, which is where the
-        non-object case is answered once."""
-        import ast
-        src = (REPO_ROOT / "tools" / "workflow_conductor.py").read_text(encoding="utf-8")
-        tree = ast.parse(src)
-        offenders = []
-        for node in ast.walk(tree):
-            if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-                    and node.func.id == "_read_json"):
-                continue
-            text = " ".join(ast.dump(a) for a in node.args)
-            for fname in wc.GATE_META_FILENAMES:
-                if fname in text:
-                    offenders.append((node.lineno, fname))
-        self.assertEqual(
-            offenders, [],
-            "these `_read_json` calls name a Validate gate meta directly; use `_read_gate_meta`, "
-            "which is the one place the absent / undecodable / non-object cases are answered "
-            "(a bare `_read_json(...) or {}` passes a JSON array through to `.get` and raises)")
-        # Self-test the reader: it must be able to SEE such a call, or the empty list above is
-        # green because the scan is broken rather than because the rule holds.
-        probe = ast.parse('x = _read_json(d / "pre_judge_meta.json") or {}')
-        seen = [n for n in ast.walk(probe)
-                if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
-                and n.func.id == "_read_json"
-                and any("pre_judge_meta.json" in ast.dump(a) for a in n.args)]
-        self.assertEqual(len(seen), 1)
-
-    def test_no_gate_category_collides_with_a_prefix_another_reader_keys_on(self) -> None:
-        """The reason is `validate_<category>`, and other readers key on `validate_<something>`
-        prefixes — `_DEV_VALIDATE_EXECUTE_REASON_PREFIX` is `validate_execute_`. A category the
-        conductor starts writing that begins with `execute_` would synthesize a dev resume
-        directive that reopens Generate over a Validate gate failure. No writer produces one
-        today; this is the growth guard, since nothing else would notice."""
-        from tools.orchestration_runtime import (
-            _DEV_VALIDATE_EXECUTE_REASON_PREFIX as EXEC_PREFIX,
-        )
-        src = (REPO_ROOT / "tools" / "workflow_conductor.py").read_text(encoding="utf-8")
-        categories = sorted(set(re.findall(r'"failure_category":\s*(?:\()?\s*"([^"]+)"', src)))
-        self.assertTrue(categories, "no literal failure_category writers found — the scan broke")
-        stem = EXEC_PREFIX[len("validate_"):]          # "execute_"
-        for cat in categories:
-            self.assertFalse(
-                f"validate_{cat}".startswith(EXEC_PREFIX),
-                f"failure_category {cat!r} makes the terminal reason validate_{cat}, which "
-                f"{EXEC_PREFIX!r} matches — rename the category, or give the gate reasons a "
-                f"prefix of their own")
-        # Self-test: the assertion must be able to fail.
-        self.assertTrue(f"validate_{stem}boom".startswith(EXEC_PREFIX))
+        Round 2 guarded these two sites and round 3 established they still had no behavioural
+        coverage: every other test here drives `run_phase` through `_FakeConductor`, which
+        overrides `determine_substep_status` wholesale, so a crash at those lines is invisible
+        to all of them. Round 2's substitute was an AST scan refusing a `_read_json` that names
+        either meta; round 3 defeated it in one line by passing the filename through the
+        module's own `GATE_META_FILENAMES[0]`, and it also refused a legitimate diagnostic
+        helper. A spelling pin was the wrong instrument — this is the behaviour it stood for,
+        and it holds however the read is spelled."""
+        import tempfile
+        for substep, fname in (("pre_judge", "pre_judge_meta.json"),
+                               ("post_judge", "post_judge_meta.json")):
+            for payload in ("[\"not\", \"an\", \"object\"]", '"oops"', "7", "not json at all"):
+                with tempfile.TemporaryDirectory() as td:
+                    repo, refs = Path(td), self._refs()
+                    c = wc.Conductor(repo_root=repo, orchestration_id="orch_x",
+                                     orchestration_agent_run_id="ORCH",
+                                     llm_config=_cfg("claude"), env={})
+                    node_dir = repo / refs.run_node_dir()
+                    node_dir.mkdir(parents=True, exist_ok=True)
+                    (node_dir / fname).write_text(payload, encoding="utf-8")
+                    status, _ = c.determine_substep_status(
+                        refs, "validate", substep, [f"{refs.run_node_dir()}/{fname}"])
+                    self.assertEqual(status, "fail", (substep, payload))
+        # Positive control: the same call on a WELL-FORMED passing meta must be able to return
+        # "pass", or the assertions above are green because the method fails on everything.
+        with tempfile.TemporaryDirectory() as td:
+            repo, refs = Path(td), self._refs()
+            c = wc.Conductor(repo_root=repo, orchestration_id="orch_x",
+                             orchestration_agent_run_id="ORCH",
+                             llm_config=_cfg("claude"), env={})
+            node_dir = repo / refs.run_node_dir()
+            node_dir.mkdir(parents=True, exist_ok=True)
+            rel = f"{refs.run_node_dir()}/pre_judge_meta.json"
+            (node_dir / "pre_judge_meta.json").write_text(
+                json.dumps({"status": "pass"}), encoding="utf-8")
+            status, _ = c.determine_substep_status(refs, "validate", "pre_judge", [rel])
+            self.assertEqual(status, "pass")
 
     def test_classifier_is_a_pure_function_of_the_meta(self) -> None:
         # The defensive classify_failure branches route from the same helper, so the two sites
