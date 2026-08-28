@@ -3180,6 +3180,99 @@ class ValidateGateReasonFromMetaTest(unittest.TestCase):
             self.assertEqual(len(sup), 1)
             self.assertIn(oc.decision.reason, sup[0]["--reason"])
 
+    def test_run_phase_terminalizes_before_classify_failure_is_consulted(self) -> None:
+        # The claim that `classify_failure`'s gate branches are DEFENSIVE, established by
+        # execution rather than by reading the control flow: drive a real pre_judge and a real
+        # post_judge failure through run_phase with classify_failure replaced by a tripwire.
+        import tempfile
+        for substep in ("pre_judge", "post_judge"):
+            with tempfile.TemporaryDirectory() as td:
+                consulted: list[str] = []
+
+                class _T(self._C):  # type: ignore[misc]
+                    def classify_failure(self, refs, phase, outcomes):  # type: ignore[override]
+                        consulted.append(phase)
+                        return wc.RouteDecision("fail_closed", reason="tripwire")
+
+                c = _T(repo_root=Path(td), orchestration_id="orch_x",
+                       orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
+                c.calls = []
+                setattr(c, f"{substep}_meta_fn",
+                        lambda n: {"status": "fail",
+                                   "failure_category": "pre_judge_dag_incomplete",
+                                   "disposition": "fail_closed"})
+                c.status_fn = lambda phase, sub, n: (
+                    "fail" if (phase == "validate" and sub == substep) else "pass")
+                oc = c.run_phase(self._refs(), "validate")
+                self.assertEqual(consulted, [], substep)
+                self.assertNotEqual(oc.decision.reason, "tripwire", substep)
+        # Positive control for the tripwire itself: `execute` is a validate substep run_phase
+        # does NOT terminalize, so the same harness must see classify_failure consulted. Without
+        # this the two assertions above are green whenever the tripwire is simply not wired.
+        with tempfile.TemporaryDirectory() as td:
+            consulted = []
+
+            class _T2(self._C):  # type: ignore[misc]
+                def classify_failure(self, refs, phase, outcomes):  # type: ignore[override]
+                    consulted.append(phase)
+                    return wc.RouteDecision("fail_closed", reason="tripwire")
+
+            c = _T2(repo_root=Path(td), orchestration_id="orch_x",
+                    orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
+            c.calls = []
+            c.status_fn = lambda phase, sub, n: (
+                "fail" if (phase == "validate" and sub == "execute") else "pass")
+            oc = c.run_phase(self._refs(), "validate")
+            self.assertEqual(consulted, ["validate"])
+            self.assertEqual(oc.decision.reason, "tripwire")
+
+    # --- rule 3-a coupling: three sites state this rule (the code that computes the reason,
+    # the operator's RUNBOOK entry, and the phase contract). The code is the one definition;
+    # the two documents are checked AGAINST it, never the reverse. RUNBOOK is coupled by
+    # MEMBERS because it names all four reasons in full; phase_04 is coupled by POINTER
+    # because it states the rule as a template and defers to RUNBOOK for the spellings.
+    _RUNBOOK = "docs/RUNBOOK.md"
+    _PHASE_DOC = "docs/workflow/phases/phase_04_validate.md"
+    # Anchors chosen so they are NOT part of what is being asserted: the issue marker for
+    # RUNBOOK, the code symbol for the phase doc (renaming the function breaks that anchor,
+    # which is the point — the doc has to be revisited with the code).
+    _RUNBOOK_ANCHOR = "(issue #114)"
+    _PHASE_ANCHOR = "`classify_validate_gate_failure`"
+
+    def _bullet(self, rel: str, anchor: str) -> str:
+        """The ONE line of `rel` carrying `anchor`. Bounding the reader to a single bullet is
+        load-bearing: over the whole file these reason names also occur in neighbouring
+        entries, and the check would then pass on an unrelated sentence."""
+        lines = [ln for ln in Path(rel).read_text(encoding="utf-8").splitlines()
+                 if anchor in ln]
+        self.assertEqual(len(lines), 1, f"{rel}: expected exactly one {anchor!r} line")
+        return lines[0]
+
+    def test_the_two_documents_state_the_reasons_the_code_computes(self) -> None:
+        f = wc.classify_validate_gate_failure
+        # Derived from the code, not respelled here.
+        members = [f(sub, meta) for sub in ("pre_judge", "post_judge") for meta in ({}, None)]
+        self.assertEqual(len(set(members)), 4)
+        bullet = self._bullet(self._RUNBOOK, self._RUNBOOK_ANCHOR)
+        for reason in members:
+            self.assertIn(reason, bullet, f"{self._RUNBOOK} does not name {reason}")
+        # Self-test the bound: a sentence that exists elsewhere in RUNBOOK must NOT be inside
+        # the window, or "the reader is bounded" is an untested claim and the four assertions
+        # above could be passing on the rest of the file.
+        whole = Path(self._RUNBOOK).read_text(encoding="utf-8")
+        control = "leaf_transient_retry_declined"
+        self.assertIn(control, whole)
+        self.assertNotIn(control, bullet)
+
+    def test_the_phase_contract_points_at_the_code_and_the_runbook(self) -> None:
+        # Coupled by POINTER: the phase doc states the derivation rule as a template, so it
+        # cannot be checked member by member. What it must not lose is the two citations that
+        # let a reader reach the definition and the operator procedure.
+        bullet = self._bullet(self._PHASE_DOC, self._PHASE_ANCHOR)
+        self.assertIn("`docs/RUNBOOK.md`", bullet)
+        self.assertIn(wc.VALIDATE_GATE_NO_CATEGORY_SUFFIX, bullet)
+        self.assertIn(wc.VALIDATE_GATE_META_MISSING_SUFFIX, bullet)
+
     def test_classifier_is_a_pure_function_of_the_meta(self) -> None:
         # The defensive classify_failure branches route from the same helper, so the two sites
         # can never disagree about what a gate failure was.
@@ -14358,6 +14451,49 @@ class DeterministicBuildTest(unittest.TestCase):
             self.assertEqual(decision.action, "retry")
             self.assertEqual(decision.target_phase, "generate")
             self.assertEqual(decision.repair_strategy, "restart")
+
+    def test_classify_failure_gate_branches_read_the_meta_not_the_index(self) -> None:
+        # Issue #114: `classify_failure`'s pre_judge / post_judge branches are DEFENSIVE
+        # (run_phase's skip-write branch terminalizes both before classify_failure is called —
+        # driven and asserted in ValidateGateReasonFromMetaTest), but a defensive branch that
+        # names a violation the meta does not record is the very defect #114 is about. Drive
+        # the branches directly, one meta shape at a time.
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            c = wc.Conductor(repo_root=repo, orchestration_id="o",
+                             orchestration_agent_run_id="O", llm_config=_cfg("claude"), env={})
+            refs = self._refs()
+            node_dir = repo / refs.run_node_dir()
+            node_dir.mkdir(parents=True, exist_ok=True)
+            pj_fail = [wc.SubstepOutcome("pj", "fail", [], 0)]           # index 0 -> pre_judge
+            post_fail = [wc.SubstepOutcome("pj", "pass", [], 0),
+                         wc.SubstepOutcome("ex", "pass", [], 0),
+                         wc.SubstepOutcome("jd", "pass", [], 0),
+                         wc.SubstepOutcome("po", "fail", [], 0)]         # index 3 -> post_judge
+            for outcomes, fname, category, expected in (
+                    (pj_fail, "pre_judge_meta.json", "pre_judge_dag_incomplete",
+                     "validate_pre_judge_dag_incomplete"),
+                    (pj_fail, "pre_judge_meta.json", None,
+                     "validate_pre_judge_failed_without_category"),
+                    (post_fail, "post_judge_meta.json", "pre_judge_violation",
+                     "validate_pre_judge_violation"),
+                    (post_fail, "post_judge_meta.json", None,
+                     "validate_post_judge_failed_without_category")):
+                (node_dir / fname).write_text(
+                    json.dumps({"status": "fail", "failure_category": category}),
+                    encoding="utf-8")
+                d = c.classify_failure(refs, "validate", outcomes)
+                self.assertEqual(d.action, "fail_closed", (fname, category))
+                self.assertEqual(d.reason, expected, (fname, category))
+                (node_dir / fname).unlink()
+            # ... and with no meta on disk at all (the state the `or {}` used to hide).
+            self.assertEqual(
+                c.classify_failure(refs, "validate", pj_fail).reason,
+                "validate_pre_judge_meta_missing")
+            self.assertEqual(
+                c.classify_failure(refs, "validate", post_fail).reason,
+                "validate_post_judge_meta_missing")
 
     def _predicate_ir(self) -> dict:
         return {"io_contract": {"test_predicates": [
