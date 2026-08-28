@@ -3434,20 +3434,24 @@ class ValidateGateReasonFromMetaTest(unittest.TestCase):
             # bullet renamed, satisfied by the incidental mention of the same suffix in the
             # bullet below it; that is the substring trap the round-2 tripwire fix already
             # closed once, at document level this time.
-            # Either the placeholder spelling the prose uses, or both literal reasons — a
-            # document that names `validate_pre_judge<suffix>` / `validate_post_judge<suffix>`
-            # in full states the rule at least as well, and refusing that would be this check
-            # dictating prose rather than checking coverage (round 4).
-            forms = [r"`validate_<substep>" + re.escape(suffix) + r"`",
-                     r"`validate_pre_judge" + re.escape(suffix) + r"`"]
-            opener = re.compile(r"^\s*- (?:" + "|".join(forms) + r")", re.MULTILINE)
+            # The placeholder spelling the prose uses, or EITHER literal reason: a document
+            # that names them in full states the rule at least as well, and refusing that
+            # would be this check dictating prose rather than checking coverage. Bold
+            # emphasis is allowed on the opener because four sibling bullets in the same
+            # section already use it — a check that refuses the section's own dominant
+            # formatting is refusing maintenance, not catching a regression. (Rounds 4 and 5
+            # each found one of these three forms wrongly refused.)
+            reason = "(?:<substep>|pre_judge|post_judge)" + re.escape(suffix)
+            opener = re.compile(r"^\s*- \*{0,2}`validate_" + reason + r"`", re.MULTILINE)
             self.assertTrue(
                 opener.search(section),
                 f"{self._RUNBOOK} {self._RUNBOOK_SECTION} has no bullet OPENING with "
-                f"`validate_<substep>{suffix}` ({name}, or the two literal spellings) — an "
-                f"operator hitting that reason has no procedure to read. A mention elsewhere "
-                f"in the section does not count. If the entry MOVED to another section, that "
-                f"is what `_RUNBOOK_SECTION` in this test names; update it there.")
+                f"`validate_<substep>{suffix}` ({name}) — an operator hitting that reason has "
+                f"no procedure to read. The opener may name `<substep>` or either substep in "
+                f"full, and may be bold. Three things make this fail: the family is not "
+                f"documented; it is mentioned only in prose rather than opening its own "
+                f"bullet; or the entry moved to another section, which is what "
+                f"`_RUNBOOK_SECTION` in this test names.")
 
     def test_the_real_determine_substep_status_survives_a_corrupt_gate_meta(self) -> None:
         """The two gate reads that run FIRST, driven on the REAL `Conductor` method.
@@ -3490,7 +3494,7 @@ class ValidateGateReasonFromMetaTest(unittest.TestCase):
             status, _ = c.determine_substep_status(refs, "validate", "pre_judge", [rel])
             self.assertEqual(status, "pass")
 
-    def test_the_freshness_arm_is_reachable_and_this_is_what_it_looks_like(self) -> None:
+    def test_a_below_window_mtime_on_a_pass_meta_is_what_builds_the_freshness_reason(self) -> None:
         """The exhibit for `validate_<substep>_deliverable_not_freshly_written`.
 
         Round 4 challenged the family as naming a mechanism the code cannot produce, reasoning
@@ -3503,9 +3507,10 @@ class ValidateGateReasonFromMetaTest(unittest.TestCase):
         having written its deliverable correctly, and the substep fails with `status: "pass"` in
         the meta — which is the shape the measured incident is in.
 
-        The exhibit here is deterministic (`os.utime`), not clock-dependent: what it pins is that
-        a below-window mtime on a `pass` meta is what produces this reason, whatever put the
-        mtime there. The CAUSE of that lag is not this branch's to fix — it is a property of the
+        The exhibit here is deterministic (`os.utime`), not clock-dependent, and the name says
+        only what it pins: a below-window mtime on a `pass` meta is what produces this reason,
+        whatever put the mtime there. REACHABILITY rests on the clock measurement above, not on
+        this test. The CAUSE of that lag is not this branch's to fix — it is a property of the
         freshness gate, which every deterministic substep shares — and is reported to issue #113,
         which is open on the incident's cause.
         """
