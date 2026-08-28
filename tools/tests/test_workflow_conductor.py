@@ -15231,6 +15231,86 @@ class DeterministicLintTest(unittest.TestCase):
         self.assertIn(out["failure_category"], wc.GATE_FAILURE_TERMINAL)
         self.assertIn("unattributed", out["failure_excerpt"])
 
+    def test_the_probe_partition_covers_the_whole_tree_not_just_the_top_level(self) -> None:
+        """A finding below `src/` must land in a probe, or it terminalizes as unattributed.
+
+        The linter RECURSES (measured, fortitude 0.8.0: a tree whose only finding is in
+        `sub/dirty.f90` reports `2 files scanned` and exits 1). A partition built from
+        `iterdir()` is total over the flat listing only, so such a finding was in the full run
+        and in neither half — both halves clean — and an ordinary leaf-repairable finding came
+        back `gate_finding_unattributed`, terminal.
+
+        This drives the real copy and asserts on the FILE SETS the probes were handed, because
+        that is where the defect lived; the categories are covered by the rows above."""
+        import tempfile
+        seen: dict[str, set[str]] = {}
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            refs = self._m3c_refs()
+            src = self._seed_m3c(repo, refs)
+            (src / "sub").mkdir()
+            (src / "sub" / "nested.f90").write_text("! nested\n", encoding="utf-8")
+            c = self._conductor(repo)
+
+            def _fn(args):
+                pd = Path(str(args.get("project_dir", "")))
+                which = ("leaf" if pd.name == "leaf"
+                         else "host" if pd.name == "host" else "whole")
+                if which != "whole":
+                    seen[which] = {
+                        str(p.relative_to(pd)) for p in pd.rglob("*") if p.is_file()}
+                return {"ok": which != "whole", "return_code": 0 if which != "whole" else 1,
+                        "command_id": f"cid-{which}", "preset": "fortitude",
+                        "stdout": "" if which != "whole" else "FINDING somewhere"}
+
+            with self._patch_linter(_fn):
+                out = c._gate_lint_check(refs, "child-1", "captok")
+        self.assertIn("sub/nested.f90", seen["leaf"])
+        self.assertEqual({c._runner_basename(refs), c.CONTROL_FILE_BASENAME}, seen["host"])
+        # Union == the whole tree, which is the property the attribution rests on.
+        self.assertEqual(
+            seen["leaf"] | seen["host"],
+            # `command_log.jsonl` is in there on purpose: the partition copies EVERY file, not
+            # a filtered set, so no file-extension knowledge enters the neutral core.
+            {"adv1d_model.f90", "adv1d_checks.f90", "adv1d_runner.f90", "Makefile",
+             "command_log.jsonl", "sub/nested.f90"})
+        # Both halves clean while the whole directory failed is the arm that must stay reachable
+        # only when the partition genuinely reproduces nothing.
+        self.assertEqual(out["failure_category"], "gate_finding_unattributed")
+
+    def test_a_nested_file_cannot_borrow_the_host_attribution(self) -> None:
+        """The host-authored set is BASENAMES, and the host writes them at the top level.
+
+        A leaf-written `sub/Makefile` matching one of those basenames must go to the LEAF side:
+        letting it into `host/` would hand a leaf a way to move its own file's findings onto the
+        terminal side. That gains the leaf nothing (terminal is still a failure), so it is not a
+        shortcut — but it is a false record, and the depth anchor costs one condition."""
+        import tempfile
+        seen: dict[str, set[str]] = {}
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            refs = self._m3c_refs()
+            src = self._seed_m3c(repo, refs)
+            (src / "sub").mkdir()
+            (src / "sub" / "Makefile").write_text("all:\n", encoding="utf-8")
+            c = self._conductor(repo)
+
+            def _fn(args):
+                pd = Path(str(args.get("project_dir", "")))
+                which = ("leaf" if pd.name == "leaf"
+                         else "host" if pd.name == "host" else "whole")
+                if which != "whole":
+                    seen[which] = {
+                        str(p.relative_to(pd)) for p in pd.rglob("*") if p.is_file()}
+                return {"ok": which != "whole", "return_code": 0 if which != "whole" else 1,
+                        "command_id": f"cid-{which}", "preset": "fortitude", "stdout": "x"}
+
+            with self._patch_linter(_fn):
+                c._gate_lint_check(refs, "child-1", "captok")
+        self.assertIn("sub/Makefile", seen["leaf"])
+        self.assertNotIn("sub/Makefile", seen["host"])
+        self.assertEqual({c._runner_basename(refs), c.CONTROL_FILE_BASENAME}, seen["host"])
+
     def test_gate_lint_probe_runs_do_not_touch_the_nodes_command_log(self) -> None:
         """The probes certify nothing, so they must stay out of `<src>/command_log.jsonl`.
 
@@ -15255,6 +15335,77 @@ class DeterministicLintTest(unittest.TestCase):
         self.assertIn("command_log_path", seen[0])
         for probe in seen[1:]:
             self.assertNotIn("command_log_path", probe)
+
+    def test_a_probe_that_judged_nothing_is_a_transport_fail_closed(self) -> None:
+        """The probe asks the SAME question the main run does, and must answer it the same way.
+
+        Left unclassified, a probe whose invocation was REFUSED (exit 2, nothing checked) reads
+        as `ok=False`. On the LEAF probe that becomes `lint_findings`, and a leaf is warm-resumed
+        to fix an argv defect in this repository — the unwinnable loop of issue #110, arriving
+        through the machinery added to close it. A mutation sweep found this call unwitnessed
+        while the main run's identical call was pinned; the pin is at the CALL SITE, because
+        deleting the call is what the sweep showed leaves the suite green."""
+        import tempfile
+        for failing in ("leaf", "host"):
+            with self.subTest(probe=failing):
+                with tempfile.TemporaryDirectory() as td:
+                    repo = Path(td)
+                    refs = self._m3c_refs()
+                    self._seed_m3c(repo, refs)
+                    c = self._conductor(repo)
+
+                    def _fn(args, _failing=failing):
+                        pd = str(args.get("project_dir", ""))
+                        which = ("leaf" if pd.endswith("/lint/leaf")
+                                 else "host" if pd.endswith("/lint/host") else "whole")
+                        if which == _failing:
+                            # exit 2: the tool validated `--select` and never read a file.
+                            return {"ok": False, "return_code": 2, "command_id": "cid",
+                                    "preset": "fortitude", "stdout": "",
+                                    "stderr": "error: invalid value 'ZZZ999' for '--select'"}
+                        return {"ok": which != "whole",
+                                "return_code": 0 if which != "whole" else 1,
+                                "command_id": "cid", "preset": "fortitude",
+                                "stdout": "" if which != "whole" else "FINDING"}
+
+                    with self._patch_linter(_fn):
+                        with self.assertRaises(RuntimeError) as caught:
+                            c._gate_lint_check(refs, "child-1", "captok")
+                self.assertIn("without checking anything", str(caught.exception))
+
+    def test_the_probe_directories_are_emptied_before_each_run(self) -> None:
+        """A probe must judge THIS attempt's source set, not a residue of an earlier one.
+
+        `workspace/tmp/<agent_run_id>/` is a flat namespace with a documented collision risk, and
+        a leftover file in `leaf/` would put a finding on the leaf's side that this attempt's
+        `src/` does not contain — a false record, and on the retry side, so it also spends the
+        budget. Nothing can pre-populate the directory today (the arid is fresh per substep and
+        the gate runs in-process with no leaf), which is exactly why the reset had no witness
+        until a mutation sweep asked for one."""
+        import tempfile
+        seen: dict[str, set[str]] = {}
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            refs = self._m3c_refs()
+            self._seed_m3c(repo, refs)
+            stale = repo / "workspace" / "tmp" / "child-1" / "lint" / "leaf"
+            stale.mkdir(parents=True)
+            (stale / "left_over.f90").write_text("! from an earlier attempt\n", encoding="utf-8")
+            c = self._conductor(repo)
+
+            def _fn(args):
+                pd = Path(str(args.get("project_dir", "")))
+                which = ("leaf" if pd.name == "leaf"
+                         else "host" if pd.name == "host" else "whole")
+                if which != "whole":
+                    seen[which] = {p.name for p in pd.rglob("*") if p.is_file()}
+                return {"ok": which != "whole", "return_code": 0 if which != "whole" else 1,
+                        "command_id": "cid", "preset": "fortitude",
+                        "stdout": "" if which != "whole" else "FINDING"}
+
+            with self._patch_linter(_fn):
+                c._gate_lint_check(refs, "child-1", "captok")
+        self.assertNotIn("left_over.f90", seen["leaf"])
 
     def test_host_rendered_src_names_comes_from_the_authorship_predicates(self) -> None:
         """The origin oracle is derived, not restated.

@@ -5768,6 +5768,15 @@ class Conductor:
         construction the set the conductor actually writes, and the write-authorization swap that
         removes them from the leaf's `allowed_output_paths` reads the same two answers.
 
+        HOW MANY READERS THIS FACT ALREADY HAS, stated because an earlier version of this note
+        said "the conductor / validator pair" and undercounted: THREE re-derive it — the two
+        predicates below, the validator's mirror `validate_pipeline_semantics._ir_m3c_language`,
+        and `orchestration_runtime.control_file_host_authored`, which record_launch calls to
+        stamp the control-file authorship flag onto the launch request — plus
+        `orchestration_runtime._payload_is_m3c_physics`, which TRUSTS that stamp rather than
+        re-deriving it. Adding a fourth re-derivation here is what this helper exists not to do;
+        a change to the answer has to visit all three.
+
         Why a set of BASENAMES: everything the gate scans lives directly under `src/`, and the
         probe directories the lint attribution builds are flat copies. A caller that needs paths
         joins them onto `refs.source_dir() / "src"` itself.
@@ -8497,11 +8506,21 @@ clean:
         `_gate_static_check`). It is also format-agnostic — a future linter backend needs no
         change here.
 
-        THE PARTITION IS TOTAL AND CARRIES NO EXTENSION KNOWLEDGE: every regular file directly
-        under `src/` goes to exactly one of the two probe directories, host-authored names
-        (`_host_rendered_src_names`) to `host/` and everything else to `leaf/`. So the union of
-        the two probes is the directory the full run scanned, and "which files does this linter
-        look at" stays the backend's question rather than the neutral core's.
+        THE PARTITION IS TOTAL OVER THE TREE, AND CARRIES NO EXTENSION KNOWLEDGE: every file
+        under `src/`, at any depth, goes to exactly one of the two probe directories —
+        host-authored basenames (`_host_rendered_src_names`) to `host/` and everything else to
+        `leaf/`, subdirectories included and reproduced. So the union of the two probes is the
+        directory the full run scanned, and "which files does this linter look at" stays the
+        backend's question rather than the neutral core's.
+
+        THE DEPTH IS LOAD-BEARING, and the first version of this got it wrong: it copied
+        `src_dir.iterdir()` and was total over the FLAT LISTING only, while the linter recurses
+        (measured on the supported build: a tree whose only finding sits in a NESTED source
+        reports `2 files scanned` and exits 1). A finding below the top level was then in the run
+        and in NEITHER probe, so both halves came back clean and an ordinary leaf-repairable
+        finding was terminalized as `gate_finding_unattributed`. The construct is at zero
+        occurrences in today's corpus (3 of 263 source trees hold a subdirectory, all of them
+        holding only `.jsonl`), which is why nothing caught it; a review round did.
 
         MEASURED, 2026-08-28, with the declared invocation on the supported linter build, over
         the real `src_20260827_002` tree of issue #110's node (2 leaf-authored findings + 1 in
@@ -8532,12 +8551,19 @@ clean:
                 shutil.rmtree(d)
             d.mkdir(parents=True, exist_ok=True)
         host_present = False
-        for entry in sorted(p for p in src_dir.iterdir() if p.is_file()):
-            if entry.name in host_names:
-                shutil.copy2(entry, host_dir / entry.name)
+        for entry in sorted(p for p in src_dir.rglob("*") if p.is_file()):
+            # The host-authored set is a set of BASENAMES, and the two files in it live at the
+            # top level; a same-named file deeper in the tree is not one the host wrote, so the
+            # membership test is anchored to depth 1. Anything else would let a nested file
+            # borrow the host's attribution.
+            relative = entry.relative_to(src_dir)
+            side = host_dir if (len(relative.parts) == 1
+                                and entry.name in host_names) else leaf_dir
+            if side is host_dir:
                 host_present = True
-            else:
-                shutil.copy2(entry, leaf_dir / entry.name)
+            target = side / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(entry, target)
 
         def _probe(target: Path) -> tuple[bool, str]:
             out = tool_run_linter({
