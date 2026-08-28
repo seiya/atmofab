@@ -16,6 +16,7 @@ import hashlib
 import json
 import os
 import queue
+import re
 import select
 import shutil
 import signal
@@ -636,6 +637,13 @@ class DecisionTableTest(unittest.TestCase):
         self.assertEqual(
             wc.classify_gate_failure(["host_rendered_lint_findings", "syntax_error"]).reason,
             "gate_syntax_error+host_rendered_lint_findings")
+        # The RELATIVE order of the two lint attribution categories, which the row above cannot
+        # see because it pairs each with `syntax_error` instead of with each other. A census
+        # reviewer found the pair swappable while every other entry of the tuple was pinned.
+        self.assertEqual(
+            wc.classify_gate_failure(
+                ["lint_finding_unattributed", "host_rendered_lint_findings"]).reason,
+            "gate_host_rendered_lint_findings+lint_finding_unattributed")
         d = wc.classify_gate_failure(["static_frontend_unavailable"])
         self.assertEqual(d.action, "fail_closed")
         d = wc.classify_gate_failure(["lint_findings", "static_frontend_unavailable"])
@@ -15083,6 +15091,121 @@ class DeterministicBuildTest(unittest.TestCase):
             self.assertFalse((repo / refs.run_node_dir() / "trial_meta.json").exists())
 
 
+class GateRoutingIsStatedToTheLeafTests(unittest.TestCase):
+    """Couple the LEAF-READ statement of the gate's routing rule to the code that decides it.
+
+    WHY A CHECK AND NOT DISCIPLINE. Issue #112 changed what a `Generate.gate` finding does to a
+    run, and the same sentence — "a finding re-runs `Generate.generate`" — is stated in five
+    places. Three of them were left false, across two review rounds, each found by a different
+    reviewer: `docs/ORCHESTRATION.md`, then this SKILL, then
+    `docs/backends/linter/fortitude/RULES.md` and a second `docs/RUNBOOK.md` entry. That is the
+    threshold at which discipline has already lost, and the audience decides which site is
+    checked first: `AGENTS.md` §Project Local Skills makes `SKILL.md` the canonical execution
+    procedure, and it is delivered INTO the leaf's launch prompt, while none of the documents
+    reaches a leaf at all.
+
+    THE BOUND IS NARROW ON PURPOSE. Only leaf-read files, and within them only a bullet that
+    states the GATE's rerun. Plenty of other prose says "a finding warm-resumes
+    `Generate.generate`" about a specific gate over the leaf's OWN model source — the checks-ABI
+    gate, the `!$omp` floor, the signature gate — where the sentence is unconditionally true.
+    Requiring the qualification there would be over-refusal, which is this repository's recorded
+    default error direction; the bound is self-tested below.
+
+    WHAT IT REQUIRES is a token DERIVED FROM THE CODE: the failure category the gate answers when
+    a finding belongs to the host. The first version required the control file's BASENAME instead
+    — which reads better to a leaf, and is a technology spelling that `docs/BACKEND_BOUNDARY.md`
+    forbids the neutral core to gain; the token ratchet refused it, correctly. So the contract
+    names the files neutrally ("the build control file", "the runner glue") and names the CATEGORY
+    exactly. The coupling is: if you tell a leaf the gate hands findings back, name the verdict it
+    will get instead.
+    """
+
+    #: Files a workflow leaf actually receives. Deliberately not "every document that mentions
+    #: the routing" — see the class docstring.
+    _LEAF_READ_SITES = ("skills/workflow-generate-generate/SKILL.md",)
+
+    #: The lint attribution's host-side verdict. Spelled here AND checked against the code below,
+    #: so a rename of the category breaks this row instead of silently decoupling it from the
+    #: contract it is meant to hold.
+    _HOST_CATEGORY = "host_rendered_lint_findings"
+
+    def test_the_category_this_row_couples_on_is_the_one_the_code_answers(self) -> None:
+        """The rule is defined in the CODE; this file is checked against it, never the reverse."""
+        self.assertIn(self._HOST_CATEGORY, wc.GATE_ONLY_TERMINAL_CATEGORIES)
+        self.assertIn(self._HOST_CATEGORY, wc.GATE_FAILURE_TERMINAL)
+        self.assertEqual(
+            "fail_closed", wc.classify_gate_failure([self._HOST_CATEGORY]).action)
+
+    #: The sentence shape this rule is stated in. Anchored on the gate's own vocabulary so a
+    #: bullet about some other gate's rerun is not swept in.
+    _GATE_RERUN = re.compile(
+        r"On a lint[^.]{0,80}finding[^.]{0,400}?`Generate\.generate`", re.DOTALL)
+
+    #: A list item starts at a line beginning with `- ` or `<n>. `. The rule is stated once in a
+    #: bullet and once in a numbered Operations Rule, so the splitter has to see both.
+    _ITEM_START = re.compile(r"^(?:- |\d+\. )", re.MULTILINE)
+
+    def _items_stating_the_rule(self, text: str) -> list[str]:
+        """The list items that tell the leaf a gate finding comes back to it.
+
+        Item-level, not match-level: the exception sentence follows the anchor, so a window that
+        ends at the anchor cannot see it. The first version did exactly that and reported a
+        correctly-written bullet as missing — a self-inflicted instance of the over-refusal
+        direction this class self-tests for."""
+        starts = [m.start() for m in self._ITEM_START.finditer(text)] + [len(text)]
+        items = [text[a:b] for a, b in zip(starts, starts[1:])]
+        return [it for it in items if self._GATE_RERUN.search(it)]
+
+    def test_every_leaf_read_statement_of_the_gate_rerun_names_the_host_authored_files(
+            self) -> None:
+        repo = Path(__file__).resolve().parents[2]
+        checked = 0
+        for rel in self._LEAF_READ_SITES:
+            text = (repo / rel).read_text(encoding="utf-8")
+            hits = self._items_stating_the_rule(text)
+            self.assertTrue(
+                hits, f"{rel}: no statement of the gate's rerun found at all — either the "
+                      f"contract stopped telling the leaf what the gate does (say so and delete "
+                      f"this row) or the wording moved and this pattern no longer reaches it")
+            for hit in hits:
+                checked += 1
+                self.assertIn(
+                    self._HOST_CATEGORY, hit,
+                    f"{rel}: this bullet tells the leaf a gate finding comes back to it, without "
+                    f"saying what happens when it does not. A finding in a file "
+                    f"`Conductor._host_rendered_src_names` puts on the host side terminalizes the "
+                    f"node as {self._HOST_CATEGORY!r} (issue #112), and the leaf is never handed "
+                    f"it. Name that category in THIS bullet; a mention elsewhere in the file does "
+                    f"not reach a leaf reading this one.")
+        self.assertGreaterEqual(checked, 2, "the leaf contract states this rule twice; if it "
+                                            "now states it fewer times, say why here")
+
+    def test_the_bound_does_not_sweep_in_a_gate_this_rule_does_not_govern(self) -> None:
+        """SELF-TEST OF THE BOUND, both directions.
+
+        A bullet about a finding in the leaf's OWN source must not be demanded the exception —
+        that is the over-refusing direction. And the pattern must actually match the shape it
+        claims to, or the row above passes by matching nothing."""
+        governed = ("- On a lint or syntax finding the conductor re-runs `Generate.generate` "
+                    "(warm resume) so you fix the flagged source.")
+        not_governed = ("- A drift in the published signatures warm-resumes `Generate.generate` "
+                        "so the same leaf fixes its own model source.")
+        self.assertTrue(self._GATE_RERUN.search(governed))
+        self.assertIsNone(self._GATE_RERUN.search(not_governed))
+
+    def test_restoring_the_unqualified_wording_fails_the_check(self) -> None:
+        """The mutation for a prose pin is the sentence it refuses, run through the check.
+
+        Anchored on the wording that stood before issue #112, byte for byte, so this row pins
+        that the check catches THAT sentence rather than that today's sentence survives."""
+        pre_112 = ("- **`static lint` … NOT yours to run.** On a lint or syntax finding the "
+                   "conductor re-runs `Generate.generate` (warm resume) so you fix the flagged "
+                   "source.")
+        hits = self._items_stating_the_rule(pre_112)
+        self.assertEqual(len(hits), 1)
+        self.assertNotIn(self._HOST_CATEGORY, hits[0])
+
+
 class DeterministicLintTest(unittest.TestCase):
     """The generate.gate lint checker (_gate_lint_check) runs in-process: it returns the `lint`
     section of gate_meta and writes the host-side lint evidence (even on a content fail). The
@@ -15421,6 +15544,64 @@ class DeterministicLintTest(unittest.TestCase):
                 self.assertIn("no exit status", str(caught.exception))
                 self.assertIn("timeout", str(caught.exception))
 
+    def test_a_fabricated_boolean_exit_status_is_refused_too(self) -> None:
+        """`True` is an `int` in Python, and it is not an exit status.
+
+        The census reviewer measured the surviving mutant: with the bool clause dropped, a run
+        reporting `return_code=True` passes the guard, `unusable_invocation_reason(1, …)` reads
+        it as the ordinary "there are findings" status, and the gate answers
+        `host_rendered_lint_findings` — a fabricated status terminalizing a node whose finding is
+        the leaf's, which is the failure the arm above it exists to prevent."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            refs = self._m3c_refs()
+            self._seed_m3c(repo, refs)
+            c = self._conductor(repo)
+            with self._patch_linter(lambda args: {
+                    "ok": False, "return_code": True, "command_id": "cid",
+                    "preset": "fortitude", "stdout": "", "stderr": ""}):
+                with self.assertRaises(RuntimeError) as caught:
+                    c._gate_lint_check(refs, "child-1", "captok")
+        self.assertIn("no exit status", str(caught.exception))
+        self.assertIn("True", str(caught.exception))
+
+    def test_the_probes_carry_the_capability_gate_fields_the_main_run_carries(self) -> None:
+        """A probe is a GATED MCP call, and every row here stubs the tool.
+
+        So nothing checked that the probes thread `orchestration_id` / `agent_run_id` /
+        `capability_token` through — and the census reviewer confirmed against the real tool that
+        dropping any of them raises `run_linter requires capability_token when orchestration_id
+        is set` under `METDSL_WORKFLOW_MODE=1`. A regression there breaks BOTH probes in
+        production while the suite stays green, which is the over-refusing direction and the
+        largest unpinned surface the census found.
+
+        Asserted against the CALLER'S arguments rather than against literals, so the row cannot
+        drift from what the gate is actually given, and `capture_limit` is included because an
+        excerpt truncated at the source is a finding the operator never sees."""
+        import tempfile
+        seen: list[dict] = []
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            refs = self._m3c_refs()
+            self._seed_m3c(repo, refs)
+            c = self._conductor(repo)
+            base = self._attributing_linter({"whole", "host"})
+
+            def _fn(args):
+                seen.append(args)
+                return base(args)
+
+            with self._patch_linter(_fn):
+                c._gate_lint_check(refs, "child-1", "captok")
+        self.assertEqual(len(seen), 3)
+        for call in seen:
+            self.assertEqual(call["orchestration_id"], c.orchestration_id)
+            self.assertEqual(call["agent_run_id"], "child-1")
+            self.assertEqual(call["capability_token"], "captok")
+            self.assertEqual(call["repo_root"], str(repo))
+            self.assertEqual(call["capture_limit"], wc._FULL_CAPTURE_LIMIT)
+
     def test_the_probe_directories_are_emptied_before_each_run(self) -> None:
         """A probe must judge THIS attempt's source set, not a residue of an earlier one.
 
@@ -15709,8 +15890,10 @@ class DeterministicSyntaxTest(unittest.TestCase):
                         "command_id": "leaf-probe", "compiler": args["compiler"],
                         "compiler_version": "GNU Fortran 13", "skipped": False,
                         "stderr": "" if leaf_probe_ok else "Error: leaf-side diagnostic"}
-            if pd.endswith("_canary"):
-                return {"ok": True, "return_code": 0, "command_id": "canary",
+            if pd.endswith("_canary") or pd.endswith("_deps_probe"):
+                # Both attribution probes that run BEFORE the leaf one must pass, or the gate
+                # raises there and the leaf probe is never reached.
+                return {"ok": True, "return_code": 0, "command_id": "pre-probe",
                         "compiler": args["compiler"], "compiler_version": "GNU Fortran 13",
                         "skipped": False}
             return {"ok": False, "return_code": 1, "command_id": "sid",
@@ -15807,6 +15990,82 @@ class DeterministicSyntaxTest(unittest.TestCase):
                 out = c._gate_syntax_check(refs, "child-1", "captok")
         self.assertEqual(out["status"], "fail")
         self.assertEqual(out["attribution"], "leaf")
+        self.assertEqual(out["failure_category"], "syntax_error")
+
+    def test_the_syntax_leaf_probe_is_isolated_and_carries_the_staged_closure(self) -> None:
+        """Two decisions of the syntax probe, both unwitnessed until a census asked.
+
+        The probe directory is RESET (its lint twin's row exists; this one had only a comment),
+        and the staged dependency closure is COPIED INTO IT. Both produce the same false record
+        when they break: the probe fails for a reason that is not the leaf's source — residue, or
+        a module the closure was supposed to supply — and `attribution` is written `"leaf"` where
+        the truth is `unattributed_interaction`. This arm routes nothing, so a wrong value is
+        silent by construction, and it is the field TODO says a later change will decide on.
+
+        Asserted on the DIRECTORY CONTENTS the probe was handed, because that is where both
+        decisions land."""
+        import tempfile
+        seen: dict[str, set[str]] = {}
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            refs = self._m3c_refs()
+            self._seed_m3c(repo, refs)
+            stale = (repo / "workspace" / "tmp" / "child-1" / "syntax"
+                     / "gfortran_leaf_probe")
+            stale.mkdir(parents=True)
+            (stale / "stale_broken.f90").write_text("! residue\n", encoding="utf-8")
+            dep = repo / "deps" / "harness_mod.f90"
+            dep.parent.mkdir(parents=True, exist_ok=True)
+            dep.write_text("module harness_mod\nend module harness_mod\n", encoding="utf-8")
+            c = self._conductor(repo)
+            # Stage one dependency the way the real closure would, so the copy has something to
+            # carry; the staging itself has its own rows.
+            c._stage_dependency_sources = (  # type: ignore[assignment]
+                lambda r, d: (__import__("shutil").copy2(dep, d / dep.name), ["harness"])[1])
+            base = self._attributing_syntax(leaf_probe_ok=True)
+
+            def _fn(args):
+                pd = Path(str(args.get("project_dir", "")))
+                if pd.name.endswith("_leaf_probe"):
+                    seen["leaf"] = {p.name for p in pd.iterdir() if p.is_file()}
+                return base(args)
+
+            with self._patch_syntax(_fn):
+                out = c._gate_syntax_check(refs, "child-1", "captok")
+        self.assertEqual(out["attribution"], "unattributed_interaction")
+        self.assertNotIn("stale_broken.f90", seen["leaf"])
+        self.assertIn("harness_mod.f90", seen["leaf"])
+        # The host-rendered runner is the file the probe exists to leave out.
+        self.assertNotIn("adv1d_runner.f90", seen["leaf"])
+
+    def test_a_skipped_leaf_probe_records_unprobed_rather_than_blaming_the_leaf(self) -> None:
+        """`unprobed` is a distinct answer from `leaf`, and only one of them is true.
+
+        A stage the tool declined to run said nothing about whose source is at fault. Recording
+        `leaf` there is a false record in the one field this arm produces."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            refs = self._m3c_refs()
+            self._seed_m3c(repo, refs)
+            c = self._conductor(repo)
+            c._stage_dependency_sources = lambda r, d: []  # type: ignore[assignment]
+
+            def _fn(args):
+                pd = str(args.get("project_dir", ""))
+                if pd.endswith("_leaf_probe"):
+                    return {"skipped": True, "reason": "no adapter on this host"}
+                if pd.endswith("_canary") or pd.endswith("_deps_probe"):
+                    return {"ok": True, "return_code": 0, "command_id": "c",
+                            "compiler": args["compiler"], "compiler_version": "GNU Fortran 13",
+                            "skipped": False}
+                return {"ok": False, "return_code": 1, "command_id": "sid",
+                        "compiler": args["compiler"], "compiler_version": "GNU Fortran 13",
+                        "skipped": False, "stderr": "adv1d_runner.f90:12: Error: boom"}
+
+            with self._patch_syntax(_fn):
+                out = c._gate_syntax_check(refs, "child-1", "captok")
+        self.assertEqual(out["attribution"], "unprobed")
         self.assertEqual(out["failure_category"], "syntax_error")
 
     def test_every_syntax_section_carries_an_attribution_key(self) -> None:

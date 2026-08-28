@@ -5768,14 +5768,20 @@ class Conductor:
         construction the set the conductor actually writes, and the write-authorization swap that
         removes them from the leaf's `allowed_output_paths` reads the same two answers.
 
-        HOW MANY READERS THIS FACT ALREADY HAS, stated because an earlier version of this note
-        said "the conductor / validator pair" and undercounted: THREE re-derive it — the two
-        predicates below, the validator's mirror `validate_pipeline_semantics._ir_m3c_language`,
-        and `orchestration_runtime.control_file_host_authored`, which record_launch calls to
-        stamp the control-file authorship flag onto the launch request — plus
-        `orchestration_runtime._payload_is_m3c_physics`, which TRUSTS that stamp rather than
-        re-deriving it. Adding a fourth re-derivation here is what this helper exists not to do;
-        a change to the answer has to visit all three.
+        HOW MANY READERS THIS FACT ALREADY HAS. Counted as SITES THAT RE-DERIVE IT FROM THE IR,
+        which is the number that matters for drift, there are FOUR: the two predicates
+        immediately below this helper, the validator's mirror
+        `validate_pipeline_semantics._ir_m3c_language`, and
+        `orchestration_runtime.control_file_host_authored`, which record_launch calls to stamp the
+        control-file authorship flag onto the launch request. A FIFTH reader,
+        `orchestration_runtime._payload_is_m3c_physics`, TRUSTS that stamp instead of re-deriving,
+        so it cannot drift on its own but inherits whatever the fourth decided.
+
+        Two earlier versions of this count were wrong in opposite ways — "the conductor /
+        validator pair" undercounted, and its replacement said "THREE" and then listed four
+        items — so the unit is written out: a re-derivation is a site that reads
+        `impl_defaults.toolchain` and answers for itself. This helper adds none; a change to the
+        ANSWER has to visit all four.
 
         Why a set of BASENAMES: everything the gate scans lives directly under `src/`, and the
         probe directories the lint attribution builds are flat copies. A caller that needs paths

@@ -22289,25 +22289,39 @@ class HostAuthoredArtifactExitCodeTests(unittest.TestCase):
                              for v in [str(v) for v in [wrapped]]))
 
     def test_the_stale_ir_code_dominates_a_cooccurring_host_authored_violation(self) -> None:
-        """The precedence between the two terminal codes, pinned so the arms cannot be swapped.
+        """The precedence between the two terminal codes, driven rather than read.
 
         Both are terminal, so routing is the same either way; what differs is which recovery the
         operator is sent to. A stale certified IR invalidates the renderer's own INPUT, so
         answering 4 first means nobody is told to fix a renderer when the real fix is a
-        re-certification (which re-renders anyway)."""
-        violations = [
-            vps.StaleDependencyIRViolation("ir: stale"),
-            vps._as_host_authored("x_runner.f90: boom", "some.producer"),
-        ]
-        self.assertTrue(any(isinstance(v, vps.StaleDependencyIRViolation) for v in violations))
-        self.assertTrue(
-            any(isinstance(v, vps.HostAuthoredArtifactViolation) for v in violations))
-        # Read the ORDER out of the source of the function that decides it rather than
-        # restating it: what this row defends is that the stale arm is written first.
+        re-certification (which re-renders anyway).
+
+        THE FIRST VERSION OF THIS ROW COULD NOT SEE A SWAP. It compared `inspect.getsource`
+        offsets of the two class NAMES inside `_main_dispatch` — and a COMMENT there names
+        `StaleDependencyIRViolation` before either arm, so the assertion held whatever order the
+        arms were in. Measured by a census reviewer: genuinely swapping the arms left this row
+        green. That is this repository's recorded substring-pin trap, reproduced in a row written
+        to prevent exactly this class of thing.
+
+        Both orders are asserted, and in a shape a swap must break: the mixed list answers the
+        stale code, and each type alone answers its own, so a mutant that drops or reorders an
+        arm changes one of the four."""
+        stale = vps.StaleDependencyIRViolation("ir: stale")
+        host = vps._as_host_authored("x_runner.f90: boom", "some.producer")
+        self.assertEqual(vps.STALE_DEPENDENCY_IR_EXIT_CODE,
+                         vps._exit_code_for_violations([host, stale]))
+        # Order in the LIST must not decide it either — only the type precedence.
+        self.assertEqual(vps.STALE_DEPENDENCY_IR_EXIT_CODE,
+                         vps._exit_code_for_violations([stale, host]))
+        self.assertEqual(vps.HOST_AUTHORED_ARTIFACT_EXIT_CODE,
+                         vps._exit_code_for_violations([host, "an ordinary violation"]))
+        self.assertEqual(vps.STALE_DEPENDENCY_IR_EXIT_CODE,
+                         vps._exit_code_for_violations([stale, "an ordinary violation"]))
+        self.assertEqual(1, vps._exit_code_for_violations(["an ordinary violation"]))
+        # And the function `_main_dispatch` actually calls is this one — an extraction nothing
+        # called would pin nothing.
         import inspect
-        body = inspect.getsource(vps._main_dispatch)
-        self.assertLess(body.index("StaleDependencyIRViolation"),
-                        body.index("HostAuthoredArtifactViolation"))
+        self.assertIn("_exit_code_for_violations", inspect.getsource(vps._main_dispatch))
 
 
 class StaleDependencyIRExitCodeTests(unittest.TestCase):

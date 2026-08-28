@@ -174,9 +174,14 @@ Two readings of that table, both load-bearing:
   carry the `! allow(C003)` directive the leaf-read documents used to mandate, and a directive is
   now a finding. New sources do not carry it (the documents no longer teach it, and the
   host-rendered runner no longer emits it — `tools/backends/language/fortran/runner.py`). What an
-  OPERATOR sees: a run resumed onto a `source/<id>/src/` written before this change fails its
-  lint gate once and warm-resumes `Generate.generate`, which regenerates without the directive.
-  That is a recoverable one-time cost with a message naming the directive.
+  OPERATOR sees: it depends on WHICH file carries the directive, and issue #112 made the
+  difference decisive. In a file the leaf authored, the run fails its lint gate once and
+  warm-resumes `Generate.generate`, which regenerates without the directive — a recoverable
+  one-time cost with a message naming the directive. In the HOST-RENDERED RUNNER, which is where
+  the archived corpus overwhelmingly carries it, the gate attributes the finding to this
+  repository and TERMINALIZES on the first attempt (`host_rendered_lint_findings`); the recovery
+  is to regenerate the source rather than to resume onto the old tree. Measured over the archived
+  trees under `workspace*/`, the second case is the common one.
 
 `FORT001` still fires on an unknown code inside a directive (`! allow(ZZZ999)`), measured on every
 supported version — disabling the directives did not take their own diagnostics with them.

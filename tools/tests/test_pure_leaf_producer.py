@@ -1974,6 +1974,36 @@ class PurePostGenerateBundleTests(unittest.TestCase):
         # the carve-out, and a widened set is caught by the row below rather than here.
         self.assertEqual([], [x for x in v if f"{_SPEC_ID}_runner.f90" in x], v)
 
+    def test_the_build_graph_is_told_which_source_is_host_glue(self) -> None:
+        """`host_glue_sources` is what makes the runner's object name a KNOWN one.
+
+        A census reviewer found it unwitnessed: with the wrong name passed, a bundle declaring a
+        file at the runner's own logical path stops earning the `bundle_assembly_collision`
+        refusal — the contract-boundary capture — and falls through to a weaker tamper
+        violation. The node is still refused, so what is lost is the REASON, which is what an
+        operator and a repair leaf act on.
+
+        Driven through the real gate with a bundle that collides, rather than by reading the
+        argument."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, gen, ir_ref = self._gen_dir(tmp)
+            spec_id = vps._spec_id_from_node_key(_NODE)
+            assert spec_id is not None
+            bundle = json.loads((gen / "codegen_bundle.json").read_text())
+            # A declared file whose logical path IS the host glue: the assembly graph must see
+            # the collision.
+            bundle["files"].append({
+                "logical_path": vps._expected_runner_name(spec_id),
+                "role": "helper", "language": "fortran", "member_node_key": None,
+                "content": "module zzz_collide\nend module zzz_collide\n",
+                "modules": ["zzz_collide"],
+            })
+            (gen / "codegen_bundle.json").write_text(json.dumps(bundle), encoding="utf-8")
+            v: list[str] = []
+            vps._validate_post_generate_bundle(repo, gen, _NODE, ir_ref, v)
+        self.assertTrue([x for x in v if "collision" in x],
+                        f"the assembly collision must be the reported reason: {v}")
+
     def test_the_carve_out_admits_exactly_the_host_rendered_runner_name(self) -> None:
         """The carve-out is a SET OF ONE, derived from the node's `spec_id`.
 

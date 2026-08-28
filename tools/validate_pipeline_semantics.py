@@ -9126,6 +9126,36 @@ def _validate_dependency_operation_usage(
     )
 
 
+def _exit_code_for_violations(violations: list[str]) -> int:
+    """The exit code a non-empty violation list answers, decided by violation TYPE.
+
+    EXTRACTED SO IT CAN BE DRIVEN. The precedence used to live inline in `_main_dispatch`, and
+    the row that claimed to pin it compared `inspect.getsource` offsets of the two class NAMES —
+    which a COMMENT naming one of them satisfies, so the assertion held whatever order the arms
+    were in (measured: swapping the arms left that row green). A rule that can only be sampled
+    through the function that consumes it gets moved somewhere it can be called; this is that
+    move, and the test now builds a mixed list and reads the answer.
+
+    PRECEDENCE, and it is deliberate. A stale certified IR invalidates the renderer's own INPUT,
+    so a host-authored artifact being wrong is plausibly a consequence of it: answering 4 first
+    means an operator is never sent to fix a renderer when the real recovery is a
+    re-certification, which re-renders anyway. Both precede `1` so that either, co-occurring with
+    ordinary leaf-repairable violations, still routes TERMINAL — the leaf cannot clear them, so a
+    warm retry would spend the whole budget and fail anyway. The accepted cost is that the
+    co-findings lose their warm repair; they are still PRINTED, so they reach
+    `gate_meta.failure_excerpt` and the operator.
+
+    The two terminal shapes cannot co-occur on a REAL node — a stale-IR violation is raised only
+    on an `infrastructure` node and the host-authored wrap applies only to an M3c physics one —
+    which is why the order has to be pinned here rather than through a fixture.
+    """
+    if any(isinstance(v, StaleDependencyIRViolation) for v in violations):
+        return STALE_DEPENDENCY_IR_EXIT_CODE
+    if any(isinstance(v, HostAuthoredArtifactViolation) for v in violations):
+        return HOST_AUTHORED_ARTIFACT_EXIT_CODE
+    return 1
+
+
 def _expected_runner_name(spec_id: str) -> str:
     """The basename of the runner a node's `spec_id` implies. ONE spelling in this module.
 
@@ -14521,20 +14551,7 @@ def _main_dispatch(args: argparse.Namespace, repo_root: Path) -> int:
         # The TYPE decides, not the text (see `StaleDependencyIRViolation`). This precedes the
         # `return 1` so that a stale IR co-occurring with ordinary content violations still routes
         # TERMINAL: the ordinary ones cannot be repaired either while the IR is stale.
-        if any(isinstance(v, StaleDependencyIRViolation) for v in violations):
-            return STALE_DEPENDENCY_IR_EXIT_CODE
-        # Same channel, one rung lower, and the ORDER is deliberate: a stale certified IR
-        # invalidates the renderer's own INPUT, so a host-authored artifact being wrong is
-        # plausibly a consequence of it. Answering 4 first means an operator is never sent to fix
-        # a renderer when the real recovery is a re-certification (which re-renders anyway).
-        # Like the arm above, this precedes `return 1` so a host-authored violation co-occurring
-        # with ordinary leaf-repairable ones still routes TERMINAL — the leaf cannot clear the
-        # host one, so a warm retry would spend the whole budget and still fail. The accepted
-        # cost is that the leaf-repairable co-findings lose their warm repair; they are still
-        # PRINTED, so they reach `gate_meta.failure_excerpt` and the operator.
-        if any(isinstance(v, HostAuthoredArtifactViolation) for v in violations):
-            return HOST_AUTHORED_ARTIFACT_EXIT_CODE
-        return 1
+        return _exit_code_for_violations(violations)
 
     print("pipeline semantic validation: PASS")
     return 0
