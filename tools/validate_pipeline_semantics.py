@@ -5262,14 +5262,14 @@ def _validate_generate_outputs_for_generation(
     # it writes into therefore carries the attribution, and no violation string is inspected to
     # decide it.
     #
-    # THE LIST MUST BE THE HOST-RENDERED FILE, NOT THE GLOB. `_write_runner` renders exactly
-    # `<spec_id>_runner.f90`; the glob is deliberately wider, because the NAME GATE inside
-    # `_validate_runner_source_files` exists to catch a leaf that wrote some other
-    # `*_runner.f90`. Wrapping the whole glob therefore took that gate's own finding — a leaf
-    # naming mistake, warm-repairable, and the one thing the gate is for — and reported it as
-    # this repository's defect, terminalizing the node (measured: exit 5 on a node carrying a
-    # stray `bogus_runner.f90`, found in review). The split below is what keeps "positional"
-    # true: one call per author, each with its own sink.
+    # THE LIST MUST BE THE HOST-RENDERED FILE, NOT THE GLOB. `_write_runner` renders exactly the
+    # basename `_expected_runner_name` gives; the glob above is deliberately wider, because the
+    # NAME GATE inside `_validate_runner_source_files` exists to catch a leaf that wrote a runner
+    # under some other name. Wrapping the whole glob therefore took that gate's own finding — a
+    # leaf naming mistake, warm-repairable, and the one thing the gate is for — and reported it
+    # as this repository's defect, terminalizing the node (measured: exit 5 on a node carrying a
+    # stray runner beside a clean host-rendered one; found in review). The split below is what
+    # keeps "positional" true: one call per author, each with its own sink.
     #
     # A non-M3c node puts everything on the leaf side: its runner is the `infrastructure`
     # harness self-test, which the leaf really does author. So does a node whose `spec_id` will
@@ -5279,7 +5279,7 @@ def _validate_generate_outputs_for_generation(
     if is_m3c:
         runner_spec_id = _spec_id_from_node_key(execution.node_key)
         if runner_spec_id is not None:
-            expected_runner = f"{runner_spec_id}_runner.f90"
+            expected_runner = _expected_runner_name(runner_spec_id)
     host_runner_files = [p for p in runner_files if p.name == expected_runner]
     leaf_runner_files = [p for p in runner_files if p.name != expected_runner]
     known_case_ids = _case_ids_for_execution(repo_root, execution)
@@ -9126,6 +9126,21 @@ def _validate_dependency_operation_usage(
     )
 
 
+def _expected_runner_name(spec_id: str) -> str:
+    """The basename of the runner a node's `spec_id` implies. ONE spelling in this module.
+
+    Four sites derived it independently, and the attribution split added by issue #112 would have
+    been a fifth: the name gate below, the build-graph seam's host-glue source, the undeclared-
+    `.f90` carve-out, and the split that decides which runner findings are this repository's. They
+    have to agree — a split that disagreed with the name gate would attribute that gate's own
+    finding to the wrong author, which is the defect the split was written to repair.
+
+    Mirrors `workflow_conductor.Conductor._runner_basename`. The two modules do not import each
+    other; what keeps them in step is that both are derived from the node's `spec_id`.
+    """
+    return f"{spec_id}_runner.f90"
+
+
 def _validate_runner_source_files(
     execution: NodeExecution,
     runner_files: list[Path],
@@ -9140,7 +9155,7 @@ def _validate_runner_source_files(
     # (_model_files_in_src_dir). No functional change: the authorization enforces it.
     spec_id = _spec_id_from_node_key(execution.node_key)
     if spec_id is not None:
-        expected_runner_name = f"{spec_id}_runner.f90"
+        expected_runner_name = _expected_runner_name(spec_id)
         for runner_file in runner_files:
             if runner_file.name != expected_runner_name:
                 violations.append(
@@ -13700,7 +13715,7 @@ def _validate_post_generate_bundle(
     def _build_graph(d: Any) -> Any:
         return derive_build_graph(
             d, dependency_closure=closure, toolchain=toolchain,
-            host_glue_sources=(f"{spec_id}_runner.f90",),
+            host_glue_sources=(_expected_runner_name(spec_id),),
             dependency_edges=edges or None)
 
     contract = pure_bundle_contract_violation(
@@ -13746,7 +13761,7 @@ def _validate_post_generate_bundle(
     # case-INSENSITIVELY: `rglob("*.f90")` misses an uppercase `extra.F90` on a case-sensitive
     # filesystem, which would let an undeclared Fortran source slip past this provenance check
     # while the rest of the gate treats suffixes case-insensitively.
-    allowed_extra = {f"{spec_id}_runner.f90".casefold()}
+    allowed_extra = {_expected_runner_name(spec_id).casefold()}
     if src_dir.is_dir():
         f90_paths = [p for p in src_dir.rglob("*")
                      if p.is_file() and p.suffix.lower() == ".f90"]
