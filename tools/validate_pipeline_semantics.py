@@ -5257,24 +5257,46 @@ def _validate_generate_outputs_for_generation(
     m3c_language = _execution_m3c_language(repo_root, execution)
     is_m3c = m3c_language is not None
     runner_files = sorted(src_dir.glob("*_runner.f90"))
-    # ATTRIBUTION IS POSITIONAL: `_validate_runner_source_files` is handed nothing but
-    # `runner_files` to talk about, so on an M3c node every string it appends is about the
-    # host-rendered runner. Collect into its own sink and wrap the whole sink — no violation
-    # string is inspected to decide this. A non-M3c node keeps the plain list: its runner is the
-    # `infrastructure` harness self-test, which the leaf really does author, and wrapping that
-    # would turn a warm-repairable finding into a permanent fail_closed.
-    runner_violations: list[str] = []
-    _validate_runner_source_files(
-        execution, runner_files, runner_violations,
-        known_case_ids=_case_ids_for_execution(repo_root, execution),
-    )
+    # ATTRIBUTION IS POSITIONAL: `_validate_runner_source_files` is handed nothing but the file
+    # list it is called with, so every string it appends is about a member of that list. The sink
+    # it writes into therefore carries the attribution, and no violation string is inspected to
+    # decide it.
+    #
+    # THE LIST MUST BE THE HOST-RENDERED FILE, NOT THE GLOB. `_write_runner` renders exactly
+    # `<spec_id>_runner.f90`; the glob is deliberately wider, because the NAME GATE inside
+    # `_validate_runner_source_files` exists to catch a leaf that wrote some other
+    # `*_runner.f90`. Wrapping the whole glob therefore took that gate's own finding — a leaf
+    # naming mistake, warm-repairable, and the one thing the gate is for — and reported it as
+    # this repository's defect, terminalizing the node (measured: exit 5 on a node carrying a
+    # stray `bogus_runner.f90`, found in review). The split below is what keeps "positional"
+    # true: one call per author, each with its own sink.
+    #
+    # A non-M3c node puts everything on the leaf side: its runner is the `infrastructure`
+    # harness self-test, which the leaf really does author. So does a node whose `spec_id` will
+    # not resolve — the name of the host-rendered file is then unknown, and the safe direction
+    # for an unknown is the WARM one, because over-wrapping is what this fix repairs.
+    expected_runner = None
     if is_m3c:
+        runner_spec_id = _spec_id_from_node_key(execution.node_key)
+        if runner_spec_id is not None:
+            expected_runner = f"{runner_spec_id}_runner.f90"
+    host_runner_files = [p for p in runner_files if p.name == expected_runner]
+    leaf_runner_files = [p for p in runner_files if p.name != expected_runner]
+    known_case_ids = _case_ids_for_execution(repo_root, execution)
+    if host_runner_files:
+        host_runner_violations: list[str] = []
+        _validate_runner_source_files(
+            execution, host_runner_files, host_runner_violations,
+            known_case_ids=known_case_ids,
+        )
         violations.extend(
             _as_host_authored(v, "tools/host_render.render_runner, via "
                                  "workflow_conductor.Conductor._write_runner")
-            for v in runner_violations)
-    else:
-        violations.extend(runner_violations)
+            for v in host_runner_violations)
+    if leaf_runner_files:
+        _validate_runner_source_files(
+            execution, leaf_runner_files, violations, known_case_ids=known_case_ids,
+        )
     if is_m3c:
         _validate_checks_source_files(
             execution, m3c_language, src_dir, model_files, violations)

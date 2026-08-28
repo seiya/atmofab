@@ -22112,7 +22112,7 @@ class HostAuthoredArtifactExitCodeTests(unittest.TestCase):
     _SOURCE_ID = "src_20260415_001"
 
     def _seed(self, tmp: Path, *, spec_kind: str,
-              runner_finding: bool = True) -> Path:
+              runner_finding: bool = True, stray_runner: bool = False) -> Path:
         """A post_generate tree whose runner carries a forbidden-output finding.
 
         `spec_kind` is the only lever: `component` makes the node M3c (a physics node with
@@ -22148,6 +22148,13 @@ class HostAuthoredArtifactExitCodeTests(unittest.TestCase):
             runner += f"  ! writes {vps.FORBIDDEN_RUNNER_OUTPUTS[0]}\n"
         runner += "end program advx_runner\n"
         (src_dir / "advx_runner.f90").write_text(runner, encoding="utf-8")
+        if stray_runner:
+            # A `*_runner.f90` the HOST never renders. The name gate inside
+            # `_validate_runner_source_files` exists precisely to catch it, so its findings are
+            # the leaf's and must stay warm-repairable.
+            (src_dir / "bogus_runner.f90").write_text(
+                f"program bogus\n  ! writes {vps.FORBIDDEN_RUNNER_OUTPUTS[0]}\n"
+                "end program bogus\n", encoding="utf-8")
         (pipeline_dir / "lineage.json").write_text(
             json.dumps({"ir_ref": ir_ref, "node_key": self._NODE_KEY,
                         "pipeline_id": "advx_20260415_001"}), encoding="utf-8")
@@ -22223,6 +22230,46 @@ class HostAuthoredArtifactExitCodeTests(unittest.TestCase):
                         f"fixture must still fail on ordinary violations: {proc.stdout}")
         self.assertNotIn(vps.HOST_AUTHORED_ARTIFACT_MARKER, proc.stdout, proc.stdout)
         self.assertEqual(proc.returncode, 1, proc.stdout)
+
+    def test_a_stray_runner_on_an_m3c_node_stays_the_leafs(self) -> None:
+        """THE OVER-WRAP THIS FIX REPAIRS, found in review.
+
+        `_write_runner` renders exactly `<spec_id>_runner.f90`. The gate's file list is a wider
+        glob ON PURPOSE, because its NAME GATE is what catches a leaf that wrote some other
+        `*_runner.f90`. Wrapping the whole glob reported that gate's own finding — a leaf naming
+        mistake, warm-repairable, and the single thing the gate exists for — as this repository's
+        defect and terminalized the node (measured: exit 5).
+
+        So the node here carries a CLEAN host-rendered runner and a dirty stray one: exit 1, no
+        marker, and the naming violation present. If the split regresses, the marker appears and
+        the code goes to 5."""
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            proc = self._run_cli(tmp, self._seed(
+                tmp, spec_kind="component", runner_finding=False, stray_runner=True))
+        self.assertIn("runner source must be named advx_runner.f90", proc.stdout, proc.stdout)
+        self.assertNotIn(vps.HOST_AUTHORED_ARTIFACT_MARKER, proc.stdout, proc.stdout)
+        self.assertEqual(proc.returncode, 1, proc.stdout)
+
+    def test_a_stray_runner_does_not_borrow_the_host_runners_attribution(self) -> None:
+        """Both dirty at once: the host one is marked, the stray one is not.
+
+        The pair matters because terminal dominates — exit 5 alone would be satisfied by wrapping
+        everything, which is exactly the defect. What this row pins is the COUNT: one marked
+        bullet, not two."""
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            proc = self._run_cli(tmp, self._seed(
+                tmp, spec_kind="component", runner_finding=True, stray_runner=True))
+        marked = [b for b in self._bullets(proc.stdout)
+                  if vps.HOST_AUTHORED_ARTIFACT_MARKER in b]
+        unmarked_runner = [b for b in self._bullets(proc.stdout)
+                           if "bogus_runner.f90" in b
+                           and vps.HOST_AUTHORED_ARTIFACT_MARKER not in b]
+        self.assertEqual(proc.returncode, vps.HOST_AUTHORED_ARTIFACT_EXIT_CODE, proc.stdout)
+        self.assertEqual(len(marked), 1, proc.stdout)
+        self.assertIn("advx_runner.f90", marked[0])
+        self.assertTrue(unmarked_runner, proc.stdout)
 
     def test_the_wrapped_violation_is_string_equal_to_its_message(self) -> None:
         """`str` subclassing is what keeps every existing message pin and formatter working.
