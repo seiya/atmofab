@@ -22089,6 +22089,241 @@ class DirectExecutionBootstrapTests(unittest.TestCase):
             "run as a script from outside the repository, which no test can reach")
 
 
+class HostAuthoredArtifactExitCodeTests(unittest.TestCase):
+    """The terminal classification channel for a violation about a file THIS REPOSITORY authors.
+
+    Issue #112. On an M3c node `src/<spec_id>_runner.f90` is host-rendered and removed from the
+    Generate leaf's `allowed_output_paths`, so a post_generate finding against it cannot be
+    repaired by re-authoring the leaf's own source. Routed as an ordinary content failure it warm-
+    resumes `generate.generate` up to the retry budget and converges on nothing — measured in
+    issue #110 as four launches ending `generate exceeded 3`.
+
+    Every row here drives the REAL CLI in a REAL subprocess, for the same reason
+    `StaleDependencyIRExitCodeTests` does: the channel is the violation's Python TYPE, so a
+    helper-level assertion would stay green while an unwrapped `violations.append` or a list
+    rebuild degraded production to exit code 1.
+
+    THE FIXTURE IS DELIBERATELY DIRTY. Its IR carries no `io_contract` / `raw_requirements`, so
+    ordinary leaf-repairable violations ALWAYS co-occur with the host-authored one — which is what
+    makes the precedence rows real rather than hypothetical.
+    """
+
+    _NODE_KEY = "component/advx@0.1.0"
+    _SOURCE_ID = "src_20260415_001"
+
+    def _seed(self, tmp: Path, *, spec_kind: str,
+              runner_finding: bool = True, stray_runner: bool = False) -> Path:
+        """A post_generate tree whose runner carries a forbidden-output finding.
+
+        `spec_kind` is the only lever: `component` makes the node M3c (a physics node with
+        exactly one infrastructure dependency on a make+fortran toolchain), so the host renders
+        its runner; `infrastructure` makes it the harness self-test, whose runner the LEAF really
+        does author. The same injected finding must classify differently on the two, and that
+        pair is the false-positive guard — wrapping too much would terminalize a finding a warm
+        retry can repair.
+        """
+        ir_ref = "workspace/ir/x"
+        ir_dir = tmp / ir_ref
+        ir_dir.mkdir(parents=True)
+        _write_json(ir_dir / "spec.ir.yaml", {
+            "meta": {"spec_kind": spec_kind, "spec_id": "advx"},
+            "impl_defaults": {
+                "toolchain": {"language": "fortran", "build_system": "make",
+                              "standard": "f2008"},
+                "target": {"backend": "serial"}},
+            "dependency": {
+                "node_key": self._NODE_KEY,
+                "direct_deps": [{"node_key": "infrastructure/harness_fortran_cpu@0.7.0"}]},
+        })
+        pipeline_dir = (tmp / "workspace" / "pipelines" / "component__advx__0.1.0"
+                        / "advx_20260415_001")
+        src_dir = pipeline_dir / "source" / self._SOURCE_ID / "src"
+        src_dir.mkdir(parents=True)
+        (src_dir / "advx_model.f90").write_text(
+            "module advx_model\nend module advx_model\n", encoding="utf-8")
+        runner = "program advx_runner\n"
+        if runner_finding:
+            # `FORBIDDEN_RUNNER_OUTPUTS` — the cheapest of the runner gates to trip, and one
+            # that reads the file's TEXT, which is what makes the node reachable at all.
+            runner += f"  ! writes {vps.FORBIDDEN_RUNNER_OUTPUTS[0]}\n"
+        runner += "end program advx_runner\n"
+        (src_dir / "advx_runner.f90").write_text(runner, encoding="utf-8")
+        if stray_runner:
+            # A `*_runner.f90` the HOST never renders. The name gate inside
+            # `_validate_runner_source_files` exists precisely to catch it, so its findings are
+            # the leaf's and must stay warm-repairable.
+            (src_dir / "bogus_runner.f90").write_text(
+                f"program bogus\n  ! writes {vps.FORBIDDEN_RUNNER_OUTPUTS[0]}\n"
+                "end program bogus\n", encoding="utf-8")
+        (pipeline_dir / "lineage.json").write_text(
+            json.dumps({"ir_ref": ir_ref, "node_key": self._NODE_KEY,
+                        "pipeline_id": "advx_20260415_001"}), encoding="utf-8")
+        return pipeline_dir
+
+    def _run_cli(self, tmp: Path, pipeline_dir: Path) -> subprocess.CompletedProcess[str]:
+        repo_root = Path(vps.__file__).resolve().parent.parent
+        return subprocess.run(
+            [sys.executable, str(Path(vps.__file__).resolve()),
+             "--repo-root", str(tmp), "--workspace-root", "workspace",
+             "--stage", "post_generate", "--pipeline-root", str(pipeline_dir),
+             "--source-id", self._SOURCE_ID],
+            cwd=str(repo_root), capture_output=True, text=True, check=False)
+
+    @staticmethod
+    def _bullets(stdout: str) -> list[str]:
+        return [line for line in stdout.splitlines() if line.startswith("- ")]
+
+    def test_host_rendered_runner_finding_answers_the_dedicated_exit_code_in_a_real_subprocess(
+            self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            proc = self._run_cli(tmp, self._seed(tmp, spec_kind="component"))
+        self.assertEqual(proc.returncode, vps.HOST_AUTHORED_ARTIFACT_EXIT_CODE,
+                         (proc.stdout, proc.stderr))
+        # The marker and the producer's name stay in the message for a human reader; neither
+        # carries a decision.
+        self.assertIn(vps.HOST_AUTHORED_ARTIFACT_MARKER, proc.stdout, proc.stdout)
+        self.assertIn("host_render.render_runner", proc.stdout, proc.stdout)
+        self.assertIn("Re-running Generate cannot change this finding", proc.stdout)
+
+    def test_cooccurring_host_and_leaf_violations_answer_the_host_exit_code(self) -> None:
+        """Hoisting `return 1` above the isinstance check would degrade this to 1.
+
+        The leaf cannot clear the host-authored finding, so the warm retry its own co-findings
+        would have earned could only spend the budget and fail anyway. The accepted cost is that
+        those co-findings lose their warm repair — they are still PRINTED, so they reach
+        `gate_meta.failure_excerpt` and the operator."""
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            proc = self._run_cli(tmp, self._seed(tmp, spec_kind="component"))
+        self.assertTrue(
+            [b for b in self._bullets(proc.stdout)
+             if vps.HOST_AUTHORED_ARTIFACT_MARKER not in b],
+            f"fixture no longer produces an ordinary violation to co-occur: {proc.stdout}")
+        self.assertEqual(proc.returncode, vps.HOST_AUTHORED_ARTIFACT_EXIT_CODE, proc.stdout)
+
+    def test_a_leaf_authored_runner_keeps_the_generic_exit_code(self) -> None:
+        """THE FALSE-POSITIVE GUARD. The same finding on a node whose runner the leaf authors.
+
+        An `infrastructure` node writes its own self-test runner, so this finding IS warm-
+        repairable and must stay exit 1. Wrapping every runner violation — the obvious
+        implementation — passes every row above and fails only here."""
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            proc = self._run_cli(tmp, self._seed(tmp, spec_kind="infrastructure"))
+        self.assertIn("forbidden runner output write detected", proc.stdout, proc.stdout)
+        self.assertNotIn(vps.HOST_AUTHORED_ARTIFACT_MARKER, proc.stdout, proc.stdout)
+        self.assertEqual(proc.returncode, 1, proc.stdout)
+
+    def test_a_clean_runner_on_an_m3c_node_does_not_reach_the_terminal_code(self) -> None:
+        """The wrap must follow the FINDING, not the node shape.
+
+        Without the injected finding the same M3c node still fails on its ordinary violations,
+        and those are the leaf's — so a wrap keyed on "this node is M3c" rather than on "this
+        violation came from the runner sink" would show up here as a terminal verdict on a
+        warm-repairable source."""
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            proc = self._run_cli(
+                tmp, self._seed(tmp, spec_kind="component", runner_finding=False))
+        self.assertTrue(self._bullets(proc.stdout),
+                        f"fixture must still fail on ordinary violations: {proc.stdout}")
+        self.assertNotIn(vps.HOST_AUTHORED_ARTIFACT_MARKER, proc.stdout, proc.stdout)
+        self.assertEqual(proc.returncode, 1, proc.stdout)
+
+    def test_a_stray_runner_on_an_m3c_node_stays_the_leafs(self) -> None:
+        """THE OVER-WRAP THIS FIX REPAIRS, found in review.
+
+        `_write_runner` renders exactly `<spec_id>_runner.f90`. The gate's file list is a wider
+        glob ON PURPOSE, because its NAME GATE is what catches a leaf that wrote some other
+        `*_runner.f90`. Wrapping the whole glob reported that gate's own finding — a leaf naming
+        mistake, warm-repairable, and the single thing the gate exists for — as this repository's
+        defect and terminalized the node (measured: exit 5).
+
+        So the node here carries a CLEAN host-rendered runner and a dirty stray one: exit 1, no
+        marker, and the naming violation present. If the split regresses, the marker appears and
+        the code goes to 5."""
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            proc = self._run_cli(tmp, self._seed(
+                tmp, spec_kind="component", runner_finding=False, stray_runner=True))
+        self.assertIn("runner source must be named advx_runner.f90", proc.stdout, proc.stdout)
+        self.assertNotIn(vps.HOST_AUTHORED_ARTIFACT_MARKER, proc.stdout, proc.stdout)
+        self.assertEqual(proc.returncode, 1, proc.stdout)
+
+    def test_a_stray_runner_does_not_borrow_the_host_runners_attribution(self) -> None:
+        """Both dirty at once: the host one is marked, the stray one is not.
+
+        The pair matters because terminal dominates — exit 5 alone would be satisfied by wrapping
+        everything, which is exactly the defect. What this row pins is the COUNT: one marked
+        bullet, not two."""
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            proc = self._run_cli(tmp, self._seed(
+                tmp, spec_kind="component", runner_finding=True, stray_runner=True))
+        marked = [b for b in self._bullets(proc.stdout)
+                  if vps.HOST_AUTHORED_ARTIFACT_MARKER in b]
+        unmarked_runner = [b for b in self._bullets(proc.stdout)
+                           if "bogus_runner.f90" in b
+                           and vps.HOST_AUTHORED_ARTIFACT_MARKER not in b]
+        self.assertEqual(proc.returncode, vps.HOST_AUTHORED_ARTIFACT_EXIT_CODE, proc.stdout)
+        self.assertEqual(len(marked), 1, proc.stdout)
+        self.assertIn("advx_runner.f90", marked[0])
+        self.assertTrue(unmarked_runner, proc.stdout)
+
+    def test_the_wrapped_violation_is_string_equal_to_its_message(self) -> None:
+        """`str` subclassing is what keeps every existing message pin and formatter working.
+
+        Pinned directly, because the LIMIT the class documents is the other side of this: the
+        channel lives in the object, so anything that rebuilds the list loses it while the text
+        stays identical."""
+        wrapped = vps._as_host_authored("x_runner.f90: boom", "some.producer")
+        self.assertIsInstance(wrapped, str)
+        self.assertIsInstance(wrapped, vps.HostAuthoredArtifactViolation)
+        self.assertTrue(wrapped.startswith("x_runner.f90: boom"))
+        self.assertIn(vps.HOST_AUTHORED_ARTIFACT_MARKER, wrapped)
+        self.assertIn("some.producer", wrapped)
+        # A list rebuild degrades it — the documented limit, pinned so it is not discovered in
+        # production.
+        self.assertFalse(any(isinstance(v, vps.HostAuthoredArtifactViolation)
+                             for v in [str(v) for v in [wrapped]]))
+
+    def test_the_stale_ir_code_dominates_a_cooccurring_host_authored_violation(self) -> None:
+        """The precedence between the two terminal codes, driven rather than read.
+
+        Both are terminal, so routing is the same either way; what differs is which recovery the
+        operator is sent to. A stale certified IR invalidates the renderer's own INPUT, so
+        answering 4 first means nobody is told to fix a renderer when the real fix is a
+        re-certification (which re-renders anyway).
+
+        THE FIRST VERSION OF THIS ROW COULD NOT SEE A SWAP. It compared `inspect.getsource`
+        offsets of the two class NAMES inside `_main_dispatch` — and a COMMENT there names
+        `StaleDependencyIRViolation` before either arm, so the assertion held whatever order the
+        arms were in. Measured by a census reviewer: genuinely swapping the arms left this row
+        green. That is this repository's recorded substring-pin trap, reproduced in a row written
+        to prevent exactly this class of thing.
+
+        Both orders are asserted, and in a shape a swap must break: the mixed list answers the
+        stale code, and each type alone answers its own, so a mutant that drops or reorders an
+        arm changes one of the four."""
+        stale = vps.StaleDependencyIRViolation("ir: stale")
+        host = vps._as_host_authored("x_runner.f90: boom", "some.producer")
+        self.assertEqual(vps.STALE_DEPENDENCY_IR_EXIT_CODE,
+                         vps._exit_code_for_violations([host, stale]))
+        # Order in the LIST must not decide it either — only the type precedence.
+        self.assertEqual(vps.STALE_DEPENDENCY_IR_EXIT_CODE,
+                         vps._exit_code_for_violations([stale, host]))
+        self.assertEqual(vps.HOST_AUTHORED_ARTIFACT_EXIT_CODE,
+                         vps._exit_code_for_violations([host, "an ordinary violation"]))
+        self.assertEqual(vps.STALE_DEPENDENCY_IR_EXIT_CODE,
+                         vps._exit_code_for_violations([stale, "an ordinary violation"]))
+        self.assertEqual(1, vps._exit_code_for_violations(["an ordinary violation"]))
+        # And the function `_main_dispatch` actually calls is this one — an extraction nothing
+        # called would pin nothing.
+        import inspect
+        self.assertIn("_exit_code_for_violations", inspect.getsource(vps._main_dispatch))
+
+
 class StaleDependencyIRExitCodeTests(unittest.TestCase):
     """The terminal classification channel for a stale certified IR.
 

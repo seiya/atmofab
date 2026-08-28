@@ -1632,10 +1632,13 @@ informed regardless).
    the runner runtime-error branch of `_execute_inproc` returns **before** any `trial_meta.json` is
    written, while the structural branch writes one. That branch now also records
    `failure_category` (`static_frontend_unavailable` / `stale_dependency_ir` /
-   `post_execute_violation` / `snapshot_deliverable_gap` / `quality_check_mismatch`, in that
-   precedence — the first two are read from the validator's dedicated exit codes and dominate any
-   co-occurring symptom, since neither is repairable by re-authoring source; below them a gate
-   report is the most specific) and
+   `host_authored_artifact_violation` / `post_execute_violation` / `snapshot_deliverable_gap` /
+   `quality_check_mismatch`, in that
+   precedence — the first three are read from the validator's dedicated exit codes and dominate
+   any co-occurring symptom, since none of them is repairable by re-authoring source; below them
+   a gate report is the most specific. The third arrived with issue #112 and is unreachable from
+   this stage today, wired so that the day it is reported it fails closed rather than arriving as
+   a warm retry) and
    `failure_excerpt` (the `[execute fail]` block, tail 50 lines as in `binary_meta` / `gate_meta`,
    **and** tail 4000 characters: unlike compiler stderr a `post_execute` violation is not
    line-shaped — it interpolates whole dict payloads into one line — so the line cap alone leaves

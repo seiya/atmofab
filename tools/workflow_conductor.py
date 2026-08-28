@@ -241,8 +241,26 @@ GATE_FAILURE_ROUTING: dict[str, tuple[str, str]] = {
 # the leaf's budget on a machine problem. The fix is `pip install tree-sitter tree-sitter-fortran`
 # on the host, then a resume.
 # A terminal category dominates any co-occurring warm-retry category in classify_gate_failure.
+# `host_rendered_lint_findings` / `host_authored_artifact_violation` — the finding's SUBJECT is a
+# file this repository authors, not the leaf: the runner glue this host renders, or the build
+# control file it writes (`Conductor._host_rendered_src_names` is the one place that names the
+# set, and it derives it from the two authorship predicates rather than restating it).
+# `build_launch_request` removes both from the leaf's
+# `allowed_output_paths`, so a warm retry re-authors the two files that were never the cause and
+# meets the identical verdict; issue #110 measured that as four `generate.generate` launches
+# ending in `generate exceeded 3`. Worse than the tokens: re-presenting a verdict the leaf has no
+# honest means to change is the pressure that produces a `leaf shortcut` (`AGENTS.md`
+# §Development premises). The fix is in this repository's renderer, so the run stops here and the
+# reason names it. (An alternative was considered and not taken: `HOST_RENDERED_RUNNER_UNREPAIRABLE`
+# below routes the same shape at Validate.execute to a COMPILE REOPEN, on the ground that the
+# runner is a pure function of the IR. `classify_gate_failure` has no reopen arm, and issue #112
+# asks for a fail_closed that names the producer, so that route is left for a later change.)
+# `lint_finding_unattributed` — the gate could not place a finding on either side of that
+# partition. Assuming the leaf is how this whole class hides, so it fails closed instead.
 GATE_FAILURE_TERMINAL: frozenset[str] = frozenset(
-    {"stale_dependency_ir", "static_frontend_unavailable"}
+    {"stale_dependency_ir", "static_frontend_unavailable",
+     "host_rendered_lint_findings", "host_authored_artifact_violation",
+     "lint_finding_unattributed"}
 )
 
 # Canonical ordering of gate failure categories in the route reason and the composed excerpt
@@ -253,10 +271,13 @@ GATE_FAILURE_TERMINAL: frozenset[str] = frozenset(
 _GATE_CATEGORY_CANON_ORDER: tuple[str, ...] = (
     "syntax_error",
     "lint_findings",
+    "host_rendered_lint_findings",
+    "lint_finding_unattributed",
     "workspace_root_violation",
     "post_generate_violation",
     "stale_dependency_ir",
     "static_frontend_unavailable",
+    "host_authored_artifact_violation",
 )
 
 
@@ -381,9 +402,14 @@ VALIDATE_EXECUTE_FAILURE_ROUTING: dict[str, tuple[str, str]] = {
 #
 # DELIBERATELY A SEPARATE SET FROM `GATE_FAILURE_TERMINAL`, not an alias of it: that one is the
 # Generate.gate subsystem's contract and this one is Validate.execute's, and the two are free to
-# diverge as either grows a category the other has no counterpart for. That they are equal TODAY
-# is pinned by a test, so a change to one is a decision about the other rather than a silent
-# drift.
+# diverge as either grows a category the other has no counterpart for. THEY DIVERGED IN ISSUE
+# #112, which is what the separation was for. This set gains
+# `host_authored_artifact_violation`, because `_execute_inproc` reads the same validator exit
+# code (5) and must fail closed on it; it does NOT gain `host_rendered_lint_findings` or
+# `lint_finding_unattributed`, which are produced by the Generate.gate LINT attribution and have
+# no Validate.execute counterpart — nothing at execute runs a linter. The relationship is now
+# pinned as a strict subset plus the named difference, so a category added to either is still a
+# decision about the other rather than a silent drift.
 #
 # Members are deliberately absent from `VALIDATE_EXECUTE_FAILURE_ROUTING`, so
 # `_read_repair_findings` cannot thread findings into a repair that provably cannot converge.
@@ -398,7 +424,17 @@ VALIDATE_EXECUTE_FAILURE_ROUTING: dict[str, tuple[str, str]] = {
 # beside it pinned only the latter too, so the set the route actually consults had no witness.
 # Recovery is the operator's (install the front end / re-certify) followed by `--resume`.
 VALIDATE_EXECUTE_FAILURE_TERMINAL: frozenset[str] = frozenset(
-    {"stale_dependency_ir", "static_frontend_unavailable"}
+    {"stale_dependency_ir", "static_frontend_unavailable",
+     "host_authored_artifact_violation"}
+)
+
+# The categories `GATE_FAILURE_TERMINAL` carries that Validate.execute has no counterpart for.
+# Named HERE rather than written out again in a test, so the test compares two definitions
+# instead of restating one (a restated set drifts, and this pair already has a comment saying
+# so). Both are produced by the Generate.gate lint attribution (issue #112); execute runs no
+# linter, so neither can reach `_execute_inproc`.
+GATE_ONLY_TERMINAL_CATEGORIES: frozenset[str] = frozenset(
+    {"host_rendered_lint_findings", "lint_finding_unattributed"}
 )
 
 # Route-reason prefix for the table above: `<prefix><failure_category>`. Also the prefix of the
@@ -5712,6 +5748,56 @@ class Conductor:
         ir = _read_yaml(self.repo_root / refs.ir_ref / "spec.ir.yaml") or {}
         return self._core_authors_control_file(_ir_build_system(ir), _ir_language(ir))
 
+    @staticmethod
+    def _runner_basename(refs: NodeRefs) -> str:
+        """The basename of the host-rendered runner glue for a node. ONE spelling.
+
+        Extracted so `_host_rendered_src_names` does not become a second place that says what the
+        renderer's output is called; the build-graph seam reads it too."""
+        return f"{refs.spec_id}_runner.f90"
+
+    #: The basename of the build control file the host writes. ONE spelling, for the same reason.
+    CONTROL_FILE_BASENAME = "Makefile"
+
+    def _host_rendered_src_names(self, refs: NodeRefs) -> frozenset[str]:
+        """The basenames under `source/<source_id>/src/` that THIS REPOSITORY authors, not the leaf.
+
+        The origin oracle the `Generate.gate` attributes a finding with (issue #112). It ADDS NO
+        PREDICATE: it asks the two that already decide authorship (the runner one and the control
+        file one, immediately below), so the set of files the gate calls host-authored is by
+        construction the set the conductor actually writes, and the write-authorization swap that
+        removes them from the leaf's `allowed_output_paths` reads the same two answers.
+
+        HOW MANY READERS THIS FACT ALREADY HAS. Counted as SITES THAT RE-DERIVE IT FROM THE IR,
+        which is the number that matters for drift, there are FOUR: the two predicates
+        immediately below this helper, the validator's mirror
+        `validate_pipeline_semantics._ir_m3c_language`, and
+        `orchestration_runtime.control_file_host_authored`, which record_launch calls to stamp the
+        control-file authorship flag onto the launch request. A FIFTH reader,
+        `orchestration_runtime._payload_is_m3c_physics`, TRUSTS that stamp instead of re-deriving,
+        so it cannot drift on its own but inherits whatever the fourth decided.
+
+        Two earlier versions of this count were wrong in opposite ways — "the conductor /
+        validator pair" undercounted, and its replacement said "THREE" and then listed four
+        items — so the unit is written out: a re-derivation is a site that reads
+        `impl_defaults.toolchain` and answers for itself. This helper adds none; a change to the
+        ANSWER has to visit all four.
+
+        Why a set of BASENAMES: everything the gate scans lives directly under `src/`, and the
+        probe directories the lint attribution builds are flat copies. A caller that needs paths
+        joins them onto `refs.source_dir() / "src"` itself.
+
+        NOT a claim that these files exist. Both writers run at phase start, so on the gate's path
+        they do; a caller that partitions a directory listing intersects with what is actually
+        there rather than assuming.
+        """
+        names: set[str] = set()
+        if self._conductor_authors_runner(refs):
+            names.add(self._runner_basename(refs))
+        if self._conductor_authors_makefile(refs):
+            names.add(self.CONTROL_FILE_BASENAME)
+        return frozenset(names)
+
     def _conductor_authors_runner(self, refs: NodeRefs) -> bool:
         """The conductor host-renders `src/<spec_id>_runner.f90` (R1/M3c-β) iff the node is a
         PHYSICS node whose toolchain the neutral core both writes a control file for and renders
@@ -6171,7 +6257,7 @@ test:
 clean:
 \trm -f $(OBJDIR)/*.o $(OBJDIR)/*.mod $(BINDIR)/$(BIN)
 """
-        path = self.repo_root / refs.source_dir() / "src" / "Makefile"
+        path = self.repo_root / refs.source_dir() / "src" / self.CONTROL_FILE_BASENAME
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(template, encoding="utf-8")
 
@@ -6327,7 +6413,7 @@ clean:
                 edges[nk] = [d for d in deps if isinstance(d, str)]
         return derive_build_graph(
             doc, dependency_closure=tuple(closure_nodes), toolchain=toolchain,
-            host_glue_sources=(f"{refs.spec_id}_runner.f90",),
+            host_glue_sources=(self._runner_basename(refs),),
             dependency_edges=edges or None)
 
     def _render_pure_makefile_from_graph(self, refs: NodeRefs, graph: dict[str, Any]) -> str:
@@ -6442,7 +6528,8 @@ clean:
         bundle_path = self.repo_root / refs.source_dir() / "codegen_bundle.json"
         bundle_path.write_text(
             json.dumps(doc, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-        makefile = self.repo_root / refs.source_dir() / "src" / "Makefile"
+        makefile = (self.repo_root / refs.source_dir() / "src"
+                    / self.CONTROL_FILE_BASENAME)
         makefile.write_text(self._render_pure_makefile_from_graph(refs, graph), encoding="utf-8")
         return written
 
@@ -8395,14 +8482,177 @@ clean:
                 continue
             if "lint" not in record.backend_provides:
                 continue
+            # A run with NO EXIT STATUS never reached a verdict, and that is decided HERE
+            # rather than by the backend: the backend classifies an exit status, and the absence
+            # of one is not an exit status. The live cause is a timeout — `_run_command` records
+            # `return_code: None` on `TimeoutExpired` — and coercing that to 0 handed the
+            # backend the CLEANEST possible status for a run that produced nothing, which it
+            # duly called a verdict. Harmless while the whole-directory run was the only caller
+            # (`ok=False` routed warm either way); not harmless once the ATTRIBUTION PROBES read
+            # the same field, because a timed-out host probe then answers
+            # `host_rendered_lint_findings` and fail_closes a node whose finding is the leaf's.
+            # A timeout is the machine's, not the source's, so it is a transport fail_closed.
+            raw_rc = sub.get("return_code")
+            if not isinstance(raw_rc, int) or isinstance(raw_rc, bool):
+                raise RuntimeError(
+                    f"generate.gate lint check: the {sub_preset} run reported no exit status "
+                    f"(return_code={raw_rc!r}), so it reached no verdict about this source. The "
+                    f"measured cause is a timeout; the run's own report is: "
+                    f"{str(sub.get('error') or sub.get('stderr') or sub.get('stdout') or '').strip()[:400]}")
             module = backend_registry.capability_module("linter", sub_preset, "lint")
             classify = getattr(module, "unusable_invocation_reason", None)
             if classify is None:
                 continue
-            reason = classify(int(sub.get("return_code", 0) or 0),
+            reason = classify(raw_rc,
                               str(sub.get("stdout") or ""), str(sub.get("stderr") or ""))
             if reason is not None:
                 raise RuntimeError(f"generate.gate lint check: {reason}")
+
+    def _attribute_lint_findings(
+        self, refs: NodeRefs, child_arid: str, cap_token: str, preset: str,
+        whole_dir_excerpts: list[str],
+    ) -> tuple[str, str | None]:
+        """Which SIDE of `src/` a failing lint run's findings are on (issue #112).
+
+        Returns `(failure_category, failure_excerpt)`. The categories are
+        `lint_findings` (the leaf can fix it — the excerpt is the LEAF run's output, so a warm
+        repair is never handed a diagnostic about a file it cannot write),
+        `host_rendered_lint_findings` (this repository's renderer produced it), and
+        `lint_finding_unattributed` (neither side reproduced it). Only the first is a warm retry;
+        `GATE_FAILURE_TERMINAL` holds the other two.
+
+        DECIDED BY THE LINTER'S OWN VERDICT over two isolated copies of `src/`, never by reading a
+        diagnostic. That is the same move `_gate_syntax_check` makes with its canary and
+        dependency-closure probes, and for the same reason: a file name merely APPEARING in the
+        output proves nothing, the leaf chooses those names, and every text-scan version of a
+        classification in this repository has been defeated (see the comment in
+        `_gate_static_check`). It is also format-agnostic — a future linter backend needs no
+        change here.
+
+        THE PARTITION IS TOTAL OVER THE TREE, AND CARRIES NO EXTENSION KNOWLEDGE: every file
+        under `src/`, at any depth, goes to exactly one of the two probe directories —
+        host-authored basenames (`_host_rendered_src_names`) to `host/` and everything else to
+        `leaf/`, subdirectories included and reproduced. So the union of the two probes is the
+        directory the full run scanned, and "which files does this linter look at" stays the
+        backend's question rather than the neutral core's.
+
+        THE DEPTH IS LOAD-BEARING, and the first version of this got it wrong: it copied
+        `src_dir.iterdir()` and was total over the FLAT LISTING only, while the linter recurses
+        (measured on the supported build: a tree whose only finding sits in a NESTED source
+        reports `2 files scanned` and exits 1). A finding below the top level was then in the run
+        and in NEITHER probe, so both halves came back clean and an ordinary leaf-repairable
+        finding was terminalized as `lint_finding_unattributed`. The construct is at zero
+        occurrences in today's corpus (3 of 263 source trees hold a subdirectory, all of them
+        holding only `.jsonl`), which is why nothing caught it; a review round did.
+
+        MEASURED, 2026-08-28, with the declared invocation on the supported linter build, over
+        the real `src_20260827_002` tree of issue #110's node (2 leaf-authored findings + 1 in
+        the host-rendered runner): full=3, leaf=2, host=1, and the host probe — whose module
+        imports are all absent from its directory — produced no finding of its own. That is the
+        premise this partition rests on; a linter that resolved across files would break it. The
+        build the measurement was taken on is recorded in the commit message and in the linter
+        backend's own document, which is where a version belongs.
+
+        A SECOND SHAPE THE MEASUREMENT ABOVE DOES NOT COVER, and it is live: on a node where the
+        host writes the control file but renders no runner — an `infrastructure` node, which the
+        corpus has — the host set is that one file and the host probe runs over a directory the
+        linter reads no source from. If a "no files matched" run exited non-zero, `not leaf_ok and
+        not host_ok` would fire and EVERY ordinary leaf finding on such a node would come back
+        terminal on the first attempt. Measured on the same build rather than assumed: the
+        declared invocation over a control-file-only directory, and over an empty one, both
+        report `0 files scanned` and exit 0. Found by a review round asking what the recorded
+        measurement did not reach.
+
+        The probe runs pass NO `command_log_path`, exactly as `_gate_syntax_check`'s `_sub_check`
+        does: they certify nothing, so keeping them out of `<src>/command_log.jsonl` leaves that
+        log the record of the gate proper.
+        """
+        import shutil
+        import sys as _sys
+        mcp_dir = str(self.repo_root / "mcp_servers")
+        if mcp_dir not in _sys.path:
+            _sys.path.insert(0, mcp_dir)
+        from build_runtime_server import tool_run_linter
+
+        src_dir = self.repo_root / refs.source_dir() / "src"
+        host_names = self._host_rendered_src_names(refs)
+        probe_root = self.repo_root / "workspace" / "tmp" / child_arid / "lint"
+        leaf_dir = probe_root / "leaf"
+        host_dir = probe_root / "host"
+        for d in (leaf_dir, host_dir):
+            if d.exists():
+                shutil.rmtree(d)
+            d.mkdir(parents=True, exist_ok=True)
+        host_present = False
+        for entry in sorted(p for p in src_dir.rglob("*") if p.is_file()):
+            # The host-authored set is a set of BASENAMES, and the two files in it live at the
+            # top level; a same-named file deeper in the tree is not one the host wrote, so the
+            # membership test is anchored to depth 1. Anything else would let a nested file
+            # borrow the host's attribution.
+            relative = entry.relative_to(src_dir)
+            side = host_dir if (len(relative.parts) == 1
+                                and entry.name in host_names) else leaf_dir
+            if side is host_dir:
+                host_present = True
+            target = side / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(entry, target)
+
+        def _probe(target: Path) -> tuple[bool, str]:
+            out = tool_run_linter({
+                "preset": preset,
+                "project_dir": str(target),
+                "repo_root": str(self.repo_root),
+                "capture_limit": _FULL_CAPTURE_LIMIT,
+                "orchestration_id": self.orchestration_id,
+                "agent_run_id": child_arid,
+                "capability_token": cap_token,
+            })
+            # A probe that could not JUDGE is not evidence about either side. The classifier is
+            # the same one the main run went through, so a refused invocation here raises to a
+            # transport fail_closed rather than silently attributing the failure to whichever
+            # side happened to be probed second.
+            self._raise_on_unusable_lint_invocation(preset, out)
+            subs = out.get("runs") or [out]
+            text = "\n".join((str(sub.get("stdout") or "") + str(sub.get("stderr") or ""))
+                              for sub in subs)
+            return bool(out.get("ok")), text
+
+        leaf_ok, leaf_text = _probe(leaf_dir)
+        host_ok, host_text = (True, "") if not host_present else _probe(host_dir)
+
+        def _tail(text: str) -> str:
+            return "\n".join(text.splitlines()[-50:])
+
+        host_note = (
+            "[host-authored] the findings below are in a file THIS REPOSITORY authors, not the "
+            "Generate leaf: " + ", ".join(sorted(host_names)) + " is written by "
+            "this host, from the IR, before the leaf runs. "
+            "The leaf has no write authority over it, so re-running Generate cannot change this "
+            "verdict. Fix the producer, or the declared lint rule set in the linter backend "
+            "package (tools/backends/linter/<preset>/), then --resume.")
+
+        if not leaf_ok and not host_ok:
+            # Terminal dominates (classify_gate_failure), but the leaf-side findings are still
+            # reported: the operator fixing the renderer wants to see everything the gate found.
+            return ("host_rendered_lint_findings",
+                    _tail(leaf_text) + "\n" + host_note + "\n" + _tail(host_text))
+        if not leaf_ok:
+            return ("lint_findings", _tail(leaf_text))
+        if not host_ok:
+            return ("host_rendered_lint_findings", host_note + "\n" + _tail(host_text))
+        # Neither isolated half reproduced the failure the whole directory produced. Something
+        # decided this verdict that the partition does not model. "Assume the leaf" is how this
+        # class hides, so it fails closed instead, and says what it could not place.
+        return ("lint_finding_unattributed",
+                "[unattributed] the lint run over source/<source_id>/src/ failed, but neither "
+                "isolated half of that directory reproduces it: the leaf-authored files pass on "
+                "their own and so do the host-authored ones ("
+                + (", ".join(sorted(host_names)) or "none on this node") + "). The verdict is "
+                "therefore decided by something this gate cannot attribute to an author — a rule "
+                "that ranges over the directory rather than a file, or a run that is not "
+                "reproducible. Refusing rather than blaming the leaf (issue #112).\n"
+                + _tail("\n".join(whole_dir_excerpts)))
 
     def _gate_lint_check(self, refs: NodeRefs, child_arid: str,
                          cap_token: str) -> dict[str, Any]:
@@ -8484,8 +8734,14 @@ clean:
             excerpts.append((result.get("stdout", "") or "") + (result.get("stderr", "") or ""))
 
         failure_excerpt = None
+        failure_category = None
         if not ok:
-            failure_excerpt = "\n".join("\n".join(e.splitlines()[-50:]) for e in excerpts)
+            # Attribute BEFORE composing the excerpt: on a host-authored finding the leaf must
+            # never receive a diagnostic about a file it cannot write (issue #112). The whole-
+            # directory output is passed in so the unattributed arm can quote what it could not
+            # place; nothing here reads it to decide anything.
+            failure_category, failure_excerpt = self._attribute_lint_findings(
+                refs, child_arid, cap_token, preset, excerpts)
 
         # Host-side, leaf-non-writable certificate the post_generate validator certifies
         # against. The evidence keys (preset/command_id/command_log_ref) are exactly what
@@ -8510,7 +8766,7 @@ clean:
             "preset": preset,
             "language": language,
             "run_linter": run_entries,
-            "failure_category": None if ok else "lint_findings",
+            "failure_category": failure_category,
             "failure_excerpt": failure_excerpt,
         }
 
@@ -8576,6 +8832,10 @@ clean:
         failure_excerpt: str | None = None
         skipped_reason: str | None = None
         stages: list[dict[str, Any]] = []
+        # OBSERVATION ONLY — which side of src/ the compiler findings are on. Recorded in
+        # gate_meta so the residual issue #112 leaves open on this checker is measured instead of
+        # asserted; nothing routes on it (see the comment at the probe below for why).
+        attribution: str | None = None
 
         node_sources = sorted(
             p for p in src_dir.iterdir()
@@ -8698,6 +8958,9 @@ clean:
                         "language": language,
                         "stages": stages,
                         "skipped_reason": None,
+                        # A refused source NAME is the leaf's own output, so this early return
+                        # already knows the attribution without running a probe.
+                        "attribution": "leaf",
                         "failure_category": "syntax_error",
                         "failure_excerpt": str(exc),
                     }
@@ -8841,6 +9104,65 @@ clean:
                                 f"closure under the same -std). The diagnostics below say which. "
                                 f"Staged: {', '.join(staged_deps)}\n"
                                 + "\n".join(probe_excerpt.splitlines()[-40:]))
+                    # Attribution step 3 — WHICH SIDE of src/ is the finding on (issue #112)?
+                    # The two probes above answer "not the invocation" and "not the dependency
+                    # closure"; this one asks whether the leaf's OWN files fail on their own,
+                    # over the same argv, with the same staged closure.
+                    #
+                    # WHY THE ANSWER IS ONLY RECORDED, NOT ROUTED ON. The host-rendered runner
+                    # `use`s the leaf-authored checks module, so a diagnostic printed at a line
+                    # inside the runner can be caused by the LEAF having missed the fixed checks
+                    # ABI — real, common, and repairable by exactly the warm retry this gate
+                    # already performs. "The leaf's files pass alone" therefore does NOT mean the
+                    # host is at fault; it means alone-vs-interaction cannot be told apart here,
+                    # and terminalizing would convert a leaf-fixable defect into a permanent
+                    # fail_closed. That is the same mistake the dependency-probe comment above
+                    # warns about, and it is why issue #112's "an unattributable finding fails
+                    # closed" is deliberately NOT applied to this checker: the lint checker
+                    # partitions files, which a compiler cannot, so only lint can decide it.
+                    #
+                    # The residual — a finding caused by the runner ALONE — is held at the
+                    # source instead: the language backend's own renderer test compiles AND lints
+                    # the rendered runner under this gate's exact flags and rule set (named in
+                    # `phase_02_generate.md`, which owns that pointer). What this probe adds is
+                    # that the
+                    # residual is now MEASURED on every failure rather than assumed, and the
+                    # count is what a later change would decide on.
+                    #
+                    # The excerpt is deliberately NOT narrowed to the leaf probe's output (the
+                    # lint checker does narrow its own): an interaction diagnostic is printed at
+                    # a runner line and is exactly what the leaf needs in order to fix its ABI.
+                    if attribution is None:
+                        leaf_only = [p for p in node_sources
+                                     if p.name not in self._host_rendered_src_names(refs)]
+                        if len(leaf_only) == len(node_sources):
+                            attribution = "leaf"
+                        else:
+                            leaf_dir = (self.repo_root / "workspace" / "tmp" / child_arid
+                                        / "syntax" / f"{compiler}_leaf_probe")
+                            # Reset, for the reason its LINT twin does (`_attribute_lint_findings`)
+                            # — `workspace/tmp/<agent_run_id>/` is a flat namespace with a
+                            # documented collision risk, and a residue here makes the probe fail,
+                            # which records `attribution="leaf"` where the truth is
+                            # `unattributed_interaction`. This arm routes nothing, so the cost is
+                            # a FALSE RECORD rather than a wrong verdict — but the record is what
+                            # a later change to this arm would decide on, so it has to be true.
+                            # The two probes were added by one change and only one got the reset;
+                            # a review round found the twin.
+                            if leaf_dir.exists():
+                                shutil.rmtree(leaf_dir)
+                            leaf_dir.mkdir(parents=True, exist_ok=True)
+                            for p in leaf_only:
+                                shutil.copy2(p, leaf_dir / p.name)
+                            for p in dep_files:
+                                shutil.copy2(p, leaf_dir / p.name)
+                            leaf_probe = _sub_check(leaf_dir)
+                            if leaf_probe.get("skipped"):
+                                attribution = "unprobed"
+                            elif not leaf_probe.get("ok"):
+                                attribution = "leaf"
+                            else:
+                                attribution = "unattributed_interaction"
                     ok = False
                     failure_category = "syntax_error"
                     tail = "\n".join(excerpt.splitlines()[-80:])
@@ -8867,6 +9189,7 @@ clean:
             "language": language,
             "stages": stages,
             "skipped_reason": skipped_reason,
+            "attribution": attribution,
             "failure_category": failure_category,
             "failure_excerpt": failure_excerpt,
         }
@@ -8909,6 +9232,7 @@ clean:
             if pg.returncode != 0:
                 from tools.validate_pipeline_semantics import (
                     FORTRAN_STRUCTURE_UNAVAILABLE_EXIT_CODE,
+                    HOST_AUTHORED_ARTIFACT_EXIT_CODE,
                     STALE_DEPENDENCY_IR_EXIT_CODE,
                 )
                 status = "fail"
@@ -8937,6 +9261,8 @@ clean:
                     failure_category = "static_frontend_unavailable"
                 elif pg.returncode == STALE_DEPENDENCY_IR_EXIT_CODE:
                     failure_category = "stale_dependency_ir"
+                elif pg.returncode == HOST_AUTHORED_ARTIFACT_EXIT_CODE:
+                    failure_category = "host_authored_artifact_violation"
                 else:
                     failure_category = "post_generate_violation"
                 failure_excerpt = "\n".join((pg.stdout + pg.stderr).splitlines()[-50:])
@@ -9407,20 +9733,27 @@ clean:
             # the three warm categories route identically: a gate/syntax report is the most
             # specific, a snapshot gap next, quality_check last.
             #
-            # rc 4 is UNREACHABLE from this stage today: the stale-IR violation has one emit site
+            # rc 4 and rc 5 are UNREACHABLE from this stage today, for the same reason and with
+            # the same remedy. The stale-IR violation has one emit site
             # (`_validate_infrastructure_generated_signatures`) and one caller
-            # (`_validate_generate_outputs_for_generation`, post_generate only). It is wired here
-            # anyway so that the day a post_execute gate reports it, it fails closed rather than
-            # arriving as a warm retry the leaf cannot converge on. rc 3 IS reachable: the
-            # front-end error is raised from the `problem` model gates that post_execute runs.
+            # (`_validate_generate_outputs_for_generation`, post_generate only); the
+            # host-authored wrap has one construction site, in that same post_generate caller —
+            # post_execute reaches the runner gates through `_validate_runner_outputs`, which is
+            # a different caller and does not wrap (issue #112). Both are wired here anyway so
+            # that the day this stage reports one, it fails closed rather than arriving as a warm
+            # retry the leaf cannot converge on. rc 3 IS reachable: the front-end error is raised
+            # from the `problem` model gates that post_execute runs.
             from tools.validate_pipeline_semantics import (
                 FORTRAN_STRUCTURE_UNAVAILABLE_EXIT_CODE,
+                HOST_AUTHORED_ARTIFACT_EXIT_CODE,
                 STALE_DEPENDENCY_IR_EXIT_CODE,
             )
             if gate.returncode == FORTRAN_STRUCTURE_UNAVAILABLE_EXIT_CODE:
                 failure_category = "static_frontend_unavailable"
             elif gate.returncode == STALE_DEPENDENCY_IR_EXIT_CODE:
                 failure_category = "stale_dependency_ir"
+            elif gate.returncode == HOST_AUTHORED_ARTIFACT_EXIT_CODE:
+                failure_category = "host_authored_artifact_violation"
             elif syn.returncode != 0 or gate.returncode != 0:
                 failure_category = "post_execute_violation"
             elif snapshot_gap:
@@ -10698,17 +11031,19 @@ clean:
         # or a stale certified IR — neither of which any re-authored semantic_review.json
         # touches. The violations are still recorded, for observation only.
         #
-        # rc 4 is UNREACHABLE from this stage today (the stale-IR violation has one emit site,
-        # reached only from post_generate); it is wired so that the day a pre_judge gate reports
-        # it, it fails closed rather than warm-resuming. rc 3 IS reachable: `--stage pre_judge`
-        # runs gates that read source through the front end.
+        # rc 4 and rc 5 are UNREACHABLE from this stage today (both have a single emit /
+        # construction site, reached only from post_generate); they are wired so that the day a
+        # pre_judge gate reports one, it fails closed rather than warm-resuming. rc 3 IS
+        # reachable: `--stage pre_judge` runs gates that read source through the front end.
         from tools.validate_pipeline_semantics import (
             FORTRAN_STRUCTURE_UNAVAILABLE_EXIT_CODE,
+            HOST_AUTHORED_ARTIFACT_EXIT_CODE,
             STALE_DEPENDENCY_IR_EXIT_CODE,
         )
         terminal_category = {
             FORTRAN_STRUCTURE_UNAVAILABLE_EXIT_CODE: "static_frontend_unavailable",
             STALE_DEPENDENCY_IR_EXIT_CODE: "stale_dependency_ir",
+            HOST_AUTHORED_ARTIFACT_EXIT_CODE: "host_authored_artifact_violation",
         }.get(gate.returncode)
         if terminal_category:
             self._write_run_node_meta(refs, "post_judge_meta.json", {

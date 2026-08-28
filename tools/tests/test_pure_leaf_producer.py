@@ -1951,6 +1951,79 @@ class PurePostGenerateBundleTests(unittest.TestCase):
             vps._validate_post_generate_bundle(repo, gen, _NODE, ir_ref, v)
             self.assertEqual(v, [])
 
+    def test_an_undeclared_source_is_refused_and_the_host_runner_is_the_only_exception(
+            self) -> None:
+        """The provenance gate's carve-out, pinned in BOTH directions.
+
+        `allowed_extra` decides which undeclared `.f90` this gate tolerates, and it is exactly
+        one file: the runner the host renders. A mutation sweep found that widening it left the
+        whole validator suite green — so the one function that now owns the runner's name
+        (`_expected_runner_name`) was the sole guard of a provenance check with no witness.
+
+        Two rows in one, because a carve-out needs both: the exception is ACCEPTED (the clean
+        bundle rows above already fail if it is not), and everything else is REFUSED. A pin on
+        the refusal alone would survive widening the set to two names."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, gen, ir_ref = self._gen_dir(tmp)
+            (gen / "src" / "smuggled.f90").write_text(
+                "module smuggled\nend module smuggled\n", encoding="utf-8")
+            v: list[str] = []
+            vps._validate_post_generate_bundle(repo, gen, _NODE, ir_ref, v)
+        self.assertTrue([x for x in v if "smuggled.f90" in x and "undeclared" in x], v)
+        # The host-rendered runner is present in the same tree and must NOT be reported: it is
+        # the carve-out, and a widened set is caught by the row below rather than here.
+        self.assertEqual([], [x for x in v if f"{_SPEC_ID}_runner.f90" in x], v)
+
+    def test_the_build_graph_is_told_which_source_is_host_glue(self) -> None:
+        """`host_glue_sources` is what makes the runner's object name a KNOWN one.
+
+        A census reviewer found it unwitnessed: with the wrong name passed, a bundle declaring a
+        file at the runner's own logical path stops earning the `bundle_assembly_collision`
+        refusal — the contract-boundary capture — and falls through to a weaker tamper
+        violation. The node is still refused, so what is lost is the REASON, which is what an
+        operator and a repair leaf act on.
+
+        Driven through the real gate with a bundle that collides, rather than by reading the
+        argument."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, gen, ir_ref = self._gen_dir(tmp)
+            spec_id = vps._spec_id_from_node_key(_NODE)
+            assert spec_id is not None
+            bundle = json.loads((gen / "codegen_bundle.json").read_text())
+            # A declared file whose logical path IS the host glue: the assembly graph must see
+            # the collision.
+            bundle["files"].append({
+                "logical_path": vps._expected_runner_name(spec_id),
+                "role": "helper", "language": "fortran", "member_node_key": None,
+                "content": "module zzz_collide\nend module zzz_collide\n",
+                "modules": ["zzz_collide"],
+            })
+            (gen / "codegen_bundle.json").write_text(json.dumps(bundle), encoding="utf-8")
+            v: list[str] = []
+            vps._validate_post_generate_bundle(repo, gen, _NODE, ir_ref, v)
+        self.assertTrue([x for x in v if "collision" in x],
+                        f"the assembly collision must be the reported reason: {v}")
+
+    def test_the_carve_out_admits_exactly_the_host_rendered_runner_name(self) -> None:
+        """The carve-out is a SET OF ONE, derived from the node's `spec_id`.
+
+        Pinned against the function that derives it rather than against the literal, so a rename
+        moves both together; and pinned as EQUALITY, because a superset is what the mutation
+        that survived actually produced."""
+        spec_id = vps._spec_id_from_node_key(_NODE)
+        self.assertIsNotNone(spec_id)
+        expected = vps._expected_runner_name(spec_id)
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, gen, ir_ref = self._gen_dir(tmp)
+            # A file whose name differs from the carve-out by one character must be refused.
+            near_miss = expected.replace("_runner.f90", "_runners.f90")
+            (gen / "src" / near_miss).write_text(
+                "module x\nend module x\n", encoding="utf-8")
+            v: list[str] = []
+            vps._validate_post_generate_bundle(repo, gen, _NODE, ir_ref, v)
+        self.assertTrue([x for x in v if near_miss in x and "undeclared" in x], v)
+        self.assertEqual([], [x for x in v if f"/{expected}" in x], v)
+
     def test_absent_bundle_is_inert(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)

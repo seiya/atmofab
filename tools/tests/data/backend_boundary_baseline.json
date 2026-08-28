@@ -323,7 +323,7 @@
       "fortran-module-procedure": 3,
       "fortran-standard": 31,
       "fortran-subroutine": 77,
-      "fortran-suffix": 41,
+      "fortran-suffix": 40,
       "linter-fortitude": 8,
       "make-control-file": 110,
       "make-variable": 25,

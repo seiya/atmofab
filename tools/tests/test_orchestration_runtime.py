@@ -30745,7 +30745,14 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # directive is inert AND that it does not always announce itself, replacing a
         # shorter sentence that promised a `FORT005` a producer will usually not see.
         # Measured 38479.
-        "skills/workflow-generate-generate/SKILL.md": 38500,
+        # Bumped 38500->39500: issue #112 — both statements of the gate's rerun had to gain the
+        # authorship exception. The contract told a leaf, unconditionally, that a lint or syntax
+        # finding comes back to it; three of the five documents stating that rule were left false
+        # across two review rounds, and this is the only one a leaf is handed. It now says which
+        # findings do NOT return and names the verdict they get instead
+        # (`host_rendered_lint_findings`), which `GateRoutingIsStatedToTheLeafTests` couples to
+        # the code so the pair cannot drift again. Measured 39403.
+        "skills/workflow-generate-generate/SKILL.md": 39500,
         # Bumped 21400->21700: the test/check target must invoke the runner with
         # `--cases $(SPEC) $(CASES)` (the runner aborts without it; make test must
         # match run_program's argv) after a validate.execute failure where a bare
