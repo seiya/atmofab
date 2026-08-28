@@ -3107,7 +3107,7 @@ class ValidateGateReasonFromMetaTest(unittest.TestCase):
             ir_id="x_1_001", pipeline_id="x_1_001", source_id="src_1_001",
             binary_id="bin_1_001", run_id="run_1_001", source_binary_id="bin_1_001")
 
-    def _run(self, repo: Path, substep: str, meta: dict | None) -> "wc.PhaseOutcome":
+    def _run(self, repo: Path, substep: str, meta: dict | None) -> wc.PhaseOutcome:
         """Run the validate phase with `substep` failing and `meta` as its authored meta
         (None -> the substep writes no meta at all)."""
         c = self._C(repo_root=repo, orchestration_id="orch_x",
@@ -3190,8 +3190,9 @@ class ValidateGateReasonFromMetaTest(unittest.TestCase):
                 consulted: list[str] = []
 
                 class _T(self._C):  # type: ignore[misc]
-                    def classify_failure(self, refs, phase, outcomes):  # type: ignore[override]
-                        consulted.append(phase)
+                    def classify_failure(self, refs, phase, outcomes,  # type: ignore[override]
+                                         _seen=consulted):
+                        _seen.append(phase)
                         return wc.RouteDecision("fail_closed", reason="tripwire")
 
                 c = _T(repo_root=Path(td), orchestration_id="orch_x",
@@ -3201,8 +3202,8 @@ class ValidateGateReasonFromMetaTest(unittest.TestCase):
                         lambda n: {"status": "fail",
                                    "failure_category": "pre_judge_dag_incomplete",
                                    "disposition": "fail_closed"})
-                c.status_fn = lambda phase, sub, n: (
-                    "fail" if (phase == "validate" and sub == substep) else "pass")
+                c.status_fn = lambda phase, sub, n, want=substep: (
+                    "fail" if (phase == "validate" and sub == want) else "pass")
                 oc = c.run_phase(self._refs(), "validate")
                 self.assertEqual(consulted, [], substep)
                 self.assertNotEqual(oc.decision.reason, "tripwire", substep)
