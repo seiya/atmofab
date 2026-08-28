@@ -88,18 +88,20 @@ def _read_json(path: Path) -> dict[str, Any] | None:
         return None
 
 
-# The ONE reader of the two deterministic Validate gate metas. Round 2 found the alternative —
-# writing `isinstance` at each call site and asserting the coverage in a docstring — failing for
-# the third round running: the claim named two sites when there were six, and the site that runs
-# FIRST (`determine_substep_status`) was not among the guarded ones, so a non-dict payload still
-# crashed the conductor before any guard was reached. `tools/tests/test_workflow_conductor.py`
-# refuses a `_read_json` of either filename, so the coverage is now structural instead of stated.
+# The ONE reader of the two deterministic Validate gate metas (`pre_judge_meta.json`,
+# `post_judge_meta.json`). Writing `isinstance` at each call site instead, and asserting the
+# coverage in a docstring, failed three rounds running: the claim named two sites when there were
+# seven, and the site that runs FIRST (`determine_substep_status`) was not among the guarded ones,
+# so a non-object payload still crashed the conductor before any guard was reached. A later
+# attempt to pin the coverage by refusing the SPELLING (a test scanning for `_read_json` of either
+# filename) was defeated by passing the name through a variable, and refused a legitimate
+# diagnostic helper; it is gone. What holds the property now is behavioural —
+# `test_the_real_determine_substep_status_survives_a_corrupt_gate_meta` drives the real method
+# over corrupt payloads — so a seventh reader written with a bare `_read_json` is caught by that
+# test only where it can crash, which is the case that matters.
 #
 # Returns None for absent, undecodable, AND non-object — three states the caller cannot act on
 # differently anyway, and every one of them means "this file does not record anything".
-GATE_META_FILENAMES: tuple[str, ...] = ("pre_judge_meta.json", "post_judge_meta.json")
-
-
 def _read_gate_meta(path: Path) -> dict[str, Any] | None:
     meta = _read_json(path)
     return meta if isinstance(meta, dict) else None

@@ -3386,8 +3386,11 @@ class ValidateGateReasonFromMetaTest(unittest.TestCase):
         body = text.split(heading, 1)[1]
         nxt = re.search(r"^## ", body, re.MULTILINE)
         section = body[:nxt.start()] if nxt else body
-        # Self-test the bound, both halves: the section must be a PROPER part of the file, and a
-        # heading that exists elsewhere in it must not be inside. Without this the assertions
+        # Self-test the bound: the section must be a PROPER part of the file, and the control
+        # heading — which precedes this section — must be outside it. The second half is weak by
+        # construction (a control that precedes the section cannot be inside a forward-running
+        # split), so it catches a reader that widened BACKWARD, not one that ran past the end;
+        # the length check is what bounds the forward side. Without this the assertions
         # below could be passing on the whole document.
         self.assertLess(len(section), len(text))
         self.assertIn(control, text,
@@ -3431,12 +3434,20 @@ class ValidateGateReasonFromMetaTest(unittest.TestCase):
             # bullet renamed, satisfied by the incidental mention of the same suffix in the
             # bullet below it; that is the substring trap the round-2 tripwire fix already
             # closed once, at document level this time.
-            opener = re.compile(r"^\s*- `validate_<substep>" + re.escape(suffix) + r"`", re.MULTILINE)
+            # Either the placeholder spelling the prose uses, or both literal reasons — a
+            # document that names `validate_pre_judge<suffix>` / `validate_post_judge<suffix>`
+            # in full states the rule at least as well, and refusing that would be this check
+            # dictating prose rather than checking coverage (round 4).
+            forms = [r"`validate_<substep>" + re.escape(suffix) + r"`",
+                     r"`validate_pre_judge" + re.escape(suffix) + r"`"]
+            opener = re.compile(r"^\s*- (?:" + "|".join(forms) + r")", re.MULTILINE)
             self.assertTrue(
                 opener.search(section),
                 f"{self._RUNBOOK} {self._RUNBOOK_SECTION} has no bullet OPENING with "
-                f"`validate_<substep>{suffix}` ({name}) — an operator hitting that reason has "
-                f"no procedure to read. A mention elsewhere in the section does not count.")
+                f"`validate_<substep>{suffix}` ({name}, or the two literal spellings) — an "
+                f"operator hitting that reason has no procedure to read. A mention elsewhere "
+                f"in the section does not count. If the entry MOVED to another section, that "
+                f"is what `_RUNBOOK_SECTION` in this test names; update it there.")
 
     def test_the_real_determine_substep_status_survives_a_corrupt_gate_meta(self) -> None:
         """The two gate reads that run FIRST, driven on the REAL `Conductor` method.
@@ -3446,9 +3457,9 @@ class ValidateGateReasonFromMetaTest(unittest.TestCase):
         overrides `determine_substep_status` wholesale, so a crash at those lines is invisible
         to all of them. Round 2's substitute was an AST scan refusing a `_read_json` that names
         either meta; round 3 defeated it in one line by passing the filename through the
-        module's own `GATE_META_FILENAMES[0]`, and it also refused a legitimate diagnostic
-        helper. A spelling pin was the wrong instrument — this is the behaviour it stood for,
-        and it holds however the read is spelled."""
+        module's own filename constant, and it also refused a legitimate diagnostic helper. A
+        spelling pin was the wrong instrument — this is the behaviour it stood for, and it holds
+        however the read is spelled."""
         import tempfile
         for substep, fname in (("pre_judge", "pre_judge_meta.json"),
                                ("post_judge", "post_judge_meta.json")):
@@ -3478,6 +3489,57 @@ class ValidateGateReasonFromMetaTest(unittest.TestCase):
                 json.dumps({"status": "pass"}), encoding="utf-8")
             status, _ = c.determine_substep_status(refs, "validate", "pre_judge", [rel])
             self.assertEqual(status, "pass")
+
+    def test_the_freshness_arm_is_reachable_and_this_is_what_it_looks_like(self) -> None:
+        """The exhibit for `validate_<substep>_deliverable_not_freshly_written`.
+
+        Round 4 challenged the family as naming a mechanism the code cannot produce, reasoning
+        that `min_mtime` is `launched_at`, taken just BEFORE the in-process body, and the body
+        writes its meta after — so `mtime >= launched_at` should hold structurally. The premise
+        is wrong, measured on this machine: the kernel stamps inode times from a coarse clock
+        that LAGS `time.time()`, so a file written immediately after an instant records an mtime
+        BELOW it (600/600 writes, median 5.2 ms behind, on both `/tmp` (xfs) and `$HOME`). A
+        deterministic body that completes inside that lag therefore fails its own freshness gate
+        having written its deliverable correctly, and the substep fails with `status: "pass"` in
+        the meta — which is the shape the measured incident is in.
+
+        The exhibit here is deterministic (`os.utime`), not clock-dependent: what it pins is that
+        a below-window mtime on a `pass` meta is what produces this reason, whatever put the
+        mtime there. The CAUSE of that lag is not this branch's to fix — it is a property of the
+        freshness gate, which every deterministic substep shares — and is reported to issue #113,
+        which is open on the incident's cause.
+        """
+        import os
+        import tempfile
+        for substep, fname in (("pre_judge", "pre_judge_meta.json"),
+                               ("post_judge", "post_judge_meta.json")):
+            with tempfile.TemporaryDirectory() as td:
+                repo, refs = Path(td), self._refs()
+                c = wc.Conductor(repo_root=repo, orchestration_id="orch_x",
+                                 orchestration_agent_run_id="ORCH",
+                                 llm_config=_cfg("claude"), env={})
+                node_dir = repo / refs.run_node_dir()
+                node_dir.mkdir(parents=True, exist_ok=True)
+                rel = f"{refs.run_node_dir()}/{fname}"
+                (node_dir / fname).write_text(json.dumps({"status": "pass",
+                                                          "failure_category": None}),
+                                              encoding="utf-8")
+                launched_at = 1_000_000.0
+                os.utime(node_dir / fname, (launched_at - 1, launched_at - 1))
+                status, _ = c.determine_substep_status(
+                    refs, "validate", substep, [rel], min_mtime=launched_at)
+                self.assertEqual(status, "fail", substep)
+                # ... and THAT pair — a `pass` meta on a failed substep — is the reason.
+                self.assertEqual(
+                    wc.classify_validate_gate_failure(
+                        substep, wc._read_gate_meta(node_dir / fname)),
+                    f"validate_{substep}_deliverable_not_freshly_written")
+                # Control: the same meta INSIDE the window passes, so the assertion above is
+                # about the mtime and not about the method failing on everything.
+                os.utime(node_dir / fname, (launched_at + 1, launched_at + 1))
+                status, _ = c.determine_substep_status(
+                    refs, "validate", substep, [rel], min_mtime=launched_at)
+                self.assertEqual(status, "pass", substep)
 
     def test_classifier_is_a_pure_function_of_the_meta(self) -> None:
         # The defensive classify_failure branches route from the same helper, so the two sites
