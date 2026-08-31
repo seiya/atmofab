@@ -365,6 +365,39 @@ nor resets the two-consecutive-clean-security-rounds condition.**
   reporting its task done". **A finding that cannot carry one is not a finding**, it is a mechanism
   description, and the sentence is what you triage against afterwards. It also states the
   over-refusal probe's other half: for a check, the same sentence is what a legitimate input says
+- **Require a WORKFLOW ROUTE on every finding, in the launch prompt.** The gain sentence says what
+  a leaf wins; the route says where the damage comes out. Together they are the whole filter, and
+  without the second a round fills with code that is wrong in the abstract and reaches nothing.
+  Hand this over verbatim:
+
+  > "Report a finding only when you can name the route by which it shows up in a real `workflow`
+  > run: **which `phase` / `step` / `substep` reaches the code, what input reaches it** (a shape
+  > that exists in this tree's `spec` and generated artifacts, not one you invented), **and what
+  > comes out wrong** — a wrong `verdict`, a broken artifact contract, a false record, a lost
+  > `--resume`, or a `leaf shortcut` that lets a leaf report its task done without earning it.
+  > **State the route with the finding, in one sentence.** If you cannot establish the route, do
+  > not report it as a finding and do not drop it either: list it under a separate heading
+  > `route not established`, one line each."
+
+  **Three things are INSIDE the route, and leaving them out is how this instruction goes wrong**:
+  a **test that would not notice the defect** — its route is the next workflow that runs on
+  unpinned code, so "the implementation is right but the test is weak" stays real; **text a leaf
+  or an operator ACTS ON** — its route is the action it causes (see "Only prose remains" under
+  Stopping conditions); and **a record about the branch that is false** — its route is the audit
+  trail, which is a workflow output. What the requirement actually cuts is the other family: a
+  mechanism description with no run behind it, a construct occurring zero times in the real
+  corpus, a hardening of a path only the operator can reach, and style.
+
+  **Read the `route not established` section yourself every round** — it is what keeps the
+  requirement from becoming an exclusion list inside the reviewer's head, and it is exactly where
+  a real defect whose route nobody has measured sits (PR #98's widest gap spent three rounds
+  inside a list of things already believed covered). Items there are input to your own
+  reproduction, not a residue list, and they are **not** carried into the next round's prompt
+- **Do not let the route requirement narrow the SEARCH.** It governs what is REPORTED, not where a
+  reviewer looks: the mutation sweep, the witness census and the over-refusal probe are run in
+  full, and a survivor is reported with the route of the workflow that would run on unpinned code.
+  If a round comes back small, check that it did not shrink because the reviewer pre-filtered its
+  own sweep — ask what it ran, not only what it found
 - But **do not name individual findings as excluded** — that is an exclusion list, subject to the
   three-round rule below
 - **For a change that adds checking machinery, include "construct legitimate work that this check
@@ -401,7 +434,10 @@ scratch path first and restore from that, or mutate in a worktree; the disciplin
 every point in the loop, not just at round 0.
 
 **Reproduce a finding yourself before classifying it.** Real / false positive / residual /
-**real but out of scope** (below) are decided only with a record of a reproduction you ran. Treat
+**real but out of scope** (below) are decided only with a record of a reproduction you ran. **The
+route the reviewer stated is a claim, not the reproduction** — a route you cannot drive is not a
+route, and a finding whose route was reconstructed by reading is the shape "verify a reviewer's
+POSITIVE claims by asking what it EXECUTED" below is about. Treat
 "the implementation is right but the test is weak" as real. (`metdsl-enforcement-change` judgment
 rules 1 and 1-b own the residual / unreachable half and state what a "record" has to be there;
 the false-positive and out-of-scope classes are this skill's own, below. This line is the round's
@@ -617,6 +653,11 @@ refusal's own residue was "a writer inside a script FILE handed to an interprete
 `forbid_python_inline_write`'s block text says "use a real script file (`python3 script.py`)", over
 an allow-list entry that permits exactly that and a leaf-read document that teaches it. Three
 sources agreeing on a route none of them guards is not something any single-file review sees.
+
+The route the reviewer handed over is what this section triages against — check it, do not
+rebuild it, and when a finding arrives with no route, treat it as the reviewer's own
+`route not established` entry: reproduce it or declare the scope, never fix it on the strength of
+the mechanism alone.
 
 **Two questions when in doubt**, both of which must answer yes: "if this stays unfixed and one
 `workflow` runs, does a **wrong certification** or a **false record** come out?" and "**does a leaf
