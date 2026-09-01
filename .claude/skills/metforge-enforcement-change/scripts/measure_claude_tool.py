@@ -138,7 +138,7 @@ def substitute(value, base: Path, repo: Path):
 
 def build_fixture() -> Path:
     """A repository two levels down, with a marked file everywhere a pattern could land."""
-    base = Path(tempfile.mkdtemp(prefix="metdsl-toolmeasure-"))
+    base = Path(tempfile.mkdtemp(prefix="metforge-toolmeasure-"))
     repo = base / "a" / "b" / "repo"
     (repo / "docs" / "sub").mkdir(parents=True)
     (repo / "docs" / "a.md").write_text("MARK docs/a.md")
@@ -238,7 +238,7 @@ def probe(repo: Path, tool: str, tool_input: dict, command: str, timeout: int,
             env = {name: os.environ[name] for name in _ENV_ALLOWLIST if name in os.environ}
             env.update(HOME=str(repo.parent.parent.parent),
                        ANTHROPIC_BASE_URL=f"http://{host}:{port}",
-                       ANTHROPIC_API_KEY="metdsl-tool-measurement",
+                       ANTHROPIC_API_KEY="metforge-tool-measurement",
                        CLAUDE_CONFIG_DIR=str(home))
             try:
                 subprocess.run(

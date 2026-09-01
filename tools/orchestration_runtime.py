@@ -16686,9 +16686,9 @@ def _resecure_workflow_home_on_reuse(repo_root: Path, orchestration_id: str,
     `prune --all --allow-unverifiable --delete` removed the home of an orchestration whose
     recorded status was `running`.
 
-    SCOPED TO OUR OWN LAYOUT. A home recorded before issue #64 lives wherever it lived —
-    `/tmp/metdsl-claude-XXXX` — and its parent is `/tmp`, which is nobody's orchestration
-    directory. Writing a marker there would litter a shared tmpfs with a file claiming an
+    SCOPED TO OUR OWN LAYOUT. A home recorded before issue #64 lives wherever it lived — a
+    `mkdtemp` directory directly under `/tmp` — and its parent is `/tmp`, which is nobody's
+    orchestration directory. What is compared is that PARENT, not the directory's name. Writing a marker there would litter a shared tmpfs with a file claiming an
     orchestration id. So the refresh runs only when the home sits exactly where this code
     puts one.
     """
@@ -17222,7 +17222,7 @@ def _claude_roster_capture_server() -> Iterator[tuple[str, list[list[str]]]]:
                     "message": "met-forge preflight roster capture: no model turn is made"}})
                 return
             self._reply(200, {
-                "id": "msg_metdsl_roster_probe", "type": "message", "role": "assistant",
+                "id": "msg_metforge_roster_probe", "type": "message", "role": "assistant",
                 "model": str(document.get("model") or "unknown") if isinstance(document, dict)
                 else "unknown",
                 "content": [{"type": "text", "text": "."}],
@@ -17486,7 +17486,7 @@ def _probe_claude_leaf_tool_roster(
         with stack:
             base_url, captured = stack.enter_context(_claude_roster_capture_server())
             scratch_home = stack.enter_context(
-                tempfile.TemporaryDirectory(prefix="metdsl-roster-home-"))
+                tempfile.TemporaryDirectory(prefix="metforge-roster-home-"))
             env = leaf_env_from(os.environ)
             # THE PROBE IS NOT A LEAF OF THIS ORCHESTRATION, and since the scratch home is
             # seeded with the leaf configuration its hooks RUN. `leaf_env_from` forwards
@@ -17501,7 +17501,7 @@ def _probe_claude_leaf_tool_roster(
                                       "METFORGE_CHILD_AGENT_RUN_ID"):
                 env.pop(workflow_identity, None)
             env["ANTHROPIC_BASE_URL"] = base_url
-            env["ANTHROPIC_API_KEY"] = "metdsl-preflight-roster-probe"
+            env["ANTHROPIC_API_KEY"] = "metforge-preflight-roster-probe"
             env["CLAUDE_CONFIG_DIR"] = scratch_home
             # SEEDED WITH THE LAYER A LEAF ACTUALLY LOADS, not left empty. The `user` tier
             # of a leaf's private home is a copy of this same committed file, and it

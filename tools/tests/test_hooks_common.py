@@ -4066,8 +4066,8 @@ class ForbidBackendCredentialReadTests(unittest.TestCase):
         """
         with tempfile.TemporaryDirectory() as repo_td, tempfile.TemporaryDirectory() as homes:
             repo = Path(repo_td)
-            claude_home = Path(homes) / "metdsl-claude-t"
-            codex_home = Path(homes) / "metdsl-codex-t"
+            claude_home = Path(homes) / "metforge-claude-t"
+            codex_home = Path(homes) / "metforge-codex-t"
             claude_home.mkdir()
             codex_home.mkdir()
             meta = repo / "workspace" / "orchestrations" / "o"
@@ -4103,7 +4103,7 @@ class ForbidBackendCredentialReadTests(unittest.TestCase):
             self.assertEqual(policy("cat README.md"), "")
             self.assertNotEqual(policy(f"cat {Path(homes)}/unrelated/file.txt"),
                                 "forbid_backend_credential_direct_read")
-            sibling = Path(homes) / "metdsl-claude-t-notmine"
+            sibling = Path(homes) / "metforge-claude-t-notmine"
             sibling.mkdir()
             self.assertNotEqual(policy(f"cat {sibling}/.credentials.json"),
                                 "forbid_backend_credential_direct_read",
@@ -4127,7 +4127,7 @@ class ForbidBackendCredentialReadTests(unittest.TestCase):
         """
         with tempfile.TemporaryDirectory() as repo_td, tempfile.TemporaryDirectory() as homes:
             repo = Path(repo_td)
-            home = Path(homes) / "metdsl-claude-t"
+            home = Path(homes) / "metforge-claude-t"
             home.mkdir()
             meta = repo / "workspace" / "orchestrations" / "o"
             meta.mkdir(parents=True)
@@ -4172,7 +4172,7 @@ class ForbidBackendCredentialReadTests(unittest.TestCase):
         """
         with tempfile.TemporaryDirectory() as repo_td, tempfile.TemporaryDirectory() as homes:
             repo = Path(repo_td)
-            real_home = Path(homes) / "metdsl-claude-real"
+            real_home = Path(homes) / "metforge-claude-real"
             real_home.mkdir()
             for oid, home in (("o", real_home),):
                 meta = repo / "workspace" / "orchestrations" / oid

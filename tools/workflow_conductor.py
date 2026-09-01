@@ -9262,7 +9262,7 @@ clean:
                     canary_dir = (self.repo_root / "workspace" / "tmp" / child_arid
                                   / "syntax" / f"{compiler}_canary")
                     canary_dir.mkdir(parents=True, exist_ok=True)
-                    (canary_dir / "metdsl_syntax_canary.f90").write_text(
+                    (canary_dir / "metforge_syntax_canary.f90").write_text(
                         SYNTAX_CANARY_SOURCE, encoding="utf-8")
                     canary = _sub_check(canary_dir)
                     if not canary.get("skipped") and not canary.get("ok"):

@@ -145,7 +145,7 @@ def pytest_configure(config) -> None:
         return
     stripped = suite_env_guard.strip_operator_env(os.environ)
     if stripped:
-        config._metdsl_stripped_operator_env = stripped
+        config._metforge_stripped_operator_env = stripped
 
 
 def _operator_env_disclosure(config) -> str | None:
@@ -153,7 +153,7 @@ def _operator_env_disclosure(config) -> str | None:
     if suite_env_guard.DECLINED:
         return ("met-forge: --keep-operator-env -- the operator's environment was NOT "
                 "stripped for this run (issue #84); failures may belong to a knob you set")
-    stripped = getattr(config, "_metdsl_stripped_operator_env", None)
+    stripped = getattr(config, "_metforge_stripped_operator_env", None)
     if not stripped:
         return None
     return ("met-forge: stripped the operator's environment for this run (issue #84): "
@@ -192,7 +192,7 @@ def _redirect_workflow_homes_root(tmp_path, monkeypatch):
     """Point every isolated backend home this test creates into `tmp_path`."""
     from tools.orchestration_runtime import WORKFLOW_HOMES_ROOT_ENV
 
-    root = tmp_path / "metdsl-homes"
+    root = tmp_path / "metforge-homes"
     root.mkdir(mode=0o700, exist_ok=True)
     monkeypatch.setenv(WORKFLOW_HOMES_ROOT_ENV, str(root))
     yield root
@@ -227,7 +227,7 @@ def _forbid_isolated_homes_in_operator_secret_root():
     # Marked so a test can ask whether the guard is installed rather than inferring it
     # from a function name. The witness for this guard must SKIP when run outside pytest,
     # where conftest is not loaded and the thing it tests does not exist.
-    _guarded._metdsl_homes_guard_installed = True
+    _guarded._metforge_homes_guard_installed = True
     runtime._workflow_homes_root = _guarded
     try:
         yield

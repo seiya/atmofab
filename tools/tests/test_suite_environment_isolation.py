@@ -615,8 +615,8 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
                 # exactly what the walk was added to stop printing.
                 self.assertTrue(
                     self._last_import_reads[expected].endswith(
-                        "metdsl_probe_module.py:" + str(body.count("\n") + 2))
-                    or "metdsl_probe_module.py:" in self._last_import_reads[expected],
+                        "metforge_probe_module.py:" + str(body.count("\n") + 2))
+                    or "metforge_probe_module.py:" in self._last_import_reads[expected],
                     f"the spy did not attribute the read to the probe file: "
                     f"{self._last_import_reads[expected]}")
 
@@ -639,10 +639,10 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
     def _names_read_during_import_of_source(self, body: str) -> set[str]:
         """Run the spy over a synthetic module built from `body`."""
         with tempfile.TemporaryDirectory() as td:
-            module = Path(td) / "metdsl_probe_module.py"
+            module = Path(td) / "metforge_probe_module.py"
             module.write_text("import os\n" + body + "\n", encoding="utf-8")
             return self._names_read_during_import(
-                "metdsl_probe_module", extra_path=td)
+                "metforge_probe_module", extra_path=td)
 
     def _names_read_during_import(self, module: str,
                                   extra_path: str | None = None) -> set[str]:
@@ -653,7 +653,7 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
         that does not happen reads nothing.
         """
         with tempfile.TemporaryDirectory() as td:
-            spy = Path(td) / "metdsl_import_spy.py"
+            spy = Path(td) / "metforge_import_spy.py"
             spy.write_text(_IMPORT_SPY_SOURCE, encoding="utf-8")
             argv = [sys.executable, str(spy), module]
             if extra_path:
@@ -811,7 +811,7 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
         """
         accepted = _run(
             [sys.executable, "-m", "pytest", "--keep-operator-env", "--co", "-q",
-             "-k", "metdsl_no_such_test_name"], {})
+             "-k", "metforge_no_such_test_name"], {})
         self.assertEqual(
             accepted.returncode, 5,          # 5 = collected, nothing selected
             "a bare `pytest` did not accept --keep-operator-env, so tools/tests/"
@@ -826,7 +826,7 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
         # a test does not make this fail.
         explicit = _run(
             [sys.executable, "-m", "pytest", "tools/tests/", "--co", "-q",
-             "-k", "metdsl_no_such_test_name"], {})
+             "-k", "metforge_no_such_test_name"], {})
         deselected = re.search(r"(\d+) deselected", accepted.stdout)
         expected = re.search(r"(\d+) deselected", explicit.stdout)
         self.assertTrue(deselected and expected, accepted.stdout + explicit.stdout)

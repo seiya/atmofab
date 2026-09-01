@@ -313,7 +313,7 @@ class RunSyntaxCheckGfortranSmokeTests(_StandaloneServerEnvMixin, unittest.TestC
         # knows, which is the signal the attribution keys on.
         d = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, d, ignore_errors=True)
-        (d / "metdsl_syntax_canary.f90").write_text(
+        (d / "metforge_syntax_canary.f90").write_text(
             self.mod.SYNTAX_CANARY_SOURCE, encoding="utf-8")
         # every standard a node may declare — a canary that failed any one of these would
         # fail_closed every ordinary syntax finding on a node targeting it

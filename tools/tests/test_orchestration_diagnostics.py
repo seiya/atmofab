@@ -450,7 +450,7 @@ class LeafTranscriptRootTests(unittest.TestCase):
     def _repo_with_private_home(self, td: str) -> tuple[Path, Path, str]:
         repo = Path(td) / "repo"
         repo.mkdir()
-        home = Path(td) / "metdsl-claude-diag"
+        home = Path(td) / "metforge-claude-diag"
         home.mkdir()
         meta = repo / "workspace" / "orchestrations" / "o"
         meta.mkdir(parents=True)
