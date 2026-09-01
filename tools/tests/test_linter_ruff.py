@@ -371,10 +371,18 @@ class ResolutionAgainstTheInstalledBuildTests(unittest.TestCase):
         """The sixth channel, recorded because no flag closes it — asserted as MEASURED behaviour.
 
         A `--exclude=` bullet added a round earlier claimed emptying the built-in list "makes the
-        file set a function of the walk root alone". It does not: a symlink whose target leaves
-        the root is not entered. This row pins BOTH halves, because the distinction is what the
-        documents state — a target inside the root IS followed, so a future build that starts
-        following outward links, or stops following inward ones, is noticed either way.
+        file set a function of the walk root alone". It does not: a DIRECTORY SYMLINK IS NEVER
+        ENTERED, so a target outside the root is invisible.
+
+        WHAT THIS ROW PINS, and what it does not. It pins the outward case — the one that changes
+        a verdict — and, as its second half, that the fixture's findings are still reported when a
+        real directory holds them, so a build that stopped walking subdirectories entirely would
+        not read as a pass here. An earlier version of this docstring claimed it also pinned "a
+        target inside the root IS followed"; that is not a behaviour the tool has (the inward
+        file is found through its REAL path, never through the link), and the second half creates
+        a real directory rather than a symlink, so nothing here would notice a change to inward
+        link handling. Said rather than implied, because a witness that overstates its reach is
+        the defect this branch has now corrected four times.
         """
         tree = _Tree(self)
         outside = tree.root / "outside"

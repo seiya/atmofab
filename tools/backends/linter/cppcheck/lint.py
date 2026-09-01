@@ -55,8 +55,12 @@ WHAT IS CLOSED, each measured on 2.7 / 2.16.0 / 2.17.1 with the flag present and
 * A PASS OVER SOURCE THE TOOL NEVER ANALYSED. This is the one channel on this backend that is a
   reachable `leaf shortcut` rather than a record, and `--force` closes it. Without the flag
   cppcheck analyses at most 12 preprocessor configurations and then STOPS, reporting exit 0.
-  Measured on 2.7 / 2.16.0 / 2.17.1: a file whose unused-variable defect follows twenty `#ifdef`
-  blocks exits 0, while the same three lines alone exit 2. The only trace is
+  Measured on 2.7 / 2.16.0 / 2.17.1 over `_TRUNCATION_SOURCE` in
+  `tools/tests/test_linter_cppcheck.py`: a file whose unused-variable defect sits INSIDE the
+  twentieth `#ifdef` block, preceded by nineteen padding blocks, exits 0, while that block alone
+  exits 2. THE POSITION IS THE MEASUREMENT — an earlier version of this sentence said only
+  "follows twenty `#ifdef` blocks", and a source built from that reading exits 2 both ways, which
+  reads as a licence to drop the flag. The only trace is
   `Too many #ifdef configurations - cppcheck only checks 12 configurations. [toomanyconfigs]`,
   whose severity is `information` — which `ENABLED_SEVERITIES` does not enable — so the
   truncation is SILENT at the exit status the conductor reads.

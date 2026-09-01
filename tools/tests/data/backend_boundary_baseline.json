@@ -38,6 +38,12 @@
       "fortran-kind": 3,
       "fortran-subroutine": 2
     },
+    "docs/DEVELOPMENT.md": {
+      "fortran": 1,
+      "linter-cppcheck": 1,
+      "linter-fortitude": 2,
+      "linter-ruff": 1
+    },
     "docs/GLOSSARY.md": {
       "fortran": 4,
       "make-control-file": 2

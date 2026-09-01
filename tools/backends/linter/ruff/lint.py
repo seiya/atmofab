@@ -126,10 +126,12 @@ decides the verdict, and because this enumeration has already been wrong once:
 * A SYMLINKED DIRECTORY whose target lies OUTSIDE the walk root is not entered. Measured on all
   four builds: with `walk/pkg -> ../real` and the five-finding fixture in `real/`, the declared
   invocation over `walk/` reports `warning: No Python files found under the given path(s)`,
-  `All checks passed!`, exit 0, while the same directory checked directly reports its five. A
-  target INSIDE the walk root is followed and its findings appear, and a symlinked FILE is
-  followed either way — so what is skipped is precisely the case where following the link would
-  leave the root. `fortitude` behaves the same and more quietly (`0 files scanned`, no warning);
+  `All checks passed!`, exit 0, while the same directory checked directly reports its five. A DIRECTORY SYMLINK IS NEVER ENTERED, which is the accurate statement: with
+  `src/link -> src/real`, the run reports the fixture's five findings and names them under
+  `real/probe.py`, never `link/`. So an INWARD target is still found — through its real path — and
+  only an OUTWARD one becomes invisible. An earlier version of this bullet said "a target inside
+  the walk root is followed", which describes a mechanism the tool does not have. A symlinked FILE
+  is followed either way. `fortitude` behaves the same and more quietly (`0 files scanned`, no warning);
   `cppcheck` fails closed (exit 1, classified a refusal).
 
   THIS ONE DOES NOT SHARE THE READ-ERROR ENTRY'S GROUND, which is why it is listed separately: a
@@ -168,7 +170,7 @@ EXECUTABLE = "ruff"
 #: exactly these 59 codes on 0.14.0, 0.15.20, 0.16.0 and 0.16.5.
 #:
 #: Changing this set changes what a certification means. A new vendor default does NOT enter it
-#: by being released — 0.16.0 added 354 and none of them are here; someone adds the code here,
+#: by being released — 0.16.0 added 372 and none of them are here; someone adds the code here,
 #: and the document that states the set to a reader is checked against this tuple
 #: (`tools/tests/test_linter_ruff.py`).
 RULE_CODES: tuple[str, ...] = (
@@ -193,7 +195,7 @@ EXCLUDED_RULE_CODES: dict[str, str] = {
     "SIM117": (
         "the rule that made this drift visible (issue #120). Absent from the default set on "
         "0.14.0 and 0.15.20, present from 0.16.0. It is a style preference about nested `with` "
-        "statements, not a defect class, and admitting it would mean admitting the other 353 "
+        "statements, not a defect class, and admitting it would mean admitting the other 371 "
         "rules 0.16.0 turned on with it — none of which anyone has reviewed for a generated "
         "source. Enabling any of them is a separate, reviewable edit to `RULE_CODES`."
     ),
@@ -225,7 +227,8 @@ CHECK_FLAGS: tuple[str, ...] = (
 #: Both ends state what was MEASURED, not what was found to break, and the difference from
 #: `fortitude`'s floor is worth stating: there the floor was forced (0.7.5 has no `--isolated` at
 #: all), here it is not. Spot-checked outside the range, 0.9.0 / 0.12.0 / 0.13.3 all accept the
-#: declared invocation and resolve it to the same 59 codes — but the five channels were not
+#: declared invocation and resolve it to the same 59 codes — but neither the five closed channels
+#: nor the two recorded non-closures were
 #: re-measured on them, so they are below the floor. An unmeasured build is refused at launch
 #: rather than allowed to decide a certification.
 MIN_VERSION: tuple[int, int, int] = (0, 14, 0)

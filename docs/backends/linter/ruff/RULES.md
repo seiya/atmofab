@@ -25,7 +25,7 @@ the canonical statement of that set for a reader; the machine-readable definitio
   host's build.
 - A rule the vendor enables by default in a future release does not enter a certification gate by
   being released. It enters by being added to `RULE_CODES`, which is a reviewable change. This is
-  not hypothetical for this tool: 0.16.0 added **354** rules to its own default set.
+  not hypothetical for this tool: 0.16.0 added **372** rules to its own default set and removed 18, a net 354.
 - A host whose linter is outside the supported range is refused at launch, before the first leaf
   (`tools/host_prerequisites.py`, reason `unsupported_required_host_tool_versions`;
   `docs/RUNBOOK.md` §0-1).
@@ -103,8 +103,11 @@ the canonical statement of that set for a reader; the machine-readable definitio
   - **A symlinked directory whose target lies OUTSIDE the walk root is not entered.** Measured on
     all four builds: `walk/pkg -> ../real` with the fixture in `real/` gives
     `warning: No Python files found under the given path(s)`, `All checks passed!`, exit 0, while
-    the same directory checked directly gives its five findings. A target INSIDE the root is
-    followed, and a symlinked FILE is followed either way. `fortitude` behaves the same and more
+    the same directory checked directly gives its five findings. **A directory symlink is never entered**: with
+    `src/link -> src/real` the five findings are reported under `real/probe.py`, never `link/`, so
+    an inward target is still found through its REAL path and only an outward one becomes
+    invisible. An earlier version of this bullet said "a target inside the root is followed",
+    which describes a mechanism the tool does not have. A symlinked FILE is followed either way. `fortitude` behaves the same and more
     quietly; `cppcheck` fails closed. **It does not share the read-error entry's ground** — a
     `chmod 000` directory is hidden from the compiler too, a symlinked one compiles — so what
     bounds it is write authority rather than the linter, and closing it needs the same
@@ -188,7 +191,7 @@ Codes deliberately excluded, with the ground:
 | code | ground |
 | --- | --- |
 | `E999` | Impossible to select — the tool answers `Rule 'E999' was removed and cannot be selected.` and exits 2 with nothing checked. A syntax error is reported anyway without being selected, and `E902` (io-error) covers the file-level half. |
-| `SIM117` | The rule that made this drift visible (issue #120). Absent from the default set on 0.14.0 and 0.15.20, present from 0.16.0. It is a style preference about nested `with` statements, not a defect class, and admitting it would mean admitting the other 353 rules 0.16.0 turned on with it — none of which anyone has reviewed for a generated source. |
+| `SIM117` | The rule that made this drift visible (issue #120). Absent from the default set on 0.14.0 and 0.15.20, present from 0.16.0. It is a style preference about nested `with` statements, not a defect class, and admitting it would mean admitting the other 371 rules 0.16.0 turned on with it — none of which anyone has reviewed for a generated source. |
 | `I001` | Import sorting. Never in the set this repository declares, and the single largest contributor when this repository's own tree is checked under 0.16.x's default set. No count is written here: such a count is right only at the revision it was taken at, and `TODO.md` carries that rule together with the command to re-take it. A gate that fails a generated source on import ORDER burns a regenerate cycle on a property no certification depends on. |
 
 ## Supported versions
@@ -198,7 +201,8 @@ Codes deliberately excluded, with the ground:
 Both ends state what was MEASURED, not what was found to break, and the difference from the
 `fortitude` floor is worth stating: there the floor is forced (0.7.5 has no `--isolated` at all),
 here it is not. Spot-checked below the floor, 0.9.0 / 0.12.0 / 0.13.3 all accept the declared
-invocation and resolve it to the same 59 codes — but the five channels were not re-measured on
+invocation and resolve it to the same 59 codes — but neither the five closed channels nor the
+two recorded non-closures (§Design Policy, "What no flag closes") were re-measured on
 them, so they are outside the range. An unmeasured build is refused at launch rather than allowed
 to decide a certification.
 
@@ -207,7 +211,13 @@ to decide a certification.
 Reproduce with `python3 -m pip install --target <dir> ruff==<version>`; the executable is
 `<dir>/bin/ruff` and the host's own install is not modified.
 
-Resolved rule sets, read from `ruff check --isolated --show-settings` (`linter.rules.enabled`):
+Resolved rule sets, read from `ruff check --isolated --show-settings .` (`linter.rules.enabled`).
+**Two things about that command, both measured, because re-taking this row is what §Operations
+Rules asks for**: `--show-settings` is REFUSED alongside `--ignore-noqa`
+(`error: the argument '--ignore-noqa' cannot be used with '--show-settings'`, exit 2, all four
+builds), so it is run with the declared `--select` and `--isolated` and without the suppression
+flags; and it needs a directory holding at least one `.py`, since over an empty one it exits 2
+with `No files found under the given path`.
 
 | version | default set | declared set resolves to |
 | --- | --- | --- |

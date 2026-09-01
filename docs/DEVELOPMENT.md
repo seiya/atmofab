@@ -26,6 +26,18 @@ A fresh clone needs the host tools and the operator's own CLI state. Every file 
 | 3 | Codex backend: the CLI feature flag, the credential, the writable state home | `docs/RUNBOOK.md` §0-3 |
 | 4 | The leaf-`LLM` configuration file, created by copying a sample | `docs/RUNBOOK.md` §1-3, `README.md` §"Running a workflow" |
 | 5 | The sandbox runtime | `docs/BWRAP_ENABLEMENT.md` |
+| 6 | **To run the TEST SUITE** — every `static lint` tool, not only the one this tree's nodes select | this section, below |
+
+**Step 6 is a DEVELOPER requirement and it disagrees with step 1 on purpose.** `docs/RUNBOOK.md` §0-1 is written for someone running a workflow, and it says in as many words that an operator installs `fortitude` and neither of the other two — correct, because the linter a run selects follows from its `toolchain.language` and every node in this tree is `fortran`. The SUITE is a different question: each linter backend's tests drive the real tool and deliberately FAIL rather than skip when it is absent, because a machine without the tool cannot certify anything and a green suite there would report that a gate is fine when nothing ran it (`.claude/skills/metdsl-enforcement-change` judgment rule 2). So a fresh clone that installs only what §0-1 lists gets a red suite whose message points back at §0-1. Install all three:
+
+```
+pipx install 'fortitude-lint>=0.8,<0.10'   # the one a run selects; see docs/RUNBOOK.md §0-1
+pipx install 'ruff>=0.14,<0.17'            # tools/tests/test_linter_ruff.py
+sudo apt-get install cppcheck              # tools/tests/test_linter_cppcheck.py (>=2.7,<2.18)
+```
+
+The ranges are the backends' own `SUPPORTED_VERSION_SPEC`; `docs/RUNBOOK.md` §0-1 carries the
+table and is checked against the declarations by `tools/tests/test_host_prerequisites.py`.
 
 Steps 1, 2, 3 and 5 all read machine-local state, and each is checked before the first billed leaf — though not all by the same mechanism. Step 1 fail-fasts when `tools/run_workflow.py` starts, before an orchestration exists — with one reason code per family (`missing_required_cli_tools` / `missing_required_python_modules` / `missing_required_host_tools`); steps 2, 3 and 5 are `preflight.json` checks. One requirement is outside both and is called out where it lives: the Codex credential is checked when the first leaf is prepared, not at any gate (`docs/RUNBOOK.md` §0-3).
 

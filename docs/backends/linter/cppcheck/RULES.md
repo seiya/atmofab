@@ -84,8 +84,12 @@ Element by element, each checked against `CHECK_FLAGS` by test:
     which is the point: the constant now says what the gate applies.
 - `--force` — closes the one reachable `leaf shortcut` on this backend. Without it cppcheck
   analyses at most 12 preprocessor configurations and STOPS, reporting exit 0. Measured on
-  2.7 / 2.16.0 / 2.17.1: a file whose unused-variable defect follows twenty `#ifdef` blocks exits
-  0, while the same three lines alone exit 2. The only trace is `[toomanyconfigs]`, whose severity
+  2.7 / 2.16.0 / 2.17.1 over `_TRUNCATION_SOURCE` in `tools/tests/test_linter_cppcheck.py`:
+  a file whose unused-variable defect sits INSIDE the twentieth `#ifdef` block, preceded by
+  nineteen padding blocks, exits 0, while the same block alone exits 2. **The position matters and
+  an earlier version of this sentence said only "follows twenty `#ifdef` blocks"** — a source built
+  from that reading exits 2 both ways, so a maintainer re-taking the row would conclude the flag is
+  unnecessary and drop the one closure on this backend that a leaf can reach. The only trace is `[toomanyconfigs]`, whose severity
   is `information` — which the declared severities do not enable — so the truncation is silent at
   the exit status the conductor reads. A leaf that cannot satisfy a finding could wrap the file in
   conditionals instead of fixing it. `--max-configs=N` would only move the cap to `N+1`, so the
