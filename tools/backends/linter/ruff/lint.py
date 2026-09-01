@@ -60,7 +60,8 @@ of them all.
   directories above them. `--isolated` closes it. Two keys are NOT part of this channel and
   saying so is part of the enumeration: a CLI `--select` overrides a discovered `select` and a
   discovered `ignore`, so neither changes a verdict; what does are `exclude` (silent, exit 0) and
-  `per-file-ignores` (five findings to one). The upward walk is why this matters here — the gate's
+  `per-file-ignores` (all five findings to NONE, measured on all four builds). The upward walk is
+  why this matters here — the gate's
   `project_dir` is `source/<source_id>/src/` inside the checkout, so a file at the repository root
   would reach it with nothing written near the sources at all.
 * An in-source `# noqa` comment suppresses whatever it names. The leaf authors the source — but
@@ -207,7 +208,7 @@ CHECK_FLAGS: tuple[str, ...] = (
 #: Both ends state what was MEASURED, not what was found to break, and the difference from
 #: `fortitude`'s floor is worth stating: there the floor was forced (0.7.5 has no `--isolated` at
 #: all), here it is not. Spot-checked outside the range, 0.9.0 / 0.12.0 / 0.13.3 all accept the
-#: declared invocation and resolve it to the same 59 codes — but the four channels were not
+#: declared invocation and resolve it to the same 59 codes — but the five channels were not
 #: re-measured on them, so they are below the floor. An unmeasured build is refused at launch
 #: rather than allowed to decide a certification.
 MIN_VERSION: tuple[int, int, int] = (0, 14, 0)

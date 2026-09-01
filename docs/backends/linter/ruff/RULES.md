@@ -46,7 +46,8 @@ the canonical statement of that set for a reader; the machine-readable definitio
     sources and from the repository root two directories above them. Two config keys are NOT part
     of this channel and saying so is part of the enumeration: a CLI `--select` overrides a
     discovered `select` and a discovered `ignore`, so neither changes a verdict. What does are
-    `exclude` (silent, exit 0) and `per-file-ignores` (five findings to one). **Since `--exclude=`
+    `exclude` (silent, exit 0) and `per-file-ignores` (all five findings to NONE, on all four
+    builds — the key the witness uses names every code the fixture produces). **Since `--exclude=`
     joined the argv, a CLI `--exclude` also overrides a discovered `exclude`** — so `exclude` is
     no longer the key that isolates this flag, and the witness for it uses `per-file-ignores`
     instead. A control written with `exclude` would show the channel closed with `--isolated`
@@ -188,7 +189,7 @@ Codes deliberately excluded, with the ground:
 Both ends state what was MEASURED, not what was found to break, and the difference from the
 `fortitude` floor is worth stating: there the floor is forced (0.7.5 has no `--isolated` at all),
 here it is not. Spot-checked below the floor, 0.9.0 / 0.12.0 / 0.13.3 all accept the declared
-invocation and resolve it to the same 59 codes — but the four channels were not re-measured on
+invocation and resolve it to the same 59 codes — but the five channels were not re-measured on
 them, so they are outside the range. An unmeasured build is refused at launch rather than allowed
 to decide a certification.
 

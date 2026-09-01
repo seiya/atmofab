@@ -288,7 +288,10 @@ class ResolutionAgainstTheInstalledBuildTests(unittest.TestCase):
     #: `--exclude` overrides a discovered `exclude` as well — so a control written with that key
     #: would show the channel closed with `--isolated` REMOVED, and witness nothing about
     #: `--isolated`. `per-file-ignores` is not overridden by anything on the argv, so it is what
-    #: isolates the flag under test. Measured: it takes the five findings to one.
+    #: isolates the flag under test. Measured on all four builds: it takes all five findings to
+    #: NONE, because the key names every code the fixture produces — which is what the assertions
+    #: below compare against, and what an earlier version of this comment got wrong by writing
+    #: "to one" while the assertion beside it read `== []`.
     _DISCOVERED_KEY = 'per-file-ignores = {"*.py" = ["F401", "F821", "F841", "E741"]}\n'
 
     def test_a_configuration_file_beside_the_sources_changes_no_verdict(self) -> None:
