@@ -94,9 +94,12 @@ LAUNCH_INSTANT_PROBE_BASENAME = "launch_instant.probe.json"
 # and 8.0 ms was observed — so read the cost as "a tick, occasionally two", not as a ceiling.
 # `SUBSTEPS` totals 11 per node (compile 3 / generate 3 / build 1 / validate 4) and only a
 # substep launch reaches this, so a node pass pays ~44 ms, against leaves that run for minutes.
-# The bound is here only so a filesystem whose stamps advance more slowly degrades LOUDLY
-# (`launch_instant_tick_wait_timeout`) instead of blocking a run — at the cost, said out loud,
-# of spinning without sleeping for up to the bound when it does.
+# The bound is here only so a filesystem whose stamps advance MORE SLOWLY THAN IT degrades
+# LOUDLY (`launch_instant_tick_wait_timeout`) instead of blocking a run. Between one tick and
+# the bound there is no loudness to have: the wait simply succeeds, having spun without sleeping
+# for up to that long per launch (a 1-second-granularity mount would spend ~11 CPU-seconds per
+# node pass and emit nothing). No such mount exists in any recorded run — every one is the 4 ms
+# xfs above — which is why this is stated rather than handled.
 LAUNCH_INSTANT_TICK_WAIT_SECONDS = 2.0
 
 
@@ -7855,9 +7858,10 @@ clean:
         inode from a coarse clock that only advances on a timer tick, so a file written
         immediately after a `time.time()` read records an mtime BELOW it. The PROPERTY, which is
         what holds: that shortfall is bounded by one tick plus however long the write itself
-        takes, and on this host (xfs, 2026-09-01) the tick is 3.99998 ms on both
-        `workspace/orchestrations/` and `workspace/pipelines/` (one mount, `df -T`), reproduced
-        independently at 3.999948 ms. HOW OFTEN and BY HOW MUCH is not a stable number and is
+        takes, and on this host the tick is ~4 ms — 3.99998 ms measured 2026-09-01 on both
+        `workspace/orchestrations/` and `workspace/pipelines/`, which `df -T` reports as one
+        mount (`/dev/sda1`, xfs, `/home`), and reproduced independently at 3.999948 ms and
+        3.999981 ms. It is the kernel's timer tick (CONFIG_HZ_250), not a filesystem property. HOW OFTEN and BY HOW MUCH is not a stable number and is
         deliberately not quoted: `t = time.time(); f.write_text(...); os.stat(f).st_mtime` over
         2000 iterations came back 1999/2000 below at a median of 4.7 ms on one run and
         1877/2000 at 1.7 ms on another, on the same host and tree, because the answer depends on
@@ -12560,6 +12564,16 @@ class SubstepOutcome:
     # earlier substep, not to the one that just failed. Read from the FILESYSTEM's clock
     # (`Conductor._launch_instant`), not from `time.time()`, so the comparison is between two
     # stamps of one clock — issue #113.
+    #
+    # TWO construction sites pass a plain `time.time()` instead, and deliberately: the
+    # `pure_context_assembly_failed` and `pure_only_provider_on_agentic_path` early returns,
+    # which fail BEFORE any launch, so there is no launch instant to read and no artifact for
+    # it to judge. Both are unreachable by the only consumer today
+    # (`_maybe_warm_resume_verify_meta` returns first on their `leaf_returncode=1`, which
+    # `test_transport_failed_verify_is_not_repaired` pins). `0.0` would be the wrong filler if
+    # that ever changed — every mtime is at or above it, so the attribution check would answer
+    # YES to everything; a wall clock errs toward answering NO, which is the safe direction for
+    # a substep that launched nothing.
     launched_at: float = 0.0
     # How many times run_substep launched this substep, counting the surviving/last attempt
     # (1 = no retry). >1 means a transient LLM-infrastructure failure was retried in place; the

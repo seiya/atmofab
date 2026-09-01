@@ -6138,14 +6138,16 @@ class LeafTransientRetryTest(unittest.TestCase):
 
         As a DETECTOR of a deleted tick wait, though, this assertion is a coin flip — the two
         launches straddle a tick boundary often enough that reviewers measured it passing 4 of 10
-        and 2 of 10 runs against that mutant. Do not read it as a witness for the wait. The one
-        that kills that mutant every time is
-        `test_a_deterministic_body_that_writes_inside_one_tick_still_passes` (200 iterations).
+        and 2 of 10 runs against that mutant. Do not read it as a witness for the wait. The ONE
+        test that kills that mutant every time is
+        `test_a_deterministic_body_that_writes_inside_one_tick_still_passes`, measured 15/15.
         `test_retried_judge_cannot_certify_the_dead_attempts_semantic_review` fails on the
-        artifact rather than on a number, which is stronger in kind, but it exists in TWO classes
-        here and only `LeafTransientRetryTest`'s copy was measured at 10/10 —
-        `TransientRetryWallClockBudgetTest`'s came back 8/10, so citing the name bare would
-        overstate it. What THIS test owns is the per-attempt claim below.
+        artifact rather than on a number, which is stronger in kind, but it is not a reliable
+        detector either: measured 27/30 in `LeafTransientRetryTest` and 9/10 in
+        `TransientRetryWallClockBudgetTest`, which is one rate, not two. (An earlier version of
+        this paragraph read those two samples as a DIFFERENCE and promoted the first copy to
+        "every time" — the same overstatement it was written to remove, one round later.) What
+        THIS test owns is the per-attempt claim below.
         """
         seen: list[float] = []
 
