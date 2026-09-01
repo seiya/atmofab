@@ -21,7 +21,8 @@ from __future__ import annotations
 import contextlib
 
 # The backend configuration homes, which carry no `ATMOFAB_` prefix. `CODEX_HOME` cost 10
-# failures when exported (measured on `165c26f` over `test_orchestration_runtime.py`);
+# failures when exported (measured on `165c26f` over `test_orchestration_runtime.py`,
+# spelling the names `METDSL_*` there — see the note at the bottom of this module);
 # `CLAUDE_CONFIG_DIR` is its twin and cost 0 in the same measurement, included by symmetry
 # so that a future test reading it cannot inherit the operator's.
 BACKEND_CONFIG_HOME_ENV = ("CODEX_HOME", "CLAUDE_CONFIG_DIR")

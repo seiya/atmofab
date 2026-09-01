@@ -333,7 +333,9 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
     def test_the_backend_configuration_homes_are_covered_too(self) -> None:
         """`CODEX_HOME` carries no `ATMOFAB_` prefix and cost 10 failures when exported.
 
-        Measured on `165c26f` over `tools/tests/test_orchestration_runtime.py` alone.
+        Measured on `165c26f` over `tools/tests/test_orchestration_runtime.py` alone,
+        spelling the names `METDSL_*` there: that commit predates the rename and the
+        current spelling matches nothing (`docs/GLOSSARY.md` §13).
         `CLAUDE_CONFIG_DIR` is its twin; it cost 0 in the same measurement and is covered
         by symmetry, so that a future test reading it cannot inherit the operator's.
         """
@@ -734,7 +736,8 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
         """Silence here is a check recorded as run and not run — so both are witnessed.
 
         `ATMOFAB_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT=1` was 84 failures and 482s of real
-        probing on `165c26f`; with the strip it is 1242 passed in 49s and nothing probed.
+        probing on `165c26f` (spelled `METDSL_*` there — `docs/GLOSSARY.md` §13); with
+        the strip it is 1242 passed in 49s and nothing probed.
         An operator who set it deliberately has to be able to see that, and to say they
         meant it. Neither the header nor the flag had a witness; both mutants survived.
         """

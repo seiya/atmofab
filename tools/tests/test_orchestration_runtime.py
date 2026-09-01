@@ -30797,7 +30797,8 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # Bumped 28200->28500: the metric-only-kernel item now names a `function` and its result
         # variable, because the deterministic gate reads one — leaving the reviewer's checklist
         # saying "subroutine" would tell it to skip the procedures the gate just started covering,
-        # which is the same fail-open shape as the bump above. Measured 28270.
+        # which is the same fail-open shape as the bump above. Measured 28270; 28271 after the
+        # `met-dsl` -> `atmofab` rename, which added one byte to this file (issue #127).
         "skills/workflow-generate-verify/SKILL.md": 28500,
         # Bumped 10000->10400: documented the verdict.json#per_test entry schema
         # (field name `status`/`outcome` + the pass/fail/xfail/skipped enum, with `blocked`
