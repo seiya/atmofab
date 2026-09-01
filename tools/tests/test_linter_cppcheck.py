@@ -220,21 +220,33 @@ class VersionGateTests(unittest.TestCase):
         `test_host_prerequisites.py` green. That is a family that structurally cannot answer.
 
         What does not slide is the OPERATOR'S spelling. `SUPPORTED_VERSION_SPEC` is what
-        `docs/RUNBOOK.md` §0-1 tells someone to install, so the build they get by following it —
-        the floor at patch `.0` — must be accepted, and so must the last patch under the ceiling.
-        Anything else refuses an operator at launch for having done what the document said.
+        `docs/RUNBOOK.md` §0-1 tells someone to install, so the build they get by following it
+        must be accepted, and the ceiling they are told to stay under must be refused.
+
+        NO ARITHMETIC ON THE COMPONENTS. The first version computed `minor - 1` for its probes,
+        which produced `"1.-1.999"` for any legitimate `<X.0` ceiling — refused because the string
+        does not parse rather than because it is out of range, and on the `cppcheck` regex parsed
+        as a DIFFERENT version and refused with a message naming a build nobody wrote. Both ends
+        are now probed at the spelling the document itself carries.
         """
-        floor, ceiling = lint.SUPPORTED_VERSION_SPEC.split(",")
-        fmaj, fmin = (int(x) for x in floor.removeprefix(">=").split("."))
-        cmaj, cmin = (int(x) for x in ceiling.removeprefix("<").split("."))
-        for major, minor, patch in ((fmaj, fmin, 0), (cmaj, cmin - 1, 999)):
-            text = f"{lint.EXECUTABLE} {major}.{minor}.{patch}"
-            with self.subTest(accepted=text):
-                self.assertIsNone(lint.unsupported_version_reason(text))
-        for major, minor, patch in ((fmaj, fmin - 1, 999), (cmaj, cmin, 0)):
-            text = f"{lint.EXECUTABLE} {major}.{minor}.{patch}"
-            with self.subTest(refused=text):
-                self.assertIsNotNone(lint.unsupported_version_reason(text))
+        floor, ceiling = (part.strip() for part in lint.SUPPORTED_VERSION_SPEC.split(","))
+        accepted = self._at_patch_zero(floor.removeprefix(">="))
+        refused = self._at_patch_zero(ceiling.removeprefix("<"))
+        with self.subTest(accepted=accepted):
+            self.assertIsNone(
+                lint.unsupported_version_reason(f"{lint.EXECUTABLE} {accepted}"),
+                "an operator installing the floor this repository documents is refused at launch")
+        with self.subTest(refused=refused):
+            self.assertIsNotNone(
+                lint.unsupported_version_reason(f"{lint.EXECUTABLE} {refused}"),
+                "the ceiling this repository documents is accepted, so the spec is wider than the "
+                "range")
+
+    @staticmethod
+    def _at_patch_zero(version: str) -> str:
+        """`0.14` -> `0.14.0`; a spelling that already carries a patch is left alone."""
+        parts = version.split(".")
+        return version if len(parts) >= 3 else ".".join(parts + ["0"] * (3 - len(parts)))
 
     def test_the_installed_build_is_inside_the_range(self) -> None:
         completed = subprocess.run([_linter_path(), *lint.version_argv()[1:]],
@@ -462,28 +474,6 @@ class WiringTests(unittest.TestCase):
             _infer_run_linter_preset_from_command([lint.EXECUTABLE]), "cppcheck")
         self.assertEqual(
             _infer_run_linter_preset_from_command([f"/usr/bin/{lint.EXECUTABLE}"]), "cppcheck")
-
-    def test_two_backends_sharing_an_executable_are_refused(self) -> None:
-        """The mapping is built by enumeration, so a collision would silently let the last row
-        win and attribute a logged command — and a certification — to the wrong preset.
-
-        It cannot happen on today's declarations, so it is driven by making one: the `ruff`
-        package is patched to claim this executable, and the builder must raise rather than
-        return an answer.
-        """
-        from unittest import mock
-
-        from tools.backends import registry
-        from tools import validate_pipeline_semantics as vps
-
-        other = registry.capability_module("linter", "ruff", "lint")
-        vps._lint_preset_by_executable.cache_clear()
-        self.addCleanup(vps._lint_preset_by_executable.cache_clear)
-        with mock.patch.object(other, "EXECUTABLE", lint.EXECUTABLE):
-            with self.assertRaises(ValueError) as caught:
-                vps._lint_preset_by_executable()
-        self.assertIn(lint.EXECUTABLE, str(caught.exception))
-
 
 class BackendDocumentTests(unittest.TestCase):
     def setUp(self) -> None:

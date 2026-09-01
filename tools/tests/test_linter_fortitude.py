@@ -782,8 +782,12 @@ class ProseCouplingTests(unittest.TestCase):
     def test_the_runbook_states_this_range_wherever_an_operator_reads_it(self) -> None:
         """Both sites, not "the range appears somewhere".
 
-        The document states this one twice — in the host-tool table and in the install line — and
-        a presence check is satisfied while the other one drifts. Measured: editing the first
+        The document states this one at three sites since issue #120 — the host-tool table, the
+        install line, and the version-range table §0-1 gained — and a presence check is satisfied
+        while one of them drifts. The assertion below is `>= 2` rather than a count, deliberately:
+        a count here is a number that rots every time the document grows, which is the class this
+        branch spent two rounds correcting. What pins the TABLE is
+        `tools/tests/test_host_prerequisites.py`'s set identity over its range column. Measured: editing the first
         occurrence to a different range left an `assertIn` green.
 
         The set-identity half of this check — that NO range in the document is one nothing

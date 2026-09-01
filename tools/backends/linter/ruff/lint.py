@@ -89,8 +89,10 @@ of them all.
   across the supported range (`.bzr .direnv .eggs .git .git-rewrite .hg .ipynb_checkpoints
   .mypy_cache .nox .pants.d .pyenv .pytest_cache .pytype .ruff_cache .svn .tox .venv .vscode
   __pypackages__ _build buck-out dist node_modules site-packages venv`), so the channel is the
-  exclusion itself and not its drift. `--exclude=` — the empty list — closes it, and makes the
-  file set a function of the walk root alone. The gate's `project_dir` is
+  exclusion itself and not its drift. `--exclude=` — the empty list — closes it. An earlier
+  version of this bullet added "and makes the file set a function of the walk root alone", which
+  the SYMLINK entry below falsifies: the enumeration has now been wrong three times on this
+  backend, twice in a sentence written to fix the previous time. The gate's `project_dir` is
   `source/<source_id>/src/`, which holds generated sources and nothing this list is meant to
   protect, so emptying it costs nothing here.
 * A STALE CACHE ENTRY answers instead of the checker. Measured on all four builds: the cache key
@@ -121,6 +123,21 @@ decides the verdict, and because this enumeration has already been wrong once:
   `TODO.md` carries it; it is recorded here rather than closed because the gain is measured to be
   nothing — a leaf that hides a source from the linter has hidden it from the compiler too, and
   the build control file pins its sources by name.
+* A SYMLINKED DIRECTORY whose target lies OUTSIDE the walk root is not entered. Measured on all
+  four builds: with `walk/pkg -> ../real` and the five-finding fixture in `real/`, the declared
+  invocation over `walk/` reports `warning: No Python files found under the given path(s)`,
+  `All checks passed!`, exit 0, while the same directory checked directly reports its five. A
+  target INSIDE the walk root is followed and its findings appear, and a symlinked FILE is
+  followed either way — so what is skipped is precisely the case where following the link would
+  leave the root. `fortitude` behaves the same and more quietly (`0 files scanned`, no warning);
+  `cppcheck` fails closed (exit 1, classified a refusal).
+
+  THIS ONE DOES NOT SHARE THE READ-ERROR ENTRY'S GROUND, which is why it is listed separately: a
+  `chmod 000` directory is hidden from the compiler too, but a symlinked directory COMPILES. What
+  bounds it today is write authority — the leaf would need a link target outside `project_dir` —
+  not the linter. No flag closes it; a caller refusing a run that reports zero files over a
+  directory known to be non-empty would, which is the same caller-side check the read-error entry
+  needs. `TODO.md` carries both.
 * THE EXTENSIONS the walk reads, and what `__init__.py` semantics imply for a package. Unchanged
   by any flag above.
 

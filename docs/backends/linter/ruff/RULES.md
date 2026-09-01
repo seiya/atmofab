@@ -67,8 +67,7 @@ the canonical statement of that set for a reader; the machine-readable definitio
     `.git-rewrite`, `.hg`, `.ipynb_checkpoints`, `.mypy_cache`, `.nox`, `.pants.d`, `.pyenv`,
     `.pytest_cache`, `.pytype`, `.ruff_cache`, `.svn`, `.tox`, `.venv`, `.vscode`,
     `__pypackages__`, `_build`, `buck-out`, `dist`, `node_modules`, `site-packages`, `venv`), so
-    what the flag closes is the exclusion itself rather than its drift. Emptying it makes the file
-    set a function of the walk root alone, and costs nothing here: the gate's `project_dir` is
+    what the flag closes is the exclusion itself rather than its drift. Emptying it costs nothing here: the gate's `project_dir` is
     `source/<source_id>/src/`, which holds generated sources and none of the trees that list
     exists to protect.
   - `--no-cache` — closes a stale cache entry answering instead of the checker. Measured on all
@@ -101,6 +100,16 @@ the canonical statement of that set for a reader; the machine-readable definitio
     refusal). It is recorded rather than closed because the gain is measured to be nothing: a leaf
     that hides a source from the linter has hidden it from the compiler too, and the build control
     file pins its sources by name. `TODO.md` carries it.
+  - **A symlinked directory whose target lies OUTSIDE the walk root is not entered.** Measured on
+    all four builds: `walk/pkg -> ../real` with the fixture in `real/` gives
+    `warning: No Python files found under the given path(s)`, `All checks passed!`, exit 0, while
+    the same directory checked directly gives its five findings. A target INSIDE the root is
+    followed, and a symlinked FILE is followed either way. `fortitude` behaves the same and more
+    quietly; `cppcheck` fails closed. **It does not share the read-error entry's ground** — a
+    `chmod 000` directory is hidden from the compiler too, a symlinked one compiles — so what
+    bounds it is write authority rather than the linter, and closing it needs the same
+    caller-side check. An earlier version of the `--exclude=` bullet claimed emptying the list
+    "makes the file set a function of the walk root alone"; this is what falsifies it.
   - **The extensions the walk reads**, and what `__init__.py` semantics imply for a package.
 - `--select ALL` is not used. It is not a spelling of any set anyone reviewed.
 

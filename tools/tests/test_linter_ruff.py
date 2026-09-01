@@ -186,21 +186,33 @@ class VersionGateTests(unittest.TestCase):
         `test_host_prerequisites.py` green. That is a family that structurally cannot answer.
 
         What does not slide is the OPERATOR'S spelling. `SUPPORTED_VERSION_SPEC` is what
-        `docs/RUNBOOK.md` §0-1 tells someone to install, so the build they get by following it —
-        the floor at patch `.0` — must be accepted, and so must the last patch under the ceiling.
-        Anything else refuses an operator at launch for having done what the document said.
+        `docs/RUNBOOK.md` §0-1 tells someone to install, so the build they get by following it
+        must be accepted, and the ceiling they are told to stay under must be refused.
+
+        NO ARITHMETIC ON THE COMPONENTS. The first version computed `minor - 1` for its probes,
+        which produced `"1.-1.999"` for any legitimate `<X.0` ceiling — refused because the string
+        does not parse rather than because it is out of range, and on the `cppcheck` regex parsed
+        as a DIFFERENT version and refused with a message naming a build nobody wrote. Both ends
+        are now probed at the spelling the document itself carries.
         """
-        floor, ceiling = lint.SUPPORTED_VERSION_SPEC.split(",")
-        fmaj, fmin = (int(x) for x in floor.removeprefix(">=").split("."))
-        cmaj, cmin = (int(x) for x in ceiling.removeprefix("<").split("."))
-        for major, minor, patch in ((fmaj, fmin, 0), (cmaj, cmin - 1, 999)):
-            text = f"{lint.EXECUTABLE} {major}.{minor}.{patch}"
-            with self.subTest(accepted=text):
-                self.assertIsNone(lint.unsupported_version_reason(text))
-        for major, minor, patch in ((fmaj, fmin - 1, 999), (cmaj, cmin, 0)):
-            text = f"{lint.EXECUTABLE} {major}.{minor}.{patch}"
-            with self.subTest(refused=text):
-                self.assertIsNotNone(lint.unsupported_version_reason(text))
+        floor, ceiling = (part.strip() for part in lint.SUPPORTED_VERSION_SPEC.split(","))
+        accepted = self._at_patch_zero(floor.removeprefix(">="))
+        refused = self._at_patch_zero(ceiling.removeprefix("<"))
+        with self.subTest(accepted=accepted):
+            self.assertIsNone(
+                lint.unsupported_version_reason(f"{lint.EXECUTABLE} {accepted}"),
+                "an operator installing the floor this repository documents is refused at launch")
+        with self.subTest(refused=refused):
+            self.assertIsNotNone(
+                lint.unsupported_version_reason(f"{lint.EXECUTABLE} {refused}"),
+                "the ceiling this repository documents is accepted, so the spec is wider than the "
+                "range")
+
+    @staticmethod
+    def _at_patch_zero(version: str) -> str:
+        """`0.14` -> `0.14.0`; a spelling that already carries a patch is left alone."""
+        parts = version.split(".")
+        return version if len(parts) >= 3 else ".".join(parts + ["0"] * (3 - len(parts)))
 
     def test_the_installed_build_is_inside_the_range(self) -> None:
         completed = subprocess.run([_linter_path(), *lint.version_argv()[1:]],
@@ -324,7 +336,10 @@ class ResolutionAgainstTheInstalledBuildTests(unittest.TestCase):
         (tree.src / "ruff.toml").write_text("[lint]\n" + self._DISCOVERED_KEY)
         self.assertEqual(_reported_codes(tree.run()),
                          ["E741", "F401", "F401", "F821", "F841"])
-        # Negative control: without `--isolated` the same file silences four of the five.
+        # Negative control. What it silences is the assertion below, not this comment: the
+        # figure was restated here in prose and was WRONG for four rounds, surviving the
+        # commit that corrected the same figure eleven lines above. A restatement of a
+        # measurement the assertion already carries has no reason to exist.
         self.assertEqual(_reported_codes(tree.run(drop=("--isolated",))), [])
 
     def test_a_configuration_file_at_an_ancestor_changes_no_verdict(self) -> None:
@@ -351,6 +366,30 @@ class ResolutionAgainstTheInstalledBuildTests(unittest.TestCase):
         control = tree.run(drop=("--exclude=",))
         self.assertEqual(control.returncode, 0)
         self.assertEqual(_reported_codes(control), [])
+
+    def test_a_symlinked_directory_outside_the_root_is_a_measured_NON_closure(self) -> None:
+        """The sixth channel, recorded because no flag closes it — asserted as MEASURED behaviour.
+
+        A `--exclude=` bullet added a round earlier claimed emptying the built-in list "makes the
+        file set a function of the walk root alone". It does not: a symlink whose target leaves
+        the root is not entered. This row pins BOTH halves, because the distinction is what the
+        documents state — a target inside the root IS followed, so a future build that starts
+        following outward links, or stops following inward ones, is noticed either way.
+        """
+        tree = _Tree(self)
+        outside = tree.root / "outside"
+        outside.mkdir()
+        (tree.src / "probe.py").rename(outside / "probe.py")
+        (tree.src / "pkg").symlink_to(outside)
+        completed = tree.run()
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+
+        inside = tree.src / "inner"
+        inside.mkdir()
+        (outside / "probe.py").write_text(_DEFECTIVE_SOURCE)
+        (inside / "probe.py").write_text(_DEFECTIVE_SOURCE)
+        self.assertEqual(_reported_codes(tree.run()),
+                         ["E741", "F401", "F401", "F821", "F841"])
 
     def test_an_unreadable_directory_is_a_measured_NON_closure(self) -> None:
         """Recorded because no flag closes it and the documents say so.
