@@ -777,9 +777,16 @@ code:
 **The move that finds them: spend one round on the disclosure axis alone**, with no functional
 brief, **before stopping rather than as an extra round after deciding to stop**. Two briefs:
 "verify every claim in the commit messages at HEAD" and "read it as the next maintainer: what
-would mislead you, can the deletion's measurement be re-taken from what is written, what does a
-LEAF see, what does an OPERATOR see, would you merge". If it returns first-category items, the
-record has not converged even though the enforcement code has.
+would mislead you, can the deletion's measurement be re-taken from what is written, **what CHECK
+went with what was deleted**, what does a LEAF see, what does an OPERATOR see, would you merge". If
+it returns first-category items, the record has not converged even though the enforcement code has.
+
+**The added clause is not a flourish.** On PR #125 it is what surfaced the branch's only blocker —
+a check `origin/main` had that a round-2 fix narrowed away — and no other instrument in this loop
+could have: the sweep mutates what exists, the census enumerates what exists, and a blank-slate
+reviewer reads HEAD. **Everything else compares HEAD against itself.** The disclosure round is the
+one place a reviewer is pointed at the previous revision, so it is the only place a deleted
+guarantee is visible.
 
 **For a change that adds checking machinery, run a witness census once.** Instruct a dedicated
 reviewer:
@@ -843,7 +850,19 @@ that tells you how it closed.
   got that sentence wrong in three consecutive rounds, each version written to fix the previous
   one. What closed it was DELETING the summary: state the figures, state what they are being
   compared against, and leave the comparison to the reader. A summary of a spread is a claim with
-  no witness; the spread itself has one
+  no witness; the spread itself has one.
+  **And when you do reach for the sweep, sweep the FACT, not the spelling.** PR #125 corrected one
+  figure three times, each correction sweeping the wording it had just written, and each missing a
+  different phrasing of the same measurement — the fourth spelling sat eleven lines from the third
+  and survived four rounds. Sweep for the NUMBER and for what it is a number OF, then read every
+  hit; a `grep` for last round's sentence finds last round's sentence
+- **A comment or docstring RESTATES a measurement the assertion beside it already carries** →
+  delete the restatement; do not correct it. Criterion: could this sentence and the line under it
+  disagree? Then they will, and the sentence is the one that will be wrong, because nothing runs
+  it. PR #125's four-round figure lived three lines above `assertEqual(..., [])` saying something
+  the assertion contradicted, and each round corrected the prose rather than asking why a
+  measurement was stated twice. **This is not the "prose that enumerates entities" row**: that one
+  says turn prose into a check, this one says the check is already there
 - **A term you coined for a tool has appeared in a document as if the system used it** → check it
   against the vocabulary the repository already defines. On PR #100 a reporting script labelled any
   body it could not parse "body is not an event stream", and that phrase was then written into
@@ -857,6 +876,16 @@ that tells you how it closed.
   readers) → **re-measuring loses. Turn it into a check.** Criterion: should this prose break if
   one test is renamed? Then make it a check (the general form, and when a check is the wrong
   answer, is rule 3-a — this row is the enumeration case of it)
+- **Your fix NARROWS a check to stop it over-refusing** → the OLD check is a mutant, and you owe
+  it a run against BOTH revisions. Narrowing is the standard fix for over-refusal and it removes
+  coverage by construction; what you have to establish is that what it stops catching is only the
+  legitimate input. Procedure, two commands: take the defect the old check caught, apply it at
+  `origin/main` and at `HEAD`, and require red-then-red. Red-then-GREEN is the finding. PR #125
+  narrowed a whole-document version-range identity to one table column and un-pinned the operator's
+  own install line with it — drifting `pipx install 'fortitude-lint>=0.8,<0.10'` to `<0.11` left
+  HEAD green and `origin/main` red, and no round noticed until the disclosure axis read the branch
+  as the next maintainer. **Nothing else in this loop looks backwards**: every other instrument
+  compares HEAD against itself, so a check the branch deleted is invisible to all of them
 - **A fix changed the shape of the rule** (denylist → allowlist and the like) → split everything
   after that into another PR. If you continue without splitting, **give the user the options and
   ask**

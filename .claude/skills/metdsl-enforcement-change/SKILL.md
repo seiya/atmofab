@@ -24,7 +24,7 @@ here that does not obviously apply to your case is answered in its reference fil
 guessing.
 
 - `references/judgment-episodes.md` — what each judgment rule below cost, in full
-- `references/input-surfaces.md` — surfaces 5-9, the marker-narrowing version table, the recipes
+- `references/input-surfaces.md` — surfaces 5-10, the marker-narrowing version table, the recipes
 - `references/source-text-surface.md` — the spelling variation a source-text-reading gate must survive
 - `references/dual-read-pairs.md` — the table of facts two layers read
 - `references/failure-routing.md` — attribution criteria, the known branches, and remedy wording
@@ -202,7 +202,7 @@ When a rule derives its safety from an enumeration, **write a test that kills ea
 enumeration by mutation** (round 0 in `metdsl-review-loop`). A missing element shows up in no
 other test.
 
-The five surfaces that are none of exec / env / argv / FS / evidence paths and none of the
+The six surfaces that are none of exec / env / argv / FS / evidence paths and none of the
 spelling variation. Each is one question; the episodes, the version tables and the measurement
 recipes are in `references/input-surfaces.md`:
 
@@ -267,6 +267,22 @@ recipes are in `references/input-surfaces.md`:
   And **attribution is not enforcement** — roots are sorted longest-path-first, so a new entry
   beneath an existing one silently takes over the block message; keep a control read that must
   still be attributed to the root above
+- **Surface 10 — when a gate delegates its verdict to an external tool, can that tool decline to do
+  the work and report SUCCESS?** A gate that reads an exit status is trusting the tool to have
+  looked. Tools bound their own effort — a configuration cap, a time or memory limit, a walk that
+  skips what it cannot read, a parse it abandons — and the honest ones then say so **on a channel
+  the gate is not listening to**. PR #125: `cppcheck` analyses at most 12 preprocessor
+  configurations and stops, exiting **0** over source it never analysed; the only trace is
+  `[toomanyconfigs]`, whose severity is `information`, which the declared severities did not
+  enable. A leaf that cannot satisfy a finding wraps the file in `#ifdef`s and the gate passes.
+  **Rule: enumerate the tool's OWN limits from its `--help`, not its failure modes**, and for each,
+  ask what it reports and where. **Prefer removing the cap to raising it** — `--max-configs=N` only
+  moves the hole to `N+1`, `--force` removes it — and check the degenerate case fails CLOSED (there,
+  a timeout arrives as `return_code: None`, which the conductor already refuses). **The tell is a
+  tool that reports partial work as completion**, and every family this repository delegates to has
+  one: a linter's walk exclusions and read errors, a compiler's error cap, a test runner's
+  collection error, a build system's `-k`. Related but different from surface 5 — nothing here is
+  caller-controlled; the tool is simply answering a narrower question than the gate asked.
 
 ### 2. Confirm the path production actually takes
 
