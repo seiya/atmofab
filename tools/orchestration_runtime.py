@@ -16687,10 +16687,13 @@ def _resecure_workflow_home_on_reuse(repo_root: Path, orchestration_id: str,
     recorded status was `running`.
 
     SCOPED TO OUR OWN LAYOUT. A home recorded before issue #64 lives wherever it lived — a
-    `mkdtemp` directory directly under `/tmp` — and its parent is `/tmp`, which is nobody's
-    orchestration directory. What is compared is that PARENT, not the directory's name. Writing a marker there would litter a shared tmpfs with a file claiming an
-    orchestration id. So the refresh runs only when the home sits exactly where this code
-    puts one.
+    `mkdtemp` directory directly under `/tmp`, whose leaf name carries a random suffix and
+    whose parent is `/tmp`, which is nobody's orchestration directory. TWO guards reject
+    it and the NAME one runs first: `_workflow_backend_home_path` raises unless
+    `home.name` is a declared backend dirname, and this function returns on that
+    `ValueError` before the parent comparison below is reached. Writing a marker there
+    would litter a shared tmpfs with a file claiming an orchestration id. So the refresh
+    runs only when the home sits exactly where this code puts one.
     """
     try:
         expected = _workflow_backend_home_path(orchestration_id, home.name)

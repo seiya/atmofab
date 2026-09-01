@@ -38438,10 +38438,11 @@ class DurableWorkflowHomesTests(unittest.TestCase):
         """The refresh is scoped to our own layout, and BOTH of its guards are observed.
 
         A home recorded before issue #64 lives in a `mkdtemp` directory directly under
-        `/tmp`, whose parent is `/tmp` — nobody's orchestration directory. The guard
-        compares that parent, not the directory's name. Writing a marker there would drop a
-        file claiming an orchestration id into a shared tmpfs, so the refresh runs only
-        when the home sits exactly where this code puts one.
+        `/tmp`, whose leaf name carries a random suffix and whose parent is `/tmp` —
+        nobody's orchestration directory. Either guard alone rejects it, and the NAME one
+        runs first. Writing a marker there would drop a file claiming an orchestration id
+        into a shared tmpfs, so the refresh runs only when the home sits exactly where
+        this code puts one.
 
         TWO cases, because the first version of this test only reached the first guard.
         `atmofab-claude-old` is not a declared backend name, so
