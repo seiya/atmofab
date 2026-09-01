@@ -3565,11 +3565,14 @@ class ValidateGateReasonFromMetaTest(unittest.TestCase):
         control below keeps the assertion about the clock and not about the method passing on
         everything: an mtime a full tick BELOW the instant must still fail.
 
-        The loop count is what makes this a REGRESSION test rather than a coin flip: with
-        `time.time()` as the instant, 1999/2000 writes on this host stamped below it, so 200
-        iterations miss the defect with probability ~(1/2000)**200 on a host with this lag, and
-        on a host whose filesystem stamps finely enough for the defect not to exist the test is
-        simply always true — it never fails for a reason other than the one it names.
+        The loop count is what makes this a REGRESSION test rather than a coin flip. The rate at
+        which a `time.time()` instant loses to the stamp is NOT a stable figure — the same
+        spelling on this host has come back anywhere from 1877 to 2000 out of 2000, across four
+        readers, because it depends on where in the tick each iteration lands. 200 iterations
+        need only the LOW end: at the worst rate seen, missing the defect 200 times running has
+        probability ~0.06**200. On a host whose filesystem stamps finely enough for the defect
+        not to exist at all, the test is simply always true — it never fails for a reason other
+        than the one it names.
         """
         import tempfile
         for substep, fname in (("pre_judge", "pre_judge_meta.json"),
@@ -3663,9 +3666,14 @@ class ValidateGateReasonFromMetaTest(unittest.TestCase):
         the only place that difference is visible, and a review round found it was the one
         mechanism here that survived being deleted.
 
-        Driven by shortening the bound to zero rather than by mocking the clock: the wait is
-        then over before it begins, which is precisely the state the arm exists for. The
-        assertion is on the emitted record, not on the return value alone — the return value
+        Driven by simulating the condition the arm names — a clock whose stamps do not advance —
+        with the bound shortened to zero so the give-up is immediate. Shortening the bound ALONE
+        is not enough and the difference is measured, not theoretical: a reviewer ran that
+        version 3000 times against a loaded `agents/` dir and 15 of them returned without
+        emitting, because the loop tests `instant > first` BEFORE the deadline and the first
+        `os.utime` can itself cross a tick. That is a flaky test in the direction of green.
+
+        The assertion is on the emitted record, not on the return value alone — the return value
         equals `first` under a deleted tick wait too, so it cannot tell the two apart.
         """
         import tempfile
@@ -3677,7 +3685,8 @@ class ValidateGateReasonFromMetaTest(unittest.TestCase):
                              llm_config=_cfg("claude"), env={})
             events: list[dict] = []
             c.emit = lambda event, **f: events.append({"event": event, **f})  # type: ignore[method-assign]
-            with patch.object(wc, "LAUNCH_INSTANT_TICK_WAIT_SECONDS", 0.0):
+            with patch.object(wc, "LAUNCH_INSTANT_TICK_WAIT_SECONDS", 0.0), \
+                    patch.object(wc.os, "utime", lambda *a, **k: None):
                 instant = c._launch_instant("arid-slow")
             probe = (repo / "workspace" / "orchestrations" / "orch_x" / "agents" / "arid-slow"
                      / wc.LAUNCH_INSTANT_PROBE_BASENAME)
@@ -6128,12 +6137,15 @@ class LeafTransientRetryTest(unittest.TestCase):
         return, and it then waits past that.
 
         As a DETECTOR of a deleted tick wait, though, this assertion is a coin flip — the two
-        launches straddle a tick boundary often enough that a reviewer measured it passing 4 of
-        10 runs against that mutant. Do not read it as a witness for the wait; the two that kill
-        that mutant every time are
-        `test_a_deterministic_body_that_writes_inside_one_tick_still_passes` (200 iterations) and
-        `test_retried_judge_cannot_certify_the_dead_attempts_semantic_review` (it fails on the
-        artifact, not on a number). What THIS test owns is the per-attempt claim below.
+        launches straddle a tick boundary often enough that reviewers measured it passing 4 of 10
+        and 2 of 10 runs against that mutant. Do not read it as a witness for the wait. The one
+        that kills that mutant every time is
+        `test_a_deterministic_body_that_writes_inside_one_tick_still_passes` (200 iterations).
+        `test_retried_judge_cannot_certify_the_dead_attempts_semantic_review` fails on the
+        artifact rather than on a number, which is stronger in kind, but it exists in TWO classes
+        here and only `LeafTransientRetryTest`'s copy was measured at 10/10 —
+        `TransientRetryWallClockBudgetTest`'s came back 8/10, so citing the name bare would
+        overstate it. What THIS test owns is the per-attempt claim below.
         """
         seen: list[float] = []
 

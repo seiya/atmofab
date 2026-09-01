@@ -867,7 +867,7 @@ class PureProducerSubstepTests(unittest.TestCase):
         to one timer tick), so this fails the moment the loop stops using the resolver.
 
         PROVENANCE, not a decision — a review round established that a pure loop's `launched_at`
-        reaches no comparison today (`_maybe_repair_verify_meta` returns before reading it for a
+        reaches no comparison today (`_maybe_warm_resume_verify_meta` returns before reading it for a
         pure substep). It comes from the one resolver so the field means the same thing at every
         site; a `time.time()` here and a filesystem stamp elsewhere is the state that produced
         #113.

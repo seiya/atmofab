@@ -98,7 +98,7 @@ class PureVerifySubstepTests(unittest.TestCase):
 
         What this pins is PROVENANCE, not a decision: a review round established that this
         loop's `SubstepOutcome.launched_at` reaches no comparison today. Its only production
-        consumer is `_maybe_repair_verify_meta`, which returns before reading it whenever the
+        consumer is `_maybe_warm_resume_verify_meta`, which returns before reading it whenever the
         substep is pure (`if self._pure_leaf_substep(refs, phase, "verify"): return outcomes`),
         and this loop runs only when that predicate is true. An earlier version of this docstring
         claimed the opposite and was false. The value is taken from the one resolver anyway so

@@ -87,11 +87,16 @@ def _iso_now() -> str:
 # variable was not.
 LAUNCH_INSTANT_PROBE_BASENAME = "launch_instant.probe.json"
 # How long `_launch_instant` waits for the filesystem's clock to leave the tick its probe was
-# stamped in. The tick is 3.99998 ms on this host (xfs; it is the kernel's timer tick, not a
-# property of the filesystem), and the wait costs one of them per LAUNCH — measured over 300
-# calls: median 4.00 ms, max 4.01 ms — i.e. ~60 ms across a node's substeps, against leaves that
-# run for minutes. The bound is here only so a filesystem whose stamps advance more slowly
-# degrades LOUDLY (`launch_instant_tick_wait_timeout`) instead of blocking a run.
+# stamped in. The tick is ~4 ms on this host (3.999949 ms measured on `/dev/sda1`, xfs, where
+# `workspace/` lives; it is the kernel's timer tick — CONFIG_HZ_250 — not a property of the
+# filesystem), and the wait costs ONE OF THEM per launch: median 3.999-4.000 ms over 300 calls,
+# re-measured by three readers. The MAX is not one tick — a call that loses the CPU spans two,
+# and 8.0 ms was observed — so read the cost as "a tick, occasionally two", not as a ceiling.
+# `SUBSTEPS` totals 11 per node (compile 3 / generate 3 / build 1 / validate 4) and only a
+# substep launch reaches this, so a node pass pays ~44 ms, against leaves that run for minutes.
+# The bound is here only so a filesystem whose stamps advance more slowly degrades LOUDLY
+# (`launch_instant_tick_wait_timeout`) instead of blocking a run — at the cost, said out loud,
+# of spinning without sleeping for up to the bound when it does.
 LAUNCH_INSTANT_TICK_WAIT_SECONDS = 2.0
 
 
