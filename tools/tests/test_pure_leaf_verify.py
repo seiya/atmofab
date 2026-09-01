@@ -86,6 +86,33 @@ class PureVerifySubstepTests(unittest.TestCase):
         if hasattr(self, "_tmp"):
             self._tmp.cleanup()
 
+    def test_the_reviewer_loop_takes_its_launch_instant_from_the_filesystem(self) -> None:
+        """Mirror of the producer's #113 pin — one witness per OCCURRENCE, not per rule.
+
+        The three sites that take a launch instant read identically, and round 0's hunk
+        mutation reported this one killed in one run and surviving in another (the kill came
+        from a neighbouring failure under `-x`, not from an assertion about this line). An
+        identity against the probe `Conductor._launch_instant` writes for this attempt's arid
+        settles it: a `time.time()` reading is a different number, the two clocks differing by
+        up to one timer tick.
+
+        What this pins is PROVENANCE, not a decision: a review round established that this
+        loop's `SubstepOutcome.launched_at` reaches no comparison today. Its only production
+        consumer is `_maybe_warm_resume_verify_meta`, which returns before reading it whenever the
+        substep is pure (`if self._pure_leaf_substep(refs, phase, "verify"): return outcomes`),
+        and this loop runs only when that predicate is true. An earlier version of this docstring
+        claimed the opposite and was false. The value is taken from the one resolver anyway so
+        that the field means the same thing at all three sites — the alternative, a `time.time()`
+        here and a filesystem stamp elsewhere, is the state that produced #113.
+        """
+        c, _refs, oc = self._run([_envelope(_verdict("pass"))])
+        self.assertEqual(oc.status, "pass")
+        probe = (c.repo_root / "workspace" / "orchestrations" / c.orchestration_id
+                 / "agents" / oc.agent_run_id / wc.LAUNCH_INSTANT_PROBE_BASENAME)
+        self.assertTrue(probe.exists(), probe)
+        self.assertEqual(oc.launched_at, probe.stat().st_mtime)
+        self.assertEqual(json.loads(probe.read_text())["agent_run_id"], oc.agent_run_id)
+
     def test_pure_pass_finalize_payload_satisfies_the_real_summary_validator(self) -> None:
         """Mirror of the producer's regression pin (billed E2E, 2026-07-16).
 
