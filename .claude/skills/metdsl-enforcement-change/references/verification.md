@@ -14,6 +14,35 @@ while developing this repository.
 python3 -m pytest tools/tests/ -q -p no:randomly
 ```
 
+- **Before you diagnose a defect, run the FILE that covers the mechanism on `origin/main`.**
+
+  ```bash
+  git worktree add --detach <scratch>/main origin/main
+  (cd <scratch>/main && python3 -m pytest tools/tests/<the file> -q -p no:randomly)
+  ```
+
+  Issue #113 was a freshness gate comparing a `time.time()` instant against a file mtime — two
+  different clocks, so a deterministic in-process body that finished inside one timer tick failed
+  its own gate. `tools/tests/test_workflow_conductor.py` was **8 failed / 761 passed on
+  `origin/main`** for exactly that reason (`VerifyMetaSchemaWarmResumeTests` and both copies of
+  `test_retried_judge_cannot_certify_the_dead_attempts_semantic_review`, whose stubs write their
+  metas in-process), and it went to 770 passed on the branch. Nobody noticed for two rounds: I
+  argued the cause from one incident's artifacts and from a timing measurement, a reviewer showed
+  the arithmetic did not carry, and only then did another reviewer run the file on `main`. **The
+  strongest evidence a causal argument in this repository can have is often already a red test on
+  `main`, and it costs seconds.**
+
+  **Why the full-suite run does not surface it**: the whole-tree verdict here is "2 failed /
+  ~5460 passed", those two being the standing path-depth-coupled `ForbidBackendCredentialReadTests`
+  cases, and a branch that FIXES eight failures elsewhere reports the same two. The delta rule
+  below compares totals, and eight fewer failures reads as eight more passes among thousands. Run
+  the file, read the failure NAMES.
+
+  Two directions, both worth the seconds: failures on `main` that your branch turns green are
+  evidence FOR your diagnosis (say so in the commit — I did not, and a reviewer had to); failures
+  your branch does not touch are the baseline you must name before anyone else reads them as
+  yours.
+
 - **Do NOT point `TMPDIR` at `/dev/shm`.** This section used to recommend it, and the
   recommendation cost two false failures on `main` and on a branch alike (measured 2026-08-21):
   `test_hooks_common.py::DevShmWriteBlockTests::test_blocks_dev_shm_via_find_traversal` and
