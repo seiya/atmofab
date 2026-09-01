@@ -3641,10 +3641,62 @@ class ValidateGateReasonFromMetaTest(unittest.TestCase):
             self.assertFalse(ort._should_ignore_runtime_snapshot_path(
                 "workspace/pipelines/p/runs/r/n/pre_judge_meta.json",
                 orchestration_id="orch_x", agent_run_id="arid-1"))
-            # A second attempt re-stamps in place: the record is the SURVIVING attempt's.
-            later = c._launch_instant("arid-1")
-            self.assertGreaterEqual(later, instant)
-            self.assertEqual(probe.stat().st_mtime, later)
+            # A SECOND attempt is a second arid — every retry loop allocates one at the top of
+            # its body — so it gets its own probe and the first attempt's record survives beside
+            # its `dialogs/`. An earlier version of this block called the method twice with ONE
+            # arid and called the result "re-stamps in place"; that shape occurs zero times in
+            # production, and three documents had been written from it.
+            second = c._launch_instant("arid-2")
+            second_probe = (repo / "workspace" / "orchestrations" / "orch_x" / "agents"
+                            / "arid-2" / wc.LAUNCH_INSTANT_PROBE_BASENAME)
+            self.assertEqual(second_probe.stat().st_mtime, second)
+            self.assertGreater(second, instant)          # ... and it is strictly later
+            self.assertEqual(probe.stat().st_mtime, instant)   # ... the first is untouched
+
+    def test_a_clock_that_does_not_advance_degrades_loudly_and_says_so(self) -> None:
+        """The `deadline` arm of `_launch_instant`, and the event that is its whole point.
+
+        On a filesystem whose stamps advance more slowly than `LAUNCH_INSTANT_TICK_WAIT_SECONDS`
+        the method gives up waiting and returns the probe's OWN stamp. That loses the strict
+        half — a file written in the previous tick can then share the instant — while keeping
+        the half #113 is about, since a later write still cannot stamp below it. The event is
+        the only place that difference is visible, and a review round found it was the one
+        mechanism here that survived being deleted.
+
+        Driven by shortening the bound to zero rather than by mocking the clock: the wait is
+        then over before it begins, which is precisely the state the arm exists for. The
+        assertion is on the emitted record, not on the return value alone — the return value
+        equals `first` under a deleted tick wait too, so it cannot tell the two apart.
+        """
+        import tempfile
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            c = wc.Conductor(repo_root=repo, orchestration_id="orch_x",
+                             orchestration_agent_run_id="ORCH",
+                             llm_config=_cfg("claude"), env={})
+            events: list[dict] = []
+            c.emit = lambda event, **f: events.append({"event": event, **f})  # type: ignore[method-assign]
+            with patch.object(wc, "LAUNCH_INSTANT_TICK_WAIT_SECONDS", 0.0):
+                instant = c._launch_instant("arid-slow")
+            probe = (repo / "workspace" / "orchestrations" / "orch_x" / "agents" / "arid-slow"
+                     / wc.LAUNCH_INSTANT_PROBE_BASENAME)
+            self.assertEqual(instant, probe.stat().st_mtime)
+            self.assertEqual([e["event"] for e in events], ["launch_instant_tick_wait_timeout"])
+            self.assertEqual(events[0]["agent_run_id"], "arid-slow")
+            self.assertEqual(events[0]["instant"], instant)
+            self.assertEqual(events[0]["waited_seconds"], 0.0)
+        # Control: with the real bound the arm does NOT fire, so the assertions above are about
+        # the deadline and not about a method that always reports a timeout.
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            c = wc.Conductor(repo_root=repo, orchestration_id="orch_x",
+                             orchestration_agent_run_id="ORCH",
+                             llm_config=_cfg("claude"), env={})
+            events = []
+            c.emit = lambda event, **f: events.append({"event": event, **f})  # type: ignore[method-assign]
+            c._launch_instant("arid-normal")
+            self.assertEqual(events, [])
 
     def test_classifier_is_a_pure_function_of_the_meta(self) -> None:
         # The defensive classify_failure branches route from the same helper, so the two sites
@@ -6070,11 +6122,18 @@ class LeafTransientRetryTest(unittest.TestCase):
         Still `>` after issue #113 moved the instant onto the FILESYSTEM's clock
         (`Conductor._launch_instant`), and that is not free: that clock advances one tick at a
         time (3.99998 ms measured on this host), so two launches inside one tick would read one
-        value — the leaf here is a stub that returns instantly, which is exactly that case. What
-        keeps the inequality strict is the tick wait inside `_launch_instant`, and this test is
-        one of the two that hold it (the other is
-        `test_retried_judge_cannot_certify_the_dead_attempts_semantic_review`, which fails on the
-        artifact rather than on the number).
+        value — the leaf here is a stub that returns instantly, which is exactly that case. The
+        tick wait inside `_launch_instant` is what makes the strict inequality hold, and it holds
+        DETERMINISTICALLY: the second call's own first stamp is at or after the first call's
+        return, and it then waits past that.
+
+        As a DETECTOR of a deleted tick wait, though, this assertion is a coin flip — the two
+        launches straddle a tick boundary often enough that a reviewer measured it passing 4 of
+        10 runs against that mutant. Do not read it as a witness for the wait; the two that kill
+        that mutant every time are
+        `test_a_deterministic_body_that_writes_inside_one_tick_still_passes` (200 iterations) and
+        `test_retried_judge_cannot_certify_the_dead_attempts_semantic_review` (it fails on the
+        artifact, not on a number). What THIS test owns is the per-attempt claim below.
         """
         seen: list[float] = []
 

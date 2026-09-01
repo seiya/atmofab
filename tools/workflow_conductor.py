@@ -7848,20 +7848,37 @@ clean:
         `_stage_meta_authored_since`) compares it against a deliverable's `st_mtime`, so it has
         to come from the same clock those stamps do. `time.time()` does not: Linux stamps an
         inode from a coarse clock that only advances on a timer tick, so a file written
-        immediately after a `time.time()` read records an mtime BELOW it. Measured on this host
-        (xfs, 2026-09-01): 1999/2000 writes stamped below the instant read just before them,
-        median 4.7 ms below, and the tick is 3.99998 ms on both `workspace/orchestrations/` and
-        `workspace/pipelines/`. An LLM leaf takes seconds and never lands inside that lag; a
-        DETERMINISTIC in-process body can finish well inside one tick, and it then fails its own
-        freshness gate having written its deliverable correctly. That is issue #113's incident
-        (`orch_20260827T105454Z_99f63b7e`, twice): `pre_judge_meta.json` recording
-        `status: "pass"`, its sole deliverable present, the body's rc 0, and the substep failed —
-        which leaves the freshness clause as the only condition that can have failed, since the
-        three others are the whole of the conjunction. HOW FAR below the instant that mtime was
-        is not recoverable from that run, because the instant was never written down (the probe
-        below is also the fix for that); what the run does record is the deliverable landing
-        44 ms after `record-launch` wrote its own last artifact, i.e. inside the window where
-        one tick decides.
+        immediately after a `time.time()` read records an mtime BELOW it. The PROPERTY, which is
+        what holds: that shortfall is bounded by one tick plus however long the write itself
+        takes, and on this host (xfs, 2026-09-01) the tick is 3.99998 ms on both
+        `workspace/orchestrations/` and `workspace/pipelines/` (one mount, `df -T`), reproduced
+        independently at 3.999948 ms. HOW OFTEN and BY HOW MUCH is not a stable number and is
+        deliberately not quoted: `t = time.time(); f.write_text(...); os.stat(f).st_mtime` over
+        2000 iterations came back 1999/2000 below at a median of 4.7 ms on one run and
+        1877/2000 at 1.7 ms on another, on the same host and tree, because the answer depends on
+        where in the tick each iteration lands and on what the write costs. An LLM leaf takes
+        seconds and never lands inside the lag at all; a DETERMINISTIC in-process body can finish
+        well inside one tick, and it then fails its own freshness gate having written its
+        deliverable correctly.
+
+        That is issue #113's incident (`orch_20260827T105454Z_99f63b7e`, twice):
+        `pre_judge_meta.json` recording `status: "pass"`, its sole deliverable present, the body's
+        rc 0, and the substep failed — which leaves the freshness clause as the only condition
+        that can have failed, since the three others are the whole of the conjunction. The rest
+        follows from that failure rather than from any timing measurement: the clause failing
+        means the launch instant was ABOVE the deliverable's stamp, while the body wrote that
+        deliverable AFTER the instant — which is the lag itself, and the tick bounds it. (An
+        earlier version of this paragraph argued it from the deliverable landing 44 ms after
+        `record-launch`'s own last write. That inference needs `record-launch`'s teardown to have
+        taken nearly all of those 44 ms, which the run does not record; a reviewer measured a
+        proxy for that teardown at ~17 ms, under which the arithmetic says the opposite. The
+        derivation above needs no such term.)
+
+        The repository's own suite is the other exhibit, and it is not a reconstruction:
+        `tools/tests/test_workflow_conductor.py` has 8 failures on `origin/main` at `e64b50a`
+        (`VerifyMetaSchemaWarmResumeTests` and the two
+        `test_retried_judge_cannot_certify_the_dead_attempts_semantic_review`) whose stubs write
+        their metas in-process inside one tick, and they pass here.
 
         Writing a probe and reading ITS mtime removes the clock mismatch rather than allowing
         for it with a margin: both stamps then come from the one coarse clock, so a deliverable
@@ -7873,8 +7890,13 @@ clean:
 
         The probe also RECORDS the instant, which nothing did before: `min_mtime` was a float in
         a local variable, so an operator reading a freshness failure after the fact could not
-        re-evaluate the test. It is per-attempt (each attempt overwrites it), matching the value
-        the surviving attempt was judged on.
+        re-evaluate the test. There is ONE PROBE PER ATTEMPT because there is one per
+        `agent_run_id`, and every retry loop allocates a fresh one at the top of its own body
+        (`child_arid = self.new_agent_run_id()`) — so a retry leaves the dead attempt's probe
+        beside its `dialogs/`, and nothing is overwritten. The instant a substep was judged on is
+        the probe under the arid of its LAST row in `agent_runs.jsonl`. (Re-calling this method
+        with an arid it has already been called with does re-stamp in place; no production path
+        does.)
 
         Placement: the child's bookkeeping dir, whose whole subtree
         `_should_ignore_runtime_snapshot_path` exempts from the terminal write-diff — the same
@@ -7892,7 +7914,14 @@ clean:
         An `OSError` is deliberately not caught. It means the conductor cannot write its own
         bookkeeping dir — which `record_launch` has just written to — a host failure, not a leaf
         one, and both fallbacks are wrong in their own direction: `time.time()` restores the bug
-        this method exists to remove, and `0.0` turns the freshness gate off silently.
+        this method exists to remove, and `0.0` turns the freshness gate off silently. What it
+        costs is stated rather than defended: this runs AFTER `record_launch` and BEFORE
+        `finalize_child`, so a raise here (ENOSPC, EROFS) leaves a launched child that is never
+        terminalized — the same un-vouched-orphan state `docs/ORCHESTRATION.md` §per-attempt
+        describes, needing a manual `add-superseded-runs` rather than a `--resume`. A leaf gains
+        nothing from it; what is lost is the resume. Moving the call ABOVE `record_launch` would
+        close that window and reopen a worse one, since the instant would then predate
+        `record_launch`'s own writes.
         """
         probe = (self.repo_root / "workspace" / "orchestrations" / self.orchestration_id
                  / "agents" / child_arid / LAUNCH_INSTANT_PROBE_BASENAME)

@@ -96,10 +96,14 @@ class PureVerifySubstepTests(unittest.TestCase):
         settles it: a `time.time()` reading is a different number, the two clocks differing by
         up to one timer tick.
 
-        It matters here as well as in the producer because THIS loop's outcome is the one
-        `_stage_meta_authored_since(refs, phase, failed.launched_at)` compares against a file
-        mtime when it decides whether the failed verify leaf authored the meta it would be
-        asked to repair.
+        What this pins is PROVENANCE, not a decision: a review round established that this
+        loop's `SubstepOutcome.launched_at` reaches no comparison today. Its only production
+        consumer is `_maybe_repair_verify_meta`, which returns before reading it whenever the
+        substep is pure (`if self._pure_leaf_substep(refs, phase, "verify"): return outcomes`),
+        and this loop runs only when that predicate is true. An earlier version of this docstring
+        claimed the opposite and was false. The value is taken from the one resolver anyway so
+        that the field means the same thing at all three sites — the alternative, a `time.time()`
+        here and a filesystem stamp elsewhere, is the state that produced #113.
         """
         c, _refs, oc = self._run([_envelope(_verdict("pass"))])
         self.assertEqual(oc.status, "pass")
