@@ -8,6 +8,7 @@ assert the names; they assert that the names come from the tables that run them.
 
 from __future__ import annotations
 
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -366,6 +367,192 @@ class ToolVersionArmTests(unittest.TestCase):
         """The companion of `test_this_development_host_satisfies_the_probe`: if this fails, a
         workflow started on this machine would be refused at launch."""
         self.assertEqual(hp.unsupported_host_tool_versions(), ())
+
+
+class RunbookVersionRangeTests(unittest.TestCase):
+    """Every version range the operator's document states is one a backend package declares.
+
+    Set identity, not "the range appears somewhere": a document that states a range nothing
+    declares sends an operator to install a build the launch probe will refuse, and a presence
+    check is satisfied while a second occurrence drifts (measured on the fortitude range —
+    editing the first of its two occurrences left an `assertIn` green).
+
+    This lives here rather than in a backend's own test file because it is a property of ALL of
+    them at once: asserted from one backend, a sibling's range change would fail the wrong file.
+    Each backend still pins its OWN occurrences where they matter (fortitude's install line).
+    """
+
+    def _declared_ranges(self) -> dict[str, str]:
+        from tools.backends import registry as backend_registry
+
+        found = {}
+        for backend_id in backend_registry.backend_ids("linter"):
+            if "lint" not in backend_registry.get("linter", backend_id).backend_provides:
+                continue
+            module = backend_registry.capability_module("linter", backend_id, "lint")
+            found[backend_id] = module.SUPPORTED_VERSION_SPEC
+        return found
+
+    #: The §0-1 table this check owns, found by its own header rather than by position.
+    _RANGE_TABLE_HEADER = "| linter | supported versions | declaration and measurement |"
+
+    #: Which column of that table holds a range. The third is headed "declaration and
+    #: measurement" and is free PROSE: a legitimate note there — say, that a range's interior was
+    #: not installable and is unmeasured — carries a `>=x.y,<a.b` that is not a declaration, and
+    #: reading the whole row refused it. Reading the whole DOCUMENT refused more still: any
+    #: `python3` or `cmake` prerequisite anywhere in the operator's runbook turned the suite red
+    #: with a message blaming the document for a linter fact. Both were over-refusals, one scope
+    #: level apart, and this constant is the second fix.
+    _RANGE_COLUMN = 2
+
+    _RANGE_RE = re.compile(r">=\d+\.\d+(?:\.\d+)?,<\d+\.\d+(?:\.\d+)?")
+
+    def _ranges_in_table(self, document: str) -> set[str]:
+        """The ranges the §0-1 linter table DECLARES, out of `document`.
+
+        Takes the document as an argument so the over-refusal probe below can drive THIS
+        function rather than re-implementing it. The first version of that probe re-implemented
+        the extraction inline, with different termination semantics, and its docstring claimed
+        otherwise — measured, replacing this whole body with `return document` left the suite
+        green, so the fix it witnesses was pinned by nothing.
+        """
+        self.assertIn(
+            self._RANGE_TABLE_HEADER, document,
+            "docs/RUNBOOK.md §0-1 no longer carries the linter version-range table; this check "
+            "cannot find what it is supposed to compare")
+        found: set[str] = set()
+        for line in document.split(self._RANGE_TABLE_HEADER, 1)[1].splitlines()[1:]:
+            if not line.startswith("|"):
+                break
+            cells = [c.strip() for c in line.strip().strip("|").split("|")]
+            if len(cells) > self._RANGE_COLUMN - 1:
+                found.update(self._RANGE_RE.findall(cells[self._RANGE_COLUMN - 1]))
+        return found
+
+    def _runbook(self) -> str:
+        return (REPO_ROOT / "docs" / "RUNBOOK.md").read_text()
+
+    def test_every_range_the_runbook_table_declares_is_one_a_backend_declares(self) -> None:
+        declared = self._declared_ranges()
+        self.assertEqual(
+            self._ranges_in_table(self._runbook()), set(declared.values()),
+            "the linter version-range table in docs/RUNBOOK.md §0-1 declares a range no linter "
+            f"backend declares, or omits one that is declared (declared: {declared})")
+
+    def test_every_declared_range_reaches_the_document(self) -> None:
+        """The other direction, so a new linter's range cannot land unwritten. It names WHICH
+        backend is missing, which the set comparison does not."""
+        runbook = self._runbook()
+        for backend_id, spec in sorted(self._declared_ranges().items()):
+            self.assertIn(spec, runbook,
+                          f"the {backend_id} range {spec} is declared but docs/RUNBOOK.md §0-1 "
+                          f"does not state it")
+
+    def test_every_range_stated_BESIDE_a_linter_name_is_that_linter_s(self) -> None:
+        """The coverage `origin/main` had and this branch deleted, restored without its bug.
+
+        `origin/main` asserted set identity over EVERY range in the document. That caught the
+        operator's install line — `pipx install 'fortitude-lint>=0.8,<0.10'` — drifting out of the
+        declared range, which is the exact failure the branch's own §Supported-versions reasoning
+        is about: a document that tells an operator to install a build the launch probe then
+        refuses. It also refused any non-linter prerequisite documented anywhere in the file,
+        which is why this branch replaced it with a table-scoped check — and un-pinned the install
+        line in the process. Measured: drifting that line to `<0.11` left HEAD green and
+        `origin/main` red.
+
+        The property restored here is narrower than a whole-document scan and wider than the
+        table: any range on a LINE that names a linter's executable must be that linter's. That
+        covers the install line and the host-tool table row, and cannot fire on a `python3` or
+        `cmake` prerequisite, because those lines name no linter.
+        """
+        runbook = self._runbook()
+        declared = self._declared_ranges()
+        from tools.backends import registry as backend_registry
+
+        checked = 0
+        for backend_id, spec in sorted(declared.items()):
+            executable = backend_registry.capability_module(
+                "linter", backend_id, "lint").EXECUTABLE
+            for line in runbook.splitlines():
+                if executable not in line:
+                    continue
+                found = set(self._RANGE_RE.findall(line))
+                if not found:
+                    continue
+                checked += 1
+                self.assertEqual(
+                    found, {spec},
+                    f"docs/RUNBOOK.md states a version range beside {executable!r} that is not "
+                    f"the range {backend_id} declares ({spec}); an operator following this line "
+                    f"installs a build the launch probe refuses.\n  {line.strip()}")
+        self.assertGreaterEqual(
+            checked, 2,
+            "no line in docs/RUNBOOK.md states a range beside a linter's executable name; this "
+            "check has stopped observing the install line it exists for")
+
+    def test_a_range_outside_the_table_s_range_column_is_not_this_check_s_business(self) -> None:
+        """The over-refusal probe, driving the REAL extractor over a synthetic document.
+
+        Two legitimate things carry a `>=x.y,<a.b` that is not a linter declaration: a
+        prerequisite documented elsewhere in the runbook, and a measurement note in the table's
+        own prose column. Both refused the suite at some point in this branch's history; neither
+        may again. The row drives `_ranges_in_table` itself — an earlier version re-implemented
+        the extraction and so could not fail for any reason in the code it claimed to witness.
+        """
+        document = (
+            "# Runbook\n\nInstall `python3` `>=3.10,<3.14` and `cmake` `>=3.20,<4.0` first.\n\n"
+            f"{self._RANGE_TABLE_HEADER}\n|---|---|---|\n"
+            "| `zzlint` | `>=9.9,<9.10` | RULES.md — the interior `>=9.2,<9.8` is unmeasured |\n"
+            "\nAnd afterwards, `gfortran` `>=11.0,<15.0`.\n"
+        )
+        self.assertEqual(self._ranges_in_table(document), {">=9.9,<9.10"})
+
+    def test_the_extractor_refuses_a_document_whose_table_is_gone(self) -> None:
+        """A renamed or deleted table must say so, not silently compare an empty set."""
+        with self.assertRaises(AssertionError) as caught:
+            self._ranges_in_table("# Runbook\n\nno table here\n")
+        self.assertIn("no longer carries the linter version-range table", str(caught.exception))
+
+
+class LinterExecutableCollisionTests(unittest.TestCase):
+    """A property of EVERY linter at once, so it is asserted from no single backend's file.
+
+    `tools/validate_pipeline_semantics._lint_preset_by_executable` builds an argv[0] -> preset map
+    by enumeration, so two backends declaring the same executable would silently let the last row
+    win and attribute a logged command — and a certification — to the wrong preset. It fails
+    closed instead.
+
+    It lived in `tools/tests/test_linter_cppcheck.py` for one round, where it patched the RUFF
+    package to construct the collision: a cross-backend property asserted from one backend's file,
+    hardcoding its sibling, which is the placement two other checks in this repository explicitly
+    reject. Renaming or removing either backend turned the other's file red.
+    """
+
+    def test_two_backends_sharing_an_executable_are_refused(self) -> None:
+        from unittest import mock
+
+        from tools import validate_pipeline_semantics as vps
+        from tools.backends import registry
+
+        linters = [b for b in registry.backend_ids("linter")
+                   if "lint" in registry.get("linter", b).backend_provides]
+        self.assertGreaterEqual(len(linters), 2, "a collision needs two package-backed linters")
+        first, second = (registry.capability_module("linter", b, "lint") for b in linters[:2])
+
+        vps._lint_preset_by_executable.cache_clear()
+        self.addCleanup(vps._lint_preset_by_executable.cache_clear)
+        with mock.patch.object(second, "EXECUTABLE", first.EXECUTABLE):
+            with self.assertRaises(ValueError) as caught:
+                vps._lint_preset_by_executable()
+        self.assertIn(first.EXECUTABLE, str(caught.exception))
+
+    def test_the_real_declarations_have_no_collision(self) -> None:
+        """The other direction, so the row above cannot pass by refusing everything."""
+        from tools import validate_pipeline_semantics as vps
+
+        vps._lint_preset_by_executable.cache_clear()
+        self.addCleanup(vps._lint_preset_by_executable.cache_clear)
+        self.assertGreaterEqual(len(vps._lint_preset_by_executable()), 3)
 
 
 class NeutralCoreTests(unittest.TestCase):

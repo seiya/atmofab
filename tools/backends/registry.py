@@ -265,17 +265,31 @@ _BACKENDS: dict[tuple[str, str], Backend] = {
         # asks `unimplemented_reason("linter", ...)` and holds no set of its own, so this is the
         # only place the accepted presets are written. Listing only `fortitude` here would
         # narrow the live gate.
-        # The one linter whose invocation has left the neutral core. Its argv is no longer a row
-        # of `mcp_servers/build_runtime_server.py`'s table but a call into the package, because
-        # the argv now carries the RULE SET the gate applies — and a lint rule id is the example
-        # `docs/BACKEND_BOUNDARY.md` §Design Policy gives of knowledge the neutral core may not
-        # hold (issue #111). The other three rows below are still inlined there.
+        # Every linter that HAS an invocation now authors it in its own package, and
+        # `mcp_servers/build_runtime_server.py` composes each row through `capability_module`.
+        # What forced each move is the argv itself: a lint rule id, and a compiler-family
+        # argument, are the examples `docs/BACKEND_BOUNDARY.md` §Design Policy gives of knowledge
+        # the neutral core may not hold (issue #111 for the first of them, issue #120 for the
+        # other two).
         Backend(
             "linter", "fortitude", "tools.backends.linter.fortitude",
             backend_provides=frozenset({"lint"}),
         ),
-        Backend("linter", "cppcheck", None, core_provides=frozenset({"lint"})),
-        Backend("linter", "ruff", None, core_provides=frozenset({"lint"})),
+        Backend(
+            "linter", "cppcheck", "tools.backends.linter.cppcheck",
+            backend_provides=frozenset({"lint"}),
+        ),
+        Backend(
+            "linter", "ruff", "tools.backends.linter.ruff",
+            backend_provides=frozenset({"lint"}),
+        ),
+        # `mixed` stays in the neutral core, and the ground is that it has no invocation of its
+        # own: it is a COMPOSITE, defined by the presets it runs in order
+        # (`_LINT_PRESET_COMPOSITES` in the server), and naming an axis value is what the neutral
+        # core may do. It holds no rule id, no flag, and no executable name. Issue #120's
+        # acceptance was written as "core_provides={'lint'} appears on no linter record"; this
+        # row is the exception to that wording, and the wording rather than the row is what was
+        # wrong — the rule the migration serves is about knowing, not about naming.
         Backend("linter", "mixed", None, core_provides=frozenset({"lint"})),
         Backend("parallel", "openmp", None, core_provides=frozenset({"parallel_directives"})),
         # A node that declares no parallel model. It exists as a member so the axis has a

@@ -75,12 +75,29 @@ The same executables, checked a second way: PRESENT but of a version this reposi
 measured its gates against. Checked after the missing-tool arm, because an absent program has no
 version to read.
 
-Today one tool carries a range. The `Generate.gate` lint check applies a rule set this repository
-declares rather than the linter's own default, and that set is measured against the range in the
-`fortitude` row of the table above; the declaration and the measurement are
-[docs/backends/linter/fortitude/RULES.md](backends/linter/fortitude/RULES.md). Neither the tool
-name, the range, nor the probe argv is written in the launch check — all three come from the
+Every `static lint` tool carries a range, and the probe evaluates the range of whichever one the
+run's own axis selection resolves to — for the Fortran nodes in this tree, `fortitude` alone, the
+row in the table above. The `Generate.gate` lint check applies a rule set this repository declares
+rather than the linter's own default, and each set is measured against its own range. Neither the
+tool name, the range, nor the probe argv is written in the launch check — all three come from the
 backend package that owns the tool, so the check cannot look for a build the gate never runs.
+
+| linter | supported versions | declaration and measurement |
+|---|---|---|
+| `fortitude` | `>=0.8,<0.10` | [docs/backends/linter/fortitude/RULES.md](backends/linter/fortitude/RULES.md) |
+| `ruff` | `>=0.14,<0.17` | [docs/backends/linter/ruff/RULES.md](backends/linter/ruff/RULES.md) |
+| `cppcheck` | `>=2.7,<2.18` | [docs/backends/linter/cppcheck/RULES.md](backends/linter/cppcheck/RULES.md) |
+
+Which of them a run selects follows from its own `toolchain.language`, and that mapping is stated
+once, in [docs/workflow/phases/phase_02_generate.md](workflow/phases/phase_02_generate.md) §2-1 —
+not restated here, because what an operator meeting this refusal needs is the RANGE.
+
+Only the first row is reachable today: no `spec` node can select a non-`fortran` language on a
+non-`infrastructure` node, so an operator setting up a machine installs `fortitude` and neither of
+the other two. The other rows are here because the ranges are refused by the same launch arm the
+moment one of them is selected. The `missing_required_host_tools` table above deliberately does
+not grow the same rows: it renders one RESOLVED selection, not a catalogue, and adding a program
+no run installs would make the install line above wrong.
 
 Without this arm the failure surfaces at the first `Generate.gate` and consumes the whole
 `Generate` retry budget on findings no leaf can act on: the linter's vendor enabled 18 additional

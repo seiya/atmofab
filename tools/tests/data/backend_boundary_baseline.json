@@ -7,7 +7,9 @@
     "README.md": {
       "compiler-driver": 3,
       "fortran": 4,
-      "linter-fortitude": 1
+      "linter-cppcheck": 1,
+      "linter-fortitude": 1,
+      "linter-ruff": 1
     },
     "docs/AGENT_CONTRACT.md": {
       "fortran-suffix": 1,
@@ -36,6 +38,12 @@
       "fortran-kind": 3,
       "fortran-subroutine": 2
     },
+    "docs/DEVELOPMENT.md": {
+      "fortran": 1,
+      "linter-cppcheck": 1,
+      "linter-fortitude": 2,
+      "linter-ruff": 1
+    },
     "docs/GLOSSARY.md": {
       "fortran": 4,
       "make-control-file": 2
@@ -62,10 +70,12 @@
     },
     "docs/RUNBOOK.md": {
       "compiler-driver": 2,
-      "fortran": 12,
+      "fortran": 14,
       "fortran-module-file": 2,
       "fortran-suffix": 2,
-      "linter-fortitude": 8,
+      "linter-cppcheck": 3,
+      "linter-fortitude": 10,
+      "linter-ruff": 3,
       "make-control-file": 3
     },
     "docs/SPEC.md": {
@@ -143,7 +153,9 @@
       "fortran-standard": 10,
       "fortran-subroutine": 11,
       "fortran-suffix": 16,
+      "linter-cppcheck": 2,
       "linter-fortitude": 6,
+      "linter-ruff": 1,
       "make-control-file": 14,
       "make-variable": 12,
       "parallel-construct": 4,
@@ -166,7 +178,9 @@
       "compiler-syntax-only": 1,
       "fortran": 13,
       "fortran-suffix": 1,
-      "linter-fortitude": 4,
+      "linter-cppcheck": 4,
+      "linter-fortitude": 5,
+      "linter-ruff": 2,
       "make-control-file": 6,
       "make-variable": 2,
       "parallel-directive": 1
@@ -180,12 +194,16 @@
       "fortran-standard": 3,
       "fortran-subroutine": 1,
       "fortran-suffix": 6,
-      "linter-fortitude": 8,
+      "linter-cppcheck": 6,
+      "linter-fortitude": 7,
+      "linter-ruff": 4,
       "make-control-file": 16,
       "make-variable": 8
     },
     "mcp_servers/tools/run_linter.json": {
+      "linter-cppcheck": 2,
       "linter-fortitude": 3,
+      "linter-ruff": 2,
       "make-control-file": 1
     },
     "mcp_servers/tools/run_syntax_check.json": {
@@ -242,7 +260,9 @@
       "compiler-driver": 2,
       "fortran": 10,
       "fortran-subroutine": 1,
-      "linter-fortitude": 3
+      "linter-cppcheck": 2,
+      "linter-fortitude": 3,
+      "linter-ruff": 2
     },
     "tools/codegen_bundle.py": {
       "compiler-driver": 2,
@@ -324,7 +344,9 @@
       "fortran-standard": 31,
       "fortran-subroutine": 77,
       "fortran-suffix": 40,
-      "linter-fortitude": 8,
+      "linter-cppcheck": 7,
+      "linter-fortitude": 6,
+      "linter-ruff": 3,
       "make-control-file": 110,
       "make-variable": 25,
       "parallel-construct": 10,

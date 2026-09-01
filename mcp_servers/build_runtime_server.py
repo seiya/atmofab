@@ -1156,56 +1156,35 @@ def tool_run_quality_checks(args: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-#: The `static lint` presets whose argv is still SPELLED HERE, in the neutral core. Each row is
-#: one linter's invocation; `tool_run_linter` runs them and `lint_preset_executables` answers the
-#: launch-time host probe (`tools/host_prerequisites.py`) out of the same rows, so what the probe
-#: looks for cannot drift from what the gate later launches. Adding a row here does NOT widen what
-#: the `Generate` lint evidence gate ACCEPTS — that set is `tools/backends/registry.py`'s `linter`
-#: axis, and the two remain separate declarations (TODO.md, compiler / linter adapters area).
-#:
-#: A preset whose record declares `lint` in `backend_provides` is NOT here: its argv comes from
-#: its own package (`_lint_preset_command`). Today that is `fortitude` alone.
-_INLINE_LINT_PRESET_COMMANDS: dict[str, tuple[str, ...]] = {
-    "cppcheck": (
-        "cppcheck",
-        "--error-exitcode=1",
-        "--enable=warning,style,performance",
-        "--inline-suppr",
-        ".",
-    ),
-    "ruff": ("ruff", "check", "."),
-}
-
-
 def _lint_preset_command(preset: str) -> tuple[str, ...]:
-    """One preset's argv, from whichever side of the boundary owns it.
+    """One preset's argv, asked of the backend package that authors it.
 
-    Per (axis, value), which is what a partial migration looks like: the record's own package
-    where it declares the `lint` capability there, the inlined row otherwise. The preset NAME
-    survives in this module either way — naming an axis value is what the neutral core may do;
-    knowing what the value implies (here: a rule set) is what it may not
-    (`docs/BACKEND_BOUNDARY.md` §Design Policy).
+    No simple preset's argv is spelled in this module any more. The preset NAME survives here —
+    naming an axis value is what the neutral core may do; knowing what the value implies (a rule
+    set, a compiler-family argument, an executable) is what it may not
+    (`docs/BACKEND_BOUNDARY.md` §Design Policy). `_INLINE_LINT_PRESET_COMMANDS`, the table this
+    function used to fall back to, held `cppcheck`'s and `ruff`'s argv until issue #120; a
+    `KeyError` from it was how a preset with no package used to surface, and the refusal is now
+    `registry.capability_module`'s, which names the record and the capability.
+
+    `tool_run_linter` runs the result and `lint_preset_executables` answers the launch-time host
+    probe (`tools/host_prerequisites.py`) out of the same rows, so what the probe looks for
+    cannot drift from what the gate later launches.
     """
     registry = _backend_registry()
-    if "lint" in registry.get("linter", preset).backend_provides:
-        return tuple(registry.capability_module("linter", preset, "lint").check_argv())
-    return _INLINE_LINT_PRESET_COMMANDS[preset]
+    return tuple(registry.capability_module("linter", preset, "lint").check_argv())
 
 
-#: The simple `static lint` presets, in one place. A preset is here whether its argv is inlined
-#: above or authored by its own backend package; the split between those two is a MIGRATION
-#: state, and the set of presets is not.
+#: The simple `static lint` presets, in one place. Every one of them now authors its own argv in
+#: its backend package; this tuple is the set of NAMES, which is a different fact and stays here.
 #:
-#: Written as its own tuple rather than derived from `_INLINE_LINT_PRESET_COMMANDS`, because the
-#: package-backed ones are not in that table — and checked against it at import, because before
-#: the check an inline row whose name was left out of the tuple was invisible to every reader
-#: here (`lint_preset_sub_presets` would answer "unsupported preset" for a preset this file
-#: defines). That failure is closed rather than open, which is why it is a declaration check and
-#: not a gate.
+#: It is not derived from anything in this module on purpose — there is nothing here to derive it
+#: from — and a name in it whose record does not declare the `lint` capability fails at import,
+#: in the dict comprehension below, rather than at the first call.
 _SIMPLE_LINT_PRESETS: tuple[str, ...] = ("fortitude", "cppcheck", "ruff")
 
 #: The argv each simple preset runs, composed once at import. The KEYS are the set above — the
-#: set every reader below iterates — and are unchanged by where a row's argv is authored.
+#: set every reader below iterates.
 _LINT_PRESET_COMMANDS: dict[str, tuple[str, ...]] = {
     preset: _lint_preset_command(preset) for preset in _SIMPLE_LINT_PRESETS
 }
@@ -1242,11 +1221,6 @@ def _check_lint_preset_declarations() -> None:
             raise ValueError(f"lint preset {preset!r} composes unregistered presets: {unknown}")
     if DEFAULT_LINT_PRESET not in _LINT_PRESET_COMMANDS:
         raise ValueError(f"default lint preset {DEFAULT_LINT_PRESET!r} has no command row")
-    orphaned = sorted(set(_INLINE_LINT_PRESET_COMMANDS) - set(_SIMPLE_LINT_PRESETS))
-    if orphaned:
-        raise ValueError(
-            f"lint preset argv is spelled here but the preset is not declared in "
-            f"_SIMPLE_LINT_PRESETS, so no reader can reach it: {orphaned}")
 
 
 _check_lint_preset_declarations()
