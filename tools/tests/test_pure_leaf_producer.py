@@ -857,6 +857,28 @@ class PureProducerSubstepTests(unittest.TestCase):
         self.assertEqual(meta["prompt_contract_version"], PURE_PROMPT_CONTRACT_VERSION)
         self.assertEqual(meta["per_attempt"][0]["model"], "claude-opus-4-8")
 
+    def test_the_producer_loop_takes_its_launch_instant_from_the_filesystem(self) -> None:
+        """Issue #113's resolver is used by THIS loop too, not only by `run_substep`.
+
+        `SubstepOutcome.launched_at` is the bound a later attribution check compares against a
+        file mtime, so it has to be a stamp of the clock that writes those mtimes. Pinned as an
+        identity against the probe `Conductor._launch_instant` leaves behind for the surviving
+        attempt's arid: a `time.time()` reading is a different number (it is taken from a
+        different clock, and the two differ by up to one timer tick), so this fails the moment
+        the loop stops using the resolver.
+
+        Round 0's hunk mutation found this loop unwitnessed while its sibling
+        `_run_pure_verify_substep` was covered — the two took the instant on lines that read
+        identically.
+        """
+        c, refs, oc = self._run([_envelope(_valid_bundle())])
+        self.assertEqual(oc.status, "pass")
+        probe = (c.repo_root / "workspace" / "orchestrations" / c.orchestration_id
+                 / "agents" / oc.agent_run_id / wc.LAUNCH_INSTANT_PROBE_BASENAME)
+        self.assertTrue(probe.exists(), probe)
+        self.assertEqual(oc.launched_at, probe.stat().st_mtime)
+        self.assertEqual(json.loads(probe.read_text())["agent_run_id"], oc.agent_run_id)
+
     def test_pure_pass_finalize_payload_satisfies_the_real_summary_validator(self) -> None:
         """The finalize payload a passing pure leaf produces must survive the REAL
         runtime validators.
