@@ -1,4 +1,4 @@
-# Input surfaces 5-9: the episodes behind them
+# Input surfaces 5-10: the episodes behind them
 
 Moved out of `SKILL.md` verbatim (2026-08-25). `SKILL.md` §1 "Inventory the surface before
 fixing" keeps each surface's question and its rule in a few lines; this file is what each one
@@ -189,4 +189,61 @@ not.
   block message for everything under it. The read stays refused; the id in the message changes,
   and any test or document that named the old id becomes false. Check both, and keep a control
   read that must still be attributed to the root above
+
+## Surface 10 — the tool declined to do the work and reported success
+
+PR #125 (issue #120), found by a round-3 security axis after two rounds had attacked the same
+backend and missed it. It is the only reachable `leaf shortcut` that branch produced, and the
+mechanism is the tool's, not the gate's.
+
+`cppcheck` analyses at most **12** preprocessor configurations and then stops. Measured identically
+on 2.7, 2.16.0 and 2.17.1, under the gate's own declared argv:
+
+    defect inside the 20th `#ifdef`, 19 padding blocks before it   -> exit 0
+    the same block alone                                           -> exit 2
+
+Same source body, same argv, same build; the verdict flips on how much dead conditional precedes
+it. The gate reads `proc.returncode == 0` and records `ok=true`, so `Generate.gate` certifies
+source the tool never looked at.
+
+**What made it invisible for two rounds.** The tool DOES say so — `Too many #ifdef configurations
+- cppcheck only checks 12 configurations` — but the message carries severity `information`, and
+the declared severity set did not enable `information`. So the warning existed on a channel the
+gate was not listening to, and the only thing the gate WAS listening to said success. Two earlier
+rounds enumerated this backend's channels, its config discovery, its suppression directives and
+its exit statuses; none asked whether the tool bounds its own effort, because that is not an input
+surface in the ordinary sense — nothing about it is caller-controlled.
+
+**Why `--force` rather than `--max-configs=N`.** A cap of `N` has the same hole at `N+1`. Removing
+the cap is the closure; raising it is a bigger number. The cost has to be checked in the same
+breath, and the degenerate case must fail CLOSED rather than pass: measured, `--force` changed no
+verdict and no measurable time on the checked-in fixture, and a source adversarial enough to make
+it expensive hits `run_linter`'s `timeout_sec`, which arrives as `return_code: None` and is
+already a transport `fail_closed`.
+
+**The procedure is validated on this instance, and that is worth stating because it is the part
+that generalises.** `cppcheck --help` carries the whole thing without running anything:
+
+    --max-configs=<limit>   Maximum number of configurations to check in a file
+                            before skipping it. Default is '12'. …
+    -f, --force             Force checking of all configurations in files.
+
+The cap, its default and the flag that removes it, in one entry — and the runtime message names the
+channel too (`For more details, use --enable=information`). Nobody read it for three rounds. The
+string an investigator naturally greps for afterwards, `only checks 12 configurations`, is in
+`--errorlist`, NOT in `--help`; the `--help` spelling is `Default is '12'`. Grep for the flag names
+and for `default`, not for the sentence the tool prints when it fires.
+
+**The general procedure**, which is cheap and was never run on any of the three linter backends
+before this: read the tool's `--help` for the limits it imposes on ITSELF — configuration caps,
+error caps, time and memory limits, "only the first N", walk exclusions, files it declines to read
+— and for each ask two questions: what does the tool report, and is the gate listening to that
+channel. Every family this repository delegates a verdict to has at least one: a linter's walk
+exclusions and read errors (both recorded as non-closures on the same branch), a compiler's
+diagnostic cap, a test runner's collection error, a build system's `-k`.
+
+**Not surface 5.** Surface 5 is caller-controlled data reaching the classification channel, and
+the fix there is to change the channel. Here nothing is caller-controlled — the tool is answering
+a narrower question than the gate asked, and saying so somewhere else. The fix is to stop it
+narrowing, or to listen where it says it did.
 
