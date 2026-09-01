@@ -11539,7 +11539,13 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
                     {
                         "command_id": "lint_cmd_fixture_001",
                         "tool_name": "run_linter",
-                        "command": ["cppcheck", "--error-exitcode=1", "."],
+                        # The declared invocation, taken from the backend package rather than
+                        # transcribed: a fixture spelling its own argv would keep passing while
+                        # the gate's real command changed under it (issue #120 changed this one
+                        # — `--error-exitcode` moved to 2 and `--inline-suppr` left).
+                        "command": list(
+                            backend_registry.capability_module(
+                                "linter", "cppcheck", "lint").check_argv()),
                         "ok": True,
                     },
                     ensure_ascii=False,

@@ -8,6 +8,7 @@ assert the names; they assert that the names come from the tables that run them.
 
 from __future__ import annotations
 
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -366,6 +367,51 @@ class ToolVersionArmTests(unittest.TestCase):
         """The companion of `test_this_development_host_satisfies_the_probe`: if this fails, a
         workflow started on this machine would be refused at launch."""
         self.assertEqual(hp.unsupported_host_tool_versions(), ())
+
+
+class RunbookVersionRangeTests(unittest.TestCase):
+    """Every version range the operator's document states is one a backend package declares.
+
+    Set identity, not "the range appears somewhere": a document that states a range nothing
+    declares sends an operator to install a build the launch probe will refuse, and a presence
+    check is satisfied while a second occurrence drifts (measured on the fortitude range —
+    editing the first of its two occurrences left an `assertIn` green).
+
+    This lives here rather than in a backend's own test file because it is a property of ALL of
+    them at once: asserted from one backend, a sibling's range change would fail the wrong file.
+    Each backend still pins its OWN occurrences where they matter (fortitude's install line).
+    """
+
+    def _declared_ranges(self) -> dict[str, str]:
+        from tools.backends import registry as backend_registry
+
+        found = {}
+        for backend_id in backend_registry.backend_ids("linter"):
+            if "lint" not in backend_registry.get("linter", backend_id).backend_provides:
+                continue
+            module = backend_registry.capability_module("linter", backend_id, "lint")
+            found[backend_id] = module.SUPPORTED_VERSION_SPEC
+        return found
+
+    def test_every_range_the_runbook_states_is_one_a_backend_declares(self) -> None:
+        runbook = (REPO_ROOT / "docs" / "RUNBOOK.md").read_text()
+        stated = set(re.findall(r">=\d+\.\d+(?:\.\d+)?,<\d+\.\d+(?:\.\d+)?", runbook))
+        declared = self._declared_ranges()
+        self.assertEqual(
+            stated, set(declared.values()),
+            "docs/RUNBOOK.md §0-1 states a version range no linter backend declares, or omits "
+            f"one that is declared (declared: {declared})")
+
+    def test_every_declared_range_reaches_the_document(self) -> None:
+        """The other direction, so a new linter's range cannot land unwritten. Stated as its own
+        row because the set equality above would also be satisfied by a document and a registry
+        that are both wrong in the same way only if they agree — and this names WHICH backend is
+        missing, which the set comparison does not."""
+        runbook = (REPO_ROOT / "docs" / "RUNBOOK.md").read_text()
+        for backend_id, spec in sorted(self._declared_ranges().items()):
+            self.assertIn(spec, runbook,
+                          f"the {backend_id} range {spec} is declared but docs/RUNBOOK.md §0-1 "
+                          f"does not state it")
 
 
 class NeutralCoreTests(unittest.TestCase):

@@ -491,7 +491,6 @@ class WiringTests(unittest.TestCase):
         import build_runtime_server as server
 
         self.assertEqual(server._LINT_PRESET_COMMANDS["fortitude"], lint.check_argv())
-        self.assertNotIn("fortitude", server._INLINE_LINT_PRESET_COMMANDS)
         # argv[0] is what the launch probe looks for; a flag added ahead of it would send the
         # probe after the wrong program.
         self.assertEqual(server.lint_preset_executables("fortitude"), (lint.EXECUTABLE,))
@@ -780,21 +779,20 @@ class ProseCouplingTests(unittest.TestCase):
                 self.assertEqual(completed.returncode, 1,
                                  f"{rel} is gitignored; `git add -A` would skip it silently")
 
-    def test_every_version_range_the_runbook_states_is_the_declared_one(self) -> None:
-        """EVERY spelling, not "the range appears somewhere".
+    def test_the_runbook_states_this_range_wherever_an_operator_reads_it(self) -> None:
+        """Both sites, not "the range appears somewhere".
 
-        The document states it twice — once in the host-tool table and once in the install line —
-        and a presence check is satisfied while the other one drifts. Measured: editing the first
-        occurrence to a different range left an `assertIn` green. So the assertion is over the
-        SET of ranges the document contains, which is what makes an operator's install line and
-        the launch refusal impossible to disagree.
+        The document states this one twice — in the host-tool table and in the install line — and
+        a presence check is satisfied while the other one drifts. Measured: editing the first
+        occurrence to a different range left an `assertIn` green.
+
+        The set-identity half of this check — that NO range in the document is one nothing
+        declares — moved to `tools/tests/test_host_prerequisites.py` when `ruff` and `cppcheck`
+        gained ranges of their own (issue #120): it is a property of every linter at once, and
+        asserting it from one backend's file would have made this file fail whenever a sibling's
+        range changed.
         """
         runbook = (REPO_ROOT / "docs" / "RUNBOOK.md").read_text()
-        spellings = set(re.findall(r">=\d+\.\d+(?:\.\d+)?,<\d+\.\d+(?:\.\d+)?", runbook))
-        self.assertEqual(
-            spellings, {lint.SUPPORTED_VERSION_SPEC},
-            "docs/RUNBOOK.md states a version range that is not the declared one "
-            f"({lint.SUPPORTED_VERSION_SPEC}, from tools/backends/linter/fortitude/lint.py)")
         self.assertGreaterEqual(runbook.count(lint.SUPPORTED_VERSION_SPEC), 2,
                                 "the range must reach both the tool table and the install line")
         self.assertIn("unsupported_required_host_tool_versions", runbook)

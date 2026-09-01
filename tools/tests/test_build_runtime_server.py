@@ -1202,21 +1202,35 @@ class RunLinterPresetDispatchTests(unittest.TestCase):
             for sub in subs:
                 self.assertIn(sub, self.mod._LINT_PRESET_COMMANDS, f"{preset} -> {sub}")
 
-    def test_an_inlined_argv_row_no_reader_can_reach_is_refused_at_import(self) -> None:
-        """The preset SET and the inlined argv table are two spellings since one preset's argv
-        moved into its backend package, so they can disagree.
+    def test_no_simple_preset_argv_is_spelled_in_the_neutral_core(self) -> None:
+        """Every simple preset's argv comes from its backend package, not from this module.
 
-        A row spelled in `_INLINE_LINT_PRESET_COMMANDS` but left out of `_SIMPLE_LINT_PRESETS` is
-        a preset this module defines and no reader can reach — `lint_preset_sub_presets` answers
-        "unsupported preset" for it. It fails CLOSED, which is why the import-time declaration
-        check is the right place for it rather than a gate; what the check buys is that the
-        failure names the cause instead of surfacing as a refusal of a preset that is right
-        there in the file. Driven with a synthetic row, since today's declarations agree.
+        The property issue #120 closed. It is pinned by IDENTITY against the package rather than
+        by the absence of a table: a reinstated table would satisfy "there is no
+        `_INLINE_LINT_PRESET_COMMANDS`" the moment it were given another name, and would not
+        satisfy this.
         """
-        with mock.patch.dict(self.mod._INLINE_LINT_PRESET_COMMANDS,
-                             {"zz_orphan": ("zz_orphan", "check", ".")}):
-            with self.assertRaises(ValueError) as caught:
-                self.mod._check_lint_preset_declarations()
-        self.assertIn("zz_orphan", str(caught.exception))
-        self.assertIn("_SIMPLE_LINT_PRESETS", str(caught.exception))
+        from tools.backends import registry
+
+        self.assertFalse(hasattr(self.mod, "_INLINE_LINT_PRESET_COMMANDS"))
+        for preset in self.mod._SIMPLE_LINT_PRESETS:
+            record = registry.get("linter", preset)
+            self.assertIn("lint", record.backend_provides, preset)
+            module = registry.capability_module("linter", preset, "lint")
+            self.assertEqual(self.mod._LINT_PRESET_COMMANDS[preset], tuple(module.check_argv()),
+                             preset)
+
+    def test_a_preset_whose_record_declares_no_package_is_refused_by_name(self) -> None:
+        """`mixed` is the live instance: a composite carries `lint` in `core_provides`, so
+        `_lint_preset_command` must refuse it rather than compose an argv for it.
+
+        Before issue #120 the refusal was a `KeyError` out of the inlined table, which named
+        nothing. It is now the registry's, which names the record and the capability. Driven
+        through the real function on the real declaration, not a synthetic one.
+        """
+        with self.assertRaises(Exception) as caught:
+            self.mod._lint_preset_command("mixed")
+        message = str(caught.exception)
+        self.assertIn("mixed", message)
+        self.assertIn("lint", message)
 

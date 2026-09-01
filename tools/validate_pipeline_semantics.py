@@ -6859,18 +6859,45 @@ def _impl_language_from_plan_dir(repo_root: Path, ir_dir: Path) -> str | None:
     return raw.strip().lower()
 
 
+@lru_cache(maxsize=1)
+def _lint_preset_by_executable() -> dict[str, str]:
+    """argv[0] -> the simple `linter` preset that runs it, asked of the backend packages.
+
+    Not a table here. The three executable names used to be spelled in this module, which made a
+    second declaration of a fact `tools/backends/linter/<id>/lint.py` already owns — a rename in
+    a backend would have left this reader looking for a binary the gate never launches, and the
+    check below would then certify a command log it could not attribute. Same property
+    `tools/host_prerequisites.py` has, for the same reason (issue #120).
+
+    Composite presets are deliberately absent, and they exclude themselves rather than being
+    filtered: a composite runs no command of its own, so it declares no `lint` package and
+    `backend_provides` never names it.
+    """
+    found: dict[str, str] = {}
+    for preset in backend_registry.backend_ids("linter"):
+        if "lint" not in backend_registry.get("linter", preset).backend_provides:
+            continue
+        module = backend_registry.capability_module("linter", preset, "lint")
+        executable = str(module.EXECUTABLE).strip().lower()
+        # Fail CLOSED on a collision rather than letting the last row win. Two linters sharing an
+        # argv[0] would make this mapping silently attribute a logged command to whichever preset
+        # was enumerated last, and the caller certifies a `Generate` lint evidence record with the
+        # answer. It cannot happen on today's declarations, which is why it raises rather than
+        # returning a reason: it is a defect in the registry, not an input.
+        if executable in found:
+            raise ValueError(
+                f"two linter backends declare the same executable {executable!r} "
+                f"({found[executable]!r} and {preset!r}); a logged run_linter command cannot be "
+                f"attributed to one of them")
+        found[executable] = preset
+    return found
+
+
 def _infer_run_linter_preset_from_command(command: list[Any]) -> str | None:
     if not command:
         return None
     head = str(command[0]).strip().lower()
-    exe = Path(head).name
-    if exe == "fortitude":
-        return "fortitude"
-    if exe == "cppcheck":
-        return "cppcheck"
-    if exe == "ruff":
-        return "ruff"
-    return None
+    return _lint_preset_by_executable().get(Path(head).name)
 
 
 def _verify_mcp_command_log_record(

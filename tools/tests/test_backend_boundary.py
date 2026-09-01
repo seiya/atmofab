@@ -240,8 +240,14 @@ _TOKEN_CLASSES: dict[str, str] = {
     # redundant, and a probe for `clang++ -c` was being killed by its sibling.
     "compiler-driver": r"\bgfortran\b|\bflang\b|\bg\+\+|\bgcc\b|\bclang\b",
     "compiler-syntax-only": r"-fsyntax-only",
-    # linter
+    # linter. One class per registered linter, because the migration ledger is per (axis, value)
+    # and a single `linter-*` class would let a count fall in one backend while it rose in
+    # another. Each is a bare name: what these count is the NAME, which the neutral core may use
+    # as a preset key — the knowledge is what moved (TODO.md records that the counts do not fall
+    # to zero for that reason).
     "linter-fortitude": r"fortitude",
+    "linter-cppcheck": r"\bcppcheck\b",
+    "linter-ruff": r"\bruff\b",
     # parallel
     "parallel-directive": r"!\$omp",
     "parallel-construct": r"do\s+concurrent",
@@ -955,6 +961,8 @@ class TokenClassReachTests(unittest.TestCase):
                              "clang -c"), ("fortran compiler", "libgcc_s")),
         "compiler-syntax-only": (("-fsyntax-only",), ("--syntax-only",)),
         "linter-fortitude": (("fortitude check",), ("fortifying the gate",)),
+        "linter-cppcheck": (("cppcheck --enable=warning",), ("cppcheckers", "check cpp")),
+        "linter-ruff": (("ruff check .",), ("gruff", "ruffle")),
         "parallel-directive": (("!$omp parallel do",), ("$omp parallel do",)),
         "parallel-construct": (("do concurrent (i=1:n)", "do  concurrent (i=1:n)"),
                                ("run these concurrently",)),
@@ -1446,9 +1454,13 @@ class RegistryConsistencyTests(unittest.TestCase):
         # for it. Note the asymmetry the instrument's own comment below records — the conductor's
         # `{"lint": ...}` dict key is NOT what makes it dispatched, and never was.
         #
+        # `lint` reached every linter that HAS an argv when issue #120 moved `cppcheck` and
+        # `ruff` too; `mixed` is the one linter record still answering from `core_provides`, and
+        # it has no argv of its own to move (it is a composite).
+        #
         # The rest are declaration-only TODAY: they are how their records answer `implemented`,
         # and they gain a dispatch when their ledger area lands (the compiler adapters and the
-        # parallel knobs are still inlined in the neutral core, as are the other three linters).
+        # parallel knobs are still inlined in the neutral core).
         declaration_only = set(registry.CAPABILITIES) - dispatched
         asked: set[str] = set()
         registry_path = Path(registry.__file__).resolve()
