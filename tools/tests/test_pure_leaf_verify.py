@@ -86,6 +86,29 @@ class PureVerifySubstepTests(unittest.TestCase):
         if hasattr(self, "_tmp"):
             self._tmp.cleanup()
 
+    def test_the_reviewer_loop_takes_its_launch_instant_from_the_filesystem(self) -> None:
+        """Mirror of the producer's #113 pin — one witness per OCCURRENCE, not per rule.
+
+        The three sites that take a launch instant read identically, and round 0's hunk
+        mutation reported this one killed in one run and surviving in another (the kill came
+        from a neighbouring failure under `-x`, not from an assertion about this line). An
+        identity against the probe `Conductor._launch_instant` writes for this attempt's arid
+        settles it: a `time.time()` reading is a different number, the two clocks differing by
+        up to one timer tick.
+
+        It matters here as well as in the producer because THIS loop's outcome is the one
+        `_stage_meta_authored_since(refs, phase, failed.launched_at)` compares against a file
+        mtime when it decides whether the failed verify leaf authored the meta it would be
+        asked to repair.
+        """
+        c, _refs, oc = self._run([_envelope(_verdict("pass"))])
+        self.assertEqual(oc.status, "pass")
+        probe = (c.repo_root / "workspace" / "orchestrations" / c.orchestration_id
+                 / "agents" / oc.agent_run_id / wc.LAUNCH_INSTANT_PROBE_BASENAME)
+        self.assertTrue(probe.exists(), probe)
+        self.assertEqual(oc.launched_at, probe.stat().st_mtime)
+        self.assertEqual(json.loads(probe.read_text())["agent_run_id"], oc.agent_run_id)
+
     def test_pure_pass_finalize_payload_satisfies_the_real_summary_validator(self) -> None:
         """Mirror of the producer's regression pin (billed E2E, 2026-07-16).
 
