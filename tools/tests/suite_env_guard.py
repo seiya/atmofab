@@ -72,7 +72,8 @@ def operator_env_names_to_strip(environ) -> list[str]:
 
     NO COUNT is stated for how many names this covers, deliberately, and this paragraph
     has now been wrong twice for stating one. Three documents once said "the 17 METFORGE_*
-    names the tree reads"; reviewers counting differently got 21, 23, 25 and 27, each a
+    names the tree reads" (spelled `METDSL_*` at the time — the prefix was renamed in issue
+    #127); reviewers counting differently got 21, 23, 25 and 27, each a
     correct answer to a different question about which files and which spellings count.
     What is checked instead is a PROPERTY, by
     `test_every_environment_name_the_tree_reads_is_stripped_or_declared`: every name the

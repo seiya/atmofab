@@ -63,7 +63,11 @@ answers a question about the machine instead of about the code, and the cost is 
 reviewer's round: on PR #81 a reviewer reported 152 failures as a branch regression when
 143 were the branch's and the rest were this.
 
-Measured on `165c26f`, whole suite, one variable at a time unless noted:
+Measured on `165c26f`, whole suite, one variable at a time unless noted. **That commit
+predates the `met-dsl` -> `met-forge` rename (issue #127), so to RE-TAKE any figure below
+spell the names `METDSL_*` there — `METFORGE_*` matches nothing at `165c26f` and every
+row comes back 0.** The names are written in the current spelling because the record
+is about which names the tree reads, not about that commit's text:
 
   clean                                              5280 passed / 114s
   METFORGE_ORCHESTRATION_ID + METFORGE_CHILD_AGENT_RUN_ID    9 failed   (the pair issue #84 named)
