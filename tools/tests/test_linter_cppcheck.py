@@ -204,6 +204,31 @@ class VersionGateTests(unittest.TestCase):
         for text in (None, "", "Cppcheck", "not a version"):
             self.assertIsNotNone(lint.unsupported_version_reason(text), repr(text))
 
+    def test_the_range_an_operator_is_told_to_install_is_the_range_that_is_accepted(self) -> None:
+        """The PATCH component, which every other probe here moves with.
+
+        `below`, `inside`, `floor` and `ceiling` in the rows above are all derived from
+        `MIN_VERSION` / `BELOW_VERSION`, so they slide with the constant and cannot see a patch
+        component change: `MIN_VERSION = (2, 7, 5)` left this file and
+        `test_host_prerequisites.py` green. That is a family that structurally cannot answer.
+
+        What does not slide is the OPERATOR'S spelling. `SUPPORTED_VERSION_SPEC` is what
+        `docs/RUNBOOK.md` §0-1 tells someone to install, so the build they get by following it —
+        the floor at patch `.0` — must be accepted, and so must the last patch under the ceiling.
+        Anything else refuses an operator at launch for having done what the document said.
+        """
+        floor, ceiling = lint.SUPPORTED_VERSION_SPEC.split(",")
+        fmaj, fmin = (int(x) for x in floor.removeprefix(">=").split("."))
+        cmaj, cmin = (int(x) for x in ceiling.removeprefix("<").split("."))
+        for major, minor, patch in ((fmaj, fmin, 0), (cmaj, cmin - 1, 999)):
+            text = f"{lint.EXECUTABLE} {major}.{minor}.{patch}"
+            with self.subTest(accepted=text):
+                self.assertIsNone(lint.unsupported_version_reason(text))
+        for major, minor, patch in ((fmaj, fmin - 1, 999), (cmaj, cmin, 0)):
+            text = f"{lint.EXECUTABLE} {major}.{minor}.{patch}"
+            with self.subTest(refused=text):
+                self.assertIsNotNone(lint.unsupported_version_reason(text))
+
     def test_the_installed_build_is_inside_the_range(self) -> None:
         completed = subprocess.run([_linter_path(), *lint.version_argv()[1:]],
                                    text=True, capture_output=True, timeout=60, check=False)
@@ -271,6 +296,27 @@ class BehaviourAgainstTheInstalledBuildTests(unittest.TestCase):
         reported = _reported_checks(tree.run())
         self.assertTrue(_CHECKS_EVERY_BUILD_REPORTS <= reported,
                         sorted(_CHECKS_EVERY_BUILD_REPORTS - reported))
+
+    def test_the_severity_list_is_redundant_and_that_is_measured_not_assumed(self) -> None:
+        """`--enable=style` alone gives the same verdict as the three-name list.
+
+        Two of the three members of `ENABLED_SEVERITIES` are unwitnessed by any fixture, because
+        the tool subsumes them: its `--help` documents `style` as enabling style, warning,
+        performance AND portability. That is a fact about the BUILD, so it is measured here rather
+        than asserted in prose — if a supported build ever stops subsuming, the redundancy the
+        document states becomes false and this row is what says so.
+
+        It also pins the direction that matters: the declared argv must not report LESS than
+        `--enable=style`, which is what a narrowing edit would produce.
+        """
+        tree = _Tree(self)
+        declared = _reported_checks(tree.run())
+        argv = list(lint.check_argv("."))
+        argv[0] = _linter_path()
+        style_only = [a if not a.startswith("--enable=") else "--enable=style" for a in argv]
+        subsumed = _reported_checks(_run(style_only, tree.src))
+        self.assertEqual(declared, subsumed)
+        self.assertTrue(declared, "the fixture reported nothing; the comparison is vacuous")
 
     def test_a_clean_source_passes(self) -> None:
         tree = _Tree(self, _CLEAN_SOURCE)
@@ -397,14 +443,39 @@ class BackendDocumentTests(unittest.TestCase):
         policy = self.text.split("## Design Policy", 1)[1].split("## Declared set", 1)[0]
         self.assertRegex(policy, re.compile(r"^- \*\*`--inline-suppr` is ABSENT", re.M))
 
-    def test_the_document_states_every_suppression(self) -> None:
-        stated = set(re.findall(r"^\| `([A-Za-z][A-Za-z0-9]*)` \|", self.text, re.M))
-        self.assertEqual(stated & set(lint.SUPPRESSED_RULE_CODES),
-                         set(lint.SUPPRESSED_RULE_CODES))
+    def _declared_set_section(self) -> str:
+        return self.text.split("## Declared set", 1)[1].split("## Limits", 1)[0]
 
-    def test_the_document_states_the_severities_the_gate_enables(self) -> None:
-        for severity in lint.ENABLED_SEVERITIES:
-            self.assertIn(severity, self.text)
+    def test_the_declared_set_section_names_exactly_the_suppressions(self) -> None:
+        """SET IDENTITY over the section, not containment.
+
+        The first version asserted `stated & set(SUPPRESSED_RULE_CODES) == set(...)`, which is
+        `set() == set()` while the dict is empty and is containment-only even when it is not — so
+        a row claiming a check is suppressed that the gate in fact REPORTS passed. The `ruff`
+        sibling had the same shape and was fixed a round earlier; this one was left behind, which
+        is why it is stated as a rule about the section rather than about the codes.
+
+        The direction matters on the day `c`/`cpp` is reachable: §Scope promises the leaf-facing
+        checklist is derived from this document, and a check the document calls suppressed that
+        the gate reports is a rule the leaf is told it need not satisfy.
+        """
+        rows = set(re.findall(r"^\| `([A-Za-z][A-Za-z0-9]*)` \|", self._declared_set_section(),
+                              re.M))
+        self.assertEqual(rows, set(lint.SUPPRESSED_RULE_CODES))
+
+    def test_the_declared_set_section_names_exactly_the_enabled_severities(self) -> None:
+        """The severities are read out of the section, not searched for in the whole document.
+
+        `assertIn("warning", self.text)` is three ordinary English words against a document that
+        uses all of them in prose, in the fenced argv and in the design bullets: deleting this
+        section's sentence entirely, and rewriting it to name `portability` and `information`,
+        both left the file green. What a reader takes the certified scope from is this section, so
+        this is where the identity is asserted — and `error` is required with them, because the
+        section has to say why it is not in the constant.
+        """
+        section = self._declared_set_section()
+        spans = set(re.findall(r"`([a-z]+)`", section.split("There is no id-level set", 1)[0]))
+        self.assertEqual(spans, set(lint.ENABLED_SEVERITIES) | {"error"})
 
     def test_the_document_quotes_the_supported_range(self) -> None:
         self.assertIn(lint.SUPPORTED_VERSION_SPEC, self.text)

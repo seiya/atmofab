@@ -393,14 +393,50 @@ class RunbookVersionRangeTests(unittest.TestCase):
             found[backend_id] = module.SUPPORTED_VERSION_SPEC
         return found
 
-    def test_every_range_the_runbook_states_is_one_a_backend_declares(self) -> None:
+    #: The §0-1 table this check owns, found by its own header rather than by position. Scoping
+    #: to it is not tidiness: the first version scanned the WHOLE document for any `>=x.y,<a.b`
+    #: and demanded set identity with the LINTER backends, so one legitimate row documenting a
+    #: `python3` or `cmake` version prerequisite anywhere in the operator's runbook turned the
+    #: suite red with a message blaming the document for a linter fact. That is over-refusal, the
+    #: recorded default error direction of this repository, aimed by accident at the instrument's
+    #: own document.
+    _RANGE_TABLE_HEADER = "| linter | supported versions | declaration and measurement |"
+
+    def _linter_range_table(self) -> str:
         runbook = (REPO_ROOT / "docs" / "RUNBOOK.md").read_text()
-        stated = set(re.findall(r">=\d+\.\d+(?:\.\d+)?,<\d+\.\d+(?:\.\d+)?", runbook))
+        self.assertIn(self._RANGE_TABLE_HEADER, runbook,
+                      "docs/RUNBOOK.md §0-1 no longer carries the linter version-range table; "
+                      "this check cannot find what it is supposed to compare")
+        after = runbook.split(self._RANGE_TABLE_HEADER, 1)[1]
+        rows = []
+        for line in after.splitlines()[1:]:          # skip the `|---|` separator
+            if not line.startswith("|"):
+                break
+            rows.append(line)
+        return "\n".join(rows)
+
+    def test_every_range_the_runbook_table_states_is_one_a_backend_declares(self) -> None:
+        stated = set(re.findall(r">=\d+\.\d+(?:\.\d+)?,<\d+\.\d+(?:\.\d+)?",
+                                self._linter_range_table()))
         declared = self._declared_ranges()
         self.assertEqual(
             stated, set(declared.values()),
-            "docs/RUNBOOK.md §0-1 states a version range no linter backend declares, or omits "
-            f"one that is declared (declared: {declared})")
+            "the linter version-range table in docs/RUNBOOK.md §0-1 states a range no linter "
+            f"backend declares, or omits one that is declared (declared: {declared})")
+
+    def test_a_version_range_elsewhere_in_the_runbook_is_not_this_check_s_business(self) -> None:
+        """The over-refusal probe, kept as a row rather than as a comment.
+
+        A range documented for a NON-linter prerequisite is legitimate work in that document. The
+        first version of this check refused it; this one must not, and the row drives the real
+        extractor over a document body carrying exactly that.
+        """
+        body = (f"| tool | version |\n{self._RANGE_TABLE_HEADER}\n|---|---|---|\n"
+                "| `fortitude` | `>=9.9,<9.10` | x |\n\n"
+                "Elsewhere: install `python3` `>=3.10,<3.14` and `cmake` `>=3.20,<4.0`.\n")
+        found = set(re.findall(r">=\d+\.\d+(?:\.\d+)?,<\d+\.\d+(?:\.\d+)?",
+                               body.split(self._RANGE_TABLE_HEADER, 1)[1].split("\n\n", 1)[0]))
+        self.assertEqual(found, {">=9.9,<9.10"})
 
     def test_every_declared_range_reaches_the_document(self) -> None:
         """The other direction, so a new linter's range cannot land unwritten. Stated as its own

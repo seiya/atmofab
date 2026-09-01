@@ -102,12 +102,27 @@ import re
 #: name of its own (`tools/host_prerequisites.py`).
 EXECUTABLE = "cppcheck"
 
-#: The severities the gate applies, and the only place they are written. `error` is not listed
-#: because cppcheck always reports it; these are the ones `--enable` has to ask for.
+#: The severities the gate asks for, and the only place they are written. `error` is not listed
+#: because cppcheck always reports it; these are the ones `--enable` has to be told.
 #:
 #: This is the closest thing cppcheck has to a declared rule set, and it is not close: which
 #: checks a severity contains is the build's business, which is why the module docstring states
 #: the weaker property this backend achieves.
+#:
+#: TWO OF THE THREE ARE REDUNDANT, and saying so is part of the declaration rather than a reason
+#: to drop them. `--enable=style` is documented by the tool's own `--help` as enabling "all
+#: messages with the severities 'style', 'warning', 'performance' and 'portability'", and
+#: MEASURED on 2.7 / 2.16.0 / 2.17.1 over the checked-in fixture, `--enable=style` alone produces
+#: a verdict identical to the three-name list. They stay because a declaration should NAME what it
+#: applies: reducing this to `("style",)` would make the argv depend on that subsumption, which is
+#: the kind of inherited semantics this whole backend exists to remove.
+#:
+#: AND THE CONSTANT UNDERSTATES THE ARGV, which is the half worth a reader's attention. By the
+#: same `--help` sentence, `--enable=style` also enables `portability`, and this tuple does not
+#: name it — so the severities the gate APPLIES are a superset of the severities it DECLARES.
+#: Stated rather than closed, because it is not measured: no source constructed here produced a
+#: `portability` finding on any supported build, so the difference between the two sets is
+#: documented from the tool's own text and not from an observation. `TODO.md` carries it.
 ENABLED_SEVERITIES: tuple[str, ...] = ("warning", "style", "performance")
 
 #: Checks deliberately suppressed, id to the ground for it, imposed as `--suppress=<id>`.

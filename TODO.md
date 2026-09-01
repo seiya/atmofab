@@ -24,6 +24,29 @@ the linter PRESET of the same name is a different subject entirely.
 
 ## TODO list
 
+- **The `cppcheck` lint gate applies a severity its own declaration does not name** (2026-09-01,
+  low — documented but NOT measured; found by the issue #120 review loop, witness-census axis,
+  by pulling on a smaller finding). `tools/backends/linter/cppcheck/lint.py` declares
+  `ENABLED_SEVERITIES = ("warning", "style", "performance")` and the argv passes them to
+  `--enable`. The tool's own `--help`, identical on 2.7 / 2.16.0 / 2.17.1, documents `style` as
+  enabling "all messages with the severities `style`, `warning`, `performance` **and
+  `portability`**". So the severities the gate APPLIES are a superset of the severities it
+  DECLARES, which is the one place in that backend where the declaration is known to be narrower
+  than the behaviour.
+  - **Not measured, and that is why it is here rather than fixed.** No source constructed during
+    the review produced a `portability` finding on any supported build, so the difference between
+    the two sets has no observation behind it — only the vendor's text. Writing `portability` into
+    the constant on the strength of a `--help` sentence would be declaring something nobody has
+    seen, which is the failure this backend's own §Requirements is about.
+  - **What would settle it**: construct a source that produces a `portability` finding (the
+    `--errorlist` entries with that severity are the candidate list), then either add the
+    severity to the constant or pass `--enable` a set that excludes it, and record which.
+  - Measured and pinned in the same review: `--enable=style` ALONE gives a verdict identical to
+    the three-name list on all three builds, so two of the three declared members are redundant.
+    They are kept deliberately — a declaration should name what it applies — and
+    `test_the_severity_list_is_redundant_and_that_is_measured_not_assumed` fails if a build stops
+    subsuming.
+
 - **`preset=mixed` refuses its own lint gate on a node whose tree holds nothing one sub-preset can
   analyse** (2026-09-01, low — reproduced, unreachable today; found by the issue #120 review loop,
   correctness axis, as a `route not established` item and reproduced here). `mixed` runs

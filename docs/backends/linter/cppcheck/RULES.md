@@ -59,8 +59,23 @@ Element by element, each checked against `CHECK_FLAGS` by test:
   `--error-exitcode=1` those last three were indistinguishable from "there are findings", so a
   conductor that could not start the linter would have routed the failure to the leaf as findings
   in its own source — issue #110's unwinnable loop.
-- `--enable=warning,style,performance` — the severities the gate applies, declared as
+- `--enable=warning,style,performance` — the severities the gate asks for, declared as
   `ENABLED_SEVERITIES`. `error` is not listed because cppcheck always reports it.
+  - **Two of the three are REDUNDANT.** The tool's own `--help` documents `style` as enabling
+    "all messages with the severities 'style', 'warning', 'performance' and 'portability'", and
+    measured on 2.7 / 2.16.0 / 2.17.1 over the checked-in fixture, `--enable=style` alone gives a
+    verdict identical to the three-name list. They are kept because a declaration should NAME what
+    it applies; reducing the argv to `--enable=style` would make it depend on that subsumption,
+    which is the inherited semantics this backend exists to remove. Pinned by
+    `test_the_severity_list_is_redundant_and_that_is_measured_not_assumed`, so a build that stops
+    subsuming is noticed.
+  - **The constant UNDERSTATES the argv.** By the same sentence, `--enable=style` also enables
+    `portability`, which `ENABLED_SEVERITIES` does not name — so the severities the gate APPLIES
+    are a superset of the severities it DECLARES. **This half is not measured**: no source
+    constructed here produced a `portability` finding on any supported build, so the gap is
+    documented from the tool's text rather than from an observation. It is the one place in this
+    backend where the declaration is known to be narrower than the behaviour. `TODO.md` carries
+    it.
 - `--platform=unix64` — pins the type model. The default is `native`, i.e. whichever machine runs
   the gate. **DECLARED, NOT WITNESSED, and said rather than implied**: no fixture measured here
   reports differently under `native`, `unix64` and `unix32`. The flag removes a host input; it

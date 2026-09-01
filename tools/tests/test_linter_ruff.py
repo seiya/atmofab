@@ -177,6 +177,31 @@ class VersionGateTests(unittest.TestCase):
         inside = (lint.MIN_VERSION[0], lint.MIN_VERSION[1], lint.MIN_VERSION[2])
         self.assertIsNone(lint.unsupported_version_reason(f"ruff {inside[0]}.{inside[1]}.{inside[2]}"))
 
+    def test_the_range_an_operator_is_told_to_install_is_the_range_that_is_accepted(self) -> None:
+        """The PATCH component, which every other probe here moves with.
+
+        `below`, `inside`, `floor` and `ceiling` in the rows above are all derived from
+        `MIN_VERSION` / `BELOW_VERSION`, so they slide with the constant and cannot see a patch
+        component change: `MIN_VERSION = (0, 14, 9)` left this file and
+        `test_host_prerequisites.py` green. That is a family that structurally cannot answer.
+
+        What does not slide is the OPERATOR'S spelling. `SUPPORTED_VERSION_SPEC` is what
+        `docs/RUNBOOK.md` §0-1 tells someone to install, so the build they get by following it —
+        the floor at patch `.0` — must be accepted, and so must the last patch under the ceiling.
+        Anything else refuses an operator at launch for having done what the document said.
+        """
+        floor, ceiling = lint.SUPPORTED_VERSION_SPEC.split(",")
+        fmaj, fmin = (int(x) for x in floor.removeprefix(">=").split("."))
+        cmaj, cmin = (int(x) for x in ceiling.removeprefix("<").split("."))
+        for major, minor, patch in ((fmaj, fmin, 0), (cmaj, cmin - 1, 999)):
+            text = f"{lint.EXECUTABLE} {major}.{minor}.{patch}"
+            with self.subTest(accepted=text):
+                self.assertIsNone(lint.unsupported_version_reason(text))
+        for major, minor, patch in ((fmaj, fmin - 1, 999), (cmaj, cmin, 0)):
+            text = f"{lint.EXECUTABLE} {major}.{minor}.{patch}"
+            with self.subTest(refused=text):
+                self.assertIsNotNone(lint.unsupported_version_reason(text))
+
     def test_the_installed_build_is_inside_the_range(self) -> None:
         completed = subprocess.run([_linter_path(), *lint.version_argv()[1:]],
                                    text=True, capture_output=True, timeout=60, check=False)
@@ -485,7 +510,10 @@ class BackendDocumentTests(unittest.TestCase):
         in the section that holds the enumeration.
         """
         policy = self.text.split("## Design Policy", 1)[1].split("## Declared set", 1)[0]
-        opened = set(re.findall(r"^  - `(--[a-z-]+=?)` — ", policy, re.M))
+        # `^\s*- `, not `^  - `: the nesting depth of a bullet is a formatting choice, and a
+        # legitimate de-indent should not turn this row red. The pin is that each flag OPENS its
+        # own bullet in this section, not how far that bullet is indented.
+        opened = set(re.findall(r"^\s*- `(--[a-z-]+=?)` — ", policy, re.M))
         expected = {f.split("=", 1)[0] + "=" if f.endswith("=") else f
                     for f in lint.CHECK_FLAGS if f.startswith("--") and f != "--select"}
         self.assertEqual(opened, expected)
