@@ -30861,7 +30861,7 @@ class GateResultTmpCopySurfaceTests(unittest.TestCase):
     The path `workspace/tmp/<agent_run_id>/gate_results/<gate>.json` is stated across the
     instruction corpus, in the gate hint injected into every leaf's launch prompt, and in
     the runtime that writes it. That many statement sites of one rule is where a sweep by
-    hand has already lost (`.claude/skills/metdsl-enforcement-change` rule 3-a), and two of
+    hand has already lost (`.claude/skills/metforge-enforcement-change` rule 3-a), and two of
     the sites are read by a leaf and by an operator, who ACT on them: a leaf sent to a path
     the runtime no longer writes reads nothing and cannot tell that from a gate that
     produced nothing.
@@ -31189,7 +31189,7 @@ class GateResultTmpCopySurfaceTests(unittest.TestCase):
         Six surfaces used to say `gates/<arid>/<gate>.json` is a file "no leaf can write",
         and round 1 established it is not. Anchoring a check on the corrected wording
         would pin that my edit survived, not that the correction is still true -- the
-        first trap under `.claude/skills/metdsl-enforcement-change` rule 3-a. So this
+        first trap under `.claude/skills/metforge-enforcement-change` rule 3-a. So this
         pins the two tree facts the correction rests on. If either flips, the documents
         become stale in the SAFE direction and this test is what says so.
 

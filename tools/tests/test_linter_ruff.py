@@ -9,7 +9,7 @@ Four kinds of check live here, and they are not interchangeable.
    amount of asserting a constant against itself would see it. Every channel row carries a
    NEGATIVE CONTROL — the same probe with the flag omitted — because a row that only asserts
    "the findings are still there" passes on a linter that found them for another reason. They do
-   NOT skip when the linter is absent (`.claude/skills/metdsl-enforcement-change` judgment
+   NOT skip when the linter is absent (`.claude/skills/metforge-enforcement-change` judgment
    rule 2: a machine without the tool is a machine that cannot run a workflow, which
    `tools/tests/test_host_prerequisites.py` already asserts).
 3. **Prose coupling** — `docs/backends/linter/ruff/RULES.md` is the document a reader is sent to,

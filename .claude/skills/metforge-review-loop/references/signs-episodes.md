@@ -11,9 +11,9 @@ the case history that tells you how it closed.
   **your own fixes** — put the focus instruction in from the first round
 - **You have rewritten the same string three times** → the problem is not the rule but the prose
   citing it. Switch to the grep sweep
-  (`.claude/skills/metdsl-enforcement-change/references/verification.md`). **Rewriting one statement
+  (`.claude/skills/metforge-enforcement-change/references/verification.md`). **Rewriting one statement
   repeatedly is a SWEEP problem, which this row owns; several sites that each state the rule is a
-  COUPLING problem, which `metdsl-enforcement-change` rule 3-a owns and states the threshold
+  COUPLING problem, which `metforge-enforcement-change` rule 3-a owns and states the threshold
   for.** Do not restate its number here — that is the drift this pair is about
 - **Prose that enumerates entities in the code** (lists of test names, counts of call sites,
   numbers of readers) → **re-measuring loses. Turn it into a check.** Unlike a number measured once,
@@ -74,7 +74,7 @@ the case history that tells you how it closed.
   weaker question that can be answered** (is there no other declaration anywhere in the file).
   **If the simple and the complex version give identical measured diffs, the complexity bought
   nothing** — take that diff first
-- **A reviewer said "it is environment-dependent"** (`metdsl-enforcement-change` judgment rule 2
+- **A reviewer said "it is environment-dependent"** (`metforge-enforcement-change` judgment rule 2
   owns this rule; this row is the episode) → do not close it with a mock on the test side.
   Ask first what happens in production on that environment
 - **You rebuilt the design and tests carrying the old mechanism's name remain** → test names are

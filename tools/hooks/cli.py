@@ -1704,7 +1704,7 @@ def _evaluate_grep_glob_read_policy(
     # escape reopens and nothing here notices — the preflight roster check measures which
     # TOOLS a leaf gets, not what one of them can reach. `TODO.md` carries that, and the
     # measurement is re-runnable:
-    # `.claude/skills/metdsl-enforcement-change/scripts/measure_claude_tool.py`.
+    # `.claude/skills/metforge-enforcement-change/scripts/measure_claude_tool.py`.
     #
     # `~` is kept in the trigger although it is inert, because `_glob_literal_prefix`
     # already returns the expanded location and the condition costs one character.
@@ -2440,7 +2440,7 @@ def main(argv: list[str] | None = None) -> int:
             # first sentence is therefore for the leaf and says the one thing it can act
             # on: nothing. Without it a leaf meets a refusal it cannot explain and will
             # retry, which is the shape a fail-closed message must not have
-            # (`.claude/skills/metdsl-review-loop`: a refusal is closed only once it is
+            # (`.claude/skills/metforge-review-loop`: a refusal is closed only once it is
             # an instruction under which a warm retry converges - and here the converging
             # instruction is to stop). The rest is for the operator who will read it in
             # `native_hook_events.jsonl` or in their own terminal.

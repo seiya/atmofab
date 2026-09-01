@@ -111,7 +111,7 @@ back. It nearly became "this pin works" in the prose — the pin was in fact fal
 against `origin/main`'s wording, which only replacing the whole file revealed.
 
 - Count the occurrences before substituting and **exit non-zero on zero matches**.
-  `.claude/skills/metdsl-review-loop/scripts/mutation_check.py` does this for the case that
+  `.claude/skills/metforge-review-loop/scripts/mutation_check.py` does this for the case that
   matches it — a hunk it cannot revert is
   reported as SKIPPED and exits 1 (witnessed for the rename cause; no scenario has yet produced a
   bare `git apply -R` refusal, so that half is asserted from the code, not measured) (until 2026-08-19 it was counted as neither a survivor
@@ -183,7 +183,7 @@ was never observed at all. A kill from a setup error is worth exactly as much as
 
 **Rewriting a test can delete a witness.** PR #57's round 3 replaced a test with a better one and
 removed the only test observing a validator-side backstop it had deliberately kept. The mechanism
-lived on, and mutants went green. Sibling of `metdsl-enforcement-change` §4's "Pin at the handler, not the helper".
+lived on, and mutants went green. Sibling of `metforge-enforcement-change` §4's "Pin at the handler, not the helper".
 
 **Reproducing the wiring is not observing the wiring.** A test meant to pin what `run_substep`
 passes as `pure=` computed `pure` itself and handed it to `_resolve_reuse_resume` directly, so

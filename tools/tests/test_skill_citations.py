@@ -311,7 +311,7 @@ class CitationScannerSelfTests(unittest.TestCase):
     """SELF-TEST. The check above asserts an ABSENCE, so a scanner that found nothing would
     satisfy it. The rule is defined once, above, and driven here from both directions."""
 
-    _SOURCE = f"{SKILL_ROOT}/metdsl-enforcement-change/SKILL.md"
+    _SOURCE = f"{SKILL_ROOT}/metforge-enforcement-change/SKILL.md"
 
     def test_a_broken_citation_is_found(self) -> None:
         targets = citation_targets("see `tools/no_such_file.py`", self._SOURCE)
@@ -344,13 +344,13 @@ class CitationScannerSelfTests(unittest.TestCase):
         self.assertCountEqual(
             targets,
             ["AGENTS.md", "TODO.md",
-             f"{SKILL_ROOT}/metdsl-enforcement-change/references/verification.md"])
+             f"{SKILL_ROOT}/metforge-enforcement-change/references/verification.md"])
 
     def test_a_skill_relative_pointer_resolves_from_a_reference_file_too(self) -> None:
-        source = f"{SKILL_ROOT}/metdsl-enforcement-change/references/verification.md"
+        source = f"{SKILL_ROOT}/metforge-enforcement-change/references/verification.md"
         self.assertEqual(
             citation_targets("`scripts/measure_claude_tool.py`", source),
-            [f"{SKILL_ROOT}/metdsl-enforcement-change/scripts/measure_claude_tool.py"])
+            [f"{SKILL_ROOT}/metforge-enforcement-change/scripts/measure_claude_tool.py"])
 
     def test_the_body_is_read_from_the_index_not_the_worktree(self) -> None:
         """The property the previous round claimed to have fixed and had not.

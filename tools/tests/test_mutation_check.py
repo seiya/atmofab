@@ -77,7 +77,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 SCRIPT = (Path(__file__).resolve().parents[2]
-          / ".claude" / "skills" / "metdsl-review-loop" / "scripts" / "mutation_check.py")
+          / ".claude" / "skills" / "metforge-review-loop" / "scripts" / "mutation_check.py")
 
 #: Neutralise the operator's git configuration for every git this file runs, its own and the
 #: script's. Measured on one developer machine's plausible settings: `commit.gpgsign=true` fails

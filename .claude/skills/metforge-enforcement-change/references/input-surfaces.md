@@ -33,7 +33,7 @@ Each fix narrowed the scan, and **each was broken by one byte**:
 enters that text. If it does, **change the channel rather than narrowing the sample** — exit
 code, exception type, a dedicated field, a sidecar. Each of these is written by the side that
 knows and cannot be written by the caller. This is the classification-channel version of
-`metdsl-review-loop`'s "when a pin keeps being broken in a new shape, move the definition to
+`metforge-review-loop`'s "when a pin keeps being broken in a new shape, move the definition to
 one place".
 
 The same shape usually exists several times in the same repository. In L174 the twin survived

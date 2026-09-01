@@ -4175,7 +4175,7 @@ DEFAULT_ALLOWED_GATE_SERVICES: tuple[str, ...] = (
 # name. THE RULE IS DEFINED HERE AND THE DOCUMENTS ARE CHECKED AGAINST IT, because this
 # path is restated in many places -- the leaf-read contract, the rendered gate hint, the
 # operator runbook, the audit SKILL and four more documents -- and a sweep by hand over
-# that many sites is the failure mode `.claude/skills/metdsl-enforcement-change` rule 3-a
+# that many sites is the failure mode `.claude/skills/metforge-enforcement-change` rule 3-a
 # exists for. THE COUNT IS DELIBERATELY NOT WRITTEN HERE: three parties measured it in
 # round 1 and returned three different answers (7 files, 8 files, and an appositive that
 # enumerated 8 while the sentence said 10), because none of them stated a method. The
@@ -6483,7 +6483,7 @@ def _assert_under_agent_tmp_root(repo_root: Path, target: Path) -> None:
     CONSEQUENCE, stated rather than discovered later: deleting the CALL is invisible to
     the suite, because no reachable input makes it fire. The function's own behaviour is
     pinned by `AgentTmpRootContainmentTests`; the call site is not, and cannot be without
-    a defect to reach it. Kept under `.claude/skills/metdsl-enforcement-change` rule 1-b --
+    a defect to reach it. Kept under `.claude/skills/metforge-enforcement-change` rule 1-b --
     a surviving mutation is not grounds for deletion, and "there is no test" and "the code
     is unnecessary" are different claims.
     """

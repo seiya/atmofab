@@ -674,7 +674,7 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
         load-bearing sentence — the one telling a maintainer what stands between the
         snapshot and the operator's cached value. Both were caught by review, in
         consecutive rounds, which is the definition of a discipline that has stopped
-        working; `.claude/skills/metdsl-enforcement-change` rule 3-a says to couple the
+        working; `.claude/skills/metforge-enforcement-change` rule 3-a says to couple the
         documents to the rule with a check at that point, and this is the check.
 
         Scoped to the files this change owns, and to CODE — a document may legitimately

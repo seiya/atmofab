@@ -7,7 +7,7 @@ Four kinds of check live here, and they are not interchangeable.
 2. **Behaviour against the INSTALLED build** — runs the tool. Every channel row carries a
    NEGATIVE CONTROL, because a row that only asserts "the findings are still there" passes on a
    linter that found them for another reason. They do NOT skip when the linter is absent
-   (`.claude/skills/metdsl-enforcement-change` judgment rule 2).
+   (`.claude/skills/metforge-enforcement-change` judgment rule 2).
 3. **Prose coupling** — `docs/backends/linter/cppcheck/RULES.md` is compared against the code,
    never the reverse.
 4. **The deferred leaf-facing checklist**, tied to the reachability gate rather than to memory.

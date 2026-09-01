@@ -280,7 +280,7 @@ def unusable_invocation_reason(returncode: int, stdout: str, stderr: str) -> str
 
     ONLY THE EXIT STATUS IS READ. The alternative — matching `cppcheck: error:` in the output —
     reads a channel the caller's own file names are mixed into, which is the shape
-    `.claude/skills/metdsl-enforcement-change` surface 5 exists for.
+    `.claude/skills/metforge-enforcement-change` surface 5 exists for.
     """
     if returncode in (0, FINDINGS_EXIT_CODE):
         return None

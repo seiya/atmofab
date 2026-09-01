@@ -32,7 +32,7 @@ command that merely CONTAINS a sleep invocation is refused too — a `grep "slee
 message quoting this rule, a heredoc documenting it. This is the same trade
 `operator_safety.py` records for its own rules and for the same reason: the failure direction is a
 refusal the operator can rephrase, and narrowing it by parsing shell grammar is the losing line
-(`.claude/skills/metdsl-enforcement-change/references/source-text-surface.md`). It is not
+(`.claude/skills/metforge-enforcement-change/references/source-text-surface.md`). It is not
 hypothetical: this rule refused two commands of the commit that introduced it, both of them
 heredocs writing the documentation for it — the same way `operator_safety.py` was refused by
 itself on 2026-08-26. What IS narrowed
@@ -45,7 +45,7 @@ first two could not happen:
 * **A cleanup command SCOPED BY THE DURATION is refused**: `pkill -f "sleep 1799"`, `pgrep -af
   "sleep 1799"`. The duration sits in a quoted argument, which raw text cannot tell from a wait —
   and quoting cannot be the discriminator either, since the incident's own spelling was
-  `eval '<wait>; true'`. What keeps this from blocking cleanup is that `metdsl-review-loop`
+  `eval '<wait>; true'`. What keeps this from blocking cleanup is that `metforge-review-loop`
   ALREADY forbids `pkill -f` for this job and mandates killing by PID after reading `ps`:
   `pkill -P <ppid>` and `kill <pid>` are unaffected, and stopping the agent reaps its children
   anyway. The prescribed route is open; the forbidden one is not. An earlier version of this
@@ -107,7 +107,7 @@ _SLEEP_INVOCATION = re.compile(
 
 #: What the refusal tells the reader to do, most reachable cause first. Ordered because a remedy
 #: is read in order and the first line is the one that gets followed
-#: (`.claude/skills/metdsl-enforcement-change/references/failure-routing.md`).
+#: (`.claude/skills/metforge-enforcement-change/references/failure-routing.md`).
 _REMEDY = (
     "Do not wait by sleeping in an agent session. In order of what is most likely true here: "
     "(1) if you are waiting on work this harness started, DO NOT POLL — it re-invokes the "

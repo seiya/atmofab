@@ -35,7 +35,7 @@ import unittest
 from pathlib import Path
 
 SCRIPT = (Path(__file__).resolve().parents[2]
-          / ".claude/skills/metdsl-enforcement-change/scripts/measure_claude_tool.py")
+          / ".claude/skills/metforge-enforcement-change/scripts/measure_claude_tool.py")
 
 
 def _load():
