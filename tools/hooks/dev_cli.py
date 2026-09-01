@@ -118,7 +118,7 @@ def main(argv: list[str] | None = None) -> int:
         # Order is not load-bearing — both refuse — but the checkout-guarding rule is asked
         # first so a command that trips both reports the more serious cause.
         violation = operator_safety_violation(
-            command, workflow_exec_mode=os.environ.get("METDSL_WORKFLOW_EXEC_MODE")
+            command, workflow_exec_mode=os.environ.get("METFORGE_WORKFLOW_EXEC_MODE")
         ) or polling_wait_violation(command)
         if violation is None:
             return 0

@@ -7150,7 +7150,7 @@ def _validate_generate_syntax_command_logs(
     (the pipeline root is read-only inside the sandbox). Required only for
     toolchain.language=fortran (the only language with a syntax-check adapter); the
     MANDATORY stage is gfortran and must have passed. Optional additional stages (the
-    METDSL_SYNTAX_COMPILERS target-compiler stages) may be recorded as `skipped` when
+    METFORGE_SYNTAX_COMPILERS target-compiler stages) may be recorded as `skipped` when
     their compiler has no registered adapter or no installed binary, or when the stage
     refused before running (a staged source whose name the tool rejects); a `skipped` MANDATORY stage fails certification
     either way, as does a recorded `fail` stage."""

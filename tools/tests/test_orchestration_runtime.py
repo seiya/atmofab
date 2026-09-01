@@ -19,7 +19,7 @@ import unittest
 # `_dependency_ready` now fails closed when live recompute cannot run; tests
 # explicitly opt into the legacy persisted-boolean fallback so existing
 # fixtures keep working. Production environments do NOT set this variable.
-os.environ.setdefault("METDSL_DEP_READINESS_ALLOW_PERSISTED_FALLBACK", "1")
+os.environ.setdefault("METFORGE_DEP_READINESS_ALLOW_PERSISTED_FALLBACK", "1")
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from typing import Any, Callable
 from datetime import datetime, timedelta, timezone
@@ -452,12 +452,12 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
         return checks
 
     def setUp(self) -> None:
-        self._old_live_preflight = os.environ.get("METDSL_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT")
-        self._old_assume_bwrap = os.environ.get("METDSL_ORCHESTRATION_ASSUME_BWRAP")
-        self._old_codex_home = os.environ.get("METDSL_HOME")
-        os.environ["METDSL_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT"] = "0"
-        os.environ["METDSL_ORCHESTRATION_ASSUME_BWRAP"] = "1"
-        os.environ["METDSL_HOME"] = "/tmp/codex-orchestration-test-home"
+        self._old_live_preflight = os.environ.get("METFORGE_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT")
+        self._old_assume_bwrap = os.environ.get("METFORGE_ORCHESTRATION_ASSUME_BWRAP")
+        self._old_codex_home = os.environ.get("METFORGE_HOME")
+        os.environ["METFORGE_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT"] = "0"
+        os.environ["METFORGE_ORCHESTRATION_ASSUME_BWRAP"] = "1"
+        os.environ["METFORGE_HOME"] = "/tmp/codex-orchestration-test-home"
         # `_prepare_codex_workflow_home` binds the operator's real `auth.json` into
         # the isolated home read-only and refuses to launch without it. This class's
         # codex launches began reaching that code once the isolation branch keyed on
@@ -472,17 +472,17 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         if self._old_live_preflight is None:
-            os.environ.pop("METDSL_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT", None)
+            os.environ.pop("METFORGE_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT", None)
         else:
-            os.environ["METDSL_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT"] = self._old_live_preflight
+            os.environ["METFORGE_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT"] = self._old_live_preflight
         if self._old_assume_bwrap is None:
-            os.environ.pop("METDSL_ORCHESTRATION_ASSUME_BWRAP", None)
+            os.environ.pop("METFORGE_ORCHESTRATION_ASSUME_BWRAP", None)
         else:
-            os.environ["METDSL_ORCHESTRATION_ASSUME_BWRAP"] = self._old_assume_bwrap
+            os.environ["METFORGE_ORCHESTRATION_ASSUME_BWRAP"] = self._old_assume_bwrap
         if self._old_codex_home is None:
-            os.environ.pop("METDSL_HOME", None)
+            os.environ.pop("METFORGE_HOME", None)
         else:
-            os.environ["METDSL_HOME"] = self._old_codex_home
+            os.environ["METFORGE_HOME"] = self._old_codex_home
 
     def test_terminal_statuses_do_not_include_fail_closed(self) -> None:
         self.assertEqual(TERMINAL_STATUSES, {"pass", "fail", "blocked", "timeout", "cancel"})
@@ -1668,7 +1668,7 @@ shell_tool                       stable             true
                 )
             raise AssertionError(args)
 
-        with patch.dict(os.environ, {"METDSL_ORCHESTRATION_ASSUME_BWRAP": "0"}):
+        with patch.dict(os.environ, {"METFORGE_ORCHESTRATION_ASSUME_BWRAP": "0"}):
             with patch("tools.orchestration_runtime.shutil.which", return_value=None):
                 result = probe_execution_platform(backend="codex", runner=runner)
         self.assertEqual(result["status"], "fail")
@@ -1690,8 +1690,8 @@ shell_tool                       stable             true
         with patch.dict(
             os.environ,
             {
-                "METDSL_HOME": "/__codex_preflight_missing_parent__/home/.codex",
-                "METDSL_ORCHESTRATION_ASSUME_BWRAP": "1",
+                "METFORGE_HOME": "/__codex_preflight_missing_parent__/home/.codex",
+                "METFORGE_ORCHESTRATION_ASSUME_BWRAP": "1",
             },
         ):
             result = probe_execution_platform(backend="codex", runner=runner)
@@ -9837,7 +9837,7 @@ shell_tool                       stable             true
                     "checks": [{"name": "multi_agent_enabled", "pass": True}, {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
                 },
             )
-            os.environ["METDSL_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT"] = "1"
+            os.environ["METFORGE_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT"] = "1"
             with patch("tools.orchestration_runtime.probe_execution_platform") as probe_mock:
                 probe_mock.return_value = {
                     "checked_at": "2026-04-15T12:00:00Z",
@@ -9906,7 +9906,7 @@ shell_tool                       stable             true
                     "checks": [{"name": "multi_agent_enabled", "pass": True}, {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
                 },
             )
-            os.environ["METDSL_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT"] = "0"
+            os.environ["METFORGE_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT"] = "0"
             with patch(
                 "tools.orchestration_runtime.probe_execution_platform",
                 side_effect=AssertionError("live probe must not run"),
@@ -13501,7 +13501,7 @@ class OrchestrationMetaAndJudgeHookTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             orch = "preflight_only_orch"
-            with patch.dict(os.environ, {"METDSL_ALLOW_PARALLEL_NODES": "1"}):
+            with patch.dict(os.environ, {"METFORGE_ALLOW_PARALLEL_NODES": "1"}):
                 write_preflight(
                     repo_root=repo,
                     orchestration_id=orch,
@@ -13517,7 +13517,7 @@ class OrchestrationMetaAndJudgeHookTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             orch = "preflight_then_init"
-            with patch.dict(os.environ, {"METDSL_ALLOW_PARALLEL_NODES": "true"}):
+            with patch.dict(os.environ, {"METFORGE_ALLOW_PARALLEL_NODES": "true"}):
                 write_preflight(
                     repo_root=repo,
                     orchestration_id=orch,
@@ -13607,7 +13607,7 @@ class OrchestrationMetaAndJudgeHookTests(unittest.TestCase):
 
     def test_record_launch_and_terminal_record_agent_run_update_session_run_index(self) -> None:
         with tempfile.TemporaryDirectory() as tmp, patch.dict(
-            os.environ, {"METDSL_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "0"}
+            os.environ, {"METFORGE_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "0"}
         ):
             repo = Path(tmp)
             # This launch is CODEX-backed: since the isolation branch keys on the
@@ -13701,14 +13701,14 @@ class OrchestrationMetaAndJudgeHookTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             orch = "orch_parallel_audit"
-            with patch.dict(os.environ, {"METDSL_ALLOW_PARALLEL_NODES": "1"}):
+            with patch.dict(os.environ, {"METFORGE_ALLOW_PARALLEL_NODES": "1"}):
                 out1 = pre_orchestration_start(repo, orch, event="init")
             self.assertTrue(out1["parallel_nodes_explicit"])
             meta_path = repo / "workspace" / "orchestrations" / orch / "orchestration_meta.json"
             meta1 = json.loads(meta_path.read_text(encoding="utf-8"))
             self.assertTrue(meta1.get("parallel_nodes_explicit"))
             with patch.dict(os.environ, {}, clear=False):
-                os.environ.pop("METDSL_ALLOW_PARALLEL_NODES", None)
+                os.environ.pop("METFORGE_ALLOW_PARALLEL_NODES", None)
                 out2 = pre_orchestration_start(repo, orch, event="preflight")
             self.assertTrue(out2["parallel_nodes_explicit"])
             meta2 = json.loads(meta_path.read_text(encoding="utf-8"))
@@ -13864,45 +13864,45 @@ class OrchestrationMetaAndJudgeHookTests(unittest.TestCase):
 
 class PreflightLiveProbeTtlTests(unittest.TestCase):
     def test_live_preflight_mode_never_on_zero(self) -> None:
-        with patch.dict(os.environ, {"METDSL_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "0"}):
+        with patch.dict(os.environ, {"METFORGE_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "0"}):
             self.assertEqual(_live_preflight_mode(), "never")
 
     def test_live_preflight_mode_never_on_false(self) -> None:
-        with patch.dict(os.environ, {"METDSL_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "false"}):
+        with patch.dict(os.environ, {"METFORGE_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "false"}):
             self.assertEqual(_live_preflight_mode(), "never")
 
     def test_live_preflight_mode_always_on_one(self) -> None:
-        with patch.dict(os.environ, {"METDSL_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "1"}):
+        with patch.dict(os.environ, {"METFORGE_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "1"}):
             self.assertEqual(_live_preflight_mode(), "always")
 
     def test_live_preflight_mode_ttl_when_unset(self) -> None:
         with patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("METDSL_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT", None)
+            os.environ.pop("METFORGE_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT", None)
             self.assertEqual(_live_preflight_mode(), "ttl")
 
     def test_live_preflight_mode_ttl_on_unknown_value(self) -> None:
-        with patch.dict(os.environ, {"METDSL_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "auto"}):
+        with patch.dict(os.environ, {"METFORGE_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "auto"}):
             self.assertEqual(_live_preflight_mode(), "ttl")
 
     def test_live_preflight_ttl_seconds_default(self) -> None:
         with patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("METDSL_PREFLIGHT_TTL_SECONDS", None)
+            os.environ.pop("METFORGE_PREFLIGHT_TTL_SECONDS", None)
             self.assertEqual(_live_preflight_ttl_seconds(), 1800)
 
     def test_live_preflight_ttl_seconds_custom(self) -> None:
-        with patch.dict(os.environ, {"METDSL_PREFLIGHT_TTL_SECONDS": "300"}):
+        with patch.dict(os.environ, {"METFORGE_PREFLIGHT_TTL_SECONDS": "300"}):
             self.assertEqual(_live_preflight_ttl_seconds(), 300)
 
     def test_live_preflight_ttl_seconds_zero(self) -> None:
-        with patch.dict(os.environ, {"METDSL_PREFLIGHT_TTL_SECONDS": "0"}):
+        with patch.dict(os.environ, {"METFORGE_PREFLIGHT_TTL_SECONDS": "0"}):
             self.assertEqual(_live_preflight_ttl_seconds(), 0)
 
     def test_live_preflight_ttl_seconds_invalid_value(self) -> None:
-        with patch.dict(os.environ, {"METDSL_PREFLIGHT_TTL_SECONDS": "abc"}):
+        with patch.dict(os.environ, {"METFORGE_PREFLIGHT_TTL_SECONDS": "abc"}):
             self.assertEqual(_live_preflight_ttl_seconds(), 1800)
 
     def test_live_preflight_ttl_seconds_negative(self) -> None:
-        with patch.dict(os.environ, {"METDSL_PREFLIGHT_TTL_SECONDS": "-1"}):
+        with patch.dict(os.environ, {"METFORGE_PREFLIGHT_TTL_SECONDS": "-1"}):
             self.assertEqual(_live_preflight_ttl_seconds(), 0)
 
     def test_is_within_preflight_ttl_true_when_recent(self) -> None:
@@ -14017,8 +14017,8 @@ class PreflightLiveProbeTtlTests(unittest.TestCase):
                 ),
             )
             env = {
-                "METDSL_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "auto",
-                "METDSL_PREFLIGHT_TTL_SECONDS": "1800",
+                "METFORGE_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "auto",
+                "METFORGE_PREFLIGHT_TTL_SECONDS": "1800",
             }
             with patch.dict(os.environ, env):
                 with patch(
@@ -14041,8 +14041,8 @@ class PreflightLiveProbeTtlTests(unittest.TestCase):
                 ),
             )
             env = {
-                "METDSL_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "auto",
-                "METDSL_PREFLIGHT_TTL_SECONDS": "1800",
+                "METFORGE_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "auto",
+                "METFORGE_PREFLIGHT_TTL_SECONDS": "1800",
             }
             with patch.dict(os.environ, env):
                 with patch("tools.orchestration_runtime.probe_execution_platform") as probe_mock:
@@ -14067,8 +14067,8 @@ class PreflightLiveProbeTtlTests(unittest.TestCase):
                 ),
             )
             env = {
-                "METDSL_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "auto",
-                "METDSL_PREFLIGHT_TTL_SECONDS": "1800",
+                "METFORGE_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "auto",
+                "METFORGE_PREFLIGHT_TTL_SECONDS": "1800",
             }
             with patch.dict(os.environ, env):
                 with patch("tools.orchestration_runtime.probe_execution_platform") as probe_mock:
@@ -14090,8 +14090,8 @@ class PreflightLiveProbeTtlTests(unittest.TestCase):
             path.write_text(json.dumps(body, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
             env = {
-                "METDSL_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "auto",
-                "METDSL_PREFLIGHT_TTL_SECONDS": "1800",
+                "METFORGE_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "auto",
+                "METFORGE_PREFLIGHT_TTL_SECONDS": "1800",
             }
             with patch.dict(os.environ, env):
                 with patch("tools.orchestration_runtime.probe_execution_platform") as probe_mock:
@@ -14114,7 +14114,7 @@ class PreflightLiveProbeTtlTests(unittest.TestCase):
                     probed_at=_iso_utc_z(datetime.now(timezone.utc) - timedelta(seconds=5)),
                 ),
             )
-            with patch.dict(os.environ, {"METDSL_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "1"}):
+            with patch.dict(os.environ, {"METFORGE_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "1"}):
                 with patch("tools.orchestration_runtime.probe_execution_platform") as probe_mock:
                     probe_mock.return_value = _launchable_preflight_dict(
                         checked_at="2026-04-15T11:00:00Z",
@@ -14134,7 +14134,7 @@ class PreflightLiveProbeTtlTests(unittest.TestCase):
                     probed_at=_iso_utc_z(datetime.now(timezone.utc) - timedelta(seconds=2000)),
                 ),
             )
-            with patch.dict(os.environ, {"METDSL_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "0"}):
+            with patch.dict(os.environ, {"METFORGE_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "0"}):
                 with patch(
                     "tools.orchestration_runtime.probe_execution_platform",
                     side_effect=AssertionError("probe must not run"),
@@ -14155,8 +14155,8 @@ class PreflightLiveProbeTtlTests(unittest.TestCase):
             )
             new_checked = "2026-04-15T15:30:00Z"
             env = {
-                "METDSL_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "auto",
-                "METDSL_PREFLIGHT_TTL_SECONDS": "1800",
+                "METFORGE_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "auto",
+                "METFORGE_PREFLIGHT_TTL_SECONDS": "1800",
             }
             with patch.dict(os.environ, env):
                 with patch("tools.orchestration_runtime.probe_execution_platform") as probe_mock:
@@ -14182,8 +14182,8 @@ class PreflightLiveProbeTtlTests(unittest.TestCase):
             )
             fallback = "2099-01-01T00:00:00Z"
             env = {
-                "METDSL_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "auto",
-                "METDSL_PREFLIGHT_TTL_SECONDS": "1800",
+                "METFORGE_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "auto",
+                "METFORGE_PREFLIGHT_TTL_SECONDS": "1800",
             }
             with patch.dict(os.environ, env):
                 with patch("tools.orchestration_runtime.probe_execution_platform") as probe_mock:
@@ -14213,8 +14213,8 @@ class PreflightLiveProbeTtlTests(unittest.TestCase):
                 ),
             )
             env = {
-                "METDSL_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "auto",
-                "METDSL_PREFLIGHT_TTL_SECONDS": "0",
+                "METFORGE_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "auto",
+                "METFORGE_PREFLIGHT_TTL_SECONDS": "0",
             }
             with patch.dict(os.environ, env):
                 with patch("tools.orchestration_runtime.probe_execution_platform") as probe_mock:
@@ -14243,8 +14243,8 @@ class PreflightLiveProbeTtlTests(unittest.TestCase):
                 checked_at=_iso_utc_z(datetime.now(timezone.utc) - timedelta(seconds=30)),
             )
             env = {
-                "METDSL_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "auto",
-                "METDSL_PREFLIGHT_TTL_SECONDS": "1800",
+                "METFORGE_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "auto",
+                "METFORGE_PREFLIGHT_TTL_SECONDS": "1800",
             }
             with patch.dict(os.environ, env):
                 with patch("tools.orchestration_runtime.probe_execution_platform") as probe_mock:
@@ -14333,8 +14333,8 @@ class PreflightLiveProbeTtlTests(unittest.TestCase):
                 encoding="utf-8",
             )
             env = {
-                "METDSL_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "auto",
-                "METDSL_PREFLIGHT_TTL_SECONDS": "1800",
+                "METFORGE_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "auto",
+                "METFORGE_PREFLIGHT_TTL_SECONDS": "1800",
             }
             with patch.dict(os.environ, env):
                 with patch("tools.orchestration_runtime.probe_execution_platform") as probe_mock:
@@ -14427,8 +14427,8 @@ class PreflightLiveProbeTtlTests(unittest.TestCase):
             with patch.dict(
                 os.environ,
                 {
-                    "METDSL_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "auto",
-                    "METDSL_PREFLIGHT_TTL_SECONDS": "1800",
+                    "METFORGE_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "auto",
+                    "METFORGE_PREFLIGHT_TTL_SECONDS": "1800",
                 },
             ):
                 st = get_preflight_ttl_status(repo, "o1")
@@ -14442,7 +14442,7 @@ class PreflightLiveProbeTtlTests(unittest.TestCase):
             repo = Path(tmp)
             init_orchestration(repo_root=repo, orchestration_id="o1")
             _mark_dependencies_ready(repo, "o1")
-            with patch.dict(os.environ, {"METDSL_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "auto"}):
+            with patch.dict(os.environ, {"METFORGE_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "auto"}):
                 st = get_preflight_ttl_status(repo, "o1")
             self.assertFalse(st["preflight_exists"])
             self.assertFalse(st["probe_skippable"])
@@ -14459,7 +14459,7 @@ class PreflightLiveProbeTtlTests(unittest.TestCase):
                     probed_at=_iso_utc_z(datetime.now(timezone.utc) - timedelta(seconds=5)),
                 ),
             )
-            with patch.dict(os.environ, {"METDSL_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "1"}):
+            with patch.dict(os.environ, {"METFORGE_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "1"}):
                 st = get_preflight_ttl_status(repo, "o1")
             self.assertFalse(st["probe_skippable"])
 
@@ -14479,8 +14479,8 @@ class PreflightLiveProbeTtlTests(unittest.TestCase):
             with patch.dict(
                 os.environ,
                 {
-                    "METDSL_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "auto",
-                    "METDSL_PREFLIGHT_TTL_SECONDS": "1800",
+                    "METFORGE_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "auto",
+                    "METFORGE_PREFLIGHT_TTL_SECONDS": "1800",
                 },
             ):
                 with redirect_stdout(buf):
@@ -16095,7 +16095,7 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
             (project_dir / "CMakeLists.txt").write_text("project(x)\n", encoding="utf-8")
             fake = {"ok": True, "return_code": 0, "stdout": "", "stderr": ""}
             with patch.dict(os.environ, {}, clear=False):
-                for name in ("METDSL_WORKFLOW_MODE", "METDSL_ORCHESTRATION_ID"):
+                for name in ("METFORGE_WORKFLOW_MODE", "METFORGE_ORCHESTRATION_ID"):
                     os.environ.pop(name, None)
                 with patch.object(brs, "_run_command", return_value=dict(fake)) as run_command:
                     result = tool_compile_project({"project_dir": str(project_dir)})
@@ -18758,7 +18758,7 @@ class BwrapProfileFilePinTests(unittest.TestCase):
             codex_home = Path(home) / ".codex"
             self.assertFalse(codex_home.exists())
             with patch.dict(os.environ, {"HOME": home}, clear=False):
-                os.environ.pop("METDSL_HOME", None)
+                os.environ.pop("METFORGE_HOME", None)
                 profile = build_bwrap_profile(
                     repo_root=repo_root, orchestration_id=orch, agent_run_id=run_id,
                     backend_command="codex", backend_type="codex",
@@ -18768,8 +18768,8 @@ class BwrapProfileFilePinTests(unittest.TestCase):
 
     def test_build_bwrap_profile_rejects_rw_home_not_outside_repo(self) -> None:
         """A backend rw home with any containment relationship to repo_root must be
-        rejected: covering it (METDSL_HOME=repo root/ancestor) would remount the repo
-        writable, and an in-repo home (METDSL_HOME=$repo/workspace) would grant writes
+        rejected: covering it (METFORGE_HOME=repo root/ancestor) would remount the repo
+        writable, and an in-repo home (METFORGE_HOME=$repo/workspace) would grant writes
         beyond the child write_roots. Only a home fully outside repo_root is allowed."""
         from tools.orchestration_runtime import build_bwrap_profile
 
@@ -18783,7 +18783,7 @@ class BwrapProfileFilePinTests(unittest.TestCase):
             )
             for bad_home in (str(repo_root), str(repo_root / "workspace")):
                 with self.subTest(home=bad_home):
-                    with patch.dict(os.environ, {"METDSL_HOME": bad_home}, clear=False):
+                    with patch.dict(os.environ, {"METFORGE_HOME": bad_home}, clear=False):
                         with self.assertRaises(ValueError):
                             build_bwrap_profile(
                                 repo_root=repo_root, orchestration_id=orch,
@@ -19030,7 +19030,7 @@ class BwrapProfileFilePinTests(unittest.TestCase):
             (home / ".claude.json").write_text("{}", encoding="utf-8")
             (home / ".codex").mkdir()
             with patch.dict(os.environ, {"HOME": str(home)}, clear=False):
-                os.environ.pop("METDSL_HOME", None)
+                os.environ.pop("METFORGE_HOME", None)
                 # explicit claude type + opaque wrapper command → claude home still bound
                 _, rw_wrap = _backend_runtime_bind_paths("claude", "mywrap --model Z")
                 self.assertIn(str(home / ".claude"), rw_wrap)
@@ -19038,8 +19038,8 @@ class BwrapProfileFilePinTests(unittest.TestCase):
                 # codex type → ~/.codex bound writable
                 _, rw_codex = _backend_runtime_bind_paths("codex", "codex")
                 self.assertIn(str(home / ".codex"), rw_codex)
-                # METDSL_HOME with a `~` is expanded to an absolute path (matches preflight)
-                with patch.dict(os.environ, {"METDSL_HOME": "~/.codexcustom"}, clear=False):
+                # METFORGE_HOME with a `~` is expanded to an absolute path (matches preflight)
+                with patch.dict(os.environ, {"METFORGE_HOME": "~/.codexcustom"}, clear=False):
                     _, rw_custom = _backend_runtime_bind_paths("codex", "codex")
                 self.assertIn(str(home / ".codexcustom"), rw_custom)
 
@@ -21877,9 +21877,9 @@ class RecordTimeoutTests(unittest.TestCase):
         """
         authored = {"PATH": "/usr/bin:/bin", "HOME": "/tmp/leaf-home",
                     "LANG": "C.UTF-8", "PYTHONPATH": "/repo",
-                    "METDSL_ORCHESTRATION_ID": "orch_to_001",
-                    "METDSL_CHILD_AGENT_RUN_ID": "substep_run_to_001",
-                    "METDSL_WORKFLOW_MODE": "1",
+                    "METFORGE_ORCHESTRATION_ID": "orch_to_001",
+                    "METFORGE_CHILD_AGENT_RUN_ID": "substep_run_to_001",
+                    "METFORGE_WORKFLOW_MODE": "1",
                     "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1"}
         with tempfile.TemporaryDirectory() as td:
             repo_root = Path(td)
@@ -21912,8 +21912,8 @@ class RecordTimeoutTests(unittest.TestCase):
         tightly than an agentic one, not less, so it is the wrong one to leave inheriting.
         """
         authored = {"PATH": "/usr/bin:/bin", "HOME": "/tmp/leaf-home", "LANG": "C.UTF-8",
-                    "METDSL_ORCHESTRATION_ID": "orch_to_001",
-                    "METDSL_CHILD_AGENT_RUN_ID": "substep_run_to_001"}
+                    "METFORGE_ORCHESTRATION_ID": "orch_to_001",
+                    "METFORGE_CHILD_AGENT_RUN_ID": "substep_run_to_001"}
         with mock.patch.dict(os.environ, {"ANTHROPIC_BASE_URL": "http://127.0.0.1:9"}):
             with tempfile.TemporaryDirectory() as td:
                 repo_root = Path(td)
@@ -22235,7 +22235,7 @@ class RecordTimeoutTests(unittest.TestCase):
             token = _parent_return_token_path(
                 repo_root, "orch_to_001", arid
             ).read_text(encoding="utf-8").strip()
-            with _patch.dict(os.environ, {"METDSL_ENFORCE_REPLY_BUDGET": "1"}):
+            with _patch.dict(os.environ, {"METFORGE_ENFORCE_REPLY_BUDGET": "1"}):
                 with self.assertRaises(ValueError):
                     finalize_child(
                         repo_root=repo_root,
@@ -22282,7 +22282,7 @@ class RecordTimeoutTests(unittest.TestCase):
             token = _parent_return_token_path(
                 repo_root, "orch_to_001", arid
             ).read_text(encoding="utf-8").strip()
-            with _patch.dict(os.environ, {"METDSL_ENFORCE_REPLY_BUDGET": "1"}):
+            with _patch.dict(os.environ, {"METFORGE_ENFORCE_REPLY_BUDGET": "1"}):
                 with self.assertRaises(ValueError):
                     finalize_child(
                         repo_root=repo_root,
@@ -24054,7 +24054,7 @@ class DependencyReadyFailReasonPropagationTests(unittest.TestCase):
             # Disable persisted-boolean fallback for this assertion: we want
             # production strict-mode behavior where the gate uses fail_reason.
             with patch.dict(os.environ, {}, clear=False):
-                os.environ.pop("METDSL_DEP_READINESS_ALLOW_PERSISTED_FALLBACK", None)
+                os.environ.pop("METFORGE_DEP_READINESS_ALLOW_PERSISTED_FALLBACK", None)
                 ok, reason = _dependency_ready(repo_root, "frp", step="compile")
             self.assertFalse(ok)
             self.assertEqual(reason, "deps_yaml_malformed_schema",
@@ -24096,7 +24096,7 @@ class DependencyReadyFailReasonPropagationTests(unittest.TestCase):
             }
             meta_path.write_text(json.dumps(meta) + "\n", encoding="utf-8")
             with patch.dict(os.environ, {}, clear=False):
-                os.environ.pop("METDSL_DEP_READINESS_ALLOW_PERSISTED_FALLBACK", None)
+                os.environ.pop("METFORGE_DEP_READINESS_ALLOW_PERSISTED_FALLBACK", None)
                 ok, reason = _dependency_ready(repo_root, "frp2", step="compile")
             self.assertFalse(ok)
             self.assertEqual(reason, "deps_yaml_missing_or_unparseable")
@@ -24892,7 +24892,7 @@ class MarkDependencyReadinessMalformedCliTests(unittest.TestCase):
 class DependencyReadinessStrictModeTests(unittest.TestCase):
     """Codex round 20 F1: production launch checks fail closed when live
     recompute cannot run (no deps.yaml). The persisted-boolean fallback is
-    gated behind METDSL_DEP_READINESS_ALLOW_PERSISTED_FALLBACK=1, which only
+    gated behind METFORGE_DEP_READINESS_ALLOW_PERSISTED_FALLBACK=1, which only
     test scaffolding sets."""
 
     def test_strict_mode_rejects_when_recompute_unavailable(self) -> None:
@@ -24903,11 +24903,11 @@ class DependencyReadinessStrictModeTests(unittest.TestCase):
             _mark_dependencies_ready(repo_root, "strict")
             # No spec_ref / deps.yaml on disk. Disable the fallback.
             with patch.dict(os.environ, {
-                "METDSL_DEP_READINESS_ALLOW_PERSISTED_FALLBACK": "",
+                "METFORGE_DEP_READINESS_ALLOW_PERSISTED_FALLBACK": "",
             }, clear=False):
                 # patch.dict can't truly "unset" a var unless we ensure it.
                 os.environ.pop(
-                    "METDSL_DEP_READINESS_ALLOW_PERSISTED_FALLBACK", None,
+                    "METFORGE_DEP_READINESS_ALLOW_PERSISTED_FALLBACK", None,
                 )
                 ok, reason = _dependency_ready(repo_root, "strict", step="compile")
             self.assertFalse(ok,
@@ -24925,7 +24925,7 @@ class DependencyReadinessStrictModeTests(unittest.TestCase):
             _mark_dependencies_ready(repo_root, "fb")
             # Module-level setdefault already set the env var to "1".
             self.assertEqual(
-                os.environ.get("METDSL_DEP_READINESS_ALLOW_PERSISTED_FALLBACK"),
+                os.environ.get("METFORGE_DEP_READINESS_ALLOW_PERSISTED_FALLBACK"),
                 "1",
             )
             ok, reason = _dependency_ready(repo_root, "fb", step="compile")
@@ -31425,7 +31425,7 @@ class ReplyBudgetTests(unittest.TestCase):
     def test_over_budget_hard_raises_under_env(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root, ref = self._write_reply(tmp, "y" * (REPLY_BUDGET_CHARS + 1))
-            with patch.dict(os.environ, {"METDSL_ENFORCE_REPLY_BUDGET": "1"}):
+            with patch.dict(os.environ, {"METFORGE_ENFORCE_REPLY_BUDGET": "1"}):
                 with self.assertRaises(ValueError):
                     _evaluate_reply_budget(repo_root, "o1", agent_run_id="a", reply_ref=ref)
 
@@ -34634,31 +34634,31 @@ class MultiProviderPreflightTests(unittest.TestCase):
               "phases:\n  generate:\n    substeps:\n      generate:\n"
               "        provider: openai_compatible\n"
               "        base_url: http://localhost:8000/v1\n"
-              "        api_key_env: METDSL_TEST_LOCAL_KEY\n        model: local-model\n")
+              "        api_key_env: METFORGE_TEST_LOCAL_KEY\n        model: local-model\n")
 
     # --- the HTTP prober -------------------------------------------------------------
 
     def _row(self, **kw):
         row = {"backend": "openai_compatible", "provider": "openai_compatible",
-               "base_url": "http://localhost:8000/v1", "api_key_env": "METDSL_TEST_LOCAL_KEY"}
+               "base_url": "http://localhost:8000/v1", "api_key_env": "METFORGE_TEST_LOCAL_KEY"}
         row.update(kw)
         return row
 
     def test_http_provider_probes_launchable_when_all_three_checks_pass(self) -> None:
-        with patch.dict(os.environ, {"METDSL_TEST_LOCAL_KEY": "secret-value"}, clear=False):
+        with patch.dict(os.environ, {"METFORGE_TEST_LOCAL_KEY": "secret-value"}, clear=False):
             out = ort._probe_http_provider(self._row(), opener=lambda *a, **k: object())
         self.assertTrue(out["launchable"])
         self.assertEqual(len(out["checks"]), 3)
         self.assertEqual(out["provider_type"], "openai_compatible")
 
     def test_http_provider_never_records_the_key_value(self) -> None:
-        with patch.dict(os.environ, {"METDSL_TEST_LOCAL_KEY": "super-secret"}, clear=False):
+        with patch.dict(os.environ, {"METFORGE_TEST_LOCAL_KEY": "super-secret"}, clear=False):
             out = ort._probe_http_provider(self._row(), opener=lambda *a, **k: object())
         self.assertNotIn("super-secret", json.dumps(out))
-        self.assertIn("METDSL_TEST_LOCAL_KEY", json.dumps(out))
+        self.assertIn("METFORGE_TEST_LOCAL_KEY", json.dumps(out))
 
     def test_http_provider_fails_closed_when_the_key_variable_is_unset(self) -> None:
-        env = {k: v for k, v in os.environ.items() if k != "METDSL_TEST_LOCAL_KEY"}
+        env = {k: v for k, v in os.environ.items() if k != "METFORGE_TEST_LOCAL_KEY"}
         with patch.dict(os.environ, env, clear=True):
             out = ort._probe_http_provider(self._row(), opener=lambda *a, **k: object())
         self.assertFalse(out["launchable"])
@@ -34666,7 +34666,7 @@ class MultiProviderPreflightTests(unittest.TestCase):
             [c for c in out["checks"] if c["name"].endswith("api_key_env_set")][0]["pass"])
 
     def test_http_provider_fails_closed_on_a_malformed_base_url(self) -> None:
-        with patch.dict(os.environ, {"METDSL_TEST_LOCAL_KEY": "k"}, clear=False):
+        with patch.dict(os.environ, {"METFORGE_TEST_LOCAL_KEY": "k"}, clear=False):
             out = ort._probe_http_provider(
                 self._row(base_url="localhost:8000"), opener=lambda *a, **k: object())
         self.assertFalse(out["launchable"])
@@ -34678,7 +34678,7 @@ class MultiProviderPreflightTests(unittest.TestCase):
     def test_http_provider_fails_closed_when_nothing_is_listening(self) -> None:
         def _refuse(*_a, **_k):
             raise OSError("Connection refused")
-        with patch.dict(os.environ, {"METDSL_TEST_LOCAL_KEY": "k"}, clear=False):
+        with patch.dict(os.environ, {"METFORGE_TEST_LOCAL_KEY": "k"}, clear=False):
             out = ort._probe_http_provider(self._row(), opener=_refuse)
         self.assertFalse(out["launchable"])
 
@@ -34689,15 +34689,15 @@ class MultiProviderPreflightTests(unittest.TestCase):
 
         def _unauthorized(*_a, **_k):
             raise urllib.error.HTTPError("http://x", 401, "Unauthorized", {}, None)
-        with patch.dict(os.environ, {"METDSL_TEST_LOCAL_KEY": "k"}, clear=False):
+        with patch.dict(os.environ, {"METFORGE_TEST_LOCAL_KEY": "k"}, clear=False):
             out = ort._probe_http_provider(self._row(), opener=_unauthorized)
         self.assertTrue(out["launchable"])
         self.assertIn("HTTP 401",
                       [c["detail"] for c in out["checks"] if "reachable" in c["name"]][0])
 
     def test_the_reachability_escape_hatch_never_skips_the_other_two(self) -> None:
-        env = {k: v for k, v in os.environ.items() if k != "METDSL_TEST_LOCAL_KEY"}
-        env["METDSL_HTTP_PREFLIGHT_SKIP_REACHABILITY"] = "1"
+        env = {k: v for k, v in os.environ.items() if k != "METFORGE_TEST_LOCAL_KEY"}
+        env["METFORGE_HTTP_PREFLIGHT_SKIP_REACHABILITY"] = "1"
         with patch.dict(os.environ, env, clear=True):
             out = ort._probe_http_provider(self._row(), opener=None)
         self.assertFalse(out["launchable"])       # the missing key still fails it
@@ -34708,7 +34708,7 @@ class MultiProviderPreflightTests(unittest.TestCase):
     def test_probe_all_providers_covers_every_distinct_provider(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             cfg = self._config(Path(tmp), self._MIXED)
-            with patch.dict(os.environ, {"METDSL_TEST_LOCAL_KEY": "k"}, clear=False), \
+            with patch.dict(os.environ, {"METFORGE_TEST_LOCAL_KEY": "k"}, clear=False), \
                  patch.object(ort, "probe_execution_platform",
                               return_value=_launchable_preflight_dict(backend="claude")):
                 out = ort.probe_all_providers(llm_config_path=cfg,
@@ -34873,7 +34873,7 @@ class MultiProviderPreflightTests(unittest.TestCase):
                            "checks": [], "launchable": True},
                 "openai_compatible": {"provider_type": "openai_compatible",
                                       "base_url": "http://localhost:8000/v1",
-                                      "api_key_env": "METDSL_TEST_LOCAL_KEY",
+                                      "api_key_env": "METFORGE_TEST_LOCAL_KEY",
                                       "checks": [], "launchable": True},
             }
             self._orch_with_preflight(repo_root, payload)
@@ -34881,7 +34881,7 @@ class MultiProviderPreflightTests(unittest.TestCase):
             def _refuse(*_a, **_k):
                 raise OSError("Connection refused")
 
-            with patch.dict(os.environ, {"METDSL_TEST_LOCAL_KEY": "k"}, clear=False), \
+            with patch.dict(os.environ, {"METFORGE_TEST_LOCAL_KEY": "k"}, clear=False), \
                  patch.object(ort, "probe_execution_platform",
                               return_value=_launchable_preflight_dict(backend="claude")), \
                  patch("urllib.request.urlopen", _refuse), \
@@ -36571,7 +36571,7 @@ class ClaudeLeafToolRosterPreflightTests(unittest.TestCase):
     def test_the_seeded_home_carries_the_permissions_but_not_the_hooks(self) -> None:
         """The probe is the THIRD caller of the leaf hook chain, and it cannot satisfy it.
 
-        `env.pop` above removes `METDSL_ORCHESTRATION_ID` from this launch on purpose (a
+        `env.pop` above removes `METFORGE_ORCHESTRATION_ID` from this launch on purpose (a
         probe row must not land in a live run's `native_hook_events.jsonl`), and since
         issue #102 the leaf entrypoint refuses a call that cannot name an orchestration.
         Seeding the leaf's `hooks` therefore made the probe refuse its own prompt, which
@@ -37022,9 +37022,9 @@ class ClaudeLeafToolRosterPreflightTests(unittest.TestCase):
                                  "ANTHROPIC_BASE_URL": "https://api.anthropic.com",
                                  "CLAUDE_CODE_USE_BEDROCK": "1",
                                  "HTTPS_PROXY": "http://operator-proxy:8080",
-                                 "METDSL_WORKFLOW_MODE": "1",
-                                 "METDSL_ORCHESTRATION_ID": "orch_live",
-                                 "METDSL_CHILD_AGENT_RUN_ID": "arid_live"}):
+                                 "METFORGE_WORKFLOW_MODE": "1",
+                                 "METFORGE_ORCHESTRATION_ID": "orch_live",
+                                 "METFORGE_CHILD_AGENT_RUN_ID": "arid_live"}):
                 check = self._probe(root, runner)
         self.assertIs(check["pass"], True)
         env = seen["kwargs"]["env"]
@@ -37043,8 +37043,8 @@ class ClaudeLeafToolRosterPreflightTests(unittest.TestCase):
         # mid-run TTL re-probe appended a `user_prompt_submit` row — a session belonging to
         # no leaf — to the LIVE orchestration's `hooks/native_hook_events.jsonl`, which the
         # audit reads as the record of what the leaves did. Measured twice, independently.
-        for name in ("METDSL_ORCHESTRATION_ID", "METDSL_WORKFLOW_MODE",
-                     "METDSL_CHILD_AGENT_RUN_ID"):
+        for name in ("METFORGE_ORCHESTRATION_ID", "METFORGE_WORKFLOW_MODE",
+                     "METFORGE_CHILD_AGENT_RUN_ID"):
             self.assertNotIn(name, env)
         # The set itself is `leaf_env_from`'s — the same declaration a LEAF is launched
         # under — plus exactly the three names this probe owns. Pinned as an equality, so
@@ -37053,8 +37053,8 @@ class ClaudeLeafToolRosterPreflightTests(unittest.TestCase):
         self.assertEqual(
             set(env),
             (set(ort.leaf_env_from(os.environ))
-             - {"METDSL_ORCHESTRATION_ID", "METDSL_WORKFLOW_MODE",
-                "METDSL_CHILD_AGENT_RUN_ID"})
+             - {"METFORGE_ORCHESTRATION_ID", "METFORGE_WORKFLOW_MODE",
+                "METFORGE_CHILD_AGENT_RUN_ID"})
             | {"ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "CLAUDE_CONFIG_DIR"})
         # A scratch home, so the roster measured is not one the operator's own
         # configuration shaped — and it is gone by the time the probe returns.
@@ -37900,11 +37900,11 @@ class DurableWorkflowHomesTests(unittest.TestCase):
     def setUp(self) -> None:
         """Own the homes root rather than borrowing the suite's.
 
-        `tools/tests/conftest.py` redirects `METDSL_WORKFLOW_HOMES_ROOT` for every test,
+        `tools/tests/conftest.py` redirects `METFORGE_WORKFLOW_HOMES_ROOT` for every test,
         and this class read it straight out of the environment — so it worked under
         pytest and, run any other way, resolved the OPERATOR's real `~/.met-dsl/homes`
         and created directories in it. That is not hypothetical: a reviewer ran the exact
-        `env -u METDSL_WORKFLOW_HOMES_ROOT python3 -m unittest …` command this branch's
+        `env -u METFORGE_WORKFLOW_HOMES_ROOT python3 -m unittest …` command this branch's
         own commit message prescribes and had to prune three entries out of the operator's
         tree afterwards. The prevent-not-detect guard lives in conftest, so it is not
         there either when conftest is not.
@@ -38081,7 +38081,7 @@ class DurableWorkflowHomesTests(unittest.TestCase):
         randomness could be dropped only once the tree became private. But a mode is
         something this code can simply set, and REFUSING made two pieces of correct
         operator behaviour fail every launch: `docs/RUNBOOK.md` offers
-        `METDSL_WORKFLOW_HOMES_ROOT` with no stated precondition, so a plain `mkdir`
+        `METFORGE_WORKFLOW_HOMES_ROOT` with no stated precondition, so a plain `mkdir`
         creating it 0755 under the default umask bricked the lever; and a mode drift on
         `~/.met-dsl/homes` — a backup restored without permissions — bricked every
         orchestration. Both measured before the change.
@@ -38521,10 +38521,10 @@ class DurableWorkflowHomesTests(unittest.TestCase):
     def test_a_module_run_outside_pytest_writes_nothing_into_the_home(self) -> None:
         """The module redirect, which the suite cannot observe from inside itself.
 
-        `tools/tests/conftest.py` redirects `METDSL_WORKFLOW_HOMES_ROOT` for every test,
+        `tools/tests/conftest.py` redirects `METFORGE_WORKFLOW_HOMES_ROOT` for every test,
         so under pytest the module-level redirect changes nothing and a mutant deleting
         it stays green — while the thing it exists to prevent happens only where conftest
-        is NOT loaded. Two reviewers ran `env -u METDSL_WORKFLOW_HOMES_ROOT python3 -m
+        is NOT loaded. Two reviewers ran `env -u METFORGE_WORKFLOW_HOMES_ROOT python3 -m
         unittest …`, the command this branch's own commit messages prescribe, and had to
         prune entries out of the operator's real `~/.met-dsl/homes` afterwards.
 
@@ -38558,7 +38558,7 @@ class DurableWorkflowHomesTests(unittest.TestCase):
     def test_a_tilde_homes_root_override_is_expanded(self) -> None:
         """`~` is expanded, and nothing observed that either.
 
-        A quoted `METDSL_WORKFLOW_HOMES_ROOT='~/big/homes'` is a plausible spelling — the
+        A quoted `METFORGE_WORKFLOW_HOMES_ROOT='~/big/homes'` is a plausible spelling — the
         RUNBOOK says these accumulate, so pointing them at a bigger disk is the reason the
         lever exists — and the shell does not expand inside quotes. Without `expanduser`
         the value would be a literal `~` directory under whoever's working directory, and
@@ -38656,7 +38656,7 @@ class DurableWorkflowHomesTests(unittest.TestCase):
 
         The guard runs inside a HOOK process and the writer inside the conductor, and the
         two need not share a working directory — so a relative
-        `METDSL_WORKFLOW_HOMES_ROOT` would have made the two resolve different trees, which
+        `METFORGE_WORKFLOW_HOMES_ROOT` would have made the two resolve different trees, which
         is the same failure the override closure was supposed to end. Measured before the
         fix: `../outside_homes` came back relative from the resolver both sides share.
         """
@@ -38740,7 +38740,7 @@ class DurableWorkflowHomesTests(unittest.TestCase):
                     self.assertTrue(made.is_dir())
 
     def test_an_override_whose_parent_is_absent_is_refused(self) -> None:
-        """A typo'd `METDSL_WORKFLOW_HOMES_ROOT` must not silently build a deep tree.
+        """A typo'd `METFORGE_WORKFLOW_HOMES_ROOT` must not silently build a deep tree.
 
         The default resolution may create `~/.met-dsl` itself (a host that has never run
         `init_orchestration` has none), but an override names a location the caller
@@ -39121,14 +39121,14 @@ class LeafEnvAllowlistHygieneTests(unittest.TestCase):
         """Single-route rule: the config home reaches a leaf through the bwrap
         profile's `--setenv` alone, so the filter must never forward a host copy."""
         poisoned = {var: "/host/leak" for var in ort._BACKEND_HOME_ENV_VARS}
-        poisoned["METDSL_HOME"] = "/host/leak"
+        poisoned["METFORGE_HOME"] = "/host/leak"
         got = ort.leaf_env_from({**poisoned, "PATH": "/usr/bin"})
         self.assertEqual(set(got), {"PATH"})
 
     def test_the_filter_drops_strangers_and_keeps_the_declared_verbatim(self) -> None:
         host = {
             "PATH": "/p", "HOME": "/h", "LANG": "C.UTF-8", "PYTHONPATH": "/repo",
-            "METDSL_WORKFLOW_MODE": "1", "METDSL_ANYTHING_NEW": "x",
+            "METFORGE_WORKFLOW_MODE": "1", "METFORGE_ANYTHING_NEW": "x",
             "ANTHROPIC_BASE_URL": "http://127.0.0.1:9", "ANTHROPIC_MODEL": "haiku",
             "HTTPS_PROXY": "http://user:pw@proxy:3128", "LD_PRELOAD": "/evil.so",
             "EMPTY": "",
@@ -39136,18 +39136,18 @@ class LeafEnvAllowlistHygieneTests(unittest.TestCase):
         got = ort.leaf_env_from(host)
         self.assertEqual(got, {
             "PATH": "/p", "HOME": "/h", "LANG": "C.UTF-8", "PYTHONPATH": "/repo",
-            "METDSL_WORKFLOW_MODE": "1", "METDSL_ANYTHING_NEW": "x",
+            "METFORGE_WORKFLOW_MODE": "1", "METFORGE_ANYTHING_NEW": "x",
         })
 
     def test_the_allowed_prefix_is_exactly_the_repo_namespace(self) -> None:
         """The prefix's SPELLING, which anchoring alone does not pin.
 
-        Shortening it to `METDS` still anchors and still passes every other test, while
-        admitting `METDSX_*` — a namespace this repository does not own. The surviving
+        Shortening it to `METFORG` still anchors and still passes every other test, while
+        admitting `METFORGX_*` — a namespace this repository does not own. The surviving
         justification for prefix-passing is that it admits only the repo's own namespace,
         so the exact string is the justification's load-bearing half."""
-        self.assertEqual(ort.LEAF_ENV_ALLOWED_PREFIXES, ("METDSL_",))
-        self.assertEqual(ort.leaf_env_from({"PATH": "/b", "METDSX_FOO": "y"}),
+        self.assertEqual(ort.LEAF_ENV_ALLOWED_PREFIXES, ("METFORGE_",))
+        self.assertEqual(ort.leaf_env_from({"PATH": "/b", "METFORGX_FOO": "y"}),
                          {"PATH": "/b"})
 
     def test_a_non_string_key_or_value_is_skipped_not_forwarded(self) -> None:
@@ -39159,27 +39159,27 @@ class LeafEnvAllowlistHygieneTests(unittest.TestCase):
         converter — without it a non-string key raises `AttributeError` from
         `startswith` rather than being filtered."""
         got = ort.leaf_env_from({"PATH": "/b", "HOME": object(), 1: "x",
-                                 "METDSL_OK": "yes"})
-        self.assertEqual(got, {"PATH": "/b", "METDSL_OK": "yes"})
+                                 "METFORGE_OK": "yes"})
+        self.assertEqual(got, {"PATH": "/b", "METFORGE_OK": "yes"})
 
     def test_the_prefix_is_ANCHORED_not_a_substring_match(self) -> None:
         """Anchoring is the whole load-bearing half of the prefix justification.
 
         The comment's surviving claim is that the names known to redirect a leaf are
         outside the prefix BY CONSTRUCTION. That is only true while the match is
-        anchored: with a substring match `MY_METDSL_API_KEY` and even
-        `ANTHROPIC_METDSL_X` are admitted, and the construction argument evaporates.
+        anchored: with a substring match `MY_METFORGE_API_KEY` and even
+        `ANTHROPIC_METFORGE_X` are admitted, and the construction argument evaporates.
         Measured as a surviving mutation — replacing `startswith` with `in` in BOTH
         copies of the rule kept all 4972 tests green — so it is pinned here and in the
         renderer's sibling below."""
         got = ort.leaf_env_from({
             "PATH": "/b",
-            "METDSL_REAL": "kept",
-            "MY_METDSL_API_KEY": "sk-live",
-            "OPERATOR_METDSL_X": "y",
-            "XMETDSL_Z": "z",
+            "METFORGE_REAL": "kept",
+            "MY_METFORGE_API_KEY": "sk-live",
+            "OPERATOR_METFORGE_X": "y",
+            "XMETFORGE_Z": "z",
         })
-        self.assertEqual(got, {"PATH": "/b", "METDSL_REAL": "kept"})
+        self.assertEqual(got, {"PATH": "/b", "METFORGE_REAL": "kept"})
 
     def test_an_unanchored_prefix_name_is_refused_at_render_too(self) -> None:
         """The renderer spells the same rule a second time, so it needs its own probe:
@@ -39195,11 +39195,11 @@ class LeafEnvAllowlistHygieneTests(unittest.TestCase):
             "read_roots": [], "write_roots": [],
             "runtime_ro_bind_paths": [], "runtime_rw_bind_paths": [],
             "env": {"PATH": "/usr/bin:/bin", "TMPDIR": str(root / "ws"),
-                    "MY_METDSL_API_KEY": "sk-live"},
+                    "MY_METFORGE_API_KEY": "sk-live"},
         }
         with self.assertRaises(ValueError) as ctx:
             ort.render_bwrap_command(profile=profile, command_argv=["claude"])
-        self.assertIn("MY_METDSL_API_KEY", str(ctx.exception))
+        self.assertIn("MY_METFORGE_API_KEY", str(ctx.exception))
 
     def test_an_empty_value_never_becomes_a_declared_name(self) -> None:
         """The filter's `or not value` skip, measured as a surviving mutation.
@@ -39213,7 +39213,7 @@ class LeafEnvAllowlistHygieneTests(unittest.TestCase):
         self.assertEqual(ort.leaf_env_from({"PATH": ""})["PATH"],
                          ort.LEAF_ENV_PATH_DEFAULT)
         # ...and a declared-but-empty name is absent rather than present-and-empty
-        got = ort.leaf_env_from({"PATH": "/b", "HOME": "", "METDSL_X": ""})
+        got = ort.leaf_env_from({"PATH": "/b", "HOME": "", "METFORGE_X": ""})
         self.assertEqual(got, {"PATH": "/b"})
 
     def test_path_falls_back_when_the_host_has_none(self) -> None:
@@ -39301,7 +39301,7 @@ class LeafEnvClosureTests(unittest.TestCase):
             "read_roots": [], "write_roots": [],
             "runtime_ro_bind_paths": [], "runtime_rw_bind_paths": [],
             "env": {"PATH": "/usr/bin:/bin", "HOME": "/h",
-                    "METDSL_ORCHESTRATION_ID": "o", "TMPDIR": str(root / "ws")},
+                    "METFORGE_ORCHESTRATION_ID": "o", "TMPDIR": str(root / "ws")},
         }
         base.update(over)
         if "env" in over and isinstance(over["env"], dict) and over["env"]:
@@ -39364,7 +39364,7 @@ class LeafEnvClosureTests(unittest.TestCase):
         """A stranger here means something built an environment outside `leaf_env_from`
         — the one question this layer exists to answer — so it is refused rather than
         delivered and recorded as though it had been declared."""
-        for name in ("ANTHROPIC_BASE_URL", "AWS_PROFILE", "METDSL_HOME", "SHELL"):
+        for name in ("ANTHROPIC_BASE_URL", "AWS_PROFILE", "METFORGE_HOME", "SHELL"):
             with self.subTest(name=name):
                 profile = self._profile()
                 profile["env"] = {**profile["env"], name: "x"}
@@ -39415,7 +39415,7 @@ class LeafEnvClosureTests(unittest.TestCase):
 
         `spawn_leaf` renders a profile READ OFF DISK, including one persisted before the
         environment became declared — whose `env` predates the ids entirely. Under
-        `--clearenv` that leaf gets no `METDSL_ORCHESTRATION_ID`, and its MCP server then
+        `--clearenv` that leaf gets no `METFORGE_ORCHESTRATION_ID`, and its MCP server then
         reads "not under a run" and stops requiring a capability token.
 
         Filled from the profile's own recorded ids rather than refused, because refusing
@@ -39429,8 +39429,8 @@ class LeafEnvClosureTests(unittest.TestCase):
         profile["agent_run_id"] = "arid-recorded"
         argv = ort.render_bwrap_command(profile=profile, command_argv=["claude"])
         setenv = self._setenv_map(argv)
-        self.assertEqual(setenv["METDSL_ORCHESTRATION_ID"], "orch-recorded")
-        self.assertEqual(setenv["METDSL_CHILD_AGENT_RUN_ID"], "arid-recorded")
+        self.assertEqual(setenv["METFORGE_ORCHESTRATION_ID"], "orch-recorded")
+        self.assertEqual(setenv["METFORGE_CHILD_AGENT_RUN_ID"], "arid-recorded")
         # ...and the pre-branch profile is RENDERED, not refused
         self.assertEqual(setenv["HOME"], "/h")
 
@@ -39438,10 +39438,10 @@ class LeafEnvClosureTests(unittest.TestCase):
         """The fill must not become a silent correction: a profile that DECLARES an id
         keeps it, so the record and the delivery still cannot disagree."""
         profile = self._profile()
-        profile["env"] = {**profile["env"], "METDSL_ORCHESTRATION_ID": "from-env"}
+        profile["env"] = {**profile["env"], "METFORGE_ORCHESTRATION_ID": "from-env"}
         profile["orchestration_id"] = "from-field"
         argv = ort.render_bwrap_command(profile=profile, command_argv=["claude"])
-        self.assertEqual(self._setenv_map(argv)["METDSL_ORCHESTRATION_ID"], "from-env")
+        self.assertEqual(self._setenv_map(argv)["METFORGE_ORCHESTRATION_ID"], "from-env")
 
     def test_an_empty_value_is_dropped_rather_than_declared_empty(self) -> None:
         """`--setenv CLAUDE_CONFIG_DIR ""` points the CLI at the empty path; absent lets
@@ -39463,7 +39463,7 @@ class LeafEnvClosureTests(unittest.TestCase):
         self.addCleanup(shutil.rmtree, d, True)
         repo = Path(d)
         authored = {"PATH": "/a/bin", "HOME": "/a/home", "LANG": "C.UTF-8",
-                    "METDSL_ORCHESTRATION_ID": "o", "METDSL_CHILD_AGENT_RUN_ID": "A"}
+                    "METFORGE_ORCHESTRATION_ID": "o", "METFORGE_CHILD_AGENT_RUN_ID": "A"}
         with mock.patch.dict(os.environ, {"ANTHROPIC_BASE_URL": "http://127.0.0.1:9"}):
             profile = ort.build_readonly_bwrap_profile(
                 repo_root=repo, orchestration_id="o", agent_run_id="A",
@@ -39474,12 +39474,12 @@ class LeafEnvClosureTests(unittest.TestCase):
 
     def test_a_child_env_naming_another_leafs_ids_fails_closed(self) -> None:
         """Threading only helps if the dict belongs to THIS launch. A profile carrying
-        another leaf's `METDSL_CHILD_AGENT_RUN_ID` would hand the leaf an id naming a
+        another leaf's `METFORGE_CHILD_AGENT_RUN_ID` would hand the leaf an id naming a
         different run, and the record and the reality would be one object describing two."""
         d = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, d, True)
-        for name, bad in (("METDSL_ORCHESTRATION_ID", "other-orch"),
-                          ("METDSL_CHILD_AGENT_RUN_ID", "other-arid")):
+        for name, bad in (("METFORGE_ORCHESTRATION_ID", "other-orch"),
+                          ("METFORGE_CHILD_AGENT_RUN_ID", "other-arid")):
             with self.subTest(name=name):
                 with self.assertRaises(ValueError):
                     ort.build_readonly_bwrap_profile(
@@ -39492,8 +39492,8 @@ class LeafEnvClosureTests(unittest.TestCase):
 
         A `record-launch` run from inside a leaf — documented in `docs/CLI_REFERENCE.md`,
         granted by `leaf_config/claude/settings.json` — builds from that leaf's own
-        environment, which carries the PARENT's `METDSL_CHILD_AGENT_RUN_ID`; and under
-        the workflow `run_workflow.py` puts `METDSL_ORCHESTRATION_ID` into every node's
+        environment, which carries the PARENT's `METFORGE_CHILD_AGENT_RUN_ID`; and under
+        the workflow `run_workflow.py` puts `METFORGE_ORCHESTRATION_ID` into every node's
         environment, so a stale id is present essentially always. Carrying it into the
         child's profile is wrong (the hook selects a capability by that name), but so is
         REFUSING: this path's whole job is to rebuild an environment from an unrelated
@@ -39505,15 +39505,15 @@ class LeafEnvClosureTests(unittest.TestCase):
         where it belongs."""
         d = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, d, True)
-        with mock.patch.dict(os.environ, {"METDSL_ORCHESTRATION_ID": "OTHER-ORCH",
-                                          "METDSL_CHILD_AGENT_RUN_ID": "PARENT-ARID",
+        with mock.patch.dict(os.environ, {"METFORGE_ORCHESTRATION_ID": "OTHER-ORCH",
+                                          "METFORGE_CHILD_AGENT_RUN_ID": "PARENT-ARID",
                                           "PATH": "/usr/bin"}):
             profile = ort.build_readonly_bwrap_profile(
                 repo_root=Path(d) / "repo", orchestration_id="o",
                 agent_run_id="CHILD-ARID", backend_command="claude",
                 backend_type="claude")
-        self.assertEqual(profile["env"]["METDSL_ORCHESTRATION_ID"], "o")
-        self.assertEqual(profile["env"]["METDSL_CHILD_AGENT_RUN_ID"], "CHILD-ARID")
+        self.assertEqual(profile["env"]["METFORGE_ORCHESTRATION_ID"], "o")
+        self.assertEqual(profile["env"]["METFORGE_CHILD_AGENT_RUN_ID"], "CHILD-ARID")
 
     def test_an_EMPTY_per_launch_id_is_refused_not_quietly_filled(self) -> None:
         """The `is not None` guard, which a census found unpinned.
@@ -39525,7 +39525,7 @@ class LeafEnvClosureTests(unittest.TestCase):
         -id whose MCP server stops requiring a capability token. Refusing at the boundary
         is right: this arrives over `--child-env-from-stdin`, and an empty id there is a
         malformed payload, not an omission."""
-        for name in ("METDSL_ORCHESTRATION_ID", "METDSL_CHILD_AGENT_RUN_ID"):
+        for name in ("METFORGE_ORCHESTRATION_ID", "METFORGE_CHILD_AGENT_RUN_ID"):
             with self.subTest(name=name):
                 with self.assertRaises(ValueError):
                     ort._profile_child_env({"PATH": "/b", name: ""},
@@ -39546,7 +39546,7 @@ class LeafEnvClosureTests(unittest.TestCase):
 
         The threaded check only compares a key that EXISTS, so a `child_env` omitting an
         id used to produce a profile without it — and since the profile is now the only
-        route into the leaf, a leaf without `METDSL_ORCHESTRATION_ID` makes its
+        route into the leaf, a leaf without `METFORGE_ORCHESTRATION_ID` makes its
         build-runtime MCP server read "not under a run" (`_workflow_mode_env_signal()`
         returns None) and stop requiring a capability token. An ungated server, from an
         omission rather than an attack.
@@ -39554,37 +39554,37 @@ class LeafEnvClosureTests(unittest.TestCase):
         Filled rather than refused: the ids are this builder's own arguments, so an
         absence contradicts nothing. Only a disagreement does, and that still raises."""
         for child_env in ({"PATH": "/b"},
-                          {"PATH": "/b", "METDSL_ORCHESTRATION_ID": "o"},
-                          {"PATH": "/b", "METDSL_CHILD_AGENT_RUN_ID": "A"},
+                          {"PATH": "/b", "METFORGE_ORCHESTRATION_ID": "o"},
+                          {"PATH": "/b", "METFORGE_CHILD_AGENT_RUN_ID": "A"},
                           None):
             with self.subTest(child_env=child_env):
                 got = ort._profile_child_env(child_env, orchestration_id="o",
                                              agent_run_id="A")
-                self.assertEqual(got["METDSL_ORCHESTRATION_ID"], "o")
-                self.assertEqual(got["METDSL_CHILD_AGENT_RUN_ID"], "A")
+                self.assertEqual(got["METFORGE_ORCHESTRATION_ID"], "o")
+                self.assertEqual(got["METFORGE_CHILD_AGENT_RUN_ID"], "A")
 
     def test_a_stale_ambient_id_does_not_make_a_profile_build_fail(self) -> None:
         """The regression itself, stated as the property rather than as a value.
 
-        `run_workflow.py` exports `METDSL_ORCHESTRATION_ID` into every node, so ANY
+        `run_workflow.py` exports `METFORGE_ORCHESTRATION_ID` into every node, so ANY
         conductor-less profile build under the workflow sees one. If that can raise, the
         suite becomes coupled to the operator's shell and a leaf-initiated
         `record-launch` terminalizes the run through `record_launch`'s `except
         Exception` -> `sandbox_enforcement_violation` -> `fail_closed`."""
         d = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, d, True)
-        for ambient in ({"METDSL_ORCHESTRATION_ID": "OTHER-ORCH"},
-                        {"METDSL_CHILD_AGENT_RUN_ID": "OTHER-ARID"},
-                        {"METDSL_ORCHESTRATION_ID": "OTHER-ORCH",
-                         "METDSL_CHILD_AGENT_RUN_ID": "OTHER-ARID"}):
+        for ambient in ({"METFORGE_ORCHESTRATION_ID": "OTHER-ORCH"},
+                        {"METFORGE_CHILD_AGENT_RUN_ID": "OTHER-ARID"},
+                        {"METFORGE_ORCHESTRATION_ID": "OTHER-ORCH",
+                         "METFORGE_CHILD_AGENT_RUN_ID": "OTHER-ARID"}):
             with self.subTest(ambient=sorted(ambient)):
                 with mock.patch.dict(os.environ, {**ambient, "PATH": "/usr/bin"}):
                     profile = ort.build_readonly_bwrap_profile(
                         repo_root=Path(d) / "repo", orchestration_id="o",
                         agent_run_id="A", backend_command="claude",
                         backend_type="claude")
-                self.assertEqual(profile["env"]["METDSL_ORCHESTRATION_ID"], "o")
-                self.assertEqual(profile["env"]["METDSL_CHILD_AGENT_RUN_ID"], "A")
+                self.assertEqual(profile["env"]["METFORGE_ORCHESTRATION_ID"], "o")
+                self.assertEqual(profile["env"]["METFORGE_CHILD_AGENT_RUN_ID"], "A")
 
     def test_a_non_mapping_or_mistyped_child_env_fails_closed(self) -> None:
         """The type validations, which review found undriven by any test.
@@ -39652,7 +39652,7 @@ class LeafEnvLiveBwrapWitnessTests(unittest.TestCase):
             "runtime_ro_bind_paths": ["/usr", "/bin", "/lib", "/lib64"],
             "runtime_rw_bind_paths": [],
             "env": {"PATH": "/usr/bin:/bin", "HOME": "/leaf/home", "LANG": "C.UTF-8",
-                    "METDSL_ORCHESTRATION_ID": "o", "METDSL_CHILD_AGENT_RUN_ID": "A",
+                    "METFORGE_ORCHESTRATION_ID": "o", "METFORGE_CHILD_AGENT_RUN_ID": "A",
                     "TMPDIR": str(root / "ws")},
         }
         argv = ort.render_bwrap_command(profile=profile, command_argv=["/usr/bin/env"])

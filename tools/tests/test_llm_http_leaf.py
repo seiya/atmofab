@@ -33,7 +33,7 @@ from tools import llm_http_leaf as hl
 from tools import workflow_conductor as wc
 from tools.pure_leaf import PURE_SYSTEM_PROMPT
 
-KEY_ENV = "METDSL_TEST_HTTP_KEY"
+KEY_ENV = "METFORGE_TEST_HTTP_KEY"
 KEY_VALUE = "sk-test-do-not-log-me"
 
 

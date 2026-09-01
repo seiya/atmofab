@@ -28,7 +28,7 @@
 #                    Plain `http` is accepted only for a LOOPBACK host, which is where the local
 #                    servers this provider exists for run. Anything else would send the API key
 #                    in cleartext and is rejected with `llm_config_insecure_base_url` unless
-#                    `METDSL_ALLOW_INSECURE_LLM_BASE_URL=1` accepts that deliberately.
+#                    `METFORGE_ALLOW_INSECURE_LLM_BASE_URL=1` accepts that deliberately.
 #   api_key_env      The NAME of the environment variable holding the key, never the key. A
 #                    configuration file is read, copied and diffed; a key in it is a key leaked.
 #   model            Required, and an exact slug: an HTTP endpoint has no alias to resolve at

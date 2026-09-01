@@ -22,7 +22,7 @@ from zoneinfo import ZoneInfo
 from types import SimpleNamespace
 from unittest import mock
 
-os.environ.setdefault("METDSL_DEP_READINESS_ALLOW_PERSISTED_FALLBACK", "1")
+os.environ.setdefault("METFORGE_DEP_READINESS_ALLOW_PERSISTED_FALLBACK", "1")
 
 import tools.codegen_bundle as cb
 import tools.orchestration_runtime as ort
@@ -2122,12 +2122,12 @@ class GenerateExecutorFlagTests(unittest.TestCase):
         # M-F: a cold run has NO executor gate — the executor is hardcoded pure. The run proceeds
         # straight to normal startup resolution (failing here on the bogus spec, not on any
         # executor block), and does NOT emit the retired generate_executor_invalid reason nor stamp
-        # the removed METDSL_GENERATE_EXECUTOR env.
+        # the removed METFORGE_GENERATE_EXECUTOR env.
         import io
         from contextlib import redirect_stdout
         import tools.run_workflow as rw
         buf = io.StringIO()
-        prev = os.environ.pop("METDSL_GENERATE_EXECUTOR", None)
+        prev = os.environ.pop("METFORGE_GENERATE_EXECUTOR", None)
         try:
             with redirect_stdout(buf):
                 # `--llm-config` explicitly: this runs against the real checkout, whose
@@ -2140,21 +2140,21 @@ class GenerateExecutorFlagTests(unittest.TestCase):
             self.assertEqual(rc, 2)
             self.assertIn("invalid_startup_input", buf.getvalue())
             self.assertNotIn("generate_executor_invalid", buf.getvalue())
-            self.assertNotIn("METDSL_GENERATE_EXECUTOR", os.environ)
+            self.assertNotIn("METFORGE_GENERATE_EXECUTOR", os.environ)
         finally:
             if prev is not None:
-                os.environ["METDSL_GENERATE_EXECUTOR"] = prev
+                os.environ["METFORGE_GENERATE_EXECUTOR"] = prev
 
     def test_ambient_env_executor_ignored(self) -> None:
-        # M-F: METDSL_GENERATE_EXECUTOR is fully inert. A stale ambient value (even an old typo)
+        # M-F: METFORGE_GENERATE_EXECUTOR is fully inert. A stale ambient value (even an old typo)
         # is neither read nor validated — no generate_executor_invalid, and the run proceeds to
         # normal startup resolution.
         import io
         from contextlib import redirect_stdout
         import tools.run_workflow as rw
         buf = io.StringIO()
-        prev = os.environ.get("METDSL_GENERATE_EXECUTOR")
-        os.environ["METDSL_GENERATE_EXECUTOR"] = "pur"
+        prev = os.environ.get("METFORGE_GENERATE_EXECUTOR")
+        os.environ["METFORGE_GENERATE_EXECUTOR"] = "pur"
         try:
             with redirect_stdout(buf):
                 # `--llm-config` explicitly: this runs against the real checkout, whose
@@ -2169,9 +2169,9 @@ class GenerateExecutorFlagTests(unittest.TestCase):
             self.assertNotIn("generate_executor_invalid", buf.getvalue())
         finally:
             if prev is not None:
-                os.environ["METDSL_GENERATE_EXECUTOR"] = prev
+                os.environ["METFORGE_GENERATE_EXECUTOR"] = prev
             else:
-                os.environ.pop("METDSL_GENERATE_EXECUTOR", None)
+                os.environ.pop("METFORGE_GENERATE_EXECUTOR", None)
 
 
 

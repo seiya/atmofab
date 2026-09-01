@@ -51,7 +51,7 @@
       },
       "orchestration_id": {
         "type": "string",
-        "description": "Required under the workflow (METDSL_ORCHESTRATION_ID set, or METDSL_WORKFLOW_MODE set to a non-empty value other than 0, in the server's environment): with agent_run_id and capability_token it enforces preflight, record-launch artifacts, phase_state child_running, and capability permissions. Omitting it is refused, not exempted."
+        "description": "Required under the workflow (METFORGE_ORCHESTRATION_ID set, or METFORGE_WORKFLOW_MODE set to a non-empty value other than 0, in the server's environment): with agent_run_id and capability_token it enforces preflight, record-launch artifacts, phase_state child_running, and capability permissions. Omitting it is refused, not exempted."
       },
       "agent_run_id": {
         "type": "string",

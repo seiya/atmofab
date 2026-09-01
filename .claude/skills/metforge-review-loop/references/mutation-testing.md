@@ -233,7 +233,7 @@ The sub-rules below had no section here and were carried in `SKILL.md` in full. 
 
   - **a test can pass because of the SUITE'S OWN ENVIRONMENT.** Distinct from "two paths to the
     outcome": here the fixture is fine and `conftest.py` is what decides the verdict. On PR #86 a
-    session fixture redirected `METDSL_WORKFLOW_HOMES_ROOT` for every test, so a test asserting
+    session fixture redirected `METFORGE_WORKFLOW_HOMES_ROOT` for every test, so a test asserting
     which protected root a path falls under was reasoning about a nesting that did not exist while
     it ran — green under pytest, **failing under `env -u <VAR> python3 -m unittest <dotted.path>`**,
     which is the production resolution. Two tests on that branch had it.
@@ -258,11 +258,11 @@ The sub-rules below had no section here and were carried in `SKILL.md` in full. 
 
   - **when a comment JUSTIFIES a rule, mutate the property the justification names.** The rule
     usually has a witness and the property holding it up usually does not. On PR #81 the
-    surviving justification for passing `METDSL_*` by prefix was "the names that redirect a leaf
+    surviving justification for passing `METFORGE_*` by prefix was "the names that redirect a leaf
     are outside the prefix BY CONSTRUCTION" — true only because the match is anchored, and
-    `startswith` -> `in` kept all 4972 tests green, admitting `MY_METDSL_API_KEY`. The neighbouring
-    spelling too: the prefix STRING was separately unpinned, and shortening `"METDSL_"` to
-    `"METDS"` stayed green while widening the namespace to one the repo does not own. Read your own
+    `startswith` -> `in` kept all 4972 tests green, admitting `MY_METFORGE_API_KEY`. The neighbouring
+    spelling too: the prefix STRING was separately unpinned, and shortening `"METFORGE_"` to
+    `"METFORG"` stayed green while widening the namespace to one the repo does not own. Read your own
     justification as a list of claims and write one mutant per claim — and note this is the sign's
     other half: rewriting a justification three times (`SKILL.md` §"Signs to catch mid-loop") is
     when its supporting property is

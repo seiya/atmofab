@@ -3,7 +3,7 @@
 
 Since issue #64 each orchestration's isolated backend homes live at
 `<homes-root>/<orchestration_id>/{claude,codex}`, where the root is
-`~/.met-dsl/homes` (relocatable with `METDSL_WORKFLOW_HOMES_ROOT`). They hold the
+`~/.met-dsl/homes` (relocatable with `METFORGE_WORKFLOW_HOMES_ROOT`). They hold the
 ONLY record of what a leaf actually did — the claude transcript, the codex rollout —
 so **nothing deletes them automatically and nothing ever will**. Retention is
 indefinite, and this tool is the one way a home is removed.

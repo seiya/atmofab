@@ -68,7 +68,7 @@ inherit its context and design intent instead of cold-starting (re-reading the s
 scratch). `restart` stays cold (no resume) to avoid anchoring on the defective reasoning — so the
 warm/cold choice is driven by `repair_strategy` (deterministic-gate findings route `reuse`→warm;
 LLM-verify-attributed `restart`→cold). This is always-on (the former opt-in env flags
-`METDSL_CONDUCTOR_REUSE_RESUME` / `METDSL_CONDUCTOR_REUSE_SLIM_PROMPT` were removed); it falls back
+`METFORGE_CONDUCTOR_REUSE_RESUME` / `METFORGE_CONDUCTOR_REUSE_SLIM_PROMPT` were removed); it falls back
 to a cold launch when the producer transcript was GC'd. Verified live in a billed E2E
 (`orch_20260630T061511Z_536a8586`): a `compile.static` finding forked the `compile.generate`
 session and the rotated repair passed.

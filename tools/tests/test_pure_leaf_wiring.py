@@ -20,7 +20,7 @@ from unittest.mock import patch
 
 # Trust the persisted dependency-readiness booleans _mark_dependencies_ready injects, so a
 # record_launch test does not need a real deps.yaml on disk (mirrors test_orchestration_runtime).
-os.environ.setdefault("METDSL_DEP_READINESS_ALLOW_PERSISTED_FALLBACK", "1")
+os.environ.setdefault("METFORGE_DEP_READINESS_ALLOW_PERSISTED_FALLBACK", "1")
 
 import tools.orchestration_runtime as ort
 import tools.validate_pipeline_semantics as vps
@@ -575,12 +575,12 @@ class PureRecordLaunchTests(unittest.TestCase):
     def setUp(self) -> None:
         self._saved = {
             k: os.environ.get(k)
-            for k in ("METDSL_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT",
-                      "METDSL_ORCHESTRATION_ASSUME_BWRAP", "METDSL_HOME")
+            for k in ("METFORGE_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT",
+                      "METFORGE_ORCHESTRATION_ASSUME_BWRAP", "METFORGE_HOME")
         }
-        os.environ["METDSL_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT"] = "0"
-        os.environ["METDSL_ORCHESTRATION_ASSUME_BWRAP"] = "1"
-        os.environ["METDSL_HOME"] = "/tmp/pure-leaf-test-home"
+        os.environ["METFORGE_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT"] = "0"
+        os.environ["METFORGE_ORCHESTRATION_ASSUME_BWRAP"] = "1"
+        os.environ["METFORGE_HOME"] = "/tmp/pure-leaf-test-home"
 
     def tearDown(self) -> None:
         for k, v in self._saved.items():

@@ -47,11 +47,11 @@ def seed_codex_hooks(repo_root: Path) -> Path:
 # --------------------------------------------------------------------------------------
 # Isolated-homes redirect for test MODULES, not only for pytest.
 #
-# `tools/tests/conftest.py` points `METDSL_WORKFLOW_HOMES_ROOT` at each test's `tmp_path`
+# `tools/tests/conftest.py` points `METFORGE_WORKFLOW_HOMES_ROOT` at each test's `tmp_path`
 # and raises if a prepared home lands in the operator's real `~/.met-dsl`. Neither half
 # is loaded by plain `unittest`, so any module that prepares a backend home writes into
 # the operator's durable tree when run that way — and this branch's own commit messages
-# prescribe `env -u METDSL_WORKFLOW_HOMES_ROOT python3 -m unittest …` as the way to check
+# prescribe `env -u METFORGE_WORKFLOW_HOMES_ROOT python3 -m unittest …` as the way to check
 # the production resolution. Two reviewers had to prune entries out of the real tree
 # afterwards.
 #

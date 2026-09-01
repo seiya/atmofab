@@ -39,7 +39,7 @@ Detect structural-invariant violations of the Compile stage output, and judge th
 - Check **V4c only**: each `direct_deps[].operations` is in the published `operation_id` set of the dependency `node` (from the dependency IR if generated, else `spec_catalog.yaml`). The closure/topo consistency (former node_key / dependency-set / topo_level check) is now correct-by-construction — conductor-authored to the `dependency_graph.json` sidecar and cross-checked by `--stage compile` — so you no longer verify it.
 - Check the diff against a `spec.ir.yaml` regenerated from the same input, and detect a determinism violation.
 - When the information needed to derive a structural invariant is insufficient, it is a `fail`, and `pass` must not be assigned by guessed completion.
-- The workflow mode uses `METDSL_WORKFLOW_EXEC_MODE` as the canonical source, and applies `dev` when unset.
+- The workflow mode uses `METFORGE_WORKFLOW_EXEC_MODE` as the canonical source, and applies `dev` when unset.
 - A finding sets `verification_status=fail` (record `issue_severity`); `minor` is not tolerated. The conductor warm-repairs `minor` (re-runs `Compile.generate`) and stops(`dev`)/escalates(`prod`) on `major|critical`.
 - Check that a `node` with a dependency-resolution error is treated as `blocked`.
 - Check that the storage root of the checked artifact is `workspace/`, and the workflow-root judgment targets only `workspace/`.

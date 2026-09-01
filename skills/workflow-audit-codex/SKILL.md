@@ -43,7 +43,7 @@ Investigate the logs of a completed or interrupted workflow execution across the
 >
 > **Operator context only.** Both of those paths are protected read roots for Bash — the
 > credential/session home and, since issue #64, `~/.met-dsl` — so the guard rejects these
-> reads fail-closed whenever `METDSL_WORKFLOW_MODE=1` (policies
+> reads fail-closed whenever `METFORGE_WORKFLOW_MODE=1` (policies
 > `forbid_backend_credential_direct_read` / `forbid_operator_secret_direct_read`;
 > canonical: `docs/HOOKS.md` §"Layer boundary"). Run this audit from an operator terminal
 > outside a workflow run — inside one, every such read blocks, and that block is correct.

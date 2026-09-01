@@ -116,7 +116,7 @@ AXES: dict[str, Axis] = {
         name="compiler",
         source=(
             "ir.impl_defaults.toolchain.compiler (optional; pins the build compiler, "
-            "docs/IMPL_PLAN_SPEC.md) and METDSL_SYNTAX_COMPILERS plus the mandatory "
+            "docs/IMPL_PLAN_SPEC.md) and METFORGE_SYNTAX_COMPILERS plus the mandatory "
             "syntax-only stage each language backend names"
         ),
         description=(
