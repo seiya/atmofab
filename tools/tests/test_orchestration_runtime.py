@@ -131,7 +131,7 @@ from tools.tests.test_bwrap_simulation import _bwrap_usable
 def setUpModule() -> None:
     # See `redirect_isolated_homes_root_for_module`: this module prepares isolated
     # backend homes, and without this it writes them into the operator's real
-    # `~/.met-dsl/homes` whenever it is run outside pytest.
+    # `~/.atmofab/homes` whenever it is run outside pytest.
     redirect_isolated_homes_root_for_module(__name__)
 
 
@@ -158,7 +158,7 @@ def _discard_isolated_homes(orchestration_id: str) -> None:
     ids carry a timestamp and 8 random hex characters and do not repeat.
 
     `tools/tests/conftest.py` points the root at this test's `tmp_path`, so this never
-    touches the operator's `~/.met-dsl/homes`; the environment name is read rather than
+    touches the operator's `~/.atmofab/homes`; the environment name is read rather than
     assumed so that a test which overrides it is followed rather than bypassed.
     """
     root = os.environ.get(ort.WORKFLOW_HOMES_ROOT_ENV, "").strip()
@@ -29621,7 +29621,7 @@ class DismissViolationTests(unittest.TestCase):
             home = Path(tmp) / "home"
             oid, arid = "orch_tok", "run_tok"
             self._seed_violation(repo, oid, arid, ["a.txt"])
-            tok_dir = home / ".met-dsl" / "operator_tokens"
+            tok_dir = home / ".atmofab" / "operator_tokens"
             tok_dir.mkdir(parents=True, exist_ok=True)
             (tok_dir / f"{oid}.txt").write_text("real-token", encoding="utf-8")
             with patch.dict(os.environ, {"HOME": str(home)}):
@@ -29642,7 +29642,7 @@ class DismissViolationTests(unittest.TestCase):
             home = Path(tmp) / "home"
             oid, arid = "orch_empty", "run_empty"
             self._seed_violation(repo, oid, arid, ["a.txt"])
-            tok_dir = home / ".met-dsl" / "operator_tokens"
+            tok_dir = home / ".atmofab" / "operator_tokens"
             tok_dir.mkdir(parents=True, exist_ok=True)
             (tok_dir / f"{oid}.txt").write_text("", encoding="utf-8")  # 0-byte
             with patch.dict(os.environ, {"HOME": str(home)}):
@@ -29663,7 +29663,7 @@ class DismissViolationTests(unittest.TestCase):
             home = Path(tmp) / "h"
             # 0-byte → repaired
             repo1 = Path(tmp) / "r1"; repo1.mkdir()
-            td = home / ".met-dsl" / "operator_tokens"; td.mkdir(parents=True)
+            td = home / ".atmofab" / "operator_tokens"; td.mkdir(parents=True)
             broken = td / "orch_a.txt"; broken.write_text("", encoding="utf-8")
             with patch.dict(os.environ, {"HOME": str(home)}):
                 init_orchestration(repo_root=repo1, orchestration_id="orch_a",
@@ -29687,7 +29687,7 @@ class DismissViolationTests(unittest.TestCase):
             home = Path(tmp) / "home"
             oid, arid = "orch_ok", "run_ok"
             self._seed_violation(repo, oid, arid, ["a.txt", "b.txt"])
-            tok_dir = home / ".met-dsl" / "operator_tokens"
+            tok_dir = home / ".atmofab" / "operator_tokens"
             tok_dir.mkdir(parents=True, exist_ok=True)
             (tok_dir / f"{oid}.txt").write_text("real-token", encoding="utf-8")
             with patch.dict(os.environ, {"HOME": str(home)}):
@@ -29713,7 +29713,7 @@ class DismissViolationTests(unittest.TestCase):
             home = Path(tmp) / "home"
             oid, arid = "orch_unk", "run_unk"
             self._seed_violation(repo, oid, arid, ["a.txt"])
-            tok_dir = home / ".met-dsl" / "operator_tokens"
+            tok_dir = home / ".atmofab" / "operator_tokens"
             tok_dir.mkdir(parents=True, exist_ok=True)
             (tok_dir / f"{oid}.txt").write_text("real-token", encoding="utf-8")
             with patch.dict(os.environ, {"HOME": str(home)}):
@@ -37902,7 +37902,7 @@ class DurableWorkflowHomesTests(unittest.TestCase):
 
         `tools/tests/conftest.py` redirects `ATMOFAB_WORKFLOW_HOMES_ROOT` for every test,
         and this class read it straight out of the environment — so it worked under
-        pytest and, run any other way, resolved the OPERATOR's real `~/.met-dsl/homes`
+        pytest and, run any other way, resolved the OPERATOR's real `~/.atmofab/homes`
         and created directories in it. That is not hypothetical: a reviewer ran the exact
         `env -u ATMOFAB_WORKFLOW_HOMES_ROOT python3 -m unittest …` command this branch's
         own commit message prescribes and had to prune three entries out of the operator's
@@ -37953,7 +37953,7 @@ class DurableWorkflowHomesTests(unittest.TestCase):
             self.assertEqual(meta["claude_workflow_home"], claude["home"])
 
     def test_without_an_override_the_root_is_the_operator_secret_root(self) -> None:
-        """`~/.met-dsl/homes`, resolved through the SAME `$HOME` reading as the guard.
+        """`~/.atmofab/homes`, resolved through the SAME `$HOME` reading as the guard.
 
         This is the assertion that connects the new location to the protection it
         depends on: `tools/hooks/common.py::protected_host_read_roots` refuses a leaf's
@@ -37976,7 +37976,7 @@ class DurableWorkflowHomesTests(unittest.TestCase):
                 secret_root = operator_secret_root()
             self.assertEqual(Path(iso["home"]), secret_root / "homes" / "orch_d" / "claude")
             self.assertTrue(Path(iso["home"]).is_relative_to(secret_root))
-            # `~/.met-dsl` itself is NOT forced to 0700 (the operator-token writer has
+            # `~/.atmofab` itself is NOT forced to 0700 (the operator-token writer has
             # created it best-effort since long before this change, so requiring a mode
             # here would refuse every launch on a host whose root predates that), but
             # everything this code creates below it is.
@@ -38083,7 +38083,7 @@ class DurableWorkflowHomesTests(unittest.TestCase):
         operator behaviour fail every launch: `docs/RUNBOOK.md` offers
         `ATMOFAB_WORKFLOW_HOMES_ROOT` with no stated precondition, so a plain `mkdir`
         creating it 0755 under the default umask bricked the lever; and a mode drift on
-        `~/.met-dsl/homes` — a backup restored without permissions — bricked every
+        `~/.atmofab/homes` — a backup restored without permissions — bricked every
         orchestration. Both measured before the change.
 
         What must still hold afterwards is the property, so that is what is asserted: the
@@ -38105,7 +38105,7 @@ class DurableWorkflowHomesTests(unittest.TestCase):
                     self.assertEqual(Path(iso["home"]).stat().st_mode & 0o777, 0o700)
 
     def test_the_operator_secret_root_itself_is_never_re_moded(self) -> None:
-        """`~/.met-dsl` is left exactly as the operator has it. Nothing observed that.
+        """`~/.atmofab` is left exactly as the operator has it. Nothing observed that.
 
         `_require_secure_home_ancestor`'s docstring and `docs/RUNBOOK.md` both state it —
         the root is shared with `operator_tokens/` and `start_claims/`, the operator-token
@@ -38120,7 +38120,7 @@ class DurableWorkflowHomesTests(unittest.TestCase):
         from tools.orchestration_runtime import _prepare_claude_workflow_home
         with tempfile.TemporaryDirectory() as td:
             fake_home = Path(td) / "home"
-            secret_root = fake_home / ".met-dsl"
+            secret_root = fake_home / ".atmofab"
             secret_root.mkdir(parents=True)
             os.chmod(secret_root, 0o755)
             root = self._claude_repo(str(Path(td) / "repo_parent"))
@@ -38130,7 +38130,7 @@ class DurableWorkflowHomesTests(unittest.TestCase):
             with mock.patch.dict(os.environ, env, clear=True):
                 iso = _prepare_claude_workflow_home(root, "orch_d")
             self.assertEqual(secret_root.stat().st_mode & 0o777, 0o755,
-                             "the operator's own `~/.met-dsl` was re-moded")
+                             "the operator's own `~/.atmofab` was re-moded")
             self.assertEqual((secret_root / "homes").stat().st_mode & 0o777, 0o700)
             self.assertEqual(Path(iso["home"]).stat().st_mode & 0o777, 0o700)
 
@@ -38526,12 +38526,12 @@ class DurableWorkflowHomesTests(unittest.TestCase):
         it stays green — while the thing it exists to prevent happens only where conftest
         is NOT loaded. Two reviewers ran `env -u ATMOFAB_WORKFLOW_HOMES_ROOT python3 -m
         unittest …`, the command this branch's own commit messages prescribe, and had to
-        prune entries out of the operator's real `~/.met-dsl/homes` afterwards.
+        prune entries out of the operator's real `~/.atmofab/homes` afterwards.
 
         So this witness leaves the process: it runs a class that relies on the module
         redirect under plain `unittest`, with the variable cleared and `$HOME` pointed at
         a temporary directory, and asserts that nothing was created under it. Delete the
-        redirect and `<fake home>/.met-dsl/homes` appears.
+        redirect and `<fake home>/.atmofab/homes` appears.
 
         `ClaudeWorkflowHomeTests` is the target on purpose: `DurableWorkflowHomesTests`
         has its own `setUp` root and would pass either way.
@@ -38552,7 +38552,7 @@ class DurableWorkflowHomesTests(unittest.TestCase):
             self.assertEqual(proc.returncode, 0,
                              f"the class did not pass outside pytest:\n{proc.stderr[-2000:]}")
             self.assertFalse(
-                (fake_home / ".met-dsl" / "homes").exists(),
+                (fake_home / ".atmofab" / "homes").exists(),
                 "a test module wrote isolated homes into $HOME when run outside pytest")
 
     def test_a_tilde_homes_root_override_is_expanded(self) -> None:
@@ -38604,7 +38604,7 @@ class DurableWorkflowHomesTests(unittest.TestCase):
         with `if False:` left all 5022 tests green. A safety net surviving mutation is
         expected — nothing normally trips it — but this one was introduced at the cost of
         a reviewer's mutant leaving four real directories in the operator's
-        `~/.met-dsl/homes`, and the conftest docstring calls it "the one that actually
+        `~/.atmofab/homes`, and the conftest docstring calls it "the one that actually
         holds". A layer described that way and observed by nothing is a claim, not a
         layer.
 
@@ -38742,7 +38742,7 @@ class DurableWorkflowHomesTests(unittest.TestCase):
     def test_an_override_whose_parent_is_absent_is_refused(self) -> None:
         """A typo'd `ATMOFAB_WORKFLOW_HOMES_ROOT` must not silently build a deep tree.
 
-        The default resolution may create `~/.met-dsl` itself (a host that has never run
+        The default resolution may create `~/.atmofab` itself (a host that has never run
         `init_orchestration` has none), but an override names a location the caller
         chose, and creating several levels under a misspelled one is the failure that
         costs most — the homes are then somewhere nobody looks, and the run appears to

@@ -48,7 +48,7 @@ def seed_codex_hooks(repo_root: Path) -> Path:
 # Isolated-homes redirect for test MODULES, not only for pytest.
 #
 # `tools/tests/conftest.py` points `ATMOFAB_WORKFLOW_HOMES_ROOT` at each test's `tmp_path`
-# and raises if a prepared home lands in the operator's real `~/.met-dsl`. Neither half
+# and raises if a prepared home lands in the operator's real `~/.atmofab`. Neither half
 # is loaded by plain `unittest`, so any module that prepares a backend home writes into
 # the operator's durable tree when run that way — and this branch's own commit messages
 # prescribe `env -u ATMOFAB_WORKFLOW_HOMES_ROOT python3 -m unittest …` as the way to check
@@ -67,7 +67,7 @@ def seed_codex_hooks(repo_root: Path) -> Path:
 # pytest conftest redirects anyway, so a mutant deleting this changes nothing that the
 # suite can see. `test_a_module_run_outside_pytest_writes_nothing_into_the_home` runs a
 # dependent class under plain `unittest` in a subprocess with a fake `$HOME` and asserts
-# that `.met-dsl/homes` never appears there.
+# that `.atmofab/homes` never appears there.
 _MODULE_HOMES_REDIRECTS: dict[str, tuple] = {}
 
 

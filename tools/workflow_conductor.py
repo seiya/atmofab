@@ -3910,7 +3910,7 @@ class Conductor:
             # Ensure the isolated home exists before accepting a recorded Codex
             # thread. If the home vanished, this rotates its generation; every
             # prior thread is then deliberately cold-fallback only. Since issue #64
-            # the home is durable (`~/.met-dsl/homes/<oid>/codex`), so "vanished"
+            # the home is durable (`~/.atmofab/homes/<oid>/codex`), so "vanished"
             # means an operator pruned it or lost the filesystem, not a /tmp sweep —
             # and the rotated home lands at the SAME path, which is exactly why the
             # generation is an integer and not a location.

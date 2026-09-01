@@ -51,7 +51,7 @@ from tools.tests.llm_samples import sample_config_with as _cfg
 def setUpModule() -> None:
     # See `redirect_isolated_homes_root_for_module`: this module prepares isolated
     # backend homes through `record_launch`, and without this it writes them into
-    # the operator's real `~/.met-dsl/homes` whenever it is run outside pytest.
+    # the operator's real `~/.atmofab/homes` whenever it is run outside pytest.
     redirect_isolated_homes_root_for_module(__name__)
 
 

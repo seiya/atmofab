@@ -2,13 +2,13 @@
 
 `_prepare_claude_workflow_home` (and its codex twin) create a private per-orchestration
 home and nothing removes it. Since issue #64 that home is DURABLE — `<homes-root>/<oid>/
-<backend>` under `~/.met-dsl/homes` — because it holds the leaf's only conversation
+<backend>` under `~/.atmofab/homes` — because it holds the leaf's only conversation
 record, and losing it makes a billed run unauditable after the fact. Retention is manual:
 `tools/prune_workflow_homes.py`, never anything automatic.
 
 A TEST RUN must not participate in that. Every fixture that drives `record_launch` for a
 claude-shaped leaf prepares a home, so a suite would otherwise write a few hundred
-directories into the operator's real `~/.met-dsl/homes` and leave them there — mixed in
+directories into the operator's real `~/.atmofab/homes` and leave them there — mixed in
 with the homes of real runs, where the prune tool would find them unverifiable (their
 "owner" checkouts are temporary directories that no longer exist).
 
@@ -30,7 +30,7 @@ TWO LAYERS, and the second is the one that actually holds:
      guard wrapped the two PREPARERS and raised on the path they RETURNED, so by the time
      it fired the directory was already on disk and nothing removed it. A reviewer
      running one mutant that made `_workflow_homes_root` ignore the redirect left four
-     real directories in the operator's `~/.met-dsl/homes` — permanent, unverifiable
+     real directories in the operator's `~/.atmofab/homes` — permanent, unverifiable
      residue in the one tree whose retention is manual. Wrapping the resolver means the
      mutant that reaches past the redirect cannot create anything at all.
 
@@ -200,7 +200,7 @@ def _redirect_workflow_homes_root(tmp_path, monkeypatch):
 
 @pytest.fixture(scope="session", autouse=True)
 def _forbid_isolated_homes_in_operator_secret_root():
-    """Fail any test about to resolve the isolated-homes root to the real `~/.met-dsl`."""
+    """Fail any test about to resolve the isolated-homes root to the real `~/.atmofab`."""
     import tools.orchestration_runtime as runtime
     from tools.hooks.common import operator_secret_root
 

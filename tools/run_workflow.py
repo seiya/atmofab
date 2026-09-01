@@ -1577,7 +1577,7 @@ def _claim_lock_path(repo_root: Path, kind: str, key: str) -> Path:
     # leaves it unset: one file per orchestration and per spec, which the OS releases
     # on process death, is the point.
     override = os.environ.get("ATMOFAB_START_CLAIM_ROOT", "").strip()
-    root = Path(override) if override else Path.home() / ".met-dsl" / "start_claims"
+    root = Path(override) if override else Path.home() / ".atmofab" / "start_claims"
     return root / f"{kind}.{digest}.lock"
 
 

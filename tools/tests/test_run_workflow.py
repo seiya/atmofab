@@ -75,7 +75,7 @@ def setUpModule() -> None:
 
     Every test drives a fresh temporary repo root, and the claim path is keyed on it,
     so without this the suite deposits one 0-byte file per (root, spec/orchestration)
-    under `~/.met-dsl/start_claims/` on every run — thousands of dentries that nothing
+    under `~/.atmofab/start_claims/` on every run — thousands of dentries that nothing
     ever reaps. Production leaves the variable unset.
     """
     global _CLAIM_ROOT_TMPDIR, _SAVED_CLAIM_ROOT

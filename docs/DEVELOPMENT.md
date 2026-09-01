@@ -55,7 +55,7 @@ Two sessions run against this checkout, and they load disjoint configuration. An
 | `.claude/skills/` | DEV | the same session | yes |
 | `llm.yaml` | run input | the driver, to decide what each leaf launches | no |
 | the operator's own CLI configuration directories | personal | the operator's own session, and the CLI's authentication | out of tree |
-| `~/.met-dsl/` | runtime state | the host, per orchestration | out of tree |
+| `~/.atmofab/` | runtime state | the host, per orchestration | out of tree |
 
 Three consequences worth stating explicitly:
 

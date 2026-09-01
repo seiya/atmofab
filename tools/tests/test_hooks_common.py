@@ -3031,7 +3031,7 @@ class ForbidBackendCredentialReadTests(unittest.TestCase):
                 msg=command)
         # The same class on the pre-existing operator-secret root.
         self.assertEqual(
-            self._policy("cat ${HOME:-/x}/.met-dsl/operator_tokens/t.txt"),
+            self._policy("cat ${HOME:-/x}/.atmofab/operator_tokens/t.txt"),
             "forbid_operator_secret_direct_read")
 
     def test_blocks_same_command_variable_indirection(self) -> None:
@@ -3240,7 +3240,7 @@ class ForbidBackendCredentialReadTests(unittest.TestCase):
                 "forbid_backend_credential_direct_read",
                 msg=command)
         self.assertEqual(
-            self._policy("cat ~/.m$'e't-dsl/operator_tokens/x.txt"),
+            self._policy("cat ~/.a$'t'mofab/operator_tokens/x.txt"),
             "forbid_operator_secret_direct_read")
         # A defined variable is a real expansion, not an obfuscated path.
         self.assertEqual(self._call("echo $HOME").action, HookDecisionAction.ALLOW)
@@ -3298,7 +3298,7 @@ class ForbidBackendCredentialReadTests(unittest.TestCase):
         home = str(Path.home())
         for command in (
             f"X=QQ{home}; cat ${{X:2}}/.codex/auth.json",
-            f"X=QQ{home}; cat ${{X:2}}/.met-dsl/operator_tokens/x.txt",
+            f"X=QQ{home}; cat ${{X:2}}/.atmofab/operator_tokens/x.txt",
             f"X={home}xx; cat ${{X:0:{len(home)}}}/.claude.json",
         ):
             self.assertNotEqual(self._policy(command), "", msg=command)
@@ -3318,7 +3318,7 @@ class ForbidBackendCredentialReadTests(unittest.TestCase):
         many = "".join(f"${{Z{i}-q}}" for i in range(9))
         for command in (
             "A=$HOME/; cat ${A:-x}${B:-.codex}/auth.json",
-            f"{pads}; cat ${{A:-{home}}}{many}${{G:-/.met-dsl/operator_tokens/x.txt}}",
+            f"{pads}; cat ${{A:-{home}}}{many}${{G:-/.atmofab/operator_tokens/x.txt}}",
         ):
             self.assertNotEqual(self._policy(command), "", msg=command[:60])
 
@@ -3367,7 +3367,7 @@ class ForbidBackendCredentialReadTests(unittest.TestCase):
             "cat ${A:-${B:-${C:-${HOME}}}}/.codex/auth.json",
             "A=PADDING$HOME; cat ${A:0x7}/.claude.json",
             "A=PAD$HOME; cat ${A:1*3}/.claude.json",
-            "A=$HOME; cat ${A//[[:alpha:]]/x}/.met-dsl/t",
+            "A=$HOME; cat ${A//[[:alpha:]]/x}/.atmofab/t",
         ):
             self.assertNotEqual(self._policy(command), "", msg=command)
         # An unresolved expansion that names nothing protected is NOT blocked —
@@ -3591,7 +3591,7 @@ class ForbidBackendCredentialReadTests(unittest.TestCase):
             "cat $HOME/$(echo .claude.json)",
             'cat "$HOME/$(echo .claude.json)"',
             "cat $HOME/`echo .claude.json`",
-            "cat ~/$(echo .met-dsl)/operator_tokens/t.txt",
+            "cat ~/$(echo .atmofab)/operator_tokens/t.txt",
             "A=$(echo .claude.json); cat $HOME/$A",
         ):
             self.assertNotEqual(self._policy(command), "", msg=command)
@@ -3684,17 +3684,17 @@ class ForbidBackendCredentialReadTests(unittest.TestCase):
         """The containment drop is a CREDENTIAL-root rule.
 
         Its justification is that the bind side rejects such a configuration, so
-        nothing under the root is bound writable — and `~/.met-dsl` is not an rw
+        nothing under the root is bound writable — and `~/.atmofab` is not an rw
         bind at all, so a checkout placed inside or around it must keep failing
         closed rather than lose the guard.
         """
         from tools.hooks.common import _command_reads_protected_host_path, protected_host_read_roots
-        inside = Path.home() / ".met-dsl" / "checkout"
-        command = "cat ~/.met-dsl/operator_tokens/x.txt"
+        inside = Path.home() / ".atmofab" / "checkout"
+        command = "cat ~/.atmofab/operator_tokens/x.txt"
         self.assertEqual(
             _command_reads_protected_host_path(
                 command, command.split(), inside, protected_host_read_roots()),
-            (Path.home() / ".met-dsl").resolve())
+            (Path.home() / ".atmofab").resolve())
 
     def test_no_budget_on_the_number_or_size_of_assignments(self) -> None:
         """The assignment axis carries NO bound an evader can satisfy and then
@@ -3716,7 +3716,7 @@ class ForbidBackendCredentialReadTests(unittest.TestCase):
             "cd ~ && cat .clau*e.json",
             "cd ~ && cat .co*x/auth.json",
             "cd ~ && cat .{claude,x}.json",
-            "cd ~ && od -c .m*t-dsl/operator_tokens/x.txt",
+            "cd ~ && od -c .a*mofab/operator_tokens/x.txt",
         ):
             self.assertNotEqual(self._policy(command), "", msg=command)
         # An in-repo `cd` with an ordinary glob is untouched.
@@ -3978,7 +3978,7 @@ class ForbidBackendCredentialReadTests(unittest.TestCase):
         for command in (
             r"cat ~/\.claude.json 'unbalanced",
             "cat ~/.cl''aude.json 'unbalanced",
-            # The same reassembled shapes the ~/.met-dsl suite pins: comma
+            # The same reassembled shapes the ~/.atmofab suite pins: comma
             # braces, `{k..m}` sequences, 3-part step sequences, nested braces,
             # and the `*` / `?` / `[c]` glob spellings — for BOTH backend roots.
             "cat ~/.{claude,foo}/settings.json",
@@ -4221,7 +4221,7 @@ class ForbidBackendCredentialReadTests(unittest.TestCase):
 
 
 class DurablePrivateHomeReadGuardTests(unittest.TestCase):
-    """The read guard against the DURABLE home layout (`~/.met-dsl/homes/<oid>/<backend>`).
+    """The read guard against the DURABLE home layout (`~/.atmofab/homes/<oid>/<backend>`).
 
     The twin of `test_the_isolated_private_home_is_guarded_for_both_backends` and its
     neighbours, which put the homes in an arbitrary temporary directory. Those stay:
@@ -4237,10 +4237,10 @@ class DurablePrivateHomeReadGuardTests(unittest.TestCase):
     tree would couple the suite to the machine it runs on — issue #84's shape — and
     would also make the assertions depend on how deep this checkout happens to be.
 
-    `ATMOFAB_WORKFLOW_HOMES_ROOT` is set EXPLICITLY to the fake home's `.met-dsl/homes`,
+    `ATMOFAB_WORKFLOW_HOMES_ROOT` is set EXPLICITLY to the fake home's `.atmofab/homes`,
     and that is load-bearing rather than tidy. `tools/tests/conftest.py` redirects that
     variable for every test in the suite, so without this the homes root resolved
-    somewhere OUTSIDE the fake `~/.met-dsl` — a relationship production never has — and
+    somewhere OUTSIDE the fake `~/.atmofab` — a relationship production never has — and
     the verdicts these tests assert were the harness's, not the workflow's. Measured: one
     assertion here passed under pytest and FAILED under
     `env -u ATMOFAB_WORKFLOW_HOMES_ROOT python3 -m unittest`, which is the production
@@ -4251,15 +4251,15 @@ class DurablePrivateHomeReadGuardTests(unittest.TestCase):
     def _fixture(self, td: str):
         """A fake `$HOME` with a durable homes tree, plus a repo whose meta names it."""
         home = Path(td) / "home"
-        (home / ".met-dsl").mkdir(parents=True)
+        (home / ".atmofab").mkdir(parents=True)
         (home / ".claude").mkdir()
         repo = Path(td) / "repo"
         (repo / "workspace" / "orchestrations" / "o").mkdir(parents=True)
-        claude_home = home / ".met-dsl" / "homes" / "o" / "claude"
-        codex_home = home / ".met-dsl" / "homes" / "o" / "codex"
+        claude_home = home / ".atmofab" / "homes" / "o" / "claude"
+        codex_home = home / ".atmofab" / "homes" / "o" / "codex"
         claude_home.mkdir(parents=True)
         codex_home.mkdir(parents=True)
-        sibling = home / ".met-dsl" / "homes" / "other" / "claude"
+        sibling = home / ".atmofab" / "homes" / "other" / "claude"
         sibling.mkdir(parents=True)
         (repo / "workspace" / "orchestrations" / "o" / "orchestration_meta.json").write_text(
             json.dumps({"claude_workflow_home": str(claude_home),
@@ -4271,9 +4271,9 @@ class DurablePrivateHomeReadGuardTests(unittest.TestCase):
         env = {"ATMOFAB_WORKFLOW_MODE": "1", "ATMOFAB_ORCHESTRATION_ID": "o",
                "HOME": str(home),
                # The production RELATIONSHIP, not merely a temporary directory: the homes
-               # root must sit under this fixture's `~/.met-dsl`, or every verdict below
+               # root must sit under this fixture's `~/.atmofab`, or every verdict below
                # is about a layout the workflow never produces. See the class docstring.
-               "ATMOFAB_WORKFLOW_HOMES_ROOT": str(home / ".met-dsl" / "homes")}
+               "ATMOFAB_WORKFLOW_HOMES_ROOT": str(home / ".atmofab" / "homes")}
         with patch.dict(os.environ, env, clear=False):
             decision = evaluate_common_policy(HookInput(
                 event_name=HookEventName.PRE_COMMAND_EXECUTE, backend=backend,
@@ -4284,7 +4284,7 @@ class DurablePrivateHomeReadGuardTests(unittest.TestCase):
     def test_the_home_under_the_secret_root_is_still_named_by_its_own_rule(self) -> None:
         """Attribution, and it is the longest-path-first sort that produces it.
 
-        Both `~/.met-dsl` and `~/.met-dsl/homes/o/claude` are protected roots now, and
+        Both `~/.atmofab` and `~/.atmofab/homes/o/claude` are protected roots now, and
         the second is inside the first. `protected_host_read_roots` sorts longest
         first, so the leaf's own home names itself; drop that sort and every one of
         these reads is reported as an operator-secret read instead — still blocked,
@@ -4313,7 +4313,7 @@ class DurablePrivateHomeReadGuardTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             home, repo, _c, _x, _sibling = self._fixture(td)
             for spelling in ("~", "$HOME", "${HOME}", "${HOME:-/x}"):
-                command = f"cat {spelling}/.met-dsl/homes/o/claude/.credentials.json"
+                command = f"cat {spelling}/.atmofab/homes/o/claude/.credentials.json"
                 self.assertEqual(self._policy(home, repo, command),
                                  "forbid_backend_credential_direct_read", msg=command)
 
@@ -4328,15 +4328,15 @@ class DurablePrivateHomeReadGuardTests(unittest.TestCase):
 
         WHICH root names it is the part I got wrong and a blank-slate reviewer caught.
         The first version of this test asserted `forbid_operator_secret_direct_read` and
-        two documents said the message names `~/.met-dsl`. That was true only until the
+        two documents said the message names `~/.atmofab`. That was true only until the
         homes ROOT became a protected entry of its own: it is a longer path than
-        `~/.met-dsl`, so longest-path-first now attributes anything under `homes/` to it,
+        `~/.atmofab`, so longest-path-first now attributes anything under `homes/` to it,
         and a sibling is reported as a backend-home read. That is the MORE accurate of
         the two labels — a sibling home is a backend home, not the dismiss-violation
         store — so the behaviour stands and the claim moved to match it.
 
         The reason the wrong assertion passed is worth as much as the assertion: the
-        suite's conftest redirects `ATMOFAB_WORKFLOW_HOMES_ROOT` away from `~/.met-dsl`,
+        suite's conftest redirects `ATMOFAB_WORKFLOW_HOMES_ROOT` away from `~/.atmofab`,
         so the nesting this test reasons about did not exist while it ran. The fixture
         now builds it (see the class docstring), and the operator-token control below is
         what keeps the two rules distinguishable.
@@ -4345,14 +4345,14 @@ class DurablePrivateHomeReadGuardTests(unittest.TestCase):
             home, repo, _c, _x, sibling = self._fixture(td)
             self.assertEqual(self._policy(home, repo, f"cat {sibling}/projects/x.jsonl"),
                              "forbid_backend_credential_direct_read")
-            self.assertEqual(self._policy(home, repo, "cat ~/.met-dsl/homes/other/claude/x"),
+            self.assertEqual(self._policy(home, repo, "cat ~/.atmofab/homes/other/claude/x"),
                              "forbid_backend_credential_direct_read")
             # The dismiss-violation tokens are what the operator-secret root exists for,
             # and they are still attributed to it — so the homes root did not swallow the
             # rule above it, which is the failure mode of adding a longer entry.
-            self.assertEqual(self._policy(home, repo, "cat ~/.met-dsl/operator_tokens/o.txt"),
+            self.assertEqual(self._policy(home, repo, "cat ~/.atmofab/operator_tokens/o.txt"),
                              "forbid_operator_secret_direct_read")
-            self.assertEqual(self._policy(home, repo, "cat ~/.met-dsl/start_claims/x.lock"),
+            self.assertEqual(self._policy(home, repo, "cat ~/.atmofab/start_claims/x.lock"),
                              "forbid_operator_secret_direct_read")
 
     def test_the_leaf_own_persisted_tool_result_stays_readable_in_every_spelling(self) -> None:
@@ -4380,7 +4380,7 @@ class DurablePrivateHomeReadGuardTests(unittest.TestCase):
             results = claude_home / "projects" / slug / "sess-1" / "tool-results"
             results.mkdir(parents=True)
             (results / "abc.txt").write_text("oversized gate output", encoding="utf-8")
-            rel = f".met-dsl/homes/o/claude/projects/{slug}/sess-1/tool-results/abc.txt"
+            rel = f".atmofab/homes/o/claude/projects/{slug}/sess-1/tool-results/abc.txt"
             # EVERY `${HOME…}` parameter expansion, not the three literal spellings. The
             # block side has always accepted the whole class, so listing only `~`,
             # `$HOME` and `${HOME}` on the exemption side left a seam: `${HOME:-/x}`,
@@ -4405,19 +4405,19 @@ class DurablePrivateHomeReadGuardTests(unittest.TestCase):
                     msg=f"the leaf must be able to read its own tool result: {spelling}")
             # CONTROLS in the same home and the same spellings — this is an exemption
             # for one SHAPE, not a hole in the root.
-            for blocked in ("${HOME}/.met-dsl/homes/o/claude/.credentials.json",
-                            f"${{HOME}}/.met-dsl/homes/o/claude/projects/{slug}/other-arid.jsonl",
-                            "${HOME}/.met-dsl/homes/o/claude/projects/-other-slug/sess/tool-results/a.txt",
+            for blocked in ("${HOME}/.atmofab/homes/o/claude/.credentials.json",
+                            f"${{HOME}}/.atmofab/homes/o/claude/projects/{slug}/other-arid.jsonl",
+                            "${HOME}/.atmofab/homes/o/claude/projects/-other-slug/sess/tool-results/a.txt",
                             # The SAME widened spellings on the control side: widening the
                             # exemption must not have widened what it exempts.
-                            "${HOME:-/x}/.met-dsl/homes/o/claude/.credentials.json",
-                            "${HOME%/}/.met-dsl/homes/other/claude/transcript.jsonl"):
+                            "${HOME:-/x}/.atmofab/homes/o/claude/.credentials.json",
+                            "${HOME%/}/.atmofab/homes/other/claude/transcript.jsonl"):
                 self.assertEqual(self._policy(home, repo, f"cat {blocked}"),
                                  "forbid_backend_credential_direct_read", msg=blocked)
             # The operator-secret store is blocked too, in the widened spellings, and
             # under its OWN policy — the two rules stay distinguishable.
-            for token_read in ("${HOME:+$HOME}/.met-dsl/operator_tokens/o.txt",
-                               "${HOME:-/x}/.met-dsl/start_claims/x.lock"):
+            for token_read in ("${HOME:+$HOME}/.atmofab/operator_tokens/o.txt",
+                               "${HOME:-/x}/.atmofab/start_claims/x.lock"):
                 self.assertEqual(self._policy(home, repo, f"cat {token_read}"),
                                  "forbid_operator_secret_direct_read", msg=token_read)
 
@@ -4426,7 +4426,7 @@ class DurablePrivateHomeReadGuardTests(unittest.TestCase):
 
         `protected_host_read_roots` covered every orchestration's home through ONE entry,
         `operator_secret_root()`, which the homes sit under by default. Set
-        `ATMOFAB_WORKFLOW_HOMES_ROOT` outside `~/.met-dsl` and that entry stopped covering
+        `ATMOFAB_WORKFLOW_HOMES_ROOT` outside `~/.atmofab` and that entry stopped covering
         them, so a leaf's Bash read of a SIBLING run's transcript was ALLOWED — while this
         module's docstrings and `docs/HOOKS.md` §"Layer boundary" asserted the closure
         with no mention of the condition. Measured before the fix; found by Codex.
@@ -4466,7 +4466,7 @@ class DurablePrivateHomeReadGuardTests(unittest.TestCase):
                 return (decision.audit_detail or {}).get("policy", "")
 
             # BLOCKED is the property; WHICH policy names it is not, and it differs from
-            # the default layout on purpose. Under `~/.met-dsl/homes` a sibling is caught
+            # the default layout on purpose. Under `~/.atmofab/homes` a sibling is caught
             # by the operator-secret root above it (the neighbouring test pins that);
             # under an override the homes root is its own entry and is reported as a
             # backend-home read, which is the more accurate label of the two.
@@ -4492,14 +4492,14 @@ class DurablePrivateHomeReadGuardTests(unittest.TestCase):
         """The guard did not become "block everything under `$HOME`".
 
         Without this, every assertion above passes for the wrong reason. `~/.bashrc`
-        and a file beside `.met-dsl` are ordinary reads and must stay so.
+        and a file beside `.atmofab` are ordinary reads and must stay so.
         """
         with tempfile.TemporaryDirectory() as td:
             home, repo, _c, _x, _s = self._fixture(td)
             (home / ".bashrc").write_text("", encoding="utf-8")
             (home / "notes.txt").write_text("", encoding="utf-8")
             for command in ("cat ~/.bashrc", "cat ~/notes.txt", f"cat {home}/notes.txt",
-                            "cat ~/.met-dsl-notes"):
+                            "cat ~/.atmofab-notes"):
                 # Against the two policies this class is about, not against silence —
                 # the absolute-path case names a fixture directory that other rules
                 # answer for on some hosts (measured under `TMPDIR=/dev/shm`).
@@ -4511,7 +4511,7 @@ class DurablePrivateHomeReadGuardTests(unittest.TestCase):
 
 
 class ForbidOperatorSecretReadTests(unittest.TestCase):
-    """P1: ~/.met-dsl/ reads are blocked regardless of the read command."""
+    """P1: ~/.atmofab/ reads are blocked regardless of the read command."""
 
     def _call(self, command: str) -> HookDecision:
         with patch.dict(os.environ, {"ATMOFAB_WORKFLOW_MODE": "1"}, clear=False):
@@ -4530,23 +4530,23 @@ class ForbidOperatorSecretReadTests(unittest.TestCase):
     def test_blocks_cat_head_tail(self) -> None:
         for c in ("cat", "head", "tail", "less"):
             self.assertEqual(
-                self._policy(f"{c} ~/.met-dsl/operator_tokens/x.txt"),
+                self._policy(f"{c} ~/.atmofab/operator_tokens/x.txt"),
                 "forbid_operator_secret_direct_read", msg=c)
 
     def test_blocks_non_read_commands(self) -> None:
         """od/xxd/cut/read are not in the read-command set but must still block."""
         for c in (
-            "od -c ~/.met-dsl/operator_tokens/x.txt",
-            "xxd ~/.met-dsl/operator_tokens/x.txt",
-            "cut -c1- ~/.met-dsl/operator_tokens/x.txt",
-            "read X < ~/.met-dsl/operator_tokens/x.txt",
+            "od -c ~/.atmofab/operator_tokens/x.txt",
+            "xxd ~/.atmofab/operator_tokens/x.txt",
+            "cut -c1- ~/.atmofab/operator_tokens/x.txt",
+            "read X < ~/.atmofab/operator_tokens/x.txt",
         ):
             self.assertEqual(
                 self._policy(c), "forbid_operator_secret_direct_read", msg=c)
 
     def test_blocks_command_substitution(self) -> None:
         self.assertEqual(
-            self._policy("x=$(cat ~/.met-dsl/operator_tokens/x.txt)"),
+            self._policy("x=$(cat ~/.atmofab/operator_tokens/x.txt)"),
             "forbid_operator_secret_direct_read")
 
     def test_blocks_glob_metacharacters(self) -> None:
@@ -4554,42 +4554,42 @@ class ForbidOperatorSecretReadTests(unittest.TestCase):
         from pathlib import Path
         home = str(Path.home())
         for c in (
-            "cat ~/.met-d*/operator_tokens/x.txt",
-            "cat $HOME/.met-d*/operator_tokens/x.txt",
-            f"cat {home}/.met-d*/operator_tokens/x.txt",
-            "od ~/.m?t-dsl/operator_tokens/x.txt",
-            "cat ~/.[m]et-dsl/operator_tokens/x.txt",
+            "cat ~/.atmof*/operator_tokens/x.txt",
+            "cat $HOME/.atmof*/operator_tokens/x.txt",
+            f"cat {home}/.atmof*/operator_tokens/x.txt",
+            "od ~/.a?mofab/operator_tokens/x.txt",
+            "cat ~/.[a]tmofab/operator_tokens/x.txt",
         ):
             self.assertEqual(
                 self._policy(c), "forbid_operator_secret_direct_read", msg=c)
 
     def test_blocks_brace_expansion(self) -> None:
-        """Shell brace expansion `{a,b}` in the .met-dsl segment must fail-closed."""
+        """Shell brace expansion `{a,b}` in the .atmofab segment must fail-closed."""
         for c in (
-            "cat ~/.met-{dsl,x}/operator_tokens/x.txt",
-            "cat ~/.met-ds{l}/operator_tokens/x.txt",
-            "cat ~/.{met-dsl,foo}/operator_tokens/x.txt",
-            "cat $HOME/.met-{dsl,x}/operator_tokens/x.txt",
+            "cat ~/.atmo{fab,x}/operator_tokens/x.txt",
+            "cat ~/.atmofa{b}/operator_tokens/x.txt",
+            "cat ~/.{atmofab,foo}/operator_tokens/x.txt",
+            "cat $HOME/.atmo{fab,x}/operator_tokens/x.txt",
         ):
             self.assertEqual(
                 self._policy(c), "forbid_operator_secret_direct_read", msg=c)
 
     def test_blocks_brace_sequence_and_nested(self) -> None:
-        """`{k..m}` sequence and nested braces both expand to .met-dsl in bash."""
+        """`{k..m}` sequence and nested braces both expand to .atmofab in bash."""
         for c in (
-            "cat ~/.met-ds{k..m}/operator_tokens/x.txt",
-            "cat ~/.{met-{dsl,x},y}/operator_tokens/x.txt",
-            "od ~/.met-ds{a..z}/operator_tokens/x.txt",
+            "cat ~/.atmofa{a..c}/operator_tokens/x.txt",
+            "cat ~/.{atmo{fab,x},y}/operator_tokens/x.txt",
+            "od ~/.atmofa{a..z}/operator_tokens/x.txt",
         ):
             self.assertEqual(
                 self._policy(c), "forbid_operator_secret_direct_read", msg=c)
 
     def test_blocks_brace_step_sequence(self) -> None:
-        """bash 3-part step sequence `{lo..hi..incr}` also expands to .met-dsl."""
+        """bash 3-part step sequence `{lo..hi..incr}` also expands to .atmofab."""
         for c in (
-            "cat ~/.met-ds{k..m..1}/operator_tokens/x.txt",
-            "od -c ~/.met-ds{j..p..2}/x",
-            "cat ~/.met-ds{a..z..1}/x",
+            "cat ~/.atmofa{a..c..1}/operator_tokens/x.txt",
+            "od -c ~/.atmofa{b..f..2}/x",
+            "cat ~/.atmofa{a..z..1}/x",
         ):
             self.assertEqual(
                 self._policy(c), "forbid_operator_secret_direct_read", msg=c)
@@ -4623,22 +4623,22 @@ class ForbidOperatorSecretReadTests(unittest.TestCase):
         and a met-dsl-targeting one must still block."""
         with _CpuUnits() as measured:
             self.assertEqual(
-                self._policy("cat ~/.met-ds{0..999999999}/operator_tokens/x.txt"),
+                self._policy("cat ~/.atmofa{0..999999999}/operator_tokens/x.txt"),
                 "forbid_operator_secret_direct_read")
             self._policy("cat ~/x{0..999999999}/y")  # non-secret, must also be fast
         self.assertLess(measured.units, 40, measured.describe())
 
     def test_blocks_embedded_quote_backslash_fallback(self) -> None:
         """When shlex parse fails and evaluate_common_policy falls back to
-        command.split(), embedded quote/backslash forms (`~/.met-d''sl`,
-        `~/\\.met-dsl`) must still be caught by the collapse pass."""
+        command.split(), embedded quote/backslash forms (`~/.atmof''ab`,
+        `~/\\.atmofab`) must still be caught by the collapse pass."""
         from pathlib import Path
         from tools.hooks.common import _command_reads_protected_host_path
         repo = Path.cwd()
-        root = (Path.home() / ".met-dsl").resolve()
+        root = (Path.home() / ".atmofab").resolve()
         for cmd in (
-            r"cat ~/\.met-dsl/operator_tokens/x.txt 'unbalanced",
-            "cat ~/.met-d''sl/operator_tokens/x.txt 'unbalanced",
+            r"cat ~/\.atmofab/operator_tokens/x.txt 'unbalanced",
+            "cat ~/.atmof''ab/operator_tokens/x.txt 'unbalanced",
         ):
             self.assertEqual(
                 _command_reads_protected_host_path(cmd, cmd.split(), repo, [root]),
@@ -4660,10 +4660,10 @@ class ForbidOperatorSecretReadTests(unittest.TestCase):
         from pathlib import Path
         home = str(Path.home())
         for c in (
-            "cat $HOME/.met-dsl/operator_tokens/x.txt",
-            "cat ${HOME}/.met-dsl/operator_tokens/x.txt",
-            f"cat {home}/.met-dsl/operator_tokens/x.txt",
-            f"cat {home}/foo/../.met-dsl/operator_tokens/x.txt",
+            "cat $HOME/.atmofab/operator_tokens/x.txt",
+            "cat ${HOME}/.atmofab/operator_tokens/x.txt",
+            f"cat {home}/.atmofab/operator_tokens/x.txt",
+            f"cat {home}/foo/../.atmofab/operator_tokens/x.txt",
         ):
             self.assertEqual(
                 self._policy(c), "forbid_operator_secret_direct_read", msg=c)

@@ -306,7 +306,7 @@ class PruneWorkflowHomesTests(unittest.TestCase):
 
         Importing the NAME binds the function object at import time, so
         `tools/tests/conftest.py` replacing the module attribute — the guard that exists
-        to stop a test writing into the operator's real `~/.met-dsl` — did not reach the
+        to stop a test writing into the operator's real `~/.atmofab` — did not reach the
         one module that DELETES. Measured: with the guard installed and the redirect
         cleared, `prune --all` resolved the operator's real root and the guard never
         fired.
