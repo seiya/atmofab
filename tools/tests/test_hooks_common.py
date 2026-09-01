@@ -336,7 +336,7 @@ class HookCommonTests(unittest.TestCase):
         self.assertEqual(decision.action, HookDecisionAction.BLOCK)
 
     def test_evaluate_common_policy_blocks_direct_tools_read_via_cat_in_workflow_mode(self) -> None:
-        with patch.dict(os.environ, {"METDSL_WORKFLOW_MODE": "1"}, clear=False):
+        with patch.dict(os.environ, {"ATMOFAB_WORKFLOW_MODE": "1"}, clear=False):
             decision = evaluate_common_policy(
                 HookInput(
                     event_name=HookEventName.PRE_COMMAND_EXECUTE,
@@ -350,7 +350,7 @@ class HookCommonTests(unittest.TestCase):
 
     def test_evaluate_common_policy_allows_non_repo_tools_path_in_workflow_mode(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            with patch.dict(os.environ, {"METDSL_WORKFLOW_MODE": "1"}, clear=False):
+            with patch.dict(os.environ, {"ATMOFAB_WORKFLOW_MODE": "1"}, clear=False):
                 decision = evaluate_common_policy(
                     HookInput(
                         event_name=HookEventName.PRE_COMMAND_EXECUTE,
@@ -365,7 +365,7 @@ class HookCommonTests(unittest.TestCase):
         self.assertEqual(decision.action, HookDecisionAction.ALLOW)
 
     def test_evaluate_common_policy_blocks_direct_tools_read_via_sed_in_workflow_mode(self) -> None:
-        with patch.dict(os.environ, {"METDSL_WORKFLOW_MODE": "1"}, clear=False):
+        with patch.dict(os.environ, {"ATMOFAB_WORKFLOW_MODE": "1"}, clear=False):
             decision = evaluate_common_policy(
                 HookInput(
                     event_name=HookEventName.PRE_COMMAND_EXECUTE,
@@ -378,7 +378,7 @@ class HookCommonTests(unittest.TestCase):
         self.assertEqual((decision.audit_detail or {}).get("policy"), "forbid_tools_direct_read")
 
     def test_evaluate_common_policy_blocks_direct_tools_read_via_rg_in_workflow_mode(self) -> None:
-        with patch.dict(os.environ, {"METDSL_WORKFLOW_MODE": "1"}, clear=False):
+        with patch.dict(os.environ, {"ATMOFAB_WORKFLOW_MODE": "1"}, clear=False):
             decision = evaluate_common_policy(
                 HookInput(
                     event_name=HookEventName.PRE_COMMAND_EXECUTE,
@@ -391,7 +391,7 @@ class HookCommonTests(unittest.TestCase):
         self.assertEqual((decision.audit_detail or {}).get("policy"), "forbid_tools_direct_read")
 
     def test_evaluate_common_policy_blocks_direct_tools_read_via_grep_in_workflow_mode(self) -> None:
-        with patch.dict(os.environ, {"METDSL_WORKFLOW_MODE": "1"}, clear=False):
+        with patch.dict(os.environ, {"ATMOFAB_WORKFLOW_MODE": "1"}, clear=False):
             decision = evaluate_common_policy(
                 HookInput(
                     event_name=HookEventName.PRE_COMMAND_EXECUTE,
@@ -404,7 +404,7 @@ class HookCommonTests(unittest.TestCase):
         self.assertEqual((decision.audit_detail or {}).get("policy"), "forbid_tools_direct_read")
 
     def test_evaluate_common_policy_blocks_direct_tools_read_via_awk_in_workflow_mode(self) -> None:
-        with patch.dict(os.environ, {"METDSL_WORKFLOW_MODE": "1"}, clear=False):
+        with patch.dict(os.environ, {"ATMOFAB_WORKFLOW_MODE": "1"}, clear=False):
             decision = evaluate_common_policy(
                 HookInput(
                     event_name=HookEventName.PRE_COMMAND_EXECUTE,
@@ -417,7 +417,7 @@ class HookCommonTests(unittest.TestCase):
         self.assertEqual((decision.audit_detail or {}).get("policy"), "forbid_tools_direct_read")
 
     def test_evaluate_common_policy_allows_sed_non_tools_path_in_workflow_mode(self) -> None:
-        with patch.dict(os.environ, {"METDSL_WORKFLOW_MODE": "1"}, clear=False):
+        with patch.dict(os.environ, {"ATMOFAB_WORKFLOW_MODE": "1"}, clear=False):
             decision = evaluate_common_policy(
                 HookInput(
                     event_name=HookEventName.PRE_COMMAND_EXECUTE,
@@ -429,7 +429,7 @@ class HookCommonTests(unittest.TestCase):
         self.assertEqual(decision.action, HookDecisionAction.ALLOW)
 
     def test_evaluate_common_policy_allows_rg_pattern_only_tools_token_in_workflow_mode(self) -> None:
-        with patch.dict(os.environ, {"METDSL_WORKFLOW_MODE": "1"}, clear=False):
+        with patch.dict(os.environ, {"ATMOFAB_WORKFLOW_MODE": "1"}, clear=False):
             decision = evaluate_common_policy(
                 HookInput(
                     event_name=HookEventName.PRE_COMMAND_EXECUTE,
@@ -441,7 +441,7 @@ class HookCommonTests(unittest.TestCase):
         self.assertEqual(decision.action, HookDecisionAction.ALLOW)
 
     def test_evaluate_common_policy_blocks_direct_tools_read_via_sed_f_script_in_workflow_mode(self) -> None:
-        with patch.dict(os.environ, {"METDSL_WORKFLOW_MODE": "1"}, clear=False):
+        with patch.dict(os.environ, {"ATMOFAB_WORKFLOW_MODE": "1"}, clear=False):
             decision = evaluate_common_policy(
                 HookInput(
                     event_name=HookEventName.PRE_COMMAND_EXECUTE,
@@ -454,7 +454,7 @@ class HookCommonTests(unittest.TestCase):
         self.assertEqual((decision.audit_detail or {}).get("policy"), "forbid_tools_direct_read")
 
     def test_evaluate_common_policy_blocks_direct_tools_read_via_rg_file_in_workflow_mode(self) -> None:
-        with patch.dict(os.environ, {"METDSL_WORKFLOW_MODE": "1"}, clear=False):
+        with patch.dict(os.environ, {"ATMOFAB_WORKFLOW_MODE": "1"}, clear=False):
             decision = evaluate_common_policy(
                 HookInput(
                     event_name=HookEventName.PRE_COMMAND_EXECUTE,
@@ -467,7 +467,7 @@ class HookCommonTests(unittest.TestCase):
         self.assertEqual((decision.audit_detail or {}).get("policy"), "forbid_tools_direct_read")
 
     def test_evaluate_common_policy_blocks_direct_tools_read_via_grep_f_in_workflow_mode(self) -> None:
-        with patch.dict(os.environ, {"METDSL_WORKFLOW_MODE": "1"}, clear=False):
+        with patch.dict(os.environ, {"ATMOFAB_WORKFLOW_MODE": "1"}, clear=False):
             decision = evaluate_common_policy(
                 HookInput(
                     event_name=HookEventName.PRE_COMMAND_EXECUTE,
@@ -480,7 +480,7 @@ class HookCommonTests(unittest.TestCase):
         self.assertEqual((decision.audit_detail or {}).get("policy"), "forbid_tools_direct_read")
 
     def test_evaluate_common_policy_blocks_direct_tools_read_via_awk_f_in_workflow_mode(self) -> None:
-        with patch.dict(os.environ, {"METDSL_WORKFLOW_MODE": "1"}, clear=False):
+        with patch.dict(os.environ, {"ATMOFAB_WORKFLOW_MODE": "1"}, clear=False):
             decision = evaluate_common_policy(
                 HookInput(
                     event_name=HookEventName.PRE_COMMAND_EXECUTE,
@@ -493,7 +493,7 @@ class HookCommonTests(unittest.TestCase):
         self.assertEqual((decision.audit_detail or {}).get("policy"), "forbid_tools_direct_read")
 
     def test_evaluate_common_policy_blocks_direct_tools_read_via_sed_e_and_tools_input_in_workflow_mode(self) -> None:
-        with patch.dict(os.environ, {"METDSL_WORKFLOW_MODE": "1"}, clear=False):
+        with patch.dict(os.environ, {"ATMOFAB_WORKFLOW_MODE": "1"}, clear=False):
             decision = evaluate_common_policy(
                 HookInput(
                     event_name=HookEventName.PRE_COMMAND_EXECUTE,
@@ -506,7 +506,7 @@ class HookCommonTests(unittest.TestCase):
         self.assertEqual((decision.audit_detail or {}).get("policy"), "forbid_tools_direct_read")
 
     def test_evaluate_common_policy_blocks_direct_tools_read_via_awk_f_and_tools_input_in_workflow_mode(self) -> None:
-        with patch.dict(os.environ, {"METDSL_WORKFLOW_MODE": "1"}, clear=False):
+        with patch.dict(os.environ, {"ATMOFAB_WORKFLOW_MODE": "1"}, clear=False):
             decision = evaluate_common_policy(
                 HookInput(
                     event_name=HookEventName.PRE_COMMAND_EXECUTE,
@@ -519,7 +519,7 @@ class HookCommonTests(unittest.TestCase):
         self.assertEqual((decision.audit_detail or {}).get("policy"), "forbid_tools_direct_read")
 
     def test_evaluate_common_policy_blocks_direct_tools_read_via_sed_combined_f_in_workflow_mode(self) -> None:
-        with patch.dict(os.environ, {"METDSL_WORKFLOW_MODE": "1"}, clear=False):
+        with patch.dict(os.environ, {"ATMOFAB_WORKFLOW_MODE": "1"}, clear=False):
             decision = evaluate_common_policy(
                 HookInput(
                     event_name=HookEventName.PRE_COMMAND_EXECUTE,
@@ -532,7 +532,7 @@ class HookCommonTests(unittest.TestCase):
         self.assertEqual((decision.audit_detail or {}).get("policy"), "forbid_tools_direct_read")
 
     def test_evaluate_common_policy_blocks_direct_tools_read_via_rg_combined_f_in_workflow_mode(self) -> None:
-        with patch.dict(os.environ, {"METDSL_WORKFLOW_MODE": "1"}, clear=False):
+        with patch.dict(os.environ, {"ATMOFAB_WORKFLOW_MODE": "1"}, clear=False):
             decision = evaluate_common_policy(
                 HookInput(
                     event_name=HookEventName.PRE_COMMAND_EXECUTE,
@@ -545,7 +545,7 @@ class HookCommonTests(unittest.TestCase):
         self.assertEqual((decision.audit_detail or {}).get("policy"), "forbid_tools_direct_read")
 
     def test_evaluate_common_policy_allows_sed_mixed_implicit_and_explicit_script_without_tools_input(self) -> None:
-        with patch.dict(os.environ, {"METDSL_WORKFLOW_MODE": "1"}, clear=False):
+        with patch.dict(os.environ, {"ATMOFAB_WORKFLOW_MODE": "1"}, clear=False):
             decision = evaluate_common_policy(
                 HookInput(
                     event_name=HookEventName.PRE_COMMAND_EXECUTE,
@@ -557,7 +557,7 @@ class HookCommonTests(unittest.TestCase):
         self.assertEqual(decision.action, HookDecisionAction.ALLOW)
 
     def test_evaluate_common_policy_blocks_python_inline_open_write(self) -> None:
-        with patch.dict(os.environ, {"METDSL_WORKFLOW_MODE": "1"}, clear=False):
+        with patch.dict(os.environ, {"ATMOFAB_WORKFLOW_MODE": "1"}, clear=False):
             decision = evaluate_common_policy(
                 HookInput(
                     event_name=HookEventName.PRE_COMMAND_EXECUTE,
@@ -571,7 +571,7 @@ class HookCommonTests(unittest.TestCase):
         self.assertIn("python -c inline execution is forbidden", decision.reason or "")
 
     def test_evaluate_common_policy_allows_python_inline_open_write_outside_workflow_mode(self) -> None:
-        with patch.dict(os.environ, {"METDSL_WORKFLOW_MODE": "0"}, clear=False):
+        with patch.dict(os.environ, {"ATMOFAB_WORKFLOW_MODE": "0"}, clear=False):
             decision = evaluate_common_policy(
                 HookInput(
                     event_name=HookEventName.PRE_COMMAND_EXECUTE,
@@ -902,7 +902,7 @@ class EvaluateCommonPolicyCliHelpAuditTests(unittest.TestCase):
         )
 
     def test_cli_help_invocation_allows_with_audit_detail_in_workflow_mode(self) -> None:
-        with patch.dict(os.environ, {"METDSL_WORKFLOW_MODE": "1"}):
+        with patch.dict(os.environ, {"ATMOFAB_WORKFLOW_MODE": "1"}):
             decision = evaluate_common_policy(
                 self._make("python3 tools/orchestration_runtime.py record-launch --help")
             )
@@ -913,7 +913,7 @@ class EvaluateCommonPolicyCliHelpAuditTests(unittest.TestCase):
         self.assertEqual(decision.audit_detail["subcommand"], "record-launch")
 
     def test_non_help_invocation_allows_without_audit_detail(self) -> None:
-        with patch.dict(os.environ, {"METDSL_WORKFLOW_MODE": "1"}):
+        with patch.dict(os.environ, {"ATMOFAB_WORKFLOW_MODE": "1"}):
             decision = evaluate_common_policy(
                 self._make("python3 tools/orchestration_runtime.py record-launch --repo-root .")
             )
@@ -922,7 +922,7 @@ class EvaluateCommonPolicyCliHelpAuditTests(unittest.TestCase):
 
     def test_implementation_read_still_blocked_in_workflow_mode(self) -> None:
         """Even while permitting the `--help` path, a direct implementation read such as `cat tools/X.py` remains blocked."""
-        with patch.dict(os.environ, {"METDSL_WORKFLOW_MODE": "1"}):
+        with patch.dict(os.environ, {"ATMOFAB_WORKFLOW_MODE": "1"}):
             decision = evaluate_common_policy(
                 self._make("cat tools/orchestration_runtime.py")
             )
@@ -932,7 +932,7 @@ class EvaluateCommonPolicyCliHelpAuditTests(unittest.TestCase):
 
     def test_cli_help_audit_skipped_outside_workflow_mode(self) -> None:
         """When workflow mode is disabled, the hook does not attach audit_detail."""
-        with patch.dict(os.environ, {"METDSL_WORKFLOW_MODE": "0"}):
+        with patch.dict(os.environ, {"ATMOFAB_WORKFLOW_MODE": "0"}):
             decision = evaluate_common_policy(
                 self._make("python3 tools/orchestration_runtime.py record-launch --help")
             )
@@ -1204,7 +1204,7 @@ class ForbidPythonInlineWriteNewPatternsTests(unittest.TestCase):
     """B-1: heredoc / write_text / shutil detection added in forbid_python_inline_write."""
 
     def _call(self, command: str) -> HookDecision:
-        with patch.dict(os.environ, {"METDSL_WORKFLOW_MODE": "1"}, clear=False):
+        with patch.dict(os.environ, {"ATMOFAB_WORKFLOW_MODE": "1"}, clear=False):
             return evaluate_common_policy(
                 HookInput(
                     event_name=HookEventName.PRE_COMMAND_EXECUTE,
@@ -2525,7 +2525,7 @@ class FixHintInAuditDetailTests(unittest.TestCase):
         when a leaf reached for `python3 -c` and is being sent to a scratch script.
         """
         from tools.hooks.common import evaluate_common_policy
-        with patch.dict(os.environ, {"METDSL_WORKFLOW_MODE": "1"}, clear=False):
+        with patch.dict(os.environ, {"ATMOFAB_WORKFLOW_MODE": "1"}, clear=False):
             decision = evaluate_common_policy(
                 HookInput(
                     event_name=HookEventName.PRE_COMMAND_EXECUTE,
@@ -2610,7 +2610,7 @@ class DevShmWriteBlockTests(unittest.TestCase):
     """C-4: cp/mv/rsync/install to /dev/shm is blocked in workflow mode."""
 
     def _call(self, command: str) -> HookDecision:
-        with patch.dict(os.environ, {"METDSL_WORKFLOW_MODE": "1"}, clear=False):
+        with patch.dict(os.environ, {"ATMOFAB_WORKFLOW_MODE": "1"}, clear=False):
             return evaluate_common_policy(
                 HookInput(
                     event_name=HookEventName.PRE_COMMAND_EXECUTE,
@@ -2813,7 +2813,7 @@ class PipeTailInlinePythonAstTests(unittest.TestCase):
     substring blocklist was trivially defeated)."""
 
     def _call(self, command: str) -> HookDecision:
-        with patch.dict(os.environ, {"METDSL_WORKFLOW_MODE": "1"}, clear=False):
+        with patch.dict(os.environ, {"ATMOFAB_WORKFLOW_MODE": "1"}, clear=False):
             return evaluate_common_policy(
                 HookInput(
                     event_name=HookEventName.PRE_COMMAND_EXECUTE,
@@ -2961,7 +2961,7 @@ class ForbidBackendCredentialReadTests(unittest.TestCase):
     """
 
     def _call(self, command: str, backend: str = "claude") -> HookDecision:
-        with patch.dict(os.environ, {"METDSL_WORKFLOW_MODE": "1"}, clear=False):
+        with patch.dict(os.environ, {"ATMOFAB_WORKFLOW_MODE": "1"}, clear=False):
             return evaluate_common_policy(
                 HookInput(
                     event_name=HookEventName.PRE_COMMAND_EXECUTE,
@@ -3023,7 +3023,7 @@ class ForbidBackendCredentialReadTests(unittest.TestCase):
             "cat ${PWD}/../../.claude.json",
             # An UNSET variable's default operand is the other half: the path is
             # in the operand, not in any environment value.
-            "cat ${METDSL_NO_SUCH_VAR:-~/.claude.json}",
+            "cat ${ATMOFAB_NO_SUCH_VAR:-~/.claude.json}",
         ):
             self.assertEqual(
                 self._policy(command),
@@ -3244,7 +3244,7 @@ class ForbidBackendCredentialReadTests(unittest.TestCase):
             "forbid_operator_secret_direct_read")
         # A defined variable is a real expansion, not an obfuscated path.
         self.assertEqual(self._call("echo $HOME").action, HookDecisionAction.ALLOW)
-        self.assertEqual(self._call("echo $METDSL_NO_SUCH_VAR").action, HookDecisionAction.ALLOW)
+        self.assertEqual(self._call("echo $ATMOFAB_NO_SUCH_VAR").action, HookDecisionAction.ALLOW)
 
     def test_decodes_the_quoting_constructs_directly(self) -> None:
         """Unit pin for the decoder: the reachable shapes go through other
@@ -3303,7 +3303,7 @@ class ForbidBackendCredentialReadTests(unittest.TestCase):
         ):
             self.assertNotEqual(self._policy(command), "", msg=command)
         self.assertEqual(
-            self._policy("cat ${METDSL_NO_SUCH:-~}/.claude.json"),
+            self._policy("cat ${ATMOFAB_NO_SUCH:-~}/.claude.json"),
             "forbid_backend_credential_direct_read")
 
     def test_alternate_words_are_resolved_not_enumerated(self) -> None:
@@ -3738,7 +3738,7 @@ class ForbidBackendCredentialReadTests(unittest.TestCase):
         A's VALUE and B's OPERAND together."""
         for command in (
             "A=$HOME/; cat ${A:-x}${B:-.codex}/auth.json",
-            "cat ${METDSL_NO_SUCH_A:-~}/${METDSL_NO_SUCH_B:-.claude.json}",
+            "cat ${ATMOFAB_NO_SUCH_A:-~}/${ATMOFAB_NO_SUCH_B:-.claude.json}",
         ):
             self.assertEqual(
                 self._policy(command),
@@ -3816,8 +3816,8 @@ class ForbidBackendCredentialReadTests(unittest.TestCase):
             "H=/home/" + Path.home().name + "; cd $H && cat .claude.json",
             # bash treats an empty or unresolvable `cd` operand as no operand at
             # all, which is `cd $HOME`.
-            "cd $METDSL_NO_SUCH_VAR && cat .claude.json",
-            "cd ${METDSL_NO_SUCH_VAR} && cat .claude.json",
+            "cd $ATMOFAB_NO_SUCH_VAR && cat .claude.json",
+            "cd ${ATMOFAB_NO_SUCH_VAR} && cat .claude.json",
             "E=; cd $E && cat .claude.json",
         ):
             self.assertEqual(
@@ -4078,7 +4078,7 @@ class ForbidBackendCredentialReadTests(unittest.TestCase):
                 encoding="utf-8")
 
             def policy(command: str, backend: str = "claude") -> str:
-                env = {"METDSL_WORKFLOW_MODE": "1", "METDSL_ORCHESTRATION_ID": "o"}
+                env = {"ATMOFAB_WORKFLOW_MODE": "1", "ATMOFAB_ORCHESTRATION_ID": "o"}
                 with patch.dict(os.environ, env, clear=False):
                     decision = evaluate_common_policy(HookInput(
                         event_name=HookEventName.PRE_COMMAND_EXECUTE, backend=backend,
@@ -4141,7 +4141,7 @@ class ForbidBackendCredentialReadTests(unittest.TestCase):
             (home / "projects" / slug / "other-arid.jsonl").write_text("{}", encoding="utf-8")
 
             def policy(command: str) -> str:
-                env = {"METDSL_WORKFLOW_MODE": "1", "METDSL_ORCHESTRATION_ID": "o"}
+                env = {"ATMOFAB_WORKFLOW_MODE": "1", "ATMOFAB_ORCHESTRATION_ID": "o"}
                 with patch.dict(os.environ, env, clear=False):
                     decision = evaluate_common_policy(HookInput(
                         event_name=HookEventName.PRE_COMMAND_EXECUTE, backend="claude",
@@ -4184,7 +4184,7 @@ class ForbidBackendCredentialReadTests(unittest.TestCase):
              / "orchestration_meta.json").write_text(json.dumps({}), encoding="utf-8")
 
             command = f"cat {real_home}/.credentials.json"
-            env = {"METDSL_WORKFLOW_MODE": "1", "METDSL_ORCHESTRATION_ID": "o"}
+            env = {"ATMOFAB_WORKFLOW_MODE": "1", "ATMOFAB_ORCHESTRATION_ID": "o"}
             with patch.dict(os.environ, env, clear=False):
                 decision = evaluate_common_policy(HookInput(
                     event_name=HookEventName.PRE_COMMAND_EXECUTE, backend="claude",
@@ -4208,10 +4208,10 @@ class ForbidBackendCredentialReadTests(unittest.TestCase):
                 self.assertEqual(
                     self._policy(f"cat {relocated}/auth.json"),
                     "forbid_backend_credential_direct_read")
-            # METDSL_HOME is the documented deprecated alias preflight also
+            # ATMOFAB_HOME is the documented deprecated alias preflight also
             # honors; the guard must follow the same fallback order.
             legacy = Path(tmp) / "legacy_home"
-            env = {"METDSL_HOME": str(legacy)}
+            env = {"ATMOFAB_HOME": str(legacy)}
             with patch.dict(os.environ, env, clear=False):
                 os.environ.pop("CODEX_HOME", None)
                 self.assertEqual(backend_credential_home_paths("codex")[0], (legacy,))
@@ -4237,13 +4237,13 @@ class DurablePrivateHomeReadGuardTests(unittest.TestCase):
     tree would couple the suite to the machine it runs on — issue #84's shape — and
     would also make the assertions depend on how deep this checkout happens to be.
 
-    `METDSL_WORKFLOW_HOMES_ROOT` is set EXPLICITLY to the fake home's `.met-dsl/homes`,
+    `ATMOFAB_WORKFLOW_HOMES_ROOT` is set EXPLICITLY to the fake home's `.met-dsl/homes`,
     and that is load-bearing rather than tidy. `tools/tests/conftest.py` redirects that
     variable for every test in the suite, so without this the homes root resolved
     somewhere OUTSIDE the fake `~/.met-dsl` — a relationship production never has — and
     the verdicts these tests assert were the harness's, not the workflow's. Measured: one
     assertion here passed under pytest and FAILED under
-    `env -u METDSL_WORKFLOW_HOMES_ROOT python3 -m unittest`, which is the production
+    `env -u ATMOFAB_WORKFLOW_HOMES_ROOT python3 -m unittest`, which is the production
     resolution. Anything that reasons about which root a path falls under has to build the
     nesting it is reasoning about.
     """
@@ -4268,12 +4268,12 @@ class DurablePrivateHomeReadGuardTests(unittest.TestCase):
         return home, repo, claude_home, codex_home, sibling
 
     def _policy(self, home: Path, repo: Path, command: str, backend: str = "claude") -> str:
-        env = {"METDSL_WORKFLOW_MODE": "1", "METDSL_ORCHESTRATION_ID": "o",
+        env = {"ATMOFAB_WORKFLOW_MODE": "1", "ATMOFAB_ORCHESTRATION_ID": "o",
                "HOME": str(home),
                # The production RELATIONSHIP, not merely a temporary directory: the homes
                # root must sit under this fixture's `~/.met-dsl`, or every verdict below
                # is about a layout the workflow never produces. See the class docstring.
-               "METDSL_WORKFLOW_HOMES_ROOT": str(home / ".met-dsl" / "homes")}
+               "ATMOFAB_WORKFLOW_HOMES_ROOT": str(home / ".met-dsl" / "homes")}
         with patch.dict(os.environ, env, clear=False):
             decision = evaluate_common_policy(HookInput(
                 event_name=HookEventName.PRE_COMMAND_EXECUTE, backend=backend,
@@ -4336,7 +4336,7 @@ class DurablePrivateHomeReadGuardTests(unittest.TestCase):
         store — so the behaviour stands and the claim moved to match it.
 
         The reason the wrong assertion passed is worth as much as the assertion: the
-        suite's conftest redirects `METDSL_WORKFLOW_HOMES_ROOT` away from `~/.met-dsl`,
+        suite's conftest redirects `ATMOFAB_WORKFLOW_HOMES_ROOT` away from `~/.met-dsl`,
         so the nesting this test reasons about did not exist while it ran. The fixture
         now builds it (see the class docstring), and the operator-token control below is
         what keeps the two rules distinguishable.
@@ -4426,7 +4426,7 @@ class DurablePrivateHomeReadGuardTests(unittest.TestCase):
 
         `protected_host_read_roots` covered every orchestration's home through ONE entry,
         `operator_secret_root()`, which the homes sit under by default. Set
-        `METDSL_WORKFLOW_HOMES_ROOT` outside `~/.met-dsl` and that entry stopped covering
+        `ATMOFAB_WORKFLOW_HOMES_ROOT` outside `~/.met-dsl` and that entry stopped covering
         them, so a leaf's Bash read of a SIBLING run's transcript was ALLOWED — while this
         module's docstrings and `docs/HOOKS.md` §"Layer boundary" asserted the closure
         with no mention of the condition. Measured before the fix; found by Codex.
@@ -4453,9 +4453,9 @@ class DurablePrivateHomeReadGuardTests(unittest.TestCase):
              / "orchestration_meta.json").write_text(
                 json.dumps({"claude_workflow_home": str(relocated / "o" / "claude")}),
                 encoding="utf-8")
-            env = {"METDSL_WORKFLOW_MODE": "1", "METDSL_ORCHESTRATION_ID": "o",
+            env = {"ATMOFAB_WORKFLOW_MODE": "1", "ATMOFAB_ORCHESTRATION_ID": "o",
                    "HOME": str(home),
-                   "METDSL_WORKFLOW_HOMES_ROOT": str(relocated)}
+                   "ATMOFAB_WORKFLOW_HOMES_ROOT": str(relocated)}
 
             def policy(command: str) -> str:
                 with patch.dict(os.environ, env, clear=False):
@@ -4514,7 +4514,7 @@ class ForbidOperatorSecretReadTests(unittest.TestCase):
     """P1: ~/.met-dsl/ reads are blocked regardless of the read command."""
 
     def _call(self, command: str) -> HookDecision:
-        with patch.dict(os.environ, {"METDSL_WORKFLOW_MODE": "1"}, clear=False):
+        with patch.dict(os.environ, {"ATMOFAB_WORKFLOW_MODE": "1"}, clear=False):
             return evaluate_common_policy(
                 HookInput(
                     event_name=HookEventName.PRE_COMMAND_EXECUTE,
@@ -4692,7 +4692,7 @@ class ForbidDismissViolationTokenizationTests(unittest.TestCase):
     """P1: dismiss-violation block resists quote/backslash/var reassembly."""
 
     def _policy(self, command: str) -> str:
-        with patch.dict(os.environ, {"METDSL_WORKFLOW_MODE": "1"}, clear=False):
+        with patch.dict(os.environ, {"ATMOFAB_WORKFLOW_MODE": "1"}, clear=False):
             d = evaluate_common_policy(
                 HookInput(
                     event_name=HookEventName.PRE_COMMAND_EXECUTE,

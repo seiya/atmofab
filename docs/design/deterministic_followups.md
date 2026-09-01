@@ -794,8 +794,8 @@ dependency facts and gate runbook (the resumed leaf already holds them). The win
 the warm leaf already skips re-reading the must-read docs on its own. Token cost drops ~11.5KB→
 ~1–2KB as a secondary benefit.
 
-**Gate.** Always-on — the former opt-in env flags `METDSL_CONDUCTOR_REUSE_SLIM_PROMPT` and
-`METDSL_CONDUCTOR_REUSE_RESUME` were removed (warm resume + slim are now the default). Slim applies
+**Gate.** Always-on — the former opt-in env flags `ATMOFAB_CONDUCTOR_REUSE_SLIM_PROMPT` and
+`ATMOFAB_CONDUCTOR_REUSE_RESUME` were removed (warm resume + slim are now the default). Slim applies
 **only** when a warm resume is actually resolved (session resumable) AND a findings excerpt is
 present — i.e. the `Generate.gate`/`Compile.static` deterministic-gate reopens;
 a warm reuse without findings (e.g. a cross-phase code repair) or a cold fallback keeps the full
@@ -940,7 +940,7 @@ false-fail when source_meta is fresh).
 Two operator-directed changes to the repair loop, on top of G2:
 
 **Warm-resume + slim are now always-on (env flags removed).** The opt-in env flags
-`METDSL_CONDUCTOR_REUSE_RESUME` / `METDSL_CONDUCTOR_REUSE_SLIM_PROMPT` and their
+`ATMOFAB_CONDUCTOR_REUSE_RESUME` / `ATMOFAB_CONDUCTOR_REUSE_SLIM_PROMPT` and their
 `_reuse_resume_enabled` / `_reuse_slim_prompt_enabled` gates were deleted. `_resolve_reuse_resume`
 warm-`--resume`s (forks) the producer session for ANY `repair_strategy=reuse` repair (claude,
 session resumable); `restart` stays cold (anchoring avoidance) — so warm/cold is driven purely by
@@ -2571,7 +2571,7 @@ until the billed A/B passed; the adoption commit (2026-07-18, see "Z2 adoption" 
   staged-source == `files[]` ∪ host glue byte-for-byte, single-node `optimization_unit.members`, literal `<spec_id>_model.f90`
   + module name) and the launch-record sweep mirror (pure↔prompt consistency, no output manifest, `pure_readonly`
   capability, pure terminal `output_refs` non-empty = violation).
-- `tools/run_workflow.py` — the `--generate-executor {legacy,pure}` flag (env `METDSL_GENERATE_EXECUTOR`), persisted once
+- `tools/run_workflow.py` — the `--generate-executor {legacy,pure}` flag (env `ATMOFAB_GENERATE_EXECUTOR`), persisted once
   to `orchestration_meta.json#invocation.generate_executor` and **immutable across `--resume`** (recovered value always
   wins; a resume-time flag conflict is rejected; the ambient env is ignored — validated on cold init only).
 - Tests: `tools/tests/test_pure_leaf.py`, `test_pure_leaf_wiring.py`, `test_pure_leaf_producer.py`, `test_pure_leaf_verify.py`.
@@ -3189,7 +3189,7 @@ certified-outcome accuracy — is satisfied, and the adoption commit flips the d
   the P arm's leaf savings were offset by those dev-mode retries, the known residual.
 
 **What the adoption commit changes.** `run_workflow.py`'s cold-run resolution (`--generate-executor` /
-`METDSL_GENERATE_EXECUTOR` / default) now defaults to `pure`, as does `run_conductor`'s env fallback (reached only
+`ATMOFAB_GENERATE_EXECUTOR` / default) now defaults to `pure`, as does `run_conductor`'s env fallback (reached only
 without run_workflow's stamp); `_build_invocation_record` takes the executor as a required keyword so no call site can
 silently record a wrong provenance. Everything else is unchanged: `legacy` remains explicitly selectable until M-F
 removes it, the recorded executor stays immutable across `--resume`, an orchestration whose invocation predates the
@@ -3209,7 +3209,7 @@ The final `Z2` migration milestone: legacy generate execution is deleted so `pur
 is *migration-scope* removal only — the broad hook / preflight / contract-doc teardown remains `Z4`.
 
 **What was removed.**
-- The `--generate-executor {legacy,pure}` CLI flag and the `METDSL_GENERATE_EXECUTOR` env var (`run_workflow.py`).
+- The `--generate-executor {legacy,pure}` CLI flag and the `ATMOFAB_GENERATE_EXECUTOR` env var (`run_workflow.py`).
   The executor is no longer selectable or threaded through the environment.
 - The cold-run executor resolution + validation block (and its `generate_executor_invalid` reason), the conductor's
   `generate_executor` dataclass field + its `run_conductor` env read, and the resume-time

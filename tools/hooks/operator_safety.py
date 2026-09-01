@@ -34,7 +34,7 @@ from __future__ import annotations
 
 from typing import Any
 
-# Verify-bypass flags. `METDSL_WORKFLOW_EXEC_MODE` unset means dev, which is the
+# Verify-bypass flags. `ATMOFAB_WORKFLOW_EXEC_MODE` unset means dev, which is the
 # operator's ordinary case and the one this refusal is for.
 VERIFY_BYPASS_TOKENS: tuple[str, ...] = (
     "--allow-missing-orchestration",
@@ -53,7 +53,7 @@ def operator_safety_violation(
 ) -> tuple[str, dict[str, Any]] | None:
     """Return `(reason, audit_detail)` for a refused command, or None.
 
-    `workflow_exec_mode` is the raw `METDSL_WORKFLOW_EXEC_MODE` value (None when
+    `workflow_exec_mode` is the raw `ATMOFAB_WORKFLOW_EXEC_MODE` value (None when
     unset). Callers pass it in rather than reading the environment here, so the rule
     stays a pure function of its inputs and a test can drive both modes without
     patching a process.

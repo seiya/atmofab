@@ -110,7 +110,7 @@ The bundled script handles all seven structurally; do not hand-sum these:
 > **Operator context only.** Both roots in the row above are protected read roots for Bash
 > — the backend CLI's credential/session home, and since issue #64 `~/.met-dsl`, under
 > which the durable private homes live — so the guard rejects these reads fail-closed
-> whenever `METDSL_WORKFLOW_MODE=1` (policies `forbid_backend_credential_direct_read` /
+> whenever `ATMOFAB_WORKFLOW_MODE=1` (policies `forbid_backend_credential_direct_read` /
 > `forbid_operator_secret_direct_read`; canonical:
 > `docs/HOOKS.md` §"Layer boundary"). Run this audit from an operator terminal outside a
 > workflow run — inside one, every such read blocks, and that block is correct.
@@ -214,7 +214,7 @@ thinking.
   and do not read its `elapsed` at all (trap 6).
 - **A leaf can be KILLED at the per-leaf cap.** Such a leaf reports the same
   `reason_code=leaf_transport_error`, and its `elapsed` is slightly ABOVE
-  `METDSL_LEAF_TIMEOUT_SECONDS` (7200 s by default — the cap plus the
+  `ATMOFAB_LEAF_TIMEOUT_SECONDS` (7200 s by default — the cap plus the
   SIGTERM/SIGKILL grace and the bounded stream teardown). Filter on `>=` the cap, never on equality.
   The discriminators are the `leaf_timeout` event on the node's event stream and the
   `[conductor] leaf_timeout:` line at the end of the leaf's captured stderr; the tag is also

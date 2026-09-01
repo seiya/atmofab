@@ -146,7 +146,7 @@ python3 -m pytest tools/tests/ -q -m "not slow"
 opt-out because nothing else runs the full set: deselecting it by default would leave the
 leaf deadline / abandon / teardown guards executed by nobody.
 
-**The suite ignores your `METDSL_*`, `CODEX_HOME` and `CLAUDE_CONFIG_DIR` environment
+**The suite ignores your `ATMOFAB_*`, `CODEX_HOME` and `CLAUDE_CONFIG_DIR` environment
 variables** (issue #84). They are per-run knobs that `tools/run_workflow.py` sets in every
 node's environment, so the shell most likely to have them exported is one used for this
 repository's own work — and a suite that inherits them answers a question about the machine

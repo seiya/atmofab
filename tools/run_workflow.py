@@ -1571,12 +1571,12 @@ def _claim_lock_path(repo_root: Path, kind: str, key: str) -> Path:
     """
     digest = hashlib.sha256(
         f"{repo_root}\0{kind}\0{key}".encode("utf-8")).hexdigest()[:32]
-    # `METDSL_START_CLAIM_ROOT` relocates the whole set. It exists so a caller that
+    # `ATMOFAB_START_CLAIM_ROOT` relocates the whole set. It exists so a caller that
     # drives many throwaway repo roots — the test suite does exactly this — does not
     # accumulate one 0-byte file per (root, key) in the operator's home. Production
     # leaves it unset: one file per orchestration and per spec, which the OS releases
     # on process death, is the point.
-    override = os.environ.get("METDSL_START_CLAIM_ROOT", "").strip()
+    override = os.environ.get("ATMOFAB_START_CLAIM_ROOT", "").strip()
     root = Path(override) if override else Path.home() / ".met-dsl" / "start_claims"
     return root / f"{kind}.{digest}.lock"
 
@@ -2167,7 +2167,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     ):
         parser.add_argument(removed, action=_RemovedFlagAction, replacement=replacement,
                             dest=f"_removed{removed.replace('-', '_')}", default=None)
-    # NOTE (M-F): the `--generate-executor` flag and the `METDSL_GENERATE_EXECUTOR` env var were
+    # NOTE (M-F): the `--generate-executor` flag and the `ATMOFAB_GENERATE_EXECUTOR` env var were
     # removed when legacy generate execution was deleted — `pure` is the only executor. A cold run
     # that still passes `--generate-executor …` therefore fails at argparse ("unrecognized
     # arguments", SystemExit 2), not via a JSON envelope. The JSON fail-close (with reason
@@ -2451,7 +2451,7 @@ def _run_main(
     # the verdict reviewer) go through the pure path when `_pure_leaf_substep` matches (claude
     # backend ∧ M3c node); a non-M3c or codex node runs the shared agentic leaf loop as a recorded
     # residual, NOT as a selectable executor. The `--generate-executor` flag and
-    # METDSL_GENERATE_EXECUTOR env were deleted; a cold run that still passes the flag fails at
+    # ATMOFAB_GENERATE_EXECUTOR env were deleted; a cold run that still passes the flag fails at
     # argparse. On RESUME the recorded executor is recovered below and a non-`pure` record is
     # rejected fail-closed (`generate_executor_legacy_removed`) — legacy runs cannot be resumed.
 
@@ -2881,13 +2881,13 @@ def _run_main(
         )
         return 2
 
-    # Base env shared by every node. METDSL_ORCHESTRATION_ID / TMPDIR /
+    # Base env shared by every node. ATMOFAB_ORCHESTRATION_ID / TMPDIR /
     # ORCHESTRATION_AGENT_RUN_ID are per-node and set inside _run_node so a
     # dependency-closure run (one orchestration per node) never leaks the
     # previous node's ids/tmp into the next.
     base_env = dict(os.environ)
-    base_env["METDSL_WORKFLOW_MODE"] = "1"
-    base_env["METDSL_WORKFLOW_EXEC_MODE"] = workflow_mode
+    base_env["ATMOFAB_WORKFLOW_MODE"] = "1"
+    base_env["ATMOFAB_WORKFLOW_EXEC_MODE"] = workflow_mode
     # Warm-resume minor-fix repairs are ALWAYS active (claude only; no env gate): a
     # generate.gate / compile.static finding (and the build->generate reuse
     # repairs) re-run the phase's producer substep (generate.generate / compile.generate) by
@@ -3151,7 +3151,7 @@ def _format_event_human(payload: dict[str, Any], *, elide_detail: bool = True) -
         elapsed = payload.get("elapsed_seconds", "?")
         cap = payload.get("timeout_seconds", "?")
         return (f"    [warn   ] leaf timeout in {phase}.{substep}: no answer after {elapsed}s "
-                f"(cap {cap}s, METDSL_LEAF_TIMEOUT_SECONDS) — process group killed, "
+                f"(cap {cap}s, ATMOFAB_LEAF_TIMEOUT_SECONDS) — process group killed, "
                 f"phase fails closed")
 
     if status == "info" and event == "leaf_usage_limit_wait":
@@ -3474,7 +3474,7 @@ def _run_node(
     path preserves the existing block); it carries the reproduction record and the
     closure back-link that drives closure-aware resume."""
     env = dict(base_env)
-    env["METDSL_ORCHESTRATION_ID"] = orchestration_id
+    env["ATMOFAB_ORCHESTRATION_ID"] = orchestration_id
 
     tmp_parent = repo_root / "workspace" / "tmp"
     # TMPDIR must match output_manifest.allowed_tmp_root for the active agent (orchestration uses
@@ -3950,8 +3950,8 @@ def _run_node(
             "target_spec_ref": spec_ref,
             "until_phase": until_phase,
             "workflow_mode": workflow_mode,
-            "metdsl_workflow_mode": env["METDSL_WORKFLOW_MODE"],
-            "metdsl_workflow_exec_mode": env["METDSL_WORKFLOW_EXEC_MODE"],
+            "metdsl_workflow_mode": env["ATMOFAB_WORKFLOW_MODE"],
+            "metdsl_workflow_exec_mode": env["ATMOFAB_WORKFLOW_EXEC_MODE"],
             "workflow_status": workflow_status,
             "prompt_ref": str(prompt_path.relative_to(repo_root)),
             "llm_invoked": launched,

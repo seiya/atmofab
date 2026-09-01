@@ -160,7 +160,7 @@ SUBSTEPS: dict[str, tuple[str | None, ...]] = {
     #   - lint   (Conductor._gate_lint_check):   runs run_linter. Always runs.
     #   - syntax (Conductor._gate_syntax_check): runs the MCP run_syntax_check compiler
     #     front-end gate (gfortran -fsyntax-only, plus optional target-compiler stages from
-    #     METDSL_SYNTAX_COMPILERS) over the staged node + dependency-closure sources, so the
+    #     ATMOFAB_SYNTAX_COMPILERS) over the staged node + dependency-closure sources, so the
     #     whole class of syntax / standard-conformance compile_errors surfaces here instead
     #     of at Build (fortran-language nodes only; non-fortran passes through). Always runs
     #     (independent of lint); an unfixable-by-leaf attribution (canary / dependency-closure)
@@ -1736,7 +1736,7 @@ LEAF_TIMEOUT_MAX_SECONDS = 2_147_483
 
 
 def _leaf_timeout_seconds() -> int:
-    """The per-leaf cap in seconds: `METDSL_LEAF_TIMEOUT_SECONDS`, else the default.
+    """The per-leaf cap in seconds: `ATMOFAB_LEAF_TIMEOUT_SECONDS`, else the default.
 
     A value that parses to `0` (`0`, `00`, `+0`) disables the cap, restoring the unbounded wait
     for an operator deliberately running a leaf longer than the default — the leaf's EXIT is
@@ -1754,7 +1754,7 @@ def _leaf_timeout_seconds() -> int:
     value that disables the cap, so the "a negative never disables the backstop" rule would be
     false for exactly one spelling of a negative.
     """
-    raw = os.environ.get("METDSL_LEAF_TIMEOUT_SECONDS", "").strip()
+    raw = os.environ.get("ATMOFAB_LEAF_TIMEOUT_SECONDS", "").strip()
     if not raw or raw.startswith("-"):
         return LEAF_TIMEOUT_DEFAULT_SECONDS
     try:
@@ -1773,7 +1773,7 @@ def _leaf_timeout_marker(timeout_seconds: int, elapsed: float) -> str:
     text (it comes from `ProcResult.timed_out`), and no classifier pattern may ever match it —
     that would let any leaf claim the tag by writing the line (see `_LEAF_INFRA_ERROR_PATTERNS`).
     """
-    return (f"[conductor] leaf_timeout: leaf exceeded METDSL_LEAF_TIMEOUT_SECONDS="
+    return (f"[conductor] leaf_timeout: leaf exceeded ATMOFAB_LEAF_TIMEOUT_SECONDS="
             f"{timeout_seconds} (elapsed {elapsed:.0f}s); process group killed")
 
 
@@ -4323,7 +4323,7 @@ class Conductor:
         hooks would not fire must not launch at all — the in-sandbox gate fail-closes only if
         the hook actually runs, which it does not when the hooks feature is off, so recording
         a disabled cache without blocking would leave the leaf unguarded by the hook layer.
-        Honours the same `METDSL_REQUIRE_CODEX_HOOKS_FEATURE` opt-out the hook does."""
+        Honours the same `ATMOFAB_REQUIRE_CODEX_HOOKS_FEATURE` opt-out the hook does."""
         entry = entry if entry is not None else self.entry_for(None, None)
         if entry.provider != "codex_cli":
             return
@@ -4342,7 +4342,7 @@ class Conductor:
             command=command)
         # Read the requirement from self.env (the same env the leaf's hook inherits via
         # _child_env), defaulting to required — matches the hook's gate semantics.
-        require_raw = self.env.get("METDSL_REQUIRE_CODEX_HOOKS_FEATURE", "1").strip().lower()
+        require_raw = self.env.get("ATMOFAB_REQUIRE_CODEX_HOOKS_FEATURE", "1").strip().lower()
         hooks_required = require_raw not in {"0", "false", "no"}
         if hooks_required and not enabled:
             # Fail closed BEFORE memoizing, so this never degrades into an allow on a retry.
@@ -4609,7 +4609,7 @@ class Conductor:
             # The leaf executable could not be found. Under mandatory bwrap argv[0] is
             # `bwrap`, so a missing binary means the host cannot sandbox the leaf at all
             # (e.g. the startup preflight was bypassed via
-            # METDSL_ORCHESTRATION_ASSUME_BWRAP on a host where bwrap is absent — the
+            # ATMOFAB_ORCHESTRATION_ASSUME_BWRAP on a host where bwrap is absent — the
             # probe lied). Funnel it into the SAME fail-closed path as a missing/invalid
             # profile rather than letting a raw OSError bubble up as a generic
             # conductor_error: every "leaf cannot be sandboxed" condition terminalizes
@@ -7658,20 +7658,20 @@ clean:
         )
         env = leaf_env_from(self.env)
         # A name the configuration DECLARES as an `api_key_env` holds a credential — the
-        # file has said so — and the filter cannot know that: `METDSL_*` is passed by
-        # prefix, so an operator who named their key `METDSL_..._KEY` would have it
+        # file has said so — and the filter cannot know that: `ATMOFAB_*` is passed by
+        # prefix, so an operator who named their key `ATMOFAB_..._KEY` would have it
         # forwarded to every leaf and, for a CLI leaf, written verbatim into the persisted
         # `sandbox_profiles/<arid>.json`. Drop every declared key name here; the ONE entry
         # that is entitled to its own gets it back in the HTTP branch below.
         for declared in self._declared_api_key_env_names():
             env.pop(declared, None)
-        env["METDSL_ORCHESTRATION_ID"] = self.orchestration_id
+        env["ATMOFAB_ORCHESTRATION_ID"] = self.orchestration_id
         # Codex assigns a thread id internally, so stdout-based discovery can
         # race its first hook.  The hook command inherits this immutable parent
         # process environment and uses the recorded child id to select the
         # already-created capability until the parent replaces the provisional
         # session-index token with the authoritative thread id.
-        env["METDSL_CHILD_AGENT_RUN_ID"] = child_arid
+        env["ATMOFAB_CHILD_AGENT_RUN_ID"] = child_arid
         env["TMPDIR"] = str(self.repo_root / "workspace" / "tmp" / child_arid)
         # Lift the claude leaf's output ceiling off the CLI default (see LEAF_MAX_OUTPUT_TOKENS:
         # thinking is billed against it, so the default truncates a hard leaf mid-think). Set
@@ -7712,15 +7712,15 @@ clean:
             # here could name a different home than the one whose settings were
             # SHA-pinned and bound, and the record would describe neither.
         elif entry.provider == "codex_cli":
-            # METDSL_HOME was the historical private alias for CODEX_HOME. An operator
+            # ATMOFAB_HOME was the historical private alias for CODEX_HOME. An operator
             # who set BOTH to different homes has said two incompatible things, and the
             # run must not pick one silently — so the conflict still raises. Read from
             # the HOST environment, not from `env`: neither name survives the allowlist
             # (both are on the single-route side), so `env` can no longer answer this.
             canonical = (self.env.get("CODEX_HOME") or "").strip()
-            legacy = (self.env.get("METDSL_HOME") or "").strip()
+            legacy = (self.env.get("ATMOFAB_HOME") or "").strip()
             if canonical and legacy and Path(canonical).expanduser().resolve() != Path(legacy).expanduser().resolve():
-                raise SandboxEnforcementError("CODEX_HOME and deprecated METDSL_HOME conflict")
+                raise SandboxEnforcementError("CODEX_HOME and deprecated ATMOFAB_HOME conflict")
             # No promotion of `legacy` into CODEX_HOME here. The home the leaf reads is
             # the one `record_launch` PREPARED and the bwrap profile `--setenv`s
             # (`codex_isolation_profile_kwargs`); a host-side spelling could name a
@@ -9037,7 +9037,7 @@ clean:
         dependency's certified source. A missing MANDATORY gfortran (or a genuine tool/infra
         error) raises and surfaces as a transport fail_closed likewise — an environment
         problem, not something the generate retry loop could fix. Optional additional stages
-        from METDSL_SYNTAX_COMPILERS (comma-separated adapter ids, e.g. "gfortran,frt" — the
+        from ATMOFAB_SYNTAX_COMPILERS (comma-separated adapter ids, e.g. "gfortran,frt" — the
         future target-compiler second stage) are recorded as skipped when their compiler has no
         registered adapter or its binary is not installed, so one configuration runs on
         machines with and without the target compiler.
@@ -9122,7 +9122,7 @@ clean:
                     f"content error and loop — fail closed (this node is unbuildable anyway)")
             dep_files = [p for p in deps_dir.iterdir() if p.is_file()]
 
-            raw = self.env.get("METDSL_SYNTAX_COMPILERS", DEFAULT_COMPILER)
+            raw = self.env.get("ATMOFAB_SYNTAX_COMPILERS", DEFAULT_COMPILER)
             compilers = [c.strip().lower() for c in raw.split(",") if c.strip()]
             # The mandatory stage runs regardless of the env list's content/order: it is the one
             # stage post_generate certification requires to have passed. Its identity is the

@@ -52,7 +52,7 @@ _CITATION_SOURCES = (
 
 # The regression issue #84 opens with: under the workflow the MCP server refuses a
 # caller-named `repo_root`, and this test asserts the OUTSIDE-a-run branch. An operator
-# with `METDSL_ORCHESTRATION_ID` exported got a failure belonging to no change.
+# with `ATMOFAB_ORCHESTRATION_ID` exported got a failure belonging to no change.
 _SUBJECT_MODULE = "tools.tests.test_build_runtime_server"
 _SUBJECT_CLASS = "OrchestratedEnvAllowlistTests"
 _SUBJECT_TEST = "test_only_an_absent_repo_root_falls_back_to_project_dir"
@@ -66,7 +66,7 @@ def _environment_names_read_by(repo_root: Path) -> set[str]:
     disagreed — 17, 23 and 25 — each answering a different question about spellings.
 
     A read through a MODULE CONSTANT counts too — `_LIVENESS_TTL_ENV =
-    "METDSL_ORCH_LIVENESS_TTL_SECONDS"` then `os.environ.get(_LIVENESS_TTL_ENV)`. Six names
+    "ATMOFAB_ORCH_LIVENESS_TTL_SECONDS"` then `os.environ.get(_LIVENESS_TTL_ENV)`. Six names
     in this tree are spelled that way and a literal-only reader misses every one of them,
     which is one of the reasons the hand-counts disagreed. Resolved one level, against
     module-scope assignments in the same file; a name computed at runtime or imported from
@@ -195,13 +195,13 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
     def test_no_ambient_operator_name_survives_into_a_running_test(self) -> None:
         """The guard's effect, observed from inside a test rather than inferred.
 
-        TWO claims, because "no `METDSL_*` name is set during a test" is false and would
+        TWO claims, because "no `ATMOFAB_*` name is set during a test" is false and would
         be the wrong thing to pin:
 
         1. Nothing a test sees carries the OPERATOR's value. Vacuous on a clean host —
            there was nothing to strip — which is why the end-to-end case below drives a
            real poisoned process rather than relying on this one.
-        2. Every `METDSL_*` name that IS set during a test is one the SUITE set, and is
+        2. Every `ATMOFAB_*` name that IS set during a test is one the SUITE set, and is
            declared in `suite_env_guard.SUITE_OWNED_ENV`. That is a ratchet: a new process-global environment dependence
            cannot appear without someone naming it here and saying who sets it.
 
@@ -226,7 +226,7 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
             if name in SUITE_OWNED_ENV and os.environ.get(name) == operator_value:
                 # Undecidable by VALUE, and only for these two. The suite sets them itself
                 # AFTER the strip, so an operator who exported the value the suite happens
-                # to use — `METDSL_DEP_READINESS_ALLOW_PERSISTED_FALLBACK=1` is the suite's
+                # to use — `ATMOFAB_DEP_READINESS_ALLOW_PERSISTED_FALLBACK=1` is the suite's
                 # own — cannot be told apart here from the suite having set it.
                 #
                 # The exemption is narrow ON PURPOSE, and the first version of it was NOT.
@@ -280,8 +280,8 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
         declared = dict.fromkeys(SUITE_OWNED_ENV, "x")
         self.assertEqual(undeclared_operator_env_names(declared), set())
         self.assertEqual(
-            undeclared_operator_env_names({**declared, "METDSL_A_NEW_KNOB": "1"}),
-            {"METDSL_A_NEW_KNOB"})
+            undeclared_operator_env_names({**declared, "ATMOFAB_A_NEW_KNOB": "1"}),
+            {"ATMOFAB_A_NEW_KNOB"})
         self.assertEqual(
             undeclared_operator_env_names({**declared, "CODEX_HOME": "/tmp/x"}),
             {"CODEX_HOME"})
@@ -303,14 +303,14 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
         # those too — the table exempts them from the RATCHET, not from the guard — and a
         # mutant that records one without popping it is the shape a reviewer found
         # surviving. Here nothing else writes to the mapping, so it is decidable.
-        environ = {"METDSL_A_KNOB": "1", "CODEX_HOME": "/tmp/x", owned: "9", "PATH": "/b"}
+        environ = {"ATMOFAB_A_KNOB": "1", "CODEX_HOME": "/tmp/x", owned: "9", "PATH": "/b"}
         removed = suite_env_guard.strip_operator_env(environ)
-        self.assertEqual(removed, sorted(["CODEX_HOME", "METDSL_A_KNOB", owned]))
+        self.assertEqual(removed, sorted(["CODEX_HOME", "ATMOFAB_A_KNOB", owned]))
         self.assertEqual(environ, {"PATH": "/b"})
         self.assertEqual(suite_env_guard.STRIPPED_OPERATOR_ENV,
-                         {"METDSL_A_KNOB": "1", "CODEX_HOME": "/tmp/x", owned: "9"})
+                         {"ATMOFAB_A_KNOB": "1", "CODEX_HOME": "/tmp/x", owned: "9"})
         suite_env_guard.restore_operator_env(environ)
-        self.assertEqual(environ, {"METDSL_A_KNOB": "1", "CODEX_HOME": "/tmp/x",
+        self.assertEqual(environ, {"ATMOFAB_A_KNOB": "1", "CODEX_HOME": "/tmp/x",
                                    owned: "9", "PATH": "/b"})
         self.assertEqual(suite_env_guard.STRIPPED_OPERATOR_ENV, {})
 
@@ -318,20 +318,20 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
         """Coupled by POINTER: the prefix is defined once, in the production constant.
 
         `orchestration_runtime.LEAF_ENV_ALLOWED_PREFIXES` is what decides which host names
-        reach a leaf; a `METDSL_*` knob added later must be neutralized here without
-        anyone remembering this file exists. Pinning the string `"METDSL_"` in a second
+        reach a leaf; a `ATMOFAB_*` knob added later must be neutralized here without
+        anyone remembering this file exists. Pinning the string `"ATMOFAB_"` in a second
         place would state the rule twice and let the two drift, so what is pinned is that
         the function FOLLOWS the constant — moving the constant moves the answer.
         """
         import tools.orchestration_runtime as runtime
 
-        sample = {"METDSL_ORCHESTRATION_ID": "x", "ZZTOP_KNOB": "y", "PATH": "/b"}
-        self.assertEqual(operator_env_names_to_strip(sample), ["METDSL_ORCHESTRATION_ID"])
+        sample = {"ATMOFAB_ORCHESTRATION_ID": "x", "ZZTOP_KNOB": "y", "PATH": "/b"}
+        self.assertEqual(operator_env_names_to_strip(sample), ["ATMOFAB_ORCHESTRATION_ID"])
         with mock.patch.object(runtime, "LEAF_ENV_ALLOWED_PREFIXES", ("ZZTOP_",)):
             self.assertEqual(operator_env_names_to_strip(sample), ["ZZTOP_KNOB"])
 
     def test_the_backend_configuration_homes_are_covered_too(self) -> None:
-        """`CODEX_HOME` carries no `METDSL_` prefix and cost 10 failures when exported.
+        """`CODEX_HOME` carries no `ATMOFAB_` prefix and cost 10 failures when exported.
 
         Measured on `165c26f` over `tools/tests/test_orchestration_runtime.py` alone.
         `CLAUDE_CONFIG_DIR` is its twin; it cost 0 in the same measurement and is covered
@@ -345,11 +345,11 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
     def test_every_environment_name_the_tree_reads_is_stripped_or_declared(self) -> None:
         """The ratchet that replaces a count three enumerations disagreed on.
 
-        The first version of this test collected `METDSL_*` LITERALS with a regex and
+        The first version of this test collected `ATMOFAB_*` LITERALS with a regex and
         asked whether the strip covers them. Two reviewers found the same thing from
-        different angles: the regex harvests only names beginning with `METDSL_` and the
-        rule covers exactly names beginning with `METDSL_`, so the equality was true by
-        construction. Adding `GEMINI_CONFIG_DIR` or `METDSL2_NEW_KNOB` to the tree — both
+        different angles: the regex harvests only names beginning with `ATMOFAB_` and the
+        rule covers exactly names beginning with `ATMOFAB_`, so the equality was true by
+        construction. Adding `GEMINI_CONFIG_DIR` or `ATMOFAB2_NEW_KNOB` to the tree — both
         uncovered — left it green. It pinned nothing about the tree, and its docstring
         said it could not go stale.
 
@@ -374,13 +374,13 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
         # stops covering one of them fails here instead of quietly shrinking the question.
         # `PYTHONPATH` is the anchor for the `mcp_servers` root because it is read ONLY
         # there (measured: of the 27 names, only it and PYTHONDONTWRITEBYTECODE are). The
-        # first version anchored that root on `METDSL_ORCHESTRATION_ID`, which is also read
+        # first version anchored that root on `ATMOFAB_ORCHESTRATION_ID`, which is also read
         # under `tools/`, so dropping the whole `mcp_servers` root survived — the exact
         # silent shrinkage this block exists to stop.
-        for name, where in (("METDSL_HOOK_REPO_ROOT", "tools/hooks/cli.py"),
+        for name, where in (("ATMOFAB_HOOK_REPO_ROOT", "tools/hooks/cli.py"),
                             ("PYTHONPATH", "mcp_servers/build_runtime_server.py"),
-                            ("METDSL_ORCH_LIVENESS_TTL_SECONDS", "tools/validate_workspace_root.py"),
-                            ("METDSL_START_CLAIM_ROOT", "tools/run_workflow.py")):
+                            ("ATMOFAB_ORCH_LIVENESS_TTL_SECONDS", "tools/validate_workspace_root.py"),
+                            ("ATMOFAB_START_CLAIM_ROOT", "tools/run_workflow.py")):
             # NOT PINNED BY ANYTHING ITSELF: removing these four assertions survives a
             # sweep, because an assertion inside a test is not a mechanism. The regress
             # stops here — what it buys is that the walk's scope cannot shrink silently,
@@ -439,7 +439,7 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
         with suite_env_guard.isolated_record():
             with self.assertRaisesRegex(RuntimeError, "without removing it"):
                 suite_env_guard.strip_operator_env(
-                    _KeepsWhatItPops({"METDSL_A_KNOB": "1"}))
+                    _KeepsWhatItPops({"ATMOFAB_A_KNOB": "1"}))
 
     def test_the_stripped_or_declared_decision_reports_an_undecided_name(self) -> None:
         """The decision above, driven where the answer is not "nothing".
@@ -450,13 +450,13 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
         """
         self.assertEqual(
             suite_env_guard.undecided_environment_names(
-                {"METDSL_A_KNOB", "CODEX_HOME"} | set(MUST_BE_INHERITED)), set())
+                {"ATMOFAB_A_KNOB", "CODEX_HOME"} | set(MUST_BE_INHERITED)), set())
         self.assertEqual(
             suite_env_guard.undecided_environment_names({"GEMINI_CONFIG_DIR"}),
             {"GEMINI_CONFIG_DIR"})
         self.assertEqual(
-            suite_env_guard.undecided_environment_names({"METDSL2_NEW_KNOB"}),
-            {"METDSL2_NEW_KNOB"},
+            suite_env_guard.undecided_environment_names({"ATMOFAB2_NEW_KNOB"}),
+            {"ATMOFAB2_NEW_KNOB"},
             "a near-miss prefix is not the prefix")
 
     def test_driving_the_strip_leaves_no_global_state_behind(self) -> None:
@@ -482,19 +482,19 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
             # measured, dropping the record restore survived a sweep once the DECLINED
             # block was added, because a later `__enter__` cleared the residue the
             # assertion at the end would have seen.
-            suite_env_guard.STRIPPED_OPERATOR_ENV["METDSL_SENTINEL"] = "outer"
+            suite_env_guard.STRIPPED_OPERATOR_ENV["ATMOFAB_SENTINEL"] = "outer"
             with suite_env_guard.isolated_record():
-                environ = {"METDSL_A_KNOB": "1", "PATH": "/b"}
+                environ = {"ATMOFAB_A_KNOB": "1", "PATH": "/b"}
                 suite_env_guard.strip_operator_env(environ)
                 self.assertTrue(suite_env_guard.CONFIGURED)
                 self.assertEqual(suite_env_guard.STRIPPED_OPERATOR_ENV,
-                                 {"METDSL_A_KNOB": "1"})
+                                 {"ATMOFAB_A_KNOB": "1"})
             self.assertEqual(suite_env_guard.STRIPPED_OPERATOR_ENV,
-                             {"METDSL_SENTINEL": "outer"},
+                             {"ATMOFAB_SENTINEL": "outer"},
                              "isolated_record did not restore the record")
             self.assertFalse(suite_env_guard.CONFIGURED,
                              "isolated_record did not restore CONFIGURED")
-            del suite_env_guard.STRIPPED_OPERATOR_ENV["METDSL_SENTINEL"]
+            del suite_env_guard.STRIPPED_OPERATOR_ENV["ATMOFAB_SENTINEL"]
             # DECLINED too. It was left out of the first version and survived a sweep,
             # because nothing in the suite calls `decline_strip` — a latent leak that a
             # future test inside this context would turn into "the operator declined" for
@@ -517,8 +517,8 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
         """
         self.assertEqual(
             suite_env_guard.import_reads_that_would_be_stripped(
-                {"METDSL_A_KNOB", "CODEX_HOME"}),
-            {"METDSL_A_KNOB", "CODEX_HOME"})
+                {"ATMOFAB_A_KNOB", "CODEX_HOME"}),
+            {"ATMOFAB_A_KNOB", "CODEX_HOME"})
         self.assertEqual(
             suite_env_guard.import_reads_that_would_be_stripped(
                 set(MUST_BE_INHERITED) | {"_PYTHON_SUBPROCESS_USE_POSIX_SPAWN"}),
@@ -733,12 +733,12 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
     def test_the_strip_is_reported_and_can_be_declined(self) -> None:
         """Silence here is a check recorded as run and not run — so both are witnessed.
 
-        `METDSL_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT=1` was 84 failures and 482s of real
+        `ATMOFAB_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT=1` was 84 failures and 482s of real
         probing on `165c26f`; with the strip it is 1242 passed in 49s and nothing probed.
         An operator who set it deliberately has to be able to see that, and to say they
         meant it. Neither the header nor the flag had a witness; both mutants survived.
         """
-        poison = {"METDSL_ORCHESTRATION_ID": "orch_header_witness"}
+        poison = {"ATMOFAB_ORCHESTRATION_ID": "orch_header_witness"}
         node = f"tools/tests/{_SUBJECT_MODULE.rsplit('.', 1)[1]}.py" \
                f"::{_SUBJECT_CLASS}::{_SUBJECT_TEST}"
 
@@ -760,7 +760,7 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
                     f"with {extra or 'no flag'} the strip was disclosed {seen} times, "
                     f"expected {expected} (header + summary at default verbosity, summary "
                     f"alone under -q):\n{reported.stdout[:2000]}")
-                self.assertIn("METDSL_ORCHESTRATION_ID", reported.stdout)
+                self.assertIn("ATMOFAB_ORCHESTRATION_ID", reported.stdout)
                 self.assertIn("--keep-operator-env", reported.stdout)
         # The control: with nothing to strip there is no line to print.
         quiet = _run([sys.executable, "-m", "pytest", node, "-q"], {})
@@ -842,7 +842,7 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
         is to start pytest. `unittest` loads no conftest, which makes it the control
         runner — the same code, the same poison, no guard.
         """
-        poison = {"METDSL_ORCHESTRATION_ID": "orch_witness"}
+        poison = {"ATMOFAB_ORCHESTRATION_ID": "orch_witness"}
         node = f"tools/tests/{_SUBJECT_MODULE.rsplit('.', 1)[1]}.py" \
                f"::{_SUBJECT_CLASS}::{_SUBJECT_TEST}"
         unittest_target = f"{_SUBJECT_MODULE}.{_SUBJECT_CLASS}.{_SUBJECT_TEST}"

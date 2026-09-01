@@ -24,7 +24,7 @@ from typing import Any
 # is revoked so leaked executable scratch is surfaced. Defaults to 24h;
 # override via env for long-running workloads or short-TTL tests.
 _DEFAULT_LIVENESS_TTL_SECONDS = 86400  # 24 hours
-_LIVENESS_TTL_ENV = "METDSL_ORCH_LIVENESS_TTL_SECONDS"
+_LIVENESS_TTL_ENV = "ATMOFAB_ORCH_LIVENESS_TTL_SECONDS"
 
 # Adv-39: TTL beyond which a cleanup-pending arid (terminal entry exists,
 # cleanup_committed marker missing) loses its tmp-script exemption.
@@ -34,7 +34,7 @@ _LIVENESS_TTL_ENV = "METDSL_ORCH_LIVENESS_TTL_SECONDS"
 # shorter value yields stricter detection at the cost of less time for
 # operator-driven recovery before the leak is surfaced.
 _DEFAULT_CLEANUP_PENDING_TTL_SECONDS = 86400  # 24 hours
-_CLEANUP_PENDING_TTL_ENV = "METDSL_CLEANUP_PENDING_TTL_SECONDS"
+_CLEANUP_PENDING_TTL_ENV = "ATMOFAB_CLEANUP_PENDING_TTL_SECONDS"
 
 
 _TTL_WARNED: set[str] = set()
@@ -680,7 +680,7 @@ def _live_agent_tmp_run_ids(workspace_root: Path) -> set[str]:
         runs_path = orch_dir / "agent_runs.jsonl"
         terminated_here: set[str] = set()
         # Adv-39: track finished_at per terminal arid so cleanup-pending arids
-        # can be aged out after METDSL_CLEANUP_PENDING_TTL_SECONDS instead of
+        # can be aged out after ATMOFAB_CLEANUP_PENDING_TTL_SECONDS instead of
         # remaining exempt forever on a transient cleanup refusal.
         terminated_finished_at: dict[str, float] = {}
         # Adv-12: a missing agent_runs.jsonl is also unhealthy. init_orchestration

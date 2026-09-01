@@ -4664,8 +4664,8 @@ class UsageProbeRunnerTests(unittest.TestCase):
         # proves the filter is really in the path: `MARKER` is not a declared name and is
         # gone, `HOME` is and survives verbatim.
         self.assertEqual(kw["env"], {"HOME": "/h", "PATH": wc_runtime.LEAF_ENV_PATH_DEFAULT,
-                                     "METDSL_ORCHESTRATION_ID": "orch_x",
-                                     "METDSL_CHILD_AGENT_RUN_ID": "ORCH"})
+                                     "ATMOFAB_ORCHESTRATION_ID": "orch_x",
+                                     "ATMOFAB_CHILD_AGENT_RUN_ID": "ORCH"})
         # TMPDIR is absent DELIBERATELY, and this is the assertion that says so. `_child_env`
         # points it at `workspace/tmp/<arid>`, which only a profile builder creates — and the
         # meta arid gets a profile only if `escalate()` ran. Handing the CLI a TMPDIR that
@@ -4791,15 +4791,15 @@ class LeafChildEnvTest(unittest.TestCase):
         self.assertEqual(env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"], str(wc.LEAF_MAX_OUTPUT_TOKENS))
         self.assertEqual(wc.LEAF_MAX_OUTPUT_TOKENS, 128000)  # the Opus 4.8 synchronous ceiling
         # the pre-existing leaf env is untouched
-        self.assertEqual(env["METDSL_ORCHESTRATION_ID"], "orch_x")
+        self.assertEqual(env["ATMOFAB_ORCHESTRATION_ID"], "orch_x")
         self.assertTrue(env["TMPDIR"].endswith("/workspace/tmp/child-1"))
         # THE CHILD'S OWN ARID, not the orchestration's. The hook selects a capability by
         # this value, so labelling a leaf with the parent's id hands it the wrong one.
         # Measured as a surviving mutation: swapping `child_arid` for
         # `self.orchestration_agent_run_id` here kept the whole suite green, because the
         # set-identity test names the KEY and never checked the VALUE.
-        self.assertEqual(env["METDSL_CHILD_AGENT_RUN_ID"], "child-1")
-        self.assertNotEqual(env["METDSL_CHILD_AGENT_RUN_ID"], "ORCH")
+        self.assertEqual(env["ATMOFAB_CHILD_AGENT_RUN_ID"], "child-1")
+        self.assertNotEqual(env["ATMOFAB_CHILD_AGENT_RUN_ID"], "ORCH")
 
     def test_child_env_closes_the_operators_auto_memory_for_a_claude_leaf(self) -> None:
         """Auto-memory is NOT a settings file, so no `--setting-sources` value reaches it.
@@ -4849,7 +4849,7 @@ class LeafChildEnvTest(unittest.TestCase):
         "PATH": "/host/bin", "HOME": "/host/home", "LANG": "C.UTF-8",
         "LC_ALL": "C.UTF-8", "TERM": "xterm", "USER": "op", "LOGNAME": "op",
         "PYTHONPATH": "/repo", "PYTHONDONTWRITEBYTECODE": "1",
-        "METDSL_WORKFLOW_MODE": "1", "METDSL_WORKFLOW_EXEC_MODE": "hybrid",
+        "ATMOFAB_WORKFLOW_MODE": "1", "ATMOFAB_WORKFLOW_EXEC_MODE": "hybrid",
     }
 
     def _poisoned(self, backend: str) -> wc.Conductor:
@@ -4875,7 +4875,7 @@ class LeafChildEnvTest(unittest.TestCase):
         env = self._poisoned("claude")._child_env("child-1")
         for name in ("PATH", "HOME", "LANG", "LC_ALL", "TERM", "USER", "LOGNAME",
                      "PYTHONPATH", "PYTHONDONTWRITEBYTECODE",
-                     "METDSL_WORKFLOW_MODE", "METDSL_WORKFLOW_EXEC_MODE"):
+                     "ATMOFAB_WORKFLOW_MODE", "ATMOFAB_WORKFLOW_EXEC_MODE"):
             with self.subTest(name=name):
                 self.assertEqual(env[name], self._POISONED_HOST[name])
 
@@ -4888,7 +4888,7 @@ class LeafChildEnvTest(unittest.TestCase):
         host_side = set(ort.LEAF_ENV_ALLOWLIST) | {
             k for k in self._POISONED_HOST
             if any(k.startswith(p) for p in ort.LEAF_ENV_ALLOWED_PREFIXES)}
-        conductor_side = {"METDSL_ORCHESTRATION_ID", "METDSL_CHILD_AGENT_RUN_ID", "TMPDIR",
+        conductor_side = {"ATMOFAB_ORCHESTRATION_ID", "ATMOFAB_CHILD_AGENT_RUN_ID", "TMPDIR",
                           *ort.CLAUDE_LEAF_ENV_EXTRAS}
         self.assertEqual(set(env), host_side | conductor_side)
 
@@ -4939,16 +4939,16 @@ class LeafChildEnvTest(unittest.TestCase):
         self.assertNotIn("CODEX_HOME", env)
 
     def test_child_env_drops_metdsl_home_despite_the_prefix(self) -> None:
-        """`METDSL_HOME` is inside the allowed prefix and still must not travel: it is
+        """`ATMOFAB_HOME` is inside the allowed prefix and still must not travel: it is
         the deprecated alias for codex's config home, so it is on the single-route side.
         The prefix exception is what keeps the general rule general."""
         c = wc.Conductor(repo_root=Path("/tmp/repo"), orchestration_id="orch_x",
                          orchestration_agent_run_id="ORCH", llm_config=_cfg("codex"),
-                         env={"METDSL_HOME": "/host/.codex", "METDSL_KEPT": "yes",
+                         env={"ATMOFAB_HOME": "/host/.codex", "ATMOFAB_KEPT": "yes",
                               "PATH": "/host/bin"})
         env = c._child_env("child-1")
-        self.assertNotIn("METDSL_HOME", env)
-        self.assertEqual(env["METDSL_KEPT"], "yes")   # the prefix still works
+        self.assertNotIn("ATMOFAB_HOME", env)
+        self.assertEqual(env["ATMOFAB_KEPT"], "yes")   # the prefix still works
 
     def test_codex_home_conflict_still_raises_after_the_filter(self) -> None:
         """The conflict check reads two names the filter now drops, so it had to move to
@@ -4956,19 +4956,19 @@ class LeafChildEnvTest(unittest.TestCase):
         would have gone quietly dead — two incompatible operator settings, no complaint."""
         c = wc.Conductor(repo_root=Path("/tmp/repo"), orchestration_id="orch_x",
                          orchestration_agent_run_id="ORCH", llm_config=_cfg("codex"),
-                         env={"CODEX_HOME": "/a/one", "METDSL_HOME": "/b/two",
+                         env={"CODEX_HOME": "/a/one", "ATMOFAB_HOME": "/b/two",
                               "PATH": "/host/bin"})
         with self.assertRaises(wc.SandboxEnforcementError):
             c._child_env("child-1")
 
     def test_codex_home_is_not_promoted_from_the_legacy_alias(self) -> None:
-        """The old code promoted `METDSL_HOME` into `child_env["CODEX_HOME"]`. No
+        """The old code promoted `ATMOFAB_HOME` into `child_env["CODEX_HOME"]`. No
         host-side reader consumes that, and the home the leaf actually reads is the one
         `record_launch` prepared and the profile `--setenv`s — so the promotion could
         only ever name a DIFFERENT home than the one whose settings were pinned."""
         c = wc.Conductor(repo_root=Path("/tmp/repo"), orchestration_id="orch_x",
                          orchestration_agent_run_id="ORCH", llm_config=_cfg("codex"),
-                         env={"METDSL_HOME": "/b/two", "PATH": "/host/bin"})
+                         env={"ATMOFAB_HOME": "/b/two", "PATH": "/host/bin"})
         self.assertNotIn("CODEX_HOME", c._child_env("child-1"))
 
     def _http_conductor(self, env: dict) -> wc.Conductor:
@@ -4980,7 +4980,7 @@ class LeafChildEnvTest(unittest.TestCase):
             "phases:\n  generate:\n    substeps:\n      generate:\n"
             "        provider: openai_compatible\n"
             "        base_url: http://localhost:8000/v1\n"
-            "        api_key_env: METDSL_TEST_HTTP_KEY\n"
+            "        api_key_env: ATMOFAB_TEST_HTTP_KEY\n"
             "        model: local-coder\n", encoding="utf-8")
         return wc.Conductor(repo_root=Path("/tmp/repo"), orchestration_id="orch_x",
                             orchestration_agent_run_id="ORCH",
@@ -4990,15 +4990,15 @@ class LeafChildEnvTest(unittest.TestCase):
         """The one name the allowlist structurally cannot carry: the configuration FILE
         chooses it, so it is forwarded by entry lookup, not by enumeration. `_api_key`
         reads `child_env`, so without this every HTTP leaf would fail `missing_api_key`."""
-        c = self._http_conductor({"METDSL_TEST_HTTP_KEY": "sk-declared", "PATH": "/b"})
+        c = self._http_conductor({"ATMOFAB_TEST_HTTP_KEY": "sk-declared", "PATH": "/b"})
         env = c._child_env("child-1", c.entry_for("generate", "generate"))
-        self.assertEqual(env["METDSL_TEST_HTTP_KEY"], "sk-declared")
+        self.assertEqual(env["ATMOFAB_TEST_HTTP_KEY"], "sk-declared")
 
     def test_an_http_leaf_gets_only_the_credential_its_entry_names(self) -> None:
         """Forwarding by ENTRY, not by shape. A `*_API_KEY` the operator happens to have
         exported is a credential the run did not choose; sending it to a base_url the run
         DID choose is how a key reaches the wrong endpoint."""
-        c = self._http_conductor({"METDSL_TEST_HTTP_KEY": "sk-declared",
+        c = self._http_conductor({"ATMOFAB_TEST_HTTP_KEY": "sk-declared",
                                   "OPENAI_API_KEY": "sk-stranger",
                                   "ANTHROPIC_API_KEY": "sk-stranger-2", "PATH": "/b"})
         env = c._child_env("child-1", c.entry_for("generate", "generate"))
@@ -5011,22 +5011,22 @@ class LeafChildEnvTest(unittest.TestCase):
         conductor must not manufacture a `""` that would make the header look present."""
         c = self._http_conductor({"PATH": "/b"})
         env = c._child_env("child-1", c.entry_for("generate", "generate"))
-        self.assertNotIn("METDSL_TEST_HTTP_KEY", env)
+        self.assertNotIn("ATMOFAB_TEST_HTTP_KEY", env)
 
     def test_a_cli_leaf_does_not_get_the_http_credential(self) -> None:
         """The delta is per-KIND. `defaults` in the same file is a claude_cli entry, and a
         CLI leaf's environment is rendered into a persisted bwrap profile — a credential
         landing there would be written to disk in `sandbox_profiles/<arid>.json`.
 
-        The fixture name is deliberately inside the `METDSL_` prefix, because that is the
+        The fixture name is deliberately inside the `ATMOFAB_` prefix, because that is the
         case that actually bites: the prefix would forward it, and only the "a declared
         `api_key_env` name is a credential" rule takes it back out. With a name outside
         the prefix this test would have passed while the hole stayed open — it did, and
         that is how the hole was found."""
-        c = self._http_conductor({"METDSL_TEST_HTTP_KEY": "sk-declared", "PATH": "/b"})
+        c = self._http_conductor({"ATMOFAB_TEST_HTTP_KEY": "sk-declared", "PATH": "/b"})
         env = c._child_env("child-1", c.entry_for("compile", "generate"))
         self.assertFalse(c.entry_for("compile", "generate").is_http)
-        self.assertNotIn("METDSL_TEST_HTTP_KEY", env)
+        self.assertNotIn("ATMOFAB_TEST_HTTP_KEY", env)
 
 
 class LeafEnvThreadingSiteTest(unittest.TestCase):
@@ -8954,7 +8954,7 @@ class LeafSpawnTest(unittest.TestCase):
         # Phase-2 (Linux+bwrap-only): bwrap leaf sandboxing is unconditionally mandatory;
         # there is no opt-out env value. _bwrap_enabled() always returns True.
         self.assertTrue(self._c(env={})._bwrap_enabled())
-        self.assertTrue(self._c(env={"METDSL_CONDUCTOR_BWRAP": "off"})._bwrap_enabled())
+        self.assertTrue(self._c(env={"ATMOFAB_CONDUCTOR_BWRAP": "off"})._bwrap_enabled())
 
     def test_spawn_leaf_wraps_in_bwrap(self) -> None:
         # With a recorded sandbox profile, the leaf argv is wrapped in
@@ -9270,7 +9270,7 @@ class LeafSpawnTest(unittest.TestCase):
         # The prefix, not a reconstruction: the event carries `round(elapsed, 1)` while the
         # marker formatted the raw value, so rebuilding the string here would differ whenever
         # rounding crosses a whole second.
-        marker_prefix = "[conductor] leaf_timeout: leaf exceeded METDSL_LEAF_TIMEOUT_SECONDS=0.05"
+        marker_prefix = "[conductor] leaf_timeout: leaf exceeded ATMOFAB_LEAF_TIMEOUT_SECONDS=0.05"
         self.assertTrue(proc.stderr.splitlines()[-1].startswith(marker_prefix),
                         proc.stderr.splitlines()[-1])
         self.assertTrue(wc._leaf_infra_error(proc)[1].startswith(marker_prefix))
@@ -10162,7 +10162,7 @@ class LeafSpawnTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo = self._profile_repo(tmp)
             with patch.object(wc.subprocess, "Popen", _QuickPopen), \
-                    patch.dict(wc.os.environ, {"METDSL_LEAF_TIMEOUT_SECONDS": "0"}):
+                    patch.dict(wc.os.environ, {"ATMOFAB_LEAF_TIMEOUT_SECONDS": "0"}):
                 proc = self._c(repo_root=repo, env={}).spawn_leaf(
                     "P", {"HOME": "/h"}, session_id="A", child_arid="A")
         # No deadline at all: the wait runs until the leaf ends, however long it takes. It is
@@ -10179,7 +10179,7 @@ class LeafSpawnTest(unittest.TestCase):
         from unittest.mock import patch
 
         with patch.dict(wc.os.environ, {}, clear=False):
-            wc.os.environ.pop("METDSL_LEAF_TIMEOUT_SECONDS", None)
+            wc.os.environ.pop("ATMOFAB_LEAF_TIMEOUT_SECONDS", None)
             self.assertEqual(wc._leaf_timeout_seconds(), wc.LEAF_TIMEOUT_DEFAULT_SECONDS)
         cases = [
             ("60", 60), ("0", 0), ("  900 ", 900),
@@ -10209,7 +10209,7 @@ class LeafSpawnTest(unittest.TestCase):
         ]
         for raw, expected in cases:
             with self.subTest(raw=raw):
-                with patch.dict(wc.os.environ, {"METDSL_LEAF_TIMEOUT_SECONDS": raw}):
+                with patch.dict(wc.os.environ, {"ATMOFAB_LEAF_TIMEOUT_SECONDS": raw}):
                     self.assertEqual(wc._leaf_timeout_seconds(), expected)
         self.assertEqual(wc.LEAF_TIMEOUT_DEFAULT_SECONDS, 7200)
         # The tuning constants are pinned by VALUE because every test patches them: a poll
@@ -12156,7 +12156,7 @@ class LeafSpawnTest(unittest.TestCase):
                 gets.clear()
                 waits.clear()
                 with patch.object(wc.queue, "Queue", _RecordingQueue), \
-                        patch.dict(wc.os.environ, {"METDSL_LEAF_TIMEOUT_SECONDS": raw}):
+                        patch.dict(wc.os.environ, {"ATMOFAB_LEAF_TIMEOUT_SECONDS": raw}):
                     proc = self._codex_stream_result(stream, wait_recorder=waits)
                 self.assertEqual(proc.stdout, "done")
                 self.assertIs(proc.timed_out, False)
@@ -16287,7 +16287,7 @@ class DeterministicLintTest(unittest.TestCase):
         So nothing checked that the probes thread `orchestration_id` / `agent_run_id` /
         `capability_token` through — and the census reviewer confirmed against the real tool that
         dropping any of them raises `run_linter requires capability_token when orchestration_id
-        is set` under `METDSL_WORKFLOW_MODE=1`. A regression there breaks BOTH probes in
+        is set` under `ATMOFAB_WORKFLOW_MODE=1`. A regression there breaks BOTH probes in
         production while the suite stays green, which is the over-refusing direction and the
         largest unpinned surface the census found.
 
@@ -16488,7 +16488,7 @@ class DeterministicLintTest(unittest.TestCase):
 class DeterministicSyntaxTest(unittest.TestCase):
     """The generate.gate syntax checker (_gate_syntax_check) runs in-process: it stages the node
     (+ dep closure) sources, runs the MCP run_syntax_check compiler gate (mandatory gfortran,
-    optional METDSL_SYNTAX_COMPILERS stages), returns the `syntax` section of gate_meta and
+    optional ATMOFAB_SYNTAX_COMPILERS stages), returns the `syntax` section of gate_meta and
     writes the host-side syntax evidence. An unfixable attribution raises (transport
     fail_closed); the unioned gate_meta.json is exercised by DeterministicGateTest."""
 
@@ -16893,7 +16893,7 @@ class DeterministicSyntaxTest(unittest.TestCase):
             self._seed(repo, refs)
             # frt is a REGISTERED adapter here (temporarily) but its binary is not
             # installed: the tool returns skipped, the gate records it and still passes.
-            c = self._conductor(repo, env={"METDSL_SYNTAX_COMPILERS": "frt,gfortran"})
+            c = self._conductor(repo, env={"ATMOFAB_SYNTAX_COMPILERS": "frt,gfortran"})
             registry = dict(build_runtime_server._SYNTAX_COMPILER_ADAPTERS)
             registry["frt"] = registry["gfortran"]
 
@@ -17134,7 +17134,7 @@ class DeterministicSyntaxTest(unittest.TestCase):
             self.assertIn("no IMPLICIT type", meta["failure_excerpt"])
 
     def test_gate_syntax_check_unregistered_optional_compiler_skipped(self) -> None:
-        # An optional METDSL_SYNTAX_COMPILERS entry with no registered adapter is recorded
+        # An optional ATMOFAB_SYNTAX_COMPILERS entry with no registered adapter is recorded
         # skipped, NOT crashed: the tool raises ValueError for an unknown compiler, which
         # would otherwise propagate as a transport fail_closed even though gfortran passed.
         import tempfile
@@ -17143,7 +17143,7 @@ class DeterministicSyntaxTest(unittest.TestCase):
             repo = Path(td)
             refs = self._refs()
             self._seed(repo, refs)
-            c = self._conductor(repo, env={"METDSL_SYNTAX_COMPILERS": "gfortran,frtxx"})
+            c = self._conductor(repo, env={"ATMOFAB_SYNTAX_COMPILERS": "gfortran,frtxx"})
 
             def fake(args):
                 # frtxx is unregistered, so the tool must never be called for it.
@@ -18744,7 +18744,7 @@ class CodexFeatureCacheTest(unittest.TestCase):
                     c.run_substep(refs, "compile", "generate")
 
     def test_codex_disabled_requirement_opt_out_does_not_fail_closed(self) -> None:
-        # With METDSL_REQUIRE_CODEX_HOOKS_FEATURE=0 (same opt-out the hook honours), an
+        # With ATMOFAB_REQUIRE_CODEX_HOOKS_FEATURE=0 (same opt-out the hook honours), an
         # uncertified feature is recorded but does NOT fail closed.
         from unittest.mock import patch
         from tools.hooks.codex_feature import codex_feature_cache_path
@@ -18752,7 +18752,7 @@ class CodexFeatureCacheTest(unittest.TestCase):
             repo = Path(tmp)
             (repo / "workspace" / "orchestrations" / "orch_cfc").mkdir(parents=True)
             c = self._conductor(repo, "codex",
-                                env={"METDSL_REQUIRE_CODEX_HOOKS_FEATURE": "0"})
+                                env={"ATMOFAB_REQUIRE_CODEX_HOOKS_FEATURE": "0"})
             with patch("tools.hooks.codex_feature.codex_hooks_feature_enabled",
                        return_value=(False, "hooks=false")):
                 c._ensure_codex_feature_cache()  # no raise
@@ -19615,7 +19615,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
                 "phases:\n  generate:\n    substeps:\n      generate:\n"
                 "        provider: openai_compatible\n"
                 "        base_url: http://localhost:8000/v1\n"
-                "        api_key_env: METDSL_TEST_HTTP_KEY\n"
+                "        api_key_env: ATMOFAB_TEST_HTTP_KEY\n"
                 "        model: local-coder\n"))
         http_entry = http.entry_for("generate", "generate")
         self.assertTrue(http_entry.is_http)

@@ -1595,7 +1595,7 @@ def operator_secret_root() -> Path:
 # imported by `tools/orchestration_runtime.py` — the same arrangement as
 # `backend_credential_home_paths`, and for the same reason: the side that CREATES the
 # homes and the side that FORBIDS reading them must resolve the location identically.
-WORKFLOW_HOMES_ROOT_ENV = "METDSL_WORKFLOW_HOMES_ROOT"
+WORKFLOW_HOMES_ROOT_ENV = "ATMOFAB_WORKFLOW_HOMES_ROOT"
 
 
 def workflow_homes_root() -> Path:
@@ -1605,7 +1605,7 @@ def workflow_homes_root() -> Path:
     `protected_host_read_roots` cover EVERY orchestration's home through one entry rather
     than only the current one it can resolve from metadata.
 
-    `METDSL_WORKFLOW_HOMES_ROOT` relocates it, and that used to silently withdraw the
+    `ATMOFAB_WORKFLOW_HOMES_ROOT` relocates it, and that used to silently withdraw the
     coverage: with the override pointing outside `~/.met-dsl`, a leaf's Bash read of a
     SIBLING orchestration's transcript was allowed (measured), while
     `docs/HOOKS.md` and this module's own docstrings asserted that closure without
@@ -1653,7 +1653,7 @@ def backend_credential_home_paths(backend_type: str) -> tuple[tuple[Path, ...], 
     if btype == "codex":
         # Mirror preflight's codex-home resolution so the guarded path is the
         # bound one even when CODEX_HOME relocates it.
-        raw = os.environ.get("CODEX_HOME", "").strip() or os.environ.get("METDSL_HOME", "").strip()
+        raw = os.environ.get("CODEX_HOME", "").strip() or os.environ.get("ATMOFAB_HOME", "").strip()
         codex_home = Path(raw).expanduser() if raw else home / ".codex"
         if not codex_home.is_absolute():
             codex_home = codex_home.resolve()
@@ -1698,7 +1698,7 @@ def workflow_private_backend_homes(repo_root: Path | None,
         the workflow forbids, and it would leave no trace in any artifact.
 
     The orchestration id is taken from the environment the HOST set through the
-    sandbox (`METDSL_ORCHESTRATION_ID`, AUTHORED by `workflow_conductor._child_env`
+    sandbox (`ATMOFAB_ORCHESTRATION_ID`, AUTHORED by `workflow_conductor._child_env`
     and DELIVERED by the bwrap profile's `--setenv` — bwrap now `--clearenv`s, so
     this name reaches the leaf because it was declared, not because it was
     inherited), never from the hook payload: `tools/hooks/cli.py::_extract_orchestration_id` prefers the payload,
@@ -1745,7 +1745,7 @@ def protected_host_read_roots(repo_root: Path | None = None,
 
     Four classes, one rule: the operator-secret root (dismiss-violation tokens), the
     isolated-homes ROOT (every orchestration's homes, wherever
-    `METDSL_WORKFLOW_HOMES_ROOT` puts them), every backend credential home the sandbox
+    `ATMOFAB_WORKFLOW_HOMES_ROOT` puts them), every backend credential home the sandbox
     rw-binds (OAuth credentials + session transcripts), and — when the caller can name the
     orchestration — that orchestration's own homes, which hold the SAME credential by bind
     plus every earlier leaf's transcript. The Read tool reaches none of them — the read
@@ -1760,13 +1760,13 @@ def protected_host_read_roots(repo_root: Path | None = None,
     than being pointed at the operator's secret store.
 
     Until the root was added, the sibling closure held only while the override was unset:
-    with `METDSL_WORKFLOW_HOMES_ROOT` pointing outside `~/.met-dsl`, another run's
+    with `ATMOFAB_WORKFLOW_HOMES_ROOT` pointing outside `~/.met-dsl`, another run's
     transcript was readable (measured), while this docstring and `docs/HOOKS.md` asserted
     the closure unconditionally.
 
     The per-orchestration entries are omitted when no orchestration id is supplied. That
     is the pre-issue-#63 answer and is right for callers outside a run; inside a run the
-    conductor always sets `METDSL_ORCHESTRATION_ID`.
+    conductor always sets `ATMOFAB_ORCHESTRATION_ID`.
     """
     roots: list[Path] = [operator_secret_root(), workflow_homes_root()]
     for btype in BACKEND_CREDENTIAL_BACKEND_TYPES:
@@ -2619,13 +2619,13 @@ def _blank_persisted_tool_results(command: str, repo_root: Path,
 def _workflow_orchestration_id() -> str | None:
     """The orchestration id the HOST set through the sandbox, or None.
 
-    `METDSL_ORCHESTRATION_ID` only — never the hook payload's copy, which
+    `ATMOFAB_ORCHESTRATION_ID` only — never the hook payload's copy, which
     `tools/hooks/cli.py::_extract_orchestration_id` prefers and a caller can
     influence. Everything reading this uses it to decide WHICH private home's paths
     get special treatment, so a caller-named orchestration would either unguard its
     own home or exempt someone else's.
     """
-    raw = os.environ.get("METDSL_ORCHESTRATION_ID")
+    raw = os.environ.get("ATMOFAB_ORCHESTRATION_ID")
     return raw.strip() if isinstance(raw, str) and raw.strip() else None
 
 
@@ -3571,7 +3571,7 @@ def evaluate_common_policy(hook_input: HookInput) -> HookDecision:
     # the DEV entrypoint, which must not import this module (issue #102). Defined once
     # there; wrapped into a decision here.
     violation = operator_safety_violation(
-        command, workflow_exec_mode=os.environ.get("METDSL_WORKFLOW_EXEC_MODE")
+        command, workflow_exec_mode=os.environ.get("ATMOFAB_WORKFLOW_EXEC_MODE")
     )
     if violation is not None:
         reason, audit_detail = violation
@@ -3581,7 +3581,7 @@ def evaluate_common_policy(hook_input: HookInput) -> HookDecision:
             continue_processing=False,
             audit_detail=audit_detail,
         )
-    workflow_mode_val = os.environ.get("METDSL_WORKFLOW_MODE", "0").strip()
+    workflow_mode_val = os.environ.get("ATMOFAB_WORKFLOW_MODE", "0").strip()
     cli_help_audit: dict[str, Any] | None = None
     if workflow_mode_val == "1":
         bash_read_cmds = frozenset(
@@ -3616,7 +3616,7 @@ def evaluate_common_policy(hook_input: HookInput) -> HookDecision:
         matched_root = _command_reads_protected_host_path(
             command, cmd_tokens, repo_root,
             protected_host_read_roots(
-                repo_root, os.environ.get("METDSL_ORCHESTRATION_ID"))
+                repo_root, os.environ.get("ATMOFAB_ORCHESTRATION_ID"))
         )
         if matched_root is not None:
             if matched_root == met_dsl_root:
@@ -3864,7 +3864,7 @@ def evaluate_common_policy(hook_input: HookInput) -> HookDecision:
         # Block dismiss-violation in all workflow sessions regardless of how the
         # runtime is invoked (script path, -m module, or wrapper) and regardless
         # of shell reassembly (quote/backslash splitting, variable indirection).
-        # An agent cannot bypass this by using METDSL_WORKFLOW_MODE=0 prefix
+        # An agent cannot bypass this by using ATMOFAB_WORKFLOW_MODE=0 prefix
         # because the hook reads its OWN os.environ (set by run_workflow.py at
         # session start), not the subprocess env override.
         if _command_invokes_dismiss_violation(command, cmd_tokens):

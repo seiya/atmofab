@@ -4,7 +4,7 @@
 The compiler syntax gate is the syntax checker of the deterministic `generate.gate` substep,
 run in-process by the conductor (`Conductor._gate_inproc -> _gate_syntax_check`), NOT by the leaf. It runs the MCP `run_syntax_check`
 compiler adapters (gfortran `-fsyntax-only` first, then any optional target-compiler stages
-from `METDSL_SYNTAX_COMPILERS`) over the staged sources. The `post_generate` validator
+from `ATMOFAB_SYNTAX_COMPILERS`) over the staged sources. The `post_generate` validator
 certifies that the gate actually ran with the mandatory gfortran stage passing. That
 certificate must NOT be forgeable by the leaf, so it lives at the **pipeline root**
 (`workspace/pipelines/<safe>/<pipeline_id>/syntax_evidence/<source_id>.json`) — the same

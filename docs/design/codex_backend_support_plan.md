@@ -55,7 +55,7 @@ the strict tool-free isolation provided by the Claude backend.
   - supplies repository trust explicitly;
   - enables hooks and bypasses only the validated project-hook hash check.
 - Use `CODEX_HOME` as the canonical Codex configuration location. Support
-  `METDSL_HOME` temporarily as a deprecated compatibility alias and reject
+  `ATMOFAB_HOME` temporarily as a deprecated compatibility alias and reject
   conflicting values.
 - Preflight must parse the repository hook configuration and confirm that each
   workflow-relevant command resolves to

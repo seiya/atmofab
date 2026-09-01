@@ -91,7 +91,7 @@ _NoDuplicateKeyLoader.add_constructor(
 # local servers this provider exists for run, and the traffic never leaves the host. Anything
 # else needs an explicit opt-in, because the realistic case is a typo or a LAN address, not a
 # deliberate choice.
-_INSECURE_BASE_URL_OPT_IN_ENV = "METDSL_ALLOW_INSECURE_LLM_BASE_URL"
+_INSECURE_BASE_URL_OPT_IN_ENV = "ATMOFAB_ALLOW_INSECURE_LLM_BASE_URL"
 
 
 def _is_loopback(host: str) -> bool:
@@ -260,7 +260,7 @@ _EFFORT_LEVELS: Mapping[str, frozenset[str]] = {
 # ceiling simply not reaching the codex leaf, which has nowhere to apply it.
 _FIELDS_NOT_APPLICABLE: Mapping[str, frozenset[str]] = {
     # `timeout_s` bounds an HTTP request; a CLI leaf's wall-clock cap is the conductor's own
-    # (`METDSL_LEAF_TIMEOUT_SECONDS`). `max_output_tokens` reaches only the claude transport
+    # (`ATMOFAB_LEAF_TIMEOUT_SECONDS`). `max_output_tokens` reaches only the claude transport
     # (`CLAUDE_CODE_MAX_OUTPUT_TOKENS`) and the HTTP request bodies.
     # `stream` names the shape of ONE HTTP request; a CLI leaf is a process, and how its
     # transport frames the provider's answer is the CLI's business, not the operator's.

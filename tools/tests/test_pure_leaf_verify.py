@@ -19,7 +19,7 @@ from pathlib import Path
 from unittest import mock
 from zoneinfo import ZoneInfo
 
-os.environ.setdefault("METDSL_DEP_READINESS_ALLOW_PERSISTED_FALLBACK", "1")
+os.environ.setdefault("ATMOFAB_DEP_READINESS_ALLOW_PERSISTED_FALLBACK", "1")
 
 import tools.workflow_conductor as wc
 from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION

@@ -79,16 +79,16 @@ def setUpModule() -> None:
     ever reaps. Production leaves the variable unset.
     """
     global _CLAIM_ROOT_TMPDIR, _SAVED_CLAIM_ROOT
-    _SAVED_CLAIM_ROOT = os.environ.get("METDSL_START_CLAIM_ROOT")
+    _SAVED_CLAIM_ROOT = os.environ.get("ATMOFAB_START_CLAIM_ROOT")
     _CLAIM_ROOT_TMPDIR = tempfile.TemporaryDirectory(prefix="metdsl_claims_")
-    os.environ["METDSL_START_CLAIM_ROOT"] = _CLAIM_ROOT_TMPDIR.name
+    os.environ["ATMOFAB_START_CLAIM_ROOT"] = _CLAIM_ROOT_TMPDIR.name
 
 
 def tearDownModule() -> None:
     if _SAVED_CLAIM_ROOT is None:
-        os.environ.pop("METDSL_START_CLAIM_ROOT", None)
+        os.environ.pop("ATMOFAB_START_CLAIM_ROOT", None)
     else:
-        os.environ["METDSL_START_CLAIM_ROOT"] = _SAVED_CLAIM_ROOT
+        os.environ["ATMOFAB_START_CLAIM_ROOT"] = _SAVED_CLAIM_ROOT
     if _CLAIM_ROOT_TMPDIR is not None:
         _CLAIM_ROOT_TMPDIR.cleanup()
 
@@ -1567,8 +1567,8 @@ class RunWorkflowTests(unittest.TestCase):
         # (this suite) from depositing a 0-byte file per key in the operator's home.
         with tempfile.TemporaryDirectory() as tmp:
             claim_root = Path(tmp) / "claims"
-            saved = os.environ.get("METDSL_START_CLAIM_ROOT")
-            os.environ["METDSL_START_CLAIM_ROOT"] = str(claim_root)
+            saved = os.environ.get("ATMOFAB_START_CLAIM_ROOT")
+            os.environ["ATMOFAB_START_CLAIM_ROOT"] = str(claim_root)
             try:
                 path = run_workflow._claim_lock_path(Path(tmp), "spec", "spec/x")
                 self.assertEqual(path.parent, claim_root)
@@ -1582,9 +1582,9 @@ class RunWorkflowTests(unittest.TestCase):
                     path, run_workflow._claim_lock_path(Path(tmp), "spec", "spec/y"))
             finally:
                 if saved is None:
-                    os.environ.pop("METDSL_START_CLAIM_ROOT", None)
+                    os.environ.pop("ATMOFAB_START_CLAIM_ROOT", None)
                 else:
-                    os.environ["METDSL_START_CLAIM_ROOT"] = saved
+                    os.environ["ATMOFAB_START_CLAIM_ROOT"] = saved
 
     def test_cold_start_claim_is_exclusive_per_spec(self) -> None:
         # The guard alone cannot see a run that has not written its meta yet, so two
@@ -3109,14 +3109,14 @@ class RunWorkflowTests(unittest.TestCase):
             self._seed_resumable_orchestration(
                 repo_root, oid, spec_ref="spec/problem/test.md", until_phase="Generate",
                 mode="dev", backend="claude", invocation={"generate_executor": "pure"})
-            prev = os.environ.pop("METDSL_GENERATE_EXECUTOR", None)
+            prev = os.environ.pop("ATMOFAB_GENERATE_EXECUTOR", None)
             try:
                 code, out = self._resume_capture(repo_root, oid, [])
                 self.assertEqual(code, 0, out)
-                self.assertNotIn("METDSL_GENERATE_EXECUTOR", os.environ)
+                self.assertNotIn("ATMOFAB_GENERATE_EXECUTOR", os.environ)
             finally:
                 if prev is not None:
-                    os.environ["METDSL_GENERATE_EXECUTOR"] = prev
+                    os.environ["ATMOFAB_GENERATE_EXECUTOR"] = prev
 
     def test_resume_legacy_recorded_orchestration_fails_closed(self) -> None:
         # M-F: a legacy-recorded run cannot be resumed — legacy execution was removed. Resume must
@@ -3161,7 +3161,7 @@ class RunWorkflowTests(unittest.TestCase):
             self.assertEqual(out["reason"], "generate_executor_legacy_removed")
 
     def test_ambient_env_executor_is_inert(self) -> None:
-        # M-F: METDSL_GENERATE_EXECUTOR was removed and is fully inert. A stale ambient value (even
+        # M-F: ATMOFAB_GENERATE_EXECUTOR was removed and is fully inert. A stale ambient value (even
         # an old "legacy" or a typo) neither blocks a pure resume nor changes its outcome.
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
@@ -3170,16 +3170,16 @@ class RunWorkflowTests(unittest.TestCase):
             self._seed_resumable_orchestration(
                 repo_root, oid, spec_ref="spec/problem/test.md", until_phase="Generate",
                 mode="dev", backend="claude", invocation={"generate_executor": "pure"})
-            prev = os.environ.get("METDSL_GENERATE_EXECUTOR")
-            os.environ["METDSL_GENERATE_EXECUTOR"] = "legacy"  # stale ambient value: must be inert
+            prev = os.environ.get("ATMOFAB_GENERATE_EXECUTOR")
+            os.environ["ATMOFAB_GENERATE_EXECUTOR"] = "legacy"  # stale ambient value: must be inert
             try:
                 code, out = self._resume_capture(repo_root, oid, [])
                 self.assertEqual(code, 0, out)
             finally:
                 if prev is not None:
-                    os.environ["METDSL_GENERATE_EXECUTOR"] = prev
+                    os.environ["ATMOFAB_GENERATE_EXECUTOR"] = prev
                 else:
-                    os.environ.pop("METDSL_GENERATE_EXECUTOR", None)
+                    os.environ.pop("ATMOFAB_GENERATE_EXECUTOR", None)
 
     def test_generate_executor_flag_removed(self) -> None:
         # M-F: the --generate-executor flag was deleted. A cold run that still passes it (legacy OR
@@ -6013,7 +6013,7 @@ class StdoutFormatTests(unittest.TestCase):
         self.assertEqual(
             timeout_line,
             "    [warn   ] leaf timeout in generate.generate: no answer after 7205.3s "
-            "(cap 7200s, METDSL_LEAF_TIMEOUT_SECONDS) — process group killed, "
+            "(cap 7200s, ATMOFAB_LEAF_TIMEOUT_SECONDS) — process group killed, "
             "phase fails closed",
         )
         # Defence for a future `spawn_leaf` caller that omits (or half-fills) `timeout_context`:
@@ -6026,7 +6026,7 @@ class StdoutFormatTests(unittest.TestCase):
                "timeout_seconds": 7200, "elapsed_seconds": 7205.3, "leaf_exit": -9,
                "stdout_chars": 0, "stderr_chars": 812, "orchestration_id": "o"}),
             "    [warn   ] leaf timeout in build.step: no answer after 7205.3s "
-            "(cap 7200s, METDSL_LEAF_TIMEOUT_SECONDS) — process group killed, "
+            "(cap 7200s, ATMOFAB_LEAF_TIMEOUT_SECONDS) — process group killed, "
             "phase fails closed",
         )
         # An opt-in usage-limit wait: the run is deliberately parked until the reset, so the wait is

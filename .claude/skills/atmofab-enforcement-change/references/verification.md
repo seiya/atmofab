@@ -335,10 +335,10 @@ environment are included.
 
 ```bash
 # standalone works
-env -u METDSL_WORKFLOW_MODE -u METDSL_ORCHESTRATION_ID \
+env -u ATMOFAB_WORKFLOW_MODE -u ATMOFAB_ORCHESTRATION_ID \
   python3 mcp_servers/mcp_call.py --tool run_syntax_check --args-json '{"project_dir": "<abs>"}'
 # under the workflow, dropping orchestration_id is refused
-METDSL_WORKFLOW_MODE=1 python3 mcp_servers/mcp_call.py --tool run_linter --args-json '{"project_dir": "<abs>"}'
+ATMOFAB_WORKFLOW_MODE=1 python3 mcp_servers/mcp_call.py --tool run_linter --args-json '{"project_dir": "<abs>"}'
 ```
 
 ## What an LLM CLI actually does (unbilled capture harness)

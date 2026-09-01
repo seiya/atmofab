@@ -27,12 +27,12 @@ profile builder, the leaf-launch path, or the build toolchain.
    not run it concurrently with other manual workflow activity or it will pollute the
    workspace-global baseline (the truth is `meta=pass` + `aggregate_verdict`; a polluted
    parallel run can false-fail). Use a clean workspace state.
-4. **Do not set `METDSL_ORCHESTRATION_ASSUME_BWRAP`.** That env var is a test-only
+4. **Do not set `ATMOFAB_ORCHESTRATION_ASSUME_BWRAP`.** That env var is a test-only
    affordance that makes the preflight probe *assume* bwrap is available (so unit/
    integration tests can drive the enforced launch path without bwrap installed). On a
    real host it would only mask a missing sandbox — the run must verify bwrap for real.
 5. For Codex, set `CODEX_HOME` to the writable Codex state directory when a non-default
-   location is required. `METDSL_HOME` is a deprecated compatibility alias. The two variables
+   location is required. `ATMOFAB_HOME` is a deprecated compatibility alias. The two variables
    must resolve to the same path when both are set.
 
 ## 1. Run one node end-to-end under the sandbox
@@ -58,7 +58,7 @@ The run must reach `orchestration_meta.json` `status=pass` with a real
 | Check | How to confirm |
 |---|---|
 | Leaves actually ran sandboxed | each `agents/<arid>/dialogs/child.response.json` of a CHILD-PROCESS leaf has `sandbox_enforced: true` **and** a `sandbox_command` starting with `bwrap`; the leaf produced a real reply (not an immediate launch error). A leaf answered over HTTPS from the conductor's own process instead carries `leaf_transport: "http"`, `sandbox_enforced: false` and no `sandbox_command` — it runs no model-directed tool, so there is nothing to confine (see `docs/ORCHESTRATION.md` "Leaf LLM configuration") |
-| Real auth + `--session-id` transcript worked | `<projects-root>/<slug>/<session_id>.jsonl` exists (for a workflow leaf `<projects-root>` is `orchestration_meta.json#claude_workflow_home` + `/projects`, issue #63; for an operator's own session `~/.claude/projects`) and has assistant turns for each leaf (auth/config-home bind is functional). **Operator context only**: that path is the backend CLI's credential/session home, which the Bash read guard rejects fail-closed whenever `METDSL_WORKFLOW_MODE=1` (policy `forbid_backend_credential_direct_read`; canonical: `docs/HOOKS.md` §"Layer boundary"). Check it from an operator terminal outside a workflow run |
+| Real auth + `--session-id` transcript worked | `<projects-root>/<slug>/<session_id>.jsonl` exists (for a workflow leaf `<projects-root>` is `orchestration_meta.json#claude_workflow_home` + `/projects`, issue #63; for an operator's own session `~/.claude/projects`) and has assistant turns for each leaf (auth/config-home bind is functional). **Operator context only**: that path is the backend CLI's credential/session home, which the Bash read guard rejects fail-closed whenever `ATMOFAB_WORKFLOW_MODE=1` (policy `forbid_backend_credential_direct_read`; canonical: `docs/HOOKS.md` §"Layer boundary"). Check it from an operator terminal outside a workflow run |
 | MCP `build-runtime` invoked | the deterministic conductor substeps (`generate.gate` / `build` / `validate.execute`, run in-process — not LLM leaves) recorded `run_linter` / `run_syntax_check` / `compile_project` / `run_program` evidence (`command_log.jsonl` present, `ok:true`) |
 | Hooks fired in-sandbox | the run completed without a `*_violation` due to a missing hook decision; gate-friction behavior is unchanged |
 | **Build output landed in write_roots (highest risk)** | the **Build phase passed** — `compile_project` wrote `.o`/`.mod` to the per-run object dir and the exe to `binary/<binary_id>/bin/` with no `unauthorized_write_violation` / EROFS. This is the make-or-break check. |
