@@ -37,9 +37,12 @@ WHAT IS CLOSED, each measured on 2.7 / 2.16.0 / 2.17.1 with the flag present and
   removal IS the fix. Measured against the fixture this repository carries (`_DEFECTIVE_SOURCE`
   and `_DEFECTIVE_SOURCE_CPP` in `tools/tests/test_linter_cppcheck.py`):
   `// cppcheck-suppress unusedVariable` above a declaration removes exactly one finding WITH the
-  flag and none without it, and the same polarity holds for `// cppcheck-suppress-begin` and
-  `// cppcheck-suppress-file`. Dropping the flag closes the whole directive family rather than one
-  spelling of it. This repository takes the same position
+  flag and none without it. Dropping the flag closes the whole directive FAMILY rather than one
+  spelling of it — `-begin`/`-end` and `-file` suppress the same finding with the flag on 2.16.0
+  and 2.17.1 and are inert without it. On the FLOOR build 2.7 those two spellings are inert either
+  way; an earlier version of this bullet said "the same polarity holds" for them, which is false
+  on the one build an operator is told to install. The closure is no weaker for it — nothing is
+  suppressed on 2.7 to begin with — but the sentence was. This repository takes the same position
   for every linter: `fortitude` closes it with `--ignore-allow-comments`, `ruff` with
   `--ignore-noqa`. The previous argv took the opposite position by inheritance, over files the
   leaf writes, with no reason recorded anywhere.

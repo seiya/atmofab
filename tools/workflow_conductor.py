@@ -8947,7 +8947,11 @@ clean:
         # `generate.generate` would send a leaf to fix a file it cannot write, which is the
         # unwinnable loop of issue #110 in a new place (found by a blank-slate reviewer, whose
         # reproduction drove exactly this path). Only a preset whose package declares `lint`
-        # answers; the still-inlined presets keep their previous behaviour.
+        # answers, which is now every SIMPLE preset (issue #120 moved the last two); a COMPOSITE
+        # declares none of its own and is answered per sub-preset inside the callee. The packages
+        # do not agree on which exit statuses are verdicts about the source, and that disagreement
+        # is exactly why the question is asked of each package rather than answered here — this
+        # file names no status of its own.
         self._raise_on_unusable_lint_invocation(preset, result)
 
         run_entries: list[dict[str, Any]] = []

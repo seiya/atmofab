@@ -426,10 +426,29 @@ class BackendDocumentTests(unittest.TestCase):
         section = self.text.split(heading, 1)[1]
         return re.findall(r"^\| `([A-Z]+[0-9]+)` \|", section, re.M)
 
-    def test_the_document_states_the_declared_set(self) -> None:
-        declared = self._table_codes("## Declared set")
-        stated = [c for c in declared if c in lint.RULE_CODES or c in lint.EXCLUDED_RULE_CODES]
-        self.assertEqual([c for c in stated if c in lint.RULE_CODES], list(lint.RULE_CODES))
+    def test_the_document_states_the_declared_set_and_nothing_else(self) -> None:
+        """SET IDENTITY over the whole table, not "the declared codes appear in it".
+
+        The first version filtered the table down to rows already in one of the two constants and
+        then compared — so a row for a code in NEITHER was dropped before the assertion, and
+        adding `| `E501` | line-too-long |` to the Declared-set table passed 33 tests. That is the
+        direction that matters: the document is what a reader takes the certified scope from, and
+        the day `python` is reachable the leaf-facing checklist §Scope promises is derived from
+        this table, so a code listed here and never selected is a rule a leaf is told to satisfy
+        that no gate applies.
+        """
+        section = self.text.split("## Declared set", 1)[1].split("Codes deliberately excluded", 1)[0]
+        rows = re.findall(r"^\| `([A-Z]+[0-9]+)` \|", section, re.M)
+        self.assertEqual(rows, list(lint.RULE_CODES))
+
+    def test_the_document_states_the_size_of_the_declared_set(self) -> None:
+        """`The N codes below` is `len(RULE_CODES)`, so it is derived rather than transcribed.
+
+        It was one of the numbers a reviewer's mutant changed with the suite green. Most rows in
+        §Measurement are multi-build measurements a single-build suite genuinely cannot re-take;
+        this one is not, and neither is `cppcheck`'s findings exit code.
+        """
+        self.assertIn(f"The {len(lint.RULE_CODES)} codes below.", self.text)
 
     def test_the_document_states_every_exclusion(self) -> None:
         stated = set(self._table_codes("Codes deliberately excluded"))

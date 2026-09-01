@@ -24,6 +24,25 @@ the linter PRESET of the same name is a different subject entirely.
 
 ## TODO list
 
+- **`preset=mixed` refuses its own lint gate on a node whose tree holds nothing one sub-preset can
+  analyse** (2026-09-01, low — reproduced, unreachable today; found by the issue #120 review loop,
+  correctness axis, as a `route not established` item and reproduced here). `mixed` runs
+  `fortitude` then `cppcheck`. Measured on Cppcheck 2.7 and 2.17.1: over a directory holding only
+  `main.f90`, `cppcheck` exits 1 with `could not find or open any of the paths given`, which its
+  `unusable_invocation_reason` correctly classifies as a REFUSAL, so
+  `_raise_on_unusable_lint_invocation` raises a transport `fail_closed`. That is reachable on a
+  `mixed` node in two places: a `src/` that happens to hold no C, and — always —
+  `_attribute_lint_findings`'s HOST-AUTHORED copy, whose basenames on such a node are Fortran.
+  - **The previous argv did not avoid this**; it made it quieter and wronger. `--error-exitcode=1`
+    made the same exit 1 indistinguishable from findings, so the failure was routed to the leaf as
+    defects in its own source. Issue #120 did not introduce the case, it made it legible.
+  - **The fix belongs to the composite, not to a backend**: a sub-preset should be skipped over a
+    tree holding nothing it can analyse, which is a change to `tool_run_linter`'s composite branch
+    or to `_gate_lint_check`. Both are existing machinery issue #120 does not touch.
+  - Unreachable today: `_validate_toolchain_backend_supported` refuses `language: mixed` on every
+    non-`infrastructure` node and the corpus is `fortran` throughout. Recorded in
+    `docs/backends/linter/cppcheck/RULES.md` §Limits.
+
 - **A walk READ ERROR is exit 0 in the `Generate.gate` lint step, for the linter that is actually
   reachable** (2026-09-01, low — reproduced, pre-existing; found by the issue #120 review loop,
   security axis). Measured on this host: `chmod 000` on a subdirectory of `project_dir` gives

@@ -10,9 +10,13 @@ a row of a table in `mcp_servers/`.
 
 Before it, the gate ran `ruff check .` and inherited that build's compiled-in default set. That
 set is not stable: MEASURED on four builds installed side by side (2026-09-01), it is 59 rules on
-0.14.0 and on 0.15.20 and 413 rules on 0.16.0 and 0.16.5 — the vendor added 354 rules to the
-default in one minor release (47 `PYI`, 42 `UP`, 36 `RUF`, 33 `PLE`, 29 `B`, 21 `SIM`, ...). On
-one unchanged fixture the inherited default LOSES `E741` and GAINS `SIM117` at 0.16.0. That is
+0.14.0 and on 0.15.20 and 413 rules on 0.16.0 and 0.16.5. The move is 372 codes ADDED and 18
+REMOVED, a net 354; the breakdown (47 `PYI`, 42 `UP`, 36 `RUF`, 33 `PLE`, 29 `B`, 21 `SIM`, ...)
+belongs to the 372, and an earlier version of this sentence attached it to the net. The REMOVALS
+are the sharper half and were not stated at all: all 18 are members of `RULE_CODES` below, so the
+vendor default dropped 18 of the exact codes this repository certifies against while adding 372
+nobody here has reviewed. On one unchanged fixture that shows up as the inherited default LOSING
+`E741` and GAINING `SIM117` at 0.16.0. That is
 issue #110's failure mode in a second linter, and it is why the set below is declared rather than
 inherited.
 
@@ -32,10 +36,12 @@ means is an edit to this tuple, not a release the vendor makes.
 
 MEASURED, and each fact decided part of the shape below:
 
-* `--select` is validated before a file is read, so an unknown code (`ZZZ999`:
-  `Unknown rule selector`) and a REMOVED code (`E999`: `Rule 'E999' was removed and cannot be
-  selected.`) are both exit 2 with nothing checked. Both are refusals of the invocation, not
-  verdicts about the source — `unusable_invocation_reason` below.
+* `--select` is validated before a file is read, so an unknown code and a REMOVED code (`E999`:
+  ``Rule `E999` was removed and cannot be selected.``) are both exit 2 with nothing checked. Both
+  are refusals of the invocation, not verdicts about the source — `unusable_invocation_reason`
+  below. The STATUS is what holds across the range; the wording does not, and only the status is
+  read: an unknown `ZZZ999` is `Unknown rule selector` on 0.15.20 and later and
+  `error: invalid value ... for '--select <RULE_CODE>'` on 0.14.0.
 * A REMAPPED code is not an error: `PGH001` prints `has been remapped to 'S307'` and the run
   proceeds. A declared set is therefore checked by RESOLVING it (`--show-settings`), never by
   trusting the spelling.

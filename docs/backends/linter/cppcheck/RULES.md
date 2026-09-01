@@ -69,9 +69,16 @@ Element by element, each checked against `CHECK_FLAGS` by test:
   suppression comment on — the channel a leaf can actually write, since a leaf authors the
   source. Measured on all three builds against the checked-in fixture:
   `// cppcheck-suppress unusedVariable` above a declaration removes exactly one finding WITH the
-  flag and none without it, and the same polarity holds for `// cppcheck-suppress-begin` and
-  `// cppcheck-suppress-file`. Dropping the flag closes the whole directive family rather than one
-  spelling of it. This repository takes the same
+  flag and none without it. Dropping the flag closes the whole directive FAMILY rather than one
+  spelling of it — `// cppcheck-suppress-begin` / `-end` and `// cppcheck-suppress-file` suppress
+  the same finding with the flag on 2.16.0 and 2.17.1, and are inert without it.
+
+  **On the FLOOR build those two spellings are inert either way**, and an earlier version of this
+  bullet claimed "the same polarity holds" for them, which is false there. Measured on 2.7 — the
+  host's build, and the one `docs/RUNBOOK.md` §0-1 tells an operator to install —
+  `-begin`/`-end` and `-file` change nothing WITH `--inline-suppr` present. That makes the closure
+  no weaker (nothing is suppressed on 2.7 to begin with), but the sentence a reader would rely on
+  when widening the range was wrong about the one build actually installed. This repository takes the same
   position for every linter — `fortitude` closes it with `--ignore-allow-comments`, `ruff` with
   `--ignore-noqa` — and the previous argv took the opposite position by inheritance, over files
   the leaf writes, with no reason recorded anywhere.
@@ -102,6 +109,19 @@ from does not enumerate what the tool reports.
 - **The FILE SET is not closed.** `cppcheck <dir>` walks for the source extensions it knows; a
   header pulled in by an `#include` is analysed as part of a translation unit but is not itself a
   walk entry.
+- **A directory holding no C/C++ source is a REFUSAL, and on a `mixed` node that is reachable
+  without anything being wrong.** Measured on 2.7 and 2.17.1: `cppcheck` over a directory holding
+  only `main.f90` exits 1 with `could not find or open any of the paths given`, which
+  `unusable_invocation_reason` classifies as a refusal — so
+  `tools/workflow_conductor.py`'s `_raise_on_unusable_lint_invocation` raises a transport
+  `fail_closed`. `preset=mixed` runs `fortitude` and `cppcheck` in order, and
+  `_attribute_lint_findings` re-runs each sub-preset over a HOST-AUTHORED copy of the tree, whose
+  basenames on such a node are Fortran. The previous argv did not avoid this: the same exit 1 was
+  read as "there are findings" and routed to the leaf as defects in its own source, which is
+  worse. Neither behaviour is right, and the correct fix belongs to the composite rather than to
+  this backend — a sub-preset should be skipped over a tree holding nothing it can analyse.
+  Unreachable today: `_validate_toolchain_backend_supported` refuses `language: mixed` on every
+  non-`infrastructure` node, and the corpus is `fortran` throughout. `TODO.md` carries it.
 
 ## Supported versions
 `>=2.7,<2.18`, declared as `MIN_VERSION` / `BELOW_VERSION` in `lint.py` and quoted by

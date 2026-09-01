@@ -409,6 +409,18 @@ class BackendDocumentTests(unittest.TestCase):
     def test_the_document_quotes_the_supported_range(self) -> None:
         self.assertIn(lint.SUPPORTED_VERSION_SPEC, self.text)
 
+    def test_the_document_states_the_findings_exit_code_the_code_declares(self) -> None:
+        """The exit-status table's `findings` row is `FINDINGS_EXIT_CODE`, so it is derived.
+
+        A reviewer's mutant changed that row to 7 with the suite green. The other rows of that
+        table are three-build measurements a single-build suite cannot re-take and are left as
+        recorded measurements; this row is not one of them, and it is the row a reader compares
+        against `unusable_invocation_reason`'s classification.
+        """
+        table = self.text.split("Exit statuses, identical on all three builds", 1)[1]
+        self.assertRegex(
+            table, re.compile(rf"^\| findings \| {lint.FINDINGS_EXIT_CODE} \|$", re.M))
+
     def test_the_document_states_the_weaker_property_before_anything_else(self) -> None:
         """The one claim this document must not let a reader assume. It is checked at its
         STATEMENT POSITION — the opening of §Requirements — because the same words appear later

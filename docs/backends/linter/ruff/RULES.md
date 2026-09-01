@@ -73,7 +73,11 @@ the canonical statement of that set for a reader; the machine-readable definitio
   - `--no-cache` — closes a stale cache entry answering instead of the checker. Measured on all
     four builds: the cache key carries neither the file size nor a content hash, so under
     `--isolated --select` alone a file cached clean at 6 bytes and then replaced by the 170-byte
-    five-finding fixture with its mtime restored still reports `All checks passed`, exit 0. The flag
+    five-finding fixture with its mtime restored still reports `All checks passed`, exit 0. **The
+    restoration has to be exact**: a float round-trip through `os.utime(p, (atime, mtime))` does
+    NOT reproduce it (exit 1, five findings, on all four builds), while `os.utime(p, ns=...)` or a
+    fixed stamp does — which is what the test uses. A reader re-taking this row with the float
+    form will conclude the row is wrong. The flag
     also stops ruff writing `.ruff_cache/` into `project_dir`.
 
     **One qualification, measured and stated rather than left out.** On every supported build
@@ -202,8 +206,16 @@ Resolved rule sets, read from `ruff check --isolated --show-settings` (`linter.r
 | 0.16.0 | 413 codes | the declared 59, exactly |
 | 0.16.5 | 413 codes | the declared 59, exactly |
 
-0.16.0 added 354 rules to the default in one minor release: 47 `PYI`, 42 `UP`, 36 `RUF`, 33
-`PLE`, 29 `B`, 21 `SIM`, 20 `PLW`, 17 `FURB`, 17 `C`, 13 `PLR`, and the rest.
+0.16.0 moved the default set by **372 codes added and 18 removed**, a net 354. The breakdown of
+the 372 is 47 `PYI`, 42 `UP`, 36 `RUF`, 33 `PLE`, 29 `B`, 21 `SIM`, 20 `PLW`, 17 `FURB`, 17 `C`,
+13 `PLR`, and the rest — it belongs to the gross figure, not to the net one, and an earlier
+version of this paragraph attached it to the net.
+
+**The 18 REMOVALS are the sharper half, and the earlier version did not state them at all.** They
+are `E401 E402 E701 E702 E703 E711 E712 E713 E714 E721 E731 E741 E742 E743 F403 F405 F406 F722` —
+**every one a member of the declared 59**. So at 0.16.0 the vendor default dropped 18 of the exact
+codes this repository certifies against and added 372 nobody here has reviewed. The verdict table
+below shows one instance of that (`E741`); the set arithmetic is the general statement.
 
 Verdicts on one fixture (two unused imports, a nested `with`, `l = 1`, an undefined name). The
 fixture is `_DEFECTIVE_SOURCE` in `tools/tests/test_linter_ruff.py`, so both columns are
@@ -227,7 +239,7 @@ Argument validation, measured on all four:
 
 | input | result |
 | --- | --- |
-| an unknown code (`ZZZ999`) | exit 2, nothing checked: `Unknown rule selector 'ZZZ999' in 'select' from the CLI` |
+| an unknown code (`ZZZ999`) | exit 2, nothing checked. The MESSAGE differs across the range and the exit status does not: 0.15.20 / 0.16.0 / 0.16.5 say ``Unknown rule selector `ZZZ999` in `select` from the CLI``, and 0.14.0 says `error: invalid value 'ZZZ999' for '--select <RULE_CODE>'`. Only the status is read by anything. |
 | a removed code (`E999`) | exit 2, nothing checked: `Rule 'E999' was removed and cannot be selected.` |
 | a remapped code (`PGH001`) | a warning (`has been remapped to 'S307'`) and the run proceeds |
 
