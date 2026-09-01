@@ -1,7 +1,7 @@
 # Backend boundary (canonical source)
 
 ## Purpose
-`met-dsl` describes a `spec` without naming an implementation technology. A `controlled_spec` is
+`met-forge` describes a `spec` without naming an implementation technology. A `controlled_spec` is
 language-neutral; the `IR` carries the technology choice as data; the workflow renders that choice
 into concrete source, a concrete build, and concrete tool invocations. This document is the
 canonical source for where the knowledge of a concrete technology is allowed to live, and for the
