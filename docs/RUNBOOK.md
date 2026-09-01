@@ -438,8 +438,8 @@ python3 tools/run_workflow.py --resume build
 
 Three things live outside the repository, under the operator's own home. All three are
 per-operator and per-host; none of them is ever committed. This is the inventory of what
-the CODE writes there. An `ls` on a long-lived host may show more — this checkout's own
-shows `cold_start_locks/` and `escape.txt` — and neither has a producer anywhere in this
+the CODE writes there. An `ls` on a long-lived host may show more: `cold_start_locks/` and `escape.txt` have
+been seen in this operator's root, and neither has a producer anywhere in this
 repository's history (`git log --all -S` finds none), so they are residue from something
 outside it or from a version that predates the history. Nothing writes them, nothing
 reads them, and nothing cleans them up; they are named here only so their presence is not
