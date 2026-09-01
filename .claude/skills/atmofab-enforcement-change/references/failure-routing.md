@@ -109,7 +109,7 @@ together with their episodes. Both sides state a rule, which is one site over th
 appears, rule 3-a applies to this pair as much as to anything else.
 
 The surfaces named in the last bullet — dependencies, preflight, execution policy, consistency
-with repository conventions — are the list `metdsl-review-loop` §"When to bring in Codex" carries.
+with repository conventions — are the list `atmofab-review-loop` §"When to bring in Codex" carries.
 
 **Once attribution is decided, decide when it should surface.** Attribution can be right while
 the **moment** is wrong, and the attribution discussion alone never surfaces that. In L174 a new
@@ -126,7 +126,7 @@ wrong moment.**
   backstop** and add the earlier check as well
 - Eight subagents across four rounds never raised this; **Codex raised it on its first pass**.
   Dependencies, preflight, and operations are surfaces subagents structurally do not look at (see
-  the Codex section of `metdsl-review-loop`)
+  the Codex section of `atmofab-review-loop`)
 
 **The cause a refusal message names must match the actual set of causes.** For a fail-closed,
 failing correctly is not enough. If the party that failed is a leaf, it is closed only once the

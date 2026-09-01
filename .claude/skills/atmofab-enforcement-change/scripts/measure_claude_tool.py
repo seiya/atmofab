@@ -35,7 +35,7 @@ FOUR TRAPS, each of which cost a measurement here:
     the answer — 0 only if every expectation held.
 
 USAGE
-    python3 .claude/skills/metdsl-enforcement-change/scripts/measure_claude_tool.py
+    python3 .claude/skills/atmofab-enforcement-change/scripts/measure_claude_tool.py
     python3 ...  --cases my_cases.json    # [[expectation, tool, tool_input], ...] where
                                           # expectation is "reads" or "inert"; the strings
                                           # {BASE} and {REPO} are substituted with the

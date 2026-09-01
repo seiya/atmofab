@@ -7,7 +7,7 @@ Three kinds of check live here, and they are not interchangeable.
    a declared set that the installed build silently resolves to something else is exactly the
    failure this work exists to prevent, and no amount of asserting the constant against itself
    would see it. They do NOT skip when the linter is absent (`.claude/skills/
-   metdsl-enforcement-change` judgment rule 2: a machine without the tool is a machine that
+   atmofab-enforcement-change` judgment rule 2: a machine without the tool is a machine that
    cannot run a workflow, which `tools/tests/test_host_prerequisites.py` already asserts).
 3. **Prose coupling** — the leaf-read documents name individual codes of this set, and a code
    they name that the gate does not run is an instruction to satisfy a rule nothing checks.
@@ -516,7 +516,7 @@ class WiringTests(unittest.TestCase):
 class ProseCouplingTests(unittest.TestCase):
     """The documents that state this rule set, coupled to the code that defines it.
 
-    Four leaf-read sites name individual codes, and `.claude/skills/metdsl-enforcement-change`
+    Four leaf-read sites name individual codes, and `.claude/skills/atmofab-enforcement-change`
     rule 3-a is explicit that three or more statement sites is where discipline has already lost.
     They are coupled by CONTAINMENT and a POINTER, not by members: each names the handful of
     codes a generated source most often trips, and pinning the full set into a leaf's checklist

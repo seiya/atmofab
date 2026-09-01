@@ -4307,7 +4307,7 @@ class GrepGlobReadGuardTests(unittest.TestCase):
         So these rows assert that the check does NOT refuse them. If a future CLI starts
         resolving `..`, this test is what turns green into a decision: it will still pass,
         and the premise it rests on is re-measurable by
-        `.claude/skills/metdsl-enforcement-change/scripts/measure_claude_tool.py`. That list asks
+        `.claude/skills/atmofab-enforcement-change/scripts/measure_claude_tool.py`. That list asks
         the same SHAPES as the rows below, not the same strings: its absolute alternative
         points into the fixture rather than at `/etc`, so the row is saturated, and it also
         carries `~/…`, which cannot appear here because the hook refuses it. An earlier
@@ -4631,7 +4631,7 @@ class GlobPatternTriggerSurfaceTests(unittest.TestCase):
         `_PREFIXES = ("/", "~")` — a refactor that changes nothing — raised its assertion
         and turned a set of true documents red, with a message naming no repair. That is
         an over-refusal on correct work, and this class is the exemplar
-        `metdsl-enforcement-change` rule 3-a tells a reader to copy, so the flaw would have
+        `atmofab-enforcement-change` rule 3-a tells a reader to copy, so the flaw would have
         been copied with it.
         """
         source = (cls._REPO_ROOT / "tools" / "hooks" / "cli.py").read_text(encoding="utf-8")
