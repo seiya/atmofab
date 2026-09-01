@@ -4963,7 +4963,7 @@ class BashReadManifestGuardTests(unittest.TestCase):
                 str(Path.home() / ".claude.json"),
                 str(Path.home() / ".claude" / "settings.json"),
                 str(Path.home() / ".codex" / "auth.json"),
-                str(Path.home() / ".met-dsl" / "operator_tokens" / "x.txt"),
+                str(Path.home() / ".met-forge" / "operator_tokens" / "x.txt"),
             ):
                 payload = {
                     "orchestration_id": self.ORCH,

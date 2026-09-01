@@ -1586,8 +1586,8 @@ def _home_dir() -> Path:
 
 
 def operator_secret_root() -> Path:
-    """`~/.met-dsl/` — where the operator-only dismiss-violation tokens live."""
-    return (_home_dir() / ".met-dsl").resolve()
+    """`~/.met-forge/` — where the operator-only dismiss-violation tokens live."""
+    return (_home_dir() / ".met-forge").resolve()
 
 
 # The environment name that relocates the durable isolated-homes tree. Defined HERE, in
@@ -1599,14 +1599,14 @@ WORKFLOW_HOMES_ROOT_ENV = "METFORGE_WORKFLOW_HOMES_ROOT"
 
 
 def workflow_homes_root() -> Path:
-    """`~/.met-dsl/homes` — the durable root of every isolated backend home.
+    """`~/.met-forge/homes` — the durable root of every isolated backend home.
 
     Under the operator-secret root by default, which is what lets
     `protected_host_read_roots` cover EVERY orchestration's home through one entry rather
     than only the current one it can resolve from metadata.
 
     `METFORGE_WORKFLOW_HOMES_ROOT` relocates it, and that used to silently withdraw the
-    coverage: with the override pointing outside `~/.met-dsl`, a leaf's Bash read of a
+    coverage: with the override pointing outside `~/.met-forge`, a leaf's Bash read of a
     SIBLING orchestration's transcript was allowed (measured), while
     `docs/HOOKS.md` and this module's own docstrings asserted that closure without
     naming the condition. The root is returned here so the guard protects wherever the
@@ -1678,11 +1678,11 @@ def workflow_private_backend_homes(repo_root: Path | None,
     leaf's own home names ITSELF in the block message rather than the root above it.
     MEASURED, and the second half was wrong the first time it was written here: a read of
     the current orchestration's home is attributed to that home, and a read of a SIBLING
-    orchestration's home is attributed to the HOMES ROOT (`~/.met-dsl/homes`), not to
-    `~/.met-dsl`. The homes root became a protected entry in its own right when the
+    orchestration's home is attributed to the HOMES ROOT (`~/.met-forge/homes`), not to
+    `~/.met-forge`. The homes root became a protected entry in its own right when the
     override was closed, and it is a longer path than the operator-secret root, so it
     wins the sort for everything under it. That is the more accurate label of the two — a
-    sibling home is a backend home, not the dismiss-violation store — and `~/.met-dsl`
+    sibling home is a backend home, not the dismiss-violation store — and `~/.met-forge`
     still names what is directly under it (`operator_tokens/`, `start_claims/`).
 
     Two things a leaf must not read live there, and BOTH arrive by a BIND rather
@@ -1760,7 +1760,7 @@ def protected_host_read_roots(repo_root: Path | None = None,
     than being pointed at the operator's secret store.
 
     Until the root was added, the sibling closure held only while the override was unset:
-    with `METFORGE_WORKFLOW_HOMES_ROOT` pointing outside `~/.met-dsl`, another run's
+    with `METFORGE_WORKFLOW_HOMES_ROOT` pointing outside `~/.met-forge`, another run's
     transcript was readable (measured), while this docstring and `docs/HOOKS.md` asserted
     the closure unconditionally.
 
@@ -2937,7 +2937,7 @@ def _protected_component_in(
     """The root whose own final path component `text` spells literally, if any.
 
     `~/.claude.json` and `~/.codex` are distinctive names — `.claude.json`,
-    `.codex`, `.met-dsl` — and a token that carries one as a whole path
+    `.codex`, `.met-forge` — and a token that carries one as a whole path
     component is naming that root, whatever the rest of it expands to.
 
     A name that ALSO exists inside the repository is not distinctive and is
@@ -3001,7 +3001,7 @@ def _command_reads_protected_host_path(
 
     The OPERATOR-SECRET root is never dropped. The reason USED TO BE "it is not an rw
     bind at all", and issue #64 made that false: the isolated backend homes are rw
-    binds and they now live under `~/.met-dsl/homes/`. The reason that survives is
+    binds and they now live under `~/.met-forge/homes/`. The reason that survives is
     about what the root holds and where it is. It holds the dismiss-violation tokens,
     which are not bound anywhere and whose whole purpose is that an agent cannot reach
     them; and its location is fixed relative to nothing — a checkout placed inside or
@@ -3036,7 +3036,7 @@ def _command_reads_protected_host_path(
         if marker_re.search(command):
             return root
     # Also test a quote/backslash-collapsed copy of the whole command: shlex
-    # normally removes embedded quotes (`~/.met-d''sl`) and escapes (`~/\.met-dsl`),
+    # normally removes embedded quotes (`~/.met-f''orge`) and escapes (`~/\.met-forge`),
     # but on a shlex parse failure evaluate_common_policy falls back to
     # command.split(), which does NOT — so collapse them here too (mirrors
     # _command_invokes_dismiss_violation).
@@ -3154,7 +3154,7 @@ def _command_reads_protected_host_path(
             named = _protected_component_in(t, roots, repo_root, left_repo)
             if named is not None:
                 return named
-        # Brace expansion (`~/.met-{dsl,x}/...`, `{k..m}`, nested) happens in the
+        # Brace expansion (`~/.met-{forge,x}/...`, `{k..m}`, nested) happens in the
         # shell before the path exists; expanduser/glob never see it.  Expand to
         # the cartesian product and test every variant precisely.
         brace_variants = _brace_expand(t)
@@ -3179,7 +3179,7 @@ def _command_reads_protected_host_path(
             expanded = os.path.expanduser(os.path.expandvars(variant))
             # Glob metacharacters (`*?[`) are expanded by the shell at runtime;
             # a literal .resolve() would keep them and miss the match.  e.g.
-            # `cat ~/.met-d*/operator_tokens/x.txt` reads the real token.
+            # `cat ~/.met-f*/operator_tokens/x.txt` reads the real token.
             if any(ch in expanded for ch in "*?["):
                 matched = _glob_pattern_reaches_root(expanded, roots, repo_root, anchors)
                 if matched is not None:
@@ -3338,7 +3338,7 @@ def _brace_expand(s: str) -> list[str]:
                         # braces — do NOT substitute literally — so the caller's
                         # `{`-present `_braces_to_glob` fallback still fires.
                         # (Substituting literally would drop the `{`, skip the
-                        # fallback, and let `~/.met-ds{k..m..1}/x` through.)
+                        # fallback, and let `~/.met-forg{d..f..1}/x` through.)
                         for tail in _brace_expand(post):
                             out.append(pre + "{" + inner + "}" + tail)
                             if len(out) > BRACE_EXPAND_MAX_RESULTS:
@@ -3362,7 +3362,7 @@ def _braces_to_glob(s: str) -> str:
 
     Fail-closed catch-all for ANY brace form — comma groups, sequence
     expansion `{k..m}`, and nested braces — without emulating bash exactly.
-    e.g. `~/.met-ds{k..m}/x` -> `~/.met-ds*/x`, `~/.{met-{dsl,x},y}/z` -> `~/.*/z`.
+    e.g. `~/.met-forg{d..f}/x` -> `~/.met-forg*/x`, `~/.{met-{forge,x},y}/z` -> `~/.*/z`.
     The result is then matched as a glob pattern against the secret root.
     """
     prev = None
@@ -3376,8 +3376,8 @@ def _glob_pattern_targets_root(pattern: str, root: Path) -> bool:
     """True if an absolute glob `pattern` could match a path under `root`.
 
     Component-wise glob match: each literal component of `root` must be matched
-    by the corresponding glob component of `pattern` (e.g. `.met-d*` / `.m?t-dsl`
-    / `.[m]et-dsl` all match the literal `.met-dsl`).  Used to fail-closed on
+    by the corresponding glob component of `pattern` (e.g. `.met-f*` / `.m?t-forge`
+    / `.[m]et-forge` all match the literal `.met-forge`).  Used to fail-closed on
     globbed operator-secret reads even when the file does not yet exist.
     """
     pat = Path(pattern)
@@ -3388,7 +3388,7 @@ def _glob_pattern_targets_root(pattern: str, root: Path) -> bool:
     if len(pat_parts) < len(root_parts):
         return False
     # The repo's own matcher, not `fnmatch`: fnmatch does not know POSIX classes,
-    # so `~/.met-d[[:alpha:]]l/…` and `~/.[[:lower:]]laude.json` slipped past a
+    # so `~/.met-forg[[:alpha:]]/…` and `~/.[[:lower:]]laude.json` slipped past a
     # check that caught their `[a-z]` / `[c]` twins.
     return all(
         _glob_matches_whole(pp, rp) for pp, rp in zip(pat_parts, root_parts)
@@ -3408,7 +3408,7 @@ def _glob_targets_secret_bounded(pattern: str, root: Path) -> bool:
     A pattern with multiple wildcard path components (`~/*/*/*/x`) makes
     glob.glob recursively scandir the entire $HOME subtree (multi-second hang).
     Such patterns already lexically target the secret root (a `*` at the
-    .met-dsl depth fnmatches it) and are caught by `_glob_pattern_targets_root`
+    .met-forge depth fnmatches it) and are caught by `_glob_pattern_targets_root`
     BEFORE this is called — so here we only run glob when at most ONE component
     carries a wildcard, keeping the filesystem walk cheap.
     """
@@ -3599,7 +3599,7 @@ def evaluate_common_policy(hook_input: HookInput) -> HookDecision:
             if isinstance(repo_root_raw, str) and repo_root_raw.strip()
             else Path.cwd()
         )
-        # Out-of-repo host paths that must never enter agent context: ~/.met-dsl/
+        # Out-of-repo host paths that must never enter agent context: ~/.met-forge/
         # (operator-only dismiss-violation tokens) and the backend credential
         # homes the bwrap profile rw-binds (~/.claude, ~/.claude.json, ~/.codex —
         # OAuth credentials + session transcripts).  NOT gated on the command
@@ -3607,7 +3607,7 @@ def evaluate_common_policy(hook_input: HookInput) -> HookDecision:
         # `x=$(cat ...)`, ..-traversal, etc.) is blocked.  The Read tool already
         # excludes all of them (allowed_read_roots is repo-relative); this closes
         # the Bash path, which is the only other route.
-        met_dsl_root = operator_secret_root()
+        met_forge_root = operator_secret_root()
         # The orchestration id comes from the environment the HOST set through the
         # sandbox, not from the payload: the payload's copy is caller-influenced
         # (`tools/hooks/cli.py::_extract_orchestration_id` prefers it), and here it
@@ -3619,11 +3619,11 @@ def evaluate_common_policy(hook_input: HookInput) -> HookDecision:
                 repo_root, os.environ.get("METFORGE_ORCHESTRATION_ID"))
         )
         if matched_root is not None:
-            if matched_root == met_dsl_root:
+            if matched_root == met_forge_root:
                 return HookDecision(
                     action=HookDecisionAction.BLOCK,
                     reason=(
-                        "blocked: direct read from ~/.met-dsl/ via Bash is forbidden in "
+                        "blocked: direct read from ~/.met-forge/ via Bash is forbidden in "
                         "workflow mode. Operator tokens live there and must not enter "
                         "agent context; dismiss-violation is an operator-only action."
                     ),

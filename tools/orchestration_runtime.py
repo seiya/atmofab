@@ -10017,15 +10017,15 @@ def dismiss_violation(
         agent_run_id: the agent run ID to dismiss
         dismiss_reason: the dismiss reason (free-form, remains in the audit log)
         paths: the file paths to dismiss (relative to repo root)
-        operator_token: the content of ~/.met-dsl/operator_tokens/<oid>.txt
+        operator_token: the content of ~/.met-forge/operator_tokens/<oid>.txt
     """
     # Operator-only gate via token validation.
-    # The token is written to ~/.met-dsl/operator_tokens/<oid>.txt at orchestration
+    # The token is written to ~/.met-forge/operator_tokens/<oid>.txt at orchestration
     # init (mode 0o600) and is NOT under any workspace/ path that agents may read.
     # Two hook layers keep it out of agent reach: (a) the orchestration agent's
-    # allowed_read_roots include workspace/ but NOT ~/.met-dsl/, so the Read tool
+    # allowed_read_roots include workspace/ but NOT ~/.met-forge/, so the Read tool
     # is blocked by read_manifest_read_guard; (b) forbid_operator_secret_direct_read
-    # blocks `cat ~/.met-dsl/...` (and $HOME/absolute spellings) via Bash.
+    # blocks `cat ~/.met-forge/...` (and $HOME/absolute spellings) via Bash.
     # Residual: a written `python3 script.py` whose body reads the token file
     # internally is not interceptable by PreToolUse hooks — this is an accepted
     # architectural limit shared by all on-disk secrets; the operator passes the
@@ -10034,7 +10034,7 @@ def dismiss_violation(
     # This replaces the prior mutable-env-var check, which an agent could bypass
     # by clearing os.environ['METFORGE_WORKFLOW_MODE'] before calling this function
     # from a tmp Python script.
-    token_path = Path.home() / ".met-dsl" / "operator_tokens" / f"{orchestration_id}.txt"
+    token_path = Path.home() / ".met-forge" / "operator_tokens" / f"{orchestration_id}.txt"
     if not token_path.exists():
         raise ValueError(
             f"dismiss-violation: operator_token.txt not found at {token_path}. "
@@ -16384,14 +16384,14 @@ def _chmod_directory_no_follow(path: Path, mode: int, label: str) -> None:
 # `tools/hooks/common.py`, not defined here. The name relocates the whole durable-homes
 # tree, in the same shape and for the same purpose as `METFORGE_START_CLAIM_ROOT` in
 # `tools/run_workflow.py`: a test, or an operator with a reason, needs the tree somewhere
-# other than the real `~/.met-dsl`. (`METFORGE_HOME` is deliberately NOT reused — it already
+# other than the real `~/.met-forge`. (`METFORGE_HOME` is deliberately NOT reused — it already
 # means "the operator's `~/.codex`" on the codex auth path, and one name with two meanings
 # is how two resolutions silently drift apart.)
 #
 # It lives in the hooks module because the side that CREATES these homes and the side that
 # FORBIDS a leaf from reading them have to resolve the same location — the arrangement
 # `backend_credential_home_paths` already uses. When this constant lived here, the Bash
-# guard knew only `~/.met-dsl`, so setting the override moved the homes out from under the
+# guard knew only `~/.met-forge`, so setting the override moved the homes out from under the
 # one protected root that covers every orchestration and a leaf could read a SIBLING run's
 # transcript (measured). Codex found that; the fix is that there is now one resolver.
 
@@ -16407,7 +16407,7 @@ WORKFLOW_HOME_OWNER_FILENAME = "owner.json"
 
 
 def _workflow_homes_root() -> Path:
-    """`~/.met-dsl/homes` — the durable root of every isolated backend home.
+    """`~/.met-forge/homes` — the durable root of every isolated backend home.
 
     A thin alias over `tools/hooks/common.py::workflow_homes_root`, kept as a name because
     this module's tests and `tools/prune_workflow_homes.py` patch it, and because the
@@ -16466,12 +16466,12 @@ def _require_secure_home_ancestor(path: Path, label: str, *, require_private: bo
     made an operator following `docs/RUNBOOK.md` — which offers
     `METFORGE_WORKFLOW_HOMES_ROOT` with no stated precondition — fail EVERY launch after a
     plain `mkdir` created the root 0755 under the default umask; and it made a mode drift
-    on `~/.met-dsl/homes` (a backup restored without permissions) refuse every launch of
+    on `~/.met-forge/homes` (a backup restored without permissions) refuse every launch of
     every orchestration. The chmod is exactly what the create path does one branch away,
     so tightening here makes the two agree rather than adding an authority.
 
     The tightening is `require_private`-gated for the same reason the check was:
-    `~/.met-dsl` ITSELF is left alone. `init_orchestration`'s operator-token writer has
+    `~/.met-forge` ITSELF is left alone. `init_orchestration`'s operator-token writer has
     created it best-effort since long before this change and does not force its mode
     either, it is shared with `operator_tokens/` and `start_claims/`, and it is the one
     level here that this code did not necessarily create. `docs/RUNBOOK.md` recommends
@@ -16532,7 +16532,7 @@ def _create_workflow_backend_home(repo_root: Path, orchestration_id: str,
     override_used = bool(os.environ.get(WORKFLOW_HOMES_ROOT_ENV, "").strip())
     # With an override in play, only the root itself is created: the override names a
     # location the caller chose, and silently building a deep tree under a typo'd path is
-    # the failure mode that costs most. Without one, `~/.met-dsl` may legitimately not
+    # the failure mode that costs most. Without one, `~/.met-forge` may legitimately not
     # exist yet (a host that has never run `init_orchestration`).
     ancestors: list[tuple[Path, bool]] = []
     if override_used:
@@ -16559,8 +16559,8 @@ def _create_workflow_backend_home(repo_root: Path, orchestration_id: str,
             )
         ancestors.append((root, True))
     else:
-        ancestors.append((root.parent, False))  # ~/.met-dsl — mode not forced
-        ancestors.append((root, True))          # ~/.met-dsl/homes
+        ancestors.append((root.parent, False))  # ~/.met-forge — mode not forced
+        ancestors.append((root, True))          # ~/.met-forge/homes
     ancestors.append((home.parent, True))  # <homes-root>/<oid>
     for path, require_private in ancestors:
         if path.exists() or path.is_symlink():
@@ -19485,15 +19485,15 @@ def init_orchestration(
         )
     meta["orchestration_agent_run_id"] = orchestration_agent_run_id
     _write_json(meta_path, meta)
-    # Operator token: written once at init to ~/.met-dsl/operator_tokens/<oid>.txt
+    # Operator token: written once at init to ~/.met-forge/operator_tokens/<oid>.txt
     # (mode 0o600), never overwritten on resume so the same token remains valid
     # across restarts.  Stored OUTSIDE workspace/ so the orchestration agent's
     # allowed_read_roots (which include workspace/) cannot reach it via the Read
-    # tool, and forbid_operator_secret_direct_read blocks `cat ~/.met-dsl/...` via
+    # tool, and forbid_operator_secret_direct_read blocks `cat ~/.met-forge/...` via
     # Bash.  dismiss-violation requires this token to prevent agents from calling
     # the function programmatically (e.g. from a tmp Python script) to self-approve
     # their own unauthorized_write_violations.
-    operator_token_path = Path.home() / ".met-dsl" / "operator_tokens" / f"{orchestration_id}.txt"
+    operator_token_path = Path.home() / ".met-forge" / "operator_tokens" / f"{orchestration_id}.txt"
     operator_token_path.parent.mkdir(parents=True, exist_ok=True)
     # Restrict the directory to the owner so other local users on a shared host
     # cannot enumerate or read operator tokens.
@@ -24054,8 +24054,8 @@ def main(argv: list[str] | None = None) -> int:
         "--operator-token",
         required=True,
         help=(
-            "Content of ~/.met-dsl/operator_tokens/<oid>.txt. "
-            "Read with: cat ~/.met-dsl/operator_tokens/<oid>.txt"
+            "Content of ~/.met-forge/operator_tokens/<oid>.txt. "
+            "Read with: cat ~/.met-forge/operator_tokens/<oid>.txt"
         ),
     )
     dismiss_viol_parser.add_argument(

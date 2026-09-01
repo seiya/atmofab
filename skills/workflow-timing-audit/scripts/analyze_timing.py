@@ -29,7 +29,7 @@ Usage:
                     taking the private dir "when it exists, else ~/.claude" made
                     every pre-migration leaf of a resumed run look non-LLM. <slug>
                     is the repo abs-path with '/' -> '-'. Since issue #64 that
-                    private home is durable (~/.met-dsl/homes/<orch_id>/claude), so
+                    private home is durable (~/.met-forge/homes/<orch_id>/claude), so
                     an older run stays analysable; before it, a host restart took
                     the transcripts.
 
