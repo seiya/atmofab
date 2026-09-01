@@ -134,4 +134,50 @@ the case history that tells you how it closed.
   passed. Note which side of the tree was already safe: the PURE prompt template was pinned by a
   token literal in `tools/tests/test_pure_leaf_wiring.py` and its reversal died there. The agentic
   path — including the one document every `generate` leaf is force-read — had no counterpart
+- **Sweep the FACT, not the spelling** → PR #125, issue #120. One measurement — what a discovered
+  `per-file-ignores` key does to a five-finding fixture — was written into three places as "five
+  findings to one" when the answer is five to NONE, and the assertion three lines below one of
+  those places read `assertEqual(_reported_codes(...), [])`. Round 2 corrected all three and its
+  commit message said, correctly, that "a rewrite that touches a sentence and does not re-read the
+  clause it is attached to is how both of these survived" — and then did it: an eleventh line below
+  the comment it had just fixed, in the same file, in the same commit, sat "the same file silences
+  four of the five". My sweep after that commit searched `five findings to one` and `four channels`;
+  the survivor was a THIRD spelling of the same fact and was found by a reviewer, not by me, one
+  round later. Four rounds, three spellings, one number.
+  **Two lessons, and the second is the one that closed it.** Sweep for the NUMBER and for what it is
+  a number OF, then read every hit — a `grep` for last round's sentence finds last round's sentence.
+  And the fourth correction was not a correction: the comment was DELETED. It restated a measurement
+  the assertion beside it already carried, so the two could disagree and only one of them ran.
+  Related and different: the `TODO.md` figures for this repository's own `ruff` count are a
+  *dated record* and are correct as such; what rots is a claim about the present.
+- **A comment or docstring RESTATES a measurement the assertion beside it already carries** →
+  the same PR #125 episode, read from the other end. The question that would have closed it in round
+  1 is not "is this figure right" but "why is this measurement written twice". A test's assertion is
+  executed on every run; the sentence above it is executed by nobody. Wherever the two can disagree,
+  the sentence is the half that will be wrong, and correcting it buys one round.
+  **Do not confuse this with "prose that enumerates entities in the code"**, which says turn prose
+  into a check. Here the check already exists; the prose is the redundant copy, and the fix is
+  subtraction. The tell is that the sentence and the line under it are about the same measurement.
+- **Your fix NARROWS a check to stop it over-refusing** → PR #125, and it produced the only
+  BLOCKER of that branch's disclosure round. `origin/main` carried
+  `test_every_version_range_the_runbook_states_is_the_declared_one`, set identity over EVERY
+  `>=x.y,<a.b` in `docs/RUNBOOK.md`, with a docstring saying why: it "makes an operator's install
+  line and the launch refusal impossible to disagree". Round 2 of that loop found it over-refusing —
+  any legitimate `python3` or `cmake` prerequisite documented in the operator's own runbook turned
+  the suite red with a message blaming the document for a linter fact — and narrowed it to the
+  §0-1 table's range column. Correct fix, real over-refusal, and it deleted the coverage of the one
+  line an operator actually types. Measured in the disclosure round: drifting
+  `pipx install 'fortitude-lint>=0.8,<0.10'` to `<0.11` left **HEAD green and `origin/main` red**.
+  **Why no instrument saw it.** The mutation sweep mutates what exists; the census enumerates what
+  exists; a blank-slate reviewer reads HEAD. Every instrument in this loop compares HEAD against
+  itself, so a check the branch REMOVED is outside all of them. Only a reader who went looking for
+  what was deleted found it, and the brief that sent them was "is anything DELETED whose measurement
+  can no longer be re-taken".
+  **The procedure is two commands and it is cheap.** Take the defect the old check caught, apply it
+  at `origin/main` and at `HEAD`, require red-then-red, and treat red-then-green as the finding. Run
+  it in the same commit as the narrowing, because the narrowing is where the knowledge of what the
+  old check caught is at its freshest. The eventual fix on that branch was a scope BETWEEN the two —
+  any range on a line naming a linter's executable must be that linter's — which catches the install
+  line and cannot fire on a prerequisite that names no linter; the general shape is that a
+  narrowing usually has a middle, and "whole document" versus "one column" was a false choice.
 
