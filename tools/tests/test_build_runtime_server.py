@@ -1220,6 +1220,46 @@ class RunLinterPresetDispatchTests(unittest.TestCase):
             self.assertEqual(self.mod._LINT_PRESET_COMMANDS[preset], tuple(module.check_argv()),
                              preset)
 
+    def test_each_arm_of_the_import_time_declaration_check_refuses(self) -> None:
+        """All three raises, driven one at a time. Before this the count driven was ZERO.
+
+        The guard had four arms and the orphan one was the only one with a test; issue #120
+        deleted that arm together with the table it watched, and took the file's only witness for
+        this function with it. What the three survivors protect is not decorative: a name in both
+        tables makes `lint_preset_sub_presets` and `tool_run_linter`'s result-shape branch
+        disagree about whether a preset is simple, so one preset returns two shapes depending on
+        which reader asked; a composite naming a preset with no command row `KeyError`s mid-run,
+        AFTER its earlier sub-runs have already executed; and a default with no row breaks every
+        caller that names no preset. Each is reached from `Generate.gate` through `run_linter`.
+
+        Driven with synthetic tables because today's declarations are consistent — which is the
+        point of an import-time check — and each arm is asserted to name the offending preset, so
+        a guard that raised the wrong message would fail rather than pass on the raise alone.
+        """
+        cases = (
+            ("both simple and composite",
+             {"_LINT_PRESET_COMPOSITES": {**self.mod._LINT_PRESET_COMPOSITES,
+                                          "fortitude": ("fortitude",)}},
+             "fortitude"),
+            ("a composite naming an unregistered sub-preset",
+             {"_LINT_PRESET_COMPOSITES": {**self.mod._LINT_PRESET_COMPOSITES,
+                                          "zz_composite": ("zz_absent",)}},
+             "zz_absent"),
+            ("a default preset with no command row",
+             {"DEFAULT_LINT_PRESET": "zz_absent"},
+             "zz_absent"),
+        )
+        for label, attrs, expected in cases:
+            with self.subTest(arm=label):
+                with mock.patch.multiple(self.mod, **attrs):
+                    with self.assertRaises(ValueError) as caught:
+                        self.mod._check_lint_preset_declarations()
+                self.assertIn(expected, str(caught.exception))
+
+    def test_the_declaration_check_accepts_the_real_tables(self) -> None:
+        """The other direction, so the three arms above cannot pass by refusing everything."""
+        self.mod._check_lint_preset_declarations()
+
     def test_a_preset_whose_record_declares_no_package_is_refused_by_name(self) -> None:
         """`mixed` is the live instance: a composite carries `lint` in `core_provides`, so
         `_lint_preset_command` must refuse it rather than compose an argv for it.

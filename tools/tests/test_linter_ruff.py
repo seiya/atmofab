@@ -186,7 +186,26 @@ class VersionGateTests(unittest.TestCase):
 
 class UnusableInvocationTests(unittest.TestCase):
     def test_a_refused_invocation_is_not_a_verdict(self) -> None:
-        self.assertIsNotNone(lint.unusable_invocation_reason(2, "", "Unknown rule selector"))
+        """Driven through the REAL tool, not a synthetic status.
+
+        The `cppcheck` sibling drove its three refusals through the tool from the start; this one
+        was written against a hand-made `(2, "", "Unknown rule selector")`, which asserts the
+        function against itself and would survive the tool changing its exit status. It is the
+        classifier whose failure recreates issue #110's unwinnable loop, so the status it reads
+        has to come from the tool.
+        """
+        tree = _Tree(self)
+        for label, extra in (("an unknown code", "ZZZ999"), ("a removed code", "E999")):
+            argv = [a if a != ",".join(lint.RULE_CODES) else a + "," + extra
+                    for a in lint.check_argv(".")]
+            argv[0] = _linter_path()
+            completed = _run(argv, tree.src)
+            with self.subTest(refusal=label):
+                self.assertEqual(completed.returncode, 2, completed.stderr)
+                reason = lint.unusable_invocation_reason(
+                    completed.returncode, completed.stdout, completed.stderr)
+                self.assertIsNotNone(reason)
+                self.assertIn("refused, not the source", reason)
 
     def test_the_findings_exit_status_is_left_alone(self) -> None:
         """Exit 1 is the ordinary "there are findings" status; classifying it would send a leaf
