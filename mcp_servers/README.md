@@ -95,7 +95,7 @@ A reference example for other clients:
     "build-runtime": {
       "command": "python",
       "args": [
-        "/path/to/met-dsl/mcp_servers/build_runtime_server.py"
+        "/path/to/atmofab/mcp_servers/build_runtime_server.py"
       ]
     }
   }

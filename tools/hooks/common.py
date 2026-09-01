@@ -4722,7 +4722,7 @@ def _claude_project_slug(repo_root: Path) -> str:
 
     Claude Code stores per-project state under ~/.claude/projects/<slug>/, where
     <slug> is the absolute repo path with each '/' replaced by '-'. For example,
-    /home/<user>/work/met-dsl → -home-<user>-work-met-dsl.
+    /home/<user>/work/atmofab → -home-<user>-work-atmofab.
     """
     abs_str = str(repo_root)
     return abs_str.replace("/", "-")

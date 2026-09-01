@@ -14,14 +14,14 @@
 > predates that and is kept only for historical context — defer to the
 > "Part 2 — dependency nodes" / "D1 (PRIMARY)" status in `docs/design/deterministic_followups.md`.
 
-Paste the block below into a fresh session (in `/home/seiya/work/met-dsl`) to resume this
+Paste the block below into a fresh session (in the `atmofab` checkout) to resume this
 work. It is self-contained; the canonical record is the "Known limitations & deferred work"
 section of `docs/design/deterministic_followups.md`.
 
 ---
 
 ```
-met-dsl リポジトリ（/home/seiya/work/met-dsl）で、決定論 Makefile / transport・resume 修正の
+atmofab リポジトリ（<checkout>）で、決定論 Makefile / transport・resume 修正の
 「積み残し」を対応してください。今回の主題は **依存ノードのビルド（Model B）の実装と検証**です。
 背景と既存アンカーは docs/design/deterministic_followups.md の
 「Known limitations & deferred work (recorded 2026-06-25)」節が正典です。まず読んでください。

@@ -2978,8 +2978,8 @@ class ForbidBackendCredentialReadTests(unittest.TestCase):
         """The `..`-and-back route from `repo_root` to `$HOME`, for THIS checkout.
 
         The cases below that exercise a relative escape used to spell it `../..`, which
-        states a fact about the development checkout (`/home/seiya/work/met-dsl` is two
-        levels under `$HOME`) rather than about the guard. In a `git worktree` under
+        states a fact about the development checkout (that it sits a particular number
+        of levels under `$HOME`) rather than about the guard. In a `git worktree` under
         `/tmp` — where every mutation sweep of this repository runs — `../..` is `/`, and
         `test_blocks_bash_only_tilde_prefixes` failed for the depth of the path it ran
         from (measured on `165c26f` in `/tmp/wt84`: 1 failure there, 0 in the primary
@@ -3427,10 +3427,10 @@ class ForbidBackendCredentialReadTests(unittest.TestCase):
         re-resolved against the anchor that same `cd` produced, landing on
         `$HOME` and blocking an ordinary command."""
         for command in (
-            "cd .. && grep -rn foo met-dsl/docs",
-            "cd .. && ls -R met-dsl/docs",
-            "cd .. ; du -sh met-dsl/docs",
-            "cd .. && cp -a met-dsl/docs /tmp/x",
+            "cd .. && grep -rn foo atmofab/docs",
+            "cd .. && ls -R atmofab/docs",
+            "cd .. ; du -sh atmofab/docs",
+            "cd .. && cp -a atmofab/docs /tmp/x",
         ):
             self.assertEqual(self._call(command).action, HookDecisionAction.ALLOW, msg=command)
 
@@ -3444,7 +3444,7 @@ class ForbidBackendCredentialReadTests(unittest.TestCase):
             "pushd ~ && grep -r x ~",
         ):
             self.assertNotEqual(self._policy(command), "", msg=command)
-        for command in ("cd .. && grep -rn foo met-dsl/docs", "cd .. && ls -R met-dsl/docs"):
+        for command in ("cd .. && grep -rn foo atmofab/docs", "cd .. && ls -R atmofab/docs"):
             self.assertEqual(self._call(command).action, HookDecisionAction.ALLOW, msg=command)
 
     def test_a_substitution_elsewhere_does_not_block_the_repo_s_own_dot_claude(self) -> None:
@@ -4620,7 +4620,7 @@ class ForbidOperatorSecretReadTests(unittest.TestCase):
 
     def test_giant_brace_sequence_no_dos(self) -> None:
         """A huge single `{0..N}` sequence must not allocate/hang the hook,
-        and a met-dsl-targeting one must still block."""
+        and a atmofab-targeting one must still block."""
         with _CpuUnits() as measured:
             self.assertEqual(
                 self._policy("cat ~/.atmofa{0..999999999}/operator_tokens/x.txt"),
@@ -4672,7 +4672,7 @@ class ForbidOperatorSecretReadTests(unittest.TestCase):
         for c in (
             "cat docs/RUNBOOK.md",
             "cat workspace/orchestrations/o/meta.json",
-            "echo met-dsl is fine in text",
+            "echo atmofab is fine in text",
         ):
             self.assertNotEqual(
                 self._policy(c), "forbid_operator_secret_direct_read", msg=c)
