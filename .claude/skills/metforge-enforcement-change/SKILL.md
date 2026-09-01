@@ -3,7 +3,7 @@ name: metforge-enforcement-change
 description: Use when changing this repository's enforcement machinery — the MCP capability gate, validators, hooks, capability / write_root derivation, and the input validation a gate performs — and whenever you are about to classify a review finding as 「残余」「到達不能」「対象外」 (residual / unreachable / out of scope). Required reading for fixing a fail-open, adding to an allowlist or denylist, touching the gate functions in `mcp_servers/build_runtime_server.py` / `tools/orchestration_runtime.py`, `tools/hooks/`, or the gates in `validate_pipeline_semantics.py`, for fixing an audit finding, and for triaging a subagent's or Codex's review findings.
 ---
 
-# Changing met-dsl's enforcement machinery
+# Changing met-forge's enforcement machinery
 
 What this skill holds is the **traps specific to the enforcement domain**: dual-read pairs,
 failure attribution, verification commands, and the judgment rules you never drop. **How to

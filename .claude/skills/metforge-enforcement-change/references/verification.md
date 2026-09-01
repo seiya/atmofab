@@ -1,6 +1,6 @@
-# Verification procedures (met-dsl)
+# Verification procedures (met-forge)
 
-Run these from the met-dsl checkout root. **Do not write an assertion into a commit or TODO.md
+Run these from the met-forge checkout root. **Do not write an assertion into a commit or TODO.md
 that you have not measured.**
 
 These are an operator's own dev-session commands. `AGENTS.md` §MCP execution rules — run

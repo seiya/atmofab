@@ -642,7 +642,7 @@ class MutationCheckScenarioTests(unittest.TestCase):
     def test_a_red_baseline_names_the_two_paths_this_harness_chose(self) -> None:
         """The message must accuse the HARNESS before the suite.
 
-        Both of these defaults were once inputs to met-dsl's own suite — a `/dev/shm` scratch
+        Both of these defaults were once inputs to met-forge's own suite — a `/dev/shm` scratch
         root reddened the two tests that reason about `/dev/shm`, and the default worktree
         location reddens the hook tests that resolve `..` against the checkout's depth. The
         message said "Fix the suite", which is the one thing that was not wrong, so a full-suite

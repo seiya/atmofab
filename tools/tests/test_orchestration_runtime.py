@@ -407,7 +407,7 @@ def _answer_claude_roster_probe(args, kwargs, *, roster=None):
     return _FakeCompletedProcess(
         1, stdout=json.dumps({"is_error": True, "subtype": "success",
                               "api_error_status": 400,
-                              "result": "API Error: 400 met-dsl preflight roster capture"}))
+                              "result": "API Error: 400 met-forge preflight roster capture"}))
 
 
 def _is_claude_roster_probe(args) -> bool:
@@ -1035,7 +1035,7 @@ shell_tool                       stable             true
                 allow_permissions=["mcp__build-runtime"],
             )
             runner = self._claude_runner_with_mcp(
-                "build-runtime: stdio /opt/met-dsl/build_runtime_server.py - ✓ Connected\n"
+                "build-runtime: stdio /opt/met-forge/build_runtime_server.py - ✓ Connected\n"
             )
             result = probe_execution_platform(
                 backend="claude", runner=runner, repo_root=repo_root
@@ -34389,7 +34389,7 @@ class HostPycacheRedirectExemptionTest(unittest.TestCase):
             # follows it when loading cached modules, and this subtree is exempt from the
             # write-diff, so the payload would leave no trace.
             repo = Path(tmp).resolve()
-            mirrored = repo / _HOST_PYCACHE_REDIRECT_PREFIX / "home" / "u" / "met-dsl"
+            mirrored = repo / _HOST_PYCACHE_REDIRECT_PREFIX / "home" / "u" / "met-forge"
             mirrored.mkdir(parents=True)
             target = repo.parent / "leaf_writable"
             target.mkdir(exist_ok=True)

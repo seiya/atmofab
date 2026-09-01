@@ -48,7 +48,7 @@ To investigate a specific orchestration, use the instructed `orchestration_id`.
 
 Read the `payload_summary.session_id` recorded in `native_hook_events.jsonl`, and
 identify the corresponding `.jsonl` file under `<projects-root>/<cwd-slug>/` (resolved as in the table above).
-`<cwd-slug>` is the repo's absolute path with `/` replaced by `-` (e.g. `/home/alice/work/met-dsl` → `-home-alice-work-met-dsl`).
+`<cwd-slug>` is the repo's absolute path with `/` replaced by `-` (e.g. `/home/alice/work/met-forge` → `-home-alice-work-met-forge`).
 
 ```bash
 python3 - <<'EOF'

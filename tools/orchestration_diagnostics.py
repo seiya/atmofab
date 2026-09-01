@@ -444,7 +444,7 @@ def _leaf_transcript_path(child_arid: str, repo_root: Path,
 
 def _claude_projects_dir(repo_root: Path, orchestration_id: str | None = None) -> Path:
     # Claude Code derives the project slug from the absolute cwd, with every "/"
-    # replaced by "-" (e.g. /home/seiya/work/met-dsl -> -home-seiya-work-met-dsl).
+    # replaced by "-" (e.g. /home/seiya/work/met-forge -> -home-seiya-work-met-forge).
     # Resolve first so a relative repo_root (e.g. Path(".")) still maps correctly.
     try:
         abs_root = repo_root.resolve()

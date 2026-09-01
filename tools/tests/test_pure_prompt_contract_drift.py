@@ -152,7 +152,15 @@ PINNED: dict[str, str] = {
     # range, so the sentence was false on half of it. The instruction ("under 100") was already
     # correct everywhere; what changed is that a producer checking the claim against its own host
     # no longer finds the checklist wrong.
-    "pure-22": "771d0659d2341bb372d1dde2c7afd71b2a25d4383ce900ed94c20c828826e94d",}
+    "pure-22": "771d0659d2341bb372d1dde2c7afd71b2a25d4383ce900ed94c20c828826e94d",
+    # pure-23: the project rename (issue #127; `docs/GLOSSARY.md` §13 is canonical for the
+    # name and for what it was called before) reached the opening sentence of both pure
+    # templates ("the `generate.generate` producer of the met-forge workflow"). No rule, gate, or ABI constant moved. The bump is here because
+    # `orchestration_runtime._resolve_exemplar_source` gates prior-art exemplars on this
+    # version, and a bundle produced under the old text must not be silently treated as
+    # having been produced under the new one; re-pinning in place would have been the
+    # reverse-drift hole this file exists to close.
+    "pure-23": "0db0fecb03f1c244e9d600907087f17601bcef39825a2462448a8d6cbddef1a5",}
 
 
 def _contract_tuple() -> dict[str, object]:

@@ -3,7 +3,7 @@
 ## Purpose
 
 This plan implements GitHub issue
-[seiya/met-dsl#13](https://github.com/seiya/met-dsl/issues/13) in one pull
+[seiya/met-forge#13](https://github.com/seiya/met-forge/issues/13) in one pull
 request. The implementation keeps workflow contracts and validation
 backend-neutral. Backend-specific behavior is confined to transport, session
 management, hooks, resume, and usage-limit handling.

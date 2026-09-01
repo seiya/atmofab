@@ -80,7 +80,7 @@ failed in a way I could not explain.
 
 ## How to look
 
-Run from the met-dsl checkout root.
+Run from the met-forge checkout root.
 
 ```bash
 # sweep the places that read a given fact (example: the toolchain language)

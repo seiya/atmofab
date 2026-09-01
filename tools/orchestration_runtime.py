@@ -17219,7 +17219,7 @@ def _claude_roster_capture_server() -> Iterator[tuple[str, list[list[str]]]]:
                         captured.append(names)
                 self._reply(400, {"type": "error", "error": {
                     "type": "invalid_request_error",
-                    "message": "met-dsl preflight roster capture: no model turn is made"}})
+                    "message": "met-forge preflight roster capture: no model turn is made"}})
                 return
             self._reply(200, {
                 "id": "msg_metdsl_roster_probe", "type": "message", "role": "assistant",

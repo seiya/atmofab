@@ -151,12 +151,12 @@ def pytest_configure(config) -> None:
 def _operator_env_disclosure(config) -> str | None:
     """What this run did to the operator's environment, or None if it did nothing."""
     if suite_env_guard.DECLINED:
-        return ("met-dsl: --keep-operator-env -- the operator's environment was NOT "
+        return ("met-forge: --keep-operator-env -- the operator's environment was NOT "
                 "stripped for this run (issue #84); failures may belong to a knob you set")
     stripped = getattr(config, "_metdsl_stripped_operator_env", None)
     if not stripped:
         return None
-    return ("met-dsl: stripped the operator's environment for this run (issue #84): "
+    return ("met-forge: stripped the operator's environment for this run (issue #84): "
             + ", ".join(stripped)
             + " -- pass --keep-operator-env to run against them instead")
 

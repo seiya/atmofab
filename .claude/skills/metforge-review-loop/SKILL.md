@@ -109,7 +109,7 @@ when a rule does not obviously apply:
   script caught it and exited 2, which is the behaviour to keep) — and a suite that ALREADY has a
   failure unrelated to the change,
   where `-x` stops every mutant at that same failure so every mutant reads as `killed` — a false
-  green over the whole run, not a per-hunk slip. met-dsl's standing instance is the two
+  green over the whole run, not a per-hunk slip. met-forge's standing instance is the two
   path-depth-coupled `ForbidBackendCredentialReadTests` cases, which fail in a worktree under
   `/tmp` and pass in the checkout; one PR #98 reviewer reported 12 of 12 mutants killed that way
   before re-running. **Deselect the known failures in `--test-cmd`, or drop `-x`**
@@ -221,7 +221,7 @@ when a rule does not obviously apply:
    - **A count with no unit is not reproducible** — "14 hunks" came back as 19 and 16 because the
      figure depends on the diff CONTEXT WIDTH. Name the width, the command, and the exclusions
    - **Name WHERE a suite figure was measured.** A number can be right and still be a defect if it
-     does not say which checkout produced it: met-dsl's suite is one lower in a `/tmp` worktree
+     does not say which checkout produced it: met-forge's suite is one lower in a `/tmp` worktree
      than in the primary checkout, because a declared skip fires there. On PR #104 a reviewer
      correctly reported a commit message as wrong for that reason, and the message was right —
      it simply had not said where
