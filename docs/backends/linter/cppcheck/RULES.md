@@ -48,7 +48,7 @@ half.
 The declared invocation is
 
 ```
-cppcheck --error-exitcode=2 --enable=warning,style,performance --platform=unix64 <target>
+cppcheck --error-exitcode=2 --enable=warning,style,performance,portability --platform=unix64 --force <target>
 ```
 
 Element by element, each checked against `CHECK_FLAGS` by test:
@@ -59,8 +59,8 @@ Element by element, each checked against `CHECK_FLAGS` by test:
   `--error-exitcode=1` those last three were indistinguishable from "there are findings", so a
   conductor that could not start the linter would have routed the failure to the leaf as findings
   in its own source — issue #110's unwinnable loop.
-- `--enable=warning,style,performance` — the severities the gate asks for, declared as
-  `ENABLED_SEVERITIES`. `error` is not listed because cppcheck always reports it.
+- `--enable=warning,style,performance,portability` — the severities the gate asks for, declared
+  as `ENABLED_SEVERITIES`. `error` is not listed because cppcheck always reports it.
   - **Two of the three are REDUNDANT.** The tool's own `--help` documents `style` as enabling
     "all messages with the severities 'style', 'warning', 'performance' and 'portability'", and
     measured on 2.7 / 2.16.0 / 2.17.1 over the checked-in fixture, `--enable=style` alone gives a
@@ -69,13 +69,30 @@ Element by element, each checked against `CHECK_FLAGS` by test:
     which is the inherited semantics this backend exists to remove. Pinned by
     `test_the_severity_list_is_redundant_and_that_is_measured_not_assumed`, so a build that stops
     subsuming is noticed.
-  - **The constant UNDERSTATES the argv.** By the same sentence, `--enable=style` also enables
-    `portability`, which `ENABLED_SEVERITIES` does not name — so the severities the gate APPLIES
-    are a superset of the severities it DECLARES. **This half is not measured**: no source
-    constructed here produced a `portability` finding on any supported build, so the gap is
-    documented from the tool's text rather than from an observation. It is the one place in this
-    backend where the declaration is known to be narrower than the behaviour. `TODO.md` carries
-    it.
+  - **`portability` is named because the argv applies it.** By the same sentence, `--enable=style`
+    enables `portability`. An earlier version of this document left it out of the constant and
+    recorded the gap as unmeasured; the next review round constructed it twice, independently:
+
+    ```c
+    void sv(void *p) { printf("%zu\n", sizeof(*p)); }
+    void ar(void *p) { char *q = (char *)(p + 1); (void)q; }
+    ```
+
+    reports `sizeofDereferencedVoidPointer` and `arithOperationsOnVoidPointer`, severity
+    `portability`, exit 2, under the declared argv on 2.7 / 2.16.0 / 2.17.1, with
+    `--enable=warning,performance` clean as the negative control. Naming it changes no verdict,
+    which is the point: the constant now says what the gate applies.
+- `--force` — closes the one reachable `leaf shortcut` on this backend. Without it cppcheck
+  analyses at most 12 preprocessor configurations and STOPS, reporting exit 0. Measured on
+  2.7 / 2.16.0 / 2.17.1: a file whose unused-variable defect follows twenty `#ifdef` blocks exits
+  0, while the same three lines alone exit 2. The only trace is `[toomanyconfigs]`, whose severity
+  is `information` — which the declared severities do not enable — so the truncation is silent at
+  the exit status the conductor reads. A leaf that cannot satisfy a finding could wrap the file in
+  conditionals instead of fixing it. `--max-configs=N` would only move the cap to `N+1`, so the
+  cap is removed rather than raised. Measured cost on the checked-in fixture, all three builds: no
+  verdict change, no measurable time difference; a source adversarial enough to make `--force`
+  expensive hits `run_linter`'s `timeout_sec`, which arrives as `return_code: None` and is already
+  a transport `fail_closed`.
 - `--platform=unix64` — pins the type model. The default is `native`, i.e. whichever machine runs
   the gate. **DECLARED, NOT WITNESSED, and said rather than implied**: no fixture measured here
   reports differently under `native`, `unix64` and `unix32`. The flag removes a host input; it
@@ -100,7 +117,7 @@ Element by element, each checked against `CHECK_FLAGS` by test:
 
 ## Declared set
 `ENABLED_SEVERITIES` in `tools/backends/linter/cppcheck/lint.py`: `warning`, `style`,
-`performance`, plus `error`, which cppcheck always reports. There is no id-level set; §Requirements
+`performance`, `portability`, plus `error`, which cppcheck always reports. There is no id-level set; §Requirements
 says why.
 
 `SUPPRESSED_RULE_CODES` is **empty**, and empty is a decision. The mechanism works and is

@@ -52,6 +52,23 @@ WHAT IS CLOSED, each measured on 2.7 / 2.16.0 / 2.17.1 with the flag present and
   1. Under the previous `--error-exitcode=1` those last three were indistinguishable from "there
   are findings", so a conductor that cannot start the linter would have routed the failure to the
   leaf as findings in its own source — issue #110's unwinnable loop.
+* A PASS OVER SOURCE THE TOOL NEVER ANALYSED. This is the one channel on this backend that is a
+  reachable `leaf shortcut` rather than a record, and `--force` closes it. Without the flag
+  cppcheck analyses at most 12 preprocessor configurations and then STOPS, reporting exit 0.
+  Measured on 2.7 / 2.16.0 / 2.17.1: a file whose unused-variable defect follows twenty `#ifdef`
+  blocks exits 0, while the same three lines alone exit 2. The only trace is
+  `Too many #ifdef configurations - cppcheck only checks 12 configurations. [toomanyconfigs]`,
+  whose severity is `information` — which `ENABLED_SEVERITIES` does not enable — so the
+  truncation is SILENT at the exit status the conductor reads.
+
+  A leaf that cannot satisfy a finding can therefore wrap the file in conditionals instead of
+  fixing it, and the gate passes. `--force` removes the cap; `--max-configs=N` only moves it to
+  `N+1`, which is why the cap is removed rather than raised. Cost, measured on the checked-in
+  fixture on all three builds: no verdict change and no measurable time difference. A source
+  adversarial enough to make `--force` expensive runs into `run_linter`'s `timeout_sec`, and a
+  timeout arrives as `return_code: None`, which `tools/workflow_conductor.py`'s
+  `_raise_on_unusable_lint_invocation` already turns into a transport `fail_closed` — so the
+  degenerate case fails closed rather than passing.
 * The host's own type model. `--platform` defaults to `native`, so `sizeof` and the integer
   widths a check reasons about come from whichever machine runs the gate. `unix64` pins it.
   DECLARED, NOT WITNESSED, and said rather than implied: no fixture measured here reports
@@ -117,13 +134,21 @@ EXECUTABLE = "cppcheck"
 #: applies: reducing this to `("style",)` would make the argv depend on that subsumption, which is
 #: the kind of inherited semantics this whole backend exists to remove.
 #:
-#: AND THE CONSTANT UNDERSTATES THE ARGV, which is the half worth a reader's attention. By the
-#: same `--help` sentence, `--enable=style` also enables `portability`, and this tuple does not
-#: name it — so the severities the gate APPLIES are a superset of the severities it DECLARES.
-#: Stated rather than closed, because it is not measured: no source constructed here produced a
-#: `portability` finding on any supported build, so the difference between the two sets is
-#: documented from the tool's own text and not from an observation. `TODO.md` carries it.
-ENABLED_SEVERITIES: tuple[str, ...] = ("warning", "style", "performance")
+#: `portability` IS IN THE TUPLE BECAUSE THE ARGV APPLIES IT. By the same `--help` sentence,
+#: `--enable=style` enables `portability` too. An earlier version of this constant left it out and
+#: recorded the gap as unmeasured — "no source constructed here produced a `portability` finding
+#: on any supported build". Two reviewers constructed one independently in the next round:
+#:
+#:     void sv(void *p) { printf("%zu\n", sizeof(*p)); }
+#:     void ar(void *p) { char *q = (char *)(p + 1); (void)q; }
+#:
+#: reports `sizeofDereferencedVoidPointer` and `arithOperationsOnVoidPointer`, severity
+#: `portability`, exit 2, under the DECLARED argv on 2.7 / 2.16.0 / 2.17.1, with
+#: `--enable=warning,performance` clean as the negative control. Naming it changes no verdict —
+#: `style` was already enabling it — and it makes the constant say what the gate applies, which is
+#: the whole property this backend exists for. Naming a severity the argv applies is not the same
+#: as adding one, and the difference is the reason this is a one-word edit rather than a decision.
+ENABLED_SEVERITIES: tuple[str, ...] = ("warning", "style", "performance", "portability")
 
 #: Checks deliberately suppressed, id to the ground for it, imposed as `--suppress=<id>`.
 #:
@@ -153,6 +178,7 @@ CHECK_FLAGS: tuple[str, ...] = (
     f"--error-exitcode={FINDINGS_EXIT_CODE}",
     "--enable=" + ",".join(ENABLED_SEVERITIES),
     f"--platform={PLATFORM}",
+    "--force",
     *(f"--suppress={code}" for code in sorted(SUPPRESSED_RULE_CODES)),
 )
 

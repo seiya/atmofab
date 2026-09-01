@@ -46,7 +46,19 @@ the linter PRESET of the same name is a different subject entirely.
     They are kept deliberately — a declaration should name what it applies — and
     `test_the_severity_list_is_redundant_and_that_is_measured_not_assumed` fails if a build stops
     subsuming.
-
+  - **DONE (issue #120 review loop round 3, 2026-09-01).** The `portability` gap this entry asked
+    someone to settle was settled the round after it was written, by two reviewers independently:
+    `sizeof(*p)` and `p + 1` on a `void *` report `sizeofDereferencedVoidPointer` and
+    `arithOperationsOnVoidPointer`, severity `portability`, exit 2, under the DECLARED argv on
+    2.7 / 2.16.0 / 2.17.1, with `--enable=warning,performance` clean as the negative control.
+    `ENABLED_SEVERITIES` now names `portability`; the verdict is unchanged, because `style` was
+    already enabling it, and the constant now says what the gate applies.
+    `test_a_portability_finding_reaches_the_verdict` witnesses it.
+    - **The lesson is about the RECORD, not the tool.** This entry was written the same day, in the
+      same review round, saying "no source constructed here produced a `portability` finding on any
+      supported build" — which was true of the searcher and read as a property of the tool. Six
+      lines of C settled it. An unmeasured claim written into three files and a ledger entry is a
+      claim someone will act on; the cost of one more construction attempt was five minutes.
 - **`preset=mixed` refuses its own lint gate on a node whose tree holds nothing one sub-preset can
   analyse** (2026-09-01, low — reproduced, unreachable today; found by the issue #120 review loop,
   correctness axis, as a `route not established` item and reproduced here). `mixed` runs

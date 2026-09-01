@@ -137,13 +137,20 @@ class _Tree:
         argv[0] = _linter_path()
         return _run([argv[0], *extra, *argv[1:]], self.src)
 
+    def run_without(self, flag: str) -> subprocess.CompletedProcess:
+        """The declared invocation with one flag removed — the negative control shape."""
+        argv = [a for a in lint.check_argv(".") if a != flag]
+        argv[0] = _linter_path()
+        return _run(argv, self.src)
+
 
 class DeclarationTests(unittest.TestCase):
     def test_the_argv_is_the_declared_invocation(self) -> None:
         self.assertEqual(
             lint.check_argv("."),
             (lint.EXECUTABLE, "--error-exitcode=2",
-             "--enable=warning,style,performance", "--platform=unix64", "."),
+             "--enable=warning,style,performance,portability", "--platform=unix64", "--force",
+             "."),
         )
 
     def test_the_suppression_flag_is_absent(self) -> None:
@@ -323,6 +330,63 @@ class BehaviourAgainstTheInstalledBuildTests(unittest.TestCase):
         completed = tree.run()
         self.assertEqual(completed.returncode, 0, completed.stderr)
 
+    #: Twenty `#ifdef` blocks, then the defect. cppcheck analyses at most 12 preprocessor
+    #: configurations without `--force` and then stops, reporting exit 0 — so this source and
+    #: `_TRUNCATION_CONTROL` below differ only in how much dead conditional precedes the same
+    #: three lines.
+    _TRUNCATION_SOURCE = "".join(
+        f"#ifdef OPT{i}\nint pad{i}(void){{return {i};}}\n#endif\n" for i in range(19)
+    ) + "#ifdef OPT19\nvoid hidden(void){int q;}\n#endif\n"
+
+    #: The same defect with nothing in front of it.
+    _TRUNCATION_CONTROL = "#ifdef OPT19\nvoid hidden(void){int q;}\n#endif\n"
+
+    def test_a_source_the_tool_cannot_fully_analyse_is_not_a_pass(self) -> None:
+        """The one reachable `leaf shortcut` on this backend, and the flag that closes it.
+
+        Without `--force` the truncation is SILENT at the exit status: the only trace is
+        `[toomanyconfigs]`, whose severity is `information`, which the declared severities do not
+        enable. A leaf that cannot satisfy a finding could wrap the file in conditionals instead
+        of fixing it and the gate would pass on source the tool never analysed.
+
+        The negative control is the same defect with the conditionals removed — so a run that
+        reported nothing because the fixture is clean would fail this row rather than pass it.
+        """
+        tree = _Tree(self, self._TRUNCATION_SOURCE)
+        self.assertEqual(tree.run().returncode, lint.FINDINGS_EXIT_CODE)
+        without = tree.run_without("--force")
+        self.assertEqual(without.returncode, 0, without.stdout + without.stderr)
+
+        control = _Tree(self, self._TRUNCATION_CONTROL)
+        self.assertEqual(control.run().returncode, lint.FINDINGS_EXIT_CODE)
+        self.assertEqual(control.run_without("--force").returncode, lint.FINDINGS_EXIT_CODE)
+
+    #: A source whose only findings are `portability`-severity. It exists because an earlier
+    #: version of this backend recorded "no source constructed here produced a `portability`
+    #: finding on any supported build" and two reviewers constructed one in the next round.
+    _PORTABILITY_SOURCE = (
+        "#include <stdio.h>\n"
+        'void sv(void *p) { printf("%zu\\n", sizeof(*p)); }\n'
+        "void ar(void *p) { char *q = (char *)(p + 1); (void)q; }\n"
+    )
+
+    def test_a_portability_finding_reaches_the_verdict(self) -> None:
+        """`portability` is in `ENABLED_SEVERITIES` because the argv applies it — witnessed.
+
+        The negative control drops `portability` AND `style` (which subsumes it) from `--enable`,
+        and must go clean; otherwise this row would pass on a finding of some other severity.
+        """
+        tree = _Tree(self, self._PORTABILITY_SOURCE)
+        completed = tree.run()
+        self.assertEqual(completed.returncode, lint.FINDINGS_EXIT_CODE)
+        self.assertIn("portability:", completed.stdout + completed.stderr)
+
+        argv = list(lint.check_argv("."))
+        argv[0] = _linter_path()
+        control = _run([a if not a.startswith("--enable=") else "--enable=warning,performance"
+                        for a in argv], tree.src)
+        self.assertEqual(control.returncode, 0, control.stdout + control.stderr)
+
     def test_an_in_source_suppression_comment_changes_no_verdict(self) -> None:
         """The one channel a leaf can write, and the one this change closes."""
         tree = _Tree(self)
@@ -443,8 +507,23 @@ class BackendDocumentTests(unittest.TestCase):
         policy = self.text.split("## Design Policy", 1)[1].split("## Declared set", 1)[0]
         self.assertRegex(policy, re.compile(r"^- \*\*`--inline-suppr` is ABSENT", re.M))
 
+    #: The section this file's document pins read, and the heading that ENDS it. Both are checked
+    #: rather than assumed: the first version indexed straight into `split(...)` and a renamed
+    #: heading raised a bare `IndexError` with no message, while a renamed CLOSING heading
+    #: silently widened the section to the end of the file — so the "section" the docstrings
+    #: promise stopped being a section without anything going red. The sibling check in
+    #: `tools/tests/test_host_prerequisites.py` was given this guard in the same round; this one
+    #: was not.
+    _SECTION = "## Declared set"
+    _SECTION_END = "## Limits"
+
     def _declared_set_section(self) -> str:
-        return self.text.split("## Declared set", 1)[1].split("## Limits", 1)[0]
+        for heading in (self._SECTION, self._SECTION_END):
+            self.assertIn(
+                heading, self.text,
+                f"docs/backends/linter/cppcheck/RULES.md no longer carries a {heading!r} heading; "
+                f"the checks below cannot find the section they are supposed to compare")
+        return self.text.split(self._SECTION, 1)[1].split(self._SECTION_END, 1)[0]
 
     def test_the_declared_set_section_names_exactly_the_suppressions(self) -> None:
         """SET IDENTITY over the section, not containment.
@@ -473,8 +552,14 @@ class BackendDocumentTests(unittest.TestCase):
         this is where the identity is asserted — and `error` is required with them, because the
         section has to say why it is not in the constant.
         """
-        section = self._declared_set_section()
-        spans = set(re.findall(r"`([a-z]+)`", section.split("There is no id-level set", 1)[0]))
+        sentence = self._declared_set_section().split("There is no id-level set", 1)[0]
+        # The severities the sentence NAMES, read from the colon that introduces them rather than
+        # from every backticked lowercase word in the prefix. The first version took the latter,
+        # and then backticking `cppcheck` in that sentence — a purely cosmetic edit, and the
+        # spelling used everywhere else in the document — turned it red. A pin a reformat can
+        # break is a pin that gets edited rather than satisfied.
+        named = sentence.split(":", 1)[1] if ":" in sentence else sentence
+        spans = set(re.findall(r"`([a-z]+)`", named))
         self.assertEqual(spans, set(lint.ENABLED_SEVERITIES) | {"error"})
 
     def test_the_document_quotes_the_supported_range(self) -> None:
