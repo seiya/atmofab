@@ -84,6 +84,11 @@ to **one unbilled observation**).
 - **Observation costs two orders of magnitude less than implementation**
 - **"It was not refused" cannot be shown from refusal logs.** In a layer where refusals leave no
   event, **count the traces on the success side**
+- **Before diagnosing a defect in enforcement machinery, run the suite FILE that covers it on
+  `origin/main` and read what fails.** The bug is often already a red test there, and that is the
+  strongest evidence a causal argument can have — but the FULL-suite verdict hides it behind the
+  known baseline failures, so the whole-tree number is not the place to look. Seconds to run
+  (`references/verification.md` §The suite)
 - When a premise collapses, **keep the measurements**. The plan dies; the measured facts stay
 
 **1-e. "Out of scope because the leaf gains nothing" is a classification rule 1 does not govern.**
