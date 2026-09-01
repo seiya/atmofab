@@ -4938,7 +4938,7 @@ class LeafChildEnvTest(unittest.TestCase):
         env = c._child_env("child-1", c.entry_for("generate", "generate"))
         self.assertNotIn("CODEX_HOME", env)
 
-    def test_child_env_drops_metdsl_home_despite_the_prefix(self) -> None:
+    def test_child_env_drops_atmofab_home_despite_the_prefix(self) -> None:
         """`ATMOFAB_HOME` is inside the allowed prefix and still must not travel: it is
         the deprecated alias for codex's config home, so it is on the single-route side.
         The prefix exception is what keeps the general rule general."""
@@ -16966,7 +16966,7 @@ class DeterministicSyntaxTest(unittest.TestCase):
         d = Path(args["project_dir"])
         staged = {p.name for p in d.iterdir() if p.is_file() and p.suffix == ".f90"}
         if d.name.endswith("_canary"):
-            self.assertEqual(staged, {"metdsl_syntax_canary.f90"})
+            self.assertEqual(staged, {"atmofab_syntax_canary.f90"})
             return "canary"
         if d.name.endswith("_deps_probe"):
             self.assertEqual(staged, {"dep_model.f90"})

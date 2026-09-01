@@ -1403,7 +1403,7 @@ def syntax_compiler_executable(compiler: str) -> str:
 # invocation from broken sources by the compiler's own verdict, without enumerating the
 # stds a given compiler version happens to accept (`f2023` exists on GCC>=13 but not
 # before, so any hard-coded set is wrong on some machine).
-SYNTAX_CANARY_SOURCE = "module metdsl_syntax_canary\n  implicit none\nend module metdsl_syntax_canary\n"
+SYNTAX_CANARY_SOURCE = "module atmofab_syntax_canary\n  implicit none\nend module atmofab_syntax_canary\n"
 
 # `module <name>` definitions (excluding submodule-procedure headers) and `use <name>`
 # references, scanned to order the staged sources so each module is compiled before its

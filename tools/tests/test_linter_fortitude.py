@@ -37,18 +37,18 @@ from tools.backends.linter.fortitude import lint  # noqa: E402
 #: A source that satisfies the declared set, used as the subject of the resolution checks. It
 #: carries a plain `implicit none` with NO allow directive above it — the form the leaf-read
 #: documents now require, and one that only passes because `C003` is out of the declared set.
-_CLEAN_SOURCE = """module metdsl_probe_model
+_CLEAN_SOURCE = """module atmofab_probe_model
   use, intrinsic :: iso_fortran_env, only: real64
   implicit none
   private
-  public :: metdsl_probe__op
+  public :: atmofab_probe__op
 contains
-  subroutine metdsl_probe__op(x, y)
+  subroutine atmofab_probe__op(x, y)
     real(real64), intent(in) :: x
     real(real64), intent(out) :: y
     y = x
-  end subroutine metdsl_probe__op
-end module metdsl_probe_model
+  end subroutine atmofab_probe__op
+end module atmofab_probe_model
 """
 
 #: One defect per family the leaf-read documents instruct a leaf about, and ONLY families the
@@ -57,16 +57,16 @@ end module metdsl_probe_model
 #: column limit (S001). It deliberately does NOT probe `C003`, which left the declared set, nor
 #: `C061`: an earlier version of this comment named both and so described families that produce
 #: nothing here.
-_DEFECTIVE_SOURCE = """module metdsl_probe_bad
+_DEFECTIVE_SOURCE = """module atmofab_probe_bad
   use iso_fortran_env, only: real64
   implicit none
 contains
-  subroutine metdsl_probe_bad__op(x, y)
+  subroutine atmofab_probe_bad__op(x, y)
     real(8), intent(in) :: x
     real(8), intent(out) :: y
     y = x{padding}
-  end subroutine metdsl_probe_bad__op
-end module metdsl_probe_bad
+  end subroutine atmofab_probe_bad__op
+end module atmofab_probe_bad
 """.format(padding="  ! " + "p" * 120)
 
 
@@ -274,7 +274,7 @@ class ResolutionAgainstTheInstalledBuildTests(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         self.dir = Path(self._tmp.name)
-        (self.dir / "metdsl_probe_model.f90").write_text(_CLEAN_SOURCE)
+        (self.dir / "atmofab_probe_model.f90").write_text(_CLEAN_SOURCE)
 
     def test_every_declared_code_is_selectable_on_the_installed_build(self) -> None:
         """An unknown or withdrawn code is an ARGUMENT error, so nothing is checked at all.
@@ -283,7 +283,7 @@ class ResolutionAgainstTheInstalledBuildTests(unittest.TestCase):
         withdrawn code (`OB001`) is rejected outright. A gate whose argv is refused this way does
         not report findings — it reports a tool failure on every node.
         """
-        completed = _run(list(lint.check_argv("metdsl_probe_model.f90")), self.dir)
+        completed = _run(list(lint.check_argv("atmofab_probe_model.f90")), self.dir)
         self.assertIn(completed.returncode, (0, 1),
                       f"the declared argv was refused: "
                       f"{(completed.stderr or completed.stdout).strip()}")
@@ -295,7 +295,7 @@ class ResolutionAgainstTheInstalledBuildTests(unittest.TestCase):
         `S051` resolves to `MOD021`), so the declaration is confirmed by what the build resolves
         it to, never by the spelling being accepted.
         """
-        self.assertEqual(_resolved_rule_codes(self.dir, "metdsl_probe_model.f90"),
+        self.assertEqual(_resolved_rule_codes(self.dir, "atmofab_probe_model.f90"),
                          tuple(sorted(lint.RULE_CODES)))
 
     def test_a_neighbouring_config_file_cannot_change_the_verdict(self) -> None:
@@ -306,19 +306,19 @@ class ResolutionAgainstTheInstalledBuildTests(unittest.TestCase):
         silences every rule the defective source trips: with the flag the verdict must be
         unchanged.
         """
-        (self.dir / "metdsl_probe_bad.f90").write_text(_DEFECTIVE_SOURCE)
-        without_config = _run(list(lint.check_argv("metdsl_probe_bad.f90")), self.dir)
+        (self.dir / "atmofab_probe_bad.f90").write_text(_DEFECTIVE_SOURCE)
+        without_config = _run(list(lint.check_argv("atmofab_probe_bad.f90")), self.dir)
         self.assertEqual(without_config.returncode, 1, "the defective source must fail")
 
         silencing = ", ".join(f'"{code}"' for code in lint.RULE_CODES)
         (self.dir / "fortitude.toml").write_text(f"[check]\nignore = [{silencing}]\n")
-        with_config = _run(list(lint.check_argv("metdsl_probe_bad.f90")), self.dir)
+        with_config = _run(list(lint.check_argv("atmofab_probe_bad.f90")), self.dir)
         self.assertEqual(with_config.returncode, 1,
                          "a configuration file next to the sources changed the verdict — the "
                          "declared invocation is not isolated from it")
         # And the control: the same run WITHOUT the flag must be silenced, or the case above
         # proves nothing (a config the tool never reads would pass either way).
-        unisolated = [arg for arg in lint.check_argv("metdsl_probe_bad.f90")
+        unisolated = [arg for arg in lint.check_argv("atmofab_probe_bad.f90")
                       if arg != "--isolated"]
         self.assertEqual(_run(unisolated, self.dir).returncode, 0,
                          "the config file did not silence anything, so this case observes "
@@ -340,16 +340,16 @@ class ResolutionAgainstTheInstalledBuildTests(unittest.TestCase):
         directive never suppressed would satisfy the row.
         """
         blanket = "! allow(C122, C131, C061, PORT011, C003)\n" + _DEFECTIVE_SOURCE
-        (self.dir / "metdsl_probe_bad.f90").write_text(blanket)
+        (self.dir / "atmofab_probe_bad.f90").write_text(blanket)
         suppressible = {"C122", "C131", "PORT011"}
 
-        declared = _run(list(lint.check_argv("metdsl_probe_bad.f90")), self.dir)
+        declared = _run(list(lint.check_argv("atmofab_probe_bad.f90")), self.dir)
         self.assertEqual(declared.returncode, 1)
         self.assertEqual(
             suppressible - _reported_codes(declared), set(),
             "the allow directive suppressed a finding under the declared invocation")
 
-        without_flag = [a for a in lint.check_argv("metdsl_probe_bad.f90")
+        without_flag = [a for a in lint.check_argv("atmofab_probe_bad.f90")
                         if a != "--ignore-allow-comments"]
         control = _run(without_flag, self.dir)
         self.assertEqual(
@@ -372,7 +372,7 @@ class ResolutionAgainstTheInstalledBuildTests(unittest.TestCase):
         fixture therefore initialises one, or the case observes nothing on either side.
         """
         _run(["git", "init", "-q", "."], self.dir)
-        (self.dir / "metdsl_probe_bad.f90").write_text(_DEFECTIVE_SOURCE)
+        (self.dir / "atmofab_probe_bad.f90").write_text(_DEFECTIVE_SOURCE)
         self.assertEqual(
             _run(list(lint.check_argv(".")), self.dir).returncode, 1,
             "the defective source must fail before the .gitignore is written")
@@ -396,10 +396,10 @@ class ResolutionAgainstTheInstalledBuildTests(unittest.TestCase):
         the source must now FAIL, or the documents that stopped teaching it are lying.
         """
         self.assertEqual(
-            _run(list(lint.check_argv("metdsl_probe_model.f90")), self.dir).returncode, 0)
-        (self.dir / "metdsl_probe_model.f90").write_text(
+            _run(list(lint.check_argv("atmofab_probe_model.f90")), self.dir).returncode, 0)
+        (self.dir / "atmofab_probe_model.f90").write_text(
             _CLEAN_SOURCE.replace("  implicit none", "  ! allow(C003)\n  implicit none", 1))
-        completed = _run(list(lint.check_argv("metdsl_probe_model.f90")), self.dir)
+        completed = _run(list(lint.check_argv("atmofab_probe_model.f90")), self.dir)
         self.assertEqual(completed.returncode, 1)
         self.assertIn("FORT005", completed.stdout)
 
@@ -410,9 +410,9 @@ class ResolutionAgainstTheInstalledBuildTests(unittest.TestCase):
         would leave an invented code silent. Measured: it does not — the code is reported, on top
         of the `FORT005` the directive itself earns.
         """
-        (self.dir / "metdsl_probe_model.f90").write_text(
+        (self.dir / "atmofab_probe_model.f90").write_text(
             "! allow(ZZZ999)\n" + _CLEAN_SOURCE)
-        completed = _run(list(lint.check_argv("metdsl_probe_model.f90")), self.dir)
+        completed = _run(list(lint.check_argv("atmofab_probe_model.f90")), self.dir)
         self.assertEqual(completed.returncode, 1)
         self.assertIn("FORT001", completed.stdout)
 

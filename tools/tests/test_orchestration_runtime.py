@@ -37915,7 +37915,7 @@ class DurableWorkflowHomesTests(unittest.TestCase):
         """
         self._homes_tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._homes_tmp.cleanup)
-        root = Path(self._homes_tmp.name) / "metdsl-homes"
+        root = Path(self._homes_tmp.name) / "atmofab-homes"
         root.mkdir(mode=0o700)
         patcher = mock.patch.dict(
             os.environ, {ort.WORKFLOW_HOMES_ROOT_ENV: str(root)}, clear=False)
@@ -37997,7 +37997,7 @@ class DurableWorkflowHomesTests(unittest.TestCase):
         from tools.orchestration_runtime import _prepare_claude_workflow_home
         with tempfile.TemporaryDirectory() as td:
             root = self._claude_repo(td)
-            legacy = Path(tempfile.mkdtemp(prefix="metdsl-claude-", dir="/tmp"))
+            legacy = Path(tempfile.mkdtemp(prefix="atmofab-claude-", dir="/tmp"))
             self.addCleanup(shutil.rmtree, legacy, True)
             os.chmod(legacy, 0o700)
             meta_path = (root / "workspace" / "orchestrations" / "orch_d"
@@ -38436,13 +38436,14 @@ class DurableWorkflowHomesTests(unittest.TestCase):
     def test_a_reused_home_outside_the_current_layout_gets_no_marker_written(self) -> None:
         """The refresh is scoped to our own layout, and BOTH of its guards are observed.
 
-        A home recorded before issue #64 lives at `/tmp/metdsl-claude-XXXX`, whose parent
-        is `/tmp` — nobody's orchestration directory. Writing a marker there would drop a
+        A home recorded before issue #64 lives in a `mkdtemp` directory directly under
+        `/tmp`, whose parent is `/tmp` — nobody's orchestration directory. The guard
+        compares that parent, not the directory's name. Writing a marker there would drop a
         file claiming an orchestration id into a shared tmpfs, so the refresh runs only
         when the home sits exactly where this code puts one.
 
         TWO cases, because the first version of this test only reached the first guard.
-        `metdsl-claude-old` is not a declared backend name, so
+        `atmofab-claude-old` is not a declared backend name, so
         `_workflow_backend_home_path` raised and returned before the path comparison ever
         ran — a mutant replacing that comparison with `if False:` left the whole suite
         green. The second case is a home whose directory IS named `claude` but sits under
@@ -38455,7 +38456,7 @@ class DurableWorkflowHomesTests(unittest.TestCase):
             root = self._claude_repo(td)
             legacy_parent = Path(tempfile.mkdtemp())
             self.addCleanup(shutil.rmtree, legacy_parent, True)
-            legacy = legacy_parent / "metdsl-claude-old"
+            legacy = legacy_parent / "atmofab-claude-old"
             legacy.mkdir(mode=0o700)
             os.chmod(legacy, 0o700)
             (root / "workspace" / "orchestrations" / "orch_d"
@@ -38616,7 +38617,7 @@ class DurableWorkflowHomesTests(unittest.TestCase):
         import tools.orchestration_runtime as runtime
         from tools.hooks.common import operator_secret_root
         if not getattr(runtime._workflow_homes_root,
-                       "_metdsl_homes_guard_installed", False):
+                       "_atmofab_homes_guard_installed", False):
             # The subject of this test is a pytest fixture. Run under plain `unittest`
             # there is no guard to observe, and asserting anyway would fail for the
             # absence of the harness rather than for a defect.

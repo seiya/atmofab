@@ -98,7 +98,7 @@ def isolated_homes_per_test_suite(tests):
             for test in self:
                 if result.shouldStop:
                     break
-                with tempfile.TemporaryDirectory(prefix="metdsl-test-homes-") as td:
+                with tempfile.TemporaryDirectory(prefix="atmofab-test-homes-") as td:
                     root = Path(td) / "homes"
                     root.mkdir(mode=0o700)
                     previous = os.environ.get(WORKFLOW_HOMES_ROOT_ENV)
@@ -129,7 +129,7 @@ def redirect_isolated_homes_root_for_module(module_name: str) -> None:
     import tempfile
     from tools.orchestration_runtime import WORKFLOW_HOMES_ROOT_ENV
 
-    tmp = tempfile.TemporaryDirectory(prefix="metdsl-test-homes-")
+    tmp = tempfile.TemporaryDirectory(prefix="atmofab-test-homes-")
     root = Path(tmp.name) / "homes"
     root.mkdir(mode=0o700)
     _MODULE_HOMES_REDIRECTS[module_name] = (

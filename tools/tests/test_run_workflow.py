@@ -80,7 +80,7 @@ def setUpModule() -> None:
     """
     global _CLAIM_ROOT_TMPDIR, _SAVED_CLAIM_ROOT
     _SAVED_CLAIM_ROOT = os.environ.get("ATMOFAB_START_CLAIM_ROOT")
-    _CLAIM_ROOT_TMPDIR = tempfile.TemporaryDirectory(prefix="metdsl_claims_")
+    _CLAIM_ROOT_TMPDIR = tempfile.TemporaryDirectory(prefix="atmofab_claims_")
     os.environ["ATMOFAB_START_CLAIM_ROOT"] = _CLAIM_ROOT_TMPDIR.name
 
 

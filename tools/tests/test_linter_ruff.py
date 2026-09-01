@@ -115,7 +115,7 @@ class _Tree:
     """
 
     def __init__(self, stack: unittest.TestCase) -> None:
-        self.root = Path(tempfile.mkdtemp(prefix="metdsl-ruff-"))
+        self.root = Path(tempfile.mkdtemp(prefix="atmofab-ruff-"))
         stack.addCleanup(shutil.rmtree, self.root, True)
         subprocess.run(["git", "init", "-q", str(self.root)], check=True, timeout=60)
         self.src = self.root / "sub" / "src"

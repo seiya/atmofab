@@ -1037,7 +1037,7 @@ class ClaudeHookCliTests(unittest.TestCase):
             hook_lines = [l for l in proc.stdout.splitlines() if l.strip() not in {"nvm", ""}]
             self.assertEqual(hook_lines, [])
 
-    def test_resolve_repo_root_uses_metdsl_hook_repo_root_env(self) -> None:
+    def test_resolve_repo_root_uses_atmofab_hook_repo_root_env(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with patch.dict(os.environ, {"ATMOFAB_HOOK_REPO_ROOT": tmp}):
                 for backend in ("claude", "codex"):
@@ -3491,7 +3491,7 @@ class WriteToolExtensionPolicyTests(unittest.TestCase):
         from tools.hooks.cli import _is_auto_approvable_readonly_bash
         with tempfile.TemporaryDirectory() as repo_td, tempfile.TemporaryDirectory() as homes:
             repo = Path(repo_td)
-            home = Path(homes) / "metdsl-claude-t"
+            home = Path(homes) / "atmofab-claude-t"
             home.mkdir()
             meta = repo / "workspace" / "orchestrations" / "o"
             meta.mkdir(parents=True)
@@ -3532,7 +3532,7 @@ class WriteToolExtensionPolicyTests(unittest.TestCase):
         from tools.hooks.common import _is_persisted_tool_result_read
         with tempfile.TemporaryDirectory() as repo_td, tempfile.TemporaryDirectory() as homes:
             repo = Path(repo_td)
-            home = Path(homes) / "metdsl-claude-t"
+            home = Path(homes) / "atmofab-claude-t"
             home.mkdir()
             meta = repo / "workspace" / "orchestrations" / "o"
             meta.mkdir(parents=True)
@@ -3569,7 +3569,7 @@ class WriteToolExtensionPolicyTests(unittest.TestCase):
         from tools.hooks.common import HookEventName, HookInput
         with tempfile.TemporaryDirectory() as repo_td, tempfile.TemporaryDirectory() as homes:
             repo = Path(repo_td)
-            home = Path(homes) / "metdsl-claude-t"
+            home = Path(homes) / "atmofab-claude-t"
             home.mkdir()
             orch = repo / "workspace" / "orchestrations" / "o"
             (orch / "read_manifests").mkdir(parents=True)
