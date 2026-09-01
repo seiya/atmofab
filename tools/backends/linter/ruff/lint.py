@@ -40,11 +40,13 @@ MEASURED, and each fact decided part of the shape below:
   proceeds. A declared set is therefore checked by RESOLVING it (`--show-settings`), never by
   trusting the spelling.
 
-FOUR CHANNELS decide the verdict from somewhere other than the source and this declaration. Each
+FIVE CHANNELS decide the verdict from somewhere other than the source and this declaration. Each
 flag closes exactly one, each was measured with the flag omitted AND with it present, and all
-four behave identically on every supported build. The count is stated because the enumeration is
-the thing that goes wrong: `fortitude`'s first version enumerated the channels it had closed
-rather than the ones the tool has.
+five behave identically on every supported build. The count is stated because the enumeration is
+the thing that goes wrong, and it has now gone wrong twice: `fortitude`'s first version
+enumerated the channels it had closed rather than the ones the tool has, and the first version of
+THIS module said FOUR and omitted the fifth — the built-in exclude list — which is the quietest
+of them all.
 
 * A configuration file DISCOVERED by walking upward — `ruff.toml`, `.ruff.toml` or
   `pyproject.toml` — switches the check off. Measured: `exclude = ["*.py"]` takes a five-finding
@@ -55,7 +57,12 @@ rather than the ones the tool has.
   `per-file-ignores` (five findings to one). The upward walk is why this matters here — the gate's
   `project_dir` is `source/<source_id>/src/` inside the checkout, so a file at the repository root
   would reach it with nothing written near the sources at all.
-* An in-source `# noqa` comment suppresses whatever it names, and the leaf AUTHORS the source.
+* An in-source `# noqa` comment suppresses whatever it names. The leaf authors the source — but
+  only in the world this preset becomes reachable in: measured against
+  `tools/hooks/common.py`'s `_ALLOWED_BYPRODUCT_EXTENSIONS`, a leaf cannot write a `.py` file
+  today at all, so this closure is a future-leaf-side one rather than a reachable `leaf shortcut`.
+  Registering a `python` language backend is what makes it reachable, and it would have to widen
+  that frozenset to do so.
   Measured: `# noqa: F401` on one import takes five findings to four. That is a `leaf shortcut` in
   the plain sense — the shortest route from a failing gate to a reported-done substep runs through
   one comment — and `--ignore-noqa` closes it. This repository takes the same position for every
@@ -66,6 +73,19 @@ rather than the ones the tool has.
   either channel above. `--isolated` does NOT close it; `--no-respect-gitignore` does. The file is
   only honoured inside a git repository, and the gate's `project_dir` is inside the checkout, so
   it is.
+* THE TOOL'S OWN BUILT-IN EXCLUDE LIST removes a directory from the walk, and `--isolated`
+  RESTORES that list rather than emptying it — which is why the first version of this enumeration
+  missed it while believing `--isolated` had closed the configuration question. Measured on all
+  four builds: the five-finding fixture placed at `dist/probe.py` reports
+  `warning: No Python files found under the given path(s)`, `All checks passed!`, exit 0, while
+  the same file one directory up reports its five findings. The list is 25 names, byte-identical
+  across the supported range (`.bzr .direnv .eggs .git .git-rewrite .hg .ipynb_checkpoints
+  .mypy_cache .nox .pants.d .pyenv .pytest_cache .pytype .ruff_cache .svn .tox .venv .vscode
+  __pypackages__ _build buck-out dist node_modules site-packages venv`), so the channel is the
+  exclusion itself and not its drift. `--exclude=` — the empty list — closes it, and makes the
+  file set a function of the walk root alone. The gate's `project_dir` is
+  `source/<source_id>/src/`, which holds generated sources and nothing this list is meant to
+  protect, so emptying it costs nothing here.
 * A STALE CACHE ENTRY answers instead of the checker. Measured on all four builds: the cache key
   carries neither the file size nor a content hash — under `--isolated --select` alone, a file
   cached clean at 6 bytes and then replaced by the 170-byte five-finding fixture with its
@@ -80,6 +100,22 @@ rather than the ones the tool has.
   from open, and because the directory it stops being written into is the leaf's source tree.
   `ruff check --help` documents `--no-cache` as "Disable cache reads" and says nothing about
   `--ignore-noqa` interacting with the cache at all.
+
+WHAT NO FLAG CLOSES, stated because a count of closed channels is not a claim that nothing else
+decides the verdict, and because this enumeration has already been wrong once:
+
+* A WALK READ ERROR degrades to a warning and exit 0. Measured on all four builds: `chmod 000` on
+  a subdirectory holding the five-finding fixture gives
+  `warning: Encountered error: Permission denied (os error 13)`, `All checks passed!`, exit 0 —
+  quieter even than the `.gitignore` channel, since the tool says it could not read something and
+  then reports success anyway. No flag changes it; only a caller that refuses a run reporting zero
+  files could. `fortitude` behaves identically (`0 files scanned, 1 could not be read`, exit 0)
+  and `cppcheck` does not (exit 1, which its `unusable_invocation_reason` classifies as a refusal).
+  `TODO.md` carries it; it is recorded here rather than closed because the gain is measured to be
+  nothing — a leaf that hides a source from the linter has hidden it from the compiler too, and
+  the build control file pins its sources by name.
+* THE EXTENSIONS the walk reads, and what `__init__.py` semantics imply for a package. Unchanged
+  by any flag above.
 
 What this module deliberately does NOT do: decide the verdict, read findings, or know about the
 gate. It states the invocation; `mcp_servers/build_runtime_server.py` runs it and
@@ -155,6 +191,7 @@ CHECK_FLAGS: tuple[str, ...] = (
     "--ignore-noqa",
     "--no-respect-gitignore",
     "--no-cache",
+    "--exclude=",
     "--select", ",".join(RULE_CODES),
 )
 

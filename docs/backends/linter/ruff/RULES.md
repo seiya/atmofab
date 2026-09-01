@@ -35,16 +35,22 @@ the canonical statement of that set for a reader; the machine-readable definitio
   it. Suppressing individual rules with `--ignore` was rejected for the reason the `fortitude`
   backend records: it answers one release and leaves the next default addition to enter
   unreviewed.
-- The invocation closes **four** channels, one per flag. Each is a bullet below, the flags are
+- The invocation closes **five** channels, one per flag. Each is a bullet below, the flags are
   checked against `CHECK_FLAGS` by test, and each was measured with the flag omitted AND with it
-  present on every supported build.
+  present on every supported build. The count has been wrong once: the first version of this
+  section said four and omitted `--exclude=`, on the belief that `--isolated` had settled the
+  configuration question.
   - `--isolated` — closes a configuration file DISCOVERED by walking upward. Measured on 0.14.0,
     0.15.20, 0.16.0 and 0.16.5: a `ruff.toml`, `.ruff.toml` or `pyproject.toml` carrying
     `exclude = ["*.py"]` takes a five-finding tree to `All checks passed`, exit 0, from beside the
     sources and from the repository root two directories above them. Two config keys are NOT part
     of this channel and saying so is part of the enumeration: a CLI `--select` overrides a
     discovered `select` and a discovered `ignore`, so neither changes a verdict. What does are
-    `exclude` (silent, exit 0) and `per-file-ignores` (five findings to one).
+    `exclude` (silent, exit 0) and `per-file-ignores` (five findings to one). **Since `--exclude=`
+    joined the argv, a CLI `--exclude` also overrides a discovered `exclude`** — so `exclude` is
+    no longer the key that isolates this flag, and the witness for it uses `per-file-ignores`
+    instead. A control written with `exclude` would show the channel closed with `--isolated`
+    REMOVED, and would witness nothing.
   - `--ignore-noqa` — closes an in-source `# noqa` comment, the channel a leaf can actually
     write, since a leaf authors the source. Measured: `# noqa: F401` on one import takes five
     findings to four on every supported build.
@@ -52,6 +58,18 @@ the canonical statement of that set for a reader; the machine-readable definitio
     sources takes a five-finding tree to `All checks passed`, exit 0, with no diagnostic at all,
     so it is quieter than either channel above. `--isolated` does NOT close it. The file is only
     honoured inside a git repository, and the gate's `project_dir` is inside the checkout.
+  - `--exclude=` — empties the tool's own BUILT-IN exclude list, which `--isolated` restores
+    rather than removes. Measured on all four builds: the five-finding fixture at `dist/probe.py`
+    reports `warning: No Python files found under the given path(s)`, `All checks passed!`,
+    exit 0, while the same file one directory up reports its five findings. The list is 25 names
+    and is byte-identical across the supported range (`.bzr`, `.direnv`, `.eggs`, `.git`,
+    `.git-rewrite`, `.hg`, `.ipynb_checkpoints`, `.mypy_cache`, `.nox`, `.pants.d`, `.pyenv`,
+    `.pytest_cache`, `.pytype`, `.ruff_cache`, `.svn`, `.tox`, `.venv`, `.vscode`,
+    `__pypackages__`, `_build`, `buck-out`, `dist`, `node_modules`, `site-packages`, `venv`), so
+    what the flag closes is the exclusion itself rather than its drift. Emptying it makes the file
+    set a function of the walk root alone, and costs nothing here: the gate's `project_dir` is
+    `source/<source_id>/src/`, which holds generated sources and none of the trees that list
+    exists to protect.
   - `--no-cache` — closes a stale cache entry answering instead of the checker. Measured on all
     four builds: the cache key carries neither the file size nor a content hash, so under
     `--isolated --select` alone a file cached clean at 6 bytes and then replaced by the 170-byte
@@ -67,9 +85,18 @@ the canonical statement of that set for a reader; the machine-readable definitio
     touching the cache), and because the directory it keeps out of the leaf's source tree is worth
     keeping out on its own. The test for this channel drops both flags for its negative control,
     and says so.
-- **What the flags do NOT close is the FILE SET.** The walk reads the extensions ruff knows and
-  applies its own built-in excludes. A count of closed channels is not a claim that nothing else
-  decides the verdict.
+- **What no flag closes.** A count of closed channels is not a claim that nothing else decides the
+  verdict, and this enumeration has already been wrong once.
+  - **A walk READ ERROR degrades to a warning and exit 0.** Measured on all four builds:
+    `chmod 000` on a subdirectory holding the five-finding fixture gives
+    `warning: Encountered error: Permission denied (os error 13)`, `All checks passed!`, exit 0 —
+    quieter than any channel above, because the tool says it could not read something and then
+    reports success. No flag changes it; only a caller refusing a run that reports zero files
+    could. `fortitude` behaves identically and `cppcheck` does not (exit 1, classified as a
+    refusal). It is recorded rather than closed because the gain is measured to be nothing: a leaf
+    that hides a source from the linter has hidden it from the compiler too, and the build control
+    file pins its sources by name. `TODO.md` carries it.
+  - **The extensions the walk reads**, and what `__init__.py` semantics imply for a package.
 - `--select ALL` is not used. It is not a spelling of any set anyone reviewed.
 
 ## Declared set

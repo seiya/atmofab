@@ -24,6 +24,27 @@ the linter PRESET of the same name is a different subject entirely.
 
 ## TODO list
 
+- **A walk READ ERROR is exit 0 in the `Generate.gate` lint step, for the linter that is actually
+  reachable** (2026-09-01, low — reproduced, pre-existing; found by the issue #120 review loop,
+  security axis). Measured on this host: `chmod 000` on a subdirectory of `project_dir` gives
+  `fortitude` `warning: Encountered error: Permission denied (os error 13)`, `0 files scanned, 1
+  could not be read`, **exit 0**, and `ruff` the same shape. `cppcheck` is the exception (exit 1,
+  which its `unusable_invocation_reason` classifies as a refusal). So a lint gate can report a
+  pass over a tree it could not read, more quietly than any channel the declared invocations do
+  close — the tool says it failed to read something and then reports success.
+  - **Not fixed here, and the ground is the gain, not the mechanism.** A leaf that hides a source
+    from the linter has hidden it from the compiler too: `_write_makefile` pins
+    `<spec_id>_model` / `_checks` / `_runner.f90` by exact top-level name, so a file the walk
+    skips is a file that never builds, and the leaf is no closer to reporting its `substep` done.
+    Making the whole `src/` unreadable fails `Build` for the same reason.
+  - **What would close it** is a caller-side check rather than a flag: no linter in the supported
+    set has one. The gate would have to refuse a run that reports zero files scanned over a
+    directory the conductor knows is non-empty. That is a change to `_gate_lint_check`, in
+    existing machinery issue #120 does not touch, which is why it is recorded rather than done.
+  - Recorded in `docs/backends/linter/ruff/RULES.md` §Design Policy as a measured non-closure, and
+    pinned as measured behaviour by `test_an_unreadable_directory_is_a_measured_NON_closure` so a
+    build that starts failing closed is noticed rather than assumed.
+
 - **What issue #102 left unexercised and un-gated** (2026-08-26 — disclosure, not a plan).
   - **No orchestration has ever been run against it.** Twelve commits, five review rounds, 5278 tests and three live-CLI measurements, and not one leaf launched: no conductor loop, no `record-launch`, no gate, no `--resume`, no `bwrap` profile rendered. The change alters the entrypoint every leaf's every tool call goes through and makes it fail closed, so the modality nobody ran is the one carrying the remaining risk. What lowers it: `leaf_config/claude/settings.json` is byte-unchanged, `leaf_config/codex/hooks.json` is byte-identical to the file it moved from, the prepared leaf homes are sha256-identical to `origin/main`'s, and `preflight` returns the same verdict for every check on both backends against both revisions. What it does not cover: anything that only appears once a leaf is running under the sandbox.
   - **No preflight executes the leaf hook chain any more.** The roster probe used to seed the leaf's `hooks`, so a hook that exited non-zero failed that gate; it cannot any more, because the same block removes the `orchestration_id` the refusal keys on (`tools/orchestration_runtime.py`, and `docs/RUNBOOK.md` §0-2's roster bullet). `_probe_claude_leaf_config` replaces it structurally only, by string equality on the wrapper command. So an import-time defect in `tools/hooks/cli.py` would switch every policy off for a whole run with no preflight seeing it. The suite catches that class today — `tools/tests/test_hooks_dev_cli.py::DevCliWrapperCommandsExecute` and the two leaf-wrapper tests in `test_hooks_cli.py` execute the committed wrapper strings — but the runtime gate does not. Restoring one means adding a gating preflight check, which is machinery with its own review.

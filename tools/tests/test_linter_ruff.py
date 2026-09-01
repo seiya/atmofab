@@ -130,11 +130,11 @@ class _Tree:
 
 
 class DeclarationTests(unittest.TestCase):
-    def test_the_argv_imposes_the_declared_set_and_closes_the_four_channels(self) -> None:
+    def test_the_argv_imposes_the_declared_set_and_closes_the_five_channels(self) -> None:
         self.assertEqual(
             lint.check_argv("."),
             (lint.EXECUTABLE, "check", "--isolated", "--ignore-noqa", "--no-respect-gitignore",
-             "--no-cache", "--select", ",".join(lint.RULE_CODES), "."),
+             "--no-cache", "--exclude=", "--select", ",".join(lint.RULE_CODES), "."),
         )
 
     def test_the_default_target_is_the_directory_the_gate_points_at(self) -> None:
@@ -263,20 +263,68 @@ class ResolutionAgainstTheInstalledBuildTests(unittest.TestCase):
         completed = tree.run()
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
 
+    #: The discovered-configuration key the negative controls below use, and it is NOT `exclude`.
+    #:
+    #: `--exclude=` is on the argv for a channel of its own (the tool's built-in list), and a CLI
+    #: `--exclude` overrides a discovered `exclude` as well — so a control written with that key
+    #: would show the channel closed with `--isolated` REMOVED, and witness nothing about
+    #: `--isolated`. `per-file-ignores` is not overridden by anything on the argv, so it is what
+    #: isolates the flag under test. Measured: it takes the five findings to one.
+    _DISCOVERED_KEY = 'per-file-ignores = {"*.py" = ["F401", "F821", "F841", "E741"]}\n'
+
     def test_a_configuration_file_beside_the_sources_changes_no_verdict(self) -> None:
         tree = _Tree(self)
-        (tree.src / "ruff.toml").write_text('exclude = ["*.py"]\n')
-        self.assertEqual(tree.run().returncode, 1)
-        # Negative control: without `--isolated` the same file silences the whole tree.
-        self.assertEqual(tree.run(drop=("--isolated",)).returncode, 0)
+        (tree.src / "ruff.toml").write_text("[lint]\n" + self._DISCOVERED_KEY)
+        self.assertEqual(_reported_codes(tree.run()),
+                         ["E741", "F401", "F401", "F821", "F841"])
+        # Negative control: without `--isolated` the same file silences four of the five.
+        self.assertEqual(_reported_codes(tree.run(drop=("--isolated",))), [])
 
     def test_a_configuration_file_at_an_ancestor_changes_no_verdict(self) -> None:
         """The one channel `fortitude` does not have: ruff walks UPWARD for its configuration,
         and the gate's `project_dir` is two directories inside the checkout."""
         tree = _Tree(self)
-        (tree.root / "pyproject.toml").write_text('[tool.ruff]\nexclude = ["*.py"]\n')
+        (tree.root / "pyproject.toml").write_text("[tool.ruff.lint]\n" + self._DISCOVERED_KEY)
+        self.assertEqual(_reported_codes(tree.run()),
+                         ["E741", "F401", "F401", "F821", "F841"])
+        self.assertEqual(_reported_codes(tree.run(drop=("--isolated",))), [])
+
+    def test_the_builtin_exclude_list_changes_no_verdict(self) -> None:
+        """The fifth channel, and the one the first version of this backend missed.
+
+        `--isolated` RESTORES the tool's built-in exclude list rather than emptying it, so a
+        source under any of its 25 names is silently not scanned: exit 0, `All checks passed`, and
+        a `warning:` line that is not a finding. `--exclude=` empties it.
+        """
+        tree = _Tree(self)
+        excluded = tree.src / "dist"
+        excluded.mkdir()
+        (tree.src / "probe.py").rename(excluded / "probe.py")
         self.assertEqual(tree.run().returncode, 1)
-        self.assertEqual(tree.run(drop=("--isolated",)).returncode, 0)
+        control = tree.run(drop=("--exclude=",))
+        self.assertEqual(control.returncode, 0)
+        self.assertEqual(_reported_codes(control), [])
+
+    def test_an_unreadable_directory_is_a_measured_NON_closure(self) -> None:
+        """Recorded because no flag closes it and the documents say so.
+
+        A walk read error degrades to a warning and exit 0 — quieter than any channel the flags
+        do close. This row exists so that a future build which starts failing closed, or a flag
+        that starts closing it, is noticed rather than assumed. It asserts the MEASURED behaviour,
+        not the desirable one, and its docstring is where that distinction is stated.
+        """
+        import os
+        import stat
+
+        tree = _Tree(self)
+        hidden = tree.src / "hidden"
+        hidden.mkdir()
+        (tree.src / "probe.py").rename(hidden / "probe.py")
+        os.chmod(hidden, 0)
+        self.addCleanup(os.chmod, hidden, stat.S_IRWXU)
+        completed = tree.run()
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        self.assertIn("Permission denied", completed.stdout + completed.stderr)
 
     def test_an_in_source_noqa_comment_changes_no_verdict(self) -> None:
         """The channel a leaf can actually write, since a leaf authors the source."""
@@ -396,8 +444,9 @@ class BackendDocumentTests(unittest.TestCase):
         in the section that holds the enumeration.
         """
         policy = self.text.split("## Design Policy", 1)[1].split("## Declared set", 1)[0]
-        opened = set(re.findall(r"^  - `(--[a-z-]+)` — ", policy, re.M))
-        expected = {f for f in lint.CHECK_FLAGS if f.startswith("--") and f != "--select"}
+        opened = set(re.findall(r"^  - `(--[a-z-]+=?)` — ", policy, re.M))
+        expected = {f.split("=", 1)[0] + "=" if f.endswith("=") else f
+                    for f in lint.CHECK_FLAGS if f.startswith("--") and f != "--select"}
         self.assertEqual(opened, expected)
 
     def test_the_document_quotes_the_supported_range(self) -> None:
