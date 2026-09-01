@@ -18,7 +18,7 @@ Fix the verification responsibility of the Tune stage candidates, and select the
 - The performance evaluation uses the statistics of `perf.json`, and ranks by the objective function.
 - Handle the re-measurement result of the same point, and make a noise-robust judgment.
 - Make it a required condition that the adopted candidate is traceable in `trial_meta.json` and `lineage.json`.
-- The workflow mode uses `METDSL_WORKFLOW_EXEC_MODE` as the canonical source, and applies `dev` when unset.
+- The workflow mode uses `ATMOFAB_WORKFLOW_EXEC_MODE` as the canonical source, and applies `dev` when unset.
 - In `dev` mode, it is a `Tune fail` the moment `issue_severity=major|critical` is detected, and treating it as a minor exception is forbidden.
 
 ## Operations Rules

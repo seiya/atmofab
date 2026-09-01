@@ -24,11 +24,11 @@ Investigate the logs of a completed or interrupted workflow execution across the
 | sandbox violations | `workspace/orchestrations/<orch_id>/violations/*.json` |
 | access logs | `workspace/orchestrations/<orch_id>/access_logs/<agent_run_id>.jsonl` |
 | failure analysis | `workspace/orchestrations/<orch_id>/failure_analysis.json` |
-| session conversation log | `<projects-root>/<cwd-slug>/<session_id>.jsonl` (`<cwd-slug>` is the repo's absolute path with `/` replaced by `-`). Since issue #63 a workflow LEAF writes into the orchestration's private home: `<projects-root>` is searched in BOTH places, private home first: `orchestration_meta.json#claude_workflow_home` + `/projects` when that key is present, and `~/.claude/projects` (the operator's own sessions, and any run recorded before that change) always. Not either/or — the Step 2 script below appends the operator root unconditionally, and an orchestration resumed across the issue-#63 migration has its older leaves in one and its newer ones in the other, so a session is resolved per id rather than per directory. Since issue #64 that private home is DURABLE (`~/.met-dsl/homes/<orch_id>/claude`), so a leaf's transcript survives a host restart and this audit still finds it; before that it was under `/tmp` and went with the next reboot. It is kept indefinitely and removed only by an operator running `tools/prune_workflow_homes.py` — see `docs/RUNBOOK.md` §"The operator-private root". |
+| session conversation log | `<projects-root>/<cwd-slug>/<session_id>.jsonl` (`<cwd-slug>` is the repo's absolute path with `/` replaced by `-`). Since issue #63 a workflow LEAF writes into the orchestration's private home: `<projects-root>` is searched in BOTH places, private home first: `orchestration_meta.json#claude_workflow_home` + `/projects` when that key is present, and `~/.claude/projects` (the operator's own sessions, and any run recorded before that change) always. Not either/or — the Step 2 script below appends the operator root unconditionally, and an orchestration resumed across the issue-#63 migration has its older leaves in one and its newer ones in the other, so a session is resolved per id rather than per directory. Since issue #64 that private home is DURABLE (`~/.atmofab/homes/<orch_id>/claude`), so a leaf's transcript survives a host restart and this audit still finds it; before that it was under `/tmp` and went with the next reboot. It is kept indefinitely and removed only by an operator running `tools/prune_workflow_homes.py` — see `docs/RUNBOOK.md` §"The operator-private root". |
 
 > **Operator context only.** Both roots in the row above are protected read roots for Bash
-> — the backend CLI's credential/session home, and since issue #64 `~/.met-dsl` — so the
-> guard rejects these reads fail-closed whenever `METDSL_WORKFLOW_MODE=1` (policies
+> — the backend CLI's credential/session home, and since issue #64 `~/.atmofab` — so the
+> guard rejects these reads fail-closed whenever `ATMOFAB_WORKFLOW_MODE=1` (policies
 > `forbid_backend_credential_direct_read` / `forbid_operator_secret_direct_read`;
 > canonical: `docs/HOOKS.md` §"Layer boundary"). Run this audit from an operator terminal
 > outside a workflow run — inside one, every such read blocks, and that block is correct.
@@ -48,7 +48,7 @@ To investigate a specific orchestration, use the instructed `orchestration_id`.
 
 Read the `payload_summary.session_id` recorded in `native_hook_events.jsonl`, and
 identify the corresponding `.jsonl` file under `<projects-root>/<cwd-slug>/` (resolved as in the table above).
-`<cwd-slug>` is the repo's absolute path with `/` replaced by `-` (e.g. `/home/alice/work/met-dsl` → `-home-alice-work-met-dsl`).
+`<cwd-slug>` is the repo's absolute path with `/` replaced by `-` (e.g. `/home/alice/work/atmofab` → `-home-alice-work-atmofab`).
 
 ```bash
 python3 - <<'EOF'

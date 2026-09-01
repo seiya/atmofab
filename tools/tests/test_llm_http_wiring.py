@@ -32,7 +32,7 @@ from tools.tests.test_pure_leaf_producer import (
 )
 from tools.tests.llm_samples import sample_config_with as _cfg
 
-KEY_ENV = "METDSL_TEST_HTTP_KEY"
+KEY_ENV = "ATMOFAB_TEST_HTTP_KEY"
 
 _MIXED_CONFIG = (
     "defaults:\n  provider: claude_cli\n  model: opus\n"

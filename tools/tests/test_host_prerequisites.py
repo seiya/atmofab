@@ -271,7 +271,7 @@ class ToolVersionArmTests(unittest.TestCase):
         class _Unreadable:
             @staticmethod
             def version_argv():
-                return ("metdsl-no-such-program-nowhere",)
+                return ("atmofab-no-such-program-nowhere",)
 
             @staticmethod
             def unsupported_version_reason(version_text):
@@ -311,7 +311,7 @@ class ToolVersionArmTests(unittest.TestCase):
             self.assertIsNone(hp._tool_version_text(("x", "--version")))
 
     def test_an_unstartable_probe_is_a_refusal_rather_than_a_traceback(self) -> None:
-        self.assertIsNone(hp._tool_version_text(("metdsl-no-such-program-nowhere",)))
+        self.assertIsNone(hp._tool_version_text(("atmofab-no-such-program-nowhere",)))
 
     def test_a_build_that_cannot_impose_the_declared_set_is_refused_at_launch(self) -> None:
         """The second launch question, driven through the real arm.
@@ -355,7 +355,7 @@ class ToolVersionArmTests(unittest.TestCase):
         class _Unrunnable:
             @staticmethod
             def self_check_argv(empty_dir):
-                return ("metdsl-no-such-program-nowhere",)
+                return ("atmofab-no-such-program-nowhere",)
 
             @staticmethod
             def self_check_reason(returncode, stdout, stderr):  # pragma: no cover - not reached

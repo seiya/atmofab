@@ -1190,7 +1190,7 @@ class ValidateWorkspaceRootTests(unittest.TestCase):
             )
 
     def test_freshness_ttl_can_be_overridden_via_env(self) -> None:
-        """Adv-17: METDSL_ORCH_LIVENESS_TTL_SECONDS controls the TTL. A very
+        """Adv-17: ATMOFAB_ORCH_LIVENESS_TTL_SECONDS controls the TTL. A very
         large override keeps even very-old orchestrations live (operator
         opt-out for known long-running batch workloads)."""
         import os as _os
@@ -1215,7 +1215,7 @@ class ValidateWorkspaceRootTests(unittest.TestCase):
                 if p.exists():
                     _os.utime(p, (past, past))
 
-            with patch.dict(_os.environ, {"METDSL_ORCH_LIVENESS_TTL_SECONDS": "31536000"}, clear=False):
+            with patch.dict(_os.environ, {"ATMOFAB_ORCH_LIVENESS_TTL_SECONDS": "31536000"}, clear=False):
                 violations, _ = validate(repo_root=repo_root, workspace_root="workspace")
             self.assertFalse(
                 any(str(tmp_script) in v for v in violations),

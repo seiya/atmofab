@@ -1,6 +1,6 @@
-# Verification procedures (met-dsl)
+# Verification procedures (atmofab)
 
-Run these from the met-dsl checkout root. **Do not write an assertion into a commit or TODO.md
+Run these from the atmofab checkout root. **Do not write an assertion into a commit or TODO.md
 that you have not measured.**
 
 These are an operator's own dev-session commands. `AGENTS.md` §MCP execution rules — run
@@ -257,7 +257,7 @@ the shape that makes this kind of bug last: **the claim that matters can be true
 number in it is false.**
 
 Same reason as above, and one of this loop's own rules besides: the earlier form used `git stash`
-plus `git checkout -- .`, and `metdsl-review-loop` forbids `git checkout -- <path>` by name for
+plus `git checkout -- .`, and `atmofab-review-loop` forbids `git checkout -- <path>` by name for
 discarding uncommitted work along with whatever it was meant to revert.
 
 ## Tidying tangled commit history (no interactive rebase available)
@@ -335,10 +335,10 @@ environment are included.
 
 ```bash
 # standalone works
-env -u METDSL_WORKFLOW_MODE -u METDSL_ORCHESTRATION_ID \
+env -u ATMOFAB_WORKFLOW_MODE -u ATMOFAB_ORCHESTRATION_ID \
   python3 mcp_servers/mcp_call.py --tool run_syntax_check --args-json '{"project_dir": "<abs>"}'
 # under the workflow, dropping orchestration_id is refused
-METDSL_WORKFLOW_MODE=1 python3 mcp_servers/mcp_call.py --tool run_linter --args-json '{"project_dir": "<abs>"}'
+ATMOFAB_WORKFLOW_MODE=1 python3 mcp_servers/mcp_call.py --tool run_linter --args-json '{"project_dir": "<abs>"}'
 ```
 
 ## What an LLM CLI actually does (unbilled capture harness)
@@ -496,8 +496,8 @@ What the branch shipped, and what it is worth:
 
 ## Mutation check
 
-Use `.claude/skills/metdsl-review-loop/scripts/mutation_check.py`. The procedure is owned by
-`metdsl-review-loop`'s "Before you hand it over (round 0)".
+Use `.claude/skills/atmofab-review-loop/scripts/mutation_check.py`. The procedure is owned by
+`atmofab-review-loop`'s "Before you hand it over (round 0)".
 
 ## Measuring what a Claude Code TOOL actually reaches
 
@@ -505,7 +505,7 @@ Use `.claude/skills/metdsl-review-loop/scripts/mutation_check.py`. The procedure
 deleting or narrowing rests on **what a vendor tool can reach** — which paths a search
 tool walks, whether a filter can leave its root, whether a spelling is inert.
 
-    python3 .claude/skills/metdsl-enforcement-change/scripts/measure_claude_tool.py
+    python3 .claude/skills/atmofab-enforcement-change/scripts/measure_claude_tool.py
 
 It drives the real tool through a loopback stand-in for the Messages endpoint (no model
 turn, so nothing is billed), in a fixture where every location a pattern could resolve to

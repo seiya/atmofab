@@ -90,16 +90,16 @@ def _backend_registry() -> Any:
     return registry
 
 
-_WORKFLOW_MODE_ENV_VARS = ("METDSL_WORKFLOW_MODE", "METDSL_ORCHESTRATION_ID")
+_WORKFLOW_MODE_ENV_VARS = ("ATMOFAB_WORKFLOW_MODE", "ATMOFAB_ORCHESTRATION_ID")
 
 
 def _workflow_mode_env_signal() -> str | None:
     """The workflow environment variable that puts this server under a run, if any.
 
-    `tools/run_workflow.py` sets `METDSL_WORKFLOW_MODE=1` in the node environment and
-    the conductor adds `METDSL_ORCHESTRATION_ID` per child. Both reach the leaf's CLI —
+    `tools/run_workflow.py` sets `ATMOFAB_WORKFLOW_MODE=1` in the node environment and
+    the conductor adds `ATMOFAB_ORCHESTRATION_ID` per child. Both reach the leaf's CLI —
     and the MCP server it spawns — because they are on the leaf's DECLARED environment
-    (`METDSL_*` is allowlisted by prefix — the prefix itself lives in
+    (`ATMOFAB_*` is allowlisted by prefix — the prefix itself lives in
     `orchestration_runtime.LEAF_ENV_ALLOWED_PREFIXES`, not in the exact-name
     `LEAF_ENV_ALLOWLIST` beside it, which an earlier version of this sentence cited) and the bwrap profile `--setenv`s each one after `--clearenv`; it is
     no longer a pass-through. Measured under the stripped environment: the server comes
@@ -111,7 +111,7 @@ def _workflow_mode_env_signal() -> str | None:
         value = os.environ.get(name, "").strip()
         if not value:
             continue
-        if name == "METDSL_WORKFLOW_MODE" and value == "0":
+        if name == "ATMOFAB_WORKFLOW_MODE" and value == "0":
             continue
         return name
     return None
@@ -548,8 +548,8 @@ _ORCHESTRATION_GATE_PROPERTIES: dict[str, Any] = {
     "orchestration_id": {
         "type": "string",
         "description": (
-            "Required under the workflow (METDSL_ORCHESTRATION_ID set, or "
-            "METDSL_WORKFLOW_MODE set to a non-empty value other than 0, in the "
+            "Required under the workflow (ATMOFAB_ORCHESTRATION_ID set, or "
+            "ATMOFAB_WORKFLOW_MODE set to a non-empty value other than 0, in the "
             "server's environment): "
             "with agent_run_id and capability_token it enforces preflight, record-launch "
             "artifacts, phase_state child_running, and capability permissions. Omitting "
@@ -1370,7 +1370,7 @@ _SYNTAX_COMPILER_ADAPTERS: dict[str, dict[str, Any]] = {
     },
 }
 
-#: The syntax-only stage `Generate.gate` runs whatever `METDSL_SYNTAX_COMPILERS` lists, and the
+#: The syntax-only stage `Generate.gate` runs whatever `ATMOFAB_SYNTAX_COMPILERS` lists, and the
 #: compiler `run_syntax_check` assumes when a caller names none. The conductor's build
 #: control-file writer takes the SAME value for `FC` when the IR pins no
 #: `impl_defaults.toolchain.compiler`, so the mandatory syntax stage and the default build
@@ -1403,7 +1403,7 @@ def syntax_compiler_executable(compiler: str) -> str:
 # invocation from broken sources by the compiler's own verdict, without enumerating the
 # stds a given compiler version happens to accept (`f2023` exists on GCC>=13 but not
 # before, so any hard-coded set is wrong on some machine).
-SYNTAX_CANARY_SOURCE = "module metdsl_syntax_canary\n  implicit none\nend module metdsl_syntax_canary\n"
+SYNTAX_CANARY_SOURCE = "module atmofab_syntax_canary\n  implicit none\nend module atmofab_syntax_canary\n"
 
 # `module <name>` definitions (excluding submodule-procedure headers) and `use <name>`
 # references, scanned to order the staged sources so each module is compiled before its

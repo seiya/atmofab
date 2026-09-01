@@ -1,5 +1,5 @@
 ---
-name: metdsl-review-loop
+name: atmofab-review-loop
 description: Use when implementation in this repository reaches a pause and review begins, when running subagent or Codex review rounds, when fixing findings and moving to the next round, and when judging whether the loop has converged. Required reading for 「レビューして」「レビュー回して」「指摘を直して」「codex review」「この PR merge していい？」「まだ見るべきところある？」 and immediately after finishing the implementation of an audit finding or an issue. The subject is **review of changes you made**; do not use it for reading existing spec, docs, or implementation to judge whether they are sound (review without a change).
 ---
 
@@ -7,7 +7,7 @@ description: Use when implementation in this repository reaches a pause and revi
 
 What this skill holds is **how to run a review**: round structure, what to tell reviewers,
 convergence criteria, mutation checking. If the change touches enforcement machinery (a gate,
-validator, hook, or capability), **start `metdsl-enforcement-change` as well** — it owns the
+validator, hook, or capability), **start `atmofab-enforcement-change` as well** — it owns the
 domain-specific traps (dual-read pairs, failure attribution, verification commands) and they
 are not duplicated here.
 
@@ -66,7 +66,7 @@ Episodes for all of the above: `references/round-conduct.md`.
 
 ```bash
 # right after a fix commit (the default)
-python3 .claude/skills/metdsl-review-loop/scripts/mutation_check.py \
+python3 .claude/skills/atmofab-review-loop/scripts/mutation_check.py \
   --range HEAD~1..HEAD --paths <sources you touched> \
   --test-cmd "python3 -m pytest tools/tests/<relevant file> -q -p no:randomly -x"
 # to look at the whole branch at once (three-dot, like the review target: it excludes the
@@ -109,7 +109,7 @@ when a rule does not obviously apply:
   script caught it and exited 2, which is the behaviour to keep) — and a suite that ALREADY has a
   failure unrelated to the change,
   where `-x` stops every mutant at that same failure so every mutant reads as `killed` — a false
-  green over the whole run, not a per-hunk slip. met-dsl's standing instance is the two
+  green over the whole run, not a per-hunk slip. atmofab's standing instance is the two
   path-depth-coupled `ForbidBackendCredentialReadTests` cases, which fail in a worktree under
   `/tmp` and pass in the checkout; one PR #98 reviewer reported 12 of 12 mutants killed that way
   before re-running. **Deselect the known failures in `--test-cmd`, or drop `-x`**
@@ -221,7 +221,7 @@ when a rule does not obviously apply:
    - **A count with no unit is not reproducible** — "14 hunks" came back as 19 and 16 because the
      figure depends on the diff CONTEXT WIDTH. Name the width, the command, and the exclusions
    - **Name WHERE a suite figure was measured.** A number can be right and still be a defect if it
-     does not say which checkout produced it: met-dsl's suite is one lower in a `/tmp` worktree
+     does not say which checkout produced it: atmofab's suite is one lower in a `/tmp` worktree
      than in the primary checkout, because a declared skip fires there. On PR #104 a reviewer
      correctly reported a commit message as wrong for that reason, and the message was right —
      it simply had not said where
@@ -262,7 +262,7 @@ when a rule does not obviously apply:
    Episodes: `references/measurement-records.md`.
 
 3. **Run the verification set** and record the measurements. The commands are in
-   `.claude/skills/metdsl-enforcement-change/references/verification.md` (suite baseline, ruff
+   `.claude/skills/atmofab-enforcement-change/references/verification.md` (suite baseline, ruff
    diff against origin/main, doc size ceilings; its `mcp_call` end-to-end section is for
    enforcement machinery).
 
@@ -438,7 +438,7 @@ every point in the loop, not just at round 0.
 route the reviewer stated is a claim, not the reproduction** — a route you cannot drive is not a
 route, and a finding whose route was reconstructed by reading is the shape "verify a reviewer's
 POSITIVE claims by asking what it EXECUTED" below is about. Treat
-"the implementation is right but the test is weak" as real. (`metdsl-enforcement-change` judgment
+"the implementation is right but the test is weak" as real. (`atmofab-enforcement-change` judgment
 rules 1 and 1-b own the residual / unreachable half and state what a "record" has to be there;
 the false-positive and out-of-scope classes are this skill's own, below. This line is the round's
 trigger, not a second statement of the rule.)
@@ -593,7 +593,7 @@ cut, and it runs both ways:
 - **Buying the leaf nothing toward done** — the operator's credentials, a read outside the
   checkout, another `orchestration`, anything outliving the run. **Out of scope however real the
   mechanism**, and saying so **costs no reproduction**: name what the leaf would gain, show it is
-  nothing, stop. That permission is narrow and is not rule 1's — `metdsl-enforcement-change`
+  nothing, stop. That permission is narrow and is not rule 1's — `atmofab-enforcement-change`
   rule 1-e states the two apart
 
 **Both halves have a recorded failure, in opposite directions, so apply both** (episodes:
@@ -841,9 +841,9 @@ that tells you how it closed.
   from round 1
 - **You have rewritten the same string three times** → the problem is not the rule but the prose
   citing it. Switch to the grep sweep
-  (`.claude/skills/metdsl-enforcement-change/references/verification.md`). **Rewriting one
+  (`.claude/skills/atmofab-enforcement-change/references/verification.md`). **Rewriting one
   statement repeatedly is a SWEEP problem, which this row owns; several sites that each state the
-  rule is a COUPLING problem, which `metdsl-enforcement-change` rule 3-a owns and states the
+  rule is a COUPLING problem, which `atmofab-enforcement-change` rule 3-a owns and states the
   threshold for.** Do not restate its number here — that is the drift this pair is about.
   **A sweep does not help when the sentence SUMMARISES a measurement** — "at the top of the band",
   "above every rate observed" — because there is one site and it is wrong on its own terms. PR #100
@@ -915,7 +915,7 @@ that tells you how it closed.
   findings, one of them a fail-open regression against `origin/main`
   (`references/class-descent-log.md`)
 - **A reviewer said "it is environment-dependent"** → do not close it with a mock on the test side.
-  Ask first what happens in production on that environment (`metdsl-enforcement-change` rule 2
+  Ask first what happens in production on that environment (`atmofab-enforcement-change` rule 2
   owns this)
 - **You rebuilt the design and tests carrying the old mechanism's name remain** → test names are
   read as evidence that the mechanism is still protected. **Do not delete them; annotate at the
@@ -940,7 +940,7 @@ that tells you how it closed.
   reproduced `leaf shortcut` and a green suite. **Parse the structured form** (the diagnostic
   line's `path:line:col: CODE` shape, or `--output-format json`) **and add the negative control**:
   the same input WITHOUT the mechanism must lose exactly what the mechanism was supposed to keep.
-  This is `metdsl-enforcement-change`'s surface 5 — caller-controlled data mixed into a
+  This is `atmofab-enforcement-change`'s surface 5 — caller-controlled data mixed into a
   classification channel — asked of a TEST rather than of a gate
 - **You added a prose pin: construct the document SAYING THE OPPOSITE and run it** → a pin that a
   document mentions the rule is not a pin that it states the rule. On PR #116 three leaf-read

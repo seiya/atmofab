@@ -14,7 +14,7 @@ scorer and in the reviewer's instructions.
 ## The harness's own scratch paths reddened the baseline (TODO:414, 2026-08-21)
 
 Two of the script's defaults were themselves inputs to the suite under test, and together they
-made a full-suite `--test-cmd` impossible to run in met-dsl at all.
+made a full-suite `--test-cmd` impossible to run in atmofab at all.
 
 - The per-job temp root defaulted to `/dev/shm`. Two rows of `DevShmWriteBlockTests` ask what the
   write guard says about `/dev/shm`, so putting the job's scratch directory inside that path
@@ -111,7 +111,7 @@ back. It nearly became "this pin works" in the prose — the pin was in fact fal
 against `origin/main`'s wording, which only replacing the whole file revealed.
 
 - Count the occurrences before substituting and **exit non-zero on zero matches**.
-  `.claude/skills/metdsl-review-loop/scripts/mutation_check.py` does this for the case that
+  `.claude/skills/atmofab-review-loop/scripts/mutation_check.py` does this for the case that
   matches it — a hunk it cannot revert is
   reported as SKIPPED and exits 1 (witnessed for the rename cause; no scenario has yet produced a
   bare `git apply -R` refusal, so that half is asserted from the code, not measured) (until 2026-08-19 it was counted as neither a survivor
@@ -183,7 +183,7 @@ was never observed at all. A kill from a setup error is worth exactly as much as
 
 **Rewriting a test can delete a witness.** PR #57's round 3 replaced a test with a better one and
 removed the only test observing a validator-side backstop it had deliberately kept. The mechanism
-lived on, and mutants went green. Sibling of `metdsl-enforcement-change` §4's "Pin at the handler, not the helper".
+lived on, and mutants went green. Sibling of `atmofab-enforcement-change` §4's "Pin at the handler, not the helper".
 
 **Reproducing the wiring is not observing the wiring.** A test meant to pin what `run_substep`
 passes as `pure=` computed `pure` itself and handed it to `_resolve_reuse_resume` directly, so
@@ -233,7 +233,7 @@ The sub-rules below had no section here and were carried in `SKILL.md` in full. 
 
   - **a test can pass because of the SUITE'S OWN ENVIRONMENT.** Distinct from "two paths to the
     outcome": here the fixture is fine and `conftest.py` is what decides the verdict. On PR #86 a
-    session fixture redirected `METDSL_WORKFLOW_HOMES_ROOT` for every test, so a test asserting
+    session fixture redirected `ATMOFAB_WORKFLOW_HOMES_ROOT` for every test, so a test asserting
     which protected root a path falls under was reasoning about a nesting that did not exist while
     it ran — green under pytest, **failing under `env -u <VAR> python3 -m unittest <dotted.path>`**,
     which is the production resolution. Two tests on that branch had it.
@@ -258,11 +258,11 @@ The sub-rules below had no section here and were carried in `SKILL.md` in full. 
 
   - **when a comment JUSTIFIES a rule, mutate the property the justification names.** The rule
     usually has a witness and the property holding it up usually does not. On PR #81 the
-    surviving justification for passing `METDSL_*` by prefix was "the names that redirect a leaf
+    surviving justification for passing `ATMOFAB_*` by prefix was "the names that redirect a leaf
     are outside the prefix BY CONSTRUCTION" — true only because the match is anchored, and
-    `startswith` -> `in` kept all 4972 tests green, admitting `MY_METDSL_API_KEY`. The neighbouring
-    spelling too: the prefix STRING was separately unpinned, and shortening `"METDSL_"` to
-    `"METDS"` stayed green while widening the namespace to one the repo does not own. Read your own
+    `startswith` -> `in` kept all 4972 tests green, admitting `MY_ATMOFAB_API_KEY`. The neighbouring
+    spelling too: the prefix STRING was separately unpinned, and shortening `"ATMOFAB_"` to
+    `"ATMOFA"` stayed green while widening the namespace to one the repo does not own. Read your own
     justification as a list of claims and write one mutant per claim — and note this is the sign's
     other half: rewriting a justification three times (`SKILL.md` §"Signs to catch mid-loop") is
     when its supporting property is

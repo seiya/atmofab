@@ -2,19 +2,19 @@
 
 `_prepare_claude_workflow_home` (and its codex twin) create a private per-orchestration
 home and nothing removes it. Since issue #64 that home is DURABLE — `<homes-root>/<oid>/
-<backend>` under `~/.met-dsl/homes` — because it holds the leaf's only conversation
+<backend>` under `~/.atmofab/homes` — because it holds the leaf's only conversation
 record, and losing it makes a billed run unauditable after the fact. Retention is manual:
 `tools/prune_workflow_homes.py`, never anything automatic.
 
 A TEST RUN must not participate in that. Every fixture that drives `record_launch` for a
 claude-shaped leaf prepares a home, so a suite would otherwise write a few hundred
-directories into the operator's real `~/.met-dsl/homes` and leave them there — mixed in
+directories into the operator's real `~/.atmofab/homes` and leave them there — mixed in
 with the homes of real runs, where the prune tool would find them unverifiable (their
 "owner" checkouts are temporary directories that no longer exist).
 
 TWO LAYERS, and the second is the one that actually holds:
 
-  1. REDIRECT. A function-scoped autouse fixture points `METDSL_WORKFLOW_HOMES_ROOT` at
+  1. REDIRECT. A function-scoped autouse fixture points `ATMOFAB_WORKFLOW_HOMES_ROOT` at
      a per-test `tmp_path`, so homes land where pytest already cleans up. Per-TEST rather
      than per-session on purpose: the home path is deterministic now, so two tests using
      the same fixed orchestration id would collide on the exclusive `os.mkdir` under a
@@ -30,7 +30,7 @@ TWO LAYERS, and the second is the one that actually holds:
      guard wrapped the two PREPARERS and raised on the path they RETURNED, so by the time
      it fired the directory was already on disk and nothing removed it. A reviewer
      running one mutant that made `_workflow_homes_root` ignore the redirect left four
-     real directories in the operator's `~/.met-dsl/homes` — permanent, unverifiable
+     real directories in the operator's `~/.atmofab/homes` — permanent, unverifiable
      residue in the one tree whose retention is manual. Wrapping the resolver means the
      mutant that reaches past the redirect cannot create anything at all.
 
@@ -63,22 +63,26 @@ answers a question about the machine instead of about the code, and the cost is 
 reviewer's round: on PR #81 a reviewer reported 152 failures as a branch regression when
 143 were the branch's and the rest were this.
 
-Measured on `165c26f`, whole suite, one variable at a time unless noted:
+Measured on `165c26f`, whole suite, one variable at a time unless noted. **That commit
+predates the `met-dsl` -> `atmofab` rename (issue #127), so to RE-TAKE any figure below
+spell the names `METDSL_*` there — `ATMOFAB_*` matches nothing at `165c26f` and every
+row comes back 0.** The names are written in the current spelling because the record
+is about which names the tree reads, not about that commit's text:
 
   clean                                              5280 passed / 114s
-  METDSL_ORCHESTRATION_ID + METDSL_CHILD_AGENT_RUN_ID    9 failed   (the pair issue #84 named)
-  every `METDSL_*` name found in the tree, plus
+  ATMOFAB_ORCHESTRATION_ID + ATMOFAB_CHILD_AGENT_RUN_ID    9 failed   (the pair issue #84 named)
+  every `ATMOFAB_*` name found in the tree, plus
     CODEX_HOME and CLAUDE_CONFIG_DIR, together         181 failed / 356s
 
 Attributed on `tools/tests/test_orchestration_runtime.py` alone (1242 tests, 20s clean):
-`METDSL_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT=1` 84 failed **and 482s**, because the tests
-then run the real probes; `CODEX_HOME` 10; `METDSL_HOME` 3; `METDSL_ENFORCE_REPLY_BUDGET`
+`ATMOFAB_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT=1` 84 failed **and 482s**, because the tests
+then run the real probes; `CODEX_HOME` 10; `ATMOFAB_HOME` 3; `ATMOFAB_ENFORCE_REPLY_BUDGET`
 1; every other name measured that way 0. So the pair in the issue was a small part of the
 surface, and the expensive member was not in it.
 
 NO COUNT of those names appears here or anywhere else in the code, deliberately — and the
 sentence that replaced the first count was itself wrong, which is the argument. This
-paragraph said "the 17 `METDSL_*` names the tree reads" for four commits; its replacement
+paragraph said "the 17 `ATMOFAB_*` names the tree reads" for four commits; its replacement
 credited the constant-resolving reader with 21, the figure that reader returns with its
 constant resolution REMOVED (it returns 27). Reviewers counting literals got 23 and 25.
 Every one of those is a right answer to a different question about which files and which
@@ -93,7 +97,7 @@ every test already does.
 
 BY PREFIX, not by list: the names are taken from
 `orchestration_runtime.LEAF_ENV_ALLOWED_PREFIXES` — the same constant that decides which
-host names reach a leaf — so a `METDSL_*` knob added later is neutralized without anyone
+host names reach a leaf — so a `ATMOFAB_*` knob added later is neutralized without anyone
 remembering this file. The two exact names beside it (`CODEX_HOME`, `CLAUDE_CONFIG_DIR`)
 are the backend configuration homes, which carry no such prefix; `CODEX_HOME` is the one
 measured above, and `CLAUDE_CONFIG_DIR` is its twin, included by symmetry rather than by
@@ -124,7 +128,7 @@ from tools.tests import suite_env_guard
 def pytest_addoption(parser) -> None:
     parser.addoption(
         "--keep-operator-env", action="store_true", default=False,
-        help="do not strip the operator's METDSL_* / CODEX_HOME / CLAUDE_CONFIG_DIR "
+        help="do not strip the operator's ATMOFAB_* / CODEX_HOME / CLAUDE_CONFIG_DIR "
              "from the environment (issue #84). For deliberately running the suite "
              "against a knob you have set; expect failures that belong to the knob.")
 
@@ -136,7 +140,7 @@ def pytest_configure(config) -> None:
     runs earlier than any fixture.
 
     The removal is REPORTED. A knob discarded in silence is a check recorded as run and not
-    run — `METDSL_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT=1` is the sharp case, worth 84
+    run — `ATMOFAB_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT=1` is the sharp case, worth 84
     failures and 482s of real probing on `165c26f`, and an operator who sets it now gets
     1242 passed in 49s with nothing probed. `--keep-operator-env` is the way to mean it.
     """
@@ -145,18 +149,18 @@ def pytest_configure(config) -> None:
         return
     stripped = suite_env_guard.strip_operator_env(os.environ)
     if stripped:
-        config._metdsl_stripped_operator_env = stripped
+        config._atmofab_stripped_operator_env = stripped
 
 
 def _operator_env_disclosure(config) -> str | None:
     """What this run did to the operator's environment, or None if it did nothing."""
     if suite_env_guard.DECLINED:
-        return ("met-dsl: --keep-operator-env -- the operator's environment was NOT "
+        return ("atmofab: --keep-operator-env -- the operator's environment was NOT "
                 "stripped for this run (issue #84); failures may belong to a knob you set")
-    stripped = getattr(config, "_metdsl_stripped_operator_env", None)
+    stripped = getattr(config, "_atmofab_stripped_operator_env", None)
     if not stripped:
         return None
-    return ("met-dsl: stripped the operator's environment for this run (issue #84): "
+    return ("atmofab: stripped the operator's environment for this run (issue #84): "
             + ", ".join(stripped)
             + " -- pass --keep-operator-env to run against them instead")
 
@@ -192,7 +196,7 @@ def _redirect_workflow_homes_root(tmp_path, monkeypatch):
     """Point every isolated backend home this test creates into `tmp_path`."""
     from tools.orchestration_runtime import WORKFLOW_HOMES_ROOT_ENV
 
-    root = tmp_path / "metdsl-homes"
+    root = tmp_path / "atmofab-homes"
     root.mkdir(mode=0o700, exist_ok=True)
     monkeypatch.setenv(WORKFLOW_HOMES_ROOT_ENV, str(root))
     yield root
@@ -200,7 +204,7 @@ def _redirect_workflow_homes_root(tmp_path, monkeypatch):
 
 @pytest.fixture(scope="session", autouse=True)
 def _forbid_isolated_homes_in_operator_secret_root():
-    """Fail any test about to resolve the isolated-homes root to the real `~/.met-dsl`."""
+    """Fail any test about to resolve the isolated-homes root to the real `~/.atmofab`."""
     import tools.orchestration_runtime as runtime
     from tools.hooks.common import operator_secret_root
 
@@ -227,7 +231,7 @@ def _forbid_isolated_homes_in_operator_secret_root():
     # Marked so a test can ask whether the guard is installed rather than inferring it
     # from a function name. The witness for this guard must SKIP when run outside pytest,
     # where conftest is not loaded and the thing it tests does not exist.
-    _guarded._metdsl_homes_guard_installed = True
+    _guarded._atmofab_homes_guard_installed = True
     runtime._workflow_homes_root = _guarded
     try:
         yield

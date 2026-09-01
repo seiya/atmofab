@@ -248,8 +248,8 @@ def _append_hook_audit(
     # hooks at all. What arrives at `_global` now is one thing: a hook that could not name
     # its orchestration, which `main()` refuses — the single anomaly on this path, and the
     # one worth a trace. Suppressing it by workflow mode left a codex leaf's refusal
-    # silently unrecorded, because a leaf that lost `METDSL_ORCHESTRATION_ID` has usually
-    # lost `METDSL_WORKFLOW_MODE` from the same environment.
+    # silently unrecorded, because a leaf that lost `ATMOFAB_ORCHESTRATION_ID` has usually
+    # lost `ATMOFAB_WORKFLOW_MODE` from the same environment.
     # THE SAME RESOLVER AS THE POLICY, not merely the same order. Spelling the sources a
     # second time here is what let the two drift twice; now there is one list and the
     # callers differ only in what "no source" means. With no root known there is no tree
@@ -315,7 +315,7 @@ def _repo_root_from_sources(payload: dict[str, Any]) -> Path | None:
     says why: the policy falls back to the cwd because it must still decide, the audit
     writes nothing because there is no tree to write into.
     """
-    env_repo_root = os.environ.get("METDSL_HOOK_REPO_ROOT", "").strip()
+    env_repo_root = os.environ.get("ATMOFAB_HOOK_REPO_ROOT", "").strip()
     if env_repo_root:
         return Path(env_repo_root).resolve()
     for candidate in (payload.get("repo_root"), _inner_payload(payload).get("repo_root")):
@@ -339,7 +339,7 @@ def _extract_orchestration_id(payload: dict[str, Any]) -> str | None:
         inner_id = inner.get("orchestration_id")
         if isinstance(inner_id, str) and inner_id.strip():
             return inner_id.strip()
-    env_value = os.environ.get("METDSL_ORCHESTRATION_ID")
+    env_value = os.environ.get("ATMOFAB_ORCHESTRATION_ID")
     if isinstance(env_value, str) and env_value.strip():
         return env_value.strip()
     return None
@@ -1519,7 +1519,7 @@ def _resolve_agent_run_id_for_file_tool(
     # created this child's capability and active marker, and the Codex process
     # passes its inherited child identity unchanged to hooks.  Prefer that
     # launch-scoped binding during this narrow bootstrap interval.
-    child_run_id = os.environ.get("METDSL_CHILD_AGENT_RUN_ID", "").strip()
+    child_run_id = os.environ.get("ATMOFAB_CHILD_AGENT_RUN_ID", "").strip()
     if child_run_id:
         orch_root = repo_root / "workspace" / "orchestrations" / orchestration_id
         cap_path = orch_root / "capabilities" / f"{child_run_id}.json"
@@ -1704,7 +1704,7 @@ def _evaluate_grep_glob_read_policy(
     # escape reopens and nothing here notices — the preflight roster check measures which
     # TOOLS a leaf gets, not what one of them can reach. `TODO.md` carries that, and the
     # measurement is re-runnable:
-    # `.claude/skills/metdsl-enforcement-change/scripts/measure_claude_tool.py`.
+    # `.claude/skills/atmofab-enforcement-change/scripts/measure_claude_tool.py`.
     #
     # `~` is kept in the trigger although it is inert, because `_glob_literal_prefix`
     # already returns the expanded location and the condition costs one character.
@@ -2122,7 +2122,7 @@ def _evaluate_pre_command_file_access_policy(
     tool_name = (decoded.tool_name or "").strip()
     if decoded.event_name != HookEventName.PRE_COMMAND_EXECUTE:
         return None
-    workflow_mode = os.environ.get("METDSL_WORKFLOW_MODE", "0").strip()
+    workflow_mode = os.environ.get("ATMOFAB_WORKFLOW_MODE", "0").strip()
 
     # step 1: apply_patch write guard
     if tool_name == "apply_patch":
@@ -2422,7 +2422,7 @@ def main(argv: list[str] | None = None) -> int:
             orchestration_id = "_global"
         if orchestration_id == "_global":
             # FAIL CLOSED. This entrypoint is the LEAF's, and a leaf always has the id:
-            # `_profile_child_env` puts `METDSL_ORCHESTRATION_ID` into every leaf
+            # `_profile_child_env` puts `ATMOFAB_ORCHESTRATION_ID` into every leaf
             # profile on both of its paths, filling an absence rather than tolerating
             # it. So a
             # hook that reaches here either belongs to no run - which now means it was
@@ -2440,7 +2440,7 @@ def main(argv: list[str] | None = None) -> int:
             # first sentence is therefore for the leaf and says the one thing it can act
             # on: nothing. Without it a leaf meets a refusal it cannot explain and will
             # retry, which is the shape a fail-closed message must not have
-            # (`.claude/skills/metdsl-review-loop`: a refusal is closed only once it is
+            # (`.claude/skills/atmofab-review-loop`: a refusal is closed only once it is
             # an instruction under which a warm retry converges - and here the converging
             # instruction is to stop). The rest is for the operator who will read it in
             # `native_hook_events.jsonl` or in their own terminal.
@@ -2465,7 +2465,7 @@ def main(argv: list[str] | None = None) -> int:
         repo_root = _resolve_repo_root(payload, backend=args.backend)
 
         if args.backend == "codex":
-            require_flag = os.environ.get("METDSL_REQUIRE_CODEX_HOOKS_FEATURE", "1").strip().lower()
+            require_flag = os.environ.get("ATMOFAB_REQUIRE_CODEX_HOOKS_FEATURE", "1").strip().lower()
             if require_flag not in {"0", "false", "no"}:
                 # Read-only: the codex-hooks feature is probed HOST-side by the conductor
                 # (Conductor._ensure_codex_feature_cache) and written to a cache at the

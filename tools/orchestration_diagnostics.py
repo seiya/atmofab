@@ -16,7 +16,7 @@ leaf is launched with its ``agent_run_id`` pinned as the Claude session id
 (``claude --session-id <arid>``), so the dangling child's OWN transcript is
 directly addressable as ``<projects-root>/<slug>/<arid>.jsonl`` — since issue #63 the
 orchestration's private home first, then the operator's ``~/.claude``. That private home
-is DURABLE since issue #64 (``~/.met-dsl/homes/<orchestration_id>/claude``); it is still
+is DURABLE since issue #64 (``~/.atmofab/homes/<orchestration_id>/claude``); it is still
 machine-local, and it is still removable, but by an operator running
 ``tools/prune_workflow_homes.py`` rather than by a ``/tmp`` sweep or a ``~/.claude``
 cleanup. Every "when it is still there" below reads against that, not against a directory
@@ -444,7 +444,7 @@ def _leaf_transcript_path(child_arid: str, repo_root: Path,
 
 def _claude_projects_dir(repo_root: Path, orchestration_id: str | None = None) -> Path:
     # Claude Code derives the project slug from the absolute cwd, with every "/"
-    # replaced by "-" (e.g. /home/seiya/work/met-dsl -> -home-seiya-work-met-dsl).
+    # replaced by "-" (e.g. /home/seiya/work/atmofab -> -home-seiya-work-atmofab).
     # Resolve first so a relative repo_root (e.g. Path(".")) still maps correctly.
     try:
         abs_root = repo_root.resolve()

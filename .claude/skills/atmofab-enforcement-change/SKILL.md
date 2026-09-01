@@ -1,14 +1,14 @@
 ---
-name: metdsl-enforcement-change
+name: atmofab-enforcement-change
 description: Use when changing this repository's enforcement machinery — the MCP capability gate, validators, hooks, capability / write_root derivation, and the input validation a gate performs — and whenever you are about to classify a review finding as 「残余」「到達不能」「対象外」 (residual / unreachable / out of scope). Required reading for fixing a fail-open, adding to an allowlist or denylist, touching the gate functions in `mcp_servers/build_runtime_server.py` / `tools/orchestration_runtime.py`, `tools/hooks/`, or the gates in `validate_pipeline_semantics.py`, for fixing an audit finding, and for triaging a subagent's or Codex's review findings.
 ---
 
-# Changing met-dsl's enforcement machinery
+# Changing atmofab's enforcement machinery
 
 What this skill holds is the **traps specific to the enforcement domain**: dual-read pairs,
 failure attribution, verification commands, and the judgment rules you never drop. **How to
 run a review** — round structure, exclusion lists, when Codex enters, convergence, mutation
-checking — is owned by `metdsl-review-loop`, so start that one too once you reach the review
+checking — is owned by `atmofab-review-loop`, so start that one too once you reach the review
 stage.
 
 Fixing enforcement machinery in this repository carries a high probability that **the fix
@@ -199,7 +199,7 @@ the optional space in a two-word keyword, omitted `::`, statement labels, the 18
 forms) and the boundary note that governs them are in `references/source-text-surface.md`.
 
 When a rule derives its safety from an enumeration, **write a test that kills each element of the
-enumeration by mutation** (round 0 in `metdsl-review-loop`). A missing element shows up in no
+enumeration by mutation** (round 0 in `atmofab-review-loop`). A missing element shows up in no
 other test.
 
 The six surfaces that are none of exec / env / argv / FS / evidence paths and none of the
@@ -213,7 +213,7 @@ recipes are in `references/input-surfaces.md`:
   and each narrowing was defeated by one byte. **Rule: change the channel rather than narrowing
   the sample** — exit code, exception type, a dedicated field, a sidecar; each is written by the
   side that knows and cannot be written by the caller. This is the classification-channel version
-  of `metdsl-review-loop`'s sign "the pin was broken in a different shape every time — move the
+  of `atmofab-review-loop`'s sign "the pin was broken in a different shape every time — move the
   definition to one place". Then **count every site that makes the same
   decision** (there were six, and two further sites scanned neither marker), and at three or more
   change the channel design instead of fixing them individually. Two follow-through traps: **a
@@ -386,8 +386,8 @@ Revert your fix one hunk at a time and confirm the tests **fail**. In PR #51 the
 **42 mutants**, and the tests passing for the wrong reason, were things I learned only when a later
 round pointed them out.
 
-The procedure and the script are **owned by `metdsl-review-loop`**
-(`.claude/skills/metdsl-review-loop/scripts/mutation_check.py`).
+The procedure and the script are **owned by `atmofab-review-loop`**
+(`.claude/skills/atmofab-review-loop/scripts/mutation_check.py`).
 The same thing runs before review, so read its "Before you hand it over (round 0)".
 
 **When the rule rests on what a vendor TOOL can reach, mutation says nothing — measure the
@@ -421,7 +421,7 @@ Signs to look for:
   `references/deterministic-substep-wiring.md`
 - **A new input surface, or a new episode of an existing one** → `references/input-surfaces.md`
 - **The mutation check gave a false positive, or missed something** →
-  `.claude/skills/metdsl-review-loop/scripts/mutation_check.py`
+  `.claude/skills/atmofab-review-loop/scripts/mutation_check.py`
 - **The skill did not fire when it should have, or fired when it should not** → `description`
 - **You broke one of the three judgment rules while following the procedure** → SKILL.md itself.
   Distinguish "the rule was missing" from "the rule was there but its trigger point was

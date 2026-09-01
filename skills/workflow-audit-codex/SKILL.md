@@ -31,7 +31,7 @@ Investigate the logs of a completed or interrupted workflow execution across the
 > `~/.codex`. A workflow leaf has run against a private home since before issue #63, so
 > `~/.codex/sessions` holds an operator's own codex sessions; for a run that used the
 > isolated home, none of the run's are there. Issue #64 made that private home durable at
-> `~/.met-dsl/homes/<orch_id>/codex`, which is why this audit works at all after a host
+> `~/.atmofab/homes/<orch_id>/codex`, which is why this audit works at all after a host
 > restart; before it, a rollout was gone with the next reboot.
 >
 > **The Step 2 script searches `~/.codex/sessions` anyway, and that is a deliberate
@@ -42,8 +42,8 @@ Investigate the logs of a completed or interrupted workflow execution across the
 > apart.
 >
 > **Operator context only.** Both of those paths are protected read roots for Bash — the
-> credential/session home and, since issue #64, `~/.met-dsl` — so the guard rejects these
-> reads fail-closed whenever `METDSL_WORKFLOW_MODE=1` (policies
+> credential/session home and, since issue #64, `~/.atmofab` — so the guard rejects these
+> reads fail-closed whenever `ATMOFAB_WORKFLOW_MODE=1` (policies
 > `forbid_backend_credential_direct_read` / `forbid_operator_secret_direct_read`;
 > canonical: `docs/HOOKS.md` §"Layer boundary"). Run this audit from an operator terminal
 > outside a workflow run — inside one, every such read blocks, and that block is correct.

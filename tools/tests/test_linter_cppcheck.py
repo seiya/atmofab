@@ -7,7 +7,7 @@ Four kinds of check live here, and they are not interchangeable.
 2. **Behaviour against the INSTALLED build** — runs the tool. Every channel row carries a
    NEGATIVE CONTROL, because a row that only asserts "the findings are still there" passes on a
    linter that found them for another reason. They do NOT skip when the linter is absent
-   (`.claude/skills/metdsl-enforcement-change` judgment rule 2).
+   (`.claude/skills/atmofab-enforcement-change` judgment rule 2).
 3. **Prose coupling** — `docs/backends/linter/cppcheck/RULES.md` is compared against the code,
    never the reverse.
 4. **The deferred leaf-facing checklist**, tied to the reachability gate rather than to memory.
@@ -40,7 +40,7 @@ BACKEND_DOC = REPO_ROOT / "docs" / "backends" / "linter" / "cppcheck" / "RULES.m
 
 #: A source the declared severities pass. Not empty on purpose: an empty file passes every
 #: invocation, so it would witness nothing about which one is running.
-_CLEAN_SOURCE = """int metdsl_probe(int n)
+_CLEAN_SOURCE = """int atmofab_probe(int n)
 {
     int total = 0;
     for (int i = 0; i < n; i++) {
@@ -122,7 +122,7 @@ def _reported_checks(completed: subprocess.CompletedProcess) -> set[str]:
 
 class _Tree:
     def __init__(self, stack: unittest.TestCase, source: str | None = None) -> None:
-        self.root = Path(tempfile.mkdtemp(prefix="metdsl-cppcheck-"))
+        self.root = Path(tempfile.mkdtemp(prefix="atmofab-cppcheck-"))
         stack.addCleanup(shutil.rmtree, self.root, True)
         self.src = self.root / "sub" / "src"
         self.src.mkdir(parents=True)
@@ -271,7 +271,7 @@ class UnusableInvocationTests(unittest.TestCase):
         cases = {
             "an empty directory": [*argv[:-1], str(tree.root / "empty")],
             "a path that does not exist": [*argv[:-1], str(tree.root / "nope")],
-            "an unknown flag": [argv[0], "--metdsl-not-a-flag", *argv[1:]],
+            "an unknown flag": [argv[0], "--atmofab-not-a-flag", *argv[1:]],
         }
         (tree.root / "empty").mkdir()
         for label, case in cases.items():
@@ -302,7 +302,7 @@ class UnusableInvocationTests(unittest.TestCase):
         matters: an empty directory also exits 1, so a self-check reading the status alone would
         refuse every host."""
         with tempfile.TemporaryDirectory() as empty:
-            argv = [_linter_path(), "--metdsl-not-a-flag", *lint.CHECK_FLAGS, empty]
+            argv = [_linter_path(), "--atmofab-not-a-flag", *lint.CHECK_FLAGS, empty]
             completed = _run(argv, Path(empty))
         reason = lint.self_check_reason(completed.returncode, completed.stdout, completed.stderr)
         self.assertIsNotNone(reason)

@@ -47,11 +47,11 @@ def seed_codex_hooks(repo_root: Path) -> Path:
 # --------------------------------------------------------------------------------------
 # Isolated-homes redirect for test MODULES, not only for pytest.
 #
-# `tools/tests/conftest.py` points `METDSL_WORKFLOW_HOMES_ROOT` at each test's `tmp_path`
-# and raises if a prepared home lands in the operator's real `~/.met-dsl`. Neither half
+# `tools/tests/conftest.py` points `ATMOFAB_WORKFLOW_HOMES_ROOT` at each test's `tmp_path`
+# and raises if a prepared home lands in the operator's real `~/.atmofab`. Neither half
 # is loaded by plain `unittest`, so any module that prepares a backend home writes into
 # the operator's durable tree when run that way — and this branch's own commit messages
-# prescribe `env -u METDSL_WORKFLOW_HOMES_ROOT python3 -m unittest …` as the way to check
+# prescribe `env -u ATMOFAB_WORKFLOW_HOMES_ROOT python3 -m unittest …` as the way to check
 # the production resolution. Two reviewers had to prune entries out of the real tree
 # afterwards.
 #
@@ -67,7 +67,7 @@ def seed_codex_hooks(repo_root: Path) -> Path:
 # pytest conftest redirects anyway, so a mutant deleting this changes nothing that the
 # suite can see. `test_a_module_run_outside_pytest_writes_nothing_into_the_home` runs a
 # dependent class under plain `unittest` in a subprocess with a fake `$HOME` and asserts
-# that `.met-dsl/homes` never appears there.
+# that `.atmofab/homes` never appears there.
 _MODULE_HOMES_REDIRECTS: dict[str, tuple] = {}
 
 
@@ -98,7 +98,7 @@ def isolated_homes_per_test_suite(tests):
             for test in self:
                 if result.shouldStop:
                     break
-                with tempfile.TemporaryDirectory(prefix="metdsl-test-homes-") as td:
+                with tempfile.TemporaryDirectory(prefix="atmofab-test-homes-") as td:
                     root = Path(td) / "homes"
                     root.mkdir(mode=0o700)
                     previous = os.environ.get(WORKFLOW_HOMES_ROOT_ENV)
@@ -129,7 +129,7 @@ def redirect_isolated_homes_root_for_module(module_name: str) -> None:
     import tempfile
     from tools.orchestration_runtime import WORKFLOW_HOMES_ROOT_ENV
 
-    tmp = tempfile.TemporaryDirectory(prefix="metdsl-test-homes-")
+    tmp = tempfile.TemporaryDirectory(prefix="atmofab-test-homes-")
     root = Path(tmp.name) / "homes"
     root.mkdir(mode=0o700)
     _MODULE_HOMES_REDIRECTS[module_name] = (

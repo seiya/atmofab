@@ -1586,8 +1586,8 @@ def _home_dir() -> Path:
 
 
 def operator_secret_root() -> Path:
-    """`~/.met-dsl/` — where the operator-only dismiss-violation tokens live."""
-    return (_home_dir() / ".met-dsl").resolve()
+    """`~/.atmofab/` — where the operator-only dismiss-violation tokens live."""
+    return (_home_dir() / ".atmofab").resolve()
 
 
 # The environment name that relocates the durable isolated-homes tree. Defined HERE, in
@@ -1595,18 +1595,18 @@ def operator_secret_root() -> Path:
 # imported by `tools/orchestration_runtime.py` — the same arrangement as
 # `backend_credential_home_paths`, and for the same reason: the side that CREATES the
 # homes and the side that FORBIDS reading them must resolve the location identically.
-WORKFLOW_HOMES_ROOT_ENV = "METDSL_WORKFLOW_HOMES_ROOT"
+WORKFLOW_HOMES_ROOT_ENV = "ATMOFAB_WORKFLOW_HOMES_ROOT"
 
 
 def workflow_homes_root() -> Path:
-    """`~/.met-dsl/homes` — the durable root of every isolated backend home.
+    """`~/.atmofab/homes` — the durable root of every isolated backend home.
 
     Under the operator-secret root by default, which is what lets
     `protected_host_read_roots` cover EVERY orchestration's home through one entry rather
     than only the current one it can resolve from metadata.
 
-    `METDSL_WORKFLOW_HOMES_ROOT` relocates it, and that used to silently withdraw the
-    coverage: with the override pointing outside `~/.met-dsl`, a leaf's Bash read of a
+    `ATMOFAB_WORKFLOW_HOMES_ROOT` relocates it, and that used to silently withdraw the
+    coverage: with the override pointing outside `~/.atmofab`, a leaf's Bash read of a
     SIBLING orchestration's transcript was allowed (measured), while
     `docs/HOOKS.md` and this module's own docstrings asserted that closure without
     naming the condition. The root is returned here so the guard protects wherever the
@@ -1653,7 +1653,7 @@ def backend_credential_home_paths(backend_type: str) -> tuple[tuple[Path, ...], 
     if btype == "codex":
         # Mirror preflight's codex-home resolution so the guarded path is the
         # bound one even when CODEX_HOME relocates it.
-        raw = os.environ.get("CODEX_HOME", "").strip() or os.environ.get("METDSL_HOME", "").strip()
+        raw = os.environ.get("CODEX_HOME", "").strip() or os.environ.get("ATMOFAB_HOME", "").strip()
         codex_home = Path(raw).expanduser() if raw else home / ".codex"
         if not codex_home.is_absolute():
             codex_home = codex_home.resolve()
@@ -1678,11 +1678,11 @@ def workflow_private_backend_homes(repo_root: Path | None,
     leaf's own home names ITSELF in the block message rather than the root above it.
     MEASURED, and the second half was wrong the first time it was written here: a read of
     the current orchestration's home is attributed to that home, and a read of a SIBLING
-    orchestration's home is attributed to the HOMES ROOT (`~/.met-dsl/homes`), not to
-    `~/.met-dsl`. The homes root became a protected entry in its own right when the
+    orchestration's home is attributed to the HOMES ROOT (`~/.atmofab/homes`), not to
+    `~/.atmofab`. The homes root became a protected entry in its own right when the
     override was closed, and it is a longer path than the operator-secret root, so it
     wins the sort for everything under it. That is the more accurate label of the two — a
-    sibling home is a backend home, not the dismiss-violation store — and `~/.met-dsl`
+    sibling home is a backend home, not the dismiss-violation store — and `~/.atmofab`
     still names what is directly under it (`operator_tokens/`, `start_claims/`).
 
     Two things a leaf must not read live there, and BOTH arrive by a BIND rather
@@ -1698,7 +1698,7 @@ def workflow_private_backend_homes(repo_root: Path | None,
         the workflow forbids, and it would leave no trace in any artifact.
 
     The orchestration id is taken from the environment the HOST set through the
-    sandbox (`METDSL_ORCHESTRATION_ID`, AUTHORED by `workflow_conductor._child_env`
+    sandbox (`ATMOFAB_ORCHESTRATION_ID`, AUTHORED by `workflow_conductor._child_env`
     and DELIVERED by the bwrap profile's `--setenv` — bwrap now `--clearenv`s, so
     this name reaches the leaf because it was declared, not because it was
     inherited), never from the hook payload: `tools/hooks/cli.py::_extract_orchestration_id` prefers the payload,
@@ -1745,7 +1745,7 @@ def protected_host_read_roots(repo_root: Path | None = None,
 
     Four classes, one rule: the operator-secret root (dismiss-violation tokens), the
     isolated-homes ROOT (every orchestration's homes, wherever
-    `METDSL_WORKFLOW_HOMES_ROOT` puts them), every backend credential home the sandbox
+    `ATMOFAB_WORKFLOW_HOMES_ROOT` puts them), every backend credential home the sandbox
     rw-binds (OAuth credentials + session transcripts), and — when the caller can name the
     orchestration — that orchestration's own homes, which hold the SAME credential by bind
     plus every earlier leaf's transcript. The Read tool reaches none of them — the read
@@ -1760,13 +1760,13 @@ def protected_host_read_roots(repo_root: Path | None = None,
     than being pointed at the operator's secret store.
 
     Until the root was added, the sibling closure held only while the override was unset:
-    with `METDSL_WORKFLOW_HOMES_ROOT` pointing outside `~/.met-dsl`, another run's
+    with `ATMOFAB_WORKFLOW_HOMES_ROOT` pointing outside `~/.atmofab`, another run's
     transcript was readable (measured), while this docstring and `docs/HOOKS.md` asserted
     the closure unconditionally.
 
     The per-orchestration entries are omitted when no orchestration id is supplied. That
     is the pre-issue-#63 answer and is right for callers outside a run; inside a run the
-    conductor always sets `METDSL_ORCHESTRATION_ID`.
+    conductor always sets `ATMOFAB_ORCHESTRATION_ID`.
     """
     roots: list[Path] = [operator_secret_root(), workflow_homes_root()]
     for btype in BACKEND_CREDENTIAL_BACKEND_TYPES:
@@ -2619,13 +2619,13 @@ def _blank_persisted_tool_results(command: str, repo_root: Path,
 def _workflow_orchestration_id() -> str | None:
     """The orchestration id the HOST set through the sandbox, or None.
 
-    `METDSL_ORCHESTRATION_ID` only — never the hook payload's copy, which
+    `ATMOFAB_ORCHESTRATION_ID` only — never the hook payload's copy, which
     `tools/hooks/cli.py::_extract_orchestration_id` prefers and a caller can
     influence. Everything reading this uses it to decide WHICH private home's paths
     get special treatment, so a caller-named orchestration would either unguard its
     own home or exempt someone else's.
     """
-    raw = os.environ.get("METDSL_ORCHESTRATION_ID")
+    raw = os.environ.get("ATMOFAB_ORCHESTRATION_ID")
     return raw.strip() if isinstance(raw, str) and raw.strip() else None
 
 
@@ -2937,7 +2937,7 @@ def _protected_component_in(
     """The root whose own final path component `text` spells literally, if any.
 
     `~/.claude.json` and `~/.codex` are distinctive names — `.claude.json`,
-    `.codex`, `.met-dsl` — and a token that carries one as a whole path
+    `.codex`, `.atmofab` — and a token that carries one as a whole path
     component is naming that root, whatever the rest of it expands to.
 
     A name that ALSO exists inside the repository is not distinctive and is
@@ -3001,7 +3001,7 @@ def _command_reads_protected_host_path(
 
     The OPERATOR-SECRET root is never dropped. The reason USED TO BE "it is not an rw
     bind at all", and issue #64 made that false: the isolated backend homes are rw
-    binds and they now live under `~/.met-dsl/homes/`. The reason that survives is
+    binds and they now live under `~/.atmofab/homes/`. The reason that survives is
     about what the root holds and where it is. It holds the dismiss-violation tokens,
     which are not bound anywhere and whose whole purpose is that an agent cannot reach
     them; and its location is fixed relative to nothing — a checkout placed inside or
@@ -3036,7 +3036,7 @@ def _command_reads_protected_host_path(
         if marker_re.search(command):
             return root
     # Also test a quote/backslash-collapsed copy of the whole command: shlex
-    # normally removes embedded quotes (`~/.met-d''sl`) and escapes (`~/\.met-dsl`),
+    # normally removes embedded quotes (`~/.atmof''ab`) and escapes (`~/\.atmofab`),
     # but on a shlex parse failure evaluate_common_policy falls back to
     # command.split(), which does NOT — so collapse them here too (mirrors
     # _command_invokes_dismiss_violation).
@@ -3154,7 +3154,7 @@ def _command_reads_protected_host_path(
             named = _protected_component_in(t, roots, repo_root, left_repo)
             if named is not None:
                 return named
-        # Brace expansion (`~/.met-{dsl,x}/...`, `{k..m}`, nested) happens in the
+        # Brace expansion (`~/.atmo{fab,x}/...`, `{k..m}`, nested) happens in the
         # shell before the path exists; expanduser/glob never see it.  Expand to
         # the cartesian product and test every variant precisely.
         brace_variants = _brace_expand(t)
@@ -3179,7 +3179,7 @@ def _command_reads_protected_host_path(
             expanded = os.path.expanduser(os.path.expandvars(variant))
             # Glob metacharacters (`*?[`) are expanded by the shell at runtime;
             # a literal .resolve() would keep them and miss the match.  e.g.
-            # `cat ~/.met-d*/operator_tokens/x.txt` reads the real token.
+            # `cat ~/.atmof*/operator_tokens/x.txt` reads the real token.
             if any(ch in expanded for ch in "*?["):
                 matched = _glob_pattern_reaches_root(expanded, roots, repo_root, anchors)
                 if matched is not None:
@@ -3338,7 +3338,7 @@ def _brace_expand(s: str) -> list[str]:
                         # braces — do NOT substitute literally — so the caller's
                         # `{`-present `_braces_to_glob` fallback still fires.
                         # (Substituting literally would drop the `{`, skip the
-                        # fallback, and let `~/.met-ds{k..m..1}/x` through.)
+                        # fallback, and let `~/.atmofa{a..c..1}/x` through.)
                         for tail in _brace_expand(post):
                             out.append(pre + "{" + inner + "}" + tail)
                             if len(out) > BRACE_EXPAND_MAX_RESULTS:
@@ -3362,7 +3362,7 @@ def _braces_to_glob(s: str) -> str:
 
     Fail-closed catch-all for ANY brace form — comma groups, sequence
     expansion `{k..m}`, and nested braces — without emulating bash exactly.
-    e.g. `~/.met-ds{k..m}/x` -> `~/.met-ds*/x`, `~/.{met-{dsl,x},y}/z` -> `~/.*/z`.
+    e.g. `~/.atmofa{a..c}/x` -> `~/.atmofa*/x`, `~/.{atmo{fab,x},y}/z` -> `~/.*/z`.
     The result is then matched as a glob pattern against the secret root.
     """
     prev = None
@@ -3376,8 +3376,8 @@ def _glob_pattern_targets_root(pattern: str, root: Path) -> bool:
     """True if an absolute glob `pattern` could match a path under `root`.
 
     Component-wise glob match: each literal component of `root` must be matched
-    by the corresponding glob component of `pattern` (e.g. `.met-d*` / `.m?t-dsl`
-    / `.[m]et-dsl` all match the literal `.met-dsl`).  Used to fail-closed on
+    by the corresponding glob component of `pattern` (e.g. `.atmof*` / `.a?mofab`
+    / `.[a]tmofab` all match the literal `.atmofab`).  Used to fail-closed on
     globbed operator-secret reads even when the file does not yet exist.
     """
     pat = Path(pattern)
@@ -3388,7 +3388,7 @@ def _glob_pattern_targets_root(pattern: str, root: Path) -> bool:
     if len(pat_parts) < len(root_parts):
         return False
     # The repo's own matcher, not `fnmatch`: fnmatch does not know POSIX classes,
-    # so `~/.met-d[[:alpha:]]l/…` and `~/.[[:lower:]]laude.json` slipped past a
+    # so `~/.atmofa[[:alpha:]]/…` and `~/.[[:lower:]]laude.json` slipped past a
     # check that caught their `[a-z]` / `[c]` twins.
     return all(
         _glob_matches_whole(pp, rp) for pp, rp in zip(pat_parts, root_parts)
@@ -3408,7 +3408,7 @@ def _glob_targets_secret_bounded(pattern: str, root: Path) -> bool:
     A pattern with multiple wildcard path components (`~/*/*/*/x`) makes
     glob.glob recursively scandir the entire $HOME subtree (multi-second hang).
     Such patterns already lexically target the secret root (a `*` at the
-    .met-dsl depth fnmatches it) and are caught by `_glob_pattern_targets_root`
+    .atmofab depth fnmatches it) and are caught by `_glob_pattern_targets_root`
     BEFORE this is called — so here we only run glob when at most ONE component
     carries a wildcard, keeping the filesystem walk cheap.
     """
@@ -3571,7 +3571,7 @@ def evaluate_common_policy(hook_input: HookInput) -> HookDecision:
     # the DEV entrypoint, which must not import this module (issue #102). Defined once
     # there; wrapped into a decision here.
     violation = operator_safety_violation(
-        command, workflow_exec_mode=os.environ.get("METDSL_WORKFLOW_EXEC_MODE")
+        command, workflow_exec_mode=os.environ.get("ATMOFAB_WORKFLOW_EXEC_MODE")
     )
     if violation is not None:
         reason, audit_detail = violation
@@ -3581,7 +3581,7 @@ def evaluate_common_policy(hook_input: HookInput) -> HookDecision:
             continue_processing=False,
             audit_detail=audit_detail,
         )
-    workflow_mode_val = os.environ.get("METDSL_WORKFLOW_MODE", "0").strip()
+    workflow_mode_val = os.environ.get("ATMOFAB_WORKFLOW_MODE", "0").strip()
     cli_help_audit: dict[str, Any] | None = None
     if workflow_mode_val == "1":
         bash_read_cmds = frozenset(
@@ -3599,7 +3599,7 @@ def evaluate_common_policy(hook_input: HookInput) -> HookDecision:
             if isinstance(repo_root_raw, str) and repo_root_raw.strip()
             else Path.cwd()
         )
-        # Out-of-repo host paths that must never enter agent context: ~/.met-dsl/
+        # Out-of-repo host paths that must never enter agent context: ~/.atmofab/
         # (operator-only dismiss-violation tokens) and the backend credential
         # homes the bwrap profile rw-binds (~/.claude, ~/.claude.json, ~/.codex —
         # OAuth credentials + session transcripts).  NOT gated on the command
@@ -3607,7 +3607,7 @@ def evaluate_common_policy(hook_input: HookInput) -> HookDecision:
         # `x=$(cat ...)`, ..-traversal, etc.) is blocked.  The Read tool already
         # excludes all of them (allowed_read_roots is repo-relative); this closes
         # the Bash path, which is the only other route.
-        met_dsl_root = operator_secret_root()
+        atmofab_root = operator_secret_root()
         # The orchestration id comes from the environment the HOST set through the
         # sandbox, not from the payload: the payload's copy is caller-influenced
         # (`tools/hooks/cli.py::_extract_orchestration_id` prefers it), and here it
@@ -3616,14 +3616,14 @@ def evaluate_common_policy(hook_input: HookInput) -> HookDecision:
         matched_root = _command_reads_protected_host_path(
             command, cmd_tokens, repo_root,
             protected_host_read_roots(
-                repo_root, os.environ.get("METDSL_ORCHESTRATION_ID"))
+                repo_root, os.environ.get("ATMOFAB_ORCHESTRATION_ID"))
         )
         if matched_root is not None:
-            if matched_root == met_dsl_root:
+            if matched_root == atmofab_root:
                 return HookDecision(
                     action=HookDecisionAction.BLOCK,
                     reason=(
-                        "blocked: direct read from ~/.met-dsl/ via Bash is forbidden in "
+                        "blocked: direct read from ~/.atmofab/ via Bash is forbidden in "
                         "workflow mode. Operator tokens live there and must not enter "
                         "agent context; dismiss-violation is an operator-only action."
                     ),
@@ -3864,7 +3864,7 @@ def evaluate_common_policy(hook_input: HookInput) -> HookDecision:
         # Block dismiss-violation in all workflow sessions regardless of how the
         # runtime is invoked (script path, -m module, or wrapper) and regardless
         # of shell reassembly (quote/backslash splitting, variable indirection).
-        # An agent cannot bypass this by using METDSL_WORKFLOW_MODE=0 prefix
+        # An agent cannot bypass this by using ATMOFAB_WORKFLOW_MODE=0 prefix
         # because the hook reads its OWN os.environ (set by run_workflow.py at
         # session start), not the subprocess env override.
         if _command_invokes_dismiss_violation(command, cmd_tokens):
@@ -4722,7 +4722,7 @@ def _claude_project_slug(repo_root: Path) -> str:
 
     Claude Code stores per-project state under ~/.claude/projects/<slug>/, where
     <slug> is the absolute repo path with each '/' replaced by '-'. For example,
-    /home/<user>/work/met-dsl → -home-<user>-work-met-dsl.
+    /home/<user>/work/atmofab → -home-<user>-work-atmofab.
     """
     abs_str = str(repo_root)
     return abs_str.replace("/", "-")

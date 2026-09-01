@@ -3,7 +3,7 @@
 ## Purpose
 
 This plan implements GitHub issue
-[seiya/met-dsl#13](https://github.com/seiya/met-dsl/issues/13) in one pull
+[seiya/atmofab#13](https://github.com/seiya/atmofab/issues/13) in one pull
 request. The implementation keeps workflow contracts and validation
 backend-neutral. Backend-specific behavior is confined to transport, session
 management, hooks, resume, and usage-limit handling.
@@ -55,7 +55,7 @@ the strict tool-free isolation provided by the Claude backend.
   - supplies repository trust explicitly;
   - enables hooks and bypasses only the validated project-hook hash check.
 - Use `CODEX_HOME` as the canonical Codex configuration location. Support
-  `METDSL_HOME` temporarily as a deprecated compatibility alias and reject
+  `ATMOFAB_HOME` temporarily as a deprecated compatibility alias and reject
   conflicting values.
 - Preflight must parse the repository hook configuration and confirm that each
   workflow-relevant command resolves to

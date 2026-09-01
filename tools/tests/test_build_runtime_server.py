@@ -72,7 +72,7 @@ class _StandaloneServerEnvMixin:
     handler without `orchestration_id`.
 
     Those calls are refused when the server runs under the workflow
-    (`METDSL_WORKFLOW_MODE` / `METDSL_ORCHESTRATION_ID` in its environment), so without
+    (`ATMOFAB_WORKFLOW_MODE` / `ATMOFAB_ORCHESTRATION_ID` in its environment), so without
     this the verdict would depend on the shell that started the suite — and commands in
     this repository are routinely prefixed with those variables."""
 
@@ -81,8 +81,8 @@ class _StandaloneServerEnvMixin:
         patcher = mock.patch.dict(os.environ, {}, clear=False)
         patcher.start()
         self.addCleanup(patcher.stop)  # type: ignore[attr-defined]
-        os.environ.pop("METDSL_WORKFLOW_MODE", None)
-        os.environ.pop("METDSL_ORCHESTRATION_ID", None)
+        os.environ.pop("ATMOFAB_WORKFLOW_MODE", None)
+        os.environ.pop("ATMOFAB_ORCHESTRATION_ID", None)
 
 
 class RunSyntaxCheckTests(_StandaloneServerEnvMixin, unittest.TestCase):
@@ -313,7 +313,7 @@ class RunSyntaxCheckGfortranSmokeTests(_StandaloneServerEnvMixin, unittest.TestC
         # knows, which is the signal the attribution keys on.
         d = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, d, ignore_errors=True)
-        (d / "metdsl_syntax_canary.f90").write_text(
+        (d / "atmofab_syntax_canary.f90").write_text(
             self.mod.SYNTAX_CANARY_SOURCE, encoding="utf-8")
         # every standard a node may declare — a canary that failed any one of these would
         # fail_closed every ordinary syntax finding on a node targeting it
@@ -427,7 +427,7 @@ class OrchestrationGateFailClosedTests(unittest.TestCase):
         patcher = mock.patch.dict(os.environ, {}, clear=False)
         patcher.start()
         self.addCleanup(patcher.stop)
-        for name in ("METDSL_WORKFLOW_MODE", "METDSL_ORCHESTRATION_ID"):
+        for name in ("ATMOFAB_WORKFLOW_MODE", "ATMOFAB_ORCHESTRATION_ID"):
             os.environ.pop(name, None)
         self.project_dir = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.project_dir, ignore_errors=True)
@@ -444,27 +444,27 @@ class OrchestrationGateFailClosedTests(unittest.TestCase):
     def test_workflow_mode_refuses_gated_tool_without_orchestration_id(self) -> None:
         for tool in self.GATED_TOOLS:
             with self.subTest(tool=tool):
-                os.environ["METDSL_WORKFLOW_MODE"] = "1"
+                os.environ["ATMOFAB_WORKFLOW_MODE"] = "1"
                 with self.assertRaises(ValueError) as ctx:
                     self._call(tool, self._args(tool))
                 # Both halves are diagnosable: what is missing, and why it is required.
                 self.assertIn("orchestration_id", str(ctx.exception))
-                self.assertIn("METDSL_WORKFLOW_MODE", str(ctx.exception))
+                self.assertIn("ATMOFAB_WORKFLOW_MODE", str(ctx.exception))
 
     def test_orchestration_id_env_alone_also_refuses(self) -> None:
-        # Either signal suffices: the conductor sets METDSL_ORCHESTRATION_ID per child
-        # on top of the run-wide METDSL_WORKFLOW_MODE.
-        os.environ["METDSL_ORCHESTRATION_ID"] = "orch_x"
+        # Either signal suffices: the conductor sets ATMOFAB_ORCHESTRATION_ID per child
+        # on top of the run-wide ATMOFAB_WORKFLOW_MODE.
+        os.environ["ATMOFAB_ORCHESTRATION_ID"] = "orch_x"
         with self.assertRaises(ValueError) as ctx:
             self._call("run_linter", self._args("run_linter"))
-        self.assertIn("METDSL_ORCHESTRATION_ID", str(ctx.exception))
+        self.assertIn("ATMOFAB_ORCHESTRATION_ID", str(ctx.exception))
 
     def test_workflow_mode_off_is_not_workflow_mode(self) -> None:
         # `0` is the explicit non-workflow spelling (`tools/hooks/cli.py` uses it too)
         # and must not be read as merely "set". Every OTHER value counts as workflow
         # mode: the hook layer's allowlist (`{"1","true","yes"}`) is the fail-open
         # direction for a check whose job is to refuse.
-        os.environ["METDSL_WORKFLOW_MODE"] = "0"
+        os.environ["ATMOFAB_WORKFLOW_MODE"] = "0"
         result = self._call("run_syntax_check", self._args("run_syntax_check"))
         self.assertTrue(result["skipped"])
 
@@ -478,18 +478,18 @@ class OrchestrationGateFailClosedTests(unittest.TestCase):
         # which marker files exist in any directory it is pointed at and the resolved
         # path of that directory — a read outside the manifest boundary, with no command
         # log to attribute it. Refused under the workflow, usable standalone.
-        os.environ["METDSL_WORKFLOW_MODE"] = "1"
+        os.environ["ATMOFAB_WORKFLOW_MODE"] = "1"
         with self.assertRaises(ValueError) as ctx:
             self.mod.tool_detect_build_system({"project_dir": str(self.project_dir)})
         self.assertIn("not available under the workflow", str(ctx.exception))
-        os.environ.pop("METDSL_WORKFLOW_MODE")
+        os.environ.pop("ATMOFAB_WORKFLOW_MODE")
         result = self.mod.tool_detect_build_system({"project_dir": str(self.project_dir)})
         self.assertEqual(result["recommended_build_system"], "make")
 
     def test_refusal_precedes_loading_the_orchestration_runtime(self) -> None:
         # The refusal cannot be defeated by pointing the call at a directory with no
         # orchestration workspace: it never reaches a filesystem lookup.
-        os.environ["METDSL_WORKFLOW_MODE"] = "1"
+        os.environ["ATMOFAB_WORKFLOW_MODE"] = "1"
         with mock.patch.object(self.mod, "_load_orchestration_runtime") as loader:
             with self.assertRaises(ValueError):
                 self._call("compile_project", self._args("compile_project"))
@@ -541,7 +541,7 @@ class EnvOverrideDenylistTests(unittest.TestCase):
         patcher = mock.patch.dict(os.environ, {}, clear=False)
         patcher.start()
         self.addCleanup(patcher.stop)
-        for name in ("METDSL_WORKFLOW_MODE", "METDSL_ORCHESTRATION_ID"):
+        for name in ("ATMOFAB_WORKFLOW_MODE", "ATMOFAB_ORCHESTRATION_ID"):
             os.environ.pop(name, None)
         self.project_dir = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.project_dir, ignore_errors=True)
@@ -839,7 +839,7 @@ class OrchestratedEnvAllowlistTests(unittest.TestCase):
         orchestration tree in the scratch directory the agent contract grants it and hold
         a capability it wrote itself; the root has to be the server's checkout."""
         checkout = self.mod._server_checkout_root()
-        with mock.patch.dict(os.environ, {"METDSL_WORKFLOW_MODE": "1"}):
+        with mock.patch.dict(os.environ, {"ATMOFAB_WORKFLOW_MODE": "1"}):
             with self.assertRaises(ValueError) as ctx:
                 self.mod._repo_root_for_call(
                     {"repo_root": str(self.repo_root)}, str(self.repo_root))
@@ -870,7 +870,7 @@ class OrchestratedEnvAllowlistTests(unittest.TestCase):
         (orch / "capabilities/evil.json").write_text(
             json.dumps({"capability_token": "attacker-chosen",
                         "mcp_permissions": ["run_program"]}), encoding="utf-8")
-        with mock.patch.dict(os.environ, {"METDSL_WORKFLOW_MODE": "1"}):
+        with mock.patch.dict(os.environ, {"ATMOFAB_WORKFLOW_MODE": "1"}):
             with self.assertRaises(ValueError) as ctx:
                 self.mod.tool_run_program({
                     "project_dir": str(forged), "repo_root": str(forged),

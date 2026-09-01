@@ -1,6 +1,6 @@
-# met-dsl
+# atmofab
 
-`met-dsl` generates, validates, and certifies weather and climate compute kernels from natural-language specifications.
+`atmofab` generates, validates, and certifies weather and climate compute kernels from natural-language specifications.
 
 `controlled_spec.md` (physics and algorithm definition), `tests.md` (verification profile), and `deps.yaml` (dependency declaration) are authored by humans and are the canonical source. Every phase after them is executed by a deterministic conductor (`tools/workflow_conductor.py`), which fulfils the `orchestration agent` role: it launches each judgment-bearing `substep` as one isolated `substep agent` (an `LLM` leaf) under a fixed input/output contract, runs the deterministic gates and the build itself in its own process, and performs every build, execution, lint, and syntax check through the capability-gated MCP build/runtime server.
 
@@ -146,14 +146,15 @@ python3 -m pytest tools/tests/ -q -m "not slow"
 opt-out because nothing else runs the full set: deselecting it by default would leave the
 leaf deadline / abandon / teardown guards executed by nobody.
 
-**The suite ignores your `METDSL_*`, `CODEX_HOME` and `CLAUDE_CONFIG_DIR` environment
+**The suite ignores your `ATMOFAB_*`, `CODEX_HOME` and `CLAUDE_CONFIG_DIR` environment
 variables** (issue #84). They are per-run knobs that `tools/run_workflow.py` sets in every
 node's environment, so the shell most likely to have them exported is one used for this
 repository's own work — and a suite that inherits them answers a question about the machine
-instead of about the code. Measured at `165c26f`: exporting every such name the tree reads took a clean run of
-5280 passed to 181 failed, none of the failures belonging to any change. Every run says
-which names it removed. To run against a knob you set on purpose, pass
-`--keep-operator-env`; expect failures that belong to the knob. `tools/tests/conftest.py`
+instead of about the code. Measured at `165c26f`: exporting every such name the tree
+reads took a clean run of 5280 passed to 181 failed, none of the failures belonging to any
+change. (That commit predates the rename, so spell the names `METDSL_*` to re-take it —
+`docs/GLOSSARY.md` §13.) Every run says which names it removed. To run against a knob you
+set on purpose, pass `--keep-operator-env`; expect failures that belong to the knob. `tools/tests/conftest.py`
 and `tools/tests/suite_env_guard.py` are canonical.
 
 ## Documentation entry points

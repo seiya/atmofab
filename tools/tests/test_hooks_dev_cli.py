@@ -30,7 +30,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 def _run(backend: str, event: str, command, extra_env=None) -> tuple[int, str, str]:
     payload = {"tool_name": "Bash", "tool_input": {"command": command}}
     out, err = io.StringIO(), io.StringIO()
-    env = {k: v for k, v in os.environ.items() if k != "METDSL_WORKFLOW_EXEC_MODE"}
+    env = {k: v for k, v in os.environ.items() if k != "ATMOFAB_WORKFLOW_EXEC_MODE"}
     env.update(extra_env or {})
     with patch.dict(os.environ, env, clear=True):
         with redirect_stdout(out), redirect_stderr(err):
@@ -55,7 +55,7 @@ class DevCliRefusesTheTwoOperatorSafetyCommands(unittest.TestCase):
     def test_verify_bypass_flag_is_not_refused_outside_dev_mode(self) -> None:
         code, _out, _err = _run(
             "claude", "PreToolUse", "python3 tools/x.py --force-pass",
-            extra_env={"METDSL_WORKFLOW_EXEC_MODE": "workflow"})
+            extra_env={"ATMOFAB_WORKFLOW_EXEC_MODE": "workflow"})
         self.assertEqual(code, 0)
 
 
@@ -343,7 +343,7 @@ class DevCliWrapperCommandsExecute(unittest.TestCase):
                 # assignment survive — the module resolved through the ambient value
                 # instead. The rows then proved nothing about the wrapper.
                 env = {k: v for k, v in os.environ.items()
-                       if not k.startswith("METDSL_") and k != "PYTHONPATH"}
+                       if not k.startswith("ATMOFAB_") and k != "PYTHONPATH"}
                 # FROM A SUBDIRECTORY, like the leaf wrapper's own test: run from the
                 # repository root and `python3 -m` resolves the module through the cwd,
                 # so the wrapper's `PYTHONPATH=` assignment is doing nothing observable
@@ -364,7 +364,7 @@ class DevCliWrapperCommandsExecute(unittest.TestCase):
             (r, e, c) for r, e, c in self._dev_commands() if "PreToolUse" in e)
         payload = {"tool_name": "Bash", "tool_input": {"command": "echo hello"}}
         env = {k: v for k, v in os.environ.items()
-               if not k.startswith("METDSL_") and k != "PYTHONPATH"}
+               if not k.startswith("ATMOFAB_") and k != "PYTHONPATH"}
         proc = subprocess.run(
             command, cwd=str(REPO_ROOT / "tools"), env=env, text=True,
             capture_output=True, input=json.dumps(payload), shell=True)
