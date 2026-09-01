@@ -81,6 +81,20 @@ def _iso_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+# Basename of the per-attempt launch-instant probe `Conductor._launch_instant` writes into the
+# child's bookkeeping dir. Its MTIME is the freshness reference every `min_mtime` comparison uses
+# (issue #113); the file also makes that instant readable after the run, which a float in a local
+# variable was not.
+LAUNCH_INSTANT_PROBE_BASENAME = "launch_instant.probe.json"
+# How long `_launch_instant` waits for the filesystem's clock to leave the tick its probe was
+# stamped in. The tick is 3.99998 ms on this host (xfs; it is the kernel's timer tick, not a
+# property of the filesystem), and the wait costs one of them per LAUNCH — measured over 300
+# calls: median 4.00 ms, max 4.01 ms — i.e. ~60 ms across a node's substeps, against leaves that
+# run for minutes. The bound is here only so a filesystem whose stamps advance more slowly
+# degrades LOUDLY (`launch_instant_tick_wait_timeout`) instead of blocking a run.
+LAUNCH_INSTANT_TICK_WAIT_SECONDS = 2.0
+
+
 def _read_json(path: Path) -> dict[str, Any] | None:
     try:
         return json.loads(path.read_text(encoding="utf-8"))
@@ -6788,10 +6802,11 @@ clean:
                 cold_repair_target = resume_session_id
                 resume_session_id = None
                 continue
-            launched_at = time.time()
+            launched_at = self._launch_instant(child_arid)
             # A SECOND reading, monotonic, purely for measuring how long this attempt
-            # ran: `launched_at` must stay wall-clock because `determine_substep_status`
-            # compares it against file mtimes, and a wall clock is not a duration.
+            # ran: `launched_at` must stay the FILESYSTEM's wall clock because
+            # `determine_substep_status` compares it against file mtimes, and a wall clock is
+            # not a duration.
             launched_monotonic = time.monotonic()
             proc = self.spawn_leaf(
                 rec["launch_prompt_text"], self._child_env(child_arid, entry), entry,
@@ -7029,7 +7044,8 @@ clean:
                 # rule. MONOTONIC, not `time.time()`: a suspended host or an NTP step would
                 # otherwise be billed to the budget as time the model spent working, and this
                 # repository has already been bitten once by reading a wall clock as elapsed
-                # time. `launched_at` stays wall-clock because it is compared against file mtimes.
+                # time. `launched_at` stays the FILESYSTEM's wall clock because it is compared
+                # against file mtimes (`Conductor._launch_instant`).
                 elapsed_s = max(0.0, time.monotonic() - launched_monotonic)
                 spent_before = transient_spent
                 # Accumulated whether the retry is granted or refused: a refused attempt ran too.
@@ -7252,10 +7268,11 @@ clean:
                 cold_repair_target = resume_session_id
                 resume_session_id = None
                 continue
-            launched_at = time.time()
+            launched_at = self._launch_instant(child_arid)
             # A SECOND reading, monotonic, purely for measuring how long this attempt
-            # ran: `launched_at` must stay wall-clock because `determine_substep_status`
-            # compares it against file mtimes, and a wall clock is not a duration.
+            # ran: `launched_at` must stay the FILESYSTEM's wall clock because
+            # `determine_substep_status` compares it against file mtimes, and a wall clock is
+            # not a duration.
             launched_monotonic = time.monotonic()
             proc = self.spawn_leaf(
                 rec["launch_prompt_text"], self._child_env(child_arid, entry), entry,
@@ -7484,7 +7501,8 @@ clean:
                 # rule. MONOTONIC, not `time.time()`: a suspended host or an NTP step would
                 # otherwise be billed to the budget as time the model spent working, and this
                 # repository has already been bitten once by reading a wall clock as elapsed
-                # time. `launched_at` stays wall-clock because it is compared against file mtimes.
+                # time. `launched_at` stays the FILESYSTEM's wall clock because it is compared
+                # against file mtimes (`Conductor._launch_instant`).
                 elapsed_s = max(0.0, time.monotonic() - launched_monotonic)
                 spent_before = transient_spent
                 # Accumulated whether the retry is granted or refused: a refused attempt ran too.
@@ -7823,6 +7841,97 @@ clean:
         ]
         return findings
 
+    def _launch_instant(self, child_arid: str) -> float:
+        """The freshness gate's reference instant, read from the clock that STAMPS FILES.
+
+        Every consumer of this value (`determine_substep_status`'s `min_mtime`,
+        `_stage_meta_authored_since`) compares it against a deliverable's `st_mtime`, so it has
+        to come from the same clock those stamps do. `time.time()` does not: Linux stamps an
+        inode from a coarse clock that only advances on a timer tick, so a file written
+        immediately after a `time.time()` read records an mtime BELOW it. Measured on this host
+        (xfs, 2026-09-01): 1999/2000 writes stamped below the instant read just before them,
+        median 4.7 ms below, and the tick is 3.99998 ms on both `workspace/orchestrations/` and
+        `workspace/pipelines/`. An LLM leaf takes seconds and never lands inside that lag; a
+        DETERMINISTIC in-process body can finish well inside one tick, and it then fails its own
+        freshness gate having written its deliverable correctly. That is issue #113's incident
+        (`orch_20260827T105454Z_99f63b7e`, twice): `pre_judge_meta.json` recording
+        `status: "pass"`, its sole deliverable present, the body's rc 0, and the substep failed —
+        which leaves the freshness clause as the only condition that can have failed, since the
+        three others are the whole of the conjunction. HOW FAR below the instant that mtime was
+        is not recoverable from that run, because the instant was never written down (the probe
+        below is also the fix for that); what the run does record is the deliverable landing
+        44 ms after `record-launch` wrote its own last artifact, i.e. inside the window where
+        one tick decides.
+
+        Writing a probe and reading ITS mtime removes the clock mismatch rather than allowing
+        for it with a margin: both stamps then come from the one coarse clock, so a deliverable
+        written after this call can never stamp below what it returns. The gate loses NOTHING in
+        the other direction either, because the returned value is the tick AFTER the probe's own
+        (see the wait below): every file that existed when this was called stamped at or below
+        that first tick, so a stale artifact — the class the gate exists for — is still strictly
+        below the instant it is judged against.
+
+        The probe also RECORDS the instant, which nothing did before: `min_mtime` was a float in
+        a local variable, so an operator reading a freshness failure after the fact could not
+        re-evaluate the test. It is per-attempt (each attempt overwrites it), matching the value
+        the surviving attempt was judged on.
+
+        Placement: the child's bookkeeping dir, whose whole subtree
+        `_should_ignore_runtime_snapshot_path` exempts from the terminal write-diff — the same
+        standing that lets `_persist_leaf_output` write `dialogs/*.log` inside the child window
+        without the write being attributed to the leaf. It is written and read HERE, before the
+        leaf is spawned, so a leaf that can reach the path cannot move the instant it is judged
+        against.
+
+        Limit: probe and deliverable are assumed to be on one filesystem (both are under
+        `workspace/` in every layout this repository creates, and `df -T` reports one xfs mount
+        for both on this host). A deliverable on a filesystem with COARSER timestamp granularity
+        would truncate below this instant and read as stale; that is not defended here, and
+        `time.time()` was strictly worse at it.
+
+        An `OSError` is deliberately not caught. It means the conductor cannot write its own
+        bookkeeping dir — which `record_launch` has just written to — a host failure, not a leaf
+        one, and both fallbacks are wrong in their own direction: `time.time()` restores the bug
+        this method exists to remove, and `0.0` turns the freshness gate off silently.
+        """
+        probe = (self.repo_root / "workspace" / "orchestrations" / self.orchestration_id
+                 / "agents" / child_arid / LAUNCH_INSTANT_PROBE_BASENAME)
+        probe.parent.mkdir(parents=True, exist_ok=True)
+        # The body is for the operator reading the record; the DECISION is the mtime, which is
+        # the only value that shares a clock with the deliverables. The two can differ by up to
+        # one tick, and the text says so rather than reading as a second source of truth.
+        probe.write_text(
+            json.dumps({"agent_run_id": child_arid,
+                        "launched_at_wall_clock": _iso_now(),
+                        "note": "freshness reference = this file's mtime, not the field above"},
+                       indent=2) + "\n", encoding="utf-8")
+        first = probe.stat().st_mtime
+        # Then wait out the tick `first` was stamped in, and return the NEXT one. This is what
+        # keeps the gate's strictness while removing the lag: everything written before this call
+        # — a dead attempt's half-written artifact, its complete-but-uncertified one — stamped at
+        # or below `first`, so the returned value is strictly ABOVE all of it, and everything
+        # written after this call still stamps at or above the returned value. Without the wait
+        # the gate would lose a tick in the wrong direction: a retry launched inside the dead
+        # attempt's own tick would accept its artifact
+        # (`test_retried_judge_cannot_certify_the_dead_attempts_semantic_review` is that case).
+        # `os.utime`, not a rewrite: the same coarse stamp, two syscalls, and the recorded body
+        # stays the one written above.
+        deadline = time.monotonic() + LAUNCH_INSTANT_TICK_WAIT_SECONDS
+        while True:
+            os.utime(probe, None)
+            instant = probe.stat().st_mtime
+            if instant > first:
+                return instant
+            if time.monotonic() >= deadline:
+                # A filesystem whose stamps advance more slowly than the bound. The strict half
+                # is gone (a write from the previous tick can now share this stamp); the lag half
+                # — the incident — still holds, since a later write cannot stamp below this. Said
+                # out loud rather than degraded silently, because the record is the only place
+                # the difference is visible.
+                self.emit("launch_instant_tick_wait_timeout", agent_run_id=child_arid,
+                          waited_seconds=LAUNCH_INSTANT_TICK_WAIT_SECONDS, instant=instant)
+                return instant
+
     def _stage_meta_path(self, refs: NodeRefs, phase: str) -> Path | None:
         """Absolute path of the phase's verify meta, or None for a phase that has none."""
         from tools.meta_contracts import STAGE_META_FILENAME_BY_STEP
@@ -7867,6 +7976,11 @@ clean:
         (re)written during this attempt (mtime >= min_mtime), so a retry/reopen
         that reuses an artifact directory cannot pass on a prior attempt's stale
         outputs. The downstream verify/judge then certifies the content.
+
+        `min_mtime` must be a stamp of the same clock the deliverables' mtimes come from —
+        `Conductor._launch_instant` is the ONE producer, and passing a `time.time()` reading
+        here instead fails a body that completes within one filesystem tick of its launch
+        (issue #113; the default 0.0 is for callers that are not gating on an attempt).
         """
         output_refs = [p for p in allowed_output_paths if (self.repo_root / p).exists()]
 
@@ -10048,10 +10162,11 @@ clean:
             # (re)written during this child window, not stale files from a prior attempt.
             # Re-taken per attempt: a half-written artifact left by the leaf that died is older
             # than the retry's window, so it cannot fake the retry's pass.
-            launched_at = time.time()
+            launched_at = self._launch_instant(child_arid)
             # A SECOND reading, monotonic, purely for measuring how long this attempt
-            # ran: `launched_at` must stay wall-clock because `determine_substep_status`
-            # compares it against file mtimes, and a wall clock is not a duration.
+            # ran: `launched_at` must stay the FILESYSTEM's wall clock because
+            # `determine_substep_status` compares it against file mtimes, and a wall clock is
+            # not a duration.
             launched_monotonic = time.monotonic()
             if deterministic:
                 # Non-LLM step: run the body in-process and play the child-return ourselves
@@ -12405,10 +12520,12 @@ class SubstepOutcome:
     # re-deriving it there from the already-truncated result_summary would silently lose the tag
     # whenever the marker sat past the truncation point.
     infra_error: tuple[str, str] | None = None
-    # Wall-clock instant this substep's leaf was launched (== the `min_mtime` its
+    # Instant this substep's leaf was launched (== the `min_mtime` its
     # determine_substep_status freshness check used). Carried so a later attribution check can
     # ask "did THIS leaf author that artifact?" — an mtime older than this belongs to an
-    # earlier substep, not to the one that just failed.
+    # earlier substep, not to the one that just failed. Read from the FILESYSTEM's clock
+    # (`Conductor._launch_instant`), not from `time.time()`, so the comparison is between two
+    # stamps of one clock — issue #113.
     launched_at: float = 0.0
     # How many times run_substep launched this substep, counting the surviving/last attempt
     # (1 = no retry). >1 means a transient LLM-infrastructure failure was retried in place; the

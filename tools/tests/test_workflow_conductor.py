@@ -3510,9 +3510,11 @@ class ValidateGateReasonFromMetaTest(unittest.TestCase):
         The exhibit here is deterministic (`os.utime`), not clock-dependent, and the name says
         only what it pins: a below-window mtime on a `pass` meta is what produces this reason,
         whatever put the mtime there. REACHABILITY rests on the clock measurement above, not on
-        this test. The CAUSE of that lag is not this branch's to fix — it is a property of the
-        freshness gate, which every deterministic substep shares — and is reported to issue #113,
-        which is open on the incident's cause.
+        this test. The CAUSE of that lag was issue #113 — a property of the freshness gate that
+        every deterministic substep shared — and is fixed: `Conductor._launch_instant` takes the
+        bound from the filesystem's own clock, so a body can no longer fail on a deliverable it
+        wrote correctly. What this test still pins is unchanged and still reachable: whatever puts
+        a below-window mtime there (a genuinely stale file), THIS is the reason it produces.
         """
         import os
         import tempfile
@@ -3545,6 +3547,104 @@ class ValidateGateReasonFromMetaTest(unittest.TestCase):
                 status, _ = c.determine_substep_status(
                     refs, "validate", substep, [rel], min_mtime=launched_at)
                 self.assertEqual(status, "pass", substep)
+
+    def test_a_deterministic_body_that_writes_inside_one_tick_still_passes(self) -> None:
+        """Issue #113: the launch instant and the deliverable's mtime must share a clock.
+
+        The incident (`orch_20260827T105454Z_99f63b7e`, twice): `Validate.pre_judge` wrote a
+        `status: "pass"` meta, exited 0, and failed anyway — which leaves the freshness clause as
+        the only condition left in `determine_substep_status`'s conjunction. The cause is not in this gate's logic — Linux stamps an inode from a coarse clock
+        that lags `time.time()` by up to one tick (3.99998 ms measured on this host), so a body
+        completing inside that lag stamps its own deliverable BELOW the `time.time()` reading
+        taken just before it. An LLM leaf takes seconds; a deterministic in-process body does
+        not.
+
+        This drives the production pair — `Conductor._launch_instant` for the instant, the real
+        `determine_substep_status` for the verdict — with a write in between as fast as the body
+        writes it, repeated so a single lucky tick boundary cannot make it green. The negative
+        control below keeps the assertion about the clock and not about the method passing on
+        everything: an mtime a full tick BELOW the instant must still fail.
+
+        The loop count is what makes this a REGRESSION test rather than a coin flip: with
+        `time.time()` as the instant, 1999/2000 writes on this host stamped below it, so 200
+        iterations miss the defect with probability ~(1/2000)**200 on a host with this lag, and
+        on a host whose filesystem stamps finely enough for the defect not to exist the test is
+        simply always true — it never fails for a reason other than the one it names.
+        """
+        import tempfile
+        for substep, fname in (("pre_judge", "pre_judge_meta.json"),
+                               ("post_judge", "post_judge_meta.json")):
+            with tempfile.TemporaryDirectory() as td:
+                repo, refs = Path(td), self._refs()
+                c = wc.Conductor(repo_root=repo, orchestration_id="orch_x",
+                                 orchestration_agent_run_id="ORCH",
+                                 llm_config=_cfg("claude"), env={})
+                node_dir = repo / refs.run_node_dir()
+                node_dir.mkdir(parents=True, exist_ok=True)
+                rel = f"{refs.run_node_dir()}/{fname}"
+                for i in range(200):
+                    launched_at = c._launch_instant(f"arid-{i}")
+                    # What the in-process body does, with nothing in between.
+                    c._write_run_node_meta(refs, fname, {"status": "pass",
+                                                         "failure_category": None})
+                    status, _ = c.determine_substep_status(
+                        refs, "validate", substep, [rel], min_mtime=launched_at)
+                    self.assertEqual(status, "pass", (substep, i, launched_at))
+                # Negative control at REAL granularity, and the arm that pins the tick wait: a
+                # file written just BEFORE the instant is taken — the shape a dead attempt
+                # leaves behind — is still refused, with no `os.utime` to make the gap large.
+                # Without the wait this is the same coin flip the assertion above is, pointing
+                # the other way.
+                for i in range(200):
+                    c._write_run_node_meta(refs, fname, {"status": "pass",
+                                                         "failure_category": None})
+                    launched_at = c._launch_instant(f"arid-stale-{i}")
+                    status, _ = c.determine_substep_status(
+                        refs, "validate", substep, [rel], min_mtime=launched_at)
+                    self.assertEqual(status, "fail", (substep, i))
+                # ... and the same file a whole second old, so the arm above is not green on a
+                # method that refuses everything after the loop above wrote it.
+                os.utime(node_dir / fname, (launched_at - 1.0, launched_at - 1.0))
+                status, _ = c.determine_substep_status(
+                    refs, "validate", substep, [rel], min_mtime=launched_at)
+                self.assertEqual(status, "fail", substep)
+
+    def test_the_launch_instant_probe_records_the_instant_it_returns(self) -> None:
+        """The probe file IS the record of the launch instant (issue #113).
+
+        `min_mtime` used to be a float in a local variable, so `docs/RUNBOOK.md` had to tell an
+        operator reading a freshness failure that the test could not be re-evaluated afterwards.
+        Two properties hold that up: the returned value is the probe's own mtime (not a second
+        clock reading), and the probe lands in the child's bookkeeping dir, whose subtree the
+        terminal write-diff exempts — so writing it inside the child's window is not attributed
+        to the leaf.
+        """
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            c = wc.Conductor(repo_root=repo, orchestration_id="orch_x",
+                             orchestration_agent_run_id="ORCH",
+                             llm_config=_cfg("claude"), env={})
+            instant = c._launch_instant("arid-1")
+            probe = (repo / "workspace" / "orchestrations" / "orch_x" / "agents" / "arid-1"
+                     / wc.LAUNCH_INSTANT_PROBE_BASENAME)
+            self.assertEqual(probe.stat().st_mtime, instant)
+            self.assertEqual(json.loads(probe.read_text())["agent_run_id"], "arid-1")
+            # The exemption the placement rests on, asked of the runtime that owns it rather
+            # than asserted in prose here.
+            from tools import orchestration_runtime as ort
+            rel = probe.relative_to(repo).as_posix()
+            self.assertTrue(ort._should_ignore_runtime_snapshot_path(
+                rel, orchestration_id="orch_x", agent_run_id="arid-1"))
+            # ... and a control that must NOT be exempt, or the assertion above would hold for
+            # a predicate that ignores everything.
+            self.assertFalse(ort._should_ignore_runtime_snapshot_path(
+                "workspace/pipelines/p/runs/r/n/pre_judge_meta.json",
+                orchestration_id="orch_x", agent_run_id="arid-1"))
+            # A second attempt re-stamps in place: the record is the SURVIVING attempt's.
+            later = c._launch_instant("arid-1")
+            self.assertGreaterEqual(later, instant)
+            self.assertEqual(probe.stat().st_mtime, later)
 
     def test_classifier_is_a_pure_function_of_the_meta(self) -> None:
         # The defensive classify_failure branches route from the same helper, so the two sites
@@ -5965,7 +6065,17 @@ class LeafTransientRetryTest(unittest.TestCase):
 
     def test_transient_retry_uses_a_fresh_launch_request_and_min_mtime_per_attempt(self) -> None:
         """Each attempt re-takes its launch instant, so a half-written artifact left behind by the
-        leaf that died is OLDER than the retry's window and cannot fake the retry's pass."""
+        leaf that died is OLDER than the retry's window and cannot fake the retry's pass.
+
+        Still `>` after issue #113 moved the instant onto the FILESYSTEM's clock
+        (`Conductor._launch_instant`), and that is not free: that clock advances one tick at a
+        time (3.99998 ms measured on this host), so two launches inside one tick would read one
+        value — the leaf here is a stub that returns instantly, which is exactly that case. What
+        keeps the inequality strict is the tick wait inside `_launch_instant`, and this test is
+        one of the two that hold it (the other is
+        `test_retried_judge_cannot_certify_the_dead_attempts_semantic_review`, which fails on the
+        artifact rather than on the number).
+        """
         seen: list[float] = []
 
         c = self._conductor([self._flake(), wc.ProcResult(0, "done", "")])
@@ -5978,8 +6088,16 @@ class LeafTransientRetryTest(unittest.TestCase):
         with redirect_stdout(io.StringIO()):
             oc = c.run_substep(self._refs(), "compile", "verify")
         self.assertEqual(len(seen), 2)
-        self.assertGreater(seen[1], seen[0])       # the retry's window starts later...
+        self.assertGreater(seen[1], seen[0])       # the retry's window starts strictly later...
         self.assertEqual(oc.launched_at, seen[1])  # ...and the outcome carries the LIVE one
+        # ...and each attempt really did re-take it from its OWN probe. Addressed by arid rather
+        # than globbed: the class shares one repo_root, so the agents/ dir also holds probes
+        # other tests wrote.
+        agents = c.repo_root / "workspace" / "orchestrations" / c.orchestration_id / "agents"
+        for arid, instant in zip(("child-1", "child-2"), seen):
+            probe = agents / arid / wc.LAUNCH_INSTANT_PROBE_BASENAME
+            self.assertEqual(probe.stat().st_mtime, instant, arid)
+            self.assertEqual(json.loads(probe.read_text())["agent_run_id"], arid)
         # every attempt gets its own request.json (its own arid), so nothing is overwritten
         reqs = [cap["--request-json"] for s, cap in c.calls if s == "record-launch"]
         self.assertEqual([r["agent_run_id"] for r in reqs], ["child-1", "child-2"])
