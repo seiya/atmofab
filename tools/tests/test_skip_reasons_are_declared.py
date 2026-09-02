@@ -97,8 +97,6 @@ _DECLARED_ENVIRONMENT_SKIPS = {
         "the sandbox runtime is absent or unprivileged user namespaces are disabled",
     "symlink not supported on this filesystem":
         "the checkout is on a filesystem without symlinks",
-    "needs the checkout under $HOME":
-        "the assertion is about paths below the home directory",
     "root bypasses file permissions":
         "running as root, where an unreadable-file test cannot be set up",
     "cannot make a file unreadable as this user":
