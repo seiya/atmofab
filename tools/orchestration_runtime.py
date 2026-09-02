@@ -71,9 +71,12 @@ try:
         _ALLOWED_BYPRODUCT_EXTENSIONS,
         _ALLOWED_EXTENSIONLESS_BYPRODUCT_NAMES,
         _COMPILER_BYPRODUCT_EXTENSIONS,
+        _resolve_lenient,
         backend_credential_home_paths as _backend_credential_home_paths,
+        operator_tokens_root as _hooks_operator_tokens_root,
         validate_pipeline_semantics_stage,
         workflow_homes_root as _hooks_workflow_homes_root,
+        OPERATOR_TOKENS_ROOT_ENV,
         WORKFLOW_HOMES_ROOT_ENV,
     )
     from tools.meta_contracts import (
@@ -103,9 +106,12 @@ except ModuleNotFoundError:  # pragma: no cover - import bootstrap for direct CL
         _ALLOWED_BYPRODUCT_EXTENSIONS,
         _ALLOWED_EXTENSIONLESS_BYPRODUCT_NAMES,
         _COMPILER_BYPRODUCT_EXTENSIONS,
+        _resolve_lenient,
         backend_credential_home_paths as _backend_credential_home_paths,
+        operator_tokens_root as _hooks_operator_tokens_root,
         validate_pipeline_semantics_stage,
         workflow_homes_root as _hooks_workflow_homes_root,
+        OPERATOR_TOKENS_ROOT_ENV,
         WORKFLOW_HOMES_ROOT_ENV,
     )
     from tools.meta_contracts import (
@@ -10017,7 +10023,9 @@ def dismiss_violation(
         agent_run_id: the agent run ID to dismiss
         dismiss_reason: the dismiss reason (free-form, remains in the audit log)
         paths: the file paths to dismiss (relative to repo root)
-        operator_token: the content of ~/.atmofab/operator_tokens/<oid>.txt
+        operator_token: the content of the token file `init_orchestration` wrote —
+            ~/.atmofab/operator_tokens/<oid>.txt unless ATMOFAB_OPERATOR_TOKENS_ROOT
+            moved the store
     """
     # Operator-only gate via token validation.
     # The token is written to ~/.atmofab/operator_tokens/<oid>.txt at orchestration
@@ -10025,7 +10033,9 @@ def dismiss_violation(
     # Two hook layers keep it out of agent reach: (a) the orchestration agent's
     # allowed_read_roots include workspace/ but NOT ~/.atmofab/, so the Read tool
     # is blocked by read_manifest_read_guard; (b) forbid_operator_secret_direct_read
-    # blocks `cat ~/.atmofab/...` (and $HOME/absolute spellings) via Bash.
+    # blocks `cat ~/.atmofab/...` (and $HOME/absolute spellings) via Bash — and it
+    # blocks the store wherever ATMOFAB_OPERATOR_TOKENS_ROOT put it, because the guard
+    # and this reader ask the SAME resolver (issue #132).
     # Residual: a written `python3 script.py` whose body reads the token file
     # internally is not interceptable by PreToolUse hooks — this is an accepted
     # architectural limit shared by all on-disk secrets; the operator passes the
@@ -10034,11 +10044,25 @@ def dismiss_violation(
     # This replaces the prior mutable-env-var check, which an agent could bypass
     # by clearing os.environ['ATMOFAB_WORKFLOW_MODE'] before calling this function
     # from a tmp Python script.
-    token_path = Path.home() / ".atmofab" / "operator_tokens" / f"{orchestration_id}.txt"
+    token_path = _operator_token_path(orchestration_id)
     if not token_path.exists():
+        # Name the relocator's state, because the likeliest cause is that this shell is
+        # not the shell that started the run: the store is per-environment, and an export
+        # present in one terminal and absent in another sends the writer and the reader to
+        # two different directories. Ordered by reachability — the relocation is the thing
+        # the operator can check in one command; re-running init is the answer only once
+        # that is ruled out.
+        _tokens_override = os.environ.get(OPERATOR_TOKENS_ROOT_ENV, "").strip()
+        _where = (
+            f"{OPERATOR_TOKENS_ROOT_ENV}={_tokens_override!r} in this shell"
+            if _tokens_override
+            else f"{OPERATOR_TOKENS_ROOT_ENV} is unset in this shell (default store)"
+        )
         raise ValueError(
-            f"dismiss-violation: operator_token.txt not found at {token_path}. "
-            "Re-run orchestration init to generate the token."
+            f"dismiss-violation: operator_token.txt not found at {token_path} "
+            f"({_where}). If the run was started from a shell with a different "
+            f"{OPERATOR_TOKENS_ROOT_ENV}, re-run this command with that same value; "
+            "otherwise re-run orchestration init to generate the token."
         )
     expected_token = token_path.read_text(encoding="utf-8").strip()
     # Reject an empty/corrupt stored token: a 0-byte file (e.g. from a crash
@@ -16380,20 +16404,33 @@ def _chmod_directory_no_follow(path: Path, mode: int, label: str) -> None:
         os.close(fd)
 
 
-# `WORKFLOW_HOMES_ROOT_ENV` and the resolver below are IMPORTED from
-# `tools/hooks/common.py`, not defined here. The name relocates the whole durable-homes
-# tree, in the same shape and for the same purpose as `ATMOFAB_START_CLAIM_ROOT` in
-# `tools/run_workflow.py`: a test, or an operator with a reason, needs the tree somewhere
-# other than the real `~/.atmofab`. (`ATMOFAB_HOME` is deliberately NOT reused — it already
-# means "the operator's `~/.codex`" on the codex auth path, and one name with two meanings
-# is how two resolutions silently drift apart.)
+# `WORKFLOW_HOMES_ROOT_ENV`, `OPERATOR_TOKENS_ROOT_ENV` and the two resolvers below are
+# IMPORTED from `tools/hooks/common.py`, not defined here. THREE subtrees of the
+# operator-private root are relocatable, and each name moves exactly one of them:
 #
-# It lives in the hooks module because the side that CREATES these homes and the side that
-# FORBIDS a leaf from reading them have to resolve the same location — the arrangement
-# `backend_credential_home_paths` already uses. When this constant lived here, the Bash
-# guard knew only `~/.atmofab`, so setting the override moved the homes out from under the
-# one protected root that covers every orchestration and a leaf could read a SIBLING run's
-# transcript (measured). Codex found that; the fix is that there is now one resolver.
+#   * `ATMOFAB_WORKFLOW_HOMES_ROOT`  -> `~/.atmofab/homes` (this module writes it)
+#   * `ATMOFAB_OPERATOR_TOKENS_ROOT` -> `~/.atmofab/operator_tokens` (this module too)
+#   * `ATMOFAB_START_CLAIM_ROOT`     -> `~/.atmofab/start_claims` (`tools/run_workflow.py`)
+#
+# All three exist for the same reason: a test, or an operator with a reason, needs the
+# tree somewhere other than the real `~/.atmofab`. (`ATMOFAB_HOME` is deliberately NOT
+# reused — it already means "the operator's `~/.codex`" on the codex auth path, and one
+# name with two meanings is how two resolutions silently drift apart.) The ROOT itself is
+# deliberately not relocatable: it is the Bash read guard's anchor.
+#
+# The first two resolve in the hooks module because the side that CREATES these trees and
+# the side that FORBIDS a leaf from reading them have to resolve the same location — the
+# arrangement `backend_credential_home_paths` already uses. When `WORKFLOW_HOMES_ROOT_ENV`
+# lived here, the Bash guard knew only `~/.atmofab`, so setting the override moved the
+# homes out from under the one protected root that covers every orchestration and a leaf
+# could read a SIBLING run's transcript (measured). Codex found that; the fix is that
+# there is now one resolver. Issue #132 finished the job for the token store, which had
+# been spelled inline by its writer and its reader here.
+#
+# `start_claims` is the one that is NOT a protected read root, and that is a judgment
+# rather than an omission: the files are 0-byte advisory flocks, and a leaf that reads one
+# is no closer to reporting a substep done (`AGENTS.md` §Development premises, rule 1-e).
+# It still resolves through `operator_secret_root()` so the default follows the root.
 
 # The per-backend subdirectory names under `<homes-root>/<orchestration_id>/`. One
 # orchestration may use BOTH backends — `llm.yaml` selects per phase / per substep —
@@ -16421,6 +16458,145 @@ def _workflow_homes_root() -> Path:
     the per-orchestration resolver can name from metadata.
     """
     return _hooks_workflow_homes_root()
+
+
+def _operator_tokens_root() -> Path:
+    """`~/.atmofab/operator_tokens` — where the dismiss-violation tokens live.
+
+    A thin alias over `tools/hooks/common.py::operator_tokens_root`, kept as a name for
+    the same reason `_workflow_homes_root` is: this module's tests and the suite's
+    session guard patch it. The RESOLUTION is not duplicated — the guard lists whatever
+    this returns as a protected read root, so the store that gets written is by
+    construction the store that gets guarded.
+    """
+    return _hooks_operator_tokens_root()
+
+
+def _operator_token_path(orchestration_id: str) -> Path:
+    """The dismiss-violation token file for one orchestration.
+
+    The single place the `<oid>.txt` layout is spelled. `init_orchestration` writes it and
+    `dismiss_violation` reads it; before issue #132 each built the whole path from
+    `Path.home()` for itself, so the writer and the reader were two independent
+    resolutions that happened to agree.
+    """
+    return _operator_tokens_root() / f"{orchestration_id}.txt"
+
+
+def _require_usable_private_root_override(env_name: str, root: Path, subject: str,
+                                          creator: str = "a home",
+                                          repo_root: Path | None = None) -> None:
+    """Refuse an override that names a location this process cannot honour.
+
+    `subject` names the tree in the operator's words ("isolated claude home root", "operator
+    token store") and `creator` names what the writing side is about to make. They are
+    parameters rather than one shared sentence because the homes wording was the only
+    wording when this was extracted, and a message telling an operator their TOKEN STORE
+    failed because of "a home" names the wrong one of three relocatable trees — which is
+    the confusion the RUNBOOK sweep on this branch exists to remove.
+
+    The resolvers in `tools/hooks/common.py` stay TOTAL — they feed the Bash read guard,
+    and a hook that raises while deciding a read is worse than one that guards a path
+    nobody writes to. This is the creation side, which is where failing closed is
+    available, and it is shared by every writer under the operator-private root so the two
+    refusals cannot drift apart.
+
+    Four conditions, in the order they are checked:
+
+      * ABSOLUTE OR NOTHING. A relative override resolves against whoever asks, and the
+        two sides that must agree about the tree do not share a working directory: the
+        writer is the conductor, the Bash read guard is a hook process the CLI spawns.
+        `.absolute()` in the resolver makes the value usable, which is NOT the same as
+        making it one tree — it silently becomes a different absolute path per caller.
+      * NO CONTAINMENT WITH THE CHECKOUT, in EITHER direction. The two halves are
+        refused for different reasons and both are measured.
+
+        INSIDE is a leaf-facing rule and the others are not.
+        The Bash read guard covers the token store wherever it goes, but the READ TOOL is
+        a different layer: `_write_read_access_manifest` grants every agentic leaf
+        `docs/` and `spec/` unconditionally and never consults
+        `protected_host_read_roots`, so a store at `<repo>/spec/tokens` is readable by
+        every leaf — and a leaf that reads the dismiss-violation token can approve the
+        `unauthorized_write_violation` its own `substep` produced and report the substep
+        done. Found by Codex; measured before the refusal existed
+        (`init_orchestration` accepted it and wrote the token there). The same is true of
+        the homes root, whose relocator predates this rule: leaf transcripts under
+        `<repo>/spec/homes/<oid>/<backend>/projects/` would be Read-tool reachable, and
+        reading an earlier leaf's transcript is the past-run state the workflow forbids.
+        Measured for that caller too rather than argued from the first — both are refused.
+
+        CONTAINING the checkout is refused because the run cannot work at all. These
+        roots are exempt from the containment drop (`_command_reads_protected_host_path`
+        keeps them so the guard is not lost), so a root ABOVE the checkout makes every
+        in-repo path a path under a protected root — and the guard matches the command's
+        tokens, not only its read targets. MEASURED through `evaluate_common_policy`:
+        with either root set to the checkout's parent, `cat README.md`, `ls`, `python3
+        tools/x.py` and even `echo hi` all BLOCK. There is no working configuration to
+        preserve, so refusing costs nothing and turns a total, unexplained failure at the
+        first leaf into one refusal naming the variable. `docs/RUNBOOK.md` used to
+        describe this as costing "every recursive in-repo read", which understated it by
+        a wide margin; found by a round-5 reviewer.
+      * THE PARENT MUST EXIST. With an override in play only the root itself is created:
+        the override names a location the caller chose, and silently building a deep tree
+        under a typo'd path is the failure mode that costs most.
+      * A REAL DIRECTORY. An override naming an existing regular file passes every check
+        above (its parent exists), and `mkdir(exist_ok=True)` then raises
+        `FileExistsError` AFTER `workspace/orchestrations/<oid>/` and a `running` meta
+        are on disk — exactly the half-initialized run the POSITION of this call is
+        supposed to prevent. Also found by Codex, and also measured.
+    """
+    raw_override = os.environ.get(env_name, "").strip()
+    if not Path(raw_override).expanduser().is_absolute():
+        raise ValueError(
+            f"{env_name} must be an absolute path (got "
+            f"{raw_override!r}): a relative one resolves against each process's "
+            f"working directory, so the conductor that creates {creator} and the hook "
+            "that forbids reading it would resolve different trees"
+        )
+    if repo_root is not None:
+        repo_resolved = _resolve_lenient(Path(repo_root))
+        root_resolved = _resolve_lenient(root)
+        if root_resolved == repo_resolved or repo_resolved in root_resolved.parents:
+            where = ("IS the repository root" if root_resolved == repo_resolved
+                     else f"is under {repo_resolved}")
+            raise ValueError(
+                f"{subject} must not be inside the repository: {root_resolved} {where} "
+                f"(set by {env_name}). Every agentic leaf's read "
+                "manifest grants docs/ and spec/ unconditionally and the Read tool does "
+                "not consult the Bash guard's protected roots, so anything the workflow "
+                "keeps outside the checkout stops being out of reach the moment it moves "
+                "inside it. Point it at a directory outside the checkout"
+            )
+        if root_resolved in repo_resolved.parents:
+            raise ValueError(
+                f"{subject} must not contain the repository: {repo_resolved} is under "
+                f"{root_resolved} (set by {env_name}). These roots are exempt from the "
+                "containment rule so the Bash guard is not lost when one of them "
+                "overlaps the checkout — which means a root ABOVE the checkout makes "
+                "every in-repo path a protected path, and every Bash command in workflow "
+                "mode fails closed (measured: `cat README.md`, `ls`, even `echo hi`). "
+                "There is no working configuration here to preserve. Point it at a "
+                "directory that neither contains nor sits inside the checkout"
+            )
+    # NOT PINNED for the HOMES caller, and redundant there rather than missing: the very
+    # next thing `_create_workflow_backend_home` does is the ancestors loop, whose
+    # `_require_secure_home_ancestor` refuses a non-directory at the same path. Deleting
+    # the check below therefore changes the homes MESSAGE and not the homes verdict
+    # (round-3 census, measured: `test_orchestration_runtime.py` stays fully green while
+    # the token-side subtests fail). Kept so both callers refuse the same input in the
+    # same place, and recorded so the survivor does not read as a gap.
+    parent = root.parent
+    if not parent.exists():
+        raise ValueError(
+            f"{subject}'s parent does not exist: {parent} "
+            f"(set by {env_name})"
+        )
+    if (root.exists() or root.is_symlink()) and not root.is_dir():
+        raise ValueError(
+            f"{subject} is not a directory: {root} (set by {env_name}). Refused HERE, "
+            "before anything is created: the creation call would otherwise raise after "
+            "the orchestration directory and its running metadata are already on disk"
+        )
 
 
 def _workflow_backend_home_path(orchestration_id: str, backend: str) -> Path:
@@ -16536,27 +16712,13 @@ def _create_workflow_backend_home(repo_root: Path, orchestration_id: str,
     # exist yet (a host that has never run `init_orchestration`).
     ancestors: list[tuple[Path, bool]] = []
     if override_used:
-        # ABSOLUTE OR NOTHING. A relative override resolves against whoever asks, and the
-        # two sides that must agree about this tree do not share a working directory: the
-        # writer is the conductor, the Bash read guard is a hook process the CLI spawns.
-        # `workflow_homes_root()` makes the value absolute so the guard has something to
-        # protect, which is NOT the same as making it the same tree — it silently becomes
-        # a different absolute path per caller. Refusing here is where failing closed is
-        # available; the resolver has to stay total.
-        raw_override = os.environ.get(WORKFLOW_HOMES_ROOT_ENV, "").strip()
-        if not Path(raw_override).expanduser().is_absolute():
-            raise ValueError(
-                f"{WORKFLOW_HOMES_ROOT_ENV} must be an absolute path (got "
-                f"{raw_override!r}): a relative one resolves against each process's "
-                "working directory, so the conductor that creates a home and the hook "
-                "that forbids reading it would resolve different trees"
-            )
-        parent = root.parent
-        if not parent.exists():
-            raise ValueError(
-                f"isolated {label} home root's parent does not exist: {parent} "
-                f"(set by {WORKFLOW_HOMES_ROOT_ENV})"
-            )
+        # Both conditions live in the shared helper, so the homes root and the token
+        # store refuse an unusable override on the same terms. The WORDING is per-caller:
+        # each names its own tree, because there are three relocatable ones and telling
+        # an operator the wrong one is worse than two copies of the sentence.
+        _require_usable_private_root_override(
+            WORKFLOW_HOMES_ROOT_ENV, root, f"isolated {label} home root",
+            repo_root=repo_root)
         ancestors.append((root, True))
     else:
         ancestors.append((root.parent, False))  # ~/.atmofab — mode not forced
@@ -19413,6 +19575,16 @@ def init_orchestration(
             "init-orchestration: orchestration_id must be a plain [A-Za-z0-9_-] token "
             f"(got {orchestration_id!r})"
         )
+    # Resolve the operator token destination and refuse an unusable relocation BEFORE
+    # the first filesystem write. A refusal after `workspace/orchestrations/<oid>/` and
+    # the `running` meta are on disk leaves a run that looks started and has no token, so
+    # the operator cannot dismiss a violation in it — the failure has to arrive while
+    # nothing has been created.
+    operator_token_path = _operator_token_path(orchestration_id)
+    if os.environ.get(OPERATOR_TOKENS_ROOT_ENV, "").strip():
+        _require_usable_private_root_override(
+            OPERATOR_TOKENS_ROOT_ENV, operator_token_path.parent,
+            "operator token store", creator="the token store", repo_root=repo_root)
     root = _orchestration_root(repo_root, orchestration_id)
     root.mkdir(parents=True, exist_ok=True)
     (repo_root / "workspace" / "tmp").mkdir(parents=True, exist_ok=True)
@@ -19488,16 +19660,29 @@ def init_orchestration(
         )
     meta["orchestration_agent_run_id"] = orchestration_agent_run_id
     _write_json(meta_path, meta)
-    # Operator token: written once at init to ~/.atmofab/operator_tokens/<oid>.txt
-    # (mode 0o600), never overwritten on resume so the same token remains valid
-    # across restarts.  Stored OUTSIDE workspace/ so the orchestration agent's
+    # Operator token: written once at init to `_operator_token_path()` — by default
+    # ~/.atmofab/operator_tokens/<oid>.txt, wherever `ATMOFAB_OPERATOR_TOKENS_ROOT` puts
+    # it otherwise — at mode 0o600, never overwritten on resume so the same token remains
+    # valid across restarts.  Stored OUTSIDE workspace/ so the orchestration agent's
     # allowed_read_roots (which include workspace/) cannot reach it via the Read
-    # tool, and forbid_operator_secret_direct_read blocks `cat ~/.atmofab/...` via
-    # Bash.  dismiss-violation requires this token to prevent agents from calling
+    # tool, and forbid_operator_secret_direct_read blocks a Bash read of the store
+    # wherever it is: the guard lists whatever the SAME resolver returns (issue #132).
+    # dismiss-violation requires this token to prevent agents from calling
     # the function programmatically (e.g. from a tmp Python script) to self-approve
     # their own unauthorized_write_violations.
-    operator_token_path = Path.home() / ".atmofab" / "operator_tokens" / f"{orchestration_id}.txt"
-    operator_token_path.parent.mkdir(parents=True, exist_ok=True)
+    # The path itself was resolved at the top of this function, before anything was
+    # created, so an unusable relocation is refused rather than half-applied.
+    if os.environ.get(OPERATOR_TOKENS_ROOT_ENV, "").strip():
+        # Only the store itself is created under an override; its parent was required to
+        # exist above, so a typo'd path does not silently grow a tree.
+        # NOT PINNED, and deliberately so: the parent-exists refusal makes the only input
+        # that distinguishes this from `parents=True` unreachable, so no test can tell
+        # them apart (round-2 census, proved by construction rather than by corpus). Kept
+        # as the redundant half of a pair — if the refusal is ever relaxed, this is what
+        # stops the relaxation from silently building a tree.
+        operator_token_path.parent.mkdir(exist_ok=True)
+    else:
+        operator_token_path.parent.mkdir(parents=True, exist_ok=True)
     # Restrict the directory to the owner so other local users on a shared host
     # cannot enumerate or read operator tokens.
     try:
@@ -24057,7 +24242,8 @@ def main(argv: list[str] | None = None) -> int:
         "--operator-token",
         required=True,
         help=(
-            "Content of ~/.atmofab/operator_tokens/<oid>.txt. "
+            "Content of ~/.atmofab/operator_tokens/<oid>.txt (or of the same file under "
+            "ATMOFAB_OPERATOR_TOKENS_ROOT, if the run was started with that set). "
             "Read with: cat ~/.atmofab/operator_tokens/<oid>.txt"
         ),
     )

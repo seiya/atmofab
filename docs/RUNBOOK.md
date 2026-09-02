@@ -447,16 +447,22 @@ read as a fourth thing the workflow maintains.
 
 | Path | Written by | Read by | Retention |
 |---|---|---|---|
-| `~/.atmofab/operator_tokens/<orchestration_id>.txt` | `init_orchestration`, once per run | the operator, when dismissing an `unauthorized_write_violation` (§dismiss) | kept; a run's token stays valid across `--resume` |
-| `~/.atmofab/start_claims/` | `run_workflow.py`'s cold-start guard | itself | advisory `flock` files; the OS releases the lock when the driver dies |
-| `~/.atmofab/homes/<orchestration_id>/{claude,codex}/` | the leaf launcher, per orchestration and backend | `--resume` (warm session lookup), `audit_orchestration.py`, the three audit skills | **indefinite. Nothing deletes these automatically. See below.** |
+| `~/.atmofab/operator_tokens/<orchestration_id>.txt` (relocatable with `ATMOFAB_OPERATOR_TOKENS_ROOT`) | `init_orchestration`, once per run | the operator, when dismissing an `unauthorized_write_violation` (§dismiss) | kept; a run's token stays valid across `--resume` |
+| `~/.atmofab/start_claims/` (relocatable with `ATMOFAB_START_CLAIM_ROOT`) | `run_workflow.py`'s cold-start guard | itself | advisory `flock` files; the OS releases the lock when the driver dies |
+| `~/.atmofab/homes/<orchestration_id>/{claude,codex}/` (relocatable with `ATMOFAB_WORKFLOW_HOMES_ROOT`) | the leaf launcher, per orchestration and backend | `--resume` (warm session lookup), `audit_orchestration.py`, the three audit skills | **indefinite. Nothing deletes these automatically. See below.** |
 
 An agent cannot read any of it, and it is outside every read manifest so the Read tool
 cannot name it either. For Bash on both backends the block comes from one of two policies,
 and which one tells the operator WHICH tree was touched: `homes/` and everything under it
 is a protected root of its own and answers `forbid_backend_credential_direct_read` (with
 the leaf's OWN home naming itself, since the roots sort longest-path-first), while
-`operator_tokens/` and `start_claims/` answer `forbid_operator_secret_direct_read`. Both are refusals, and neither has a
+`operator_tokens/` and `start_claims/` answer `forbid_operator_secret_direct_read`.
+`operator_tokens/` is a protected root of its own too (issue #132), which is what keeps
+that answer true wherever the store is: it is a LONGER path than `~/.atmofab`, so it wins
+the same longest-first sort, and the policy branch treats the two as one class rather than
+letting the token store fall to the credential message. `start_claims/` has no entry of its
+own and is attributed to `~/.atmofab` above it — the files are 0-byte advisory locks, so
+they are covered by the root rather than protected in their own right. Both are refusals, and neither has a
 remedy other than dropping the read: these paths are outside every manifest and no agent
 task needs them. (The `#hook-recovery` table covers both policy ids in ONE row, whose
 description predates this section and names only the operator tokens for `~/.atmofab`;
@@ -466,18 +472,86 @@ because a root that predates this recommendation would otherwise fail every laun
 everything it creates BELOW that level is 0700 and is re-checked for ownership and
 symlinks on each launch.
 
-`ATMOFAB_WORKFLOW_HOMES_ROOT` relocates the homes tree, and `ATMOFAB_START_CLAIM_ROOT` the
-claims tree. Both exist for tests and for an operator with a specific reason; neither is
-needed for an ordinary run. The homes one has **two preconditions, and neither is the
-one you would guess**:
+`ATMOFAB_WORKFLOW_HOMES_ROOT` relocates the homes tree, `ATMOFAB_OPERATOR_TOKENS_ROOT` the
+token store, and `ATMOFAB_START_CLAIM_ROOT` the claims tree. All three exist for tests and
+for an operator with a specific reason; none is needed for an ordinary run. The ROOT itself
+is deliberately not relocatable — it is the Bash read guard's anchor — and each name moves
+exactly one subtree.
+
+The homes one and the TOKEN one have the same **four preconditions, and none of them is
+the one you would guess** (the claims root has none of them: an unavailable claim
+degrades to "proceed" by design, so there is nothing to fail closed about — see the
+paragraph after the list for what that leaves):
 
 - the value must be an **absolute path**. A relative one does not stay relative — it is
   resolved against whichever process asks, and the conductor that creates a home and the
   hook process that forbids reading it need not share a working directory, so the two
   would guard and create different trees;
+- **it must have no containment relationship with the checkout at all** — neither inside
+  it nor around it. The two halves are refused for different reasons.
+
+  **INSIDE** is the one with a leaf on the other side of it. The Bash read guard follows
+  the resolver wherever it goes, but the **Read tool is a different layer**: every
+  agentic leaf's `allowed_read_roots` contains `docs/` and `spec/` unconditionally, and
+  that manifest does not consult the protected roots at all. A token store at
+  `<repo>/spec/tokens` is therefore readable by every leaf, and a leaf holding the
+  dismiss-violation token can approve its own `unauthorized_write_violation`; a homes
+  root there exposes every earlier leaf's transcript the same way.
+
+  **AROUND** is refused because nothing works there. All three roots are exempt from the
+  containment rule that would otherwise drop a root overlapping the checkout — that
+  exemption is what keeps the guard when one of them does — so a root ABOVE the checkout
+  makes every in-repo path a path under a protected root, and the guard matches the
+  command's TOKENS rather than only its read targets. Measured: with either relocatable
+  root set to the checkout's parent, `cat README.md`, `ls`, `python3 tools/x.py` and even
+  `echo hi` are all blocked. An earlier version of this bullet called that "every
+  recursive in-repo read", which understated it by a wide margin. (It also said the homes
+  root was exempt from the drop before it was; that was the defect, and it is closed.)
+
+  Both halves resolve symlinks, so the path cannot be laundered through one — but the two
+  ROOTS are refused at different **moments**, and the difference decides where you look
+  when it bites. The token-store refusal runs inside `init_orchestration`, before that
+  command writes anything. The homes-root one runs when a leaf is LAUNCHED, which is the
+  first time a home is created — so a bad `ATMOFAB_WORKFLOW_HOMES_ROOT` lets `init`
+  finish, writes `running` metadata, and fails at the first leaf. If a run dies there,
+  check the export before you go looking at the launch;
 - the directory it names is created if absent, but its **parent must exist**, so a typo
   does not silently build a tree somewhere nobody looks. (That is also why the default
-  `~/.atmofab/homes` may be created from nothing while an override may not.)
+  `~/.atmofab/homes` may be created from nothing while an override may not.);
+- **if the path already exists it must be a directory.** A name that is a regular file
+  or a broken symlink passes every check above, and the creation call then fails after
+  the orchestration directory and its `running` metadata are on disk — a run that looks
+  started and has no token, whose violations you cannot dismiss.
+
+One more thing about a relocated **token store**, which the claims and homes trees do not
+share: **`dismiss-violation` must be typed in a shell with the same
+`ATMOFAB_OPERATOR_TOKENS_ROOT` as the shell that started the run.** The store is
+per-environment and the command is typed by hand, so an export present in one terminal
+and absent in another sends the writer and the reader to two different directories. The
+refusal says which state the current shell is in, and says so before it suggests
+re-running init — following that first would mint a new token against a live run.
+
+**`ATMOFAB_START_CLAIM_ROOT` is checked by nothing**, and that is the price of the claim
+being advisory: a claim that cannot be taken yields "proceed" rather than failing, so
+there is no refusal to hang the checks on. Pointing it inside the checkout is therefore
+possible and is a bad idea for a different reason from the other two — a 0-byte lock file
+created under the repository while a leaf is running lands in that leaf's terminal
+write-diff and is misattributed as an unauthorized write, which is the reason the claims
+live outside the repository at all.
+
+A relocated store is an entry in `protected_host_read_roots` in its own right, returns the
+same `forbid_operator_secret_direct_read`, and — since `~/.atmofab/` is no longer where it
+is — its block message names the store's path and `ATMOFAB_OPERATOR_TOKENS_ROOT`.
+
+One measured LIMIT, because "fully guarded" would overstate it: the guard's fail-closed
+fallback for a command it cannot resolve (`$(…)`, backticks) fires when a token also
+spells a protected root's own path component — `.atmofab`, `.claude`, `.codex`. A
+relocated store has no such distinctive component, so
+`cat $(printenv ATMOFAB_OPERATOR_TOKENS_ROOT)/<oid>.txt` is ALLOWED by the hook where the
+default spelling is blocked. It reaches nothing: the sandbox binds `/usr /bin /sbin /lib
+/lib64 /etc`, the checkout and the backend homes and nothing else, so a store outside
+those is not in the leaf's mount namespace and the read fails there instead. The sandbox
+is what closes it, not this guard.
 
 The MODE is not a precondition: a root you create with a plain `mkdir` is tightened to
 0700 on first use rather than refused, as is a mode that later drifts (a backup restored
@@ -592,7 +666,7 @@ When a hook blocks during workflow execution, identify the cause from `reason` a
 | `forbid_unauthorized_file_write` | wrote a path not in `allowed_file_tool_paths` (or an MCP-owned `.jsonl` log) with `Edit`/`Write`/`apply_patch`, or attempted a Bash redirect/`tee`/`sed -i` to a managed artifact | write the artifact with `Edit`/`Write` to a path that IS in `allowed_file_tool_paths` (managed `.json`/`.txt` are now direct-write eligible). If the path is missing from the manifest, the orchestration must add it; the MCP-owned `command_log.jsonl` is written only by the build-runtime MCP server and must never be written with a file tool. (`guarded-apply-patch` has been removed.) |
 | `forbid_bash_file_write_command` | a Bash command that WRITES A FILE — `cp` / `mv` / `install` / `ln` / `touch` / `truncate` / `dd` — at a fragment head, including behind a wrapper (`sudo`, `env`, `xargs`, `timeout`, `bash -c`, …), a shell keyword (`for … do cp …`), or a command substitution. The block names the command, never a path: this guard does not decide WHERE the write would land, so it fires whatever the destination is, including one the manifest would allow | write the file with the `Edit` / `Write` tool instead — an artifact to a path in `allowed_file_tool_paths`, a temporary file to the literal `allowed_tmp_root` path. A COPY is `Read` then `Write`, both halves; doing only the first leaves nothing written. **This is workflow-mode only** (`ATMOFAB_WORKFLOW_MODE=1`), so an operator's own session is unaffected. What it does NOT catch is listed in `_detect_bash_write_commands`' docstring in `tools/hooks/cli.py` — most importantly a writer inside a script FILE handed to an interpreter, which no guard covers. `mv`, `ln -s` and a binary copy have no `Write`-tool equivalent at all; no leaf procedure under `skills/` needs one today, so the remedy's silence on them is not a dead end in the current corpus. |
 | `forbid_python_inline_write` | ran `python3 -c` / `python3 - <<EOF` | **write intent**: use the `Edit`/`Write` tool for all artifacts (any extension). **UUID-generation intent**: use `python3 tools/new_agent_run_id.py`. **JSON-read intent**: read directly with the `Read` tool |
-| `forbid_backend_credential_direct_read` / `forbid_operator_secret_direct_read` | a Bash command whose read target is an out-of-repo protected path — the backend CLI's credential/session home (`~/.claude`, `~/.claude.json`, `~/.codex`, or its `CODEX_HOME` relocation) or `~/.atmofab` (operator tokens). Not gated on the command name, and it fires on the shell spellings too (`${HOME:-…}`, a variable assigned in the same command, `cd ~ && cat .claude.json`) | there is no alternative command that reaches these paths: they are outside every manifest and no agent task requires them, so **drop the read**. The one benign trigger is a command that merely NAMES such a path (`grep -rn "~/.claude.json" docs/`, and this repository's own docs contain that string) — search for a different substring. Canonical: `docs/HOOKS.md` §"Layer boundary" |
+| `forbid_backend_credential_direct_read` / `forbid_operator_secret_direct_read` | a Bash command whose read target is an out-of-repo protected path — the backend CLI's credential/session home (`~/.claude`, `~/.claude.json`, `~/.codex`, or its `CODEX_HOME` relocation) or `~/.atmofab` and the operator token store under it (wherever `ATMOFAB_OPERATOR_TOKENS_ROOT` puts it — the store is an entry of its own and answers under the same policy id). Not gated on the command name, and it fires on the shell spellings too (`${HOME:-…}`, a variable assigned in the same command, `cd ~ && cat .claude.json`) | there is no alternative command that reaches these paths: they are outside every manifest and no agent task requires them, so **drop the read**. The one benign trigger is a command that merely NAMES such a path (`grep -rn "~/.claude.json" docs/`, and this repository's own docs contain that string) — search for a different substring. Canonical: `docs/HOOKS.md` §"Layer boundary" |
 | `forbid_tools_direct_read` | tried to read under `tools/` with `grep` / `cat` / `sed` during workflow execution | the implementation under `tools/` is forbidden to reference as a workflow rule source. For the specification, refer to `docs/` / `spec/` / `skill_must_read_refs`. During repository improvement, maintenance, testing, or refactoring, `tools/*.py` is ordinary source code and may be inspected directly |
 | `rule_source_violation` | read another agent's capability / gate result / another phase's SKILL.md | obtain the gate-failure content from the gate command's own stderr, which is returned in the command result (an appended redirect capturing it to a file is refused by the permission layer; the runtime therefore writes the same summary itself at `workspace/tmp/<agent_run_id>/gate_results/<gate>.json`, inside the agent's own `allowed_tmp_root`, for a result whose command output has already scrolled away — a convenience copy, not evidence) |
 | `orchestration_id is required for hook execution` | the leaf hook entrypoint could not resolve an `orchestration_id` from the payload or from `ATMOFAB_ORCHESTRATION_ID` (`docs/ORCHESTRATION.md` §39). **A leaf cannot fix this and must not retry**: every later check is keyed on that id. **This row has no `audit_detail.policy`** — unlike every other row here it is a transport failure, not a policy — so the cheat sheet's "identify it from `audit_detail.policy`" does not apply to it; identify it from the `reason` text. Its record lands under `workspace/orchestrations/_global/`, which `tools/audit_orchestration.py` does NOT read (that tool takes an orchestration id), and under `bwrap` the record is skipped altogether because `_global/` is not a leaf write root | this is an environment fault, not a leaf fault: the orchestration has to be restarted. If you met it in your OWN session you have wired the session at the leaf entrypoint — `.claude/settings.json` and `.codex/hooks.json` must name `tools/hooks/dev_cli.py` |
@@ -628,7 +702,7 @@ When `record-agent-run` fails with `terminal run has unauthorized write paths: .
      --operator-token "$(cat ~/.atmofab/operator_tokens/<orch_id>.txt)" \
      --paths tools/__pycache__/orchestration_runtime.cpython-313.pyc
    ```
-   The operator token is auto-generated into `~/.atmofab/operator_tokens/<orch_id>.txt` at orchestration init. Because it is not under `workspace/`, the agent cannot read it, and only the operator can reference it.
+   The operator token is auto-generated into `~/.atmofab/operator_tokens/<orch_id>.txt` at orchestration init. Because it is not under `workspace/`, the agent cannot read it, and only the operator can reference it. If the run was started in a shell with `ATMOFAB_OPERATOR_TOKENS_ROOT` set, read the token from `$ATMOFAB_OPERATOR_TOKENS_ROOT/<orch_id>.txt` and run this command with that same value exported — see §"The operator-private root (`~/.atmofab`)".
 3. Re-run `record-agent-run` with the same `agent_run_id`. If the detected unauthorized_paths are a subset of `dismissed_paths` (= dismissed_paths contains unauthorized_paths), the terminal validation passes. When only some of the violation paths have been dismissed, the re-run fails again, so check whether any non-dismissed violation paths remain.
 
 **Notes**

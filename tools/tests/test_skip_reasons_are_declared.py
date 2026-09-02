@@ -118,9 +118,9 @@ _DECLARED_ENVIRONMENT_SKIPS = {
     "no git work tree to ask about tracking":
         "the tree is a `git archive` snapshot, or is unpacked inside another repository, so "
         "`git ls-files` answers for something other than this checkout",
-    "the suite's homes guard is not installed":
+    "the suite's operator-private-root guard is not installed":
         "running outside pytest, where conftest is not loaded and the guard under test "
-        "does not exist",
+        "does not exist (one reason for all three roots, since they share one marker)",
     "the suite's environment guard is not installed":
         "the same condition for the conftest hook that strips the operator's ambient "
         "environment (issue #84)",

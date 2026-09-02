@@ -1586,6 +1586,172 @@ class RunWorkflowTests(unittest.TestCase):
                 else:
                     os.environ["ATMOFAB_START_CLAIM_ROOT"] = saved
 
+    def test_the_claim_root_default_hangs_off_the_operator_secret_root(self) -> None:
+        """The DEFAULT is the half `test_claim_root_is_relocatable` cannot see.
+
+        That test sets the override, which is also what this module's `setUpModule`
+        does, so the production resolution — no override, `~/.atmofab/start_claims` —
+        ran in no test at all. It is the branch that matters for issue #132: the claims
+        are the third writer under the operator-private root, and until this commit it
+        spelled `Path.home() / ".atmofab"` for itself.
+
+        Pinned at the SHARED resolver, not against a transcribed path: `_home_dir` is
+        patched in `tools.hooks.common`, the module `operator_secret_root` reads, so if
+        the default stopped going through it this lands somewhere else and fails.
+        """
+        import tools.hooks.common as hooks_common
+        with tempfile.TemporaryDirectory() as tmp:
+            fake_home = Path(tmp) / "home"
+            env = {k: v for k, v in os.environ.items()
+                   if k != run_workflow.START_CLAIMS_ROOT_ENV}
+            with mock.patch.dict(os.environ, env, clear=True), \
+                    mock.patch.object(hooks_common, "_home_dir",
+                                      return_value=fake_home):
+                path = run_workflow._claim_lock_path(Path(tmp), "spec", "spec/x")
+            self.assertEqual(path.parent, (fake_home / ".atmofab").resolve()
+                             / "start_claims")
+
+    def test_a_tilde_claim_root_override_is_expanded(self) -> None:
+        """`~` is expanded, and until round 1 nothing observed that.
+
+        The third of three relocators, and the only one whose `expanduser` had no test —
+        `test_a_tilde_homes_root_override_is_expanded` and
+        `test_a_tilde_token_store_override_is_expanded` cover the other two, and both
+        reviewers reported this one as a surviving mutant.
+
+        The behaviour it pins is a CHANGE this branch made deliberately: a quoted
+        `ATMOFAB_START_CLAIM_ROOT='~/claims'` is a plausible spelling and the shell does
+        not expand inside quotes, so before this branch the value became a literal `~`
+        directory under the caller's working directory — which for the conductor is the
+        checkout, where it then shows up as an untracked path.
+        """
+        with mock.patch.dict(
+                os.environ,
+                {"HOME": "/tmp/fake-home-probe",
+                 run_workflow.START_CLAIMS_ROOT_ENV: "~/big/claims"},
+                clear=False):
+            resolved = run_workflow._start_claims_root()
+        self.assertEqual(resolved, Path("/tmp/fake-home-probe/big/claims"))
+        self.assertNotIn("~", str(resolved))
+
+    def test_an_unresolvable_claim_root_degrades_to_proceed(self) -> None:
+        """The promise the docstring makes, which the `expanduser()` broke.
+
+        `_exclusive_claim` says a host where the lock cannot be taken yields True — the
+        claim strengthens the driver-liveness guard and is never a precondition for
+        running — and `_start_claims_root` and `docs/RUNBOOK.md` both said the override is
+        checked by nothing. Adding `expanduser()` on this branch made that false for one
+        spelling: `~account` naming no account raises `RuntimeError`, which is not
+        `OSError`, and `_claim_lock_path` was called outside every `except` in this
+        function. Measured: it raised at HEAD and yielded True at `origin/main` — a
+        regression this branch introduced against a sentence this branch wrote.
+
+        Found by a round-4 reviewer reading the branch as the next maintainer.
+        """
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.dict(
+                    os.environ,
+                    {run_workflow.START_CLAIMS_ROOT_ENV: "~nosuchaccount12345/claims"},
+                    clear=False), \
+                run_workflow._exclusive_claim(Path(tmp), "spec", "x") as held:
+            self.assertTrue(
+                held, "an unresolvable claim root must degrade to proceed, not raise")
+
+    def test_the_claims_guard_assertion_is_not_swallowed_by_that_degradation(self) -> None:
+        """The other half, and the reason the `except` is by TYPE rather than bare.
+
+        `tools/tests/conftest.py` wraps `_start_claims_root` in a guard that raises
+        `AssertionError` when a test is about to resolve the operator's real
+        `~/.atmofab`. Catching it in `_exclusive_claim` would turn that guard into a
+        silent "proceed" — the suite would go back to writing into the operator's tree
+        and nothing would say so, which is the failure mode the guard exists to replace.
+        """
+        if not getattr(run_workflow._start_claims_root,
+                       "_atmofab_private_root_guard_installed", False):
+            self.skipTest("the suite's operator-private-root guard is not installed")
+        with tempfile.TemporaryDirectory() as tmp:
+            env = {k: v for k, v in os.environ.items()
+                   if k != run_workflow.START_CLAIMS_ROOT_ENV}
+            with mock.patch.dict(os.environ, env, clear=True), \
+                    self.assertRaisesRegex(
+                        AssertionError, "operator's real secret root"), \
+                    run_workflow._exclusive_claim(Path(tmp), "spec", "x"):
+                pass
+
+    def test_each_caught_type_degrades_to_proceed_and_leaves_no_exception_context(self) -> None:
+        """The tuple, element by element, and the chaining the first version left behind.
+
+        `except (OSError, RuntimeError, ValueError)` was pinned only through the
+        `RuntimeError` arm, and a round-5 reviewer measured the other two as reachable
+        rather than vacuous: `.absolute()` calls `getcwd()` and raises `OSError` when the
+        working directory is gone, and the key's `.encode("utf-8")` raises a
+        `UnicodeEncodeError` — a `ValueError` — for a surrogate in `repo_root`. Narrowing
+        the tuple to `RuntimeError` alone left the whole suite green.
+
+        The second assertion is the chaining. Yielding from inside the handler left the
+        swallowed exception as `__context__` for the whole `with` body, so any later
+        failure was reported "During handling of the above exception…" under an error
+        this function decided did not matter — a false lead in the run's own error record.
+        """
+        for exc in (OSError("gone"), RuntimeError("no home"), ValueError("surrogate")):
+            with self.subTest(raised=type(exc).__name__):
+                held_value = None
+                # One `with`: the claim exits FIRST (innermost), so `assertRaises`
+                # catches what comes out of its `__exit__`, which is the point.
+                with tempfile.TemporaryDirectory() as tmp, \
+                        mock.patch.object(run_workflow, "_claim_lock_path",
+                                          side_effect=exc), \
+                        self.assertRaises(KeyError) as caught, \
+                        run_workflow._exclusive_claim(Path(tmp), "spec", "x") as held:
+                    held_value = held
+                    raise KeyError("the real failure")
+                self.assertTrue(held_value)
+                self.assertIsNone(
+                    caught.exception.__context__,
+                    "a later failure is chained under the claim error the claim "
+                    "decided did not matter — the `yield` is inside the handler")
+
+    def test_the_claim_path_follows_the_module_level_resolver(self) -> None:
+        """`_claim_lock_path` asks `_start_claims_root`, so patching it is enough.
+
+        This is what makes the suite's session guard able to wrap ONE function and cover
+        every claim the suite takes — the same arrangement as
+        `orchestration_runtime._workflow_homes_root`. Patched through the module
+        attribute rather than the closure, because that is how the guard installs itself.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            elsewhere = Path(tmp) / "elsewhere"
+            with mock.patch.object(run_workflow, "_start_claims_root",
+                                   return_value=elsewhere):
+                path = run_workflow._claim_lock_path(Path(tmp), "spec", "spec/x")
+            self.assertEqual(path.parent, elsewhere)
+
+    def test_the_suites_own_claims_guard_raises_before_anything_is_created(self) -> None:
+        """A witness for `tools/tests/conftest.py`'s guard over the claims root.
+
+        The twin of `test_the_suites_own_homes_guard_raises_before_anything_is_created`
+        in `tools/tests/test_orchestration_runtime.py`, and it exists for the same
+        reason: a guard nothing observes is a claim, not a layer. Driven the way the
+        accident would happen — the redirect removed, so the resolver falls back to
+        `operator_secret_root()/start_claims` — and asserting BOTH halves of "prevent,
+        not detect": it raises, and nothing appeared in the operator's tree.
+        """
+        from tools.hooks.common import operator_secret_root
+        if not getattr(run_workflow._start_claims_root,
+                       "_atmofab_private_root_guard_installed", False):
+            # The subject is a pytest fixture. Under plain `unittest` there is no guard
+            # to observe, and asserting anyway would fail for the absence of the harness.
+            self.skipTest("the suite's operator-private-root guard is not installed")
+        real_root = operator_secret_root() / "start_claims"
+        existed_before = real_root.exists()
+        env = {k: v for k, v in os.environ.items()
+               if k != run_workflow.START_CLAIMS_ROOT_ENV}
+        with mock.patch.dict(os.environ, env, clear=True), \
+                self.assertRaisesRegex(AssertionError, "operator's real secret root"):
+            run_workflow._start_claims_root()
+        self.assertEqual(real_root.exists(), existed_before,
+                         "the guard let something be created in the operator's tree")
+
     def test_cold_start_claim_is_exclusive_per_spec(self) -> None:
         # The guard alone cannot see a run that has not written its meta yet, so two
         # cold starts of one spec launched together both scan clean. The claim is what

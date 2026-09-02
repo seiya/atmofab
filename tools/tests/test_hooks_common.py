@@ -3765,17 +3765,40 @@ class ForbidBackendCredentialReadTests(unittest.TestCase):
         """The containment drop is a CREDENTIAL-root rule.
 
         Its justification is that the bind side rejects such a configuration, so
-        nothing under the root is bound writable — and `~/.atmofab` is not an rw
-        bind at all, so a checkout placed inside or around it must keep failing
-        closed rather than lose the guard.
+        nothing under the root is bound writable — and neither `~/.atmofab` nor the
+        token store under it is an rw bind at all, so a checkout placed inside or around
+        either must keep failing closed rather than lose the guard.
+
+        `$HOME` is patched to a temporary directory, and the two overrides are cleared so
+        both roots resolve the production way. Reading the operator's real `Path.home()`
+        is issue #84's shape — it made this assertion depend on the machine — and the
+        suite now redirects the token store per test, so without the clear this would
+        reason about a store outside the fake home.
+
+        Both roots are asserted BECAUSE the store is the longer path: it wins the
+        longest-path-first sort for everything under it, so `operator_tokens/x.txt` names
+        the store and a file directly under `~/.atmofab` names the root.
         """
-        from tools.hooks.common import _command_reads_protected_host_path, protected_host_read_roots
-        inside = Path.home() / ".atmofab" / "checkout"
-        command = "cat ~/.atmofab/operator_tokens/x.txt"
-        self.assertEqual(
-            _command_reads_protected_host_path(
-                command, command.split(), inside, protected_host_read_roots()),
-            (Path.home() / ".atmofab").resolve())
+        from tools.hooks.common import (
+            _command_reads_protected_host_path, protected_host_read_roots)
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("ATMOFAB_WORKFLOW_HOMES_ROOT", "ATMOFAB_OPERATOR_TOKENS_ROOT")}
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td) / "home"
+            env["HOME"] = str(home)
+            inside = home / ".atmofab" / "checkout"
+            with patch.dict(os.environ, env, clear=True):
+                secret_root = (home / ".atmofab").resolve()
+                for command, expected in (
+                    ("cat ~/.atmofab/operator_tokens/x.txt",
+                     secret_root / "operator_tokens"),
+                    ("cat ~/.atmofab/x.txt", secret_root),
+                ):
+                    self.assertEqual(
+                        _command_reads_protected_host_path(
+                            command, command.split(), inside,
+                            protected_host_read_roots()),
+                        expected, msg=command)
 
     def test_no_budget_on_the_number_or_size_of_assignments(self) -> None:
         """The assignment axis carries NO bound an evader can satisfy and then
@@ -4346,6 +4369,13 @@ class DurablePrivateHomeReadGuardTests(unittest.TestCase):
     `env -u ATMOFAB_WORKFLOW_HOMES_ROOT python3 -m unittest`, which is the production
     resolution. Anything that reasons about which root a path falls under has to build the
     nesting it is reasoning about.
+
+    `ATMOFAB_OPERATOR_TOKENS_ROOT` is set the same way and for the same reason (issue
+    #133 gave the token store its own per-test redirect, so the suite's value points
+    outside the fake home unless a test says otherwise). It is what makes the
+    operator-token reads below a CONTROL for attribution rather than an accident: the
+    store must be under this fixture's `~/.atmofab` for "the two policies stay
+    distinguishable" to mean anything.
     """
 
     def _fixture(self, td: str):
@@ -4371,9 +4401,12 @@ class DurablePrivateHomeReadGuardTests(unittest.TestCase):
         env = {"ATMOFAB_WORKFLOW_MODE": "1", "ATMOFAB_ORCHESTRATION_ID": "o",
                "HOME": str(home),
                # The production RELATIONSHIP, not merely a temporary directory: the homes
-               # root must sit under this fixture's `~/.atmofab`, or every verdict below
-               # is about a layout the workflow never produces. See the class docstring.
-               "ATMOFAB_WORKFLOW_HOMES_ROOT": str(home / ".atmofab" / "homes")}
+               # root and the token store must sit under this fixture's `~/.atmofab`, or
+               # every verdict below is about a layout the workflow never produces. See
+               # the class docstring.
+               "ATMOFAB_WORKFLOW_HOMES_ROOT": str(home / ".atmofab" / "homes"),
+               "ATMOFAB_OPERATOR_TOKENS_ROOT": str(
+                   home / ".atmofab" / "operator_tokens")}
         with patch.dict(os.environ, env, clear=False):
             decision = evaluate_common_policy(HookInput(
                 event_name=HookEventName.PRE_COMMAND_EXECUTE, backend=backend,
@@ -4447,9 +4480,12 @@ class DurablePrivateHomeReadGuardTests(unittest.TestCase):
                              "forbid_backend_credential_direct_read")
             self.assertEqual(self._policy(home, repo, "cat ~/.atmofab/homes/other/claude/x"),
                              "forbid_backend_credential_direct_read")
-            # The dismiss-violation tokens are what the operator-secret root exists for,
-            # and they are still attributed to it — so the homes root did not swallow the
-            # rule above it, which is the failure mode of adding a longer entry.
+            # The dismiss-violation tokens are what the operator-secret root exists for.
+            # The store has its OWN entry since issue #132 and is attributed to itself,
+            # and `start_claims/` — which has no entry — is attributed to the root above
+            # it. Both return the same policy, which is what keeps the operator-secret
+            # rule distinguishable from the credential one; adding a longer entry without
+            # that is how a token read starts reporting as a credential read.
             self.assertEqual(self._policy(home, repo, "cat ~/.atmofab/operator_tokens/o.txt"),
                              "forbid_operator_secret_direct_read")
             self.assertEqual(self._policy(home, repo, "cat ~/.atmofab/start_claims/x.lock"),
@@ -4555,7 +4591,9 @@ class DurablePrivateHomeReadGuardTests(unittest.TestCase):
                 encoding="utf-8")
             env = {"ATMOFAB_WORKFLOW_MODE": "1", "ATMOFAB_ORCHESTRATION_ID": "o",
                    "HOME": str(home),
-                   "ATMOFAB_WORKFLOW_HOMES_ROOT": str(relocated)}
+                   "ATMOFAB_WORKFLOW_HOMES_ROOT": str(relocated),
+                   "ATMOFAB_OPERATOR_TOKENS_ROOT": str(
+                       home / ".atmofab" / "operator_tokens")}
 
             def policy(command: str) -> str:
                 with patch.dict(os.environ, env, clear=False):
@@ -4608,6 +4646,388 @@ class DurablePrivateHomeReadGuardTests(unittest.TestCase):
                     {"forbid_backend_credential_direct_read",
                      "forbid_operator_secret_direct_read"},
                     msg=command)
+
+    def test_a_relocated_token_store_is_protected_as_a_root_in_its_own_right(self) -> None:
+        """The token-store closure must not be conditional on an environment variable.
+
+        The twin of the relocated-homes test above, and it was open in the same shape:
+        `protected_host_read_roots` covered the dismiss-violation tokens through ONE
+        entry, `operator_secret_root()`, which the store sits under by default. Nothing
+        moved the store before issue #132 because nothing COULD — the writers spelled the
+        path themselves — and giving it a relocator without giving the guard the same
+        resolver would have opened exactly the hole PR #86 closed for the homes.
+
+        Three properties. ENFORCEMENT: the relocated store is blocked. ATTRIBUTION: under
+        `forbid_operator_secret_direct_read`, not the credential rule that the longer path
+        would otherwise take it to. REMEDY: the default message says `~/.atmofab/`, which
+        is where the store is NOT, so the relocated message names the path and the
+        variable that put it there. Plus two controls: a file beside the relocated store
+        is an ordinary read, and `~/.atmofab/start_claims/` — deliberately not a protected
+        root — is still attributed to `~/.atmofab` under the default wording.
+        """
+        from tools.hooks.common import OPERATOR_TOKENS_ROOT_ENV
+        with tempfile.TemporaryDirectory() as td:
+            home, repo, _c, _x, _s = self._fixture(td)
+            relocated = Path(td) / "elsewhere" / "tokens"
+            relocated.mkdir(parents=True)
+            (relocated / "o.txt").write_text("tok\n", encoding="utf-8")
+            (relocated.parent / "notes.txt").write_text("unrelated\n", encoding="utf-8")
+            env = {"ATMOFAB_WORKFLOW_MODE": "1", "ATMOFAB_ORCHESTRATION_ID": "o",
+                   "HOME": str(home),
+                   "ATMOFAB_WORKFLOW_HOMES_ROOT": str(home / ".atmofab" / "homes"),
+                   OPERATOR_TOKENS_ROOT_ENV: str(relocated)}
+
+            def decide(command: str):
+                with patch.dict(os.environ, env, clear=False):
+                    return evaluate_common_policy(HookInput(
+                        event_name=HookEventName.PRE_COMMAND_EXECUTE, backend="claude",
+                        payload={"command": command, "repo_root": str(repo)},
+                        command=command))
+
+            decision = decide(f"cat {relocated}/o.txt")
+            self.assertEqual(decision.action, HookDecisionAction.BLOCK)
+            self.assertEqual((decision.audit_detail or {}).get("policy"),
+                             "forbid_operator_secret_direct_read")
+            self.assertIn(str(relocated), decision.reason)
+            self.assertIn(OPERATOR_TOKENS_ROOT_ENV, decision.reason)
+            # Control 1: beside the store, not under it.
+            self.assertNotIn(
+                (decide(f"cat {relocated.parent}/notes.txt").audit_detail or {}).get(
+                    "policy", ""),
+                {"forbid_backend_credential_direct_read",
+                 "forbid_operator_secret_direct_read"})
+            # Control 2: `start_claims/` has no entry of its own, so it is attributed to
+            # `~/.atmofab` and gets the DEFAULT wording — which must not have acquired
+            # the relocated store's path.
+            claims = decide("cat ~/.atmofab/start_claims/x.lock")
+            self.assertEqual((claims.audit_detail or {}).get("policy"),
+                             "forbid_operator_secret_direct_read")
+            self.assertIn("~/.atmofab/", claims.reason)
+            self.assertNotIn(str(relocated), claims.reason)
+
+    def test_only_a_store_outside_the_root_gets_the_relocated_wording(self) -> None:
+        """The condition guarding the relocated message, which nothing observed.
+
+        The round-2 census measured this: simplify
+        `matched_root == tokens_root and matched_root != atmofab_root and not
+        _is_path_under_root(tokens_root, atmofab_root)` to `matched_root == tokens_root`
+        and every read of the DEFAULT store comes back saying
+        `ATMOFAB_OPERATOR_TOKENS_ROOT relocated it out of ~/.atmofab/` — with the variable
+        unset. Enforcement and policy id are unaffected; the reason text states something
+        false to whoever was refused, which is the class this branch exists to keep
+        straight, and no test asserted the default store's WORDING (only its policy id).
+
+        Three configurations, one property: the message describes where the store
+        actually is.
+        """
+        from tools.hooks.common import OPERATOR_TOKENS_ROOT_ENV
+        with tempfile.TemporaryDirectory() as td:
+            home, repo, _c, _x, _s = self._fixture(td)
+            outside = Path(td) / "elsewhere" / "tokens"
+            outside.mkdir(parents=True)
+
+            def reason(override: str, command: str) -> str:
+                env = {"ATMOFAB_WORKFLOW_MODE": "1", "ATMOFAB_ORCHESTRATION_ID": "o",
+                       "HOME": str(home),
+                       "ATMOFAB_WORKFLOW_HOMES_ROOT": str(home / ".atmofab" / "homes"),
+                       OPERATOR_TOKENS_ROOT_ENV: override}
+                if not override:
+                    env.pop(OPERATOR_TOKENS_ROOT_ENV)
+                    env = {k: v for k, v in {**os.environ, **env}.items()
+                           if k != OPERATOR_TOKENS_ROOT_ENV}
+                    with patch.dict(os.environ, env, clear=True):
+                        return evaluate_common_policy(HookInput(
+                            event_name=HookEventName.PRE_COMMAND_EXECUTE,
+                            backend="claude",
+                            payload={"command": command, "repo_root": str(repo)},
+                            command=command)).reason
+                with patch.dict(os.environ, env, clear=False):
+                    return evaluate_common_policy(HookInput(
+                        event_name=HookEventName.PRE_COMMAND_EXECUTE, backend="claude",
+                        payload={"command": command, "repo_root": str(repo)},
+                        command=command)).reason
+
+            # DEFAULT — no override at all. The store IS `~/.atmofab/operator_tokens`,
+            # so the message must be the unchanged `~/.atmofab/` wording and must not
+            # name a variable that is not set.
+            default = reason("", "cat ~/.atmofab/operator_tokens/o.txt")
+            self.assertIn("~/.atmofab/", default)
+            self.assertNotIn(OPERATOR_TOKENS_ROOT_ENV, default)
+            self.assertNotIn("relocated", default)
+
+            # RELOCATED, but still UNDER `~/.atmofab` — the variable is set and `~` still
+            # points at the store, so "relocated it out of ~/.atmofab/" would be false.
+            under = reason(str(home / ".atmofab" / "tok"),
+                           f"cat {home}/.atmofab/tok/o.txt")
+            self.assertNotIn("relocated", under)
+
+            # RELOCATED OUT of it — now `~` does NOT lead there, and the message has to
+            # say where the store is and what put it there.
+            out = reason(str(outside), f"cat {outside}/o.txt")
+            self.assertIn(str(outside), out)
+            self.assertIn(OPERATOR_TOKENS_ROOT_ENV, out)
+
+    def test_a_relocated_homes_root_containing_the_checkout_is_never_dropped(self) -> None:
+        """The containment drop was still costing ENFORCEMENT for the homes root.
+
+        The justification that stood in `_command_reads_protected_host_path` — "dropping
+        one of them costs attribution, not enforcement, because this root still covers
+        it" — was true at the default location and false once
+        `ATMOFAB_WORKFLOW_HOMES_ROOT` moves the tree out from under `~/.atmofab`. That is
+        the same configuration axis PR #86 closed for the homes root's ENTRY and left
+        open for its containment drop. Found by a round-3 reviewer, and MEASURED before
+        the fix: with the homes root containing the checkout, a leaf's
+        `cat <homes-root>/<other-oid>/claude/projects/*/*.jsonl` was ALLOWED, while the
+        same read with the root outside the checkout blocked. A sibling orchestration's
+        leaf transcript is the past-run state `docs/workflow/WORKFLOW_CORE.md` forbids,
+        and reading the producing leaf's answer is the shortest route to reporting a
+        substep done.
+
+        The CONTROL is the other half of the trade and is asserted here rather than
+        assumed: an ordinary in-repo read fails closed under this configuration, exactly
+        as it does for the token store. That is the cost `docs/RUNBOOK.md` names, and it
+        is why the configuration is one to avoid rather than one to support.
+        """
+        from tools.hooks.common import (
+            _command_reads_protected_host_path,
+            protected_host_read_roots,
+        )
+        with tempfile.TemporaryDirectory() as td:
+            proj = Path(td) / "proj"
+            repo = proj / "repo"
+            (repo / "workspace" / "orchestrations" / "o").mkdir(parents=True)
+            (repo / "workspace" / "orchestrations" / "o"
+             / "orchestration_meta.json").write_text("{}", encoding="utf-8")
+            sibling = proj / "other_oid" / "claude" / "projects" / "slug"
+            sibling.mkdir(parents=True)
+            home = Path(td) / "home"
+            home.mkdir()
+            # BOTH spellings of the same root. The symlinked one is what pins
+            # `_resolve_lenient` around this entry: `protected_host_read_roots` hands out
+            # resolved paths while `workflow_homes_root()` returns a merely-absolute one,
+            # and a round-5 reviewer measured that dropping the call here re-opens
+            # exactly the hole this test closes — the sibling transcript goes back to
+            # ALLOW with the whole suite green. The token-store twin has had this case
+            # since round 1; this entry was added without it.
+            link = Path(td) / "link"
+            spellings = [("plain", proj)]
+            try:
+                link.symlink_to(proj, target_is_directory=True)
+            except (OSError, NotImplementedError):
+                pass
+            else:
+                spellings.append(("symlinked", link))
+            for label, spelled in spellings:
+                env = {"ATMOFAB_WORKFLOW_MODE": "1", "ATMOFAB_ORCHESTRATION_ID": "o",
+                       "HOME": str(home),
+                       "ATMOFAB_WORKFLOW_HOMES_ROOT": str(spelled),
+                       "ATMOFAB_OPERATOR_TOKENS_ROOT": str(Path(td) / "toks")}
+                with self.subTest(spelling=label), \
+                        patch.dict(os.environ, env, clear=True):
+                    roots = protected_host_read_roots(repo, "o")
+                    blocked = f"cat {sibling}/transcript.jsonl"
+                    self.assertEqual(
+                        _command_reads_protected_host_path(
+                            blocked, blocked.split(), repo, roots),
+                        proj.resolve(),
+                        "a sibling orchestration's transcript is readable — the homes "
+                        "root took the containment drop")
+                    # The cost, asserted rather than assumed. It is bigger than "recursive
+                    # reads": the guard matches the command's TOKENS, so with the root
+                    # above the checkout every in-repo path is a protected path. This
+                    # configuration is refused at creation for that reason; the guard is
+                    # what makes the refusal necessary rather than tidy.
+                    in_repo = f"cat {repo}/README.md"
+                    self.assertEqual(
+                        _command_reads_protected_host_path(
+                            in_repo, in_repo.split(), repo, roots),
+                        proj.resolve(),
+                        "the cost of this configuration is that in-repo reads fail "
+                        "closed; if this stops holding the trade has changed")
+
+    def test_a_relocated_token_store_survives_containment_with_the_checkout(self) -> None:
+        """The containment drop must not reach the token store, in either direction.
+
+        `_command_reads_protected_host_path` drops a root that contains the checkout or
+        sits inside it, because for a CREDENTIAL root the bind side already refused that
+        configuration. The token store is bound nowhere, so the drop would simply remove
+        the guard. It survives by an identity test against the resolver, and that test is
+        where the two forms of the path meet: the roots arrive RESOLVED while
+        `operator_tokens_root()` returns a merely-absolute path.
+
+        The plain case below cannot see that, and saying so is the point: a
+        `tempfile.TemporaryDirectory()` is already resolved on this host, so both forms
+        are the same string and the comparison holds either way. The SYMLINK case is the
+        witness — `test_a_symlinked_relocated_store_is_still_never_dropped` — and it was
+        added because a review round measured the deletion of `_resolve_lenient` here as
+        a full fail-open with the whole suite green.
+        """
+        from tools.hooks.common import (
+            OPERATOR_TOKENS_ROOT_ENV,
+            _command_reads_protected_host_path,
+            protected_host_read_roots,
+        )
+        with tempfile.TemporaryDirectory() as td:
+            store = Path(td) / "store"
+            store.mkdir()
+            for label, repo_root in (
+                ("checkout inside the store", store / "checkout"),
+                ("store inside the checkout", Path(td)),
+            ):
+                env = {**os.environ, OPERATOR_TOKENS_ROOT_ENV: str(store)}
+                with patch.dict(os.environ, env, clear=True):
+                    command = f"cat {store}/o.txt"
+                    self.assertEqual(
+                        _command_reads_protected_host_path(
+                            command, command.split(), repo_root,
+                            protected_host_read_roots()),
+                        store.resolve(), msg=label)
+
+    def test_a_symlinked_relocated_store_is_still_never_dropped(self) -> None:
+        """`_resolve_lenient` in `never_dropped`, witnessed. It is a FAIL-OPEN without it.
+
+        `protected_host_read_roots` hands out RESOLVED paths; `operator_tokens_root()`
+        returns a merely-`.absolute()` one. Compare the two unresolved and a store reached
+        through a symlink is a different string from the entry in the list, so the
+        containment rule — which spares a CREDENTIAL root overlapping the checkout because
+        the bind side already refused it — drops the token store instead of sparing it.
+
+        Measured before this test existed: with the store at `<td>/link/store` where
+        `link -> <td>/real` and the checkout at `<td>/real`, deleting `_resolve_lenient`
+        from `never_dropped` turned `cat <td>/real/store/o.txt` from BLOCK to ALLOW while
+        `test_hooks_common.py`, `test_operator_private_root.py`, `test_run_workflow.py`
+        and `test_orchestration_runtime.py` all stayed green (1940 tests). That is the
+        shape this repository has already paid for once: a mechanism whose justification
+        is written down and whose behaviour nothing runs.
+
+        The `/tmp`-is-a-symlink host is not hypothetical (macOS, and any `TMPDIR` under
+        one), but this test does not depend on the host having one — it builds the symlink
+        itself, which is the only way the property is observable here.
+        """
+        from tools.hooks.common import (
+            OPERATOR_TOKENS_ROOT_ENV,
+            _command_reads_protected_host_path,
+            protected_host_read_roots,
+        )
+        with tempfile.TemporaryDirectory() as td:
+            real = Path(td) / "real"
+            (real / "store").mkdir(parents=True)
+            link = Path(td) / "link"
+            try:
+                link.symlink_to(real, target_is_directory=True)
+            except (OSError, NotImplementedError):
+                self.skipTest("symlink not supported on this filesystem")
+            spelled = link / "store"
+            resolved = spelled.resolve()
+            self.assertNotEqual(str(spelled), str(resolved),
+                                "the fixture did not build the two forms this pins")
+            env = {**os.environ, OPERATOR_TOKENS_ROOT_ENV: str(spelled)}
+            with patch.dict(os.environ, env, clear=True):
+                command = f"cat {resolved}/o.txt"
+                for label, repo_root in (
+                    ("checkout inside the store", resolved / "checkout"),
+                    ("store inside the checkout", real),
+                ):
+                    self.assertEqual(
+                        _command_reads_protected_host_path(
+                            command, command.split(), repo_root,
+                            protected_host_read_roots()),
+                        resolved, msg=label)
+
+    def test_a_symlinked_relocated_store_keeps_the_operator_secret_policy(self) -> None:
+        """`_resolve_lenient` in the POLICY branch, witnessed. It is a false record without it.
+
+        The second use of the same helper, and the second unwitnessed mechanism a review
+        round measured: `tokens_root = _resolve_lenient(operator_tokens_root())` in
+        `evaluate_common_policy`. Delete the call and `matched_root` — which arrives
+        resolved — no longer equals the unresolved override, so a read of the store is
+        reported as `forbid_backend_credential_direct_read`. Blocked either way; the
+        damage is a wrong policy id in the audit log, which is the exact class this branch
+        exists to keep straight.
+
+        The checkout is OUTSIDE the store here, so the containment rule is not what is
+        being observed — this is attribution alone.
+        """
+        from tools.hooks.common import OPERATOR_TOKENS_ROOT_ENV
+        with tempfile.TemporaryDirectory() as td:
+            home, repo, _c, _x, _s = self._fixture(td)
+            real = Path(td) / "real"
+            (real / "store").mkdir(parents=True)
+            link = Path(td) / "link"
+            try:
+                link.symlink_to(real, target_is_directory=True)
+            except (OSError, NotImplementedError):
+                self.skipTest("symlink not supported on this filesystem")
+            spelled = link / "store"
+            resolved = spelled.resolve()
+            self.assertNotEqual(str(spelled), str(resolved))
+            env = {"ATMOFAB_WORKFLOW_MODE": "1", "ATMOFAB_ORCHESTRATION_ID": "o",
+                   "HOME": str(home),
+                   "ATMOFAB_WORKFLOW_HOMES_ROOT": str(home / ".atmofab" / "homes"),
+                   OPERATOR_TOKENS_ROOT_ENV: str(spelled)}
+            with patch.dict(os.environ, env, clear=False):
+                decision = evaluate_common_policy(HookInput(
+                    event_name=HookEventName.PRE_COMMAND_EXECUTE, backend="claude",
+                    payload={"command": f"cat {resolved}/o.txt", "repo_root": str(repo)},
+                    command=f"cat {resolved}/o.txt"))
+            self.assertEqual(decision.action, HookDecisionAction.BLOCK)
+            detail = decision.audit_detail or {}
+            self.assertEqual(detail.get("policy"), "forbid_operator_secret_direct_read")
+            # The audit record has to name WHICH protected root was touched; the two
+            # policies are one class now, so the id alone no longer says it.
+            self.assertEqual(detail.get("protected_root"), str(resolved))
+
+    def test_resolve_lenient_follows_a_symlink_and_survives_an_unresolvable_path(self) -> None:
+        """The helper itself, both branches.
+
+        Pinned here as well as at its two call sites because a single-token deletion —
+        reducing the body to `return path` — removes THREE mechanisms at once (the dedup
+        loop in `protected_host_read_roots`, the containment identity, and the policy
+        attribution). A reviewer's mutant did exactly that with 1940 tests green.
+
+        Both branches: the resolving one, and the fallback that keeps the resolver total.
+        A hook that raises while deciding a read is worse than one that guards a path
+        nobody writes to, so an OS refusal must come back as the path itself.
+        """
+        from tools.hooks.common import _resolve_lenient
+        with tempfile.TemporaryDirectory() as td:
+            real = Path(td) / "real"
+            real.mkdir()
+            link = Path(td) / "link"
+            try:
+                link.symlink_to(real, target_is_directory=True)
+            except (OSError, NotImplementedError):
+                self.skipTest("symlink not supported on this filesystem")
+            self.assertEqual(_resolve_lenient(link / "x"), real / "x")
+        broken = Path("/proc/self/cwd-does-not-exist")
+        with patch.object(Path, "resolve", side_effect=OSError("refused")):
+            self.assertEqual(_resolve_lenient(broken), broken)
+
+    def test_the_token_store_is_a_protected_root_with_and_without_the_override(self) -> None:
+        """Whatever `operator_tokens_root()` returns is in the list, both ways.
+
+        The membership is what makes the tree that gets created the tree that gets
+        guarded (issue #132). Asserted against the resolver rather than against a
+        transcribed path, so a later change to the default layout moves both sides.
+        """
+        from tools.hooks.common import (
+            OPERATOR_TOKENS_ROOT_ENV,
+            operator_tokens_root,
+            protected_host_read_roots,
+        )
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td) / "home"
+            relocated = Path(td) / "elsewhere" / "tokens"
+            base = {k: v for k, v in os.environ.items()
+                    if k != OPERATOR_TOKENS_ROOT_ENV}
+            for label, extra in (
+                ("default", {}),
+                ("relocated", {OPERATOR_TOKENS_ROOT_ENV: str(relocated)}),
+            ):
+                with patch.dict(os.environ, {**base, "HOME": str(home), **extra},
+                                clear=True):
+                    self.assertIn(operator_tokens_root().resolve(),
+                                  protected_host_read_roots(), msg=label)
 
 
 class ForbidOperatorSecretReadTests(unittest.TestCase):
