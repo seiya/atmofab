@@ -189,6 +189,31 @@ not.
   block message for everything under it. The read stays refused; the id in the message changes,
   and any test or document that named the old id becomes false. Check both, and keep a control
   read that must still be attributed to the root above
+- **Enumerate the LAYERS that enforce the claim, not only the configurations that move the
+  thing.** The bullets above ask "what can move it"; this one asks "who else decides whether a
+  leaf may reach it", and PR #140 shows the two are different questions. Adding
+  `ATMOFAB_OPERATOR_TOKENS_ROOT` to the dismiss-violation token store re-ran the whole
+  configuration enumeration against the Bash guard, correctly — every spelling of a relocated
+  store blocks. It did not ask the READ TOOL, which decides the same question from a different
+  list: `_write_read_access_manifest` grants every agentic leaf `docs/` and `spec/`
+  unconditionally and **never consults `protected_host_read_roots` at all**. So a store at
+  `<repo>/spec/tokens` was accepted and written to, and readable by every leaf — the relocator
+  and the `leaf shortcut` arrived together. Codex found it; a security axis that had driven 62
+  Bash spellings had not, because it was enumerating the surface it was pointed at. **The tell is
+  a protected-root list: if one exists, ask which readers consult it and which answer the same
+  question from somewhere else.** The fix that survives is the same shape as the resolver one —
+  refuse the configuration at creation, and COUPLE the premise (a test drives the real manifest
+  builder, so deleting `"spec/"` from the base roots turns the justification red instead of
+  leaving it unmotivated)
+- **A rule you fixed on one side can still be open on the other side of the same rule.** PR #86
+  closed this surface for the homes root's ENTRY in `protected_host_read_roots`. PR #140 found
+  the containment DROP — three lines away, the same list, the same root — still conditional on
+  the default location: the code's own justification was "dropping one costs attribution, not
+  enforcement, because this root still covers it", which is true only while the tree sits under
+  `~/.atmofab`. With the homes root containing the checkout a leaf could read a sibling
+  orchestration's transcript (measured). **When you close this surface for an entry, grep the
+  other decisions that name the same root** — membership, exemption, sort order, attribution —
+  and re-check each in the moved configuration
 
 ## Surface 10 — the tool declined to do the work and reported success
 

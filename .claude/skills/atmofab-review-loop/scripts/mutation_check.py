@@ -11,6 +11,10 @@ for a different reason than its name claims. Hunk-level reverting cannot see tha
 this with a mechanism-level deletion and with checking that each fixture has only one path
 to the outcome it asserts. See the skill's "Before you hand it over (round 0)".
 
+The worktrees are checked out at the range's END COMMIT, so this answers about the COMMIT and
+not about your working tree: an uncommitted test is not there, and the hunk it pins reports
+SURVIVED. Commit the tests before sweeping.
+
 The checkout is never touched: every mutation happens in a `git worktree` under
 `--workdir` (default `~/.cache/mutation-check`), with one scratch root per job under
 `$TMPDIR` (default: the platform's).

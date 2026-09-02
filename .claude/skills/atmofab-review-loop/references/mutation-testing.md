@@ -62,6 +62,29 @@ diff should key on STRUCTURE the format guarantees (a table with a separator row
 list entry) and never on prose. When the second version breaks the way the first did, that is the
 signal to declare the scope and stop, not to write a third.
 
+## An uncommitted pin reads as a survivor (PR #140, 2026-09-02)
+
+`main()` resolves `head` from the RIGHT side of `--range` and creates every job with
+`git worktree add --detach <wt> <head>`, so the run answers about the COMMIT, not about the
+checkout. Anything in the working tree — a test written but not yet staged — is not there.
+
+Hit on PR #140. A conftest hunk came back `SURVIVED` twice across two runs, and both times the
+pin that killed it existed already, in the working tree, uncommitted. Reverting the same hunk by
+hand against the checkout turned the file from 14 passed to 1 failed / 13 passed immediately.
+The wasted move was writing a second, weaker witness for a mechanism the first one already
+covered, on the strength of a survivor line.
+
+Measured rather than read from the source: with an untracked `tools/tests/_uncommitted_probe.txt`
+in the checkout and `--test-cmd "test -f tools/tests/_uncommitted_probe.txt"`, the run stops at
+**BASELINE RED** — the worktree does not have the file.
+
+The behaviour is right and should not change: a sweep that mixed in uncommitted work would
+report about a tree no one can reproduce. What the rule has to say is the ORDER — commit the
+tests, then sweep — and what to do when a survivor surprises you: revert that one hunk by hand
+against the working tree before believing it. Related to the stale-worktree episode below, and
+the opposite direction: there the worktree was too OLD to see the fix, here it is exactly right
+and too old to see the test.
+
 ## A stale worktree makes every mutant look killed (PR #67)
 
 The script runs a baseline unless you pass `--skip-baseline`; handwriting has no baseline at all.
