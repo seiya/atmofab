@@ -820,14 +820,27 @@ def audit(repo_root: Path, orchestration_id: str, *,
     parse_errors = hook_errs + phase_errs + runs_errs + inv_errs
     timeline = collect_fail_closed_timeline(hook_events, phase_log)
     unparseable_count = timeline.get("unparseable_timestamp_count", 0)
+    # Each best-effort section below still refuses to break the audit, but a swallowed
+    # failure is RECORDED in `diagnostic_failures` and surfaced by the renderer: a
+    # section that failed must not print its clean-negative sentence, which reads as a
+    # measurement that was made (issue #130).
+    diagnostic_failures: list[dict[str, str]] = []
+
+    def _record_failure(section: str, exc: BaseException) -> None:
+        diagnostic_failures.append(
+            {"section": section, "error_type": type(exc).__name__, "error": str(exc)}
+        )
+
     # Dangling launch (open active_child window with no child return / terminal
     # run): reproduces the post-mortem of an interrupted/hung child launch and
     # correlates the (ephemeral) ~/.claude transcript. None when the window is
-    # closed. Defensive: degrades to found=False rather than raising.
+    # closed — and also None when detection FAILED, which is why the failure is
+    # recorded rather than degraded silently to "no window".
     try:
         launch_incident = build_launch_incident(repo_root, orchestration_id)
-    except Exception:  # noqa: BLE001 - diagnostics must never break the audit
+    except Exception as exc:  # noqa: BLE001 - diagnostics must never break the audit
         launch_incident = None
+        _record_failure("launch_incident", exc)
     # Token-cost attribution (parent orchestration vs child subagents). Reads the durable
     # per-leaf `usage` rows in agent_runs.jsonl; the ~/.claude transcript reconstruction is
     # opt-in (see `collect_token_cost_summary`). Best-effort — must never break the audit.
@@ -836,15 +849,23 @@ def audit(repo_root: Path, orchestration_id: str, *,
             repo_root, meta, agent_runs, invalid_runs,
             from_transcripts=token_cost_from_transcripts,
         )
-    except Exception:  # noqa: BLE001 - diagnostics must never break the audit
-        token_cost_summary = {"available": False, "reason": "token-cost collection failed"}
+    except Exception as exc:  # noqa: BLE001 - diagnostics must never break the audit
+        token_cost_summary = {
+            "available": False,
+            "reason": f"token-cost collection failed: {type(exc).__name__}: {exc}",
+        }
+        _record_failure("token_cost_summary", exc)
     # Pure-leaf A/B rollup (Z2 M-E): executor selection + claude --version +
     # per-node bundle_meta/verdict_meta metrics. Reads only in-repo artifacts
     # (no ~/.claude). Best-effort — must never break the audit.
     try:
         pure_leaf_ab_summary = collect_pure_leaf_ab_summary(repo_root, orchestration_id, meta)
-    except Exception:  # noqa: BLE001 - diagnostics must never break the audit
-        pure_leaf_ab_summary = {"available": False, "reason": "pure-leaf A/B collection failed"}
+    except Exception as exc:  # noqa: BLE001 - diagnostics must never break the audit
+        pure_leaf_ab_summary = {
+            "available": False,
+            "reason": f"pure-leaf A/B collection failed: {type(exc).__name__}: {exc}",
+        }
+        _record_failure("pure_leaf_ab_summary", exc)
     # Persisted incident snapshots captured at run time. These survive after
     # `--resume` clears the active-child markers (live detection then returns None)
     # and after ~/.claude cleanup removes the transcript, so they are the durable
@@ -882,6 +903,7 @@ def audit(repo_root: Path, orchestration_id: str, *,
         "parse_error_count": len(parse_errors),
         "parse_errors": parse_errors,
         "unparseable_timestamp_count": unparseable_count,
+        "diagnostic_failures": diagnostic_failures,
     }
 
 
@@ -968,13 +990,35 @@ def _render_launch_incident(
     incident: dict[str, Any] | None,
     snapshots: list[dict[str, Any]] | None,
     lines: list[str],
+    failure: dict[str, str] | None = None,
 ) -> None:
-    """Render the dangling-launch section: live window and/or persisted snapshots."""
+    """Render the dangling-launch section: live window and/or persisted snapshots.
+
+    ``failure`` is the recorded `diagnostic_failures` entry for this section, if
+    detection raised. The clean negative ("No dangling active_child window detected")
+    is printed ONLY when detection actually ran — a failed detection reports UNKNOWN
+    instead, because `incident is None` alone cannot tell the two apart (issue #130).
+    """
     snapshots = snapshots or []
     lines.append("## Dangling launch (active_child window)")
     lines.append("")
 
-    if incident:
+    if failure:
+        lines.append(
+            f"Dangling-launch detection FAILED "
+            f"(`{failure.get('error_type')}: {failure.get('error')}`) — whether an "
+            "active_child window is open is **UNKNOWN**; do not read this section as "
+            "'no window'."
+        )
+        lines.append("")
+        if not snapshots:
+            return
+        lines.append(
+            "Captured incident snapshot(s) below are independent of the failed live "
+            "detection."
+        )
+        lines.append("")
+    elif incident:
         lines.append(
             "An open active_child window was found with no child return / terminal "
             "agent_runs row — the child launch never completed."
@@ -1339,9 +1383,26 @@ def _render_markdown(result: dict[str, Any]) -> str:
             )
     lines.append("")
 
+    failures = result.get("diagnostic_failures") or []
+    failures_by_section = {f.get("section"): f for f in failures if isinstance(f, dict)}
     _render_launch_incident(
-        result.get("launch_incident"), result.get("launch_incident_snapshots"), lines
+        result.get("launch_incident"), result.get("launch_incident_snapshots"), lines,
+        failure=failures_by_section.get("launch_incident"),
     )
+
+    if failures:
+        lines.append("## ⚠ diagnostic failures")
+        lines.append("")
+        lines.append(
+            "A best-effort section raised and was swallowed. Its result is UNKNOWN, not "
+            "negative — re-run after fixing the cause before concluding anything from it."
+        )
+        lines.append("")
+        for f in failures:
+            lines.append(
+                f"- `{f.get('section')}` — `{f.get('error_type')}: {f.get('error')}`"
+            )
+        lines.append("")
 
     if result.get("data_integrity_warning"):
         lines.append("## ⚠ data integrity warning")
@@ -1372,7 +1433,14 @@ def _render_markdown(result: dict[str, Any]) -> str:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Read-only orchestration audit helper")
+    parser = argparse.ArgumentParser(
+        description=(
+            "Read-only orchestration audit helper. Exits 2 when the audit cannot be "
+            "trusted at face value: log corruption was detected "
+            "(`data_integrity_warning`), or a best-effort diagnostic section raised and "
+            "its result is UNKNOWN rather than negative (`diagnostic_failures`)."
+        )
+    )
     parser.add_argument("--orchestration-id", required=True, help="Orchestration ID to audit")
     parser.add_argument(
         "--format",
@@ -1404,8 +1472,9 @@ def main() -> None:
     else:
         print(_render_markdown(result))
 
-    # Exit non-zero when log corruption is detected so CI / scripts can flag it.
-    if result.get("data_integrity_warning"):
+    # Exit non-zero when log corruption is detected, or when a diagnostic section
+    # failed and so may have printed a false negative, so CI / scripts can flag it.
+    if result.get("data_integrity_warning") or result.get("diagnostic_failures"):
         sys.exit(2)
 
 
