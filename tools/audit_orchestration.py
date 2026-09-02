@@ -944,7 +944,19 @@ def _render_incident_body(incident: dict[str, Any], lines: list[str]) -> None:
         dead_air = ct.get("dead_air_seconds")
         lines.append("Child subagent transcript (decisive evidence):")
         lines.append("")
-        lines.append(f"- transcript: `{ct.get('path')}` (matched via `{ct.get('match_method')}`)")
+        # The `matched via` clause is CANONICAL here for a closed two-part vocabulary.
+        # A LIVE incident is always `session_id` and additionally carries the projects
+        # root the hit came from (private home vs a pre-#63 operator home), which is
+        # what the `under` suffix shows. A PERSISTED `launch_incident.runtime.*.json`
+        # snapshot written by the host-session-era conductor carries `tool_use_id` or
+        # `arid_in_body` and no root; all 5 snapshots on this machine hold the former
+        # (measured 2026-09-02), which is why the clause stays instead of being deleted.
+        # No fallback for a missing key: `None` here is the visible signal that the live
+        # producer (`orchestration_diagnostics.build_launch_incident`) has regressed.
+        matched_root = ct.get("matched_projects_root")
+        under = f" under `{matched_root}`" if matched_root else ""
+        lines.append(
+            f"- transcript: `{ct.get('path')}` (matched via `{ct.get('match_method')}`{under})")
         lines.append(f"- last activity: `{ct.get('last_activity_ts')}` (event `{ct.get('last_event_type')}`)")
         last_tool = ct.get("last_tool_use") or {}
         if last_tool:

@@ -1165,6 +1165,63 @@ class LaunchIncidentSnapshotTests(unittest.TestCase):
         self.assertIn("no captured incident snapshots", md)
 
 
+class LiveIncidentMatchMethodTests(unittest.TestCase):
+    """The audit renders ``matched via `<match_method>```; the live route must fill it.
+
+    It did not, so an audit run exactly as `docs/RUNBOOK.md` §launch-incomplete-recovery
+    instructs printed ``matched via `None``` over a transcript it had genuinely FOUND
+    (measured on `orch_20260827T165705Z_af3800b5`, issue #137). This is the end-to-end
+    pin of the symptom: window -> located transcript -> rendered markdown.
+    """
+
+    ORCH_ID = "orch_test"
+
+    def test_a_live_incident_names_the_method_and_the_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            home = Path(tmp) / "home"
+            orch_root = repo / "workspace" / "orchestrations" / self.ORCH_ID
+            orch_root.mkdir(parents=True)
+            _open_dangling_window(orch_root)
+            proj = home / ".claude" / "projects" / "some-slug"
+            proj.mkdir(parents=True)
+            (proj / f"{CHILD_ARID}.jsonl").write_text(
+                json.dumps({"type": "assistant",
+                            "timestamp": "2026-06-16T12:38:47.000Z",
+                            "message": {"role": "assistant", "content": []}}) + "\n",
+                encoding="utf-8")
+            with mock.patch.dict(os.environ, {"HOME": str(home)}, clear=False):
+                result = audit(repo, self.ORCH_ID)
+                md = _render_markdown(result)
+        self.assertIsNotNone(result["launch_incident"])
+        self.assertIn("matched via `session_id` under `", md)
+        self.assertIn(str(home / ".claude" / "projects"), md)
+        self.assertNotIn("matched via `None`", md)
+
+
+class IncidentMatchMethodRenderTests(unittest.TestCase):
+    """The renderer's two shapes, side by side: the clause serves both."""
+
+    def _md(self, ct: dict) -> str:
+        lines: list[str] = []
+        _render_incident_body({"dangling_child": {}, "transcripts": {"child_transcript": ct}},
+                              lines)
+        return "\n".join(lines)
+
+    def test_a_legacy_snapshot_keeps_its_method_and_gains_no_root(self) -> None:
+        # A persisted `launch_incident.runtime.*.json` from the host-session era carries
+        # `tool_use_id` and no root. Rendering it must be untouched by the live fix.
+        md = self._md({"found": True, "path": "/x.jsonl", "match_method": "tool_use_id"})
+        self.assertIn("(matched via `tool_use_id`)", md)
+        self.assertNotIn("under `", md)
+
+    def test_a_live_incident_appends_the_root_it_matched_under(self) -> None:
+        md = self._md({"found": True, "path": "/x.jsonl", "match_method": "session_id",
+                       "matched_projects_root": "/home/op/.atmofab/homes/o/claude/projects"})
+        self.assertIn(
+            "(matched via `session_id` under `/home/op/.atmofab/homes/o/claude/projects`)", md)
+
+
 class LegacyIncidentApiErrorRenderTests(unittest.TestCase):
     def test_renders_api_error_from_raw_tail_when_structured_field_missing(self) -> None:
         """A legacy snapshot predating the structured api_error field still carries the
