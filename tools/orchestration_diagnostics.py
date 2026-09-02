@@ -47,7 +47,7 @@ import re
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 # The canonical leaf-usage shape lives in its own module: it is the contract the conductor,
 # the HTTP transport and the audit all record against, where THIS module is post-mortem
@@ -414,8 +414,35 @@ def summarize_transcript_tail(path: Path, *, n: int = 40) -> dict[str, Any]:
     }
 
 
-def _leaf_transcript_path(child_arid: str, repo_root: Path,
-                          orchestration_id: str | None = None) -> Path | None:
+# The vocabulary of `match_method` is closed, and the two halves have different
+# owners. LIVE incidents are always `session_id`: the conductor pins the leaf's
+# Claude session id to its agent_run_id (`claude --session-id <arid>`), so the
+# lookup below is an exact filename match on that id. `tool_use_id` /
+# `arid_in_body` belong ONLY to persisted `launch_incident.runtime.*.json`
+# snapshots written by the host-session-era conductor (`resolve_transcripts`,
+# deleted in `977bd75`); nothing produces them now, and the audit renderer still
+# has to display them. See `tools/audit_orchestration.py::_render_incident_body`.
+LEAF_TRANSCRIPT_MATCH_METHOD = "session_id"
+
+
+class LeafTranscriptMatch(NamedTuple):
+    """Where a leaf transcript was found, not just which file it is.
+
+    ``projects_root`` is the root returned by ``claude_leaf_projects_roots`` that
+    actually held the hit. The operator's ``~/.claude/projects`` answers for TWO live
+    cases, not only for history: a PURE leaf is prepared no private home at all (only
+    the agentic shape gets one, issue #63), so it writes there on a current run, and so
+    does an agentic run recorded before that move. The path itself is self-describing,
+    which is why no label is attached to it: labelling would mean duplicating the
+    resolver's internal knowledge of which home is which.
+    """
+
+    path: Path
+    projects_root: Path
+
+
+def _locate_leaf_transcript(child_arid: str, repo_root: Path,
+                            orchestration_id: str | None = None) -> LeafTranscriptMatch | None:
     """Locate a conductor-spawned leaf's OWN transcript, or ``None``.
 
     The conductor pins each leaf's Claude session id to its ``agent_run_id``
@@ -426,8 +453,10 @@ def _leaf_transcript_path(child_arid: str, repo_root: Path,
     slightly different cwd slug is still found; the arid (a uuid) is unique, so the
     wildcard cannot collide across projects. Both the orchestration's private home
     (issue #63) and the operator's ``~/.claude`` are searched, through the canonical
-    ``claude_leaf_projects_roots`` resolver — a run that predates the private home
-    must stay auditable.
+    ``claude_leaf_projects_roots`` resolver — a PURE leaf writes there on a current
+    run, and a run predating the private home must stay auditable. Returns WHICH root
+    held the hit alongside the path, because an incident record that says only "found"
+    cannot tell an agentic leaf's private-home hit from an operator-home one.
     """
     arid = str(child_arid or "").strip()
     if not arid:
@@ -442,7 +471,7 @@ def _leaf_transcript_path(child_arid: str, repo_root: Path,
         except OSError:
             continue
         if matches:
-            return matches[0]
+            return LeafTranscriptMatch(path=matches[0], projects_root=projects)
     return None
 
 
@@ -889,10 +918,15 @@ def build_launch_incident(
     if dangling is None:
         return None
 
-    transcript_path = _leaf_transcript_path(
+    match = _locate_leaf_transcript(
         dangling["agent_run_id"], repo_root, orchestration_id)
-    if transcript_path is not None:
-        child = summarize_transcript_tail(transcript_path)
+    if match is not None:
+        child = summarize_transcript_tail(match.path)
+        # `summarize_transcript_tail` is a tail summarizer and knows nothing about
+        # HOW the file was found, so the locator's answer is stamped here — the same
+        # split the deleted host-session code used.
+        child["match_method"] = LEAF_TRANSCRIPT_MATCH_METHOD
+        child["matched_projects_root"] = str(match.projects_root)
     else:
         child = {"found": False,
                  "reason": "no leaf transcript located (private home pruned, or "

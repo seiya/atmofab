@@ -346,6 +346,12 @@ class BuildLaunchIncidentTests(unittest.TestCase):
             child = incident["transcripts"]["child_transcript"]
             self.assertTrue(child["found"])
             self.assertEqual(child["last_tool_use"]["name"], "Bash")
+            # The live route must fill the key the audit renderer prints, and say which
+            # of the two projects roots answered. Before this was set the renderer put
+            # `matched via `None`` on a transcript it had genuinely found.
+            self.assertEqual(child["match_method"], "session_id")
+            self.assertEqual(child["matched_projects_root"],
+                             str(home / ".claude" / "projects"))
             self.assertTrue(incident["abort_marker"]["interrupted"])
             self.assertEqual(
                 incident["abort_marker"]["interrupt_text"], "[Request interrupted by user]"
@@ -466,8 +472,10 @@ class LeafTranscriptRootTests(unittest.TestCase):
             proj = home / "projects" / slug
             proj.mkdir(parents=True)
             (proj / "arid-1.jsonl").write_text("{}\n", encoding="utf-8")
-            found = diag._leaf_transcript_path("arid-1", repo, "o")
-            self.assertEqual(found, proj / "arid-1.jsonl")
+            found = diag._locate_leaf_transcript("arid-1", repo, "o")
+            assert found is not None
+            self.assertEqual(found.path, proj / "arid-1.jsonl")
+            self.assertEqual(found.projects_root, home / "projects")
 
     def test_a_pre_move_transcript_in_the_operator_home_is_still_found(self) -> None:
         """A run recorded before the move must stay auditable."""
@@ -478,8 +486,15 @@ class LeafTranscriptRootTests(unittest.TestCase):
             proj.mkdir(parents=True)
             (proj / "arid-old.jsonl").write_text("{}\n", encoding="utf-8")
             with mock.patch.dict(os.environ, {"HOME": str(operator)}, clear=False):
-                found = diag._leaf_transcript_path("arid-old", repo, "o")
-            self.assertEqual(found, proj / "arid-old.jsonl")
+                found = diag._locate_leaf_transcript("arid-old", repo, "o")
+            assert found is not None
+            self.assertEqual(found.path, proj / "arid-old.jsonl")
+            # The root, not just the file: an operator reading the incident has to be
+            # able to tell an operator-home hit from a private-home one. This fixture
+            # is the pre-#63 case, but the same shape is what a PURE leaf produces on a
+            # current run, which `test_a_pure_leafs_hit_in_the_operator_home_names_that_root`
+            # drives end to end.
+            self.assertEqual(found.projects_root, operator / ".claude" / "projects")
 
     def test_the_projects_dir_prefers_the_private_home(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -936,7 +951,8 @@ class PureLeafMetaWriterReaderContractTest(unittest.TestCase):
         self.assertEqual(out["verify"]["result"], "pass")
 
 
-_DETECTION_PATH_FUNCS = ("build_launch_incident", "detect_dangling_active_child")
+_DETECTION_PATH_FUNCS = ("build_launch_incident", "detect_dangling_active_child",
+                         "_locate_leaf_transcript")
 
 
 def _blanket_swallows(source: str, funcs: tuple[str, ...]) -> list[str]:
@@ -1125,7 +1141,7 @@ class CollectorsDoNotSwallowTests(unittest.TestCase):
         The injected type is private to this test, which is what makes the check ask
         about a BLANKET swallow rather than about handling. A legitimate narrow handler —
         `detect_dangling_active_child` really does catch `OSError` around its pointer
-        read (`:155-158`), and `_leaf_transcript_path` catches `(OSError, ValueError)` —
+        read (`:155-158`), and `_locate_leaf_transcript` catches `(OSError, ValueError)` —
         does not catch `_Injected` and so is not refused. Only `except Exception`,
         `contextlib.suppress(Exception)`, or a bare `except` is, anywhere on the path.
 
