@@ -935,5 +935,25 @@ class PureLeafMetaWriterReaderContractTest(unittest.TestCase):
         self.assertEqual(out["verify"]["result"], "pass")
 
 
+class CollectorsDoNotSwallowTests(unittest.TestCase):
+    """Round 1 of #130's review: a mutant that wrapped `detect_dangling_active_child` in
+    `try/except Exception: return None` INSIDE `build_launch_incident` kept all 144 tests
+    green — and would restore issue #130's symptom exactly (a clean negative and exit 0),
+    because `audit()` records only what IT catches.
+
+    The invariant: the swallow lives at the `audit()` boundary, where it is recorded in
+    `diagnostic_failures`. This collector must let a failure out.
+    """
+
+    def test_build_launch_incident_propagates_a_detector_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            _open_dangling_window(_orch_root(repo))
+            with mock.patch.object(diag, "detect_dangling_active_child",
+                                   side_effect=RuntimeError("boom")), \
+                    self.assertRaises(RuntimeError):
+                diag.build_launch_incident(repo, ORCH_ID)
+
+
 if __name__ == "__main__":
     unittest.main()
