@@ -7,6 +7,7 @@ import contextlib
 import json
 import os
 import re
+import string
 import tempfile
 import time
 import unittest
@@ -3011,6 +3012,29 @@ class ForbidBackendCredentialReadTests(unittest.TestCase):
         """The root `_call` hands the hook — one spelling for both."""
         return os.getcwd()
 
+    def _char_absent_from(self, text: str) -> str:
+        """One character `text` does not contain — a marker a glob can match on.
+
+        A row that needs a substitution operand (`${X/<glob>/…}`) has to put a
+        character into the value that the rest of the value does not carry, or the
+        glob matches somewhere else. Spelling that character as a constant makes the
+        row depend on what `$HOME` happens to be: `${X/x*/…}` over `/export/home/u`
+        matches the `x` of `export`. Choosing it against the actual text keeps the
+        row about the glob.
+
+        The alphabet is the whole of `[A-Za-z0-9]`, not a handful of letters: a
+        fifteen-character pool was itself a partial function of the host, and a
+        `$HOME` carrying all fifteen made this helper `fail` — trading one red row
+        belonging to no change for another, which is the cost this class exists to
+        remove. A path would have to carry all 62 to reach the failure now, and the
+        `fail` stays rather than becoming a silent fallback: a marker that IS in the
+        value would make the row assert something else while still passing.
+        """
+        for candidate in string.ascii_letters + string.digits:
+            if candidate not in text:
+                return candidate
+        self.fail(f"no marker character available for {text!r}")
+
     @contextlib.contextmanager
     def _built_home(self, *, depth: int, subdirs: tuple[str, ...] = ()):
         """A `$HOME` and a checkout under it that this fixture BUILDS.
@@ -3037,6 +3061,16 @@ class ForbidBackendCredentialReadTests(unittest.TestCase):
         The credential paths themselves are NOT created: the guard matches a resolved
         path against the protected roots and never asks whether the file is there, which
         is what lets it block a read of a home the leaf has not created yet.
+
+        WHAT THIS FIXTURE DOES NOT MOVE: the process's working directory. `~+` IS `$PWD`
+        and `tools/hooks/common.py` expands it from `os.getcwd()`, so a `~+` row driven
+        here resolves against the real checkout while everything around it speaks about
+        the built home. Measured, from this checkout: `cat ~+/../../.claude.json` returns
+        no policy under this fixture's `$HOME` and `repo_root`, and blocks under the host's
+        — the row answers about the process's cwd either way, which is a relationship the
+        fixture does not build. The `~+` rows therefore stay on
+        `_relative_route_home`, which anchors on the cwd deliberately; do not move one in
+        here without making the fixture `chdir` as well.
         """
         with tempfile.TemporaryDirectory() as raw:
             home = Path(raw).resolve()
@@ -3307,9 +3341,10 @@ class ForbidBackendCredentialReadTests(unittest.TestCase):
         home while this predicate said nothing."""
         home = str(Path.home())
         head, last = home[:-1], home[-1]
+        marker = self._char_absent_from(home)
         for command in (
-            f"X={head}x; cat ${{X/x/{last}}}/.codex/auth.json",
-            f"X={head}x; cat ${{X//x/{last}}}/.claude.json",
+            f"X={head}{marker}; cat ${{X/{marker}/{last}}}/.codex/auth.json",
+            f"X={head}{marker}; cat ${{X//{marker}/{last}}}/.claude.json",
             f"X={home.upper()}; cat ${{X,,}}/.claude.json",
             f"X=zz{home}; cat ${{X#zz}}/.claude.json",
             f"X={home}zz; cat ${{X%zz}}/.claude.json",
@@ -3320,10 +3355,14 @@ class ForbidBackendCredentialReadTests(unittest.TestCase):
                 msg=command)
         # The operand of `/`, `#` and `%` is a GLOB in bash, not a literal.
         for command in (
-            f"X=/home/x; cat ${{X/x*/{Path.home().name}}}/.codex/auth.json",
+            # The `/` operand, spelled so the assertion does not depend on the
+            # SHAPE of `$HOME`: the old spelling rebuilt it as `/home/` plus its
+            # basename and was red on any host where that is not what `$HOME`
+            # is (see `_char_absent_from`).
+            f"X={home}{marker}{marker}; cat ${{X/{marker}*/}}/.codex/auth.json",
             f"X=abc{home}; cat ${{X#a*c}}/.claude.json",
             f"X={home}.tmp; cat ${{X%.t*}}/.claude.json",
-            f"X={home}zzz; cat ${{X%%z*}}/.claude.json",
+            f"X={home}{marker}{marker}{marker}; cat ${{X%%{marker}*}}/.claude.json",
         ):
             self.assertEqual(
                 self._policy(command),
@@ -3869,8 +3908,11 @@ class ForbidBackendCredentialReadTests(unittest.TestCase):
             "cd $HOME;cat .claude.json",
             "cat ~10/.claude.json",
             # An unexpanded `$H` is not a directory; accepting it as one
-            # discarded the resolved spelling behind it.
-            "H=/home/" + Path.home().name + "; cd $H && cat .claude.json",
+            # discarded the resolved spelling behind it. The literal is `$HOME`
+            # itself, not `/home/` plus its basename: the row is about the
+            # unexpanded `$H`, and rebuilding the path assumed a shape `$HOME`
+            # does not have on every host.
+            "H=" + str(Path.home()) + "; cd $H && cat .claude.json",
             # bash treats an empty or unresolvable `cd` operand as no operand at
             # all, which is `cd $HOME`.
             "cd $ATMOFAB_NO_SUCH_VAR && cat .claude.json",
