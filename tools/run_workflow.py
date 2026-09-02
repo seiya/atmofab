@@ -49,6 +49,7 @@ except ModuleNotFoundError:  # pragma: no cover - direct CLI execution
     # Re-probe so the in-function imports later in main() succeed.
     from tools import validate_pipeline_semantics as _probe  # noqa: F401
 
+from tools.hooks.common import operator_secret_root
 from tools.llm_config import (
     LlmConfig,
     LlmConfigError,
@@ -56,6 +57,19 @@ from tools.llm_config import (
     load_llm_config,
     resolve_default_config_path,
 )
+
+# The environment name that relocates the start-claim locks. The RESOLVER is below;
+# unlike the homes root and the token store it does not live in `tools/hooks/common.py`,
+# because the claims are not a protected read root and nothing in the hooks layer needs
+# to resolve them. What is shared with those two is the DEFAULT: it hangs off
+# `operator_secret_root()`, so the one place `~/.atmofab` is spelled decides where all
+# three subtrees go (issue #132).
+#
+# Why the claims are deliberately NOT protected: the files are 0-byte advisory flocks. A
+# leaf that reads one is no closer to reporting a substep done, which is the test
+# `AGENTS.md` §Development premises applies (rule 1-e) — so the answer is to name what
+# the leaf would gain and show it is nothing, not to add a guard entry.
+START_CLAIMS_ROOT_ENV = "ATMOFAB_START_CLAIM_ROOT"
 
 
 # Orchestration is conductor-only (the deterministic Python phase loop in
@@ -1560,6 +1574,33 @@ def _is_own_driver(meta: dict[str, Any], identity: dict[str, Any] | None) -> boo
     )
 
 
+def _start_claims_root() -> Path:
+    """`~/.atmofab/start_claims` — where the cold-start claim locks live.
+
+    A module-level function, not an expression inside `_claim_lock_path`, for two
+    reasons: the suite's session guard wraps it the way it wraps
+    `orchestration_runtime._workflow_homes_root`, and this is the one place the location
+    is decided.
+
+    `ATMOFAB_START_CLAIM_ROOT` relocates the whole set. It exists so a caller that
+    drives many throwaway repo roots — the test suite does exactly this — does not
+    accumulate one 0-byte file per (root, key) in the operator's home. Production
+    leaves it unset: one file per orchestration and per spec, which the OS releases
+    on process death, is the point.
+
+    `expanduser` before `absolute`, matching the two resolvers in
+    `tools/hooks/common.py`. It is a behaviour CHANGE: a quoted
+    `ATMOFAB_START_CLAIM_ROOT='~/claims'` used to become a literal `~` directory under
+    the caller's working directory, because the shell does not expand inside quotes.
+    Nothing validates an override here — a claim that cannot be taken degrades to
+    "proceed" by design (`_exclusive_claim`), so there is no failing closed to do.
+    """
+    override = os.environ.get(START_CLAIMS_ROOT_ENV, "").strip()
+    if override:
+        return Path(override).expanduser().absolute()
+    return operator_secret_root() / "start_claims"
+
+
 def _claim_lock_path(repo_root: Path, kind: str, key: str) -> Path:
     """Where a per-(repo, kind, key) start claim lives.
 
@@ -1571,14 +1612,7 @@ def _claim_lock_path(repo_root: Path, kind: str, key: str) -> Path:
     """
     digest = hashlib.sha256(
         f"{repo_root}\0{kind}\0{key}".encode("utf-8")).hexdigest()[:32]
-    # `ATMOFAB_START_CLAIM_ROOT` relocates the whole set. It exists so a caller that
-    # drives many throwaway repo roots — the test suite does exactly this — does not
-    # accumulate one 0-byte file per (root, key) in the operator's home. Production
-    # leaves it unset: one file per orchestration and per spec, which the OS releases
-    # on process death, is the point.
-    override = os.environ.get("ATMOFAB_START_CLAIM_ROOT", "").strip()
-    root = Path(override) if override else Path.home() / ".atmofab" / "start_claims"
-    return root / f"{kind}.{digest}.lock"
+    return _start_claims_root() / f"{kind}.{digest}.lock"
 
 
 @contextlib.contextmanager
