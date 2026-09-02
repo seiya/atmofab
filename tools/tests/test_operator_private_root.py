@@ -120,6 +120,79 @@ class OperatorTokenRootOverrideTests(unittest.TestCase):
             self.assertIn("operator token store", message)
             self.assertNotIn("home", message)
 
+    def test_a_token_store_inside_the_checkout_is_refused(self) -> None:
+        """The Bash guard is not the only layer, and it was the only one this rule had.
+
+        Found by Codex. `ATMOFAB_OPERATOR_TOKENS_ROOT=<repo>/spec/tokens` was accepted
+        and `init_orchestration` wrote the dismiss-violation token there — measured. The
+        token's whole design is that no read manifest reaches it
+        (`tools/orchestration_runtime.py::dismiss_violation` says so), and
+        `_write_read_access_manifest` grants EVERY agentic leaf `docs/` and `spec/`
+        unconditionally while the Read tool consults `protected_host_read_roots` not at
+        all. A leaf reading the token approves the `unauthorized_write_violation` its own
+        substep produced and reports the substep done — the shortcut at full severity.
+
+        `docs/RUNBOOK.md` warned against this configuration and named the WRONG cost
+        (recursive in-repo reads failing closed). That is what surface 9 looks like from
+        the inside: the closure was asserted for a configuration nobody had enumerated.
+
+        Only the INSIDE direction is refused. A store that CONTAINS the checkout keeps
+        its files outside the repository, where a repo-relative manifest cannot name
+        them; its cost is the fail-closed recursive read, and that stays documented
+        rather than refused. The symlinked spelling is included because the check
+        resolves — laundering the path through a link would otherwise be free.
+        """
+        with tempfile.TemporaryDirectory() as td, \
+                tempfile.TemporaryDirectory() as outside:
+            repo = Path(td) / "repo"
+            (repo / "spec").mkdir(parents=True)
+            inside = repo / "spec" / "tokens"
+            link = Path(outside) / "link_spec"
+            link.symlink_to(repo / "spec", target_is_directory=True)
+            for label, override in (("plain", inside), ("symlinked", link / "tokens")):
+                with self.subTest(spelling=label):
+                    with self.assertRaises(ValueError) as ctx:
+                        self._init_under(str(override), repo, oid="opr_inrepo")
+                    message = str(ctx.exception)
+                    self.assertIn("must not be inside the repository", message)
+                    self.assertIn(hooks_common.OPERATOR_TOKENS_ROOT_ENV, message)
+                    self.assertFalse(
+                        (repo / "workspace" / "orchestrations" / "opr_inrepo").exists())
+                    self.assertFalse(inside.exists())
+
+    def test_an_override_naming_an_existing_file_is_refused_before_the_first_write(self) -> None:
+        """The half-initialized run the POSITION of the refusal is supposed to prevent.
+
+        Found by Codex, and measured: an override naming an existing regular file passes
+        the absolute check and the parent-exists check, so `init_orchestration` ran to
+        completion through `workspace/orchestrations/<oid>/` and a `status: running`
+        meta — eleven directories and the metadata on disk — before
+        `operator_token_path.parent.mkdir(exist_ok=True)` raised `FileExistsError`. That
+        is exactly the state commit `ec6cec1` claims this call's position prevents, for
+        an input that call did not examine.
+
+        A run that looks started and has no token is a run whose violations the operator
+        cannot dismiss, and the failure it arrives as says nothing about the variable.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td) / "repo"
+            repo.mkdir()
+            for label, maker in (
+                ("regular file", lambda p: p.write_text("not a dir\n", encoding="utf-8")),
+                ("broken symlink", lambda p: p.symlink_to(Path(td) / "nothing-here")),
+            ):
+                target = Path(td) / f"store-{label.replace(' ', '-')}"
+                maker(target)
+                with self.subTest(kind=label):
+                    with self.assertRaises(ValueError) as ctx:
+                        self._init_under(str(target), repo, oid="opr_notdir")
+                    message = str(ctx.exception)
+                    self.assertIn("is not a directory", message)
+                    self.assertIn(hooks_common.OPERATOR_TOKENS_ROOT_ENV, message)
+                    self.assertFalse(
+                        (repo / "workspace" / "orchestrations" / "opr_notdir").exists(),
+                        "the refusal arrived after the run was half-created")
+
     def test_a_tilde_token_store_override_is_expanded(self) -> None:
         """`~` is expanded, and nothing else observes that.
 

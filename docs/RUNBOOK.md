@@ -478,32 +478,51 @@ for an operator with a specific reason; none is needed for an ordinary run. The 
 is deliberately not relocatable — it is the Bash read guard's anchor — and each name moves
 exactly one subtree.
 
-The homes one and the TOKEN one have the same **two preconditions, and neither is the
-one you would guess** (the claims root has neither: an unavailable claim degrades to
-"proceed" by design, so there is nothing to fail closed about):
+The homes one and the TOKEN one have the same **four preconditions, and none of them is
+the one you would guess** (the claims root has none of them: an unavailable claim
+degrades to "proceed" by design, so there is nothing to fail closed about — see the
+paragraph after the list for what that leaves):
 
 - the value must be an **absolute path**. A relative one does not stay relative — it is
   resolved against whichever process asks, and the conductor that creates a home and the
   hook process that forbids reading it need not share a working directory, so the two
   would guard and create different trees;
+- **it must not be inside the checkout**, and this is the one with a leaf on the other
+  side of it. The Bash read guard follows the resolver wherever it goes, but the **Read
+  tool is a different layer**: every agentic leaf's `allowed_read_roots` contains `docs/`
+  and `spec/` unconditionally, and that manifest does not consult the protected roots at
+  all. A token store at `<repo>/spec/tokens` is therefore readable by every leaf, and a
+  leaf holding the dismiss-violation token can approve its own
+  `unauthorized_write_violation`; a homes root there exposes every earlier leaf's
+  transcript the same way. Both are refused at creation, resolving symlinks so the path
+  cannot be laundered through one. A root that CONTAINS the checkout is a different
+  configuration and is NOT refused — its files stay outside the repository, where a
+  repo-relative manifest cannot name them — but it costs you every recursive in-repo read
+  (`grep -r … .`, `ls -R`), which fails closed because these roots are never dropped by
+  the containment rule;
 - the directory it names is created if absent, but its **parent must exist**, so a typo
   does not silently build a tree somewhere nobody looks. (That is also why the default
-  `~/.atmofab/homes` may be created from nothing while an override may not.)
+  `~/.atmofab/homes` may be created from nothing while an override may not.);
+- **if the path already exists it must be a directory.** A name that is a regular file
+  or a broken symlink passes every check above, and the creation call then fails after
+  the orchestration directory and its `running` metadata are on disk — a run that looks
+  started and has no token, whose violations you cannot dismiss.
 
-Two more things about a relocated **token store**, which the claims and homes trees do not
-share:
+One more thing about a relocated **token store**, which the claims and homes trees do not
+share: **`dismiss-violation` must be typed in a shell with the same
+`ATMOFAB_OPERATOR_TOKENS_ROOT` as the shell that started the run.** The store is
+per-environment and the command is typed by hand, so an export present in one terminal
+and absent in another sends the writer and the reader to two different directories. The
+refusal says which state the current shell is in, and says so before it suggests
+re-running init — following that first would mint a new token against a live run.
 
-- **`dismiss-violation` must be typed in a shell with the same `ATMOFAB_OPERATOR_TOKENS_ROOT`
-  as the shell that started the run.** The store is per-environment and the command is
-  typed by hand, so an export present in one terminal and absent in another sends the
-  writer and the reader to two different directories. The refusal says which state the
-  current shell is in, and says so before it suggests re-running init — following that
-  first would mint a new token against a live run;
-- **do not point it inside the checkout.** The store, like the root above it, is never
-  dropped by the containment rule that spares a credential home overlapping the
-  repository, so a store inside the checkout makes every recursive in-repo read
-  (`grep -r … .`, `ls -R`) fail closed. That is the designed behaviour, not a bug, and it
-  is the reason the default sits outside the repository.
+**`ATMOFAB_START_CLAIM_ROOT` is checked by nothing**, and that is the price of the claim
+being advisory: a claim that cannot be taken yields "proceed" rather than failing, so
+there is no refusal to hang the checks on. Pointing it inside the checkout is therefore
+possible and is a bad idea for a different reason from the other two — a 0-byte lock file
+created under the repository while a leaf is running lands in that leaf's terminal
+write-diff and is misattributed as an unauthorized write, which is the reason the claims
+live outside the repository at all.
 
 A relocated store stays fully guarded: it is an entry in `protected_host_read_roots` in its
 own right, returns the same `forbid_operator_secret_direct_read`, and — since `~/.atmofab/`

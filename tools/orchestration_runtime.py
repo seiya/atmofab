@@ -71,6 +71,7 @@ try:
         _ALLOWED_BYPRODUCT_EXTENSIONS,
         _ALLOWED_EXTENSIONLESS_BYPRODUCT_NAMES,
         _COMPILER_BYPRODUCT_EXTENSIONS,
+        _resolve_lenient,
         backend_credential_home_paths as _backend_credential_home_paths,
         operator_tokens_root as _hooks_operator_tokens_root,
         validate_pipeline_semantics_stage,
@@ -105,6 +106,7 @@ except ModuleNotFoundError:  # pragma: no cover - import bootstrap for direct CL
         _ALLOWED_BYPRODUCT_EXTENSIONS,
         _ALLOWED_EXTENSIONLESS_BYPRODUCT_NAMES,
         _COMPILER_BYPRODUCT_EXTENSIONS,
+        _resolve_lenient,
         backend_credential_home_paths as _backend_credential_home_paths,
         operator_tokens_root as _hooks_operator_tokens_root,
         validate_pipeline_semantics_stage,
@@ -16482,7 +16484,8 @@ def _operator_token_path(orchestration_id: str) -> Path:
 
 
 def _require_usable_private_root_override(env_name: str, root: Path, subject: str,
-                                          creator: str = "a home") -> None:
+                                          creator: str = "a home",
+                                          repo_root: Path | None = None) -> None:
     """Refuse an override that names a location this process cannot honour.
 
     `subject` names the tree in the operator's words ("isolated claude home root", "operator
@@ -16508,6 +16511,24 @@ def _require_usable_private_root_override(env_name: str, root: Path, subject: st
       * THE PARENT MUST EXIST. With an override in play only the root itself is created:
         the override names a location the caller chose, and silently building a deep tree
         under a typo'd path is the failure mode that costs most.
+      * NOT INSIDE THE CHECKOUT. This one is a leaf-facing rule and the others are not.
+        The Bash read guard covers the token store wherever it goes, but the READ TOOL is
+        a different layer: `_write_read_access_manifest` grants every agentic leaf
+        `docs/` and `spec/` unconditionally and never consults
+        `protected_host_read_roots`, so a store at `<repo>/spec/tokens` is readable by
+        every leaf — and a leaf that reads the dismiss-violation token can approve the
+        `unauthorized_write_violation` its own `substep` produced and report the substep
+        done. Found by Codex; measured before the refusal existed
+        (`init_orchestration` accepted it and wrote the token there). The same is true of
+        the homes root, whose relocator predates this rule: leaf transcripts under
+        `<repo>/spec/homes/<oid>/<backend>/projects/` would be Read-tool reachable, and
+        reading an earlier leaf's transcript is the past-run state the workflow forbids.
+        Measured for that caller too rather than argued from the first — both are refused.
+      * A REAL DIRECTORY. An override naming an existing regular file passes every check
+        above (its parent exists), and `mkdir(exist_ok=True)` then raises
+        `FileExistsError` AFTER `workspace/orchestrations/<oid>/` and a `running` meta
+        are on disk — exactly the half-initialized run the POSITION of this call is
+        supposed to prevent. Also found by Codex, and also measured.
     """
     raw_override = os.environ.get(env_name, "").strip()
     if not Path(raw_override).expanduser().is_absolute():
@@ -16517,11 +16538,29 @@ def _require_usable_private_root_override(env_name: str, root: Path, subject: st
             f"working directory, so the conductor that creates {creator} and the hook "
             "that forbids reading it would resolve different trees"
         )
+    if repo_root is not None:
+        repo_resolved = _resolve_lenient(Path(repo_root))
+        root_resolved = _resolve_lenient(root)
+        if root_resolved == repo_resolved or repo_resolved in root_resolved.parents:
+            raise ValueError(
+                f"{subject} must not be inside the repository: {root_resolved} is under "
+                f"{repo_resolved} (set by {env_name}). Every agentic leaf's read "
+                "manifest grants docs/ and spec/ unconditionally and the Read tool does "
+                "not consult the Bash guard's protected roots, so anything the workflow "
+                "keeps outside the checkout stops being out of reach the moment it moves "
+                "inside it. Point it at a directory outside the checkout"
+            )
     parent = root.parent
     if not parent.exists():
         raise ValueError(
             f"{subject}'s parent does not exist: {parent} "
             f"(set by {env_name})"
+        )
+    if (root.exists() or root.is_symlink()) and not root.is_dir():
+        raise ValueError(
+            f"{subject} is not a directory: {root} (set by {env_name}). Refused HERE, "
+            "before anything is created: the creation call would otherwise raise after "
+            "the orchestration directory and its running metadata are already on disk"
         )
 
 
@@ -16643,7 +16682,8 @@ def _create_workflow_backend_home(repo_root: Path, orchestration_id: str,
         # each names its own tree, because there are three relocatable ones and telling
         # an operator the wrong one is worse than two copies of the sentence.
         _require_usable_private_root_override(
-            WORKFLOW_HOMES_ROOT_ENV, root, f"isolated {label} home root")
+            WORKFLOW_HOMES_ROOT_ENV, root, f"isolated {label} home root",
+            repo_root=repo_root)
         ancestors.append((root, True))
     else:
         ancestors.append((root.parent, False))  # ~/.atmofab — mode not forced
@@ -19509,7 +19549,7 @@ def init_orchestration(
     if os.environ.get(OPERATOR_TOKENS_ROOT_ENV, "").strip():
         _require_usable_private_root_override(
             OPERATOR_TOKENS_ROOT_ENV, operator_token_path.parent,
-            "operator token store", creator="the token store")
+            "operator token store", creator="the token store", repo_root=repo_root)
     root = _orchestration_root(repo_root, orchestration_id)
     root.mkdir(parents=True, exist_ok=True)
     (repo_root / "workspace" / "tmp").mkdir(parents=True, exist_ok=True)

@@ -38061,15 +38061,23 @@ class DurableWorkflowHomesTests(unittest.TestCase):
         on a second launch they are found rather than made. A symlink placed at either
         level would otherwise decide where the home — and with it the credential bind
         destination — actually lands.
+
+        The symlink TARGET is a second temporary directory rather than one inside the
+        checkout, and that is load-bearing since the in-repo refusal landed: a homes root
+        that RESOLVES inside the checkout is refused earlier, by a different rule with a
+        different message, and this test would then be observing that one instead of the
+        ancestor check it names. `test_a_homes_root_inside_the_checkout_is_refused` is
+        where the in-repo rule is pinned.
         """
         from tools.orchestration_runtime import _prepare_claude_workflow_home
         for level in ("root", "orchestration"):
             with self.subTest(level=level):
-                with tempfile.TemporaryDirectory() as td:
+                with tempfile.TemporaryDirectory() as td, \
+                        tempfile.TemporaryDirectory() as outside:
                     self.addCleanup(_discard_isolated_homes, "orch_d")
                     _discard_isolated_homes("orch_d")
                     root = self._claude_repo(td)
-                    elsewhere = Path(td) / f"elsewhere_{level}"
+                    elsewhere = Path(outside) / f"elsewhere_{level}"
                     elsewhere.mkdir(mode=0o700)
                     homes_root = self._homes_root()
                     if level == "root":
@@ -38815,14 +38823,60 @@ class DurableWorkflowHomesTests(unittest.TestCase):
         """
         from tools.orchestration_runtime import (
             WORKFLOW_HOMES_ROOT_ENV, _prepare_claude_workflow_home)
-        with tempfile.TemporaryDirectory() as td:
+        # The missing path is OUTSIDE the checkout: an override inside it is refused by
+        # the in-repo rule first, which is a different refusal with a different message.
+        with tempfile.TemporaryDirectory() as td, \
+                tempfile.TemporaryDirectory() as outside:
             root = self._claude_repo(td)
-            missing = Path(td) / "no_such_parent" / "homes"
+            missing = Path(outside) / "no_such_parent" / "homes"
             with mock.patch.dict(
                     os.environ, {WORKFLOW_HOMES_ROOT_ENV: str(missing)}, clear=False):
                 with self.assertRaisesRegex(ValueError, "root's parent does not exist"):
                     _prepare_claude_workflow_home(root, "orch_d")
             self.assertFalse(missing.parent.exists())
+
+    def test_a_homes_root_inside_the_checkout_is_refused(self) -> None:
+        """The homes relocator can put every leaf transcript under a read-manifest root.
+
+        The sibling of the token-store rule, and MEASURED for this caller rather than
+        argued from that one: before the refusal existed,
+        `ATMOFAB_WORKFLOW_HOMES_ROOT=<repo>/spec/homes` was accepted and
+        `_create_workflow_backend_home` built the tree there. Every agentic leaf's
+        `allowed_read_roots` contains `docs/` and `spec/` unconditionally
+        (`_write_read_access_manifest`), and the Read tool does not consult
+        `protected_host_read_roots` at all — so `<repo>/spec/homes/<oid>/claude/projects/`
+        holds every earlier leaf's transcript inside a directory the next leaf may read.
+        A leaf taking that reads the producing leaf's reasoning, which is the past-run
+        state `docs/workflow/WORKFLOW_CORE.md` forbids because it shortens the route to
+        reporting a substep done.
+
+        Both directions of the containment are NOT symmetric and only one is refused: a
+        root that CONTAINS the checkout keeps the token/home files outside the repository,
+        where a repo-relative manifest cannot name them, and its cost — every recursive
+        in-repo read failing closed — is stated in `docs/RUNBOOK.md` rather than refused.
+        The symlink case is included because the check resolves: laundering the path
+        through a link is the evasion that would otherwise be free.
+        """
+        from tools.orchestration_runtime import (
+            WORKFLOW_HOMES_ROOT_ENV, _create_workflow_backend_home)
+        with tempfile.TemporaryDirectory() as td, \
+                tempfile.TemporaryDirectory() as outside:
+            repo = Path(td) / "repo"
+            (repo / "spec").mkdir(parents=True)
+            inside = repo / "spec" / "homes"
+            link = Path(outside) / "link_homes"
+            link.symlink_to(inside.parent, target_is_directory=True)
+            for label, override in (("plain", inside), ("symlinked", link / "homes")):
+                with self.subTest(spelling=label):
+                    with mock.patch.dict(
+                            os.environ, {WORKFLOW_HOMES_ROOT_ENV: str(override)},
+                            clear=False):
+                        with self.assertRaisesRegex(
+                                ValueError, "must not be inside the repository"):
+                            _create_workflow_backend_home(repo, "orch_d", "claude",
+                                                          "Claude")
+                    self.assertFalse(inside.exists(),
+                                     "the refusal must arrive before anything is made")
 
 
 class ClaudeIsolationProfileTests(unittest.TestCase):
