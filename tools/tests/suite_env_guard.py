@@ -36,7 +36,15 @@ BACKEND_CONFIG_HOME_ENV = ("CODEX_HOME", "CLAUDE_CONFIG_DIR")
 # collected afterwards; that is recorded as a rough edge in TODO.md rather than fixed.
 SUITE_OWNED_ENV = {
     "ATMOFAB_WORKFLOW_HOMES_ROOT":
-        "the `_redirect_workflow_homes_root` fixture in tools/tests/conftest.py, per test",
+        "the `_redirect_operator_private_roots` fixture in tools/tests/conftest.py, per "
+        "test (outside pytest: the module-level redirect in leaf_config_fixture.py)",
+    "ATMOFAB_OPERATOR_TOKENS_ROOT":
+        "the `_redirect_operator_private_roots` fixture in tools/tests/conftest.py, per "
+        "test (outside pytest: the module-level redirect in leaf_config_fixture.py)",
+    "ATMOFAB_START_CLAIM_ROOT":
+        "the `_redirect_operator_private_roots` fixture in tools/tests/conftest.py, per "
+        "test; ALSO set process-globally for the duration of test_run_workflow.py by its "
+        "`setUpModule` — a pre-existing setter this table did not declare",
     "ATMOFAB_DEP_READINESS_ALLOW_PERSISTED_FALLBACK":
         "a module-level `os.environ.setdefault` in test_orchestration_runtime.py and the "
         "three test_pure_leaf_* modules, so it appears once any of them is imported",

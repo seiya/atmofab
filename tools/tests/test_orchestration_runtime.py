@@ -119,6 +119,7 @@ from tools.tests.leaf_config_fixture import (
     isolated_homes_per_test_suite,
     redirect_isolated_homes_root_for_module,
     restore_isolated_homes_root_for_module,
+    _private_root_redirects,
 )
 from tools.tests.llm_samples import sample_config_with as _cfg
 # ONE answer to "can bwrap actually run here", shared with test_bwrap_simulation.py:
@@ -29511,6 +29512,22 @@ class RepairLegacyAgentRunsTests(unittest.TestCase):
 class DismissViolationTests(unittest.TestCase):
     """dismiss-violation operator gate + P2-B prior-dismissal evidence preservation."""
 
+    def _operator_home_env(self, home: Path):
+        """Patch `$HOME` and DROP the suite's token-store redirect, in one place.
+
+        These tests build `<home>/.atmofab/operator_tokens/<oid>.txt` by hand and then
+        expect `dismiss_violation` to find it — which is a statement about the DEFAULT
+        resolution. Since issue #133 the suite points `ATMOFAB_OPERATOR_TOKENS_ROOT` at
+        each test's `tmp_path`, and an override wins over `$HOME`, so leaving it in place
+        would send the reader to the redirect while the fixture wrote to the fake home:
+        every one of these would fail on the not-found branch instead of the branch it
+        names. `clear=True` over a filtered copy, rather than `clear=False`, so the drop
+        actually happens.
+        """
+        env = {k: v for k, v in os.environ.items()
+               if k != ort.OPERATOR_TOKENS_ROOT_ENV}
+        env["HOME"] = str(home)
+        return patch.dict(os.environ, env, clear=True)
     def _seed_violation(self, repo: Path, oid: str, arid: str, paths: list[str]) -> Path:
         from tools.orchestration_runtime import (
             _write_unauthorized_write_violation,
@@ -29624,7 +29641,7 @@ class DismissViolationTests(unittest.TestCase):
             tok_dir = home / ".atmofab" / "operator_tokens"
             tok_dir.mkdir(parents=True, exist_ok=True)
             (tok_dir / f"{oid}.txt").write_text("real-token", encoding="utf-8")
-            with patch.dict(os.environ, {"HOME": str(home)}):
+            with self._operator_home_env(home):
                 with self.assertRaisesRegex(ValueError, "does not match the stored"):
                     dismiss_violation(
                         repo_root=repo, orchestration_id=oid, agent_run_id=arid,
@@ -29645,7 +29662,7 @@ class DismissViolationTests(unittest.TestCase):
             tok_dir = home / ".atmofab" / "operator_tokens"
             tok_dir.mkdir(parents=True, exist_ok=True)
             (tok_dir / f"{oid}.txt").write_text("", encoding="utf-8")  # 0-byte
-            with patch.dict(os.environ, {"HOME": str(home)}):
+            with self._operator_home_env(home):
                 for cand in (" ", "", "anything"):
                     with self.assertRaisesRegex(ValueError, "empty or corrupt"):
                         dismiss_violation(
@@ -29665,7 +29682,7 @@ class DismissViolationTests(unittest.TestCase):
             repo1 = Path(tmp) / "r1"; repo1.mkdir()
             td = home / ".atmofab" / "operator_tokens"; td.mkdir(parents=True)
             broken = td / "orch_a.txt"; broken.write_text("", encoding="utf-8")
-            with patch.dict(os.environ, {"HOME": str(home)}):
+            with self._operator_home_env(home):
                 init_orchestration(repo_root=repo1, orchestration_id="orch_a",
                     spec_ref="spec/x.md", source_dependency_ref="spec/d.yaml")
             self.assertTrue(broken.read_text().strip())
@@ -29673,7 +29690,7 @@ class DismissViolationTests(unittest.TestCase):
             # valid → preserved
             repo2 = Path(tmp) / "r2"; repo2.mkdir()
             keep = td / "orch_b.txt"; keep.write_text("KEEP-123", encoding="utf-8")
-            with patch.dict(os.environ, {"HOME": str(home)}):
+            with self._operator_home_env(home):
                 init_orchestration(repo_root=repo2, orchestration_id="orch_b",
                     spec_ref="spec/x.md", source_dependency_ref="spec/d.yaml")
             self.assertEqual(keep.read_text(), "KEEP-123")
@@ -29690,7 +29707,7 @@ class DismissViolationTests(unittest.TestCase):
             tok_dir = home / ".atmofab" / "operator_tokens"
             tok_dir.mkdir(parents=True, exist_ok=True)
             (tok_dir / f"{oid}.txt").write_text("real-token", encoding="utf-8")
-            with patch.dict(os.environ, {"HOME": str(home)}):
+            with self._operator_home_env(home):
                 res = dismiss_violation(
                     repo_root=repo, orchestration_id=oid, agent_run_id=arid,
                     dismiss_reason="benign", paths=["a.txt", "b.txt"],
@@ -29716,7 +29733,7 @@ class DismissViolationTests(unittest.TestCase):
             tok_dir = home / ".atmofab" / "operator_tokens"
             tok_dir.mkdir(parents=True, exist_ok=True)
             (tok_dir / f"{oid}.txt").write_text("real-token", encoding="utf-8")
-            with patch.dict(os.environ, {"HOME": str(home)}):
+            with self._operator_home_env(home):
                 with self.assertRaisesRegex(ValueError, "not in the violation's"):
                     dismiss_violation(
                         repo_root=repo, orchestration_id=oid, agent_run_id=arid,
@@ -38524,39 +38541,82 @@ class DurableWorkflowHomesTests(unittest.TestCase):
     def test_a_module_run_outside_pytest_writes_nothing_into_the_home(self) -> None:
         """The module redirect, which the suite cannot observe from inside itself.
 
-        `tools/tests/conftest.py` redirects `ATMOFAB_WORKFLOW_HOMES_ROOT` for every test,
-        so under pytest the module-level redirect changes nothing and a mutant deleting
-        it stays green — while the thing it exists to prevent happens only where conftest
-        is NOT loaded. Two reviewers ran `env -u ATMOFAB_WORKFLOW_HOMES_ROOT python3 -m
-        unittest …`, the command this branch's own commit messages prescribe, and had to
-        prune entries out of the operator's real `~/.atmofab/homes` afterwards.
+        `tools/tests/conftest.py` redirects all three operator-private roots for every
+        test, so under pytest the module-level redirect changes nothing and a mutant
+        deleting it stays green — while the thing it exists to prevent happens only where
+        conftest is NOT loaded. Two reviewers ran `env -u ATMOFAB_WORKFLOW_HOMES_ROOT
+        python3 -m unittest …`, the command this branch's own commit messages prescribe,
+        and had to prune entries out of the operator's real `~/.atmofab/homes` afterwards.
 
-        So this witness leaves the process: it runs a class that relies on the module
-        redirect under plain `unittest`, with the variable cleared and `$HOME` pointed at
-        a temporary directory, and asserts that nothing was created under it. Delete the
-        redirect and `<fake home>/.atmofab/homes` appears.
+        So this witness leaves the process: it runs classes that rely on the module
+        redirect under plain `unittest`, with all three variables cleared and `$HOME`
+        pointed at a temporary directory, and asserts that `.atmofab` was not created
+        under it AT ALL — not just its `homes/` subtree.
 
-        `ClaudeWorkflowHomeTests` is the target on purpose: `DurableWorkflowHomesTests`
-        has its own `setUp` root and would pass either way.
+        TWO classes, because one observed only half the question. `ClaudeWorkflowHomeTests`
+        prepares a backend home and is the target for the homes redirect on purpose
+        (`DurableWorkflowHomesTests` has its own `setUp` root and would pass either way).
+        It calls `init_orchestration` nowhere, though — measured: under a fake `$HOME` at
+        `e0bae3d` it created no `.atmofab` at all, while `SetStatusIdempotencyTests`, which
+        calls `init_orchestration` without patching `$HOME`, left three
+        `.atmofab/operator_tokens/ssi_*.txt`. That is issue #133 in one line, and it is
+        why the token half needs its own class here.
         """
         import subprocess
         repo_root = Path(__file__).resolve().parents[2]
-        with tempfile.TemporaryDirectory() as td:
-            fake_home = Path(td) / "home"
-            fake_home.mkdir()
-            env = {k: v for k, v in os.environ.items()
-                   if k != ort.WORKFLOW_HOMES_ROOT_ENV}
-            env["HOME"] = str(fake_home)
-            env["PYTHONPATH"] = str(repo_root)
-            proc = subprocess.run(
-                [sys.executable, "-m", "unittest",
-                 "tools.tests.test_orchestration_runtime.ClaudeWorkflowHomeTests"],
-                cwd=str(repo_root), env=env, capture_output=True, text=True, timeout=300)
-            self.assertEqual(proc.returncode, 0,
-                             f"the class did not pass outside pytest:\n{proc.stderr[-2000:]}")
-            self.assertFalse(
-                (fake_home / ".atmofab" / "homes").exists(),
-                "a test module wrote isolated homes into $HOME when run outside pytest")
+        redirected = {name for name, _sub in _private_root_redirects()}
+        for target in ("ClaudeWorkflowHomeTests", "SetStatusIdempotencyTests"):
+            with tempfile.TemporaryDirectory() as td:
+                fake_home = Path(td) / "home"
+                fake_home.mkdir()
+                env = {k: v for k, v in os.environ.items() if k not in redirected}
+                env["HOME"] = str(fake_home)
+                env["PYTHONPATH"] = str(repo_root)
+                proc = subprocess.run(
+                    [sys.executable, "-m", "unittest",
+                     f"tools.tests.test_orchestration_runtime.{target}"],
+                    cwd=str(repo_root), env=env, capture_output=True, text=True,
+                    timeout=300)
+                self.assertEqual(
+                    proc.returncode, 0,
+                    f"{target} did not pass outside pytest:\n{proc.stderr[-2000:]}")
+                self.assertFalse(
+                    (fake_home / ".atmofab").exists(),
+                    f"{target} wrote into $HOME/.atmofab when run outside pytest: "
+                    f"{sorted(p.name for p in (fake_home / '.atmofab').glob('*'))}"
+                    if (fake_home / ".atmofab").exists() else "")
+
+    def test_the_suites_own_token_store_guard_raises_before_anything_is_created(self) -> None:
+        """The twin of the homes-guard witness, for the token store.
+
+        Same shape and same reason: a guard nothing observes is a claim, not a layer, and
+        this one is what stops a test from depositing an operator token in the real
+        `~/.atmofab/operator_tokens`. The redirect is removed so the resolver falls back
+        to `operator_secret_root()/operator_tokens`, and both halves of "prevent, not
+        detect" are asserted — it raises, and nothing appeared in the operator's tree.
+
+        There is deliberately NO write-path witness (a test that drives
+        `init_orchestration` at the real root and expects the guard to stop it). If the
+        marker check were ever to misfire, that test would write an operator token into
+        the operator's own store — the exact residue this guard exists to prevent. The
+        handler-side pin is carried by
+        `test_the_three_writers_and_the_guard_resolve_one_root` and the constant-census
+        test in `tools/tests/test_operator_private_root.py`.
+        """
+        import tools.orchestration_runtime as runtime
+        from tools.hooks.common import operator_secret_root
+        if not getattr(runtime._operator_tokens_root,
+                       "_atmofab_private_root_guard_installed", False):
+            self.skipTest("the suite's operator-private-root guard is not installed")
+        real_root = operator_secret_root() / "operator_tokens"
+        existed_before = real_root.exists()
+        env = {k: v for k, v in os.environ.items()
+               if k != ort.OPERATOR_TOKENS_ROOT_ENV}
+        with mock.patch.dict(os.environ, env, clear=True):
+            with self.assertRaisesRegex(AssertionError, "operator's real secret root"):
+                runtime._operator_tokens_root()
+        self.assertEqual(real_root.exists(), existed_before,
+                         "the guard let something be created in the operator's tree")
 
     def test_a_tilde_homes_root_override_is_expanded(self) -> None:
         """`~` is expanded, and nothing observed that either.
@@ -38619,11 +38679,13 @@ class DurableWorkflowHomesTests(unittest.TestCase):
         import tools.orchestration_runtime as runtime
         from tools.hooks.common import operator_secret_root
         if not getattr(runtime._workflow_homes_root,
-                       "_atmofab_homes_guard_installed", False):
+                       "_atmofab_private_root_guard_installed", False):
             # The subject of this test is a pytest fixture. Run under plain `unittest`
             # there is no guard to observe, and asserting anyway would fail for the
-            # absence of the harness rather than for a defect.
-            self.skipTest("the suite's homes guard is not installed")
+            # absence of the harness rather than for a defect. ONE marker spelling for
+            # all three roots (issue #133), so a witness cannot ask about a name that
+            # exists only on the resolver it happens to wrap.
+            self.skipTest("the suite's operator-private-root guard is not installed")
         real_root = operator_secret_root() / "homes"
         existed_before = real_root.exists()
         env = {k: v for k, v in os.environ.items()

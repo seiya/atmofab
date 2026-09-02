@@ -45,15 +45,22 @@ def seed_codex_hooks(repo_root: Path) -> Path:
 
 
 # --------------------------------------------------------------------------------------
-# Isolated-homes redirect for test MODULES, not only for pytest.
+# Operator-private-root redirect for test MODULES, not only for pytest.
 #
-# `tools/tests/conftest.py` points `ATMOFAB_WORKFLOW_HOMES_ROOT` at each test's `tmp_path`
-# and raises if a prepared home lands in the operator's real `~/.atmofab`. Neither half
-# is loaded by plain `unittest`, so any module that prepares a backend home writes into
-# the operator's durable tree when run that way — and this branch's own commit messages
-# prescribe `env -u ATMOFAB_WORKFLOW_HOMES_ROOT python3 -m unittest …` as the way to check
-# the production resolution. Two reviewers had to prune entries out of the real tree
-# afterwards.
+# THREE subtrees of `~/.atmofab` are written by this repository, each behind one
+# environment name, and all three are redirected together here — issue #133 is what
+# happened while only the first was: a suite run deposited a few hundred operator tokens
+# into the operator's real store (measured at `e0bae3d`: 249 files from
+# `test_orchestration_runtime.py` alone), and the guard built to stop exactly that
+# covered the homes and nothing else.
+#
+# `tools/tests/conftest.py` points these names at each test's `tmp_path` and raises if a
+# resolver is about to return the operator's real `~/.atmofab`. Neither half is loaded by
+# plain `unittest`, so any module that prepares a backend home or calls
+# `init_orchestration` writes into the operator's durable tree when run that way — and
+# this branch's own commit messages prescribe `env -u ATMOFAB_WORKFLOW_HOMES_ROOT python3
+# -m unittest …` as the way to check the production resolution. Two reviewers had to
+# prune entries out of the real tree afterwards.
 #
 # A per-CLASS `setUp` was the first fix and covered one class of the several that prepare
 # homes. This is per MODULE, so a class added later is covered without anyone remembering
@@ -65,14 +72,34 @@ def seed_codex_hooks(repo_root: Path) -> Path:
 #
 # WITNESSED FROM OUTSIDE THE PROCESS, because it cannot be witnessed from inside: under
 # pytest conftest redirects anyway, so a mutant deleting this changes nothing that the
-# suite can see. `test_a_module_run_outside_pytest_writes_nothing_into_the_home` runs a
-# dependent class under plain `unittest` in a subprocess with a fake `$HOME` and asserts
-# that `.atmofab/homes` never appears there.
+# suite can see. `test_a_module_run_outside_pytest_writes_nothing_into_the_home` runs two
+# dependent classes under plain `unittest` in a subprocess with a fake `$HOME` and
+# asserts that `.atmofab` never appears there at all — one of them prepares a home, the
+# other calls `init_orchestration`, and until the second was added the witness observed
+# only the homes half.
 _MODULE_HOMES_REDIRECTS: dict[str, tuple] = {}
 
 
+def _private_root_redirects() -> tuple[tuple[str, str], ...]:
+    """`(environment name, default subdirectory)` for every relocatable subtree.
+
+    Imported lazily: `tools.run_workflow` pulls in the llm-config layer, and this module
+    is imported by fixtures that have no other reason to.
+    """
+    from tools.orchestration_runtime import (
+        OPERATOR_TOKENS_ROOT_ENV,
+        WORKFLOW_HOMES_ROOT_ENV,
+    )
+    from tools.run_workflow import START_CLAIMS_ROOT_ENV
+    return (
+        (WORKFLOW_HOMES_ROOT_ENV, "homes"),
+        (OPERATOR_TOKENS_ROOT_ENV, "operator_tokens"),
+        (START_CLAIMS_ROOT_ENV, "start_claims"),
+    )
+
+
 def isolated_homes_per_test_suite(tests):
-    """`load_tests` wrapper giving each test its own isolated-homes root.
+    """`load_tests` wrapper giving each test its own operator-private roots.
 
     The module-level redirect below makes the operator's tree SAFE outside pytest; it
     does not make the module PASS there, because one root shared by a whole module
@@ -91,7 +118,8 @@ def isolated_homes_per_test_suite(tests):
     import os
     import tempfile
     import unittest
-    from tools.orchestration_runtime import WORKFLOW_HOMES_ROOT_ENV
+
+    redirects = _private_root_redirects()
 
     class _PerTestHomesRoot(unittest.TestSuite):
         def run(self, result, debug=False):  # noqa: D102 - unittest protocol
@@ -99,17 +127,20 @@ def isolated_homes_per_test_suite(tests):
                 if result.shouldStop:
                     break
                 with tempfile.TemporaryDirectory(prefix="atmofab-test-homes-") as td:
-                    root = Path(td) / "homes"
-                    root.mkdir(mode=0o700)
-                    previous = os.environ.get(WORKFLOW_HOMES_ROOT_ENV)
-                    os.environ[WORKFLOW_HOMES_ROOT_ENV] = str(root)
+                    previous = {}
+                    for env_name, subdir in redirects:
+                        root = Path(td) / subdir
+                        root.mkdir(mode=0o700)
+                        previous[env_name] = os.environ.get(env_name)
+                        os.environ[env_name] = str(root)
                     try:
                         test(result)
                     finally:
-                        if previous is None:
-                            os.environ.pop(WORKFLOW_HOMES_ROOT_ENV, None)
-                        else:
-                            os.environ[WORKFLOW_HOMES_ROOT_ENV] = previous
+                        for env_name, prior in previous.items():
+                            if prior is None:
+                                os.environ.pop(env_name, None)
+                            else:
+                                os.environ[env_name] = prior
             return result
 
     flat = unittest.TestSuite()
@@ -127,27 +158,28 @@ def redirect_isolated_homes_root_for_module(module_name: str) -> None:
     """Call from a module's `setUpModule`; pair with the restore below."""
     import os
     import tempfile
-    from tools.orchestration_runtime import WORKFLOW_HOMES_ROOT_ENV
 
     tmp = tempfile.TemporaryDirectory(prefix="atmofab-test-homes-")
-    root = Path(tmp.name) / "homes"
-    root.mkdir(mode=0o700)
-    _MODULE_HOMES_REDIRECTS[module_name] = (
-        tmp, os.environ.get(WORKFLOW_HOMES_ROOT_ENV))
-    os.environ[WORKFLOW_HOMES_ROOT_ENV] = str(root)
+    previous = {}
+    for env_name, subdir in _private_root_redirects():
+        root = Path(tmp.name) / subdir
+        root.mkdir(mode=0o700)
+        previous[env_name] = os.environ.get(env_name)
+        os.environ[env_name] = str(root)
+    _MODULE_HOMES_REDIRECTS[module_name] = (tmp, previous)
 
 
 def restore_isolated_homes_root_for_module(module_name: str) -> None:
     """Call from a module's `tearDownModule`."""
     import os
-    from tools.orchestration_runtime import WORKFLOW_HOMES_ROOT_ENV
 
     entry = _MODULE_HOMES_REDIRECTS.pop(module_name, None)
     if entry is None:
         return
     tmp, previous = entry
-    if previous is None:
-        os.environ.pop(WORKFLOW_HOMES_ROOT_ENV, None)
-    else:
-        os.environ[WORKFLOW_HOMES_ROOT_ENV] = previous
+    for env_name, prior in previous.items():
+        if prior is None:
+            os.environ.pop(env_name, None)
+        else:
+            os.environ[env_name] = prior
     tmp.cleanup()

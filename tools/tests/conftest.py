@@ -1,4 +1,4 @@
-"""Test-session hygiene for the isolated backend homes.
+"""Test-session hygiene for the OPERATOR-PRIVATE ROOT (`~/.atmofab`).
 
 `_prepare_claude_workflow_home` (and its codex twin) create a private per-orchestration
 home and nothing removes it. Since issue #64 that home is DURABLE — `<homes-root>/<oid>/
@@ -12,19 +12,36 @@ directories into the operator's real `~/.atmofab/homes` and leave them there —
 with the homes of real runs, where the prune tool would find them unverifiable (their
 "owner" checkouts are temporary directories that no longer exist).
 
+THREE SUBTREES, and the homes were only ever one of them (issue #133). This repository
+writes `homes/`, `operator_tokens/` and `start_claims/` under `~/.atmofab`, and until
+this file covered all three the other two went into the operator's real root on every
+run: measured at `e0bae3d`, `tools/tests/test_orchestration_runtime.py` alone left 249
+files in `~/.atmofab/operator_tokens/`, and `start_claims/` held 40. The guard built to
+stop exactly that covered the homes and nothing else — which is why the resolvers are
+named below rather than the trees.
+
 TWO LAYERS, and the second is the one that actually holds:
 
-  1. REDIRECT. A function-scoped autouse fixture points `ATMOFAB_WORKFLOW_HOMES_ROOT` at
-     a per-test `tmp_path`, so homes land where pytest already cleans up. Per-TEST rather
+  1. REDIRECT. A function-scoped autouse fixture points `ATMOFAB_WORKFLOW_HOMES_ROOT`,
+     `ATMOFAB_OPERATOR_TOKENS_ROOT` and `ATMOFAB_START_CLAIM_ROOT` at a per-test
+     `tmp_path`, so all three land where pytest already cleans up. Per-TEST rather
      than per-session on purpose: the home path is deterministic now, so two tests using
      the same fixed orchestration id would collide on the exclusive `os.mkdir` under a
      shared root.
-  2. ENFORCE, BEFORE THE FACT. A session-scoped guard wraps `_workflow_homes_root` — the
-     one function that decides WHERE a home goes — and raises if it is about to return
-     the operator's REAL homes root. The redirect is a default a test can undo
+  2. ENFORCE, BEFORE THE FACT. A session-scoped guard wraps the three functions that
+     decide WHERE each tree goes — `orchestration_runtime._workflow_homes_root`,
+     `orchestration_runtime._operator_tokens_root` and
+     `run_workflow._start_claims_root` — and raises if one is about to return something
+     inside the operator's REAL `~/.atmofab`. The redirect is a default a test can undo
      (`patch.dict(os.environ, ..., clear=True)` without re-setting the name is one line
      away), and this turns "the suite wrote into the operator's tree" from something
      noticed weeks later into a failure at the call that did it.
+
+     Guarding at the RESOLVER is also what makes this survive a fourth subtree: the
+     resolvers are the only spelling of the location (issue #132), so a writer that
+     appears later either goes through one of them or is caught by
+     `test_the_dot_atmofab_constant_is_spelled_once` in
+     `tools/tests/test_operator_private_root.py`.
 
      PREVENT, NOT DETECT, and the distinction was paid for: the first version of this
      guard wrapped the two PREPARERS and raised on the path they RETURNED, so by the time
@@ -34,10 +51,15 @@ TWO LAYERS, and the second is the one that actually holds:
      residue in the one tree whose retention is manual. Wrapping the resolver means the
      mutant that reaches past the redirect cannot create anything at all.
 
+     The rejected alternative for the two subtrees added later was to WATCH the real
+     root — a per-test mtime scan, or a before/after set difference. That is the same
+     answer the paragraph below rejects for the homes, for the same reason: it sweeps up
+     a run started WHILE the suite is running, and it notices after the file exists.
+
      "REAL" is load-bearing: the root is resolved ONCE, from the environment as the
      session starts, and NOT re-derived inside the wrapper. Several tests patch `$HOME`
      to a temporary directory precisely in order to exercise the default
-     `operator_secret_root()/homes` resolution; re-deriving would make the guard follow
+     `operator_secret_root()/<subtree>` resolution; re-deriving would make the guard follow
      them there and fail the very tests that prove the production path. What the guard
      is for is the operator's own home, and that one does not move while pytest runs.
 
@@ -192,48 +214,79 @@ def pytest_unconfigure(config) -> None:
 
 
 @pytest.fixture(autouse=True)
-def _redirect_workflow_homes_root(tmp_path, monkeypatch):
-    """Point every isolated backend home this test creates into `tmp_path`."""
-    from tools.orchestration_runtime import WORKFLOW_HOMES_ROOT_ENV
+def _redirect_operator_private_roots(tmp_path, monkeypatch):
+    """Point every tree this test writes under `~/.atmofab` into `tmp_path`.
 
-    root = tmp_path / "atmofab-homes"
-    root.mkdir(mode=0o700, exist_ok=True)
-    monkeypatch.setenv(WORKFLOW_HOMES_ROOT_ENV, str(root))
-    yield root
+    All THREE subtrees, not just the homes: the isolated backend homes, the operator
+    token store, and the start-claim locks. Only the first was redirected until issue
+    #133, and the other two were writing into the operator's real root the whole time
+    (measured at `e0bae3d`: `test_orchestration_runtime.py` alone left 249 files in
+    `~/.atmofab/operator_tokens/`, and `~/.atmofab/start_claims/` held 40).
+
+    Per-TEST rather than per-session on purpose: the home path is deterministic now, so
+    two tests using the same fixed orchestration id would collide on the exclusive
+    `os.mkdir` under a shared root.
+    """
+    from tools.tests.leaf_config_fixture import _private_root_redirects
+
+    roots = {}
+    for env_name, subdir in _private_root_redirects():
+        root = tmp_path / f"atmofab-{subdir}"
+        root.mkdir(mode=0o700, exist_ok=True)
+        monkeypatch.setenv(env_name, str(root))
+        roots[env_name] = root
+    yield roots
 
 
 @pytest.fixture(scope="session", autouse=True)
-def _forbid_isolated_homes_in_operator_secret_root():
-    """Fail any test about to resolve the isolated-homes root to the real `~/.atmofab`."""
+def _forbid_anything_in_operator_secret_root():
+    """Fail any test about to resolve one of the three roots to the real `~/.atmofab`."""
     import tools.orchestration_runtime as runtime
+    from tools import run_workflow
     from tools.hooks.common import operator_secret_root
 
     # Resolved ONCE, before any test can patch `$HOME` — see the module docstring.
     secret_root = operator_secret_root()
-    original = runtime._workflow_homes_root
 
-    def _guarded():
-        root = original()
-        try:
-            resolved = Path(root).resolve()
-        except (OSError, RuntimeError, ValueError):
-            resolved = Path(root)
-        if resolved == secret_root or secret_root in resolved.parents:
-            raise AssertionError(
-                f"a test resolved the isolated-homes root to {resolved}, inside the "
-                "operator's real secret root. Nothing has been created — the guard runs "
-                "before the directory would be. Keep "
-                f"{runtime.WORKFLOW_HOMES_ROOT_ENV} pointed at a temporary directory "
-                "(see tools/tests/conftest.py)."
-            )
-        return root
+    def _guarded(original, label, env_name):
+        def _wrapper():
+            root = original()
+            try:
+                resolved = Path(root).resolve()
+            except (OSError, RuntimeError, ValueError):
+                resolved = Path(root)
+            if resolved == secret_root or secret_root in resolved.parents:
+                raise AssertionError(
+                    f"a test resolved the {label} to {resolved}, inside the "
+                    "operator's real secret root. Nothing has been created — the guard "
+                    "runs before the directory would be. Keep "
+                    f"{env_name} pointed at a temporary directory "
+                    "(see tools/tests/conftest.py)."
+                )
+            return root
 
-    # Marked so a test can ask whether the guard is installed rather than inferring it
-    # from a function name. The witness for this guard must SKIP when run outside pytest,
-    # where conftest is not loaded and the thing it tests does not exist.
-    _guarded._atmofab_homes_guard_installed = True
-    runtime._workflow_homes_root = _guarded
+        # Marked so a test can ask whether the guard is installed rather than inferring
+        # it from a function name. ONE spelling for all three, so a witness cannot ask
+        # about a marker that exists only on the resolver it happens to name. The
+        # witnesses must SKIP when run outside pytest, where conftest is not loaded and
+        # the thing they test does not exist.
+        _wrapper._atmofab_private_root_guard_installed = True
+        return _wrapper
+
+    installed = [
+        (runtime, "_workflow_homes_root", "isolated-homes root",
+         runtime.WORKFLOW_HOMES_ROOT_ENV),
+        (runtime, "_operator_tokens_root", "operator token store",
+         runtime.OPERATOR_TOKENS_ROOT_ENV),
+        (run_workflow, "_start_claims_root", "start-claim root",
+         run_workflow.START_CLAIMS_ROOT_ENV),
+    ]
+    originals = [(module, attr, getattr(module, attr))
+                 for module, attr, _label, _env in installed]
+    for (module, attr, label, env_name), (_m, _a, original) in zip(installed, originals):
+        setattr(module, attr, _guarded(original, label, env_name))
     try:
         yield
     finally:
-        runtime._workflow_homes_root = original
+        for module, attr, original in originals:
+            setattr(module, attr, original)

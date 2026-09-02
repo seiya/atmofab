@@ -28,6 +28,7 @@ What is PINNED here and what is only SAMPLED:
 
 from __future__ import annotations
 
+import ast
 import os
 import tempfile
 import unittest
@@ -36,12 +37,16 @@ from unittest import mock
 
 import tools.hooks.common as hooks_common
 import tools.orchestration_runtime as ort
+from tools import run_workflow
 from tools.tests.leaf_config_fixture import (
+    _private_root_redirects,
     isolated_homes_per_test_suite,
     redirect_isolated_homes_root_for_module,
     restore_isolated_homes_root_for_module,
     seed_claude_leaf_config,
 )
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def setUpModule() -> None:
@@ -246,6 +251,160 @@ class DirectCliImportBootstrapTests(unittest.TestCase):
             self.assertIn(hooks_common.OPERATOR_TOKENS_ROOT_ENV,
                           completed.stdout + completed.stderr)
             self.assertFalse((repo / "workspace" / "orchestrations" / "opr_cli2").exists())
+
+
+class OnePrivateRootTests(unittest.TestCase):
+    """The three writers and the guard land in ONE root. This is issue #132 itself."""
+
+    def test_the_three_writers_and_the_guard_resolve_one_root(self) -> None:
+        """Move `$HOME` and all four follow, together.
+
+        The four sites are `init_orchestration` (writes the operator token),
+        `dismiss_violation` (reads it), `run_workflow._claim_lock_path` (writes a start
+        claim) and `protected_host_read_roots` (forbids a leaf from reading any of it).
+        Before this branch each of the first three built `Path.home() / ".atmofab" / …`
+        for itself, so they agreed by coincidence: the #127 rename moved one and the
+        others stayed. RED on `origin/main`.
+
+        Driven through the REAL functions, not through the resolvers — pinning at the
+        resolver would leave the wiring free to be deleted, which is the failure this
+        repository has already had (4 of 5 sites). `$HOME` is moved by patching
+        `_home_dir` in `tools.hooks.common`, the one function `operator_secret_root`
+        reads, and the three overrides are cleared so every default branch is taken.
+
+        The `~/.atmofab/homes` assertion is here for completeness of the root, not
+        because this change touched it.
+
+        Nothing else ties them.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            fake_home = Path(td) / "home"
+            fake_home.mkdir()
+            repo = Path(td) / "repo"
+            repo.mkdir()
+            seed_claude_leaf_config(repo)
+            oid, arid = "opr_one", "arid-1"
+            redirected = {name for name, _sub in _private_root_redirects()}
+            env = {k: v for k, v in os.environ.items() if k not in redirected}
+            with mock.patch.dict(os.environ, env, clear=True), \
+                    mock.patch.object(hooks_common, "_home_dir",
+                                      return_value=fake_home):
+                atmofab = (fake_home / ".atmofab").resolve()
+
+                # WRITER 1 — the operator token.
+                ort.init_orchestration(repo, oid, spec_ref="spec/x.yaml")
+                token = atmofab / "operator_tokens" / f"{oid}.txt"
+                self.assertTrue(token.is_file(), f"no token at {token}")
+                self.assertEqual(oct(token.stat().st_mode & 0o777), "0o600")
+                self.assertEqual(oct(token.parent.stat().st_mode & 0o777), "0o700")
+
+                # READER — the same file, resolved independently.
+                ort._violations_dir(repo, oid).mkdir(parents=True, exist_ok=True)
+                ort._write_unauthorized_write_violation(
+                    repo, oid, agent_run_id=arid, actor_role="step",
+                    actual_changed_paths=["a.txt"], unauthorized_paths=["a.txt"],
+                    output_refs=[], write_roots=[],
+                )
+                ort.dismiss_violation(
+                    repo, oid, agent_run_id=arid, dismiss_reason="benign",
+                    paths=["a.txt"],
+                    operator_token=token.read_text(encoding="utf-8").strip(),
+                )
+
+                # WRITER 2 — the start claim.
+                self.assertEqual(
+                    run_workflow._claim_lock_path(repo, "spec", "spec/x").parent,
+                    atmofab / "start_claims")
+
+                # WRITER 3 — the isolated homes root.
+                self.assertEqual(ort._workflow_homes_root(), atmofab / "homes")
+
+                # THE GUARD — both entries, so a Bash read of either fails closed.
+                roots = hooks_common.protected_host_read_roots()
+                self.assertIn(atmofab, roots)
+                self.assertIn(atmofab / "operator_tokens", roots)
+
+    def test_the_dot_atmofab_constant_is_spelled_once(self) -> None:
+        """`".atmofab"` appears in exactly one function across `tools/` and `mcp_servers/`.
+
+        A BOUND ON GROWTH, not a detector, and the difference matters. What it catches is
+        the ordinary way this splits again: someone needs a path under the operator-private
+        root, writes `Path.home() / ".atmofab" / "something"` where they are, and the
+        guard never learns about it. What it CANNOT catch, stated rather than implied:
+
+          * an f-string (`f"{home}/.atmofab/x"`) — the constant is not a bare `".atmofab"`
+            node;
+          * the same string inside a longer one — `tools/hooks/common.py` carries several
+            marker regexes and argparse help texts that spell the path in prose, and they
+            are out of scope by construction;
+          * a rename of the constant, or resolution through a variable.
+
+        So a green row here is not evidence that a change respects the rule — it is
+        evidence that the rule was not broken in the one shape that has actually broken it
+        three times. `tools/tests` is excluded: a test builds fake `~/.atmofab` layouts on
+        purpose.
+
+        RED on `origin/main`, where the set has three more members.
+        """
+        found = set()
+        for root, dirs, files in os.walk(REPO_ROOT):
+            dirs[:] = [d for d in dirs
+                       if d not in (".git", "__pycache__", "tests")
+                       and not d.startswith("workspace")]
+            rel_root = Path(root).relative_to(REPO_ROOT)
+            if not rel_root.parts or rel_root.parts[0] not in ("tools", "mcp_servers"):
+                continue
+            for name in files:
+                if not name.endswith(".py"):
+                    continue
+                path = Path(root) / name
+                rel = str(path.relative_to(REPO_ROOT))
+                try:
+                    tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"))
+                except SyntaxError:                  # not this test's subject
+                    continue
+                found |= self._atmofab_constants(tree, rel)
+        self.assertEqual(
+            found, {("tools/hooks/common.py", "operator_secret_root")},
+            "`.atmofab` is spelled outside the one resolver that owns it. Reach the "
+            "location through `operator_secret_root()` / `operator_tokens_root()` / "
+            "`workflow_homes_root()` / `run_workflow._start_claims_root()` instead "
+            "(issue #132).")
+
+    @staticmethod
+    def _atmofab_constants(tree: ast.AST, rel: str) -> set[tuple[str, str]]:
+        """`(relative path, enclosing function)` for every bare `".atmofab"` constant."""
+        out: set[tuple[str, str]] = set()
+
+        def walk(node, enclosing: str) -> None:
+            for child in ast.iter_child_nodes(node):
+                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    walk(child, child.name)
+                    continue
+                if isinstance(child, ast.Constant) and child.value == ".atmofab":
+                    out.add((rel, enclosing))
+                walk(child, enclosing)
+
+        walk(tree, "<module>")
+        return out
+
+    def test_the_constant_reader_sees_a_synthetic_spelling(self) -> None:
+        """Self-test for the bound above: an empty walk must not be able to pass it.
+
+        Both halves — that the reader FINDS a plain `Path.home() / ".atmofab" / "x"` and
+        that it reports the enclosing function rather than the module — because a reader
+        that returned `<module>` for everything would make the assertion above trivially
+        satisfiable by moving the spelling into a function.
+        """
+        source = (
+            "from pathlib import Path\n"
+            "def somewhere():\n"
+            "    return Path.home() / '.atmofab' / 'x'\n"
+            "TOP = Path.home() / '.atmofab'\n"
+        )
+        self.assertEqual(
+            OnePrivateRootTests._atmofab_constants(ast.parse(source), "probe.py"),
+            {("probe.py", "somewhere"), ("probe.py", "<module>")})
 
 
 if __name__ == "__main__":  # pragma: no cover - manual runs
