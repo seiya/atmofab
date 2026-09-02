@@ -944,7 +944,8 @@ def _render_incident_body(incident: dict[str, Any], lines: list[str]) -> None:
         dead_air = ct.get("dead_air_seconds")
         lines.append("Child subagent transcript (decisive evidence):")
         lines.append("")
-        # The `matched via` clause is CANONICAL here for a closed two-part vocabulary.
+        # The `matched via` clause is CANONICAL here for a closed vocabulary with two
+        # OWNERS and three values.
         # A LIVE incident is always `session_id` and additionally carries the projects
         # root the hit came from, which is what the `under` suffix shows: an agentic
         # leaf's private home, or the operator's `~/.claude` — which a PURE leaf uses on

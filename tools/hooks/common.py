@@ -4764,11 +4764,14 @@ def claude_leaf_projects_roots(repo_root: Path,
         (post-mortem of a dangling leaf);
       * the persisted-tool-result shape exemptions in this module.
 
-    Issue #63 moved a leaf's state from the operator's `~/.claude` into a private
-    per-orchestration home, so BOTH are returned, private home first: a resume or an
-    audit may legitimately reach back to a session recorded before that move, and the
-    operator's own dev sessions still live in `~/.claude`. Callers that only need to
-    know whether a session exists search all of them.
+    Issue #63 moved an AGENTIC leaf's state from the operator's `~/.claude` into a
+    private per-orchestration home, so BOTH are returned, private home first. Three
+    reasons, and the first is a CURRENT run rather than history: a PURE leaf is
+    prepared no private home at all (`orchestration_runtime` gates the preparation on
+    `not is_pure`, because a pure leaf reads no settings layer), so it writes under
+    `~/.claude` today; a resume or an audit may reach back to a session recorded before
+    the move; and the operator's own dev sessions live there too. Callers that only need
+    to know whether a session exists search all of them.
     """
     roots: list[Path] = []
     if orchestration_id and str(orchestration_id).strip():
