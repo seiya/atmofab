@@ -109,10 +109,12 @@ when a rule does not obviously apply:
   script caught it and exited 2, which is the behaviour to keep) — and a suite that ALREADY has a
   failure unrelated to the change,
   where `-x` stops every mutant at that same failure so every mutant reads as `killed` — a false
-  green over the whole run, not a per-hunk slip. atmofab's standing instance is the two
-  path-depth-coupled `ForbidBackendCredentialReadTests` cases, which fail in a worktree under
-  `/tmp` and pass in the checkout; one PR #98 reviewer reported 12 of 12 mutants killed that way
-  before re-running. **Deselect the known failures in `--test-cmd`, or drop `-x`**
+  green over the whole run, not a per-hunk slip. atmofab's standing instance USED to be the
+  path-depth-coupled `ForbidBackendCredentialReadTests` cases — one PR #98 reviewer reported 12 of
+  12 mutants killed that way before re-running — and issue #84 closed it on 2026-09-02: those
+  cases now build their own `$HOME` and checkout, so they pass at any depth and in a worktree.
+  The class is not closed with them: **check the baseline is green for the `--test-cmd` you pass,
+  and if it is not, deselect the failures or drop `-x`**
 - **If the change is a move, hunk mutation answers almost nothing** — `--range` cannot reach code
   that moved without changing. For move / rename / extract PRs build **mechanism-level mutants
   over every mechanism in the files you touched** (PR #68: my 39 mutants, 0 unexpected survivors;
@@ -181,7 +183,14 @@ when a rule does not obviously apply:
     tell: the test reasons about a RELATIONSHIP whose two halves are not both built by the
     fixture. The check is one command — run the new classes under pytest and under
     `env -u <VAR> python3 -m unittest <dotted.path>` and diff the verdicts. The fix is to build
-    the relationship in the fixture, not to unset the variable
+    the relationship in the fixture, not to unset the variable.
+    **When the relationship is with the HOST rather than with a variable, the diff has to be over
+    a FAMILY of environments, and the family needs every property the rows spell — not just the
+    one that is red.** Issue #84's rows reasoned about `$HOME` and the checkout: a sweep over the
+    checkout's DEPTH found a third coupled row the red one had hidden, and a round-1 reviewer then
+    found two more by varying the SHAPE of `$HOME` (`/home/<name>`, a path containing the letter
+    a glob operand spells), which the depth sweep could not see. Enumerate the properties the
+    assertions name, then vary each; a sweep that varies one property answers for one property
   - **a mechanism that guards the HARNESS cannot be witnessed from inside the suite** — put the
     witness in a subprocess outside the runner
   - **a rule whose answer on THIS tree is "nothing" cannot be observed through the assertion that
@@ -221,10 +230,12 @@ when a rule does not obviously apply:
    - **A count with no unit is not reproducible** — "14 hunks" came back as 19 and 16 because the
      figure depends on the diff CONTEXT WIDTH. Name the width, the command, and the exclusions
    - **Name WHERE a suite figure was measured.** A number can be right and still be a defect if it
-     does not say which checkout produced it: atmofab's suite is one lower in a `/tmp` worktree
-     than in the primary checkout, because a declared skip fires there. On PR #104 a reviewer
-     correctly reported a commit message as wrong for that reason, and the message was right —
-     it simply had not said where
+     does not say which checkout produced it: atmofab's suite USED to be one lower in a `/tmp`
+     worktree than in the primary checkout, because a declared skip fired there — on PR #104 a
+     reviewer correctly reported a commit message as wrong for that reason, and the message was
+     right, it simply had not said where. That particular skip is gone (issue #84, 2026-09-02) and
+     the rule is not: a figure still has to name its checkout, because the next environment-shaped
+     difference is not announced in advance
    - **A count that no method can reproduce is worse than no count.** PR #104 quoted five figures
      for "the names this tree reads"; the two that named their reader re-derived exactly, and three
      named no spelling, no file set and no reader — so the sentence claiming each answered a

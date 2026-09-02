@@ -3,9 +3,11 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
+import string
 import tempfile
 import time
 import unittest
@@ -2960,19 +2962,24 @@ class ForbidBackendCredentialReadTests(unittest.TestCase):
     is repo-relative); Bash was the open route.
     """
 
-    def _call(self, command: str, backend: str = "claude") -> HookDecision:
+    def _call(self, command: str, backend: str = "claude",
+              repo_root: str | None = None) -> HookDecision:
         with patch.dict(os.environ, {"ATMOFAB_WORKFLOW_MODE": "1"}, clear=False):
             return evaluate_common_policy(
                 HookInput(
                     event_name=HookEventName.PRE_COMMAND_EXECUTE,
                     backend=backend,
-                    payload={"command": command, "repo_root": self._repo_root()},
+                    payload={
+                        "command": command,
+                        "repo_root": repo_root or self._repo_root(),
+                    },
                     command=command,
                 )
             )
 
-    def _policy(self, command: str, backend: str = "claude") -> str:
-        return (self._call(command, backend).audit_detail or {}).get("policy", "")
+    def _policy(self, command: str, backend: str = "claude",
+                repo_root: str | None = None) -> str:
+        return (self._call(command, backend, repo_root).audit_detail or {}).get("policy", "")
 
     def _relative_route_home(self) -> str:
         """The `..`-and-back route from `repo_root` to `$HOME`, for THIS checkout.
@@ -3004,6 +3011,75 @@ class ForbidBackendCredentialReadTests(unittest.TestCase):
     def _repo_root(self) -> str:
         """The root `_call` hands the hook — one spelling for both."""
         return os.getcwd()
+
+    def _char_absent_from(self, text: str) -> str:
+        """One character `text` does not contain — a marker a glob can match on.
+
+        A row that needs a substitution operand (`${X/<glob>/…}`) has to put a
+        character into the value that the rest of the value does not carry, or the
+        glob matches somewhere else. Spelling that character as a constant makes the
+        row depend on what `$HOME` happens to be: `${X/x*/…}` over `/export/home/u`
+        matches the `x` of `export`. Choosing it against the actual text keeps the
+        row about the glob.
+
+        The alphabet is the whole of `[A-Za-z0-9]`, not a handful of letters: a
+        fifteen-character pool was itself a partial function of the host, and a
+        `$HOME` carrying all fifteen made this helper `fail` — trading one red row
+        belonging to no change for another, which is the cost this class exists to
+        remove. A path would have to carry all 62 to reach the failure now, and the
+        `fail` stays rather than becoming a silent fallback: a marker that IS in the
+        value would make the row assert something else while still passing.
+        """
+        for candidate in string.ascii_letters + string.digits:
+            if candidate not in text:
+                return candidate
+        self.fail(f"no marker character available for {text!r}")
+
+    @contextlib.contextmanager
+    def _built_home(self, *, depth: int, subdirs: tuple[str, ...] = ()):
+        """A `$HOME` and a checkout under it that this fixture BUILDS.
+
+        `_relative_route_home` removed the depth coupling from the cases that spell a
+        route to `$HOME`. It cannot help the cases whose SUBJECT is the relationship —
+        that `cd ..` folds, and that a `cd` into a directory under `$HOME` lands where
+        bash lands — because those need a checkout at a known depth under a `$HOME`
+        whose subdirectories are known, and the host's is neither. Borrowing it made the
+        pair fail wherever the real relationship differed: `test_folds_chained_relative_cd`
+        asserted the depth outright and failed in a checkout ONE level under `$HOME`
+        (`/home/seiya/atmofab`), and `test_a_variable_cd_target_folds_from_where_bash_lands`
+        built its `cd` target as `$HOME/work`, which on this host is a SYMLINK out of
+        `$HOME` entirely, so the following `cd ..` folded to the link target's parent and
+        the read was never attributed to the home. Neither failure said anything about
+        the guard.
+
+        So build both halves: a temporary `$HOME` (`_home_dir` reads the variable, which
+        is also how the bwrap profile reads it), a real checkout `depth` levels below it,
+        and whatever plain subdirectories the case needs. `.resolve()` on the temporary
+        root because the fold resolves its anchors and `/tmp` is a symlink on some hosts —
+        the same defect as the `work` link above, one level up.
+
+        The credential paths themselves are NOT created: the guard matches a resolved
+        path against the protected roots and never asks whether the file is there, which
+        is what lets it block a read of a home the leaf has not created yet.
+
+        WHAT THIS FIXTURE DOES NOT MOVE: the process's working directory. `~+` IS `$PWD`
+        and `tools/hooks/common.py` expands it from `os.getcwd()`, so a `~+` row driven
+        here resolves against the real checkout while everything around it speaks about
+        the built home. Measured, from this checkout: `cat ~+/../../.claude.json` returns
+        no policy under this fixture's `$HOME` and `repo_root`, and blocks under the host's
+        — the row answers about the process's cwd either way, which is a relationship the
+        fixture does not build. The `~+` rows therefore stay on
+        `_relative_route_home`, which anchors on the cwd deliberately; do not move one in
+        here without making the fixture `chdir` as well.
+        """
+        with tempfile.TemporaryDirectory() as raw:
+            home = Path(raw).resolve()
+            repo_root = home.joinpath(*[f"d{i}" for i in range(depth)])
+            repo_root.mkdir(parents=True)
+            for name in subdirs:
+                (home / name).mkdir(parents=True, exist_ok=True)
+            with patch.dict(os.environ, {"HOME": str(home)}, clear=False):
+                yield home, repo_root
 
     def test_blocks_shell_expansions_expandvars_cannot_do(self) -> None:
         """`os.path.expandvars` handles only bare `$NAME` / `${NAME}`.
@@ -3265,9 +3341,10 @@ class ForbidBackendCredentialReadTests(unittest.TestCase):
         home while this predicate said nothing."""
         home = str(Path.home())
         head, last = home[:-1], home[-1]
+        marker = self._char_absent_from(home)
         for command in (
-            f"X={head}x; cat ${{X/x/{last}}}/.codex/auth.json",
-            f"X={head}x; cat ${{X//x/{last}}}/.claude.json",
+            f"X={head}{marker}; cat ${{X/{marker}/{last}}}/.codex/auth.json",
+            f"X={head}{marker}; cat ${{X//{marker}/{last}}}/.claude.json",
             f"X={home.upper()}; cat ${{X,,}}/.claude.json",
             f"X=zz{home}; cat ${{X#zz}}/.claude.json",
             f"X={home}zz; cat ${{X%zz}}/.claude.json",
@@ -3278,10 +3355,14 @@ class ForbidBackendCredentialReadTests(unittest.TestCase):
                 msg=command)
         # The operand of `/`, `#` and `%` is a GLOB in bash, not a literal.
         for command in (
-            f"X=/home/x; cat ${{X/x*/{Path.home().name}}}/.codex/auth.json",
+            # The `/` operand, spelled so the assertion does not depend on the
+            # SHAPE of `$HOME`: the old spelling rebuilt it as `/home/` plus its
+            # basename and was red on any host where that is not what `$HOME`
+            # is (see `_char_absent_from`).
+            f"X={home}{marker}{marker}; cat ${{X/{marker}*/}}/.codex/auth.json",
             f"X=abc{home}; cat ${{X#a*c}}/.claude.json",
             f"X={home}.tmp; cat ${{X%.t*}}/.claude.json",
-            f"X={home}zzz; cat ${{X%%z*}}/.claude.json",
+            f"X={home}{marker}{marker}{marker}; cat ${{X%%{marker}*}}/.claude.json",
         ):
             self.assertEqual(
                 self._policy(command),
@@ -3766,7 +3847,19 @@ class ForbidBackendCredentialReadTests(unittest.TestCase):
         Capping the assignment / anchor / expansion COUNT is fail-open: an evader
         writes eight throwaway assignments, or four throwaway `cd`s, and puts the
         real one last. Each shape below was allowed under the count caps.
+
+        Driven at a `$HOME` and a checkout the fixture builds (`_built_home`), because the
+        last two rows read THROUGH `~/work`: with the host's home they depended on
+        `~/work` being a plain subdirectory of it (here it is a symlink out of `$HOME`)
+        and on `repo_root` sitting one level under `$HOME`, which is what made
+        `../.claude.json` land on the protected file from the ROOT rather than from the
+        far-away anchor the row exists to exercise. Both rows failed in a checkout at any
+        other depth, and passed in this one for the wrong reason.
         """
+        with self._built_home(depth=2, subdirs=("work",)) as (_home, root):
+            self._assert_padding_rows_are_blocked(str(root))
+
+    def _assert_padding_rows_are_blocked(self, repo_root: str) -> None:
         for command in (
             # Padded PAST every shipped cap: the counts are 80, not 12, because
             # a cap of N is disarmed by N pads, which is the whole point.
@@ -3787,22 +3880,25 @@ class ForbidBackendCredentialReadTests(unittest.TestCase):
             "cd ~ && cat .claude.json" + "".join(f" && cd e{i}" for i in range(30)),
         ):
             self.assertEqual(
-                self._policy(command),
+                self._policy(command, repo_root=repo_root),
                 "forbid_backend_credential_direct_read",
                 msg=command)
 
     def test_folds_chained_relative_cd(self) -> None:
-        """`cd ..; cd ..` lands where bash lands, not where one `cd ..` would."""
-        from tools.hooks.common import _is_path_under_root
+        """`cd ..; cd ..` lands where bash lands, not where one `cd ..` would.
 
-        cwd, home = Path.cwd().resolve(), Path.home().resolve()
-        if not _is_path_under_root(cwd, home):
-            self.skipTest("needs the checkout under $HOME")
-        depth = len(cwd.parts) - len(home.parts)
-        self.assertGreater(depth, 1, "this test needs the checkout below ~")
-        self.assertEqual(
-            self._policy("; ".join(["cd .."] * depth) + "; cat .claude.json"),
-            "forbid_backend_credential_direct_read")
+        Both directions, at a depth the fixture builds (see `_built_home`): the chain
+        that REACHES `$HOME` blocks, and one `cd ..` short of it does not. Without the
+        second half the first is satisfied by any guard that treats a leading `..` as
+        suspicious, which is not the fold.
+        """
+        with self._built_home(depth=2) as (_home, repo_root):
+            self.assertEqual(
+                self._policy("cd ..; cd ..; cat .claude.json", repo_root=str(repo_root)),
+                "forbid_backend_credential_direct_read")
+            self.assertNotEqual(
+                self._policy("cd ..; cat .claude.json", repo_root=str(repo_root)),
+                "forbid_backend_credential_direct_read")
 
     def test_blocks_separator_glued_cd_targets(self) -> None:
         """`cd ~;cat x` — end-stripping cannot remove a glued next command."""
@@ -3812,8 +3908,11 @@ class ForbidBackendCredentialReadTests(unittest.TestCase):
             "cd $HOME;cat .claude.json",
             "cat ~10/.claude.json",
             # An unexpanded `$H` is not a directory; accepting it as one
-            # discarded the resolved spelling behind it.
-            "H=/home/" + Path.home().name + "; cd $H && cat .claude.json",
+            # discarded the resolved spelling behind it. The literal is `$HOME`
+            # itself, not `/home/` plus its basename: the row is about the
+            # unexpanded `$H`, and rebuilding the path assumed a shape `$HOME`
+            # does not have on every host.
+            "H=" + str(Path.home()) + "; cd $H && cat .claude.json",
             # bash treats an empty or unresolvable `cd` operand as no operand at
             # all, which is `cd $HOME`.
             "cd $ATMOFAB_NO_SUCH_VAR && cat .claude.json",
@@ -3843,10 +3942,11 @@ class ForbidBackendCredentialReadTests(unittest.TestCase):
         `_shell_expansion_variants` also yields `H` for `$H`; taking that as the
         landing directory folded the NEXT `cd` from `<repo>/H`.
         """
-        home = str(Path.home())
-        self.assertEqual(
-            self._policy(f"H={home}/work; cd $H; cd ..; cat .claude.json"),
-            "forbid_backend_credential_direct_read")
+        with self._built_home(depth=2, subdirs=("work",)) as (home, repo_root):
+            self.assertEqual(
+                self._policy(f"H={home}/work; cd $H; cd ..; cat .claude.json",
+                             repo_root=str(repo_root)),
+                "forbid_backend_credential_direct_read")
 
     def test_a_regex_anchor_is_not_an_obfuscated_path(self) -> None:
         """The `$`-dropping heuristic applies only to a `$` that cannot open a

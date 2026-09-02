@@ -644,7 +644,8 @@ class MutationCheckScenarioTests(unittest.TestCase):
 
         Both of these defaults were once inputs to atmofab's own suite — a `/dev/shm` scratch
         root reddened the two tests that reason about `/dev/shm`, and the default worktree
-        location reddens the hook tests that resolve `..` against the checkout's depth. The
+        location reddened the hook tests that resolved `..` against the checkout's depth (issue
+        #84 closed the second on 2026-09-02; the lever stays named because it is a class). The
         message said "Fix the suite", which is the one thing that was not wrong, so a full-suite
         `--test-cmd` looked impossible to run. What is pinned is that both levers are NAMED with
         their live values, not the wording around them.

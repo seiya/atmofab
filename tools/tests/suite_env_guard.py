@@ -174,8 +174,9 @@ def decline_strip() -> None:
     early return left `CONFIGURED` False and the witness failed on a host with no knob set
     at all, which is precisely the class this whole change exists to remove. Measured: `-q
     --keep-operator-env` gave `1 failed, 5293 passed, 1 skipped` — measured in a `/tmp`
-    worktree, where the declared `needs the checkout under $HOME` skip fires; the primary
-    checkout gives the same failure and no skip. "Clean" here is about the ENVIRONMENT,
+    worktree, where the then-declared `needs the checkout under $HOME` skip fired (issue #84
+    removed both that skip and the capability declaration on 2026-09-02, so the same run
+    skips nothing now); the primary checkout gave the same failure and no skip. "Clean" here is about the ENVIRONMENT,
     which had no knob set at all, not about the checkout.
 
     With the flag AND a knob set, what fails is the ratchet — and that failure does belong

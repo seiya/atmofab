@@ -32,9 +32,10 @@ python3 -m pytest tools/tests/ -q -p no:randomly
   strongest evidence a causal argument in this repository can have is often already a red test on
   `main`, and it costs seconds.**
 
-  **Why the full-suite run does not surface it**: the whole-tree verdict here is "2 failed /
-  ~5460 passed", those two being the standing path-depth-coupled `ForbidBackendCredentialReadTests`
-  cases, and a branch that FIXES eight failures elsewhere reports the same two. The delta rule
+  **Why the full-suite run does not surface it**: the whole-tree verdict at the time was "2 failed
+  / ~5460 passed", those two being the then-standing path-depth-coupled
+  `ForbidBackendCredentialReadTests` cases (closed 2026-09-02, issue #84), and a branch that FIXES
+  eight failures elsewhere reports the same two. The delta rule
   below compares totals, and eight fewer failures reads as eight more passes among thousands. Run
   the file, read the failure NAMES.
 
@@ -54,11 +55,13 @@ python3 -m pytest tools/tests/ -q -p no:randomly
   `/tmp` is disk-backed, point `TMPDIR` at some OTHER tmpfs
 - **Never run two of these in parallel.** They share `TMPDIR`, which produces false failures
   (hit for real once)
-- The baseline is the measured value on `origin/main`. If you compare via `git worktree` /
-  `git archive`, placing the checkout outside `$HOME` makes
-  `test_hooks_common.py::ForbidBackendCredentialReadTests` fail (it assumes `../..` / `~`
-  resolve inside home; a path-depth-dependent pre-existing behaviour, identical on `main` and on
-  a branch). **Compare the DELTA, not absolute values**
+- The baseline is the measured value on `origin/main`. Comparing via `git worktree` /
+  `git archive` used to cost two failures of its own:
+  `test_hooks_common.py::ForbidBackendCredentialReadTests` assumed the checkout sat at a
+  particular depth under `$HOME`, so the pair was red wherever it did not (identical on `main`
+  and on a branch). Issue #84 closed that on 2026-09-02 — the fixture builds both halves now —
+  but a location-dependent row is a class, not one pair. **Compare the DELTA, not absolute
+  values**
 - **This count rots. Re-measure before handing anything over.** Three measurements of the same
   suite: 5 failures on 2026-08-13; 2 failed + 1 skipped on 2026-08-18
   (`test_blocks_bash_only_tilde_prefixes` / `test_directory_options_anchor_like_cd`, both since

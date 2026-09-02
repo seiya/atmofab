@@ -22,8 +22,14 @@ made a full-suite `--test-cmd` impossible to run in atmofab at all.
   `TMPDIR` under `/dev/shm` reddens exactly those two, a `TMPDIR` under `/tmp` does not.
 - With that fixed, the default `--workdir` (`~/.cache/mutation-check`) reddened
   `ForbidBackendCredentialReadTests::test_blocks_bash_only_tilde_prefixes` instead: the worktree
-  sits at a different filesystem DEPTH from the checkout, and that row resolves `~+/../..` against
-  it. `--workdir` at the checkout's own depth clears it.
+  sits at a different filesystem DEPTH from the checkout, and that row resolved `~+/../..` against
+  it. Moving `--workdir` to the checkout's own depth cleared it at the time; **it is not the lever
+  to reach for first any more** — the row stopped resolving a route it does not build in 2026-08
+  and the last depth-coupled rows were closed by issue #84 on 2026-09-02 (measured at `96657b5`:
+  the file is green in a `/tmp` worktree and under the default `--workdir` alike). Reach for it
+  when YOUR `--test-cmd` holds a row that resolves `..` or `~` against the checkout; this
+  repository is not known to hold one today, which is a statement about one commit and not about
+  the class. The episode is kept for the RULE, which the `/dev/shm` case above still exercises.
 
 What made the episode cost an hour rather than a minute is that the message said "Fix the suite
 (or narrow --test-cmd)" — pointing at the one thing that was not wrong. The suite was green in the
@@ -318,9 +324,9 @@ come out the other way. Then check the spelling is one the thing under test acce
 ### `-x` turns a pre-existing failure into a whole-run false green (PR #98)
 
 A reviewer's first mutation pass reported 12 of 12 mutants KILLED, and they re-ran and discarded
-it: `-x` stopped on the two path-depth-coupled `ForbidBackendCredentialReadTests` cases, which fail
-in a `/tmp` worktree and pass in the checkout, so every mutant "killed" the same pre-existing
-failure. `mutation_check.py`'s own baseline catches this (red baseline, exit 2) — a HANDWRITTEN
+it: `-x` stopped on the two path-depth-coupled `ForbidBackendCredentialReadTests` cases, which
+failed in a `/tmp` worktree and passed in the checkout (that coupling is gone since 2026-09-02,
+issue #84), so every mutant "killed" the same pre-existing failure. `mutation_check.py`'s own baseline catches this (red baseline, exit 2) — a HANDWRITTEN
 sweep in a scratch copy does not. Deselect the known failures in the test command, or drop `-x`.
 The "12 of 12" is that reviewer's own report of their run; it is not reproducible from the tree.
 
