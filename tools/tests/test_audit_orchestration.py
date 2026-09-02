@@ -1668,7 +1668,11 @@ class PureLeafProvenanceUnderAMixedConfigTests(unittest.TestCase):
     def test_the_module_still_runs_as_a_direct_script(self) -> None:
         """`docs/CLI_REFERENCE.md` makes `python3 tools/audit_orchestration.py ...` the
         canonical way to run this. Under it `sys.path[0]` is `tools/`, so an unconditional
-        `from tools.x import ...` raises before any existing shim can help."""
+        `from tools.x import ...` raises before any existing shim can help.
+
+        `--help` exits inside argparse and so never reaches the function bodies that
+        import `tools.hooks.*`; the witness that DOES reach them is
+        `ScriptPathDanglingLaunchWitnessTests` below (issue #130)."""
         import os
         import subprocess
         env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
@@ -1687,6 +1691,186 @@ class PureLeafProvenanceUnderAMixedConfigTests(unittest.TestCase):
         # A leaf outside that set must not steer the attribution.
         summary = self._summary({"compile.verify": {"backend": "codex", "model": "x"}})
         self.assertEqual(summary["backend"], "claude")
+
+
+class ScriptPathDanglingLaunchWitnessTests(unittest.TestCase):
+    """Issue #130: run as a script (`python3 tools/audit_orchestration.py`), the audit
+    reported "No dangling active_child window detected" over an OPEN window, because the
+    transcript lookup's `from tools.hooks.common import ...` raised `ModuleNotFoundError`
+    (repo root not on `sys.path`) inside `audit()`'s best-effort `except Exception`.
+
+    In-process the defect is invisible — pytest puts the root on the path — so the
+    witness must be a subprocess with the same path shape the operator gets.
+    """
+
+    ORCH_ID = "orch_test"
+
+    def _fixture(self, tmp: str) -> tuple[Path, Path, dict[str, str]]:
+        """An open window (no child return, no agent_runs row) plus an isolated HOME.
+
+        HOME is redirected because the transcript lookup reads `$HOME/.claude/projects`;
+        the witness must not depend on — or touch — the operator's real home.
+        """
+        from tools.tests.test_orchestration_diagnostics import (
+            CHILD_ARID, _open_dangling_window,
+        )
+        repo_root = Path(tmp) / "repo_root"
+        home = Path(tmp) / "home"
+        home.mkdir(parents=True)
+        root = repo_root / "workspace" / "orchestrations" / self.ORCH_ID
+        root.mkdir(parents=True)
+        _open_dangling_window(root)
+        env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+        env["HOME"] = str(home)
+        return repo_root, Path(CHILD_ARID), env
+
+    def _run(self, repo_root: Path, env: dict[str, str], *extra: str):
+        import subprocess
+        repo = Path(__file__).resolve().parent.parent.parent
+        return subprocess.run(
+            ["python3", "tools/audit_orchestration.py",
+             "--orchestration-id", self.ORCH_ID, "--repo-root", str(repo_root), *extra],
+            cwd=repo, env=env, capture_output=True, text=True)
+
+    def test_the_witness_env_really_hides_the_tools_package(self) -> None:
+        """Guards the two tests below from becoming empty proofs: if a `.pth` file or an
+        inherited PYTHONPATH made `tools` importable from anywhere, they would pass without
+        the bootstrap. cwd is the tmp dir because `-c` puts cwd on the path, and cwd=repo
+        would import `tools` for that reason alone."""
+        import subprocess
+        with tempfile.TemporaryDirectory() as tmp:
+            _repo_root, _arid, env = self._fixture(tmp)
+            proc = subprocess.run(
+                ["python3", "-c", "import tools"],
+                cwd=tmp, env=env, capture_output=True, text=True)
+            self.assertNotEqual(proc.returncode, 0, msg="`tools` is importable from cwd=tmp; "
+                                                        "the script-path witness proves nothing")
+
+    def test_an_open_window_is_reported_when_run_as_a_script(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root, arid, env = self._fixture(tmp)
+            proc = self._run(repo_root, env, "--format", "json")
+            self.assertEqual(proc.returncode, 0, msg=proc.stderr)
+            result = json.loads(proc.stdout)
+            self.assertEqual(result["diagnostic_failures"], [])
+            self.assertEqual(
+                result["launch_incident"]["dangling_child"]["agent_run_id"], str(arid))
+
+    def test_the_markdown_does_not_claim_a_clean_negative_when_run_as_a_script(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root, _arid, env = self._fixture(tmp)
+            proc = self._run(repo_root, env, "--format", "markdown")
+            self.assertEqual(proc.returncode, 0, msg=proc.stderr)
+            self.assertIn("An open active_child window was found", proc.stdout)
+            self.assertNotIn("No dangling active_child window detected", proc.stdout)
+
+    def test_token_cost_from_transcripts_no_longer_always_fails(self) -> None:
+        """Consequence 2 of the issue: the same swallowed import made the opt-in
+        transcript path report `token-cost collection failed` on every script run."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root, _arid, env = self._fixture(tmp)
+            proc = self._run(repo_root, env, "--format", "json",
+                             "--token-cost-from-transcripts")
+            self.assertEqual(proc.returncode, 0, msg=proc.stderr)
+            result = json.loads(proc.stdout)
+            self.assertEqual(result["diagnostic_failures"], [])
+            reason = str(result["token_cost_summary"].get("reason") or "")
+            self.assertFalse(reason.startswith("token-cost collection failed"), msg=reason)
+
+
+class DiagnosticFailureRecordingTests(unittest.TestCase):
+    """The import bootstrap closes the known cause; this closes the CLASS. A best-effort
+    section that raises must not leave the audit printing a sentence that reads as a
+    measurement ("No dangling ... detected"), and the operator must be able to see that
+    something failed (issue #130)."""
+
+    ORCH_ID = "orch_test"
+
+    def _audit(self, tmp: str, target: str, **kwargs) -> dict:
+        repo_root = Path(tmp)
+        (repo_root / "workspace" / "orchestrations" / self.ORCH_ID).mkdir(parents=True)
+        with mock.patch.object(ao, target, side_effect=RuntimeError("boom")):
+            return ao.audit(repo_root, self.ORCH_ID, **kwargs)
+
+    def test_a_failed_launch_detection_is_recorded(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self._audit(tmp, "build_launch_incident")
+            self.assertEqual(result["diagnostic_failures"], [
+                {"section": "launch_incident", "error_type": "RuntimeError", "error": "boom"}])
+            self.assertIsNone(result["launch_incident"])
+
+    def test_a_failed_launch_detection_renders_unknown_not_a_clean_negative(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            rendered = ao._render_markdown(self._audit(tmp, "build_launch_incident"))
+            self.assertIn("Dangling-launch detection FAILED", rendered)
+            self.assertIn("UNKNOWN", rendered)
+            self.assertNotIn("No dangling active_child window detected", rendered)
+            self.assertIn("## ⚠ diagnostic failures", rendered)
+            self.assertIn("`launch_incident` — `RuntimeError: boom`", rendered)
+
+    def test_a_snapshot_still_renders_when_live_detection_failed(self) -> None:
+        """The snapshots are read independently of the live window, so a failed detection
+        must not suppress the durable evidence that does exist."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            root = repo_root / "workspace" / "orchestrations" / self.ORCH_ID
+            root.mkdir(parents=True)
+            (root / "launch_incident.runtime.abc.json").write_text(json.dumps(
+                {"dangling_child": {"agent_run_id": "arid-x", "step": "compile"}}),
+                encoding="utf-8")
+            with mock.patch.object(ao, "build_launch_incident",
+                                   side_effect=RuntimeError("boom")):
+                result = ao.audit(repo_root, self.ORCH_ID)
+            rendered = ao._render_markdown(result)
+            self.assertIn("Dangling-launch detection FAILED", rendered)
+            self.assertIn("`arid-x`", rendered)
+
+    def test_a_failed_token_cost_collection_is_recorded_with_its_cause(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self._audit(tmp, "collect_token_cost_summary")
+            self.assertEqual(result["diagnostic_failures"], [
+                {"section": "token_cost_summary", "error_type": "RuntimeError",
+                 "error": "boom"}])
+            self.assertEqual(
+                result["token_cost_summary"]["reason"],
+                "token-cost collection failed: RuntimeError: boom")
+
+    def test_a_failed_pure_leaf_ab_collection_is_recorded_with_its_cause(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self._audit(tmp, "collect_pure_leaf_ab_summary")
+            self.assertEqual(result["diagnostic_failures"], [
+                {"section": "pure_leaf_ab_summary", "error_type": "RuntimeError",
+                 "error": "boom"}])
+            self.assertEqual(
+                result["pure_leaf_ab_summary"]["reason"],
+                "pure-leaf A/B collection failed: RuntimeError: boom")
+
+    def test_a_clean_audit_records_no_failures(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            (repo_root / "workspace" / "orchestrations" / self.ORCH_ID).mkdir(parents=True)
+            result = ao.audit(repo_root, self.ORCH_ID)
+            self.assertEqual(result["diagnostic_failures"], [])
+            self.assertNotIn("diagnostic failures", ao._render_markdown(result))
+
+    def test_main_exits_2_when_a_diagnostic_section_failed(self) -> None:
+        """Same ground as the existing `data_integrity_warning` exit 2: a run that may have
+        printed a false negative must be flaggable by CI / a script."""
+        for failures, expected in (([], 0), ([{"section": "launch_incident",
+                                               "error_type": "RuntimeError",
+                                               "error": "boom"}], 2)):
+            result = {"orchestration_id": "o", "diagnostic_failures": failures}
+            with mock.patch.object(ao, "audit", lambda *a, **k: result), \
+                    mock.patch.object(sys, "argv", ["audit_orchestration.py",
+                                                    "--orchestration-id", "o",
+                                                    "--format", "json"]), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                if expected:
+                    with self.assertRaises(SystemExit) as cm:
+                        ao.main()
+                    self.assertEqual(cm.exception.code, 2)
+                else:
+                    ao.main()
 
 
 if __name__ == "__main__":
