@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import ast
 import json
 import os
 import tempfile
@@ -935,6 +936,57 @@ class PureLeafMetaWriterReaderContractTest(unittest.TestCase):
         self.assertEqual(out["verify"]["result"], "pass")
 
 
+def _calls_guarded_by_try(source: str, func: str, callee: str) -> bool:
+    """Is the call to ``callee`` inside ``func`` wrapped in a `try` that has handlers?
+
+    Patching the callee to raise can only reject the exception types the test names, so
+    an `except OSError` re-introduction slips past a test that raises `RuntimeError` —
+    measured. This asks the exact question instead. Driven both ways in
+    `TryGuardScannerTests`, since its answer on this tree is `False`.
+    """
+    for node in ast.walk(ast.parse(source)):
+        if not (isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == func):
+            continue
+        for inner in ast.walk(node):
+            if not (isinstance(inner, ast.Try) and inner.handlers):
+                continue
+            for stmt in inner.body:
+                for called in ast.walk(stmt):
+                    if (isinstance(called, ast.Call)
+                            and isinstance(called.func, ast.Name)
+                            and called.func.id == callee):
+                        return True
+    return False
+
+
+class TryGuardScannerTests(unittest.TestCase):
+    """Self-test for `_calls_guarded_by_try`: on the real file the answer is `False`, and
+    an assertion against `False` is green whether the scanner works or always says so."""
+
+    def test_it_sees_a_guarded_call(self) -> None:
+        self.assertTrue(_calls_guarded_by_try(
+            "def f():\n    try:\n        x = g()\n    except OSError:\n        x = None\n",
+            "f", "g"))
+
+    def test_it_sees_one_guarded_deeper_in_the_try_body(self) -> None:
+        self.assertTrue(_calls_guarded_by_try(
+            "def f():\n    try:\n        if c:\n            x = g()\n"
+            "    except Exception:\n        x = None\n", "f", "g"))
+
+    def test_it_ignores_an_unguarded_call_and_a_guard_over_something_else(self) -> None:
+        self.assertFalse(_calls_guarded_by_try("def f():\n    x = g()\n", "f", "g"))
+        self.assertFalse(_calls_guarded_by_try(
+            "def f():\n    x = g()\n    try:\n        h()\n    except OSError:\n        pass\n",
+            "f", "g"))
+        # A `try` with no handler (bare finally) does not swallow.
+        self.assertFalse(_calls_guarded_by_try(
+            "def f():\n    try:\n        x = g()\n    finally:\n        pass\n", "f", "g"))
+        # Wrong function.
+        self.assertFalse(_calls_guarded_by_try(
+            "def other():\n    try:\n        x = g()\n    except OSError:\n        pass\n",
+            "f", "g"))
+
+
 class CollectorsDoNotSwallowTests(unittest.TestCase):
     """Round 1 of #130's review: a mutant that wrapped `detect_dangling_active_child` in
     `try/except Exception: return None` INSIDE `build_launch_incident` kept all 144 tests
@@ -949,10 +1001,22 @@ class CollectorsDoNotSwallowTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             _open_dangling_window(_orch_root(repo))
-            with mock.patch.object(diag, "detect_dangling_active_child",
-                                   side_effect=RuntimeError("boom")), \
-                    self.assertRaises(RuntimeError):
-                diag.build_launch_incident(repo, ORCH_ID)
+            for exc in (RuntimeError, OSError, ValueError):
+                with self.subTest(exc=exc.__name__), \
+                        mock.patch.object(diag, "detect_dangling_active_child",
+                                          side_effect=exc("boom")), \
+                        self.assertRaises(exc):
+                    diag.build_launch_incident(repo, ORCH_ID)
+
+    def test_the_detector_call_is_not_wrapped_in_a_handler_at_all(self) -> None:
+        """The exact form of the invariant. Raising a set of exception types can only
+        reject the types it names: an `except OSError` re-introduction survived a test
+        that raised `RuntimeError` — measured, and `detect_dangling_active_child` does
+        `glob` and jsonl I/O, so `OSError` is the shape a defensive edit reaches for."""
+        source = (Path(__file__).resolve().parent.parent
+                  / "orchestration_diagnostics.py").read_text(encoding="utf-8")
+        self.assertFalse(_calls_guarded_by_try(
+            source, "build_launch_incident", "detect_dangling_active_child"))
 
 
 if __name__ == "__main__":
