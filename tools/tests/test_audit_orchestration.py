@@ -1194,9 +1194,46 @@ class LiveIncidentMatchMethodTests(unittest.TestCase):
                 result = audit(repo, self.ORCH_ID)
                 md = _render_markdown(result)
         self.assertIsNotNone(result["launch_incident"])
-        self.assertIn("matched via `session_id` under `", md)
-        self.assertIn(str(home / ".claude" / "projects"), md)
+        # The WHOLE clause, not `assertIn` on the root alone: the root is a prefix of
+        # the transcript path printed two words earlier, so a substring check is true
+        # however wrong the reported root is. Pinning the clause is what makes a
+        # locator that reports `roots[0]` regardless of where it matched fail HERE too,
+        # and not only in the diagnostics suite.
+        self.assertIn(
+            f"(matched via `session_id` under `{home / '.claude' / 'projects'}`)", md)
         self.assertNotIn("matched via `None`", md)
+
+    def test_a_pure_leafs_hit_in_the_operator_home_names_that_root(self) -> None:
+        """The shape the corrected prose is about, and the one that makes the root
+        OBSERVABLE here: a private home exists but the transcript is in the operator's.
+
+        A PURE leaf is prepared no private home (`orchestration_runtime` gates that on
+        the agentic shape), so it writes to `~/.claude/projects` on a CURRENT run. The
+        test above cannot see a locator that reports `roots[0]` regardless of where it
+        matched, because with no private home configured `roots[0]` IS the root that
+        matched; here the two differ, so the wrong answer is rendered and caught.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            home = Path(tmp) / "home"
+            orch_root = repo / "workspace" / "orchestrations" / self.ORCH_ID
+            orch_root.mkdir(parents=True)
+            _open_dangling_window(orch_root)
+            private = home / ".atmofab" / "homes" / self.ORCH_ID / "claude"
+            (private / "projects").mkdir(parents=True)
+            (orch_root / "orchestration_meta.json").write_text(
+                json.dumps({"claude_workflow_home": str(private)}), encoding="utf-8")
+            operator_projects = home / ".claude" / "projects"
+            (operator_projects / "some-slug").mkdir(parents=True)
+            (operator_projects / "some-slug" / f"{CHILD_ARID}.jsonl").write_text(
+                json.dumps({"type": "assistant",
+                            "timestamp": "2026-06-16T12:38:47.000Z",
+                            "message": {"role": "assistant", "content": []}}) + "\n",
+                encoding="utf-8")
+            with mock.patch.dict(os.environ, {"HOME": str(home)}, clear=False):
+                md = _render_markdown(audit(repo, self.ORCH_ID))
+        self.assertIn(f"(matched via `session_id` under `{operator_projects}`)", md)
+        self.assertNotIn(str(private / "projects"), md)
 
 
 class IncidentMatchMethodRenderTests(unittest.TestCase):
@@ -1214,6 +1251,18 @@ class IncidentMatchMethodRenderTests(unittest.TestCase):
         md = self._md({"found": True, "path": "/x.jsonl", "match_method": "tool_use_id"})
         self.assertIn("(matched via `tool_use_id`)", md)
         self.assertNotIn("under `", md)
+
+    def test_a_missing_method_renders_as_None_rather_than_a_guess(self) -> None:
+        """The comment above the clause justifies itself by the ABSENCE of a fallback.
+
+        That justification is the property worth mutating: `ct.get('match_method') or
+        'session_id'` reads like a courtesy and would make a producer regression
+        invisible, which is the whole defect this branch exists to close. Nothing else
+        in the suite observes it — the live pin is green under such a fallback by
+        construction, because the live producer fills the key.
+        """
+        md = self._md({"found": True, "path": "/x.jsonl"})
+        self.assertIn("(matched via `None`)", md)
 
     def test_a_live_incident_appends_the_root_it_matched_under(self) -> None:
         md = self._md({"found": True, "path": "/x.jsonl", "match_method": "session_id",
