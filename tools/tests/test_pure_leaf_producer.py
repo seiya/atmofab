@@ -1881,14 +1881,28 @@ class PureColdRepairPromptTests(unittest.TestCase):
         # ten as subroutines — Z2 defect D reproduced in the RECOVERY path, which is reached
         # exactly when recovery is happening. Assert against the template's own paragraphs, not a
         # literal list, so a third static paragraph cannot be silently omitted the same way.
-        text = ort._render_pure_repair_prompt(self._req())
-        template = ort._load_launch_prompt_templates()["pure generate.generate"]
-        for prefix in ort.PURE_REPAIR_STATIC_PARAGRAPH_PREFIXES:
-            start = template.index(prefix)
-            end = template.index("\n\n", start)
-            for line in (ln.strip() for ln in template[start:end].splitlines()):
-                if line and not line.startswith("<"):  # the doc slot itself is filled elsewhere
-                    self.assertIn(line, text, f"cold repair dropped: {line[:60]}")
+        #
+        # The list serves BOTH pure templates (issue #142 added the verify entries), so a prefix
+        # is checked against the template that HOLDS it. Two properties, and the second is what
+        # keeps the first from going vacuous: every paragraph present in a template is lifted into
+        # that template's cold repair, AND every prefix in the list is present in at least one
+        # template — a prefix that matches nothing anywhere is a typo silently lifting nothing.
+        placed = {prefix: [] for prefix in ort.PURE_REPAIR_STATIC_PARAGRAPH_PREFIXES}
+        for substep in ("generate", "verify"):
+            template = ort._load_launch_prompt_templates()[f"pure generate.{substep}"]
+            text = ort._render_pure_repair_prompt(self._req(substep=substep))
+            for prefix in ort.PURE_REPAIR_STATIC_PARAGRAPH_PREFIXES:
+                if prefix not in template:
+                    continue
+                placed[prefix].append(substep)
+                start = template.index(prefix)
+                end = template.index("\n\n", start)
+                for line in (ln.strip() for ln in template[start:end].splitlines()):
+                    if line and not line.startswith("<"):  # the doc slot is filled elsewhere
+                        self.assertIn(line, text,
+                                      f"cold repair ({substep}) dropped: {line[:60]}")
+        for prefix, substeps in placed.items():
+            self.assertTrue(substeps, f"prefix matches no pure template: {prefix!r}")
 
     def test_placeholder_drop_keeps_rule_text_that_mentions_placeholders(self) -> None:
         # The drop is `fullmatch` on the STRIPPED line, so only a line that is nothing but a
@@ -1928,11 +1942,22 @@ class PureColdRepairPromptTests(unittest.TestCase):
             if line:
                 self.assertIn(line, text)
 
-    def test_authoring_rules_lift_empty_for_verify(self) -> None:
-        # The verify template has no authoring-rules paragraph; the lift returns '' and the
-        # renderer must leave no unfilled `<authoring_rules>` token behind.
+    def test_verify_lift_carries_the_reviewer_paragraphs_and_no_producer_rule(self) -> None:
+        # Until issue #142 this asserted the verify lift was EMPTY. It is deliberately not, now:
+        # the reviewer's cold repair carries the `Review checklist` (with the deterministic-gate
+        # exclusion) and the inlined contract's label + scope bound, because `pure_context`
+        # re-inlines the 9 KB ABI document into that prompt regardless. What must still hold is
+        # that no unfilled slot survives and that no PRODUCER-only rule leaks into a reviewer
+        # turn — the two templates share one lift list, so a prefix that matched both would hand
+        # the reviewer authoring rules for a bundle it is not authoring.
         req = self._req(substep="verify")
-        self.assertEqual(ort._pure_authoring_rules_text(req), "")
+        lifted = ort._pure_authoring_rules_text(req)
+        self.assertTrue(lifted.startswith("Review checklist"), lifted[:60])
+        self.assertIn("**Checks-module contract (", lifted)
+        self.assertIn("authority for ONE question only", lifted)
+        for producer_only in ("Authoring rules", "--ignore-allow-comments",
+                              "**Host-rendered runner", "**Checks-module behavioral contract"):
+            self.assertNotIn(producer_only, lifted)
         self.assertNotIn("<authoring_rules>", ort._render_pure_repair_prompt(req))
 
     def test_style_lint_distills_c072_character_dummy_widths(self) -> None:

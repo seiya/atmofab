@@ -168,10 +168,14 @@ PINNED: dict[str, str] = {
     # under pure-23 was reached WITHOUT the document that defines the ABI it was judging — the
     # observed failure was a `major` against a `case_setup(case_id, ok)` written exactly as the
     # contract specifies — so the two vintages must stay distinguishable. Known side effect (as
-    # for every bump): `_resolve_exemplar_source` gates prior-art exemplars on this version, so
-    # every sibling exemplar certified at pure-23 or earlier stops being offered. Advisory only —
-    # the producer takes the ABI from the rendered runner, not from an exemplar.
-    "pure-24": "4674922427ab389fff9d3a7cfcbbfe9947c1cff4c5e75ea45df7b879d9e167f5",}
+    # for every bump), TWO of them: `_resolve_exemplar_source` gates prior-art exemplars on this
+    # version, so every sibling exemplar certified at pure-23 or earlier stops being offered
+    # (advisory only — the producer takes the ABI from the rendered runner, not from an exemplar);
+    # and `validate_pipeline_semantics._validate_orchestration_hierarchy` hard-fails a persisted
+    # pure launch row whose `prompt_contract_version` is not the current one, so an orchestration
+    # whose `generate` ran under pure-23 cannot be `--resume`d across this bump. Both are inherent
+    # to bumping and neither is new; they are named because a bump is where an operator meets them.
+    "pure-24": "8b25a4e413f5a139f964aa7c09add01f5913fda76e55968c3ff90d35d2a79709",}
 
 
 def _contract_tuple() -> dict[str, object]:

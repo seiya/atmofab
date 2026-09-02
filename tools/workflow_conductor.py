@@ -12656,8 +12656,12 @@ class SubstepOutcome:
     # `pure_only_provider_on_agentic_path`,
     # which fail BEFORE any launch, so there is no launch instant to read and no artifact for
     # it to judge. All three are unreachable by the only consumer today
-    # (`_maybe_warm_resume_verify_meta` returns first on their `leaf_returncode=1`, which
-    # `test_transport_failed_verify_is_not_repaired` pins). `0.0` would be the wrong filler if
+    # (`_maybe_warm_resume_verify_meta`), but by three DIFFERENT guards, and naming only the last
+    # was wrong: the producer site returns at `SUBSTEPS[phase][...] != "verify"`, the pure verify
+    # site at the `_pure_leaf_substep` guard (unconditional for every node that can reach
+    # `_run_pure_verify_substep`), and only `pure_only_provider_on_agentic_path` — which can land
+    # on an AGENTIC verify substep — reaches the `leaf_returncode != 0` guard that
+    # `test_transport_failed_verify_is_not_repaired` pins. `0.0` would be the wrong filler if
     # that ever changed — every mtime is at or above it, so the attribution check would answer
     # YES to everything; a wall clock errs toward answering NO, which is the safe direction for
     # a substep that launched nothing.

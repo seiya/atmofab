@@ -98,10 +98,16 @@ class PureVerifyContextTests(unittest.TestCase):
                             "ok=.false.",
                             "runner always emits the case's snapshot"):
                 self.assertIn(present, doc)
+            # Every literal here must occur in the REAL document, or the assertion is true of any
+            # slice and pins nothing — an earlier version of this test named a preamble sentence
+            # the same commit had rewritten away.
+            real = _REAL_CHECKS_CONTRACT.read_text(encoding="utf-8")
             for absent in ("## 5.",
                            "Fortran legality and gate guards",
                            "# Checks-module contract",
-                           "Binds the **agentic** leaf"):
+                           "Force-read by the **agentic** leaf"):
+                self.assertIn(absent, real, f"{absent!r} no longer occurs in the document, so "
+                                            f"asserting its absence from the slice pins nothing")
                 self.assertNotIn(absent, doc)
 
     def test_missing_checks_contract_raises_the_named_contract(self) -> None:
@@ -195,6 +201,14 @@ class PureVerifySubstepTests(unittest.TestCase):
         c = cls(repo_root=repo, orchestration_id="o", orchestration_agent_run_id="orch",
                 llm_config=_cfg("claude"), env={})
         c.envelopes = envelopes
+        # Record the run-log rows without suppressing them: the real `emit` still runs, so what a
+        # test reads back is what the operator's event stream carries.
+        c.events = []  # type: ignore[attr-defined]
+        _real_emit = c.emit
+        def _emit(event, **fields):  # type: ignore[no-untyped-def]
+            c.events.append({"event": event, **fields})  # type: ignore[attr-defined]
+            _real_emit(event, **fields)
+        c.emit = _emit  # type: ignore[assignment,method-assign]
         oc = c._run_pure_verify_substep(refs, "generate", "verify", ())
         return c, refs, oc
 
@@ -225,6 +239,13 @@ class PureVerifySubstepTests(unittest.TestCase):
         base = c.repo_root / refs.source_dir()
         self.assertFalse((base / "source_meta.json").exists())
         self.assertFalse((base / "verdict_meta.json").exists())
+        # The run-log row is the operator's only trace of WHICH document was missing: the
+        # fail_closed reason downstream carries the tag but not the path. Deleting the emit left
+        # this file green before this assertion existed.
+        events = [e for e in c.events if e["event"] == "pure_context_assembly_failed"]
+        self.assertEqual(len(events), 1, c.events)
+        self.assertEqual(events[0]["node_key"], refs.node_key)
+        self.assertIn("pure_checks_contract_document_missing", events[0]["detail"])
 
     def test_the_reviewer_loop_takes_its_launch_instant_from_the_filesystem(self) -> None:
         """Mirror of the producer's #113 pin — one witness per OCCURRENCE, not per rule.

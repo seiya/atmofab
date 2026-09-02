@@ -221,11 +221,11 @@ class PurePayloadValidationTests(unittest.TestCase):
             ort._validate_pure_launch_request_payload(bad)
 
     def test_validate_payload_rejects_four_key_verify_context(self) -> None:
-        # issue #142: `checks_module_contract_document` is the fifth REQUIRED verify key. This is
-        # the one test that drives the production entry point — `prepare_launch_request_payload`
-        # then the real `_validate_launch_request_payload` handler, not the pure-specific helper —
-        # so deleting the key from PURE_CONTEXT_REQUIRED_KEYS is caught at the layer a launch
-        # actually traverses.
+        # issue #142: `checks_module_contract_document` is the fifth REQUIRED verify key. Several
+        # tests in this file drive the real `_validate_launch_request_payload`; what is unique here
+        # is the COMBINATION — a missing required `pure_context` key pushed through the production
+        # entry point (`prepare_launch_request_payload` then the real handler) rather than through
+        # the pure-specific helper, which is the layer a launch actually traverses.
         req = _pure_request("verify")
         ctx = dict(req["pure_context"])  # type: ignore[arg-type]
         del ctx["checks_module_contract_document"]
@@ -233,6 +233,20 @@ class PurePayloadValidationTests(unittest.TestCase):
         with self.assertRaises(ValueError) as cm:
             ort._validate_launch_request_payload(ort.prepare_launch_request_payload(req))
         self.assertIn("checks_module_contract_document", str(cm.exception))
+
+    def test_validate_payload_rejects_a_blank_required_verify_context_value(self) -> None:
+        # The PRESENCE check has two halves and only the key-absence half was pinned: mutating
+        # `not (isinstance(v, str) and v.strip())` to `k not in ctx` left all five pure test files
+        # green. The non-empty half is what `TODO.md` item (b) cites as the reason an empty node
+        # artifact never reaches a billed leaf, so it must not be able to rot unobserved.
+        for blank in ("", "   ", "\n"):
+            req = _pure_request("verify")
+            ctx = dict(req["pure_context"])  # type: ignore[arg-type]
+            ctx["checks_module_contract_document"] = blank
+            req["pure_context"] = ctx
+            with self.assertRaises(ValueError, msg=repr(blank)) as cm:
+                ort._validate_launch_request_payload(ort.prepare_launch_request_payload(req))
+            self.assertIn("checks_module_contract_document", str(cm.exception))
 
     def test_validate_payload_pure_verify_skips_skill_requirements(self) -> None:
         # A pure verify carries empty skill fields; the agentic verify skill-requirement block
@@ -324,6 +338,28 @@ class PureRenderTests(unittest.TestCase):
         text = ort._render_pure_repair_prompt(req)
         self.assertIn("**runner_document:**", text)
         self.assertIn("use sw_checks, only:", text)
+
+    def test_cold_repair_verify_reinlines_the_contract_with_the_text_that_governs_it(self) -> None:
+        # issue #142, round 1: `pure_context` re-inlines the 9 KB checks-module contract into a
+        # cold verify repair automatically, and NOTHING lifted the paragraphs that govern it —
+        # measured before the fix: ABI verbatim True, contract label False, scope sentence False,
+        # `G1 — case coverage` False. That is the shape `PURE_REPAIR_STATIC_PARAGRAPH_PREFIXES`'
+        # own comment says the list exists to prevent, on the reviewer side.
+        ctx = _pure_verify_context()
+        ctx["checks_module_contract_document"] = (
+            "## 1. The fixed ABI\npublic :: case_setup, case_run\n")
+        req = ort.prepare_launch_request_payload(_pure_request(
+            "verify", pure_context=ctx, repair_findings="verdict is missing findings",
+            repair_strategy="reuse"))
+        text = ort._render_pure_repair_prompt(req)
+        self.assertIn("public :: case_setup, case_run", text)            # the document
+        self.assertIn("**Checks-module contract (", text)                # its label
+        self.assertIn("authority for ONE question only", text)           # its scope bound
+        self.assertIn("G1 — case coverage", text)                        # what it does NOT narrow
+        self.assertIn("do NOT re-check style", text)                     # the gate already ran
+        # The lift drops trailing slot lines, so no metavariable ships as a literal token.
+        for slot in ("<checks_module_contract_document>", "<bundle_document>", "<ir_document>"):
+            self.assertNotIn(slot, text)
 
     def test_render_pure_prompt_passes_launch_validator(self) -> None:
         prepared = ort.prepare_launch_request_payload(_pure_request("generate"))
@@ -476,10 +512,22 @@ class PureRenderTests(unittest.TestCase):
             "**Checks-module contract (`docs/workflow/CHECKS_MODULE_CONTRACT.md` §1-4, inlined:",
             prompt)
         self.assertIn("case_setup ok=.false. still proceeds", prompt)  # the slot is filled
+        # Both statements of the rule are BOUNDED, and the bound is the load-bearing half: a
+        # round-1 reviewer showed that "do not fail the bundle for a consequence it does not
+        # state" reads as "only fail for what the contract states", which hands the reviewer leaf
+        # a template-authorized route to a zero-findings `pass` on G1-G7. Pin the narrowing
+        # clauses, not merely the fact that the rule is stated.
         self.assertIn(
-            "The inlined checks-module contract is the authority for what the runner does with "
-            "each callback's result; a finding whose justification depends on runner behaviour "
-            "the contract does not state is out of scope, not a defect.",
+            "The inlined checks-module contract is the authority for ONE question only — what "
+            "the host-rendered runner does with the RESULT a checks-module callback returns",
+            prompt)
+        self.assertIn(
+            "It narrows nothing else: G1-G7 below each stay fully in scope, and the contract's "
+            "silence about them is not a licence to pass.",
+            prompt)
+        self.assertIn(
+            "It is the authority for what the runner does with the RESULT a callback returns, "
+            "and for nothing else — it narrows no checklist item:**",
             prompt)
         self.assertLess(prompt.index("IR (authoritative"), prompt.index("Checks-module contract"))
         self.assertLess(prompt.index("Checks-module contract"),
