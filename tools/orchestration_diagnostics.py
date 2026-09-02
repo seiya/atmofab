@@ -453,10 +453,10 @@ def _locate_leaf_transcript(child_arid: str, repo_root: Path,
     slightly different cwd slug is still found; the arid (a uuid) is unique, so the
     wildcard cannot collide across projects. Both the orchestration's private home
     (issue #63) and the operator's ``~/.claude`` are searched, through the canonical
-    ``claude_leaf_projects_roots`` resolver — a run that predates the private home
-    must stay auditable. Returns WHICH root held the hit alongside the path, because
-    an incident record that says only "found" cannot tell a private-home hit from a
-    pre-#63 operator-home one.
+    ``claude_leaf_projects_roots`` resolver — a PURE leaf writes there on a current
+    run, and a run predating the private home must stay auditable. Returns WHICH root
+    held the hit alongside the path, because an incident record that says only "found"
+    cannot tell an agentic leaf's private-home hit from an operator-home one.
     """
     arid = str(child_arid or "").strip()
     if not arid:

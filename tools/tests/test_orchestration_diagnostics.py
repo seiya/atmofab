@@ -490,7 +490,10 @@ class LeafTranscriptRootTests(unittest.TestCase):
             assert found is not None
             self.assertEqual(found.path, proj / "arid-old.jsonl")
             # The root, not just the file: an operator reading the incident has to be
-            # able to tell a pre-#63 operator-home hit from a private-home one.
+            # able to tell an operator-home hit from a private-home one. This fixture
+            # is the pre-#63 case, but the same shape is what a PURE leaf produces on a
+            # current run, which `test_a_pure_leafs_hit_in_the_operator_home_names_that_root`
+            # drives end to end.
             self.assertEqual(found.projects_root, operator / ".claude" / "projects")
 
     def test_the_projects_dir_prefers_the_private_home(self) -> None:
