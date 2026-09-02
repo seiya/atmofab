@@ -1297,9 +1297,10 @@ def _render_markdown(result: dict[str, Any]) -> str:
         lines.append("")
         lines.append(
             f"`{result.get('orchestration_root')}` is not a directory. Every count below "
-            "is zero because nothing was read, NOT because nothing is wrong — check the "
-            "orchestration id, and check `--repo-root` (it defaults to the current "
-            "directory)."
+            "is zero because nothing was read, NOT because nothing is wrong. Two causes: "
+            "`--repo-root` does not name the checkout (it defaults to the CURRENT "
+            "DIRECTORY, so this is what running the command from elsewhere looks like), "
+            "or the orchestration id is wrong."
         )
         lines.append("")
 
@@ -1413,7 +1414,8 @@ def _render_markdown(result: dict[str, Any]) -> str:
     # renders exactly as before rather than growing a spurious banner.
     unmeasured = None
     if not result.get("orchestration_found", True):
-        unmeasured = "There is no such orchestration in this checkout, so NOTHING was measured"
+        unmeasured = ("No orchestration was found at the path above, so NOTHING was "
+                      "measured here")
     _render_launch_incident(
         result.get("launch_incident"), result.get("launch_incident_snapshots"), lines,
         failure=failures_by_section.get("launch_incident"),
