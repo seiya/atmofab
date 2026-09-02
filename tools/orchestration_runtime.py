@@ -12097,7 +12097,7 @@ PURE_CONTEXT_REQUIRED_KEYS: dict[tuple[str, str], tuple[str, ...]] = {
                                "ir_document",
                                "tests_document", "runner_document"),
     ("generate", "verify"): ("controlled_spec_document", "tests_document", "ir_document",
-                             "bundle_document"),
+                             "checks_module_contract_document", "bundle_document"),
 }
 
 

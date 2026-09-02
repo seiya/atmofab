@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import tempfile
 import unittest
 from datetime import datetime
@@ -39,8 +40,19 @@ def _verdict(status: str = "pass", *, severity: str | None = None,
             "findings": findings or [{"summary": "mass is not conserved"}]}
 
 
-def _verify_node(repo: Path) -> wc.NodeRefs:
-    """A pure node with the producer's codegen_bundle.json already on disk (the reviewer input)."""
+# The real checks-module contract, copied into each fixture repo. Deliberately the REAL document
+# and not a synthetic stand-in: every reviewer-loop test below renders the live slice, so a
+# reorganization of the document that `_checks_contract_abi_sections` cannot cut turns this whole
+# file red — the early warning that a billed run would otherwise be the first to give.
+# `ChecksContractSlicerTests` covers the helper's own contract on synthetic text.
+_REAL_CHECKS_CONTRACT = (
+    Path(wc.__file__).resolve().parents[1] / "docs" / "workflow" / "CHECKS_MODULE_CONTRACT.md")
+
+
+def _verify_node(repo: Path, *, stage_checks_contract: bool = True) -> wc.NodeRefs:
+    """A pure node with the producer's codegen_bundle.json already on disk (the reviewer input),
+    and — unless `stage_checks_contract=False` — the repository's checks-module contract staged
+    where `_build_pure_verify_context` reads it."""
     refs = _write_node(repo)
     src = repo / refs.source_dir()
     src.mkdir(parents=True, exist_ok=True)
@@ -48,6 +60,10 @@ def _verify_node(repo: Path) -> wc.NodeRefs:
     (repo / refs.spec_path).mkdir(parents=True, exist_ok=True)
     (repo / refs.spec_path / "controlled_spec.md").write_text(
         "# §5.1 interface\nconserves mass.\n", encoding="utf-8")
+    if stage_checks_contract:
+        dest = repo / "docs" / "workflow" / "CHECKS_MODULE_CONTRACT.md"
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(_REAL_CHECKS_CONTRACT, dest)
     return refs
 
 
@@ -55,26 +71,126 @@ def _verify_node(repo: Path) -> wc.NodeRefs:
 # _build_pure_verify_context
 # ======================================================================================
 class PureVerifyContextTests(unittest.TestCase):
-    def test_context_has_the_four_verify_keys(self) -> None:
+    def test_context_has_the_five_verify_keys(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = _verify_node(repo)
             ctx = _conductor(repo)._build_pure_verify_context(refs)
             self.assertEqual(set(ctx),
                              {"controlled_spec_document", "tests_document",
-                              "ir_document", "bundle_document"})
+                              "ir_document", "checks_module_contract_document",
+                              "bundle_document"})
             self.assertIn("conserves mass", ctx["controlled_spec_document"])
             self.assertIn("bundle_schema_version", ctx["bundle_document"])
+
+    def test_checks_contract_document_is_sections_1_to_4_of_the_real_doc(self) -> None:
+        # issue #142: the reviewer receives the ABI half of the contract and nothing else. What is
+        # pinned is the SPAN — §1 opens it, §4's content is inside, §5 and the preamble are out.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = _verify_node(repo)
+            doc = _conductor(repo)._build_pure_verify_context(
+                refs)["checks_module_contract_document"]
+            self.assertTrue(doc.startswith("## 1. "), doc[:80])
+            for present in ("## 2. Semantics the harness relies on",
+                            "## 3. Module-level state is expected",
+                            "## 4. Prohibitions",
+                            "ok=.false.",
+                            "runner always emits the case's snapshot"):
+                self.assertIn(present, doc)
+            for absent in ("## 5.",
+                           "Fortran legality and gate guards",
+                           "# Checks-module contract",
+                           "Binds the **agentic** leaf"):
+                self.assertNotIn(absent, doc)
+
+    def test_missing_checks_contract_raises_the_named_contract(self) -> None:
+        # NOT the swallow-to-"" idiom the four node artifacts use: "" satisfies the renderer's
+        # presence check and would ship a reviewer prompt whose ABI section is blank.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = _verify_node(repo, stage_checks_contract=False)
+            with self.assertRaises(RuntimeError) as cm:
+                _conductor(repo)._build_pure_verify_context(refs)
+            self.assertIn("pure_checks_contract_document_missing", str(cm.exception))
+
+    def test_non_utf8_checks_contract_raises_the_named_contract(self) -> None:
+        # UnicodeDecodeError is a ValueError, not an OSError: catching OSError alone would let it
+        # escape unnamed (the producer's runner read has the same pin).
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = _verify_node(repo)
+            (repo / "docs" / "workflow" / "CHECKS_MODULE_CONTRACT.md").write_bytes(
+                b"## 1. x\n\xff\xfe\n## 5. y\n")
+            with self.assertRaises(RuntimeError) as cm:
+                _conductor(repo)._build_pure_verify_context(refs)
+            self.assertIn("pure_checks_contract_document_missing", str(cm.exception))
+
+    def test_unsliceable_checks_contract_raises_the_named_contract(self) -> None:
+        # A readable document whose anchors moved is a DIFFERENT diagnosis from an absent one:
+        # the operator's repair is the document's section numbering, not a missing file.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = _verify_node(repo)
+            (repo / "docs" / "workflow" / "CHECKS_MODULE_CONTRACT.md").write_text(
+                "## 1. The fixed ABI\nbody\n", encoding="utf-8")
+            with self.assertRaises(RuntimeError) as cm:
+                _conductor(repo)._build_pure_verify_context(refs)
+            self.assertIn("pure_checks_contract_document_unsliceable", str(cm.exception))
+
+
+# ======================================================================================
+# _checks_contract_abi_sections (the slicer's own contract, on synthetic text)
+# ======================================================================================
+class ChecksContractSlicerTests(unittest.TestCase):
+    _DOC = ("# Title\n\npreamble\n\n"
+            "## 1. The fixed ABI\nabi body\n\n"
+            "## 2. Semantics\nsemantics body\n\n"
+            "## 3. State\nstate body\n\n"
+            "## 4. Prohibitions\nprohibitions body\n\n"
+            "## 5. Legality\nlegality body\n")
+
+    def test_keeps_1_to_4_and_drops_title_preamble_and_5(self) -> None:
+        self.assertEqual(
+            wc._checks_contract_abi_sections(self._DOC),
+            "## 1. The fixed ABI\nabi body\n\n"
+            "## 2. Semantics\nsemantics body\n\n"
+            "## 3. State\nstate body\n\n"
+            "## 4. Prohibitions\nprohibitions body")
+
+    def test_missing_begin_anchor_raises(self) -> None:
+        with self.assertRaises(ValueError):
+            wc._checks_contract_abi_sections("# Title\n\n## 5. Legality\nbody\n")
+
+    def test_missing_end_anchor_raises(self) -> None:
+        # Degrading to "everything after §1" would silently hand the reviewer the deterministic
+        # gate section the template tells it not to re-check.
+        with self.assertRaises(ValueError):
+            wc._checks_contract_abi_sections("## 1. ABI\nbody\n\n## 4. Prohibitions\nb\n")
+
+    def test_decimal_subsection_headings_do_not_anchor(self) -> None:
+        # `## 1.5` / `## 5.1` are subsection numbers, not the section anchors.
+        with self.assertRaises(ValueError):
+            wc._checks_contract_abi_sections("## 1.5 sub\nbody\n\n## 5. Legality\nb\n")
+        with self.assertRaises(ValueError):
+            wc._checks_contract_abi_sections("## 1. ABI\nbody\n\n## 5.1 sub\nb\n")
+
+    def test_an_end_anchor_before_the_begin_anchor_is_not_counted(self) -> None:
+        # The end search starts AFTER the begin index; a §5 back-reference above §1 must not
+        # produce an empty (or reversed) slice.
+        doc = ("## 5. Legality\nearly\n\n## 1. ABI\nabi body\n\n"
+               "## 5. Legality\nlegality body\n")
+        self.assertEqual(wc._checks_contract_abi_sections(doc), "## 1. ABI\nabi body")
 
 
 # ======================================================================================
 # _run_pure_verify_substep: happy path, fail verdict, repair, exhaustion, transport
 # ======================================================================================
 class PureVerifySubstepTests(unittest.TestCase):
-    def _run(self, envelopes, *, cls=_PureFakeConductor):
+    def _run(self, envelopes, *, cls=_PureFakeConductor, stage_checks_contract=True):
         self._tmp = tempfile.TemporaryDirectory()
         repo = Path(self._tmp.name)
-        refs = _verify_node(repo)
+        refs = _verify_node(repo, stage_checks_contract=stage_checks_contract)
         (repo / "workspace" / "orchestrations" / "o").mkdir(parents=True, exist_ok=True)
         c = cls(repo_root=repo, orchestration_id="o", orchestration_agent_run_id="orch",
                 llm_config=_cfg("claude"), env={})
@@ -85,6 +201,30 @@ class PureVerifySubstepTests(unittest.TestCase):
     def tearDown(self) -> None:
         if hasattr(self, "_tmp"):
             self._tmp.cleanup()
+
+    def test_context_assembly_failure_is_a_recorded_fail_closed_outcome(self) -> None:
+        """The HANDLER pin for issue #142's fail-closed disposition, not the builder's.
+
+        `_build_pure_verify_context` raising is only half the contract: `run_substep`'s callers
+        must never see an exception, so this loop has to convert it into the same recorded
+        `pure_context_assembly_failed` transport outcome the producer produces. Deleting the
+        try/except around the call would leave every builder-side test above green.
+
+        A `pass` envelope is queued deliberately: if the recovery were missing in the other
+        direction — the failure swallowed and the launch continued — the reviewer would return
+        `pass` and the assertions on spawn count and artifacts would catch it.
+        """
+        c, refs, oc = self._run([_envelope(_verdict("pass"))], stage_checks_contract=False)
+        self.assertEqual(oc.status, "fail")
+        self.assertEqual(oc.leaf_returncode, 1)      # transport => run_phase's fail_closed route
+        self.assertIsNotNone(oc.infra_error)
+        self.assertEqual(oc.infra_error[0], "pure_context_assembly_failed")
+        self.assertIn("pure_checks_contract_document_missing", oc.infra_error[1])
+        self.assertEqual(oc.output_refs, [])
+        self.assertEqual(getattr(c, "_spawn", 0), 0)  # no leaf was billed
+        base = c.repo_root / refs.source_dir()
+        self.assertFalse((base / "source_meta.json").exists())
+        self.assertFalse((base / "verdict_meta.json").exists())
 
     def test_the_reviewer_loop_takes_its_launch_instant_from_the_filesystem(self) -> None:
         """Mirror of the producer's #113 pin — one witness per OCCURRENCE, not per rule.
@@ -612,7 +752,9 @@ class PureVerifyLaunchRequestTests(unittest.TestCase):
                 makefile_host_authored=True, runner_host_authored=True,
                 pure_leaf=True,
                 pure_context={"controlled_spec_document": "cs", "tests_document": "t",
-                              "ir_document": "ir", "bundle_document": "b"})
+                              "ir_document": "ir",
+                              "checks_module_contract_document": "## 1. The fixed ABI",
+                              "bundle_document": "b"})
             self.assertEqual(req["leaf_mode"], "pure")
             self.assertEqual(req["substep"], "verify")
             self.assertEqual(req["prompt_contract_version"], PURE_PROMPT_CONTRACT_VERSION)

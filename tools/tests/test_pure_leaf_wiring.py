@@ -61,6 +61,8 @@ def _pure_verify_context() -> dict[str, str]:
         "controlled_spec_document": "the model conserves mass",
         "tests_document": "- test: conserves mass",
         "ir_document": "algorithm:\n  state_variables: [h]\n",
+        "checks_module_contract_document": (
+            "## 1. The fixed ABI\ncase_setup ok=.false. still proceeds\n"),
         "bundle_document": '{"files": []}',
     }
 
@@ -217,6 +219,20 @@ class PurePayloadValidationTests(unittest.TestCase):
         bad = _pure_request(allowed_output_paths=["workspace/pipelines/x/source/s/model.f90"])
         with self.assertRaises(ValueError):
             ort._validate_pure_launch_request_payload(bad)
+
+    def test_validate_payload_rejects_four_key_verify_context(self) -> None:
+        # issue #142: `checks_module_contract_document` is the fifth REQUIRED verify key. This is
+        # the one test that drives the production entry point — `prepare_launch_request_payload`
+        # then the real `_validate_launch_request_payload` handler, not the pure-specific helper —
+        # so deleting the key from PURE_CONTEXT_REQUIRED_KEYS is caught at the layer a launch
+        # actually traverses.
+        req = _pure_request("verify")
+        ctx = dict(req["pure_context"])  # type: ignore[arg-type]
+        del ctx["checks_module_contract_document"]
+        req["pure_context"] = ctx
+        with self.assertRaises(ValueError) as cm:
+            ort._validate_launch_request_payload(ort.prepare_launch_request_payload(req))
+        self.assertIn("checks_module_contract_document", str(cm.exception))
 
     def test_validate_payload_pure_verify_skips_skill_requirements(self) -> None:
         # A pure verify carries empty skill fields; the agentic verify skill-requirement block
@@ -434,6 +450,55 @@ class PureRenderTests(unittest.TestCase):
         # `associate` form intact — the assertion above is also this pin.
         # Static prefix first (byte-stable order): rules precede the variable documents.
         self.assertLess(prompt.index("Authoring rules"), prompt.index("Harness capabilities"))
+
+    def test_render_pure_verify_prompt_full_skeleton(self) -> None:
+        # The verify counterpart of the generate skeleton test: sentinel first, no `<...>` slot
+        # left unsubstituted, the identity block last, and exactly FIVE data-fenced documents
+        # (issue #142 made the checks-module contract the fifth).
+        prepared = ort.prepare_launch_request_payload(_pure_request("verify"))
+        prompt = prepared["launch_prompt_full"]
+        self.assertTrue(prompt.startswith(PURE_PROMPT_SENTINEL))
+        for placeholder in ("<controlled_spec_document>", "<tests_document>", "<ir_document>",
+                            "<checks_module_contract_document>", "<bundle_document>"):
+            self.assertNotIn(placeholder, prompt)
+        self.assertEqual(prompt.count(PURE_DOC_FENCE_BEGIN), 5)
+        self.assertEqual(prompt.count(PURE_DOC_FENCE_END), 5)
+        self.assertGreater(prompt.index("Target node_key:"), prompt.index("under review"))
+
+    def test_pure_verify_prompt_carries_the_checks_contract_and_its_scope_rule(self) -> None:
+        # issue #142: the reviewer failed a contract-conforming `case_setup(case_id, ok)` on a
+        # claim about the runner it had no document to check. Pin all three halves of the fix —
+        # the label, the fixture body actually reaching the slot, and the scope sentence that
+        # makes the document the authority — plus the order (authority before the artifact it
+        # judges).
+        prompt = ort.prepare_launch_request_payload(_pure_request("verify"))["launch_prompt_full"]
+        self.assertIn(
+            "**Checks-module contract (`docs/workflow/CHECKS_MODULE_CONTRACT.md` §1-4, inlined:",
+            prompt)
+        self.assertIn("case_setup ok=.false. still proceeds", prompt)  # the slot is filled
+        self.assertIn(
+            "The inlined checks-module contract is the authority for what the runner does with "
+            "each callback's result; a finding whose justification depends on runner behaviour "
+            "the contract does not state is out of scope, not a defect.",
+            prompt)
+        self.assertLess(prompt.index("IR (authoritative"), prompt.index("Checks-module contract"))
+        self.assertLess(prompt.index("Checks-module contract"),
+                        prompt.index("Generated CodegenBundle under review"))
+
+    def test_every_required_pure_context_key_has_exactly_one_template_slot(self) -> None:
+        # Structural closure of "a required key with no template slot is silently dropped": the
+        # validator would accept the launch and the leaf would never see the document. Derived
+        # from PURE_CONTEXT_REQUIRED_KEYS rather than a hand-written list, so a future key is
+        # covered the moment it is declared.
+        templates = ort._load_launch_prompt_templates()
+        for (step, substep), keys in ort.PURE_CONTEXT_REQUIRED_KEYS.items():
+            tpl = templates[f"pure {step}.{substep}"]
+            for key in keys:
+                slots = [ln for ln in tpl.splitlines()
+                         if ln.strip() == f"<{key}>"
+                         and ort._PURE_PLACEHOLDER_ONLY_RE.fullmatch(ln.strip())]
+                self.assertEqual(len(slots), 1,
+                                 f"pure {step}.{substep}: <{key}> must have exactly one slot line")
 
     def test_pure_verify_prompt_scopes_the_deterministic_floor(self) -> None:
         # Issue #22 was an asymmetry between the producer prompt and the reviewer's rule. This

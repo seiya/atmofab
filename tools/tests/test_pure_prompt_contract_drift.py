@@ -160,7 +160,18 @@ PINNED: dict[str, str] = {
     # version, and a bundle produced under the old text must not be silently treated as
     # having been produced under the new one; re-pinning in place would have been the
     # reverse-drift hole this file exists to close.
-    "pure-23": "6c9d1ced2855e79f709e06122856885c93d9b50670973e8a81d5230ed1a9ec2d",}
+    "pure-23": "6c9d1ced2855e79f709e06122856885c93d9b50670973e8a81d5230ed1a9ec2d",
+    # pure-24: the verify template gained a FIFTH data-fenced document,
+    # `<checks_module_contract_document>` (§1-4 of docs/workflow/CHECKS_MODULE_CONTRACT.md,
+    # sliced host-side), and its scope paragraph now makes that document the authority for what
+    # the runner does with each checks-module callback's result (issue #142). A verdict issued
+    # under pure-23 was reached WITHOUT the document that defines the ABI it was judging — the
+    # observed failure was a `major` against a `case_setup(case_id, ok)` written exactly as the
+    # contract specifies — so the two vintages must stay distinguishable. Known side effect (as
+    # for every bump): `_resolve_exemplar_source` gates prior-art exemplars on this version, so
+    # every sibling exemplar certified at pure-23 or earlier stops being offered. Advisory only —
+    # the producer takes the ABI from the rendered runner, not from an exemplar.
+    "pure-24": "4674922427ab389fff9d3a7cfcbbfe9947c1cff4c5e75ea45df7b879d9e167f5",}
 
 
 def _contract_tuple() -> dict[str, object]:

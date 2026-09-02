@@ -30361,7 +30361,13 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # comment, lines UNDER 100 with the reason), and the allow paragraph had to stop
         # promising a diagnostic that does not always arrive. Both are text a leaf ACTS on,
         # and the shorter versions were the ones that were wrong. Measured 14661 at the end of the loop.
-        "docs/workflow/CHECKS_MODULE_CONTRACT.md": 14700,
+        # Bumped 14700->14900: issue #142 — the preamble said a `pure` leaf "cannot read this",
+        # which stopped being true once the pure `generate.verify` reviewer began receiving §1-4
+        # inlined; it now names both pure routes (producer: ten names + rendered runner;
+        # reviewer: the inlined slice). The agentic leaf's force-read cost is what this ceiling
+        # guards, and the preamble is the first thing that leaf reads to know which half binds
+        # it. Measured 14865 at the end of the loop.
+        "docs/workflow/CHECKS_MODULE_CONTRACT.md": 14900,
         # Still force-read by compile.generate/verify (its IR schema is the contract
         # the compile SKILL defers to).
         # Bumped 17000->18200: documented the deterministic Compile.static substep (G2,
