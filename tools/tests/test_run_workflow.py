@@ -1611,6 +1611,29 @@ class RunWorkflowTests(unittest.TestCase):
             self.assertEqual(path.parent, (fake_home / ".atmofab").resolve()
                              / "start_claims")
 
+    def test_a_tilde_claim_root_override_is_expanded(self) -> None:
+        """`~` is expanded, and until round 1 nothing observed that.
+
+        The third of three relocators, and the only one whose `expanduser` had no test —
+        `test_a_tilde_homes_root_override_is_expanded` and
+        `test_a_tilde_token_store_override_is_expanded` cover the other two, and both
+        reviewers reported this one as a surviving mutant.
+
+        The behaviour it pins is a CHANGE this branch made deliberately: a quoted
+        `ATMOFAB_START_CLAIM_ROOT='~/claims'` is a plausible spelling and the shell does
+        not expand inside quotes, so before this branch the value became a literal `~`
+        directory under the caller's working directory — which for the conductor is the
+        checkout, where it then shows up as an untracked path.
+        """
+        with mock.patch.dict(
+                os.environ,
+                {"HOME": "/tmp/fake-home-probe",
+                 run_workflow.START_CLAIMS_ROOT_ENV: "~/big/claims"},
+                clear=False):
+            resolved = run_workflow._start_claims_root()
+        self.assertEqual(resolved, Path("/tmp/fake-home-probe/big/claims"))
+        self.assertNotIn("~", str(resolved))
+
     def test_the_claim_path_follows_the_module_level_resolver(self) -> None:
         """`_claim_lock_path` asks `_start_claims_root`, so patching it is enough.
 

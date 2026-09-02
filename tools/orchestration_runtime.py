@@ -16481,8 +16481,16 @@ def _operator_token_path(orchestration_id: str) -> Path:
     return _operator_tokens_root() / f"{orchestration_id}.txt"
 
 
-def _require_usable_private_root_override(env_name: str, root: Path, label: str) -> None:
+def _require_usable_private_root_override(env_name: str, root: Path, subject: str,
+                                          creator: str = "a home") -> None:
     """Refuse an override that names a location this process cannot honour.
+
+    `subject` names the tree in the operator's words ("isolated claude home root", "operator
+    token store") and `creator` names what the writing side is about to make. They are
+    parameters rather than one shared sentence because the homes wording was the only
+    wording when this was extracted, and a message telling an operator their TOKEN STORE
+    failed because of "a home" names the wrong one of three relocatable trees — which is
+    the confusion the RUNBOOK sweep on this branch exists to remove.
 
     The resolvers in `tools/hooks/common.py` stay TOTAL — they feed the Bash read guard,
     and a hook that raises while deciding a read is worse than one that guards a path
@@ -16506,13 +16514,13 @@ def _require_usable_private_root_override(env_name: str, root: Path, label: str)
         raise ValueError(
             f"{env_name} must be an absolute path (got "
             f"{raw_override!r}): a relative one resolves against each process's "
-            "working directory, so the conductor that creates a home and the hook "
+            f"working directory, so the conductor that creates {creator} and the hook "
             "that forbids reading it would resolve different trees"
         )
     parent = root.parent
     if not parent.exists():
         raise ValueError(
-            f"isolated {label} home root's parent does not exist: {parent} "
+            f"{subject}'s parent does not exist: {parent} "
             f"(set by {env_name})"
         )
 
@@ -16630,9 +16638,12 @@ def _create_workflow_backend_home(repo_root: Path, orchestration_id: str,
     # exist yet (a host that has never run `init_orchestration`).
     ancestors: list[tuple[Path, bool]] = []
     if override_used:
-        # Both conditions and both messages live in the shared helper, so the homes root
-        # and the token store refuse an unusable override identically.
-        _require_usable_private_root_override(WORKFLOW_HOMES_ROOT_ENV, root, label)
+        # Both conditions live in the shared helper, so the homes root and the token
+        # store refuse an unusable override on the same terms. The WORDING is per-caller:
+        # each names its own tree, because there are three relocatable ones and telling
+        # an operator the wrong one is worse than two copies of the sentence.
+        _require_usable_private_root_override(
+            WORKFLOW_HOMES_ROOT_ENV, root, f"isolated {label} home root")
         ancestors.append((root, True))
     else:
         ancestors.append((root.parent, False))  # ~/.atmofab — mode not forced
@@ -19497,7 +19508,8 @@ def init_orchestration(
     operator_token_path = _operator_token_path(orchestration_id)
     if os.environ.get(OPERATOR_TOKENS_ROOT_ENV, "").strip():
         _require_usable_private_root_override(
-            OPERATOR_TOKENS_ROOT_ENV, operator_token_path.parent, "operator token")
+            OPERATOR_TOKENS_ROOT_ENV, operator_token_path.parent,
+            "operator token store", creator="the token store")
     root = _orchestration_root(repo_root, orchestration_id)
     root.mkdir(parents=True, exist_ok=True)
     (repo_root / "workspace" / "tmp").mkdir(parents=True, exist_ok=True)

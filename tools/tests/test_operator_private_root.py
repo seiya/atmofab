@@ -94,8 +94,11 @@ class OperatorTokenRootOverrideTests(unittest.TestCase):
             repo.mkdir()
             with self.assertRaises(ValueError) as ctx:
                 self._init_under("relative/tokens", repo)
-            self.assertIn(hooks_common.OPERATOR_TOKENS_ROOT_ENV, str(ctx.exception))
-            self.assertIn("absolute", str(ctx.exception))
+            message = str(ctx.exception)
+            self.assertIn(hooks_common.OPERATOR_TOKENS_ROOT_ENV, message)
+            self.assertIn("absolute", message)
+            self.assertIn("the token store", message)
+            self.assertNotIn("creates a home", message)
             self.assertFalse((repo / "workspace" / "orchestrations" / "opr_1").exists())
 
     def test_an_override_whose_parent_is_missing_is_refused(self) -> None:
@@ -105,9 +108,17 @@ class OperatorTokenRootOverrideTests(unittest.TestCase):
             missing = Path(td) / "no" / "such" / "parent" / "tokens"
             with self.assertRaises(ValueError) as ctx:
                 self._init_under(str(missing), repo)
-            self.assertIn("does not exist", str(ctx.exception))
-            self.assertIn(hooks_common.OPERATOR_TOKENS_ROOT_ENV, str(ctx.exception))
+            message = str(ctx.exception)
+            self.assertIn("does not exist", message)
+            self.assertIn(hooks_common.OPERATOR_TOKENS_ROOT_ENV, message)
             self.assertFalse((repo / "workspace" / "orchestrations" / "opr_1").exists())
+            # NAMES ITS OWN TREE. The condition is shared with the homes root; the wording
+            # is not, because three trees under `~/.atmofab` are relocatable and a message
+            # saying "home" for the TOKEN STORE sends the operator to the wrong one. A
+            # round-1 reviewer measured the shared sentence saying "isolated operator
+            # token home root" and "the conductor that creates a home".
+            self.assertIn("operator token store", message)
+            self.assertNotIn("home", message)
 
     def test_a_tilde_token_store_override_is_expanded(self) -> None:
         """`~` is expanded, and nothing else observes that.
@@ -447,6 +458,16 @@ class RunbookStatesTheRelocatorsTests(unittest.TestCase):
 
     def _section(self) -> str:
         text = (REPO_ROOT / "docs" / "RUNBOOK.md").read_text(encoding="utf-8")
+        # A missing anchor is a legitimate edit (someone reworded the heading), and it
+        # used to arrive as an uncaught `ValueError: substring not found` naming nothing.
+        # A check that refuses ordinary work has to say what to do about it — this one
+        # names the anchor and where it is spelled.
+        self.assertTrue(
+            self.ANCHOR in text,
+            f"docs/RUNBOOK.md has no section opening {self.ANCHOR!r}. If the heading was "
+            "reworded, update `ANCHOR` here to the new one — it is deliberately text that "
+            "PRECEDES the rule, so it pins that the rule is stated rather than that some "
+            "correction survived.")
         start = text.index(self.ANCHOR)
         rest = text[start + len(self.ANCHOR):]
         end = rest.find("\n## ")
@@ -478,9 +499,12 @@ class RunbookStatesTheRelocatorsTests(unittest.TestCase):
         """
         text = (REPO_ROOT / "docs" / "RUNBOOK.md").read_text(encoding="utf-8")
         section = self._section()
-        self.assertIn("advisory `flock` under `~/.atmofab/start_claims/`", text,
-                      "the cold-start bullet this bound is tested against has moved; "
-                      "re-choose a control sentence outside the section")
+        # `assertTrue`, not `assertIn`: the haystack here is the whole 163 KB document.
+        self.assertTrue(
+            "advisory `flock` under `~/.atmofab/start_claims/`" in text,
+            "the cold-start bullet this bound is tested against has moved or was "
+            "reworded; re-choose a control sentence that names a relocator and sits "
+            "OUTSIDE the operator-private-root section")
         self.assertFalse(
             "advisory `flock` under `~/.atmofab/start_claims/`" in section,
             "the section slice reached outside the section — the bound is broken")

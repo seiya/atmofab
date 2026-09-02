@@ -1653,10 +1653,20 @@ def operator_tokens_root() -> Path:
     `ATMOFAB_OPERATOR_TOKENS_ROOT` relocates it, in the same shape and for the same
     reason as `ATMOFAB_WORKFLOW_HOMES_ROOT` relocates the homes: the test suite needs the
     store somewhere pytest cleans up, and an operator may have a reason. Like that one,
-    this resolver stays TOTAL and validates nothing — it feeds `protected_host_read_roots`,
-    and a hook that raises while deciding a read is worse than one that guards a path
-    nobody writes to. The refusal for an unusable override lives on the CREATION side, in
-    `init_orchestration`.
+    this resolver VALIDATES nothing — the refusal for an unusable override lives on the
+    CREATION side, in `init_orchestration`, because that is where failing closed is
+    available.
+
+    It is not TOTAL, and an earlier version of this sentence said it was. `expanduser()`
+    raises `RuntimeError` for a `~someone` spelling naming no account (measured, and the
+    same is true of `workflow_homes_root`, which carried the same claim before this
+    branch). What follows is FAIL-CLOSED rather than open — `tools/hooks/cli.py` turns a
+    raising hook into `_decision_error` and BLOCKS the command — so a leaf gains nothing
+    from it; the cost is an operator who typos the relocator getting `hook entrypoint
+    failure: Could not determine home directory` on every Bash call, with the variable
+    unnamed. Recorded in `TODO.md` rather than fixed here: making the resolver total means
+    deciding what an unresolvable override should RESOLVE to, and every answer either
+    guards a path nobody writes to or silently guards the wrong tree.
 
     An override is made absolute and that is ALL `.absolute()` does; it does not make a
     relative override safe, for the reason spelled out in `workflow_homes_root`.
