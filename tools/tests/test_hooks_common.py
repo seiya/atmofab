@@ -4713,9 +4713,14 @@ class DurablePrivateHomeReadGuardTests(unittest.TestCase):
         configuration. The token store is bound nowhere, so the drop would simply remove
         the guard. It survives by an identity test against the resolver, and that test is
         where the two forms of the path meet: the roots arrive RESOLVED while
-        `operator_tokens_root()` returns a merely-absolute path, so under a `/tmp` that is
-        a symlink (macOS, and any host with `TMPDIR` under one) an unresolved comparison
-        misses and the store is dropped silently.
+        `operator_tokens_root()` returns a merely-absolute path.
+
+        The plain case below cannot see that, and saying so is the point: a
+        `tempfile.TemporaryDirectory()` is already resolved on this host, so both forms
+        are the same string and the comparison holds either way. The SYMLINK case is the
+        witness — `test_a_symlinked_relocated_store_is_still_never_dropped` — and it was
+        added because a review round measured the deletion of `_resolve_lenient` here as
+        a full fail-open with the whole suite green.
         """
         from tools.hooks.common import (
             OPERATOR_TOKENS_ROOT_ENV,
@@ -4737,6 +4742,126 @@ class DurablePrivateHomeReadGuardTests(unittest.TestCase):
                             command, command.split(), repo_root,
                             protected_host_read_roots()),
                         store.resolve(), msg=label)
+
+    def test_a_symlinked_relocated_store_is_still_never_dropped(self) -> None:
+        """`_resolve_lenient` in `never_dropped`, witnessed. It is a FAIL-OPEN without it.
+
+        `protected_host_read_roots` hands out RESOLVED paths; `operator_tokens_root()`
+        returns a merely-`.absolute()` one. Compare the two unresolved and a store reached
+        through a symlink is a different string from the entry in the list, so the
+        containment rule — which spares a CREDENTIAL root overlapping the checkout because
+        the bind side already refused it — drops the token store instead of sparing it.
+
+        Measured before this test existed: with the store at `<td>/link/store` where
+        `link -> <td>/real` and the checkout at `<td>/real`, deleting `_resolve_lenient`
+        from `never_dropped` turned `cat <td>/real/store/o.txt` from BLOCK to ALLOW while
+        `test_hooks_common.py`, `test_operator_private_root.py`, `test_run_workflow.py`
+        and `test_orchestration_runtime.py` all stayed green (1940 tests). That is the
+        shape this repository has already paid for once: a mechanism whose justification
+        is written down and whose behaviour nothing runs.
+
+        The `/tmp`-is-a-symlink host is not hypothetical (macOS, and any `TMPDIR` under
+        one), but this test does not depend on the host having one — it builds the symlink
+        itself, which is the only way the property is observable here.
+        """
+        from tools.hooks.common import (
+            OPERATOR_TOKENS_ROOT_ENV,
+            _command_reads_protected_host_path,
+            protected_host_read_roots,
+        )
+        with tempfile.TemporaryDirectory() as td:
+            real = Path(td) / "real"
+            (real / "store").mkdir(parents=True)
+            link = Path(td) / "link"
+            try:
+                link.symlink_to(real, target_is_directory=True)
+            except (OSError, NotImplementedError):
+                self.skipTest("symlink not supported on this filesystem")
+            spelled = link / "store"
+            resolved = spelled.resolve()
+            self.assertNotEqual(str(spelled), str(resolved),
+                                "the fixture did not build the two forms this pins")
+            env = {**os.environ, OPERATOR_TOKENS_ROOT_ENV: str(spelled)}
+            with patch.dict(os.environ, env, clear=True):
+                command = f"cat {resolved}/o.txt"
+                for label, repo_root in (
+                    ("checkout inside the store", resolved / "checkout"),
+                    ("store inside the checkout", real),
+                ):
+                    self.assertEqual(
+                        _command_reads_protected_host_path(
+                            command, command.split(), repo_root,
+                            protected_host_read_roots()),
+                        resolved, msg=label)
+
+    def test_a_symlinked_relocated_store_keeps_the_operator_secret_policy(self) -> None:
+        """`_resolve_lenient` in the POLICY branch, witnessed. It is a false record without it.
+
+        The second use of the same helper, and the second unwitnessed mechanism a review
+        round measured: `tokens_root = _resolve_lenient(operator_tokens_root())` in
+        `evaluate_common_policy`. Delete the call and `matched_root` — which arrives
+        resolved — no longer equals the unresolved override, so a read of the store is
+        reported as `forbid_backend_credential_direct_read`. Blocked either way; the
+        damage is a wrong policy id in the audit log, which is the exact class this branch
+        exists to keep straight.
+
+        The checkout is OUTSIDE the store here, so the containment rule is not what is
+        being observed — this is attribution alone.
+        """
+        from tools.hooks.common import OPERATOR_TOKENS_ROOT_ENV
+        with tempfile.TemporaryDirectory() as td:
+            home, repo, _c, _x, _s = self._fixture(td)
+            real = Path(td) / "real"
+            (real / "store").mkdir(parents=True)
+            link = Path(td) / "link"
+            try:
+                link.symlink_to(real, target_is_directory=True)
+            except (OSError, NotImplementedError):
+                self.skipTest("symlink not supported on this filesystem")
+            spelled = link / "store"
+            resolved = spelled.resolve()
+            self.assertNotEqual(str(spelled), str(resolved))
+            env = {"ATMOFAB_WORKFLOW_MODE": "1", "ATMOFAB_ORCHESTRATION_ID": "o",
+                   "HOME": str(home),
+                   "ATMOFAB_WORKFLOW_HOMES_ROOT": str(home / ".atmofab" / "homes"),
+                   OPERATOR_TOKENS_ROOT_ENV: str(spelled)}
+            with patch.dict(os.environ, env, clear=False):
+                decision = evaluate_common_policy(HookInput(
+                    event_name=HookEventName.PRE_COMMAND_EXECUTE, backend="claude",
+                    payload={"command": f"cat {resolved}/o.txt", "repo_root": str(repo)},
+                    command=f"cat {resolved}/o.txt"))
+            self.assertEqual(decision.action, HookDecisionAction.BLOCK)
+            detail = decision.audit_detail or {}
+            self.assertEqual(detail.get("policy"), "forbid_operator_secret_direct_read")
+            # The audit record has to name WHICH protected root was touched; the two
+            # policies are one class now, so the id alone no longer says it.
+            self.assertEqual(detail.get("protected_root"), str(resolved))
+
+    def test_resolve_lenient_follows_a_symlink_and_survives_an_unresolvable_path(self) -> None:
+        """The helper itself, both branches.
+
+        Pinned here as well as at its two call sites because a single-token deletion —
+        reducing the body to `return path` — removes THREE mechanisms at once (the dedup
+        loop in `protected_host_read_roots`, the containment identity, and the policy
+        attribution). A reviewer's mutant did exactly that with 1940 tests green.
+
+        Both branches: the resolving one, and the fallback that keeps the resolver total.
+        A hook that raises while deciding a read is worse than one that guards a path
+        nobody writes to, so an OS refusal must come back as the path itself.
+        """
+        from tools.hooks.common import _resolve_lenient
+        with tempfile.TemporaryDirectory() as td:
+            real = Path(td) / "real"
+            real.mkdir()
+            link = Path(td) / "link"
+            try:
+                link.symlink_to(real, target_is_directory=True)
+            except (OSError, NotImplementedError):
+                self.skipTest("symlink not supported on this filesystem")
+            self.assertEqual(_resolve_lenient(link / "x"), real / "x")
+        broken = Path("/proc/self/cwd-does-not-exist")
+        with patch.object(Path, "resolve", side_effect=OSError("refused")):
+            self.assertEqual(_resolve_lenient(broken), broken)
 
     def test_the_token_store_is_a_protected_root_with_and_without_the_override(self) -> None:
         """Whatever `operator_tokens_root()` returns is in the list, both ways.
