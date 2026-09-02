@@ -808,6 +808,12 @@ def collect_pure_leaf_ab_summary(
 def audit(repo_root: Path, orchestration_id: str, *,
           token_cost_from_transcripts: bool = False) -> dict[str, Any]:
     root = _orch_root(repo_root, orchestration_id)
+    # An absent root is NOT an orchestration with nothing wrong with it. Every collector
+    # below reads missing files as empty and would report a clean negative over a
+    # directory nobody ever looked in — the same false negative issue #130 was about,
+    # reached by a mistyped id or by running the RUNBOOK's command from a cwd where the
+    # default `--repo-root .` does not name this checkout.
+    orchestration_found = root.is_dir()
     hook_events, hook_errs = _load_jsonl_with_errors(root / "hooks" / "native_hook_events.jsonl")
     phase_log, phase_errs = _load_jsonl_with_errors(root / "phase_state_log.jsonl")
     agent_runs, runs_errs = _load_jsonl_with_errors(root / "agent_runs.jsonl")
@@ -904,6 +910,8 @@ def audit(repo_root: Path, orchestration_id: str, *,
         "parse_errors": parse_errors,
         "unparseable_timestamp_count": unparseable_count,
         "diagnostic_failures": diagnostic_failures,
+        "orchestration_found": orchestration_found,
+        "orchestration_root": str(root),
     }
 
 
@@ -991,31 +999,36 @@ def _render_launch_incident(
     snapshots: list[dict[str, Any]] | None,
     lines: list[str],
     failure: dict[str, str] | None = None,
+    unmeasured_reason: str | None = None,
 ) -> None:
     """Render the dangling-launch section: live window and/or persisted snapshots.
 
-    ``failure`` is the recorded `diagnostic_failures` entry for this section, if
-    detection raised. The clean negative ("No dangling active_child window detected")
-    is printed ONLY when detection actually ran — a failed detection reports UNKNOWN
-    instead, because `incident is None` alone cannot tell the two apart (issue #130).
+    The clean negative ("No dangling active_child window detected") is printed ONLY when
+    detection actually ran over a real orchestration — `incident is None` on its own
+    cannot tell that from the two ways of not having looked (issue #130):
+    ``failure`` is the recorded `diagnostic_failures` entry when detection RAISED, and
+    ``unmeasured_reason`` is set when there was nothing to detect over.
     """
     snapshots = snapshots or []
     lines.append("## Dangling launch (active_child window)")
     lines.append("")
 
-    if failure:
-        lines.append(
+    note = unmeasured_reason
+    if failure and not note:
+        note = (
             f"Dangling-launch detection FAILED "
-            f"(`{failure.get('error_type')}: {failure.get('error')}`) — whether an "
-            "active_child window is open is **UNKNOWN**; do not read this section as "
-            "'no window'."
+            f"(`{failure.get('error_type')}: {failure.get('error')}`)"
+        )
+    if note:
+        lines.append(
+            f"{note} — whether an active_child window is open is **UNKNOWN**; do not "
+            "read this section as 'no window'."
         )
         lines.append("")
         if not snapshots:
             return
         lines.append(
-            "Captured incident snapshot(s) below are independent of the failed live "
-            "detection."
+            "Captured incident snapshot(s) below are independent of the live detection."
         )
         lines.append("")
     elif incident:
@@ -1279,6 +1292,17 @@ def _render_markdown(result: dict[str, Any]) -> str:
     lines.append(f"Total blocks: {result['total_blocks']}")
     lines.append("")
 
+    if not result.get("orchestration_found", True):
+        lines.append("## ⚠ orchestration not found")
+        lines.append("")
+        lines.append(
+            f"`{result.get('orchestration_root')}` is not a directory. Every count below "
+            "is zero because nothing was read, NOT because nothing is wrong — check the "
+            "orchestration id, and check `--repo-root` (it defaults to the current "
+            "directory)."
+        )
+        lines.append("")
+
     lines.append("## Policy block counts (substantive)")
     lines.append("")
     lines.append("| Policy | Count | Note |")
@@ -1385,9 +1409,15 @@ def _render_markdown(result: dict[str, Any]) -> str:
 
     failures = result.get("diagnostic_failures") or []
     failures_by_section = {f.get("section"): f for f in failures if isinstance(f, dict)}
+    # `orchestration_found` defaults to True so a caller holding an older result dict
+    # renders exactly as before rather than growing a spurious banner.
+    unmeasured = None
+    if not result.get("orchestration_found", True):
+        unmeasured = "There is no such orchestration in this checkout, so NOTHING was measured"
     _render_launch_incident(
         result.get("launch_incident"), result.get("launch_incident_snapshots"), lines,
         failure=failures_by_section.get("launch_incident"),
+        unmeasured_reason=unmeasured,
     )
 
     if failures:
@@ -1437,8 +1467,9 @@ def main() -> None:
         description=(
             "Read-only orchestration audit helper. Exits 2 when the audit cannot be "
             "trusted at face value: log corruption was detected "
-            "(`data_integrity_warning`), or a best-effort diagnostic section raised and "
-            "its result is UNKNOWN rather than negative (`diagnostic_failures`)."
+            "(`data_integrity_warning`), a best-effort diagnostic section raised and "
+            "its result is UNKNOWN rather than negative (`diagnostic_failures`), or "
+            "there is no such orchestration under --repo-root (`orchestration_found`)."
         )
     )
     parser.add_argument("--orchestration-id", required=True, help="Orchestration ID to audit")
@@ -1472,9 +1503,11 @@ def main() -> None:
     else:
         print(_render_markdown(result))
 
-    # Exit non-zero when log corruption is detected, or when a diagnostic section
-    # failed and so may have printed a false negative, so CI / scripts can flag it.
-    if result.get("data_integrity_warning") or result.get("diagnostic_failures"):
+    # Exit non-zero when log corruption is detected, when a diagnostic section failed,
+    # or when there was no orchestration to read — each may have printed a false
+    # negative, so CI / scripts can flag it.
+    if (result.get("data_integrity_warning") or result.get("diagnostic_failures")
+            or not result.get("orchestration_found", True)):
         sys.exit(2)
 
 
