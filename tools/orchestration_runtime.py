@@ -16501,7 +16501,7 @@ def _require_usable_private_root_override(env_name: str, root: Path, subject: st
     available, and it is shared by every writer under the operator-private root so the two
     refusals cannot drift apart.
 
-    Two conditions:
+    Four conditions, in the order they are checked:
 
       * ABSOLUTE OR NOTHING. A relative override resolves against whoever asks, and the
         two sides that must agree about the tree do not share a working directory: the

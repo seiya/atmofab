@@ -1633,9 +1633,15 @@ def workflow_homes_root() -> Path:
         #
         # What closes it is a REFUSAL on the creation side
         # (`_create_workflow_backend_home`), which is where failing closed is available.
-        # This resolver must stay total: it feeds `protected_host_read_roots`, and a hook
-        # that raises while deciding a read is worse than one that guards a path nobody
-        # writes to.
+        # This resolver is meant to stay total — it feeds `protected_host_read_roots`, and
+        # a hook that raises while deciding a read is worse than one that guards a path
+        # nobody writes to — and it is NOT: `expanduser()` raises `RuntimeError` for a
+        # `~account` naming no account. What follows is fail-CLOSED (`tools/hooks/cli.py`
+        # turns a raising hook into a BLOCK), so a leaf gains nothing; the cost is an
+        # operator whose typo refuses every Bash call without naming the variable.
+        # `TODO.md` carries the item for all three private-root resolvers. Stated here
+        # rather than only in `operator_tokens_root`, because a maintainer reading this
+        # function alone would otherwise read a property it does not have.
         return Path(override).expanduser().absolute()
     return operator_secret_root() / "homes"
 

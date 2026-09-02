@@ -1634,6 +1634,50 @@ class RunWorkflowTests(unittest.TestCase):
         self.assertEqual(resolved, Path("/tmp/fake-home-probe/big/claims"))
         self.assertNotIn("~", str(resolved))
 
+    def test_an_unresolvable_claim_root_degrades_to_proceed(self) -> None:
+        """The promise the docstring makes, which the `expanduser()` broke.
+
+        `_exclusive_claim` says a host where the lock cannot be taken yields True — the
+        claim strengthens the driver-liveness guard and is never a precondition for
+        running — and `_start_claims_root` and `docs/RUNBOOK.md` both said the override is
+        checked by nothing. Adding `expanduser()` on this branch made that false for one
+        spelling: `~account` naming no account raises `RuntimeError`, which is not
+        `OSError`, and `_claim_lock_path` was called outside every `except` in this
+        function. Measured: it raised at HEAD and yielded True at `origin/main` — a
+        regression this branch introduced against a sentence this branch wrote.
+
+        Found by a round-4 reviewer reading the branch as the next maintainer.
+        """
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.dict(
+                    os.environ,
+                    {run_workflow.START_CLAIMS_ROOT_ENV: "~nosuchaccount12345/claims"},
+                    clear=False), \
+                run_workflow._exclusive_claim(Path(tmp), "spec", "x") as held:
+            self.assertTrue(
+                held, "an unresolvable claim root must degrade to proceed, not raise")
+
+    def test_the_claims_guard_assertion_is_not_swallowed_by_that_degradation(self) -> None:
+        """The other half, and the reason the `except` is by TYPE rather than bare.
+
+        `tools/tests/conftest.py` wraps `_start_claims_root` in a guard that raises
+        `AssertionError` when a test is about to resolve the operator's real
+        `~/.atmofab`. Catching it in `_exclusive_claim` would turn that guard into a
+        silent "proceed" — the suite would go back to writing into the operator's tree
+        and nothing would say so, which is the failure mode the guard exists to replace.
+        """
+        if not getattr(run_workflow._start_claims_root,
+                       "_atmofab_private_root_guard_installed", False):
+            self.skipTest("the suite's operator-private-root guard is not installed")
+        with tempfile.TemporaryDirectory() as tmp:
+            env = {k: v for k, v in os.environ.items()
+                   if k != run_workflow.START_CLAIMS_ROOT_ENV}
+            with mock.patch.dict(os.environ, env, clear=True), \
+                    self.assertRaisesRegex(
+                        AssertionError, "operator's real secret root"), \
+                    run_workflow._exclusive_claim(Path(tmp), "spec", "x"):
+                pass
+
     def test_the_claim_path_follows_the_module_level_resolver(self) -> None:
         """`_claim_lock_path` asks `_start_claims_root`, so patching it is enough.
 

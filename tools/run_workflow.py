@@ -1592,8 +1592,13 @@ def _start_claims_root() -> Path:
     `tools/hooks/common.py`. It is a behaviour CHANGE: a quoted
     `ATMOFAB_START_CLAIM_ROOT='~/claims'` used to become a literal `~` directory under
     the caller's working directory, because the shell does not expand inside quotes.
+
     Nothing validates an override here — a claim that cannot be taken degrades to
-    "proceed" by design (`_exclusive_claim`), so there is no failing closed to do.
+    "proceed" by design, so there is no failing closed to do. That is a statement about
+    the CALLER: `expanduser()` itself raises `RuntimeError` for a `~account` naming no
+    account, and `_exclusive_claim` catches it to keep the promise. This resolver is not
+    total either (`TODO.md` carries the item for all three of them); what makes the
+    consequence different here is that the claim has a caller allowed to shrug.
     """
     override = os.environ.get(START_CLAIMS_ROOT_ENV, "").strip()
     if override:
@@ -1628,10 +1633,28 @@ def _exclusive_claim(repo_root: Path, kind: str, key: str):
 
     Yields True when the claim is held (proceed) and False when another process holds
     it (refuse). A host where the lock cannot be taken at all (no `fcntl`, an
-    unsupported filesystem, an unwritable home) yields True: the claim strengthens the
-    driver-liveness guard, it is never a precondition for running.
+    unsupported filesystem, an unwritable home, or an override this process cannot
+    resolve) yields True: the claim strengthens the driver-liveness guard, it is never a
+    precondition for running.
+
+    RESOLVING the path is inside that promise, and it did not used to be. `expanduser()`
+    raises `RuntimeError` for a `~account` spelling naming no account, and
+    `_claim_lock_path` was called outside every `except` here — so a typo'd
+    `ATMOFAB_START_CLAIM_ROOT` came out of the driver as an uncaught traceback while this
+    docstring, `_start_claims_root` and `docs/RUNBOOK.md` all said it degrades to
+    "proceed". Found by a round-4 reviewer; measured, `ATMOFAB_START_CLAIM_ROOT='~nosuchacct/claims'`
+    raised at HEAD and yielded True at `origin/main`.
+
+    `AssertionError` is deliberately NOT caught. `tools/tests/conftest.py` wraps
+    `_start_claims_root` in a session guard that raises one when a test is about to
+    resolve the operator's real `~/.atmofab`, and swallowing it here would turn that
+    guard into a silent "proceed" — the failure mode the guard exists to replace.
     """
-    path = _claim_lock_path(repo_root, kind, key)
+    try:
+        path = _claim_lock_path(repo_root, kind, key)
+    except (OSError, RuntimeError, ValueError):
+        yield True
+        return
     handle = None
     if fcntl is not None:
         try:

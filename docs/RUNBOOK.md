@@ -494,8 +494,13 @@ paragraph after the list for what that leaves):
   all. A token store at `<repo>/spec/tokens` is therefore readable by every leaf, and a
   leaf holding the dismiss-violation token can approve its own
   `unauthorized_write_violation`; a homes root there exposes every earlier leaf's
-  transcript the same way. Both are refused at creation, resolving symlinks so the path
-  cannot be laundered through one. A root that CONTAINS the checkout is a different
+  transcript the same way. Both are refused, resolving symlinks so the path cannot be
+  laundered through one — but **not at the same moment, and the difference decides where
+  you look when it bites**. The token-store refusal runs inside `init_orchestration`,
+  before that command writes anything. The homes-root one runs when a leaf is LAUNCHED,
+  which is the first time a home is created — so an in-repo `ATMOFAB_WORKFLOW_HOMES_ROOT`
+  lets `init` finish, writes `running` metadata, and fails at the first leaf. If a run
+  dies there, check the export before you go looking at the launch. A root that CONTAINS the checkout is a different
   configuration and is NOT refused — its files stay outside the repository, where a
   repo-relative manifest cannot name them — but it costs you every recursive in-repo read
   (`grep -r … .`, `ls -R`), because all three of these roots are exempt from the

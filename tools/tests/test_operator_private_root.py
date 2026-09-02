@@ -18,8 +18,11 @@ What is PINNED here and what is only SAMPLED:
   * PINNED — that the three writers and the guard land in one root, by driving the real
     `init_orchestration` / `dismiss_violation` / `_claim_lock_path` / `protected_host_read_roots`
     under one patched `$HOME` (`test_the_three_writers_and_the_guard_resolve_one_root`);
-  * PINNED — that `".atmofab"` is spelled in exactly one function across `tools/` and
-    `mcp_servers/` (`test_the_dot_atmofab_constant_is_spelled_once`). A BOUND ON GROWTH,
+  * PINNED — that `".atmofab"` is spelled exactly ONCE across `tools/` and
+    `mcp_servers/`, and in `tools/hooks/common.py`
+    (`test_the_dot_atmofab_constant_is_spelled_once`). The FILE and the COUNT, not the
+    function name: hoisting the literal to a module constant in that file strengthens the
+    property and is allowed. A BOUND ON GROWTH,
     not a detector: an f-string, a rename of the constant, or a regex spelling the path
     inside a longer string are all out of its reach, and its own docstring says so;
   * PINNED — that `docs/RUNBOOK.md`'s operator-private-root section names all three
@@ -468,7 +471,8 @@ class OnePrivateRootTests(unittest.TestCase):
                 self.assertIn(atmofab / "operator_tokens", roots)
 
     def test_the_dot_atmofab_constant_is_spelled_once(self) -> None:
-        """`".atmofab"` appears in exactly one function across `tools/` and `mcp_servers/`.
+        """`".atmofab"` is spelled exactly ONCE across `tools/` and `mcp_servers/`, in
+        `tools/hooks/common.py`.
 
         A BOUND ON GROWTH, not a detector, and the difference matters. What it catches is
         the ordinary way this splits again: someone needs a path under the operator-private
