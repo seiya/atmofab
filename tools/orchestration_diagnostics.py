@@ -53,10 +53,15 @@ from typing import Any
 # the HTTP transport and the audit all record against, where THIS module is post-mortem
 # forensics over the machine-local `~/.claude` transcripts. The sum keys below derive from
 # its token-class vocabulary so the two cannot drift.
-try:  # script run: sys.path[0] is tools/ ; package import: repo root on path
-    from leaf_usage import LEAF_TOKEN_CLASS_KEYS
-except ModuleNotFoundError:  # pragma: no cover - import bootstrap for package execution
-    from tools.leaf_usage import LEAF_TOKEN_CLASS_KEYS
+# Module-level, absolute, and NOT shimmed: this module needs `tools.hooks.common` to do
+# its transcript work, so a consumer that cannot import `tools` must fail here, at import
+# time, rather than later inside a caller's `except Exception` (issue #130). Two guards
+# hold that, and NEITHER is in this module's own test file: the placement is pinned by
+# `tools/tests/test_audit_orchestration.py::DiagnosticsFailsAtImportTimeTests` (an AST
+# scan for function-body `tools.*` imports), and `build_launch_incident`'s refusal to
+# swallow by `tools/tests/test_orchestration_diagnostics.py::CollectorsDoNotSwallowTests`.
+from tools.hooks.common import claude_leaf_projects_roots
+from tools.leaf_usage import LEAF_TOKEN_CLASS_KEYS
 
 # Terminal agent_runs statuses: a row carrying one of these (or any finished_at)
 # proves the child completed and the window is NOT dangling.
@@ -427,7 +432,6 @@ def _leaf_transcript_path(child_arid: str, repo_root: Path,
     arid = str(child_arid or "").strip()
     if not arid:
         return None
-    from tools.hooks.common import claude_leaf_projects_roots
     try:
         roots = claude_leaf_projects_roots(repo_root, orchestration_id)
     except (OSError, ValueError):
@@ -451,7 +455,6 @@ def _claude_projects_dir(repo_root: Path, orchestration_id: str | None = None) -
     except OSError:
         abs_root = repo_root
     slug = str(abs_root).replace("/", "-")
-    from tools.hooks.common import claude_leaf_projects_roots
     # First root wins: the orchestration's private home when it has one, else the
     # operator's `~/.claude`. Same resolver as every other transcript consumer.
     return claude_leaf_projects_roots(repo_root, orchestration_id)[0] / slug

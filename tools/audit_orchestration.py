@@ -29,25 +29,26 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-try:  # script run: sys.path[0] is tools/ ; package import: repo root on path
-    from leaf_usage import LEAF_USAGE_SOURCE_UNRECORDED, normalize_leaf_usage
-except ModuleNotFoundError:  # pragma: no cover - import bootstrap for package execution
+# One import identity, always `tools.`: a bare-first shim would let `leaf_usage` and
+# `tools.leaf_usage` coexist as two module objects once the root is on the path. The
+# consumers below reach for `tools.hooks.*` at run time, so a shim that merely makes
+# THIS module importable buys nothing (issue #130).
+try:
     from tools.leaf_usage import LEAF_USAGE_SOURCE_UNRECORDED, normalize_leaf_usage
-
-try:  # script run: sys.path[0] is tools/ ; package import: repo root on path
-    from llm_config import PURE_CAPABLE_SUBSTEPS as _PURE_CAPABLE_SUBSTEPS
-except ModuleNotFoundError:  # pragma: no cover - import bootstrap for package execution
     from tools.llm_config import PURE_CAPABLE_SUBSTEPS as _PURE_CAPABLE_SUBSTEPS
-
-try:  # script run: sys.path[0] is tools/ ; package import: repo root on path
-    from orchestration_diagnostics import (
+    from tools.orchestration_diagnostics import (
         build_launch_incident,
         api_error_from_records,
         aggregate_child_usage,
         aggregate_parent_usage,
         summarize_pure_leaf_metas,
     )
-except ImportError:  # pragma: no cover - import-path shim
+except ModuleNotFoundError:  # pragma: no cover - import bootstrap for direct CLI execution
+    _REPO_ROOT = Path(__file__).resolve().parent.parent
+    if str(_REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(_REPO_ROOT))
+    from tools.leaf_usage import LEAF_USAGE_SOURCE_UNRECORDED, normalize_leaf_usage
+    from tools.llm_config import PURE_CAPABLE_SUBSTEPS as _PURE_CAPABLE_SUBSTEPS
     from tools.orchestration_diagnostics import (
         build_launch_incident,
         api_error_from_records,
@@ -807,6 +808,12 @@ def collect_pure_leaf_ab_summary(
 def audit(repo_root: Path, orchestration_id: str, *,
           token_cost_from_transcripts: bool = False) -> dict[str, Any]:
     root = _orch_root(repo_root, orchestration_id)
+    # An absent root is NOT an orchestration with nothing wrong with it. Every collector
+    # below reads missing files as empty and would report a clean negative over a
+    # directory nobody ever looked in — the same false negative issue #130 was about,
+    # reached by a mistyped id or by running the RUNBOOK's command from a cwd where the
+    # default `--repo-root .` does not name this checkout.
+    orchestration_found = root.is_dir()
     hook_events, hook_errs = _load_jsonl_with_errors(root / "hooks" / "native_hook_events.jsonl")
     phase_log, phase_errs = _load_jsonl_with_errors(root / "phase_state_log.jsonl")
     agent_runs, runs_errs = _load_jsonl_with_errors(root / "agent_runs.jsonl")
@@ -819,14 +826,27 @@ def audit(repo_root: Path, orchestration_id: str, *,
     parse_errors = hook_errs + phase_errs + runs_errs + inv_errs
     timeline = collect_fail_closed_timeline(hook_events, phase_log)
     unparseable_count = timeline.get("unparseable_timestamp_count", 0)
+    # Each best-effort section below still refuses to break the audit, but a swallowed
+    # failure is RECORDED in `diagnostic_failures` and surfaced by the renderer: a
+    # section that failed must not print its clean-negative sentence, which reads as a
+    # measurement that was made (issue #130).
+    diagnostic_failures: list[dict[str, str]] = []
+
+    def _record_failure(section: str, exc: BaseException) -> None:
+        diagnostic_failures.append(
+            {"section": section, "error_type": type(exc).__name__, "error": str(exc)}
+        )
+
     # Dangling launch (open active_child window with no child return / terminal
     # run): reproduces the post-mortem of an interrupted/hung child launch and
     # correlates the (ephemeral) ~/.claude transcript. None when the window is
-    # closed. Defensive: degrades to found=False rather than raising.
+    # closed — and also None when detection FAILED, which is why the failure is
+    # recorded rather than degraded silently to "no window".
     try:
         launch_incident = build_launch_incident(repo_root, orchestration_id)
-    except Exception:  # noqa: BLE001 - diagnostics must never break the audit
+    except Exception as exc:  # noqa: BLE001 - diagnostics must never break the audit
         launch_incident = None
+        _record_failure("launch_incident", exc)
     # Token-cost attribution (parent orchestration vs child subagents). Reads the durable
     # per-leaf `usage` rows in agent_runs.jsonl; the ~/.claude transcript reconstruction is
     # opt-in (see `collect_token_cost_summary`). Best-effort — must never break the audit.
@@ -835,15 +855,23 @@ def audit(repo_root: Path, orchestration_id: str, *,
             repo_root, meta, agent_runs, invalid_runs,
             from_transcripts=token_cost_from_transcripts,
         )
-    except Exception:  # noqa: BLE001 - diagnostics must never break the audit
-        token_cost_summary = {"available": False, "reason": "token-cost collection failed"}
+    except Exception as exc:  # noqa: BLE001 - diagnostics must never break the audit
+        token_cost_summary = {
+            "available": False,
+            "reason": f"token-cost collection failed: {type(exc).__name__}: {exc}",
+        }
+        _record_failure("token_cost_summary", exc)
     # Pure-leaf A/B rollup (Z2 M-E): executor selection + claude --version +
     # per-node bundle_meta/verdict_meta metrics. Reads only in-repo artifacts
     # (no ~/.claude). Best-effort — must never break the audit.
     try:
         pure_leaf_ab_summary = collect_pure_leaf_ab_summary(repo_root, orchestration_id, meta)
-    except Exception:  # noqa: BLE001 - diagnostics must never break the audit
-        pure_leaf_ab_summary = {"available": False, "reason": "pure-leaf A/B collection failed"}
+    except Exception as exc:  # noqa: BLE001 - diagnostics must never break the audit
+        pure_leaf_ab_summary = {
+            "available": False,
+            "reason": f"pure-leaf A/B collection failed: {type(exc).__name__}: {exc}",
+        }
+        _record_failure("pure_leaf_ab_summary", exc)
     # Persisted incident snapshots captured at run time. These survive after
     # `--resume` clears the active-child markers (live detection then returns None)
     # and after ~/.claude cleanup removes the transcript, so they are the durable
@@ -881,6 +909,9 @@ def audit(repo_root: Path, orchestration_id: str, *,
         "parse_error_count": len(parse_errors),
         "parse_errors": parse_errors,
         "unparseable_timestamp_count": unparseable_count,
+        "diagnostic_failures": diagnostic_failures,
+        "orchestration_found": orchestration_found,
+        "orchestration_root": str(root),
     }
 
 
@@ -967,13 +998,40 @@ def _render_launch_incident(
     incident: dict[str, Any] | None,
     snapshots: list[dict[str, Any]] | None,
     lines: list[str],
+    failure: dict[str, str] | None = None,
+    unmeasured_reason: str | None = None,
 ) -> None:
-    """Render the dangling-launch section: live window and/or persisted snapshots."""
+    """Render the dangling-launch section: live window and/or persisted snapshots.
+
+    The clean negative ("No dangling active_child window detected") is printed ONLY when
+    detection actually ran over a real orchestration — `incident is None` on its own
+    cannot tell that from the two ways of not having looked (issue #130):
+    ``failure`` is the recorded `diagnostic_failures` entry when detection RAISED, and
+    ``unmeasured_reason`` is set when there was nothing to detect over.
+    """
     snapshots = snapshots or []
     lines.append("## Dangling launch (active_child window)")
     lines.append("")
 
-    if incident:
+    note = unmeasured_reason
+    if failure and not note:
+        note = (
+            f"Dangling-launch detection FAILED "
+            f"(`{failure.get('error_type')}: {failure.get('error')}`)"
+        )
+    if note:
+        lines.append(
+            f"{note} — whether an active_child window is open is **UNKNOWN**; do not "
+            "read this section as 'no window'."
+        )
+        lines.append("")
+        if not snapshots:
+            return
+        lines.append(
+            "Captured incident snapshot(s) below are independent of the live detection."
+        )
+        lines.append("")
+    elif incident:
         lines.append(
             "An open active_child window was found with no child return / terminal "
             "agent_runs row — the child launch never completed."
@@ -1234,6 +1292,18 @@ def _render_markdown(result: dict[str, Any]) -> str:
     lines.append(f"Total blocks: {result['total_blocks']}")
     lines.append("")
 
+    if not result.get("orchestration_found", True):
+        lines.append("## ⚠ orchestration not found")
+        lines.append("")
+        lines.append(
+            f"`{result.get('orchestration_root')}` is not a directory. Every count below "
+            "is zero because nothing was read, NOT because nothing is wrong. Two causes: "
+            "`--repo-root` does not name the checkout (it defaults to the CURRENT "
+            "DIRECTORY, so this is what running the command from elsewhere looks like), "
+            "or the orchestration id is wrong."
+        )
+        lines.append("")
+
     lines.append("## Policy block counts (substantive)")
     lines.append("")
     lines.append("| Policy | Count | Note |")
@@ -1338,9 +1408,33 @@ def _render_markdown(result: dict[str, Any]) -> str:
             )
     lines.append("")
 
+    failures = result.get("diagnostic_failures") or []
+    failures_by_section = {f.get("section"): f for f in failures if isinstance(f, dict)}
+    # `orchestration_found` defaults to True so a caller holding an older result dict
+    # renders exactly as before rather than growing a spurious banner.
+    unmeasured = None
+    if not result.get("orchestration_found", True):
+        unmeasured = ("No orchestration was found at the path above, so NOTHING was "
+                      "measured here")
     _render_launch_incident(
-        result.get("launch_incident"), result.get("launch_incident_snapshots"), lines
+        result.get("launch_incident"), result.get("launch_incident_snapshots"), lines,
+        failure=failures_by_section.get("launch_incident"),
+        unmeasured_reason=unmeasured,
     )
+
+    if failures:
+        lines.append("## ⚠ diagnostic failures")
+        lines.append("")
+        lines.append(
+            "A best-effort section raised and was swallowed. Its result is UNKNOWN, not "
+            "negative — re-run after fixing the cause before concluding anything from it."
+        )
+        lines.append("")
+        for f in failures:
+            lines.append(
+                f"- `{f.get('section')}` — `{f.get('error_type')}: {f.get('error')}`"
+            )
+        lines.append("")
 
     if result.get("data_integrity_warning"):
         lines.append("## ⚠ data integrity warning")
@@ -1371,7 +1465,15 @@ def _render_markdown(result: dict[str, Any]) -> str:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Read-only orchestration audit helper")
+    parser = argparse.ArgumentParser(
+        description=(
+            "Read-only orchestration audit helper. Exits 2 when the audit cannot be "
+            "trusted at face value: log corruption was detected "
+            "(`data_integrity_warning`), a best-effort diagnostic section raised and "
+            "its result is UNKNOWN rather than negative (`diagnostic_failures`), or "
+            "there is no such orchestration under --repo-root (`orchestration_found`)."
+        )
+    )
     parser.add_argument("--orchestration-id", required=True, help="Orchestration ID to audit")
     parser.add_argument(
         "--format",
@@ -1403,8 +1505,11 @@ def main() -> None:
     else:
         print(_render_markdown(result))
 
-    # Exit non-zero when log corruption is detected so CI / scripts can flag it.
-    if result.get("data_integrity_warning"):
+    # Exit non-zero when log corruption is detected, when a diagnostic section failed,
+    # or when there was no orchestration to read — each may have printed a false
+    # negative, so CI / scripts can flag it.
+    if (result.get("data_integrity_warning") or result.get("diagnostic_failures")
+            or not result.get("orchestration_found", True)):
         sys.exit(2)
 
 

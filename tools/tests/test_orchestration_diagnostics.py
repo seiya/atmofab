@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import ast
 import json
 import os
 import tempfile
@@ -933,6 +934,236 @@ class PureLeafMetaWriterReaderContractTest(unittest.TestCase):
         self.assertEqual(gen["models"], ["claude-opus-4-8"])
         self.assertTrue(out["verify"]["found"])
         self.assertEqual(out["verify"]["result"], "pass")
+
+
+_DETECTION_PATH_FUNCS = ("build_launch_incident", "detect_dangling_active_child")
+
+
+def _blanket_swallows(source: str, funcs: tuple[str, ...]) -> list[str]:
+    """Blanket exception swallows inside ``funcs`` (nested functions included).
+
+    ONE rule in one place, replacing a per-call-site scan that had been widened twice
+    and refused correct code each time. What is forbidden is a handler that catches
+    everything and does NOT re-raise:
+
+    - `except Exception:` / `except BaseException:` / bare `except:` whose body has no
+      `raise`, and
+    - `with contextlib.suppress(Exception)` / `suppress(BaseException)`.
+
+    What is ALLOWED, deliberately, because each is correct code the earlier version
+    refused: a NARROW handler (`except OSError` — `detect_dangling_active_child` really
+    does need one around its pointer read), a `try/finally`, and a broad handler that
+    adds context and re-raises. The rule is "nothing on this path may turn a failure
+    into a value", not "no error handling on this path".
+
+    Its answer on this tree is `[]`, so it is driven both ways on synthetic sources in
+    `SwallowScannerTests` — an assertion against `[]` is green whether the rule works or
+    returns nothing unconditionally.
+    """
+    def _is_broad(node: ast.expr | None) -> bool:
+        if node is None:  # bare `except:`
+            return True
+        names = node.elts if isinstance(node, ast.Tuple) else [node]
+        return any(isinstance(n, ast.Name) and n.id in ("Exception", "BaseException")
+                   for n in names)
+
+    def _reraises(body: list[ast.stmt]) -> bool:
+        return any(isinstance(n, ast.Raise) for stmt in body for n in ast.walk(stmt))
+
+    found: list[str] = []
+    for node in ast.walk(ast.parse(source)):
+        if not (isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and node.name in funcs):
+            continue
+        for inner in ast.walk(node):
+            if isinstance(inner, ast.Try):
+                for h in inner.handlers:
+                    if _is_broad(h.type) and not _reraises(h.body):
+                        found.append(f"{node.name}:{h.lineno} except")
+            elif isinstance(inner, (ast.With, ast.AsyncWith)):
+                for item in inner.items:
+                    ctx = item.context_expr
+                    if not isinstance(ctx, ast.Call):
+                        continue
+                    fname = ctx.func.attr if isinstance(ctx.func, ast.Attribute) else (
+                        ctx.func.id if isinstance(ctx.func, ast.Name) else "")
+                    if fname == "suppress" and any(_is_broad(a) for a in ctx.args):
+                        found.append(f"{node.name}:{inner.lineno} suppress")
+    return found
+
+
+class SwallowScannerTests(unittest.TestCase):
+    """Self-test for `_blanket_swallows`: on the real file the answer is `[]`, and an
+    assertion against `[]` is green whether the rule works or always returns one.
+
+    Both directions, because the over-refusing direction is the one this repository gets
+    wrong: an earlier version of this rule rejected a context-preserving re-raise and a
+    narrow `except OSError`, both of which are correct code."""
+
+    F = ("f",)
+
+    def test_it_finds_a_bare_and_a_broad_handler(self) -> None:
+        self.assertEqual(len(_blanket_swallows(
+            "def f():\n    try:\n        g()\n    except Exception:\n        return None\n",
+            self.F)), 1)
+        self.assertEqual(len(_blanket_swallows(
+            "def f():\n    try:\n        g()\n    except:\n        return None\n",
+            self.F)), 1)
+        self.assertEqual(len(_blanket_swallows(
+            "def f():\n    try:\n        g()\n    except (ValueError, Exception):\n"
+            "        return None\n", self.F)), 1)
+
+    def test_it_finds_a_broad_suppress(self) -> None:
+        self.assertEqual(len(_blanket_swallows(
+            "def f():\n    with contextlib.suppress(Exception):\n        g()\n",
+            self.F)), 1)
+        self.assertEqual(len(_blanket_swallows(
+            "def f():\n    with suppress(BaseException):\n        g()\n", self.F)), 1)
+
+    def test_it_finds_one_in_a_NESTED_function(self) -> None:
+        """`_is_dangling` is nested inside the detector, and round 5 put a swallow there."""
+        self.assertEqual(len(_blanket_swallows(
+            "def f():\n    def inner():\n        try:\n            g()\n"
+            "        except Exception:\n            return False\n", self.F)), 1)
+
+    def test_it_allows_a_narrow_handler(self) -> None:
+        """`detect_dangling_active_child` needs `except OSError` around its pointer read.
+        Refusing that was a real over-refusal in the previous version of this rule."""
+        self.assertEqual(_blanket_swallows(
+            "def f():\n    try:\n        g()\n    except OSError:\n        x = ''\n",
+            self.F), [])
+        self.assertEqual(_blanket_swallows(
+            "def f():\n    with contextlib.suppress(OSError):\n        g()\n",
+            self.F), [])
+
+    def test_it_allows_a_broad_handler_that_RE_RAISES(self) -> None:
+        """Adding context and re-raising does not turn a failure into a value, so the
+        rule must not refuse it — the other over-refusal the previous version had."""
+        self.assertEqual(_blanket_swallows(
+            "def f():\n    try:\n        g()\n    except Exception as e:\n"
+            "        raise RuntimeError('ctx') from e\n", self.F), [])
+        self.assertEqual(_blanket_swallows(
+            "def f():\n    try:\n        g()\n    except Exception:\n"
+            "        log()\n        raise\n", self.F), [])
+
+    def test_it_allows_try_finally_and_ignores_other_functions(self) -> None:
+        self.assertEqual(_blanket_swallows(
+            "def f():\n    try:\n        g()\n    finally:\n        pass\n", self.F), [])
+        self.assertEqual(_blanket_swallows(
+            "def other():\n    try:\n        g()\n    except Exception:\n        pass\n",
+            self.F), [])
+
+
+def _caused_by(exc: BaseException, wanted: type[BaseException]) -> bool:
+    """Is ``wanted`` anywhere in ``exc``'s cause / context chain (or ``exc`` itself)?"""
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen:
+        if isinstance(cur, wanted):
+            return True
+        seen.add(id(cur))
+        cur = cur.__cause__ or cur.__context__
+    return False
+
+
+class _Injected(Exception):
+    """Private to `CollectorsDoNotSwallowTests`: no handler in the tree names it, so
+    catching it requires a blanket `except Exception` / bare `except` / `suppress`."""
+
+
+class CollectorsDoNotSwallowTests(unittest.TestCase):
+    """Round 1 of #130's review: a mutant that wrapped `detect_dangling_active_child` in
+    `try/except Exception: return None` INSIDE `build_launch_incident` kept all 144 tests
+    green — and would restore issue #130's symptom exactly (a clean negative and exit 0),
+    because `audit()` records only what IT catches.
+
+    The invariant: the swallow lives at the `audit()` boundary, where it is recorded in
+    `diagnostic_failures`. This collector must let a failure out.
+    """
+
+    def test_a_detector_failure_of_any_type_reaches_the_boundary(self) -> None:
+        """The narrow-but-typed swallow, which the two checks around this one both miss.
+
+        `_blanket_swallows` only flags a handler that catches everything, and the
+        primitive injection below is not caught by a narrowly-typed handler either — so
+        `with contextlib.suppress(ImportError)` around this one call survived both,
+        measured. Nothing on this call is legitimate to suppress at ANY type: whatever
+        the detector raises has to reach `audit()`, which is the only place that records
+        it. `ImportError` leads the list because it is the class issue #130 raised.
+
+        Chain-based, like the injection test, so a broad handler that re-raises with
+        context is not refused.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            _open_dangling_window(_orch_root(repo))
+            for exc in (ImportError, ModuleNotFoundError, OSError, RuntimeError, ValueError):
+                with self.subTest(exc=exc.__name__), \
+                        mock.patch.object(diag, "detect_dangling_active_child",
+                                          side_effect=exc("boom")), \
+                        self.assertRaises(Exception) as cm:
+                    diag.build_launch_incident(repo, ORCH_ID)
+                self.assertTrue(_caused_by(cm.exception, exc))
+
+    def test_no_blanket_swallow_sits_between_the_disk_and_the_boundary(self) -> None:
+        """The invariant asked BEHAVIOURALLY, at the I/O primitives themselves.
+
+        Four review rounds broke this one mechanism in five spellings — `except OSError`
+        in `build_launch_incident`, `contextlib.suppress(ImportError)`, a wrapper around
+        `detect_dangling_active_child`, and then two more one statement apart INSIDE the
+        detector. Each source scan was widened and the next round found another; a scan
+        over a named function can only ever produce rejection samples.
+
+        An earlier version of this test injected at `_read_jsonl` and its docstring
+        claimed to hold "whatever the code in between looks like". That was FALSE, and
+        two round-5 reviewers found it independently: `_read_jsonl`'s first call site is
+        partway down the detector, so the injection stopped there and nothing before or
+        after it was covered. The claim is now made true rather than narrowed — the
+        injection moved DOWN to the `pathlib` primitives every reader on the path
+        bottoms out in, one at a time.
+
+        The injected type is private to this test, which is what makes the check ask
+        about a BLANKET swallow rather than about handling. A legitimate narrow handler —
+        `detect_dangling_active_child` really does catch `OSError` around its pointer
+        read (`:155-158`), and `_leaf_transcript_path` catches `(OSError, ValueError)` —
+        does not catch `_Injected` and so is not refused. Only `except Exception`,
+        `contextlib.suppress(Exception)`, or a bare `except` is, anywhere on the path.
+
+        And it requires the injection to be the CAUSE, not to be the exception itself:
+        a broad handler that adds context and re-raises satisfies the invariant — the
+        failure still reaches the boundary and is still recorded — so demanding the exact
+        type back would refuse correct code. That over-refusal was real and measured; the
+        chain walk is what removes it.
+        """
+        for prim in ("read_text", "is_dir", "is_file", "glob"):
+            with self.subTest(primitive=prim), tempfile.TemporaryDirectory() as tmp:
+                    repo = Path(tmp)
+                    _open_dangling_window(_orch_root(repo))
+                    real = getattr(Path, prim)
+
+                    def _boom(self_path, *a, _real=real, _p=prim, **k):
+                        # Only the orchestration's own tree is poisoned, so the
+                        # temp-dir machinery around the call keeps working.
+                        if ORCH_ID in str(self_path):
+                            raise _Injected(_p)
+                        return _real(self_path, *a, **k)
+
+                    with mock.patch.object(Path, prim, _boom), \
+                            self.assertRaises(Exception) as cm:
+                        diag.build_launch_incident(repo, ORCH_ID)
+                    self.assertTrue(
+                        _caused_by(cm.exception, _Injected),
+                        msg=f"{prim}: something escaped, but not from the injection")
+
+    def test_nothing_on_the_detection_path_swallows_broadly(self) -> None:
+        """The complement to the injection above, and it is needed: WIDENING the
+        legitimate `except OSError` to `except Exception` leaves nothing to propagate, so
+        no injection can see it — measured, that mutant survived the injection test. A
+        source rule answers it exactly, and this one allows the narrow handler it is
+        widening FROM."""
+        source = (Path(__file__).resolve().parent.parent
+                  / "orchestration_diagnostics.py").read_text(encoding="utf-8")
+        self.assertEqual(_blanket_swallows(source, _DETECTION_PATH_FUNCS), [])
 
 
 if __name__ == "__main__":

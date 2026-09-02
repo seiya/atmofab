@@ -715,6 +715,19 @@ There is **no automatic launch-incident capture**; recovery is the `--resume` re
 python3 tools/audit_orchestration.py --orchestration-id <orchestration_id>
 # → "## Dangling launch (active_child window)" section: which child, when launched,
 #   last activity, dead-air seconds, the abort marker, and any final API error.
+#
+# Read the section's verdict, not its absence. "Dangling-launch detection FAILED
+# (...) — ... UNKNOWN" means the window's state was NOT measured; do not read it as
+# "no window" (before issue #130 that run printed the clean negative instead). Such a
+# run exits 2 and lists the cause under "## ⚠ diagnostic failures", the same exit code
+# a data-integrity warning gives.
+#
+# Run it FROM THE CHECKOUT, or pass --repo-root: the default is the current directory,
+# so from anywhere else the command above audits an orchestration that is not there.
+# That prints "## ⚠ orchestration not found" and exits 2 (it used to report a full
+# audit of zeroes ending in the clean negative, at exit 0) — a mistyped or stale
+# --orchestration-id lands in the same place. This route reports UNKNOWN WITHOUT a
+# "## ⚠ diagnostic failures" section: nothing raised, there was simply nothing to read.
 ```
 
 `audit_orchestration.py` correlates the dangling leaf's OWN transcript on demand: the conductor pins each leaf's Claude session id to its `agent_run_id`, so the transcript is directly addressable as `<projects-root>/<slug>/<arid>.jsonl` (no host session needed). Since issue #63 that root is the orchestration's PRIVATE home — read `orchestration_meta.json#claude_workflow_home`, or let the tooling resolve it through `tools/hooks/common.py::claude_leaf_projects_roots`, which is the canonical resolver every consumer shares. The operator's `~/.claude/projects` is still searched as well, so a run recorded before that move stays auditable. Since issue #64 that home is DURABLE — `~/.atmofab/homes/<orchestration_id>/claude` — so this correlation keeps working after a host restart, which is the reason the move was made; see §"The operator-private root (`~/.atmofab`)". This recovers the child's last activity, dead-air interval, and final API error — distinguishing a retryable 529 from other failures — and degrades to the in-repo facts when that home has been cleaned or rotated. Older runs may additionally carry persisted `launch_incident.runtime.*.json` snapshots, which are surfaced too.
