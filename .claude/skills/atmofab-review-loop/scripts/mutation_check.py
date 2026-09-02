@@ -39,9 +39,9 @@ you pass already has a failure unrelated to the change, `-x` stops every mutant 
 every mutant is recorded `killed` — a false green over the whole run. The baseline check
 below is what protects you (red baseline, exit 2), so heed it rather than reaching for
 `--skip-baseline`; and note the protection does NOT extend to a sweep you write by hand.
-atmofab's standing instance is the two path-depth-coupled `ForbidBackendCredentialReadTests`
-cases, which fail in a worktree under `/tmp` and pass in the checkout: deselect them in
-`--test-cmd`, or drop `-x`.
+atmofab's standing instance was the path-depth-coupled `ForbidBackendCredentialReadTests` cases,
+closed on 2026-09-02 (issue #84) by building the `$HOME`/checkout relationship in the fixture; the
+CLASS stays open, so deselect whatever your `--test-cmd` already fails, or drop `-x`.
 
 A baseline run (nothing reverted) goes first. Without it a suite that is already red
 reports every hunk as "killed" — a false green, and the failure mode of this script that

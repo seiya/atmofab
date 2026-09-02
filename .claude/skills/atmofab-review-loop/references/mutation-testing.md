@@ -318,9 +318,9 @@ come out the other way. Then check the spelling is one the thing under test acce
 ### `-x` turns a pre-existing failure into a whole-run false green (PR #98)
 
 A reviewer's first mutation pass reported 12 of 12 mutants KILLED, and they re-ran and discarded
-it: `-x` stopped on the two path-depth-coupled `ForbidBackendCredentialReadTests` cases, which fail
-in a `/tmp` worktree and pass in the checkout, so every mutant "killed" the same pre-existing
-failure. `mutation_check.py`'s own baseline catches this (red baseline, exit 2) — a HANDWRITTEN
+it: `-x` stopped on the two path-depth-coupled `ForbidBackendCredentialReadTests` cases, which
+failed in a `/tmp` worktree and passed in the checkout (that coupling is gone since 2026-09-02,
+issue #84), so every mutant "killed" the same pre-existing failure. `mutation_check.py`'s own baseline catches this (red baseline, exit 2) — a HANDWRITTEN
 sweep in a scratch copy does not. Deselect the known failures in the test command, or drop `-x`.
 The "12 of 12" is that reviewer's own report of their run; it is not reproducible from the tree.
 

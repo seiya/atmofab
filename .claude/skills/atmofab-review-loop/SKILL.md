@@ -109,10 +109,12 @@ when a rule does not obviously apply:
   script caught it and exited 2, which is the behaviour to keep) — and a suite that ALREADY has a
   failure unrelated to the change,
   where `-x` stops every mutant at that same failure so every mutant reads as `killed` — a false
-  green over the whole run, not a per-hunk slip. atmofab's standing instance is the two
-  path-depth-coupled `ForbidBackendCredentialReadTests` cases, which fail in a worktree under
-  `/tmp` and pass in the checkout; one PR #98 reviewer reported 12 of 12 mutants killed that way
-  before re-running. **Deselect the known failures in `--test-cmd`, or drop `-x`**
+  green over the whole run, not a per-hunk slip. atmofab's standing instance USED to be the
+  path-depth-coupled `ForbidBackendCredentialReadTests` cases — one PR #98 reviewer reported 12 of
+  12 mutants killed that way before re-running — and issue #84 closed it on 2026-09-02: those
+  cases now build their own `$HOME` and checkout, so they pass at any depth and in a worktree.
+  The class is not closed with them: **check the baseline is green for the `--test-cmd` you pass,
+  and if it is not, deselect the failures or drop `-x`**
 - **If the change is a move, hunk mutation answers almost nothing** — `--range` cannot reach code
   that moved without changing. For move / rename / extract PRs build **mechanism-level mutants
   over every mechanism in the files you touched** (PR #68: my 39 mutants, 0 unexpected survivors;
