@@ -29,25 +29,26 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-try:  # script run: sys.path[0] is tools/ ; package import: repo root on path
-    from leaf_usage import LEAF_USAGE_SOURCE_UNRECORDED, normalize_leaf_usage
-except ModuleNotFoundError:  # pragma: no cover - import bootstrap for package execution
+# One import identity, always `tools.`: a bare-first shim would let `leaf_usage` and
+# `tools.leaf_usage` coexist as two module objects once the root is on the path. The
+# consumers below reach for `tools.hooks.*` at run time, so a shim that merely makes
+# THIS module importable buys nothing (issue #130).
+try:
     from tools.leaf_usage import LEAF_USAGE_SOURCE_UNRECORDED, normalize_leaf_usage
-
-try:  # script run: sys.path[0] is tools/ ; package import: repo root on path
-    from llm_config import PURE_CAPABLE_SUBSTEPS as _PURE_CAPABLE_SUBSTEPS
-except ModuleNotFoundError:  # pragma: no cover - import bootstrap for package execution
     from tools.llm_config import PURE_CAPABLE_SUBSTEPS as _PURE_CAPABLE_SUBSTEPS
-
-try:  # script run: sys.path[0] is tools/ ; package import: repo root on path
-    from orchestration_diagnostics import (
+    from tools.orchestration_diagnostics import (
         build_launch_incident,
         api_error_from_records,
         aggregate_child_usage,
         aggregate_parent_usage,
         summarize_pure_leaf_metas,
     )
-except ImportError:  # pragma: no cover - import-path shim
+except ModuleNotFoundError:  # pragma: no cover - import bootstrap for direct CLI execution
+    _REPO_ROOT = Path(__file__).resolve().parent.parent
+    if str(_REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(_REPO_ROOT))
+    from tools.leaf_usage import LEAF_USAGE_SOURCE_UNRECORDED, normalize_leaf_usage
+    from tools.llm_config import PURE_CAPABLE_SUBSTEPS as _PURE_CAPABLE_SUBSTEPS
     from tools.orchestration_diagnostics import (
         build_launch_incident,
         api_error_from_records,
