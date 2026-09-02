@@ -4767,6 +4767,63 @@ class DurablePrivateHomeReadGuardTests(unittest.TestCase):
             self.assertIn(str(outside), out)
             self.assertIn(OPERATOR_TOKENS_ROOT_ENV, out)
 
+    def test_a_relocated_homes_root_containing_the_checkout_is_never_dropped(self) -> None:
+        """The containment drop was still costing ENFORCEMENT for the homes root.
+
+        The justification that stood in `_command_reads_protected_host_path` — "dropping
+        one of them costs attribution, not enforcement, because this root still covers
+        it" — was true at the default location and false once
+        `ATMOFAB_WORKFLOW_HOMES_ROOT` moves the tree out from under `~/.atmofab`. That is
+        the same configuration axis PR #86 closed for the homes root's ENTRY and left
+        open for its containment drop. Found by a round-3 reviewer, and MEASURED before
+        the fix: with the homes root containing the checkout, a leaf's
+        `cat <homes-root>/<other-oid>/claude/projects/*/*.jsonl` was ALLOWED, while the
+        same read with the root outside the checkout blocked. A sibling orchestration's
+        leaf transcript is the past-run state `docs/workflow/WORKFLOW_CORE.md` forbids,
+        and reading the producing leaf's answer is the shortest route to reporting a
+        substep done.
+
+        The CONTROL is the other half of the trade and is asserted here rather than
+        assumed: an ordinary in-repo read fails closed under this configuration, exactly
+        as it does for the token store. That is the cost `docs/RUNBOOK.md` names, and it
+        is why the configuration is one to avoid rather than one to support.
+        """
+        from tools.hooks.common import (
+            _command_reads_protected_host_path,
+            protected_host_read_roots,
+        )
+        with tempfile.TemporaryDirectory() as td:
+            proj = Path(td) / "proj"
+            repo = proj / "repo"
+            (repo / "workspace" / "orchestrations" / "o").mkdir(parents=True)
+            (repo / "workspace" / "orchestrations" / "o"
+             / "orchestration_meta.json").write_text("{}", encoding="utf-8")
+            sibling = proj / "other_oid" / "claude" / "projects" / "slug"
+            sibling.mkdir(parents=True)
+            home = Path(td) / "home"
+            home.mkdir()
+            env = {"ATMOFAB_WORKFLOW_MODE": "1", "ATMOFAB_ORCHESTRATION_ID": "o",
+                   "HOME": str(home),
+                   "ATMOFAB_WORKFLOW_HOMES_ROOT": str(proj),
+                   "ATMOFAB_OPERATOR_TOKENS_ROOT": str(Path(td) / "toks")}
+            with patch.dict(os.environ, env, clear=True):
+                roots = protected_host_read_roots(repo, "o")
+                blocked = f"cat {sibling}/transcript.jsonl"
+                self.assertEqual(
+                    _command_reads_protected_host_path(
+                        blocked, blocked.split(), repo, roots),
+                    proj.resolve(),
+                    "a sibling orchestration's transcript is readable — the homes root "
+                    "took the containment drop")
+                # The cost, asserted rather than assumed.
+                in_repo = f"cat {repo}/README.md"
+                self.assertEqual(
+                    _command_reads_protected_host_path(
+                        in_repo, in_repo.split(), repo, roots),
+                    proj.resolve(),
+                    "the documented cost of this configuration is that in-repo reads "
+                    "fail closed; if this stops holding the trade has changed")
+
     def test_a_relocated_token_store_survives_containment_with_the_checkout(self) -> None:
         """The containment drop must not reach the token store, in either direction.
 

@@ -16542,14 +16542,23 @@ def _require_usable_private_root_override(env_name: str, root: Path, subject: st
         repo_resolved = _resolve_lenient(Path(repo_root))
         root_resolved = _resolve_lenient(root)
         if root_resolved == repo_resolved or repo_resolved in root_resolved.parents:
+            where = ("IS the repository root" if root_resolved == repo_resolved
+                     else f"is under {repo_resolved}")
             raise ValueError(
-                f"{subject} must not be inside the repository: {root_resolved} is under "
-                f"{repo_resolved} (set by {env_name}). Every agentic leaf's read "
+                f"{subject} must not be inside the repository: {root_resolved} {where} "
+                f"(set by {env_name}). Every agentic leaf's read "
                 "manifest grants docs/ and spec/ unconditionally and the Read tool does "
                 "not consult the Bash guard's protected roots, so anything the workflow "
                 "keeps outside the checkout stops being out of reach the moment it moves "
                 "inside it. Point it at a directory outside the checkout"
             )
+    # NOT PINNED for the HOMES caller, and redundant there rather than missing: the very
+    # next thing `_create_workflow_backend_home` does is the ancestors loop, whose
+    # `_require_secure_home_ancestor` refuses a non-directory at the same path. Deleting
+    # the check below therefore changes the homes MESSAGE and not the homes verdict
+    # (round-3 census, measured: `test_orchestration_runtime.py` stays fully green while
+    # the token-side subtests fail). Kept so both callers refuse the same input in the
+    # same place, and recorded so the survivor does not read as a gap.
     parent = root.parent
     if not parent.exists():
         raise ValueError(

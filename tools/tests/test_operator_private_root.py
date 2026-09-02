@@ -149,7 +149,13 @@ class OperatorTokenRootOverrideTests(unittest.TestCase):
             inside = repo / "spec" / "tokens"
             link = Path(outside) / "link_spec"
             link.symlink_to(repo / "spec", target_is_directory=True)
-            for label, override in (("plain", inside), ("symlinked", link / "tokens")):
+            for label, override in (("plain", inside),
+                                    ("symlinked", link / "tokens"),
+                                    # The checkout root ITSELF. A separate clause of the
+                                    # condition (`root_resolved == repo_resolved`), which
+                                    # `in .parents` does not cover — a round-3 reviewer
+                                    # measured that dropping it changed no test.
+                                    ("the checkout root itself", repo)):
                 with self.subTest(spelling=label):
                     with self.assertRaises(ValueError) as ctx:
                         self._init_under(str(override), repo, oid="opr_inrepo")
@@ -159,6 +165,42 @@ class OperatorTokenRootOverrideTests(unittest.TestCase):
                     self.assertFalse(
                         (repo / "workspace" / "orchestrations" / "opr_inrepo").exists())
                     self.assertFalse(inside.exists())
+
+    def test_the_in_repo_refusal_rests_on_a_read_manifest_that_still_grants_spec(self) -> None:
+        """The premise the in-repo refusal is FOR, pinned where it can be seen.
+
+        The refusal exists because `_write_read_access_manifest` puts `docs/` and `spec/`
+        in every agentic leaf's `allowed_read_roots` unconditionally and the Read tool
+        never consults `protected_host_read_roots`. Nothing on this branch pinned that,
+        and a round-3 reviewer said so: delete `"spec/"` from the base list and the
+        refusal becomes correct-but-unmotivated with every test green.
+
+        Driven through the real manifest writer rather than by reading the literal, so a
+        change that keeps the constant but stops it reaching the manifest is caught too.
+        Both roots, because either one alone reaches a store an operator would plausibly
+        put there.
+
+        This is a PREMISE check, not the rule: the refusal fails closed either way, and
+        if this list ever legitimately loses `spec/` the right response is to re-derive
+        the refusal's justification, not to delete this assertion.
+        """
+        policy = ort.build_access_policy_payload(
+            agent_run_id="arid-1",
+            request_payload={
+                "node_key": "n", "step": "generate",
+                "ir_ref": "workspace/ir/x",
+                "pipeline_ref": "workspace/pipelines/x",
+                "orchestration_id": "o",
+            })
+        roots = policy["allowed_read_roots"]
+        for granted in ("docs/", "spec/"):
+            with self.subTest(root=granted):
+                self.assertIn(
+                    granted, roots,
+                    f"an agentic leaf no longer reads {granted} unconditionally. The "
+                    "in-repo refusal in `_require_usable_private_root_override` is "
+                    "justified by exactly this — re-derive its reason before assuming it "
+                    "still holds")
 
     def test_an_override_naming_an_existing_file_is_refused_before_the_first_write(self) -> None:
         """The half-initialized run the POSITION of the refusal is supposed to prevent.
@@ -447,7 +489,7 @@ class OnePrivateRootTests(unittest.TestCase):
 
         RED on `origin/main`, where the set has three more members.
         """
-        found = set()
+        found: list[tuple[str, str]] = []
         for root, dirs, files in os.walk(REPO_ROOT):
             dirs[:] = [d for d in dirs
                        if d not in (".git", "__pycache__", "tests")
@@ -464,7 +506,7 @@ class OnePrivateRootTests(unittest.TestCase):
                     tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"))
                 except SyntaxError:                  # not this test's subject
                     continue
-                found |= self._atmofab_constants(tree, rel)
+                found.extend(self._atmofab_constants(tree, rel))
         # THE RULE IS "ONCE, IN THE MODULE THAT OWNS THE RESOLVERS", not "inside that
         # one function". The first version pinned the function name, which refused a
         # change that STRENGTHENS the property — hoisting the literal to a module-level
@@ -484,12 +526,22 @@ class OnePrivateRootTests(unittest.TestCase):
             len(found), 1,
             "the literal is spelled more than once inside tools/hooks/common.py. One "
             "spelling is the rule; where in the file it lives is not, so a module-level "
-            f"constant is fine and a second copy is not. Sites: {sorted(found)}")
+            "constant is fine and a second copy is not — including a second copy in the "
+            f"SAME function, which an earlier version of this counter could not see. "
+            f"Sites: {sorted(found)}")
 
     @staticmethod
-    def _atmofab_constants(tree: ast.AST, rel: str) -> set[tuple[str, str]]:
-        """`(relative path, enclosing function)` for every bare `".atmofab"` constant."""
-        out: set[tuple[str, str]] = set()
+    def _atmofab_constants(tree: ast.AST, rel: str) -> list[tuple[str, str]]:
+        """`(relative path, enclosing function)` for every bare `".atmofab"` constant.
+
+        A LIST, one entry per CONSTANT NODE. It was a set, and both round-3 reviewers
+        found the same thing independently: two spellings in one scope collapsed to one
+        tuple, so `len(found) == 1` counted scopes rather than spellings and a second
+        `".atmofab"` inside `operator_secret_root` itself passed. The commit message that
+        introduced the count asserted the stronger property, which the instrument did not
+        have.
+        """
+        out: list[tuple[str, str]] = []
 
         def walk(node, enclosing: str) -> None:
             for child in ast.iter_child_nodes(node):
@@ -497,7 +549,7 @@ class OnePrivateRootTests(unittest.TestCase):
                     walk(child, child.name)
                     continue
                 if isinstance(child, ast.Constant) and child.value == ".atmofab":
-                    out.add((rel, enclosing))
+                    out.append((rel, enclosing))
                 walk(child, enclosing)
 
         walk(tree, "<module>")
@@ -506,10 +558,12 @@ class OnePrivateRootTests(unittest.TestCase):
     def test_the_constant_reader_sees_a_synthetic_spelling(self) -> None:
         """Self-test for the bound above: an empty walk must not be able to pass it.
 
-        Both halves — that the reader FINDS a plain `Path.home() / ".atmofab" / "x"` and
-        that it reports the enclosing function rather than the module — because a reader
-        that returned `<module>` for everything would make the assertion above trivially
-        satisfiable by moving the spelling into a function.
+        Three halves now. That the reader FINDS a plain `Path.home() / ".atmofab" / "x"`;
+        that it reports the enclosing function rather than the module, because a reader
+        returning `<module>` for everything would make the assertion above trivially
+        satisfiable by moving the spelling into a function; and that it counts NODES
+        rather than scopes — two spellings in one function must come back as two, which
+        is the defect both round-3 reviewers found in the previous version.
         """
         source = (
             "from pathlib import Path\n"
@@ -518,8 +572,16 @@ class OnePrivateRootTests(unittest.TestCase):
             "TOP = Path.home() / '.atmofab'\n"
         )
         self.assertEqual(
-            OnePrivateRootTests._atmofab_constants(ast.parse(source), "probe.py"),
-            {("probe.py", "somewhere"), ("probe.py", "<module>")})
+            len(OnePrivateRootTests._atmofab_constants(
+                ast.parse("from pathlib import Path\n"
+                          "def twice():\n"
+                          "    a = Path.home() / '.atmofab' / 'x'\n"
+                          "    b = Path.home() / '.atmofab' / 'y'\n"
+                          "    return a, b\n"), "probe.py")),
+            2, "two spellings in ONE scope must count as two")
+        self.assertEqual(
+            sorted(OnePrivateRootTests._atmofab_constants(ast.parse(source), "probe.py")),
+            [("probe.py", "<module>"), ("probe.py", "somewhere")])
 
 
 class RunbookStatesTheRelocatorsTests(unittest.TestCase):

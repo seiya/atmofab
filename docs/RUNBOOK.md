@@ -498,8 +498,13 @@ paragraph after the list for what that leaves):
   cannot be laundered through one. A root that CONTAINS the checkout is a different
   configuration and is NOT refused — its files stay outside the repository, where a
   repo-relative manifest cannot name them — but it costs you every recursive in-repo read
-  (`grep -r … .`, `ls -R`), which fails closed because these roots are never dropped by
-  the containment rule;
+  (`grep -r … .`, `ls -R`), because all three of these roots are exempt from the
+  containment rule that would otherwise drop a root overlapping the checkout. **The homes
+  root was NOT exempt until this was written**, and the consequence was the opposite of a
+  cost: with the homes root containing the checkout the entry was dropped, in-repo reads
+  kept working, and a leaf could read a SIBLING orchestration's transcript (measured). If
+  you are reading a version of this file that says the drop costs only attribution for
+  the homes, that sentence was true only while the homes sat under `~/.atmofab`;
 - the directory it names is created if absent, but its **parent must exist**, so a typo
   does not silently build a tree somewhere nobody looks. (That is also why the default
   `~/.atmofab/homes` may be created from nothing while an override may not.);

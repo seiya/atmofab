@@ -3088,10 +3088,21 @@ def _command_reads_protected_host_path(
     failing closed is the right answer there rather than losing the guard. (With
     `ATMOFAB_OPERATOR_TOKENS_ROOT` pointing INTO the checkout that stops being a typo and
     becomes a choice, and its cost is that every recursive in-repo read fails closed;
-    `docs/RUNBOOK.md` states the precondition.) The homes are a separate entry in
-    the same list (`workflow_private_backend_homes`) and take the containment drop like
-    every other rw bind; dropping one of them costs attribution, not enforcement,
-    because this root still covers it.
+    `docs/RUNBOOK.md` states the precondition.) The isolated-homes ROOT joins them, and
+    the sentence that used to stand here is why: "the homes take the containment drop
+    like every other rw bind; dropping one of them costs attribution, not enforcement,
+    because this root still covers it". True at the DEFAULT location and false the moment
+    `ATMOFAB_WORKFLOW_HOMES_ROOT` moves the tree out from under `~/.atmofab` — which is
+    the same configuration axis PR #86 closed for the homes root's ENTRY and left open
+    here. MEASURED at that point: with the homes root containing the checkout, a leaf's
+    `cat <homes-root>/<other-oid>/claude/projects/*/*.jsonl` was ALLOWED, while the same
+    read with the root outside the checkout was blocked. A sibling orchestration's leaf
+    transcript is the past-run state `docs/workflow/WORKFLOW_CORE.md` forbids, so what
+    the drop was costing there was enforcement.
+
+    The PER-ORCHESTRATION home entries (`workflow_private_backend_homes`) still take the
+    drop, and for them the old sentence is still right: the root above now covers them
+    wherever it is, so dropping one costs attribution only.
     """
     repo_resolved = repo_root.resolve()
     secret_root = operator_secret_root()
@@ -3099,7 +3110,11 @@ def _command_reads_protected_host_path(
     # returns a merely-absolute path under an override, so resolve it the same lenient
     # way. Comparing the two unresolved forms would silently drop a relocated store that
     # sits under a symlink (`/tmp` on many hosts).
-    never_dropped = {secret_root, _resolve_lenient(operator_tokens_root())}
+    never_dropped = {
+        secret_root,
+        _resolve_lenient(operator_tokens_root()),
+        _resolve_lenient(workflow_homes_root()),
+    }
     roots = [
         root
         for root in roots
@@ -3725,6 +3740,11 @@ def evaluate_common_policy(hook_input: HookInput) -> HookDecision:
                     "workflow mode. Operator tokens live there and must not enter "
                     "agent context; dismiss-violation is an operator-only action."
                 )
+                # The middle conjunct is ENTAILED by the third — `_is_path_under_root(p,
+                # p)` is True — so it changes no verdict on any input and a mutant
+                # dropping it survives by construction (round-3 census). Kept as the
+                # cheap, readable statement of the case a reader asks about first; the
+                # other two are each pinned on their own.
                 if matched_root == tokens_root and matched_root != atmofab_root and not (
                         _is_path_under_root(tokens_root, atmofab_root)):
                     reason = (
