@@ -20,7 +20,11 @@ rather than because of your change.** In atmofab a scratch root under `/dev/shm`
 the two tests that reason about a write guard over `/dev/shm`. The default worktree
 location used to do the same through its filesystem DEPTH, reddening the hook tests that
 resolve `..` and `~`; issue #84 closed that on 2026-09-02 (the rows build their own
-`$HOME` and checkout now), so the depth lever is history and the `/dev/shm` one is live. The BASELINE RED message names both levers. The rule behind
+`$HOME` and checkout now), so of the two levers only the `/dev/shm` one has a live
+instance in this repository today; the depth one has no known instance and is NOT retired.
+The BASELINE RED message names both, and should: these are CLASSES, and the next test
+that resolves `..` or `~` against the checkout re-arms the second without announcing
+itself. What was measured is this repository at one commit, not the property. The rule behind
 them: the harness's scratch paths must not be paths the suite makes assertions about, and
 this script cannot know which those are — so when the baseline is red, suspect the harness
 before the suite.
@@ -364,10 +368,12 @@ def main() -> int:
     ap.add_argument("--repo", default=".", help="repository (default: cwd)")
     ap.add_argument("--workdir", default=str(Path.home() / ".cache" / "mutation-check"),
                     help="where the throwaway worktrees go. The default keeps them under "
-                         "$HOME, which matters where hook tests resolve `~`; it does NOT "
-                         "match your checkout's DEPTH, and a test that resolves `..` "
-                         "against it can turn the baseline red. Point this at a directory "
-                         "at the same depth as your checkout when that happens")
+                         "$HOME, which matters for a test that resolves `~`; it does NOT "
+                         "match your checkout's DEPTH, so a test that resolves `..` "
+                         "against the checkout can turn the baseline red. Point this at a "
+                         "directory at the same depth as your checkout when that happens — "
+                         "no test in this repository needs it since 2026-09-02, so check "
+                         "your own --test-cmd rather than reaching for it first")
     ap.add_argument("--timeout", type=int, default=1800)
     ap.add_argument("--jobs", type=int, default=0,
                     help="hunks to test at once, each in its own worktree "
