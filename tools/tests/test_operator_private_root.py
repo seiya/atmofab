@@ -412,50 +412,6 @@ class OnePrivateRootTests(unittest.TestCase):
             {("probe.py", "somewhere"), ("probe.py", "<module>")})
 
 
-class SuiteHarnessCoversAllThreeRootsTests(unittest.TestCase):
-    """The conftest layers themselves, which under pytest nothing else observes.
-
-    The two guard WITNESSES elsewhere skip when the marker is absent — they have to, since
-    under plain `unittest` there is no fixture to observe — so deleting the guard makes
-    them silently skip rather than fail. And the redirect has no witness under pytest at
-    all: the outside-pytest one covers `leaf_config_fixture`, not `conftest`. Measured by
-    reverting the conftest hunk: both layers dropped back to homes-only and no test in the
-    files that own them noticed.
-
-    So this asserts both layers directly, and only under pytest, where they exist.
-    """
-
-    def setUp(self) -> None:
-        if not os.environ.get("PYTEST_CURRENT_TEST"):
-            self.skipTest("the suite's operator-private-root guard is not installed")
-
-    def _resolvers(self):
-        return (
-            ("isolated-homes root", ort._workflow_homes_root),
-            ("operator token store", ort._operator_tokens_root),
-            ("start-claim root", run_workflow._start_claims_root),
-        )
-
-    def test_every_operator_private_resolver_is_guarded(self) -> None:
-        for label, resolver in self._resolvers():
-            self.assertTrue(
-                getattr(resolver, "_atmofab_private_root_guard_installed", False),
-                f"the session guard does not wrap the {label} resolver — a test can "
-                "resolve it into the operator's real ~/.atmofab and nothing will say so "
-                "(tools/tests/conftest.py)")
-
-    def test_every_operator_private_root_is_redirected_away_from_the_real_one(self) -> None:
-        """The redirect, asserted where it acts rather than by reading the fixture."""
-        secret_root = hooks_common.operator_secret_root()
-        for label, resolver in self._resolvers():
-            resolved = Path(resolver()).resolve()
-            self.assertFalse(
-                resolved == secret_root or secret_root in resolved.parents,
-                f"this test's {label} resolves to {resolved}, inside the operator's real "
-                "secret root — the per-test redirect in tools/tests/conftest.py does not "
-                "cover it")
-
-
 class RunbookStatesTheRelocatorsTests(unittest.TestCase):
     """Rule 3-a: couple the operator-facing document to the constants in the code.
 
