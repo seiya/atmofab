@@ -1682,6 +1682,10 @@ class PureLeafProvenanceUnderAMixedConfigTests(unittest.TestCase):
             cwd=repo, env=env, capture_output=True, text=True)
         self.assertEqual(proc.returncode, 0, msg=proc.stderr)
         self.assertIn("--orchestration-id", proc.stdout)
+        # `docs/CLI_REFERENCE.md` makes `--help` the canonical reference for this tool, so
+        # the exit-2 contract is documented only here — both of its conditions.
+        self.assertIn("data_integrity_warning", proc.stdout)
+        self.assertIn("diagnostic_failures", proc.stdout)
 
     def test_the_attributed_substeps_track_the_pure_capable_table(self) -> None:
         import tools.llm_config as lc
