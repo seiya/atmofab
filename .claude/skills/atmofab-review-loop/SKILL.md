@@ -137,6 +137,12 @@ when a rule does not obviously apply:
   your own commits replayed), a `--paths` matching nothing, a round that is all test files.
   A change with no revertible hunk — pure rename, binary, mode change, empty new file — is
   listed by name and **exits 1 whatever else the run found, because nothing was tested for it**
+- **The worktree is checked out at the range's END COMMIT, so a pin that is still UNCOMMITTED is
+  invisible and its hunk reports SURVIVED.** Not a false positive — the script is answering about
+  the commit — but it reads exactly like "this behaviour has no test", and the natural response
+  is to go and write the test you already wrote. **Commit the tests before the sweep**, and when
+  a survivor surprises you, revert that one hunk by hand against your working tree before
+  believing it (`references/mutation-testing.md`)
 - **If the change's mechanism lives inside a test file, hunk mutation does not apply** — "nothing
   to check" with a correct base is **not applicable, not a pass**, and `--include-tests` does not
   rescue it (reverting an ADDED test hunk deletes an assertion, so it always survives; a hunk
