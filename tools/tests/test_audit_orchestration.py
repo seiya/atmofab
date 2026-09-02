@@ -6,6 +6,7 @@ import contextlib
 import io
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -13,6 +14,10 @@ from pathlib import Path
 from unittest import mock
 
 from tools import audit_orchestration as ao
+from tools.tests.test_orchestration_diagnostics import (
+    CHILD_ARID,
+    _open_dangling_window,
+)
 from tools.audit_orchestration import (
     audit,
     collect_allow_auto_approve_stats,
@@ -1715,9 +1720,6 @@ class ScriptPathDanglingLaunchWitnessTests(unittest.TestCase):
         HOME is redirected because the transcript lookup reads `$HOME/.claude/projects`;
         the witness must not depend on — or touch — the operator's real home.
         """
-        from tools.tests.test_orchestration_diagnostics import (
-            CHILD_ARID, _open_dangling_window,
-        )
         repo_root = Path(tmp) / "repo_root"
         home = Path(tmp) / "home"
         home.mkdir(parents=True)
@@ -1729,24 +1731,22 @@ class ScriptPathDanglingLaunchWitnessTests(unittest.TestCase):
         return repo_root, Path(CHILD_ARID), env
 
     def _run(self, repo_root: Path, env: dict[str, str], *extra: str):
-        import subprocess
         repo = Path(__file__).resolve().parent.parent.parent
         return subprocess.run(
             ["python3", "tools/audit_orchestration.py",
              "--orchestration-id", self.ORCH_ID, "--repo-root", str(repo_root), *extra],
-            cwd=repo, env=env, capture_output=True, text=True)
+            cwd=repo, env=env, capture_output=True, text=True, check=False)
 
     def test_the_witness_env_really_hides_the_tools_package(self) -> None:
         """Guards the two tests below from becoming empty proofs: if a `.pth` file or an
         inherited PYTHONPATH made `tools` importable from anywhere, they would pass without
         the bootstrap. cwd is the tmp dir because `-c` puts cwd on the path, and cwd=repo
         would import `tools` for that reason alone."""
-        import subprocess
         with tempfile.TemporaryDirectory() as tmp:
             _repo_root, _arid, env = self._fixture(tmp)
             proc = subprocess.run(
                 ["python3", "-c", "import tools"],
-                cwd=tmp, env=env, capture_output=True, text=True)
+                cwd=tmp, env=env, capture_output=True, text=True, check=False)
             self.assertNotEqual(proc.returncode, 0, msg="`tools` is importable from cwd=tmp; "
                                                         "the script-path witness proves nothing")
 
@@ -1864,7 +1864,7 @@ class DiagnosticFailureRecordingTests(unittest.TestCase):
                                                "error_type": "RuntimeError",
                                                "error": "boom"}], 2)):
             result = {"orchestration_id": "o", "diagnostic_failures": failures}
-            with mock.patch.object(ao, "audit", lambda *a, **k: result), \
+            with mock.patch.object(ao, "audit", lambda *a, _r=result, **k: _r), \
                     mock.patch.object(sys, "argv", ["audit_orchestration.py",
                                                     "--orchestration-id", "o",
                                                     "--format", "json"]), \

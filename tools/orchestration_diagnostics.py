@@ -56,8 +56,8 @@ from typing import Any
 # Module-level, absolute, and NOT shimmed: this module needs `tools.hooks.common` to do
 # its transcript work, so a consumer that cannot import `tools` must fail here, at import
 # time, rather than later inside a caller's `except Exception` (issue #130).
-from tools.leaf_usage import LEAF_TOKEN_CLASS_KEYS
 from tools.hooks.common import claude_leaf_projects_roots
+from tools.leaf_usage import LEAF_TOKEN_CLASS_KEYS
 
 # Terminal agent_runs statuses: a row carrying one of these (or any finished_at)
 # proves the child completed and the window is NOT dangling.
