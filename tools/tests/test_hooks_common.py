@@ -4705,6 +4705,68 @@ class DurablePrivateHomeReadGuardTests(unittest.TestCase):
             self.assertIn("~/.atmofab/", claims.reason)
             self.assertNotIn(str(relocated), claims.reason)
 
+    def test_only_a_store_outside_the_root_gets_the_relocated_wording(self) -> None:
+        """The condition guarding the relocated message, which nothing observed.
+
+        The round-2 census measured this: simplify
+        `matched_root == tokens_root and matched_root != atmofab_root and not
+        _is_path_under_root(tokens_root, atmofab_root)` to `matched_root == tokens_root`
+        and every read of the DEFAULT store comes back saying
+        `ATMOFAB_OPERATOR_TOKENS_ROOT relocated it out of ~/.atmofab/` — with the variable
+        unset. Enforcement and policy id are unaffected; the reason text states something
+        false to whoever was refused, which is the class this branch exists to keep
+        straight, and no test asserted the default store's WORDING (only its policy id).
+
+        Three configurations, one property: the message describes where the store
+        actually is.
+        """
+        from tools.hooks.common import OPERATOR_TOKENS_ROOT_ENV
+        with tempfile.TemporaryDirectory() as td:
+            home, repo, _c, _x, _s = self._fixture(td)
+            outside = Path(td) / "elsewhere" / "tokens"
+            outside.mkdir(parents=True)
+
+            def reason(override: str, command: str) -> str:
+                env = {"ATMOFAB_WORKFLOW_MODE": "1", "ATMOFAB_ORCHESTRATION_ID": "o",
+                       "HOME": str(home),
+                       "ATMOFAB_WORKFLOW_HOMES_ROOT": str(home / ".atmofab" / "homes"),
+                       OPERATOR_TOKENS_ROOT_ENV: override}
+                if not override:
+                    env.pop(OPERATOR_TOKENS_ROOT_ENV)
+                    env = {k: v for k, v in {**os.environ, **env}.items()
+                           if k != OPERATOR_TOKENS_ROOT_ENV}
+                    with patch.dict(os.environ, env, clear=True):
+                        return evaluate_common_policy(HookInput(
+                            event_name=HookEventName.PRE_COMMAND_EXECUTE,
+                            backend="claude",
+                            payload={"command": command, "repo_root": str(repo)},
+                            command=command)).reason
+                with patch.dict(os.environ, env, clear=False):
+                    return evaluate_common_policy(HookInput(
+                        event_name=HookEventName.PRE_COMMAND_EXECUTE, backend="claude",
+                        payload={"command": command, "repo_root": str(repo)},
+                        command=command)).reason
+
+            # DEFAULT — no override at all. The store IS `~/.atmofab/operator_tokens`,
+            # so the message must be the unchanged `~/.atmofab/` wording and must not
+            # name a variable that is not set.
+            default = reason("", "cat ~/.atmofab/operator_tokens/o.txt")
+            self.assertIn("~/.atmofab/", default)
+            self.assertNotIn(OPERATOR_TOKENS_ROOT_ENV, default)
+            self.assertNotIn("relocated", default)
+
+            # RELOCATED, but still UNDER `~/.atmofab` — the variable is set and `~` still
+            # points at the store, so "relocated it out of ~/.atmofab/" would be false.
+            under = reason(str(home / ".atmofab" / "tok"),
+                           f"cat {home}/.atmofab/tok/o.txt")
+            self.assertNotIn("relocated", under)
+
+            # RELOCATED OUT of it — now `~` does NOT lead there, and the message has to
+            # say where the store is and what put it there.
+            out = reason(str(outside), f"cat {outside}/o.txt")
+            self.assertIn(str(outside), out)
+            self.assertIn(OPERATOR_TOKENS_ROOT_ENV, out)
+
     def test_a_relocated_token_store_survives_containment_with_the_checkout(self) -> None:
         """The containment drop must not reach the token store, in either direction.
 

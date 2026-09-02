@@ -269,8 +269,15 @@ class OperatorTokenRootOverrideTests(unittest.TestCase):
             repo.mkdir()
             store = Path(td) / "tokens"
             store.mkdir()
-            for override, expected in ((str(store), str(store)),
-                                       (None, "unset")):
+            # The expected fragment is the STATE SENTENCE, not the path: the store's
+            # path is already in the message via `{token_path}`, so asserting on it
+            # observed only the unset branch. Found by the round-2 census.
+            for override, expected in (
+                    (str(store),
+                     (f"{hooks_common.OPERATOR_TOKENS_ROOT_ENV}={str(store)!r} "
+                      "in this shell")),
+                    (None,
+                     f"{hooks_common.OPERATOR_TOKENS_ROOT_ENV} is unset in this shell")):
                 env = {k: v for k, v in os.environ.items()
                        if k != hooks_common.OPERATOR_TOKENS_ROOT_ENV}
                 if override is not None:
@@ -285,6 +292,11 @@ class OperatorTokenRootOverrideTests(unittest.TestCase):
                 message = str(ctx.exception)
                 self.assertIn(hooks_common.OPERATOR_TOKENS_ROOT_ENV, message)
                 self.assertIn(expected, message)
+                # And the OTHER state's sentence must be absent, so the two branches
+                # cannot both be satisfied by one wording.
+                other = ("is unset in this shell" if override is not None
+                         else f"{hooks_common.OPERATOR_TOKENS_ROOT_ENV}=")
+                self.assertNotIn(other, message)
 
 
 class DirectCliImportBootstrapTests(unittest.TestCase):
@@ -453,12 +465,26 @@ class OnePrivateRootTests(unittest.TestCase):
                 except SyntaxError:                  # not this test's subject
                     continue
                 found |= self._atmofab_constants(tree, rel)
+        # THE RULE IS "ONCE, IN THE MODULE THAT OWNS THE RESOLVERS", not "inside that
+        # one function". The first version pinned the function name, which refused a
+        # change that STRENGTHENS the property — hoisting the literal to a module-level
+        # constant in the same file — and told the author to reach the location through
+        # `operator_secret_root()`, which the code was already doing. Found by the round-2
+        # census aiming the over-refusal question at the instrument.
         self.assertEqual(
-            found, {("tools/hooks/common.py", "operator_secret_root")},
-            "`.atmofab` is spelled outside the one resolver that owns it. Reach the "
+            {rel for rel, _fn in found}, {"tools/hooks/common.py"},
+            "`.atmofab` is spelled outside the module that owns the resolvers. Reach the "
             "location through `operator_secret_root()` / `operator_tokens_root()` / "
             "`workflow_homes_root()` / `run_workflow._start_claims_root()` instead "
-            "(issue #132).")
+            "(issue #132). If a NEW site genuinely has to spell the literal — a migration "
+            "tool for a legacy tree is the plausible case — this assertion is where that "
+            "decision gets recorded: widen it here, with the reason, rather than leaving "
+            f"the rule stated in prose alone. Sites found: {sorted(found)}")
+        self.assertEqual(
+            len(found), 1,
+            "the literal is spelled more than once inside tools/hooks/common.py. One "
+            "spelling is the rule; where in the file it lives is not, so a module-level "
+            f"constant is fine and a second copy is not. Sites: {sorted(found)}")
 
     @staticmethod
     def _atmofab_constants(tree: ast.AST, rel: str) -> set[tuple[str, str]]:
@@ -563,15 +589,30 @@ class RunbookStatesTheRelocatorsTests(unittest.TestCase):
                 f"| `~/.atmofab/{subdir}" in section,
                 f"the inventory table has no row opening on ~/.atmofab/{subdir}")
 
-    def test_the_bound_excludes_the_cold_start_bullet_that_also_names_a_relocator(self) -> None:
-        """The self-test for the bound, in the shape that would actually defeat it.
+    def test_the_bound_excludes_text_on_both_sides_of_the_section(self) -> None:
+        """The self-test for the bound, in the shapes that would actually defeat it.
 
+        BOTH directions, because the first version only had one. Backward:
         `ATMOFAB_START_CLAIM_ROOT` appears in the cold-start-guard bullet of §Failure
-        modes as well, far above this section. If the slice reached that far, deleting
-        the relocator from the inventory would leave the row above green.
+        modes, far above this section — if the slice reached that far, deleting the
+        relocator from the inventory would leave the row above green. Forward: the round-2
+        census measured that mutating `rest.find("\n## ")` to `-1` left all twelve tests
+        green, because the RUNBOOK's 44 KB tail happens to mention no relocator today.
+        That is corpus-dependence, not a bound, so the forward end is asserted against the
+        NEXT heading rather than against what the tail happens to contain.
         """
         text = (REPO_ROOT / "docs" / "RUNBOOK.md").read_text(encoding="utf-8")
         section = self._section()
+        next_heading = "## Repair cheat sheet on a hook block"
+        self.assertTrue(
+            next_heading in text,
+            f"the heading this bound stops at ({next_heading!r}) has moved; re-choose "
+            "one that immediately follows the operator-private-root section")
+        self.assertFalse(
+            next_heading in section,
+            "the section slice runs past its own section into the next one — the forward "
+            "end of the bound is broken, and every assertion in this class would then be "
+            "satisfiable by a sentence somewhere else in the document")
         # `assertTrue`, not `assertIn`: the haystack here is the whole 163 KB document.
         self.assertTrue(
             "advisory `flock` under `~/.atmofab/start_claims/`" in text,

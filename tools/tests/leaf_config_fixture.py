@@ -114,6 +114,13 @@ def isolated_homes_per_test_suite(tests):
     redirect is applied around EACH test, matching what conftest does. Pair it with the
     module-level redirect, which still covers anything that runs outside a test (module
     import, class-level setup).
+
+    Its LEAK coverage is redundant and no test observes it: the round-2 census narrowed
+    this loop to the homes name alone, ran a dependent module under plain `unittest` with
+    all three variables unset and a fake `$HOME`, and found the home still empty — the
+    module-level redirect had already covered the other two. What this wrapper is FOR is
+    the collision above, which the paragraph before this one measures; the leak is the
+    module redirect's job. Recorded so the survivor does not read as a gap.
     """
     import os
     import tempfile

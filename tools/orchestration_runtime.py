@@ -19640,6 +19640,11 @@ def init_orchestration(
     if os.environ.get(OPERATOR_TOKENS_ROOT_ENV, "").strip():
         # Only the store itself is created under an override; its parent was required to
         # exist above, so a typo'd path does not silently grow a tree.
+        # NOT PINNED, and deliberately so: the parent-exists refusal makes the only input
+        # that distinguishes this from `parents=True` unreachable, so no test can tell
+        # them apart (round-2 census, proved by construction rather than by corpus). Kept
+        # as the redundant half of a pair — if the refusal is ever relaxed, this is what
+        # stops the relaxation from silently building a tree.
         operator_token_path.parent.mkdir(exist_ok=True)
     else:
         operator_token_path.parent.mkdir(parents=True, exist_ok=True)

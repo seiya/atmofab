@@ -1670,6 +1670,13 @@ def operator_tokens_root() -> Path:
 
     An override is made absolute and that is ALL `.absolute()` does; it does not make a
     relative override safe, for the reason spelled out in `workflow_homes_root`.
+
+    NOT PINNED, and the round-2 census proved why rather than leaving it open: deleting
+    `.absolute()` here changes no verdict on any input, because every consumer
+    (`protected_host_read_roots`'s dedup, the `never_dropped` identity, the policy branch)
+    passes the value through `_resolve_lenient`, which absolutizes anyway. It is kept
+    because a caller that does NOT resolve is the ordinary next addition, and a resolver
+    that can hand back a relative path is a worse default than a redundant call.
     """
     override = os.environ.get(OPERATOR_TOKENS_ROOT_ENV, "").strip()
     if override:
