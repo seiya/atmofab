@@ -48,6 +48,19 @@ To investigate a specific orchestration, use the instructed `orchestration_id`.
 
 Read the `payload_summary.session_id` recorded in `native_hook_events.jsonl`, and
 identify the corresponding `.jsonl` file under `<projects-root>/<cwd-slug>/` (resolved as in the table above).
+
+> **This step enumerates AGENTIC leaves only, and silently.** A PURE leaf runs under
+> `--safe-mode` with no settings layer, so it fires no hook and writes no row into
+> `native_hook_events.jsonl` — its session id never enters the set below, and its
+> transcript is never looked up even though it exists (in the operator's
+> `~/.claude/projects`, per the table above). MEASURED over `workspace/orchestrations/`:
+> 23 orchestrations hold pure leaves, **0 of their 64 `agent_run_id`s appear in any
+> `native_hook_events.jsonl`**, while agentic ids do. So a "found N sessions" result from
+> this step is a count of the run's agentic leaves, NOT of its Claude leaves — do not
+> report it as the run's complete conversation-log set. To reach a pure leaf, take its
+> `agent_run_id` from `launches/<arid>.request.json` (`leaf_mode: "pure"`) and use that
+> as the session id directly: the conductor pins `--session-id <agent_run_id>` for both
+> shapes.
 `<cwd-slug>` is the repo's absolute path with `/` replaced by `-` (e.g. `/home/alice/work/atmofab` → `-home-alice-work-atmofab`).
 
 ```bash
@@ -70,8 +83,9 @@ cwd_slug = str(pathlib.Path.cwd().resolve()).replace("/", "-")
 # is — with the operator's `~/.claude` kept for a run recorded before issue #63 AND for
 # every pure leaf, which is prepared no private home on a current run either.
 # This must match the table above; hardcoding `~/.claude/projects` here made the script
-# report NOT FOUND for every AGENTIC leaf of every post-#63 run (a pure leaf was still
-# found, which is what made the hardcoded form look right for longer than it was).
+# report NOT FOUND for every leaf of every post-#63 run — every leaf it LOOKS UP, which
+# is the agentic ones: the session_ids set above comes from `native_hook_events.jsonl`,
+# and a pure leaf never appears there (see Step 2's limitation note).
 # Degrades to the operator's home rather than raising, the way
 # `skills/workflow-timing-audit/scripts/analyze_timing.py` does: a run whose metadata is
 # missing or unreadable is exactly the kind this audit is opened for.

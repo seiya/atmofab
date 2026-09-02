@@ -4759,10 +4759,16 @@ def claude_leaf_projects_roots(repo_root: Path,
 
     CANONICAL for the consumers that must not drift apart, all of which locate a
     leaf's own session by ``<projects-root>/<slug>/<session-id>.jsonl``:
-      * `workflow_conductor._claude_session_resumable` (is a warm `--resume` viable);
       * `orchestration_diagnostics._locate_leaf_transcript` / `_claude_projects_dir`
         (post-mortem of a dangling leaf);
       * the persisted-tool-result shape exemptions in this module.
+
+    `workflow_conductor._claude_session_resumable` is deliberately NOT one of them and
+    must not be added: a resume is served from the ONE home the launch uses, so the
+    version that searched both called a pre-move session resumable and threw `--resume`
+    at a home that never held it. `dual-read-pairs.md:22` is canonical for that split.
+    (This list named it as a consumer until issue #137; it was already wrong, and the
+    docstring is where a maintainer looks before changing the resolver.)
 
     Issue #63 moved an AGENTIC leaf's state from the operator's `~/.claude` into a
     private per-orchestration home, so BOTH are returned, private home first. Three
