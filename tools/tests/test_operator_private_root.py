@@ -22,6 +22,11 @@ What is PINNED here and what is only SAMPLED:
     `mcp_servers/` (`test_the_dot_atmofab_constant_is_spelled_once`). A BOUND ON GROWTH,
     not a detector: an f-string, a rename of the constant, or a regex spelling the path
     inside a longer string are all out of its reach, and its own docstring says so;
+  * PINNED — that `docs/RUNBOOK.md`'s operator-private-root section names all three
+    relocators and opens an inventory row for each default subtree
+    (`test_the_runbook_names_every_relocator_and_opens_a_row_for_each_default`), coupled
+    by members resolved FROM the code. Rule 3-a, because the relocators are stated in
+    more than three places and this is the one an operator reads;
   * SAMPLED — the creation-side refusals. Two overrides that cannot be honoured, not the
     set of them.
 """
@@ -405,6 +410,80 @@ class OnePrivateRootTests(unittest.TestCase):
         self.assertEqual(
             OnePrivateRootTests._atmofab_constants(ast.parse(source), "probe.py"),
             {("probe.py", "somewhere"), ("probe.py", "<module>")})
+
+
+class RunbookStatesTheRelocatorsTests(unittest.TestCase):
+    """Rule 3-a: couple the operator-facing document to the constants in the code.
+
+    The relocators are stated in more than three places — `docs/RUNBOOK.md` at the
+    inventory table, the hook-recovery row and the dismiss recipe; `docs/HOOKS.md` twice;
+    and the module comments in `orchestration_runtime`, `run_workflow` and
+    `hooks/common`. Three or more statement sites is where
+    `.claude/skills/atmofab-enforcement-change` rule 3-a says discipline has already
+    lost, and the site an OPERATOR reads is the one to check first — a RUNBOOK that
+    names two of three relocators sends them to a shell without the export that decides
+    where their token is.
+
+    Coupled by MEMBERS, because the RUNBOOK names them in full, and the members are
+    resolved FROM THE CODE (`_private_root_redirects`, itself built from the three
+    constants) rather than transcribed here — so a rename moves both sides and this test
+    is not a second place the rule is spelled.
+
+    Two of rule 3-a's traps are answered explicitly. The ANCHOR is the section heading,
+    which precedes every sentence this checks and is byte-identical at `e0bae3d`, so it
+    pins that the rule is stated rather than that a correction survived. The READER is
+    BOUNDED to that section and the bound is self-tested below, or a document that
+    mentions `ATMOFAB_START_CLAIM_ROOT` anywhere — it does, in the cold-start-guard
+    bullet 90 lines earlier — would satisfy this on the strength of an unrelated
+    sentence.
+
+    NOT coupled: `docs/HOOKS.md`, the module comments, and the `--operator-token` help
+    text. Naming the document a leaf never reads and the strings a test cannot reach
+    would be coupling for its own sake; what this buys is that the operator-facing
+    statement cannot fall behind the code.
+    """
+
+    ANCHOR = "## The operator-private root ("
+
+    def _section(self) -> str:
+        text = (REPO_ROOT / "docs" / "RUNBOOK.md").read_text(encoding="utf-8")
+        start = text.index(self.ANCHOR)
+        rest = text[start + len(self.ANCHOR):]
+        end = rest.find("\n## ")
+        section = rest if end < 0 else rest[:end]
+        self.assertLess(len(section), len(text) / 2,
+                        "the section slice is most of the document — the bound is broken, "
+                        "and every assertion below would pass on an unrelated sentence")
+        return section
+
+    def test_the_runbook_names_every_relocator_and_opens_a_row_for_each_default(self) -> None:
+        section = self._section()
+        for env_name, subdir in _private_root_redirects():
+            # `assertTrue`, not `assertIn`: the failure message has to name the repair,
+            # and `assertIn` prints the whole section beside it.
+            self.assertTrue(
+                f"`{env_name}`" in section,
+                f"docs/RUNBOOK.md §{self.ANCHOR.strip('# (')} does not name "
+                f"{env_name}; an operator reading it would not know the tree can move")
+            self.assertTrue(
+                f"| `~/.atmofab/{subdir}" in section,
+                f"the inventory table has no row opening on ~/.atmofab/{subdir}")
+
+    def test_the_bound_excludes_the_cold_start_bullet_that_also_names_a_relocator(self) -> None:
+        """The self-test for the bound, in the shape that would actually defeat it.
+
+        `ATMOFAB_START_CLAIM_ROOT` appears in the cold-start-guard bullet of §Failure
+        modes as well, far above this section. If the slice reached that far, deleting
+        the relocator from the inventory would leave the row above green.
+        """
+        text = (REPO_ROOT / "docs" / "RUNBOOK.md").read_text(encoding="utf-8")
+        section = self._section()
+        self.assertIn("advisory `flock` under `~/.atmofab/start_claims/`", text,
+                      "the cold-start bullet this bound is tested against has moved; "
+                      "re-choose a control sentence outside the section")
+        self.assertFalse(
+            "advisory `flock` under `~/.atmofab/start_claims/`" in section,
+            "the section slice reached outside the section — the bound is broken")
 
 
 if __name__ == "__main__":  # pragma: no cover - manual runs
