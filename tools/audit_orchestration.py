@@ -946,8 +946,9 @@ def _render_incident_body(incident: dict[str, Any], lines: list[str]) -> None:
         lines.append("")
         # The `matched via` clause is CANONICAL here for a closed two-part vocabulary.
         # A LIVE incident is always `session_id` and additionally carries the projects
-        # root the hit came from (private home vs a pre-#63 operator home), which is
-        # what the `under` suffix shows. A PERSISTED `launch_incident.runtime.*.json`
+        # root the hit came from, which is what the `under` suffix shows: an agentic
+        # leaf's private home, or the operator's `~/.claude` — which a PURE leaf uses on
+        # a current run (it is prepared no private home) as well as any pre-#63 run. A PERSISTED `launch_incident.runtime.*.json`
         # snapshot written by the host-session-era conductor carries `tool_use_id` or
         # `arid_in_body` and no root; all 5 snapshots on this machine hold the former
         # (measured 2026-09-02), which is why the clause stays instead of being deleted.

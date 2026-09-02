@@ -429,10 +429,12 @@ class LeafTranscriptMatch(NamedTuple):
     """Where a leaf transcript was found, not just which file it is.
 
     ``projects_root`` is the root returned by ``claude_leaf_projects_roots`` that
-    actually held the hit — the orchestration's private home, or the operator's
-    ``~/.claude/projects`` for a run that predates issue #63. The path itself is
-    self-describing, which is why no label is attached to it: labelling would mean
-    duplicating the resolver's internal knowledge of which home is which.
+    actually held the hit. The operator's ``~/.claude/projects`` answers for TWO live
+    cases, not only for history: a PURE leaf is prepared no private home at all (only
+    the agentic shape gets one, issue #63), so it writes there on a current run, and so
+    does an agentic run recorded before that move. The path itself is self-describing,
+    which is why no label is attached to it: labelling would mean duplicating the
+    resolver's internal knowledge of which home is which.
     """
 
     path: Path
