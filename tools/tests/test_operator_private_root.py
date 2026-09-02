@@ -165,6 +165,13 @@ class OperatorTokenRootOverrideTests(unittest.TestCase):
                     message = str(ctx.exception)
                     self.assertIn("must not be inside the repository", message)
                     self.assertIn(hooks_common.OPERATOR_TOKENS_ROOT_ENV, message)
+                    # The message says WHICH of the two shapes it is. Unpinned until a
+                    # round-5 reviewer measured that reverting the branch to the
+                    # unconditional "is under {repo}" wording left this green — while a
+                    # commit message claimed the improvement.
+                    self.assertIn(
+                        "IS the repository root" if override == repo
+                        else f"is under {repo.resolve()}", message)
                     self.assertFalse(
                         (repo / "workspace" / "orchestrations" / "opr_inrepo").exists())
                     self.assertFalse(inside.exists())
@@ -237,6 +244,50 @@ class OperatorTokenRootOverrideTests(unittest.TestCase):
                     self.assertFalse(
                         (repo / "workspace" / "orchestrations" / "opr_notdir").exists(),
                         "the refusal arrived after the run was half-created")
+
+    def test_a_store_containing_the_checkout_is_refused(self) -> None:
+        """The other containment direction, refused because no working configuration exists.
+
+        These roots are exempt from the containment DROP so the guard is not lost when
+        one of them overlaps the checkout. The consequence for a root ABOVE the checkout
+        is that every in-repo path is a path under a protected root — and the guard
+        matches the command's tokens, not only its read targets. Measured through the real
+        `evaluate_common_policy`: with either root set to the checkout's parent,
+        `cat README.md`, `ls`, `python3 tools/x.py` and `echo hi` all BLOCK.
+
+        `docs/RUNBOOK.md` described this as costing "every recursive in-repo read", which
+        a round-5 reviewer measured as a wide understatement. Refusing costs nothing —
+        there is no configuration here that runs — and turns a total, unexplained failure
+        at the first leaf into one refusal naming the variable.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td) / "outer" / "repo"
+            repo.mkdir(parents=True)
+            with self.assertRaises(ValueError) as ctx:
+                self._init_under(str(Path(td) / "outer"), repo, oid="opr_outer")
+            message = str(ctx.exception)
+            self.assertIn("must not contain the repository", message)
+            self.assertIn(hooks_common.OPERATOR_TOKENS_ROOT_ENV, message)
+            self.assertFalse(
+                (repo / "workspace" / "orchestrations" / "opr_outer").exists())
+
+    def test_a_whitespace_only_override_takes_the_default(self) -> None:
+        """`.strip()` in the resolver, which nothing observed.
+
+        The resolver strips its override and so does the creation-side refusal. Drop the
+        strip in one of them and the two judge `"   /abs/store"` differently — the
+        refusal calls it absolute while the resolver builds a path under the caller's
+        working directory. A round-5 reviewer measured the deletion surviving 390 tests.
+        Not exploitable at HEAD (the un-stripped path is then caught by the parent-exists
+        or in-repo clause), which is why this pins the AGREEMENT rather than a verdict.
+        """
+        with mock.patch.dict(
+                os.environ,
+                {"HOME": "/tmp/fake-home-probe",
+                 hooks_common.OPERATOR_TOKENS_ROOT_ENV: "   "},
+                clear=False):
+            self.assertEqual(hooks_common.operator_tokens_root(),
+                             Path("/tmp/fake-home-probe/.atmofab/operator_tokens"))
 
     def test_a_tilde_token_store_override_is_expanded(self) -> None:
         """`~` is expanded, and nothing else observes that.

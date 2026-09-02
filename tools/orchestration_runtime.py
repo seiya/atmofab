@@ -16508,10 +16508,10 @@ def _require_usable_private_root_override(env_name: str, root: Path, subject: st
         writer is the conductor, the Bash read guard is a hook process the CLI spawns.
         `.absolute()` in the resolver makes the value usable, which is NOT the same as
         making it one tree — it silently becomes a different absolute path per caller.
-      * THE PARENT MUST EXIST. With an override in play only the root itself is created:
-        the override names a location the caller chose, and silently building a deep tree
-        under a typo'd path is the failure mode that costs most.
-      * NOT INSIDE THE CHECKOUT. This one is a leaf-facing rule and the others are not.
+      * NO CONTAINMENT WITH THE CHECKOUT, in EITHER direction. The two halves are
+        refused for different reasons and both are measured.
+
+        INSIDE is a leaf-facing rule and the others are not.
         The Bash read guard covers the token store wherever it goes, but the READ TOOL is
         a different layer: `_write_read_access_manifest` grants every agentic leaf
         `docs/` and `spec/` unconditionally and never consults
@@ -16524,6 +16524,21 @@ def _require_usable_private_root_override(env_name: str, root: Path, subject: st
         `<repo>/spec/homes/<oid>/<backend>/projects/` would be Read-tool reachable, and
         reading an earlier leaf's transcript is the past-run state the workflow forbids.
         Measured for that caller too rather than argued from the first — both are refused.
+
+        CONTAINING the checkout is refused because the run cannot work at all. These
+        roots are exempt from the containment drop (`_command_reads_protected_host_path`
+        keeps them so the guard is not lost), so a root ABOVE the checkout makes every
+        in-repo path a path under a protected root — and the guard matches the command's
+        tokens, not only its read targets. MEASURED through `evaluate_common_policy`:
+        with either root set to the checkout's parent, `cat README.md`, `ls`, `python3
+        tools/x.py` and even `echo hi` all BLOCK. There is no working configuration to
+        preserve, so refusing costs nothing and turns a total, unexplained failure at the
+        first leaf into one refusal naming the variable. `docs/RUNBOOK.md` used to
+        describe this as costing "every recursive in-repo read", which understated it by
+        a wide margin; found by a round-5 reviewer.
+      * THE PARENT MUST EXIST. With an override in play only the root itself is created:
+        the override names a location the caller chose, and silently building a deep tree
+        under a typo'd path is the failure mode that costs most.
       * A REAL DIRECTORY. An override naming an existing regular file passes every check
         above (its parent exists), and `mkdir(exist_ok=True)` then raises
         `FileExistsError` AFTER `workspace/orchestrations/<oid>/` and a `running` meta
@@ -16551,6 +16566,17 @@ def _require_usable_private_root_override(env_name: str, root: Path, subject: st
                 "not consult the Bash guard's protected roots, so anything the workflow "
                 "keeps outside the checkout stops being out of reach the moment it moves "
                 "inside it. Point it at a directory outside the checkout"
+            )
+        if root_resolved in repo_resolved.parents:
+            raise ValueError(
+                f"{subject} must not contain the repository: {repo_resolved} is under "
+                f"{root_resolved} (set by {env_name}). These roots are exempt from the "
+                "containment rule so the Bash guard is not lost when one of them "
+                "overlaps the checkout — which means a root ABOVE the checkout makes "
+                "every in-repo path a protected path, and every Bash command in workflow "
+                "mode fails closed (measured: `cat README.md`, `ls`, even `echo hi`). "
+                "There is no working configuration here to preserve. Point it at a "
+                "directory that neither contains nor sits inside the checkout"
             )
     # NOT PINNED for the HOMES caller, and redundant there rather than missing: the very
     # next thing `_create_workflow_backend_home` does is the ancestors loop, whose

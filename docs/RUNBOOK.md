@@ -487,29 +487,34 @@ paragraph after the list for what that leaves):
   resolved against whichever process asks, and the conductor that creates a home and the
   hook process that forbids reading it need not share a working directory, so the two
   would guard and create different trees;
-- **it must not be inside the checkout**, and this is the one with a leaf on the other
-  side of it. The Bash read guard follows the resolver wherever it goes, but the **Read
-  tool is a different layer**: every agentic leaf's `allowed_read_roots` contains `docs/`
-  and `spec/` unconditionally, and that manifest does not consult the protected roots at
-  all. A token store at `<repo>/spec/tokens` is therefore readable by every leaf, and a
-  leaf holding the dismiss-violation token can approve its own
-  `unauthorized_write_violation`; a homes root there exposes every earlier leaf's
-  transcript the same way. Both are refused, resolving symlinks so the path cannot be
-  laundered through one — but **not at the same moment, and the difference decides where
-  you look when it bites**. The token-store refusal runs inside `init_orchestration`,
-  before that command writes anything. The homes-root one runs when a leaf is LAUNCHED,
-  which is the first time a home is created — so an in-repo `ATMOFAB_WORKFLOW_HOMES_ROOT`
-  lets `init` finish, writes `running` metadata, and fails at the first leaf. If a run
-  dies there, check the export before you go looking at the launch. A root that CONTAINS the checkout is a different
-  configuration and is NOT refused — its files stay outside the repository, where a
-  repo-relative manifest cannot name them — but it costs you every recursive in-repo read
-  (`grep -r … .`, `ls -R`), because all three of these roots are exempt from the
-  containment rule that would otherwise drop a root overlapping the checkout. **The homes
-  root was NOT exempt until this was written**, and the consequence was the opposite of a
-  cost: with the homes root containing the checkout the entry was dropped, in-repo reads
-  kept working, and a leaf could read a SIBLING orchestration's transcript (measured). If
-  you are reading a version of this file that says the drop costs only attribution for
-  the homes, that sentence was true only while the homes sat under `~/.atmofab`;
+- **it must have no containment relationship with the checkout at all** — neither inside
+  it nor around it. The two halves are refused for different reasons.
+
+  **INSIDE** is the one with a leaf on the other side of it. The Bash read guard follows
+  the resolver wherever it goes, but the **Read tool is a different layer**: every
+  agentic leaf's `allowed_read_roots` contains `docs/` and `spec/` unconditionally, and
+  that manifest does not consult the protected roots at all. A token store at
+  `<repo>/spec/tokens` is therefore readable by every leaf, and a leaf holding the
+  dismiss-violation token can approve its own `unauthorized_write_violation`; a homes
+  root there exposes every earlier leaf's transcript the same way.
+
+  **AROUND** is refused because nothing works there. All three roots are exempt from the
+  containment rule that would otherwise drop a root overlapping the checkout — that
+  exemption is what keeps the guard when one of them does — so a root ABOVE the checkout
+  makes every in-repo path a path under a protected root, and the guard matches the
+  command's TOKENS rather than only its read targets. Measured: with either relocatable
+  root set to the checkout's parent, `cat README.md`, `ls`, `python3 tools/x.py` and even
+  `echo hi` are all blocked. An earlier version of this bullet called that "every
+  recursive in-repo read", which understated it by a wide margin. (It also said the homes
+  root was exempt from the drop before it was; that was the defect, and it is closed.)
+
+  Both halves resolve symlinks, so the path cannot be laundered through one — but the two
+  ROOTS are refused at different **moments**, and the difference decides where you look
+  when it bites. The token-store refusal runs inside `init_orchestration`, before that
+  command writes anything. The homes-root one runs when a leaf is LAUNCHED, which is the
+  first time a home is created — so a bad `ATMOFAB_WORKFLOW_HOMES_ROOT` lets `init`
+  finish, writes `running` metadata, and fails at the first leaf. If a run dies there,
+  check the export before you go looking at the launch;
 - the directory it names is created if absent, but its **parent must exist**, so a typo
   does not silently build a tree somewhere nobody looks. (That is also why the default
   `~/.atmofab/homes` may be created from nothing while an override may not.);
@@ -534,10 +539,19 @@ created under the repository while a leaf is running lands in that leaf's termin
 write-diff and is misattributed as an unauthorized write, which is the reason the claims
 live outside the repository at all.
 
-A relocated store stays fully guarded: it is an entry in `protected_host_read_roots` in its
-own right, returns the same `forbid_operator_secret_direct_read`, and — since `~/.atmofab/`
-is no longer where it is — its block message names the store's path and
-`ATMOFAB_OPERATOR_TOKENS_ROOT`.
+A relocated store is an entry in `protected_host_read_roots` in its own right, returns the
+same `forbid_operator_secret_direct_read`, and — since `~/.atmofab/` is no longer where it
+is — its block message names the store's path and `ATMOFAB_OPERATOR_TOKENS_ROOT`.
+
+One measured LIMIT, because "fully guarded" would overstate it: the guard's fail-closed
+fallback for a command it cannot resolve (`$(…)`, backticks) fires when a token also
+spells a protected root's own path component — `.atmofab`, `.claude`, `.codex`. A
+relocated store has no such distinctive component, so
+`cat $(printenv ATMOFAB_OPERATOR_TOKENS_ROOT)/<oid>.txt` is ALLOWED by the hook where the
+default spelling is blocked. It reaches nothing: the sandbox binds `/usr /bin /sbin /lib
+/lib64 /etc`, the checkout and the backend homes and nothing else, so a store outside
+those is not in the leaf's mount namespace and the read fails there instead. The sandbox
+is what closes it, not this guard.
 
 The MODE is not a precondition: a root you create with a plain `mkdir` is tightened to
 0700 on first use rather than refused, as is a mode that later drifts (a backup restored

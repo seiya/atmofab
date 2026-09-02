@@ -1645,14 +1645,32 @@ def _exclusive_claim(repo_root: Path, kind: str, key: str):
     "proceed". Found by a round-4 reviewer; measured, `ATMOFAB_START_CLAIM_ROOT='~nosuchacct/claims'`
     raised at HEAD and yielded True at `origin/main`.
 
-    `AssertionError` is deliberately NOT caught. `tools/tests/conftest.py` wraps
-    `_start_claims_root` in a session guard that raises one when a test is about to
-    resolve the operator's real `~/.atmofab`, and swallowing it here would turn that
-    guard into a silent "proceed" — the failure mode the guard exists to replace.
+    The three caught types are each reachable and each is pinned: `RuntimeError` from
+    `expanduser()`; `OSError` from `.absolute()`, which calls `getcwd()` and fails when
+    the working directory has been removed; `ValueError` from the key's
+    `.encode("utf-8")` when `repo_root` carries a surrogate. `AssertionError` is
+    deliberately NOT caught — `tools/tests/conftest.py` wraps `_start_claims_root` in a
+    session guard that raises one when a test is about to resolve the operator's real
+    `~/.atmofab`, and swallowing it here would turn that guard into a silent "proceed",
+    the failure mode the guard exists to replace.
+
+    The degradation is SILENT, like the `fcntl` and unwritable-home arms beside it: the
+    run proceeds with no cold-start serialisation and nothing says so. That is the
+    contract this function has always had, and it is worth knowing that a mistyped
+    `ATMOFAB_START_CLAIM_ROOT` now costs the claim rather than crashing.
     """
+    path = None
     try:
         path = _claim_lock_path(repo_root, kind, key)
     except (OSError, RuntimeError, ValueError):
+        # The `yield` is OUTSIDE the handler on purpose. Yielding from inside one leaves
+        # the swallowed exception as `__context__` for the whole body, so every later
+        # failure in the caller is reported "During handling of the above exception…"
+        # under an error this function decided did not matter — a false lead written
+        # into the run's own error record, which `tools/run_workflow.py`'s backstop
+        # prints and persists. Found by a round-5 reviewer.
+        pass
+    if path is None:
         yield True
         return
     handle = None

@@ -4802,27 +4802,48 @@ class DurablePrivateHomeReadGuardTests(unittest.TestCase):
             sibling.mkdir(parents=True)
             home = Path(td) / "home"
             home.mkdir()
-            env = {"ATMOFAB_WORKFLOW_MODE": "1", "ATMOFAB_ORCHESTRATION_ID": "o",
-                   "HOME": str(home),
-                   "ATMOFAB_WORKFLOW_HOMES_ROOT": str(proj),
-                   "ATMOFAB_OPERATOR_TOKENS_ROOT": str(Path(td) / "toks")}
-            with patch.dict(os.environ, env, clear=True):
-                roots = protected_host_read_roots(repo, "o")
-                blocked = f"cat {sibling}/transcript.jsonl"
-                self.assertEqual(
-                    _command_reads_protected_host_path(
-                        blocked, blocked.split(), repo, roots),
-                    proj.resolve(),
-                    "a sibling orchestration's transcript is readable — the homes root "
-                    "took the containment drop")
-                # The cost, asserted rather than assumed.
-                in_repo = f"cat {repo}/README.md"
-                self.assertEqual(
-                    _command_reads_protected_host_path(
-                        in_repo, in_repo.split(), repo, roots),
-                    proj.resolve(),
-                    "the documented cost of this configuration is that in-repo reads "
-                    "fail closed; if this stops holding the trade has changed")
+            # BOTH spellings of the same root. The symlinked one is what pins
+            # `_resolve_lenient` around this entry: `protected_host_read_roots` hands out
+            # resolved paths while `workflow_homes_root()` returns a merely-absolute one,
+            # and a round-5 reviewer measured that dropping the call here re-opens
+            # exactly the hole this test closes — the sibling transcript goes back to
+            # ALLOW with the whole suite green. The token-store twin has had this case
+            # since round 1; this entry was added without it.
+            link = Path(td) / "link"
+            spellings = [("plain", proj)]
+            try:
+                link.symlink_to(proj, target_is_directory=True)
+            except (OSError, NotImplementedError):
+                pass
+            else:
+                spellings.append(("symlinked", link))
+            for label, spelled in spellings:
+                env = {"ATMOFAB_WORKFLOW_MODE": "1", "ATMOFAB_ORCHESTRATION_ID": "o",
+                       "HOME": str(home),
+                       "ATMOFAB_WORKFLOW_HOMES_ROOT": str(spelled),
+                       "ATMOFAB_OPERATOR_TOKENS_ROOT": str(Path(td) / "toks")}
+                with self.subTest(spelling=label), \
+                        patch.dict(os.environ, env, clear=True):
+                    roots = protected_host_read_roots(repo, "o")
+                    blocked = f"cat {sibling}/transcript.jsonl"
+                    self.assertEqual(
+                        _command_reads_protected_host_path(
+                            blocked, blocked.split(), repo, roots),
+                        proj.resolve(),
+                        "a sibling orchestration's transcript is readable — the homes "
+                        "root took the containment drop")
+                    # The cost, asserted rather than assumed. It is bigger than "recursive
+                    # reads": the guard matches the command's TOKENS, so with the root
+                    # above the checkout every in-repo path is a protected path. This
+                    # configuration is refused at creation for that reason; the guard is
+                    # what makes the refusal necessary rather than tidy.
+                    in_repo = f"cat {repo}/README.md"
+                    self.assertEqual(
+                        _command_reads_protected_host_path(
+                            in_repo, in_repo.split(), repo, roots),
+                        proj.resolve(),
+                        "the cost of this configuration is that in-repo reads fail "
+                        "closed; if this stops holding the trade has changed")
 
     def test_a_relocated_token_store_survives_containment_with_the_checkout(self) -> None:
         """The containment drop must not reach the token store, in either direction.

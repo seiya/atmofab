@@ -1678,6 +1678,39 @@ class RunWorkflowTests(unittest.TestCase):
                     run_workflow._exclusive_claim(Path(tmp), "spec", "x"):
                 pass
 
+    def test_each_caught_type_degrades_to_proceed_and_leaves_no_exception_context(self) -> None:
+        """The tuple, element by element, and the chaining the first version left behind.
+
+        `except (OSError, RuntimeError, ValueError)` was pinned only through the
+        `RuntimeError` arm, and a round-5 reviewer measured the other two as reachable
+        rather than vacuous: `.absolute()` calls `getcwd()` and raises `OSError` when the
+        working directory is gone, and the key's `.encode("utf-8")` raises a
+        `UnicodeEncodeError` — a `ValueError` — for a surrogate in `repo_root`. Narrowing
+        the tuple to `RuntimeError` alone left the whole suite green.
+
+        The second assertion is the chaining. Yielding from inside the handler left the
+        swallowed exception as `__context__` for the whole `with` body, so any later
+        failure was reported "During handling of the above exception…" under an error
+        this function decided did not matter — a false lead in the run's own error record.
+        """
+        for exc in (OSError("gone"), RuntimeError("no home"), ValueError("surrogate")):
+            with self.subTest(raised=type(exc).__name__):
+                held_value = None
+                # One `with`: the claim exits FIRST (innermost), so `assertRaises`
+                # catches what comes out of its `__exit__`, which is the point.
+                with tempfile.TemporaryDirectory() as tmp, \
+                        mock.patch.object(run_workflow, "_claim_lock_path",
+                                          side_effect=exc), \
+                        self.assertRaises(KeyError) as caught, \
+                        run_workflow._exclusive_claim(Path(tmp), "spec", "x") as held:
+                    held_value = held
+                    raise KeyError("the real failure")
+                self.assertTrue(held_value)
+                self.assertIsNone(
+                    caught.exception.__context__,
+                    "a later failure is chained under the claim error the claim "
+                    "decided did not matter — the `yield` is inside the handler")
+
     def test_the_claim_path_follows_the_module_level_resolver(self) -> None:
         """`_claim_lock_path` asks `_start_claims_root`, so patching it is enough.
 
