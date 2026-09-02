@@ -1861,6 +1861,21 @@ class DiagnosticFailureRecordingTests(unittest.TestCase):
             self.assertEqual(result["diagnostic_failures"], [])
             self.assertNotIn("diagnostic failures", ao._render_markdown(result))
 
+    def test_main_exits_2_when_the_logs_are_corrupt(self) -> None:
+        """The oldest exit-2 clause, which predates this branch and had no behavioural
+        test at all: `bc212ef` pinned the STRING in `--help`, which cannot see a change
+        to `main()`. Dropping the clause left the suite green — measured."""
+        result = {"orchestration_id": "o", "diagnostic_failures": [],
+                  "orchestration_found": True, "data_integrity_warning": True}
+        with mock.patch.object(ao, "audit", lambda *a, **k: result), \
+                mock.patch.object(sys, "argv", ["audit_orchestration.py",
+                                                "--orchestration-id", "o",
+                                                "--format", "json"]), \
+                contextlib.redirect_stdout(io.StringIO()), \
+                self.assertRaises(SystemExit) as cm:
+            ao.main()
+        self.assertEqual(cm.exception.code, 2)
+
     def test_main_exits_2_when_a_diagnostic_section_failed(self) -> None:
         """Same ground as the existing `data_integrity_warning` exit 2: a run that may have
         printed a false negative must be flaggable by CI / a script."""
@@ -1970,9 +1985,16 @@ def _deferred_tools_imports(source: str) -> list[str]:
 
     This is the shape of issue #130: an import that only runs when the function does can
     raise into a caller's `except Exception` and be reported as a measurement. At module
-    level the same failure is unmissable. Driven on synthetic sources in
-    `DeferredImportScannerTests` — on the real file the answer is `[]`, and an assertion
-    against `[]` is green whether the scanner works or returns nothing unconditionally.
+    level the same failure is unmissable. Both spellings count — absolute (`tools.x`) and
+    relative (`from .x import`), the latter being what a developer inside the package
+    writes. Driven on synthetic sources in `DeferredImportScannerTests` — on the real
+    file the answer is `[]`, and an assertion against `[]` is green whether the scanner
+    works or returns nothing unconditionally.
+
+    Stated limit: it reads `import` statements only, so `importlib.import_module("tools.x")`
+    is invisible. Measured over the tree, `import_module` occurs twice, neither in the
+    scanned file — `tools/backends/registry.py`, the one module allowed to import
+    dynamically, and a test.
     """
     found: list[str] = []
     tree = ast.parse(source)
@@ -1980,8 +2002,14 @@ def _deferred_tools_imports(source: str) -> list[str]:
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
         for inner in ast.walk(node):
-            if isinstance(inner, ast.ImportFrom) and (inner.module or "").split(".")[0] == "tools":
-                found.extend(f"{inner.module}.{a.name}" for a in inner.names)
+            if isinstance(inner, ast.ImportFrom):
+                # `level > 0` is a relative import — from inside `tools/` that IS a
+                # `tools` import, and it is the spelling a developer working in the
+                # package reaches for. Keying on the module name alone missed it.
+                if inner.level or (inner.module or "").split(".")[0] == "tools":
+                    prefix = "." * inner.level + (inner.module or "")
+                    sep = "" if prefix.endswith(".") else "."
+                    found.extend(f"{prefix}{sep}{a.name}" for a in inner.names)
             elif isinstance(inner, ast.Import):
                 found.extend(a.name for a in inner.names if a.name.split(".")[0] == "tools")
     return found
@@ -2006,8 +2034,18 @@ class DeferredImportScannerTests(unittest.TestCase):
                 "def f():\n    if x:\n        from tools.leaf_usage import K\n"),
             ["tools.leaf_usage.K"])
 
+    def test_it_finds_a_relative_import(self) -> None:
+        """The spelling that leaked: a developer inside `tools/` writes `from .x import`,
+        and keying on the module name alone read that as not-a-`tools`-import."""
+        self.assertEqual(
+            _deferred_tools_imports("def f():\n    from .hooks.common import x\n"),
+            [".hooks.common.x"])
+        self.assertEqual(
+            _deferred_tools_imports("def f():\n    from . import hooks\n"), [".hooks"])
+
     def test_it_ignores_module_level_and_foreign_imports(self) -> None:
         self.assertEqual(_deferred_tools_imports("from tools.leaf_usage import K\n"), [])
+        self.assertEqual(_deferred_tools_imports("from .leaf_usage import K\n"), [])
         self.assertEqual(_deferred_tools_imports("def f():\n    import json\n"), [])
         self.assertEqual(
             _deferred_tools_imports("def f():\n    from toolsmith import x\n"), [])
