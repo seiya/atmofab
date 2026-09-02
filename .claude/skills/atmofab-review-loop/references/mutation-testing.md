@@ -22,8 +22,12 @@ made a full-suite `--test-cmd` impossible to run in atmofab at all.
   `TMPDIR` under `/dev/shm` reddens exactly those two, a `TMPDIR` under `/tmp` does not.
 - With that fixed, the default `--workdir` (`~/.cache/mutation-check`) reddened
   `ForbidBackendCredentialReadTests::test_blocks_bash_only_tilde_prefixes` instead: the worktree
-  sits at a different filesystem DEPTH from the checkout, and that row resolves `~+/../..` against
-  it. `--workdir` at the checkout's own depth clears it.
+  sits at a different filesystem DEPTH from the checkout, and that row resolved `~+/../..` against
+  it. Moving `--workdir` to the checkout's own depth cleared it at the time; **do not reach for
+  that lever now** — the row stopped resolving a route it does not build in 2026-08 and the last
+  depth-coupled rows were closed by issue #84 on 2026-09-02 (measured at `96657b5`: the file is
+  green in a `/tmp` worktree and under the default `--workdir` alike). The episode is kept for the
+  RULE, which the `/dev/shm` case above still exercises.
 
 What made the episode cost an hour rather than a minute is that the message said "Fix the suite
 (or narrow --test-cmd)" — pointing at the one thing that was not wrong. The suite was green in the

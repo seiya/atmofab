@@ -16,10 +16,11 @@ The checkout is never touched: every mutation happens in a `git worktree` under
 `$TMPDIR` (default: the platform's).
 
 **Both of those are paths the harness chooses, and a suite can be red because of them
-rather than because of your change.** In atmofab the default worktree location has a
-different filesystem DEPTH from the checkout, which reddens the hook tests that resolve
-`..` and `~`; and a scratch root under `/dev/shm` reddens the two tests that reason about
-a write guard over `/dev/shm`. The BASELINE RED message names both levers. The rule behind
+rather than because of your change.** In atmofab a scratch root under `/dev/shm` reddens
+the two tests that reason about a write guard over `/dev/shm`. The default worktree
+location used to do the same through its filesystem DEPTH, reddening the hook tests that
+resolve `..` and `~`; issue #84 closed that on 2026-09-02 (the rows build their own
+`$HOME` and checkout now), so the depth lever is history and the `/dev/shm` one is live. The BASELINE RED message names both levers. The rule behind
 them: the harness's scratch paths must not be paths the suite makes assertions about, and
 this script cannot know which those are — so when the baseline is red, suspect the harness
 before the suite.
