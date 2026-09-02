@@ -1590,12 +1590,21 @@ def operator_secret_root() -> Path:
     return (_home_dir() / ".atmofab").resolve()
 
 
-# The environment name that relocates the durable isolated-homes tree. Defined HERE, in
-# the module that also owns `operator_secret_root` and the protected-read-root list, and
-# imported by `tools/orchestration_runtime.py` — the same arrangement as
-# `backend_credential_home_paths`, and for the same reason: the side that CREATES the
-# homes and the side that FORBIDS reading them must resolve the location identically.
+# The two environment names that relocate a subtree of the operator-private root, and
+# the resolvers for them. Defined HERE, in the module that also owns
+# `operator_secret_root` and the protected-read-root list, and imported by
+# `tools/orchestration_runtime.py` and `tools/run_workflow.py` — the same arrangement as
+# `backend_credential_home_paths`, and for the same reason: the side that CREATES a tree
+# under `~/.atmofab` and the side that FORBIDS reading it must resolve the location
+# identically. Issue #132 is what happens without that: the root was spelled four times
+# and only one of the spellings was the guard's.
+#
+# The SUBTREES are what is relocatable, never `operator_secret_root()` itself. That
+# function is the guard's anchor, and it is what several hook tests patch `$HOME` to
+# reason about; an override there would make them reason about a layout production never
+# creates.
 WORKFLOW_HOMES_ROOT_ENV = "ATMOFAB_WORKFLOW_HOMES_ROOT"
+OPERATOR_TOKENS_ROOT_ENV = "ATMOFAB_OPERATOR_TOKENS_ROOT"
 
 
 def workflow_homes_root() -> Path:
@@ -1629,6 +1638,33 @@ def workflow_homes_root() -> Path:
         # writes to.
         return Path(override).expanduser().absolute()
     return operator_secret_root() / "homes"
+
+
+def operator_tokens_root() -> Path:
+    """`~/.atmofab/operator_tokens` — where the dismiss-violation tokens live.
+
+    CANONICAL. `init_orchestration` (the writer), `dismiss_violation` (the reader) and
+    `protected_host_read_roots` (the guard) all reach the store through this one
+    function, so the tree that gets created is by construction the tree that gets
+    guarded. Before issue #132 the two writers each spelled `Path.home() / ".atmofab" /
+    "operator_tokens"` for themselves, and moving the root was a four-site coordinated
+    edit that had already split once (the #127 rename).
+
+    `ATMOFAB_OPERATOR_TOKENS_ROOT` relocates it, in the same shape and for the same
+    reason as `ATMOFAB_WORKFLOW_HOMES_ROOT` relocates the homes: the test suite needs the
+    store somewhere pytest cleans up, and an operator may have a reason. Like that one,
+    this resolver stays TOTAL and validates nothing — it feeds `protected_host_read_roots`,
+    and a hook that raises while deciding a read is worse than one that guards a path
+    nobody writes to. The refusal for an unusable override lives on the CREATION side, in
+    `init_orchestration`.
+
+    An override is made absolute and that is ALL `.absolute()` does; it does not make a
+    relative override safe, for the reason spelled out in `workflow_homes_root`.
+    """
+    override = os.environ.get(OPERATOR_TOKENS_ROOT_ENV, "").strip()
+    if override:
+        return Path(override).expanduser().absolute()
+    return operator_secret_root() / "operator_tokens"
 
 
 BACKEND_CREDENTIAL_BACKEND_TYPES = ("claude", "codex")
@@ -1682,8 +1718,11 @@ def workflow_private_backend_homes(repo_root: Path | None,
     `~/.atmofab`. The homes root became a protected entry in its own right when the
     override was closed, and it is a longer path than the operator-secret root, so it
     wins the sort for everything under it. That is the more accurate label of the two — a
-    sibling home is a backend home, not the dismiss-violation store — and `~/.atmofab`
-    still names what is directly under it (`operator_tokens/`, `start_claims/`).
+    sibling home is a backend home, not the dismiss-violation store. `operator_tokens/`
+    is likewise an entry in its own right since issue #132, and it is attributed to
+    itself while returning the SAME policy as the root above it; `~/.atmofab` still names
+    what is directly under it and has no entry of its own (`start_claims/`, which is not
+    protected at all — a 0-byte advisory flock gets a leaf no closer to anything).
 
     Two things a leaf must not read live there, and BOTH arrive by a BIND rather
     than by being copied, so inspecting the directory's contents on the host shows
@@ -1739,12 +1778,29 @@ def workflow_private_backend_homes(repo_root: Path | None,
     return tuple(homes)
 
 
+def _resolve_lenient(path: Path) -> Path:
+    """`path.resolve()`, falling back to `path` itself when the OS refuses.
+
+    Shared by everything that has to COMPARE these roots. The comparison is what makes it
+    load-bearing: `protected_host_read_roots` hands out RESOLVED paths, while
+    `workflow_homes_root` / `operator_tokens_root` return merely `.absolute()` ones, so a
+    caller matching an override-relocated root against the list must resolve it the same
+    lenient way or a store under a symlinked `/tmp` silently fails to match.
+    """
+    try:
+        return path.resolve()
+    except (OSError, ValueError, RuntimeError):
+        return path
+
+
 def protected_host_read_roots(repo_root: Path | None = None,
                               orchestration_id: str | None = None) -> tuple[Path, ...]:
     """Out-of-repo host paths a Bash command in workflow mode may never read.
 
-    Four classes, one rule: the operator-secret root (dismiss-violation tokens), the
-    isolated-homes ROOT (every orchestration's homes, wherever
+    Five classes, one rule: the operator-secret root (which holds the dismiss-violation
+    token store by default), the token STORE itself (wherever
+    `ATMOFAB_OPERATOR_TOKENS_ROOT` puts it), the isolated-homes ROOT (every
+    orchestration's homes, wherever
     `ATMOFAB_WORKFLOW_HOMES_ROOT` puts them), every backend credential home the sandbox
     rw-binds (OAuth credentials + session transcripts), and — when the caller can name the
     orchestration — that orchestration's own homes, which hold the SAME credential by bind
@@ -1759,6 +1815,14 @@ def protected_host_read_roots(repo_root: Path | None = None,
     longest-path-first and a leaf reading its own home should be told which home rather
     than being pointed at the operator's secret store.
 
+    The token store is listed for the same reason the homes root is, and it was open in
+    the same way: with `ATMOFAB_OPERATOR_TOKENS_ROOT` pointing outside `~/.atmofab` the
+    operator-secret root covers nothing that is actually there. It is a LONGER path than
+    the operator-secret root, so it wins the longest-first sort for everything under it —
+    which is why the policy branch treats the two as one class and returns the same
+    `forbid_operator_secret_direct_read` for both. Adding the entry without that would
+    have moved every token read into the backend-credential message.
+
     Until the root was added, the sibling closure held only while the override was unset:
     with `ATMOFAB_WORKFLOW_HOMES_ROOT` pointing outside `~/.atmofab`, another run's
     transcript was readable (measured), while this docstring and `docs/HOOKS.md` asserted
@@ -1768,7 +1832,8 @@ def protected_host_read_roots(repo_root: Path | None = None,
     is the pre-issue-#63 answer and is right for callers outside a run; inside a run the
     conductor always sets `ATMOFAB_ORCHESTRATION_ID`.
     """
-    roots: list[Path] = [operator_secret_root(), workflow_homes_root()]
+    roots: list[Path] = [
+        operator_secret_root(), workflow_homes_root(), operator_tokens_root()]
     for btype in BACKEND_CREDENTIAL_BACKEND_TYPES:
         dirs, files = backend_credential_home_paths(btype)
         roots.extend(dirs)
@@ -1777,10 +1842,7 @@ def protected_host_read_roots(repo_root: Path | None = None,
     seen: set[str] = set()
     unique: list[Path] = []
     for root in roots:
-        try:
-            resolved = root.resolve()
-        except (OSError, ValueError, RuntimeError):
-            resolved = root
+        resolved = _resolve_lenient(root)
         key = str(resolved)
         if key in seen:
             continue
@@ -2999,24 +3061,32 @@ def _command_reads_protected_host_path(
     nothing under such a root is bound writable and there is nothing here to
     protect.
 
-    The OPERATOR-SECRET root is never dropped. The reason USED TO BE "it is not an rw
-    bind at all", and issue #64 made that false: the isolated backend homes are rw
-    binds and they now live under `~/.atmofab/homes/`. The reason that survives is
-    about what the root holds and where it is. It holds the dismiss-violation tokens,
-    which are not bound anywhere and whose whole purpose is that an agent cannot reach
-    them; and its location is fixed relative to nothing — a checkout placed inside or
-    around it is a configuration nobody has a reason for, so failing closed is the
-    right answer there rather than losing the guard. The homes are a separate entry in
+    The OPERATOR-SECRET root is never dropped, and neither is the TOKEN STORE. The
+    reason USED TO BE "it is not an rw bind at all", and issue #64 made that false: the
+    isolated backend homes are rw binds and they now live under `~/.atmofab/homes/`. The
+    reason that survives is about what these two hold and where they are. They hold the
+    dismiss-violation tokens, which are not bound anywhere and whose whole purpose is
+    that an agent cannot reach them; and their location is fixed relative to nothing — a
+    checkout placed inside or around them is a configuration nobody has a reason for, so
+    failing closed is the right answer there rather than losing the guard. (With
+    `ATMOFAB_OPERATOR_TOKENS_ROOT` pointing INTO the checkout that stops being a typo and
+    becomes a choice, and its cost is that every recursive in-repo read fails closed;
+    `docs/RUNBOOK.md` states the precondition.) The homes are a separate entry in
     the same list (`workflow_private_backend_homes`) and take the containment drop like
     every other rw bind; dropping one of them costs attribution, not enforcement,
     because this root still covers it.
     """
     repo_resolved = repo_root.resolve()
     secret_root = operator_secret_root()
+    # `roots` arrives RESOLVED from `protected_host_read_roots`; `operator_tokens_root()`
+    # returns a merely-absolute path under an override, so resolve it the same lenient
+    # way. Comparing the two unresolved forms would silently drop a relocated store that
+    # sits under a symlink (`/tmp` on many hosts).
+    never_dropped = {secret_root, _resolve_lenient(operator_tokens_root())}
     roots = [
         root
         for root in roots
-        if root == secret_root
+        if root in never_dropped
         or (
             not _is_path_under_root(repo_resolved, root)
             and not _is_path_under_root(root, repo_resolved)
@@ -3600,7 +3670,9 @@ def evaluate_common_policy(hook_input: HookInput) -> HookDecision:
             else Path.cwd()
         )
         # Out-of-repo host paths that must never enter agent context: ~/.atmofab/
-        # (operator-only dismiss-violation tokens) and the backend credential
+        # and the operator token store under it (or wherever
+        # `ATMOFAB_OPERATOR_TOKENS_ROOT` moved it — the guard follows the resolver the
+        # writers use, which is the whole of issue #132), and the backend credential
         # homes the bwrap profile rw-binds (~/.claude, ~/.claude.json, ~/.codex —
         # OAuth credentials + session transcripts).  NOT gated on the command
         # name: any command that reads them (cat, od, xxd, cut, `read X < ...`,
@@ -3608,6 +3680,13 @@ def evaluate_common_policy(hook_input: HookInput) -> HookDecision:
         # excludes all of them (allowed_read_roots is repo-relative); this closes
         # the Bash path, which is the only other route.
         atmofab_root = operator_secret_root()
+        # The token store is its own entry and a LONGER path, so it wins the
+        # longest-first sort for everything under it. Both are the operator-secret class
+        # and both return `forbid_operator_secret_direct_read`; without this the store
+        # would be attributed to the backend-credential policy, which is a different
+        # claim about what was read. Attribution is not enforcement — the read is blocked
+        # either way — but a wrong policy id in the audit log is a false record.
+        tokens_root = _resolve_lenient(operator_tokens_root())
         # The orchestration id comes from the environment the HOST set through the
         # sandbox, not from the payload: the payload's copy is caller-influenced
         # (`tools/hooks/cli.py::_extract_orchestration_id` prefers it), and here it
@@ -3619,18 +3698,33 @@ def evaluate_common_policy(hook_input: HookInput) -> HookDecision:
                 repo_root, os.environ.get("ATMOFAB_ORCHESTRATION_ID"))
         )
         if matched_root is not None:
-            if matched_root == atmofab_root:
+            if matched_root in (atmofab_root, tokens_root):
+                # The default wording is kept byte-identical: with no override the store
+                # IS `~/.atmofab/operator_tokens`, and that sentence already names it.
+                # A RELOCATED store is somewhere the reader cannot guess from `~`, so the
+                # message names the path and the name that put it there.
+                reason = (
+                    "blocked: direct read from ~/.atmofab/ via Bash is forbidden in "
+                    "workflow mode. Operator tokens live there and must not enter "
+                    "agent context; dismiss-violation is an operator-only action."
+                )
+                if matched_root == tokens_root and matched_root != atmofab_root and not (
+                        _is_path_under_root(tokens_root, atmofab_root)):
+                    reason = (
+                        f"blocked: direct read from {matched_root} via Bash is forbidden "
+                        "in workflow mode. That is the operator token store "
+                        f"({OPERATOR_TOKENS_ROOT_ENV} relocated it out of ~/.atmofab/); "
+                        "its contents must not enter agent context, and "
+                        "dismiss-violation is an operator-only action."
+                    )
                 return HookDecision(
                     action=HookDecisionAction.BLOCK,
-                    reason=(
-                        "blocked: direct read from ~/.atmofab/ via Bash is forbidden in "
-                        "workflow mode. Operator tokens live there and must not enter "
-                        "agent context; dismiss-violation is an operator-only action."
-                    ),
+                    reason=reason,
                     continue_processing=False,
                     audit_detail={
                         "policy": "forbid_operator_secret_direct_read",
                         "command": command,
+                        "protected_root": str(matched_root),
                     },
                 )
             return HookDecision(
