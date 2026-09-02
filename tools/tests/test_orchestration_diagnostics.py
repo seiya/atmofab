@@ -1047,6 +1047,32 @@ class CollectorsDoNotSwallowTests(unittest.TestCase):
                         self.assertRaises(exc):
                     diag.build_launch_incident(repo, ORCH_ID)
 
+    def test_a_failure_below_the_detector_reaches_the_audit_boundary(self) -> None:
+        """The invariant asked BEHAVIOURALLY, and the reason it has to be.
+
+        Three review rounds broke this one mechanism in three different spellings —
+        `except OSError`, `with contextlib.suppress(ImportError)`, and finally a wrapper
+        one frame DOWN, inside `detect_dangling_active_child` itself. Each time the
+        source scan was widened and the next round found a fourth spelling: the sign that
+        the pin was in the wrong PLACE, since a scan over one named function can only
+        ever produce rejection samples.
+
+        This injects the failure at the lowest level the detection path uses and requires
+        it to arrive at the boundary, whatever the code in between looks like. It is not
+        replaceable by 'no handler anywhere on the path': `detect_dangling_active_child`
+        legitimately catches `OSError` around its pointer read (`:155-158`), so that rule
+        would refuse correct code. The source scan below is kept as the cheaper, earlier
+        signal — this is what actually holds the class shut.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            _open_dangling_window(_orch_root(repo))
+            for exc in (OSError, RuntimeError, ImportError):
+                with self.subTest(exc=exc.__name__), \
+                        mock.patch.object(diag, "_read_jsonl", side_effect=exc("boom")), \
+                        self.assertRaises(exc):
+                    diag.build_launch_incident(repo, ORCH_ID)
+
     def test_the_detector_call_is_not_swallowed_at_all(self) -> None:
         """The exact form of the invariant. Raising a set of exception types can only
         reject the types it names: an `except OSError` re-introduction survived a test
