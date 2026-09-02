@@ -936,93 +936,139 @@ class PureLeafMetaWriterReaderContractTest(unittest.TestCase):
         self.assertEqual(out["verify"]["result"], "pass")
 
 
-def _call_is_swallowed(source: str, func: str, callee: str) -> bool:
-    """Is the call to ``callee`` inside ``func`` under anything that eats an exception?
+_DETECTION_PATH_FUNCS = ("build_launch_incident", "detect_dangling_active_child")
 
-    Patching the callee to raise can only reject the exception types the test names, so
-    an `except OSError` re-introduction slips past a test that raises `RuntimeError` —
-    measured. This asks the exact question instead.
 
-    TWO swallowing spellings, because checking only `try` left a hole a reviewer walked
-    through: a `try` with handlers, and `with contextlib.suppress(...)`. The second
-    matters most — a `contextlib.suppress(ImportError)` here reproduces issue #130
-    exactly, `ImportError` being the class the original defect raised.
+def _blanket_swallows(source: str, funcs: tuple[str, ...]) -> list[str]:
+    """Blanket exception swallows inside ``funcs`` (nested functions included).
 
-    Stated limits, since neither is obvious from the code: the callee is matched as a
-    bare `ast.Name`, so `diag.detect_dangling_active_child(...)` or a call routed
-    through a helper is invisible; and only the one function named is scanned. Driven
-    both ways in `SwallowScannerTests`, since its answer on this tree is `False`.
+    ONE rule in one place, replacing a per-call-site scan that had been widened twice
+    and refused correct code each time. What is forbidden is a handler that catches
+    everything and does NOT re-raise:
+
+    - `except Exception:` / `except BaseException:` / bare `except:` whose body has no
+      `raise`, and
+    - `with contextlib.suppress(Exception)` / `suppress(BaseException)`.
+
+    What is ALLOWED, deliberately, because each is correct code the earlier version
+    refused: a NARROW handler (`except OSError` — `detect_dangling_active_child` really
+    does need one around its pointer read), a `try/finally`, and a broad handler that
+    adds context and re-raises. The rule is "nothing on this path may turn a failure
+    into a value", not "no error handling on this path".
+
+    Its answer on this tree is `[]`, so it is driven both ways on synthetic sources in
+    `SwallowScannerTests` — an assertion against `[]` is green whether the rule works or
+    returns nothing unconditionally.
     """
-    def _calls_it(stmts: list[ast.stmt]) -> bool:
-        return any(
-            isinstance(called, ast.Call) and isinstance(called.func, ast.Name)
-            and called.func.id == callee
-            for stmt in stmts for called in ast.walk(stmt)
-        )
+    def _is_broad(node: ast.expr | None) -> bool:
+        if node is None:  # bare `except:`
+            return True
+        names = node.elts if isinstance(node, ast.Tuple) else [node]
+        return any(isinstance(n, ast.Name) and n.id in ("Exception", "BaseException")
+                   for n in names)
 
+    def _reraises(body: list[ast.stmt]) -> bool:
+        return any(isinstance(n, ast.Raise) for stmt in body for n in ast.walk(stmt))
+
+    found: list[str] = []
     for node in ast.walk(ast.parse(source)):
-        if not (isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == func):
+        if not (isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and node.name in funcs):
             continue
         for inner in ast.walk(node):
-            if isinstance(inner, ast.Try) and inner.handlers and _calls_it(inner.body):
-                return True
-            if isinstance(inner, (ast.With, ast.AsyncWith)) and _calls_it(inner.body):
+            if isinstance(inner, ast.Try):
+                for h in inner.handlers:
+                    if _is_broad(h.type) and not _reraises(h.body):
+                        found.append(f"{node.name}:{h.lineno} except")
+            elif isinstance(inner, (ast.With, ast.AsyncWith)):
                 for item in inner.items:
                     ctx = item.context_expr
-                    if isinstance(ctx, ast.Call):
-                        name = ctx.func.attr if isinstance(ctx.func, ast.Attribute) else (
-                            ctx.func.id if isinstance(ctx.func, ast.Name) else "")
-                        if name == "suppress":
-                            return True
-    return False
+                    if not isinstance(ctx, ast.Call):
+                        continue
+                    fname = ctx.func.attr if isinstance(ctx.func, ast.Attribute) else (
+                        ctx.func.id if isinstance(ctx.func, ast.Name) else "")
+                    if fname == "suppress" and any(_is_broad(a) for a in ctx.args):
+                        found.append(f"{node.name}:{inner.lineno} suppress")
+    return found
 
 
 class SwallowScannerTests(unittest.TestCase):
-    """Self-test for `_call_is_swallowed`: on the real file the answer is `False`, and an
-    assertion against `False` is green whether the scanner works or always says so."""
+    """Self-test for `_blanket_swallows`: on the real file the answer is `[]`, and an
+    assertion against `[]` is green whether the rule works or always returns one.
 
-    def test_it_sees_a_call_guarded_by_try(self) -> None:
-        self.assertTrue(_call_is_swallowed(
-            "def f():\n    try:\n        x = g()\n    except OSError:\n        x = None\n",
-            "f", "g"))
+    Both directions, because the over-refusing direction is the one this repository gets
+    wrong: an earlier version of this rule rejected a context-preserving re-raise and a
+    narrow `except OSError`, both of which are correct code."""
 
-    def test_it_sees_one_guarded_deeper_in_the_try_body(self) -> None:
-        self.assertTrue(_call_is_swallowed(
-            "def f():\n    try:\n        if c:\n            x = g()\n"
-            "    except Exception:\n        x = None\n", "f", "g"))
+    F = ("f",)
 
-    def test_it_sees_a_call_under_contextlib_suppress(self) -> None:
-        """The spelling that leaked past the `try`-only version: neither the AST check
-        nor a sweep over exception types caught `suppress(ImportError)`, which is issue
-        #130's own exception class."""
-        self.assertTrue(_call_is_swallowed(
-            "def f():\n    with contextlib.suppress(ImportError):\n        x = g()\n",
-            "f", "g"))
-        # Imported bare, and with a second context manager alongside it.
-        self.assertTrue(_call_is_swallowed(
-            "def f():\n    with suppress(Exception):\n        x = g()\n", "f", "g"))
-        self.assertTrue(_call_is_swallowed(
-            "def f():\n    with open(p) as fh, contextlib.suppress(OSError):\n"
-            "        x = g()\n", "f", "g"))
+    def test_it_finds_a_bare_and_a_broad_handler(self) -> None:
+        self.assertEqual(len(_blanket_swallows(
+            "def f():\n    try:\n        g()\n    except Exception:\n        return None\n",
+            self.F)), 1)
+        self.assertEqual(len(_blanket_swallows(
+            "def f():\n    try:\n        g()\n    except:\n        return None\n",
+            self.F)), 1)
+        self.assertEqual(len(_blanket_swallows(
+            "def f():\n    try:\n        g()\n    except (ValueError, Exception):\n"
+            "        return None\n", self.F)), 1)
 
-    def test_it_ignores_an_unguarded_call_and_a_guard_over_something_else(self) -> None:
-        self.assertFalse(_call_is_swallowed("def f():\n    x = g()\n", "f", "g"))
-        self.assertFalse(_call_is_swallowed(
-            "def f():\n    x = g()\n    try:\n        h()\n    except OSError:\n        pass\n",
-            "f", "g"))
-        # A `try` with no handler (bare finally) does not swallow.
-        self.assertFalse(_call_is_swallowed(
-            "def f():\n    try:\n        x = g()\n    finally:\n        pass\n", "f", "g"))
-        # A `with` that is not a suppress does not swallow.
-        self.assertFalse(_call_is_swallowed(
-            "def f():\n    with open(p) as fh:\n        x = g()\n", "f", "g"))
-        self.assertFalse(_call_is_swallowed(
-            "def f():\n    with contextlib.suppress(OSError):\n        h()\n    x = g()\n",
-            "f", "g"))
-        # Wrong function.
-        self.assertFalse(_call_is_swallowed(
-            "def other():\n    try:\n        x = g()\n    except OSError:\n        pass\n",
-            "f", "g"))
+    def test_it_finds_a_broad_suppress(self) -> None:
+        self.assertEqual(len(_blanket_swallows(
+            "def f():\n    with contextlib.suppress(Exception):\n        g()\n",
+            self.F)), 1)
+        self.assertEqual(len(_blanket_swallows(
+            "def f():\n    with suppress(BaseException):\n        g()\n", self.F)), 1)
+
+    def test_it_finds_one_in_a_NESTED_function(self) -> None:
+        """`_is_dangling` is nested inside the detector, and round 5 put a swallow there."""
+        self.assertEqual(len(_blanket_swallows(
+            "def f():\n    def inner():\n        try:\n            g()\n"
+            "        except Exception:\n            return False\n", self.F)), 1)
+
+    def test_it_allows_a_narrow_handler(self) -> None:
+        """`detect_dangling_active_child` needs `except OSError` around its pointer read.
+        Refusing that was a real over-refusal in the previous version of this rule."""
+        self.assertEqual(_blanket_swallows(
+            "def f():\n    try:\n        g()\n    except OSError:\n        x = ''\n",
+            self.F), [])
+        self.assertEqual(_blanket_swallows(
+            "def f():\n    with contextlib.suppress(OSError):\n        g()\n",
+            self.F), [])
+
+    def test_it_allows_a_broad_handler_that_RE_RAISES(self) -> None:
+        """Adding context and re-raising does not turn a failure into a value, so the
+        rule must not refuse it — the other over-refusal the previous version had."""
+        self.assertEqual(_blanket_swallows(
+            "def f():\n    try:\n        g()\n    except Exception as e:\n"
+            "        raise RuntimeError('ctx') from e\n", self.F), [])
+        self.assertEqual(_blanket_swallows(
+            "def f():\n    try:\n        g()\n    except Exception:\n"
+            "        log()\n        raise\n", self.F), [])
+
+    def test_it_allows_try_finally_and_ignores_other_functions(self) -> None:
+        self.assertEqual(_blanket_swallows(
+            "def f():\n    try:\n        g()\n    finally:\n        pass\n", self.F), [])
+        self.assertEqual(_blanket_swallows(
+            "def other():\n    try:\n        g()\n    except Exception:\n        pass\n",
+            self.F), [])
+
+
+def _caused_by(exc: BaseException, wanted: type[BaseException]) -> bool:
+    """Is ``wanted`` anywhere in ``exc``'s cause / context chain (or ``exc`` itself)?"""
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen:
+        if isinstance(cur, wanted):
+            return True
+        seen.add(id(cur))
+        cur = cur.__cause__ or cur.__context__
+    return False
+
+
+class _Injected(Exception):
+    """Private to `CollectorsDoNotSwallowTests`: no handler in the tree names it, so
+    catching it requires a blanket `except Exception` / bare `except` / `suppress`."""
 
 
 class CollectorsDoNotSwallowTests(unittest.TestCase):
@@ -1035,53 +1081,89 @@ class CollectorsDoNotSwallowTests(unittest.TestCase):
     `diagnostic_failures`. This collector must let a failure out.
     """
 
-    def test_build_launch_incident_propagates_a_detector_failure(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            _open_dangling_window(_orch_root(repo))
-            # ImportError / ModuleNotFoundError is the class issue #130 itself raised.
-            for exc in (RuntimeError, OSError, ValueError, ImportError, ModuleNotFoundError):
-                with self.subTest(exc=exc.__name__), \
-                        mock.patch.object(diag, "detect_dangling_active_child",
-                                          side_effect=exc("boom")), \
-                        self.assertRaises(exc):
-                    diag.build_launch_incident(repo, ORCH_ID)
+    def test_a_detector_failure_of_any_type_reaches_the_boundary(self) -> None:
+        """The narrow-but-typed swallow, which the two checks around this one both miss.
 
-    def test_a_failure_below_the_detector_reaches_the_audit_boundary(self) -> None:
-        """The invariant asked BEHAVIOURALLY, and the reason it has to be.
+        `_blanket_swallows` only flags a handler that catches everything, and the
+        primitive injection below is not caught by a narrowly-typed handler either — so
+        `with contextlib.suppress(ImportError)` around this one call survived both,
+        measured. Nothing on this call is legitimate to suppress at ANY type: whatever
+        the detector raises has to reach `audit()`, which is the only place that records
+        it. `ImportError` leads the list because it is the class issue #130 raised.
 
-        Three review rounds broke this one mechanism in three different spellings —
-        `except OSError`, `with contextlib.suppress(ImportError)`, and finally a wrapper
-        one frame DOWN, inside `detect_dangling_active_child` itself. Each time the
-        source scan was widened and the next round found a fourth spelling: the sign that
-        the pin was in the wrong PLACE, since a scan over one named function can only
-        ever produce rejection samples.
-
-        This injects the failure at the lowest level the detection path uses and requires
-        it to arrive at the boundary, whatever the code in between looks like. It is not
-        replaceable by 'no handler anywhere on the path': `detect_dangling_active_child`
-        legitimately catches `OSError` around its pointer read (`:155-158`), so that rule
-        would refuse correct code. The source scan below is kept as the cheaper, earlier
-        signal — this is what actually holds the class shut.
+        Chain-based, like the injection test, so a broad handler that re-raises with
+        context is not refused.
         """
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             _open_dangling_window(_orch_root(repo))
-            for exc in (OSError, RuntimeError, ImportError):
+            for exc in (ImportError, ModuleNotFoundError, OSError, RuntimeError, ValueError):
                 with self.subTest(exc=exc.__name__), \
-                        mock.patch.object(diag, "_read_jsonl", side_effect=exc("boom")), \
-                        self.assertRaises(exc):
+                        mock.patch.object(diag, "detect_dangling_active_child",
+                                          side_effect=exc("boom")), \
+                        self.assertRaises(Exception) as cm:
                     diag.build_launch_incident(repo, ORCH_ID)
+                self.assertTrue(_caused_by(cm.exception, exc))
 
-    def test_the_detector_call_is_not_swallowed_at_all(self) -> None:
-        """The exact form of the invariant. Raising a set of exception types can only
-        reject the types it names: an `except OSError` re-introduction survived a test
-        that raised `RuntimeError` — measured, and `detect_dangling_active_child` does
-        `glob` and jsonl I/O, so `OSError` is the shape a defensive edit reaches for."""
+    def test_no_blanket_swallow_sits_between_the_disk_and_the_boundary(self) -> None:
+        """The invariant asked BEHAVIOURALLY, at the I/O primitives themselves.
+
+        Four review rounds broke this one mechanism in five spellings — `except OSError`
+        in `build_launch_incident`, `contextlib.suppress(ImportError)`, a wrapper around
+        `detect_dangling_active_child`, and then two more one statement apart INSIDE the
+        detector. Each source scan was widened and the next round found another; a scan
+        over a named function can only ever produce rejection samples.
+
+        An earlier version of this test injected at `_read_jsonl` and its docstring
+        claimed to hold "whatever the code in between looks like". That was FALSE, and
+        two round-5 reviewers found it independently: `_read_jsonl`'s first call site is
+        partway down the detector, so the injection stopped there and nothing before or
+        after it was covered. The claim is now made true rather than narrowed — the
+        injection moved DOWN to the `pathlib` primitives every reader on the path
+        bottoms out in, one at a time.
+
+        The injected type is private to this test, which is what makes the check ask
+        about a BLANKET swallow rather than about handling. A legitimate narrow handler —
+        `detect_dangling_active_child` really does catch `OSError` around its pointer
+        read (`:155-158`), and `_leaf_transcript_path` catches `(OSError, ValueError)` —
+        does not catch `_Injected` and so is not refused. Only `except Exception`,
+        `contextlib.suppress(Exception)`, or a bare `except` is, anywhere on the path.
+
+        And it requires the injection to be the CAUSE, not to be the exception itself:
+        a broad handler that adds context and re-raises satisfies the invariant — the
+        failure still reaches the boundary and is still recorded — so demanding the exact
+        type back would refuse correct code. That over-refusal was real and measured; the
+        chain walk is what removes it.
+        """
+        for prim in ("read_text", "is_dir", "is_file", "glob"):
+            with self.subTest(primitive=prim), tempfile.TemporaryDirectory() as tmp:
+                    repo = Path(tmp)
+                    _open_dangling_window(_orch_root(repo))
+                    real = getattr(Path, prim)
+
+                    def _boom(self_path, *a, _real=real, _p=prim, **k):
+                        # Only the orchestration's own tree is poisoned, so the
+                        # temp-dir machinery around the call keeps working.
+                        if ORCH_ID in str(self_path):
+                            raise _Injected(_p)
+                        return _real(self_path, *a, **k)
+
+                    with mock.patch.object(Path, prim, _boom), \
+                            self.assertRaises(Exception) as cm:
+                        diag.build_launch_incident(repo, ORCH_ID)
+                    self.assertTrue(
+                        _caused_by(cm.exception, _Injected),
+                        msg=f"{prim}: something escaped, but not from the injection")
+
+    def test_nothing_on_the_detection_path_swallows_broadly(self) -> None:
+        """The complement to the injection above, and it is needed: WIDENING the
+        legitimate `except OSError` to `except Exception` leaves nothing to propagate, so
+        no injection can see it — measured, that mutant survived the injection test. A
+        source rule answers it exactly, and this one allows the narrow handler it is
+        widening FROM."""
         source = (Path(__file__).resolve().parent.parent
                   / "orchestration_diagnostics.py").read_text(encoding="utf-8")
-        self.assertFalse(_call_is_swallowed(
-            source, "build_launch_incident", "detect_dangling_active_child"))
+        self.assertEqual(_blanket_swallows(source, _DETECTION_PATH_FUNCS), [])
 
 
 if __name__ == "__main__":

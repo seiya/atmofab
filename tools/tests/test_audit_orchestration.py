@@ -1929,7 +1929,10 @@ class MissingOrchestrationTests(unittest.TestCase):
             rendered = ao._render_markdown(result)
             self.assertIn("No dangling active_child window detected", rendered)
             self.assertNotIn("orchestration not found", rendered)
-            self.assertNotIn("UNKNOWN", rendered)
+            # Scoped to the sentence this test is about: asserting "UNKNOWN" is absent
+            # from the WHOLE document would refuse any future legitimate use of the word
+            # elsewhere in the report.
+            self.assertNotIn("NOTHING was measured", rendered)
 
     def test_the_runbook_command_from_a_foreign_cwd_does_not_report_no_window(self) -> None:
         """Route (b), end to end: the window is OPEN and `--repo-root` defaults to a cwd
@@ -1981,7 +1984,7 @@ class MissingOrchestrationTests(unittest.TestCase):
 
 
 def _deferred_tools_imports(source: str) -> list[str]:
-    """Names imported from `tools.*` inside a function body of `source`.
+    """The NAMES bound by a `tools.*` import inside a function body of `source`.
 
     This is the shape of issue #130: an import that only runs when the function does can
     raise into a caller's `except Exception` and be reported as a measurement. At module
@@ -2007,9 +2010,7 @@ def _deferred_tools_imports(source: str) -> list[str]:
                 # `tools` import, and it is the spelling a developer working in the
                 # package reaches for. Keying on the module name alone missed it.
                 if inner.level or (inner.module or "").split(".")[0] == "tools":
-                    prefix = "." * inner.level + (inner.module or "")
-                    sep = "" if prefix.endswith(".") else "."
-                    found.extend(f"{prefix}{sep}{a.name}" for a in inner.names)
+                    found.extend(a.name for a in inner.names)
             elif isinstance(inner, ast.Import):
                 found.extend(a.name for a in inner.names if a.name.split(".")[0] == "tools")
     return found
@@ -2023,7 +2024,7 @@ class DeferredImportScannerTests(unittest.TestCase):
     def test_it_finds_a_function_body_import(self) -> None:
         self.assertEqual(
             _deferred_tools_imports("def f():\n    from tools.hooks.common import x\n"),
-            ["tools.hooks.common.x"])
+            ["x"])
         self.assertEqual(
             _deferred_tools_imports("def f():\n    import tools.hooks.common\n"),
             ["tools.hooks.common"])
@@ -2032,16 +2033,16 @@ class DeferredImportScannerTests(unittest.TestCase):
         self.assertEqual(
             _deferred_tools_imports(
                 "def f():\n    if x:\n        from tools.leaf_usage import K\n"),
-            ["tools.leaf_usage.K"])
+            ["K"])
 
     def test_it_finds_a_relative_import(self) -> None:
         """The spelling that leaked: a developer inside `tools/` writes `from .x import`,
         and keying on the module name alone read that as not-a-`tools`-import."""
         self.assertEqual(
             _deferred_tools_imports("def f():\n    from .hooks.common import x\n"),
-            [".hooks.common.x"])
+            ["x"])
         self.assertEqual(
-            _deferred_tools_imports("def f():\n    from . import hooks\n"), [".hooks"])
+            _deferred_tools_imports("def f():\n    from . import hooks\n"), ["hooks"])
 
     def test_it_ignores_module_level_and_foreign_imports(self) -> None:
         self.assertEqual(_deferred_tools_imports("from tools.leaf_usage import K\n"), [])
@@ -2061,14 +2062,28 @@ class DiagnosticsFailsAtImportTimeTests(unittest.TestCase):
     into a false negative — not later, inside a function body.
     """
 
-    def test_the_diagnostics_module_defers_no_tools_import(self) -> None:
+    def test_the_transcript_resolver_is_bound_at_import_time(self) -> None:
         """The direct pin on the hoist. The subprocess test below does NOT pin it: the
         module's sibling `from tools.leaf_usage import ...` makes the import fail loudly
-        on its own, so it stays green with the hoist reverted (measured)."""
+        on its own, so it stays green with the hoist reverted (measured).
+
+        The RULE is that the resolver the transcript path needs is resolved when the
+        module loads, so a consumer that cannot import `tools` fails there rather than
+        inside a caller's `except`. An earlier version asserted
+        `_deferred_tools_imports(source) == []` over the whole module, which pins the
+        RESULT instead: it refused a lazy import added elsewhere in the file for cost or
+        to break a cycle, neither of which can reintroduce issue #130 once one
+        unconditional module-level `tools.*` import exists. Measured — that version
+        failed on a legitimate `from tools.backends.registry import ...` inside an
+        unrelated helper while the real property still held.
+        """
+        self.assertTrue(hasattr(diag, "claude_leaf_projects_roots"))
         source = (Path(__file__).resolve().parent.parent
                   / "orchestration_diagnostics.py").read_text(encoding="utf-8")
-        self.assertEqual(_deferred_tools_imports(source), [])
-        self.assertTrue(hasattr(diag, "claude_leaf_projects_roots"))
+        self.assertNotIn(
+            "claude_leaf_projects_roots",
+            _deferred_tools_imports(source),
+            msg="the transcript resolver must not be imported inside a function body")
 
     def test_importing_it_without_the_repo_root_fails_immediately(self) -> None:
         repo = Path(__file__).resolve().parent.parent.parent
@@ -2081,8 +2096,10 @@ class DiagnosticsFailsAtImportTimeTests(unittest.TestCase):
                 ["python3", "-c", code],
                 cwd=tmp, env=env, capture_output=True, text=True, check=False)
         self.assertNotEqual(proc.returncode, 0, msg=proc.stdout)
-        self.assertIn("ModuleNotFoundError", proc.stderr)
-        self.assertIn("tools", proc.stderr)
+        # The traceback ECHOES the `<repo>/tools/orchestration_diagnostics.py` path on
+        # any import failure, so `assertIn("tools", stderr)` passed for an unrelated
+        # missing module — measured. Assert the message, which names the module.
+        self.assertIn("No module named 'tools'", proc.stderr)
 
     def test_the_script_path_holds_one_module_identity(self) -> None:
         """The other half of dropping the bare-first shims: once the bootstrap puts the
