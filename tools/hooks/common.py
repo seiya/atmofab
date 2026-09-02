@@ -4760,7 +4760,7 @@ def claude_leaf_projects_roots(repo_root: Path,
     CANONICAL for the consumers that must not drift apart, all of which locate a
     leaf's own session by ``<projects-root>/<slug>/<session-id>.jsonl``:
       * `workflow_conductor._claude_session_resumable` (is a warm `--resume` viable);
-      * `orchestration_diagnostics._leaf_transcript_path` / `_claude_projects_dir`
+      * `orchestration_diagnostics._locate_leaf_transcript` / `_claude_projects_dir`
         (post-mortem of a dangling leaf);
       * the persisted-tool-result shape exemptions in this module.
 
