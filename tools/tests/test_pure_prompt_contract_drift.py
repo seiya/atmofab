@@ -210,7 +210,21 @@ PINNED: dict[str, str] = {
     # review", because the AGENTIC verify leaf reviews a node whose runner it authored and no
     # bullet's subject named it. A verdict issued under pure-25 was reached against a wider drop
     # class, so the vintages stay distinguishable. Side effects as for every bump, unchanged.
-    "pure-26": "f1e92b91e76df84c71b224e873c91246beec63efc894f75f85248db4afabd569",}
+    "pure-26": "f1e92b91e76df84c71b224e873c91246beec63efc894f75f85248db4afabd569",
+    # pure-27: the checklist and the rubric disagreed about what the PURE reviewer may fault.
+    # The checklist said "verify only the code-vs-IR semantics below" and G1-G7 are all
+    # code-subject, while the rubric's `major` requires the subject to be an INPUT — and nothing
+    # else in the 217-line prompt mentioned `ir_inconsistency` or told the reviewer it may
+    # attribute a defect to the IR at all. The only escape was the rubric's own tie-break, which
+    # steers an unsettled subject to `minor`, so `major` was close to unreachable for this
+    # persona: an IR that cannot satisfy a checklist item looped the producer to
+    # `MAX_ATTEMPTS_PER_PHASE` instead of stopping with a name the operator can act on. (The
+    # AGENTIC reviewer never had this: its SKILL and phase_02 §On-failure state `ir_inconsistency`
+    # directly — the issue #22 asymmetry again, roles swapped.) The checklist now says the
+    # input-side finding is the reviewer's to make; the `major` bullet's enumeration becomes the
+    # cases the question usually takes rather than a closed list, which left a `tests.md`-only
+    # defect the IR faithfully reproduces with no value at all.
+    "pure-27": "14b882c6af0edf1e8d0e525f43c3bd29dbcb079616f7d73e2809114d892d2ecf",}
 
 
 def _contract_tuple() -> dict[str, object]:

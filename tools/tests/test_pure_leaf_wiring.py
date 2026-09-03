@@ -573,6 +573,13 @@ class PureRenderTests(unittest.TestCase):
         self.assertIn("the value names the repair the finding calls for, never the weight of "
                       "its consequence", prompt)
         self.assertIn("fail with the `issue_severity` the inlined severity rubric assigns", prompt)
+        # The checklist must also tell the reviewer that an INPUT-side finding is its to make.
+        # Without it the rubric's `major` had no reachable subject on this transport: G1-G7 are
+        # all code-subject, the checklist said "verify only the code-vs-IR semantics", and the
+        # rubric's own tie-break sends an unsettled subject to `minor` — so an IR that cannot
+        # satisfy a checklist item looped the producer instead of stopping (round 3).
+        self.assertIn("the defect is on the INPUT side — report it, name the input in "
+                      "`last_fail_reason`, and let the inlined severity rubric grade it", prompt)
         # The refused wording, in the exact spelling this issue removed: it told the reviewer to
         # decide the value from the defect, which is the whole defect.
         self.assertNotIn("the severity the defect warrants", prompt)
