@@ -30535,7 +30535,11 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # Bumped 59810->59990 at the round-4 HEAD (measured 59837): the `major` bullet regained a
         # subject category for the `fail`s the verify `SKILL` mandates outside V1-V8, which
         # round 3 had narrowed away and left ungradable. Measured with `wc -c` in
-        # /home/seiya/atmofab; same ~150 B slack rule as every entry in this table.
+        # /home/seiya/atmofab, and set by the ~150 B slack rule THIS entry follows. Not every
+        # entry does, and a round-5 reviewer was right to say so: measured at that HEAD the
+        # slacks ran 152 / 71 / 35 / 153 / 174 / 156 / 105 / 137 / 22 B down the table, so three
+        # of the nine sit in the band this block's own header calls a tripwire. Nothing is red
+        # today; re-measure the entry you are bumping rather than trusting a table-wide rule.
         "docs/workflow/phases/phase_01_compile.md": 59990,
         # Per-substep SKILLs — each force-read by its own LLM leaf.
         # Bumped 10800->11500: Compile.generate now authors the io_contract section (G2 /

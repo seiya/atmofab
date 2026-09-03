@@ -697,7 +697,7 @@ class PureRenderTests(unittest.TestCase):
     # reviewers reworded around them) but they named the axis in the failure. Both facts belong
     # in the PR body.
     _RUBRIC_DIGEST_BY_STEP = {
-        "compile": "41e1ed52731c88f0c5c259875a3be8c605db94c4744fb6e938e523c0ba795d3c",
+        "compile": "6eb19676f23f4addd6b5f6ba1bdf7027965f9e4b19ad951d13668ccb78291d4d",
         "generate": "83bed963f6bf9233e4167ce3c1a1f47953102c147431b7234d67fc560c3a04bc",
     }
 
@@ -1110,7 +1110,7 @@ class PureRenderTests(unittest.TestCase):
         "docs/AGENT_CONTRACT.md: - A verify-family finding always sets `verification_status=f"
         " #12a92add46ae",
         "docs/RUNBOOK.md: - Recovery from a **`conductor_phase_fail_closed` whose `rea"
-        " #b55e7ec57c05",
+        " #460f6855d596",
         "skills/workflow-generate-verify/SKILL.md: - A finding always sets "
         "`verification_status=fail` (record ` #4a2a99cfe8e9",
         # Issue #148: the `Compile.verify` mirror of the line above. It routes and points; it
@@ -1200,16 +1200,30 @@ class PureRenderTests(unittest.TestCase):
         # handed the OTHER phase's subject question beside its own checklist, which is the
         # hand-assignment this check exists to refuse. A rubric line is legitimate in exactly one
         # document, so the exclusion belongs to that document.
-        rubric_lines_by_rel: dict[str, set[str]] = {}
+        # Excluded by POSITION, not by membership in a set of strings. Round 5 measured the set
+        # version: phase_01's own `critical` bullet pasted verbatim beside `#### V3` — the SAME
+        # document, a more natural paste than the cross-document one round 1 fixed — was skipped,
+        # because the exclusion asked "is this line one of the rubric's" and not "is this line IN
+        # the rubric". A leaf handed the `critical` bullet beside a V2 checklist item grades its
+        # V2 finding `critical` and terminalizes a run the producer repairs in one turn.
+        rubric_span_by_rel: dict[str, range] = {}
         for step in ("compile", "generate"):
             rel = ort.WORKFLOW_PHASE_DOC_BY_STEP[step]
-            lines = set(self._rubric_slice(repo_root, step).splitlines())
+            lines = self._rubric_slice(repo_root, step).splitlines()
             self.assertTrue(any(self._SEVERITY_LITERAL_RE.search(ln) for ln in lines),
                             f"{step}'s rubric names no severity value, so excluding its lines "
                             f"below would exclude nothing and this check would be reading the "
                             f"wrong text")
-            rubric_lines_by_rel[rel] = lines
-        self.assertEqual(set(rubric_lines_by_rel) - scanned, set(),
+            doc_lines = (repo_root / rel).read_text(encoding="utf-8").splitlines()
+            starts = [i for i in range(len(doc_lines) - len(lines) + 1)
+                      if doc_lines[i:i + len(lines)] == lines]
+            self.assertEqual(len(starts), 1,
+                             f"{rel}: its rubric block occurs {len(starts)} times as a "
+                             f"contiguous run of lines. Exactly one of them is the rubric; "
+                             f"another is a COPY, and a copy of the rubric elsewhere on a "
+                             f"leaf-read surface is the hand-assignment this check refuses.")
+            rubric_span_by_rel[rel] = range(starts[0], starts[0] + len(lines))
+        self.assertEqual(set(rubric_span_by_rel) - scanned, set(),
                          "a phase document whose rubric lines are excluded is not itself "
                          "scanned; the exclusion would then be silently doing nothing")
         found: list[str] = []
@@ -1227,9 +1241,11 @@ class PureRenderTests(unittest.TestCase):
                 begin, end = text.index(begin_marker), text.index(end_marker)
                 self.assertGreater(end, begin, rel)
                 text = text[begin:end]
-            own_rubric = rubric_lines_by_rel.get(rel, frozenset())
-            for line in text.splitlines():
-                if line in own_rubric or not self._SEVERITY_LITERAL_RE.search(line):
+            # A bounded surface is scanned as a substring, so line indices no longer align with
+            # the document; the two phase docs are unbounded, which is where the span applies.
+            own_span = rubric_span_by_rel.get(rel, range(0)) if begin_marker is None else range(0)
+            for idx, line in enumerate(text.splitlines()):
+                if idx in own_span or not self._SEVERITY_LITERAL_RE.search(line):
                     continue
                 found.append(f"{rel}: {line[:60]} #{hashlib.sha256(line.encode()).hexdigest()[:12]}")
         self.assertEqual(sorted(found), sorted(self._SEVERITY_ROUTING_ALLOWLIST),
@@ -1345,8 +1361,20 @@ class PureRenderTests(unittest.TestCase):
         """
         repo_root = Path(ort.__file__).resolve().parents[1]
         axis = "`issue_severity` names the repair a finding calls for"
+        # The steps come from the DIGEST MAP, and the map is checked against the phases that
+        # have a rubric. Round 5 narrowed a hardcoded `("compile", "generate")` tuple to
+        # `("compile",)` and measured green — the unused `generate` entry noticed nothing, and
+        # only the subtest count moved, 32 to 30. That is round 4's regression reachable in one
+        # line again, so the coverage is asserted rather than spelled.
+        self.assertEqual(set(self._RUBRIC_DIGEST_BY_STEP),
+                         {"compile", "generate"},
+                         "`_RUBRIC_DIGEST_BY_STEP` must carry exactly the two phases that have "
+                         "a severity rubric. A key removed here removes that phase's only "
+                         "content pin and nothing else goes red; a key added here is never "
+                         "read unless the phase has a rubric to slice.")
         slices = {step: self._rubric_slice(repo_root, step)
-                  for step in ("compile", "generate")}
+                  for step in sorted(self._RUBRIC_DIGEST_BY_STEP)}
+        self.assertEqual(set(slices), set(self._RUBRIC_DIGEST_BY_STEP))
         # The one sentence BOTH rubrics must share. Checked per phase rather than by digest,
         # because it is the cross-phase invariant: two documents, one axis.
         for step, doc in slices.items():
@@ -1392,16 +1420,25 @@ class PureRenderTests(unittest.TestCase):
                     f"  3. `major` = the subject is an INPUT, so no such re-run reaches it. Its "
                     f"cases must not name anything the conductor's own gates make unreachable, "
                     f"and every case must have a destination in `docs/RUNBOOK.md` §3-1.\n"
-                    f"  4. `critical` = {artifact[step]} cannot be the base of a repair at all, "
-                    f"and the `minor` bullet's universal must still DEFER to it.\n"
-                    f"  5. The lead still explains the disagreement with {other[step]} and "
-                    f"still points at it.\n"
+                    f"  4. `critical` = {artifact[step]} cannot be the base of a repair at "
+                    f"all, and the `minor` bullet's universal must not swallow it — phase_01 "
+                    f"defers explicitly, phase_02 scopes its universal to the G1-G7 checklist "
+                    f"instead; either works, silence does not.\n"
+                    f"  5. The lead still says which value this phase gives a defect the OTHER "
+                    f"phase grades differently. phase_01 states the disagreement and points at "
+                    f"{other[step]}; phase_02 does not, and the pointer test is what holds "
+                    f"phase_01's half.\n"
                     f"  6. Each tie-break still agrees with the `major` and `critical` bullets "
                     f"— no pin can check this, which is why it is on this list.\n"
                     f"  7. No `pass`-side rule has entered the span; this rubric grades a "
                     f"FAILING finding only.\n"
-                    f"  8. Every `fail` the phase's verify `SKILL` mandates can still be graded "
-                    f"by one of the three bullets.")
+                    f"  8. Every `fail` the phase's verify `SKILL` mandates can still be "
+                    f"graded by one of the three bullets.\n"
+                    f"  9. The bullets do not CONTRADICT each other: no example in one bullet's "
+                    f"list names a case another bullet's list also claims. Round 5 added "
+                    f"\"a `direct_deps` entry naming an operation the dependency's published "
+                    f"surface lacks\" to `minor`, which `major` already owns, and every one of "
+                    f"items 1-8 was satisfied.")
 
     _COUNT_WORDS = {1: "one", 2: "two", 3: "three", 4: "four", 5: "five", 6: "six"}
 
