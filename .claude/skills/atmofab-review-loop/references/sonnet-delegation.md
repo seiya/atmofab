@@ -1,6 +1,32 @@
 # Delegating verifiable review work to sonnet: the experiment log
 
-Eight data points. SKILL.md carries the operational conclusion; this is the evidence, newest first.
+Nine data points. SKILL.md carries the operational conclusion; this is the evidence, newest first.
+
+## Data point 9 (issue #142 / PR #144, round 1) — three findings, all real, one overlap
+
+**Run as the delegated mechanical-recomputation axis**, in parallel with two opus axes on the same
+HEAD, with an explicit checklist (re-measure every number in the diff; back-check every "recorded
+in X" / "pinned by Y" claim by mutating the CODE the test is about; a failure-class -&gt; test
+correspondence table; prose-vs-implementation contradictions; count the call sites making the same
+decision). 426 s, 70 tool calls.
+
+**3 findings, 3 real, 0 false positives. Overlap with the up-model axes: 1 of 3.**
+
+- A `TODO.md` sentence named `_validate_pure_launch_request`, a function that does not exist
+  anywhere in the repository (the real name has a `_payload` suffix). **Found by no other axis** —
+  and it is the fifth time this delegation has returned "the claim points at nothing I can locate",
+  which remains the single most reproducible thing about it. The instruction that produces it is
+  "report claims you cannot locate rather than accounting for them".
+- A comment claiming three code sites are unreachable "on their `leaf_returncode=1`": true
+  conclusion, but three different guards fire and only one is the one named. **Also found by the
+  opus correctness axis** — the one overlap.
+- A docstring claiming a new test was "the one test that drives the real handler": three other
+  tests in the same file do too. **Found by no other axis.**
+
+**Reading**: sonnet ∖ opus ≠ ∅ (two of three were unique), so it kept working as an independent
+eye rather than as a substitute, and every finding was in the descriptive class — a name, an
+attribution, an overclaim. Nothing it found required a hypothesis-mutate-run cycle, which is the
+line SKILL.md draws. The axis cost one slot and paid for it; the conclusion is unchanged.
 
 ## Data points 6-8 (PR #107, rounds 1, 3 and 4) — three runs, two more premise refusals
 

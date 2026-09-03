@@ -33,6 +33,19 @@ the "false evidence" side (the message disagrees with the artifact), and I caugh
 rather than a reviewer. Once you decide to fold, **read `git show --stat` before writing the
 message**.
 
+**And the cost is a ROUND, not a record (issue #142, 2026-09-03).** The rule above was written from
+PR #67, where the omission was pure book-keeping. Issue #142 showed the other half. The branch's
+first commit added a scope rule to a leaf prompt template and, in the same commit, restated it in
+`docs/workflow/phases/phase_02_generate.md` — a document the agentic verify leaf's SKILL names in
+its closed list of canonical judgment-rule sources. The message described the code and the
+template and never mentioned the four documents in its own `--stat`. Round 1's reviewers read the
+message, attacked the template, and found the rule was unbounded; the fix went into the template.
+Round 2 then had to rediscover the identical defect in the document, where it was still live on the
+other transport, and it was reported as a fresh `leaf shortcut`. **A file the message omits is a
+file the round does not attack** — so the omission did not merely misdescribe the commit, it bought
+a second round at the price of the first. The afterthought edits are the dangerous ones precisely
+because they are where a rule gets COPIED.
+
 **`git commit --amend` for a message-only fix requires an empty index** (or pass `--only`).
 `--amend` silently absorbs whatever is staged. In PR #58 an `--amend` meant to fix one false
 sentence swallowed a file replacement that happened to be staged, leaving **a commit that

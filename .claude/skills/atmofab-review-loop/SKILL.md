@@ -45,6 +45,15 @@ is allowed when splitting is unnatural, for an experimental check, or for someth
 revert immediately — **say in one line why**, and **read `git show --stat` before writing the message**, which must
 describe everything in the commit (PR #67 folded eight fixes and described two).
 
+**This is not only a record rule, and it is not only about folded commits.** A reviewer reads the
+message to decide where to look, so a file the message omits is a file the round does not attack.
+On issue #142 the first commit's message described the code and the prompt template and said
+nothing about the four documents it also edited — and one of those documents carried a COPY of the
+rule the template stated, in the unbounded form. Round 1 fixed the template; round 2 had to find
+the same defect again in the document, as a `leaf shortcut` on the other transport. **One omitted
+line in a message cost a whole round.** Read the stat, and name every file, especially the ones you
+edited as an afterthought — those are exactly the copies.
+
 **`git commit --amend` for a message-only fix requires an empty index** (or `--only`); it
 silently absorbs whatever is staged (PR #58: an amend swallowed a file replacement, leaving a
 commit that claims work `git log -S` cannot find). **If it is unpushed you can fix it by
@@ -109,7 +118,13 @@ when a rule does not obviously apply:
   script caught it and exited 2, which is the behaviour to keep) — and a suite that ALREADY has a
   failure unrelated to the change,
   where `-x` stops every mutant at that same failure so every mutant reads as `killed` — a false
-  green over the whole run, not a per-hunk slip. atmofab's standing instance USED to be the
+  green over the whole run, not a per-hunk slip. A fourth cause is the SHELL, and it is the one
+  that leaves no trace in a summary line: **this environment's shell is zsh, which does not
+  word-split an unquoted `$var`**, so a sweep that builds its test command in a variable
+  (`run(){ pytest $1 }`) hands pytest one argument that is several paths glued together and
+  collects **zero tests** — every mutant then reports `no tests ran`, which a scorer reading only
+  the last line scores as not-failed. Hit for real on issue #142's round 0. **Read the baseline's
+  COUNT, not its colour**: `197 passed` and `no tests ran in 0.00s` are both non-red. atmofab's standing instance USED to be the
   path-depth-coupled `ForbidBackendCredentialReadTests` cases — one PR #98 reviewer reported 12 of
   12 mutants killed that way before re-running — and issue #84 closed it on 2026-09-02: those
   cases now build their own `$HOME` and checkout, so they pass at any depth and in a worktree.
@@ -479,7 +494,7 @@ same run — it is a reason to re-run the positive verdicts your change actually
 
 ## Delegate verifiable work to sonnet
 
-**Operational conclusion (9 data points; the confound resolved in PR #72 by giving both models
+**Operational conclusion (10 data points; the confound resolved in PR #72 by giving both models
 the same checklist, the axis run as delegated in PR #88): sonnet ⊂ opus, with real misses.** Move **the mechanical-recomputation axis**
 permanently to sonnet and keep judgment on the up-model. Costs came out roughly equal, so "it is
 cheap, so run more" does not hold — **use it only to free up a slot**. Run one via `Agent` with
@@ -508,7 +523,7 @@ numbers" does not give "it matches on parser semantics". **Measure per axis.**
 
 **Tell it to report claims it cannot locate rather than accounting for them** — refusing a false
 premise I had put in its prompt is the most valuable thing this axis has done — and the most
-reproducible, having now happened in four of the nine data points (5, twice on PR #107, and on
+reproducible, having now happened in five of the ten data points (5, twice on PR #107, on issue #142, and on
 PR #116, where it reported that the ten-item mutant list a commit message referenced was recorded
 nowhere it could find — true, and the thing I would least have checked myself).
 **This stays an experiment**: collect real/total findings, elapsed time and the overlap count,
