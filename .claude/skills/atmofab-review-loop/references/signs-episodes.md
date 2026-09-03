@@ -9,6 +9,51 @@ the case history that tells you how it closed.
   with zero defects in the moved code itself and everything in the fixes and the prose). The more
   a change is a move or rename where the body is known correct, the more the review is really about
   **your own fixes** — put the focus instruction in from the first round
+- **The fix was to a RECORD, so you verified it by reading** (PR #146, issue #143). Five rounds,
+  and every round after the first found defects inside the previous round's fix — the row above.
+  What that row did not say is that the RECORD fixes fail at the same rate as the code fixes, and
+  they are the ones nobody re-runs, because a sentence does not look like something you execute.
+  Three in one loop:
+  - Round 3 was told an operator remedy was **followable by half**: `docs/RUNBOOK.md` §3-1 sent
+    an operator to run `reopen-phase` by hand without naming where its `--trigger-agent-run-id`
+    comes from. The fix named `failure_analysis.json#original_finding.failed_substep_agent_run_id`
+    — copied from the entry directly above, which is the AGENT-driven route — and on the
+    conductor-driven route nothing writes that key. Two round-4 reviewers measured it
+    independently: five reads in `orchestration_runtime.py` and zero writers; nine
+    `failure_analysis.json` in the local `workspace/`, zero carrying it. **A remedy that was half
+    followable became one that is not followable at all**, which is worse than the gap it replaced.
+  - The check round 3 wrote to hold it asserted the key's name occurred in
+    `orchestration_runtime.py`. It does — inside `_derive_resume_directive`, the CONSUMER the same
+    RUNBOOK sentence correctly says never fires for this reason. So the check **ratified** the
+    error. What closed it was driving the WRITER: build the artifact
+    `run_workflow._collect_failure_analysis` produces for that stop and resolve the documented
+    dotted path against it. A pin on a source substring cannot see this class; a pin on the
+    artifact can.
+  - Round 4's commit message reported fixing a splice defect "in the previous commit". An AST walk
+    over every commit on the branch showed no duplicated class member in any of them: the
+    duplication had been in the author's uncommitted working tree, mid-splice, and was written up
+    as a committed state without checking. The same commit then **created** the duplication it
+    claimed to delete — four test methods shadowed in one class, 66 `def test_` lines against 62
+    collected, with two of that round's own fixes in the dead half. Reproduced by a reviewer
+    inserting `self.fail("dead")` into a dead copy: green.
+  - A fourth, smaller: a mutant result was written into a commit message from a round-2
+    reviewer's report without re-running it, and round 3 re-ran it and found the opposite. The
+    standing rule "do not write someone else's measurement as your own"
+    (`atmofab-enforcement-change` rule 3) covers it and was broken anyway, in a COMMIT MESSAGE,
+    which is the site the rule most often gets skipped on because nothing there is red.
+  A fifth, hit while WRITING this entry, which is the reason the sign is worth its lines: the
+  citation fix below was verified by re-running `test_skill_citations` against an unstaged edit.
+  That check reads the INDEX (`git show :<path>`, deliberately — a tree whose index and worktree
+  disagree otherwise kills it with `FileNotFoundError` instead of reporting), so it was reading
+  the text that was still wrong and stayed red; staging it turned it green. **Re-running the
+  check is not enough if the check does not read what you edited** — ask what source it reads
+  before believing either colour.
+  Closure: the corrected sentence must pass the check the wrong one failed, and the check must
+  observe the thing the record describes rather than a string that co-occurs with it. The
+  repository-wide guard that came out of the third item is
+  `tools/tests/test_suite_environment_isolation.py::NoShadowedTestMethodTests` — a shadowed test
+  method is invisible from inside the suite: nothing goes red, the collected count silently drops,
+  and a `grep` lands on the dead half first.
 - **You have rewritten the same string three times** → the problem is not the rule but the prose
   citing it. Switch to the grep sweep
   (`.claude/skills/atmofab-enforcement-change/references/verification.md`). **Rewriting one statement

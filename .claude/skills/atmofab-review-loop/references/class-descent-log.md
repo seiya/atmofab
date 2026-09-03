@@ -319,6 +319,55 @@ descent not achieved, blank-slate zero-functional-defects not achieved twice. Th
 census is explicitly not closed — an independent census found 24 of 40 mutants surviving in round
 4, and the author's own 12-mutant sweep afterwards is a statement about those 12.
 
+## PR #146 / issue #143 — the first loop to run to the cap, and what the cap bought
+
+A rubric for choosing a `verify` verdict's `issue_severity`, defined once in a phase document and
+injected verbatim into the pure reviewer's prompt. Round 0 plus **five** rounds — the cap — with
+two subagents per round, no Codex (adds checking machinery AND a prose-centred diff: two of the
+three "better not to launch" cases). Ten `PURE_PROMPT_CONTRACT_VERSION` bumps' worth of leaf-input
+change ended at `pure-30`.
+
+**The class did not descend, and the shape of what did not descend is the point.** Round 1 found
+the DELIVERABLE wrong — the rubric's own drop clause was strictly wider than the two existing
+statements of the same rule, re-creating issue #142's failure class inside the text written to
+close #143, and the wording came from the approved plan. Every round after that found defects
+inside the previous round's fix, and rounds 3-5 found leaf- or operator-facing ones rather than
+weak pins:
+
+| Round | What the previous fix had introduced |
+|---|---|
+| 2 | the coupling that fixed round 1 pinned PRESENCE, not exclusivity (an appended widening passed); the over-refusal fix to the bullet counter threw away the enum closure it replaced |
+| 3 | a half-followable operator remedy replaced by an unfollowable one, pinned by a check that ratified it; an editing-note bound whose marker occurs zero times in the document, so the note could be gutted to say the opposite |
+| 4 | a commit claiming to delete a duplicate created one — four shadowed test methods, two of that round's own fixes in the dead half; the severity sweep's predicate broken from BOTH sides in one round; a checklist clause widened on the rubric side and not on its own |
+| 5 | a tie-break ordering the value its own `major` bullet forbids — and both sentences had been pinned literally in round 4, so the CONTRADICTION was pinned rather than caught |
+
+**Two lessons the histories above did not already carry.**
+
+1. **Record fixes fail at the same rate as code fixes and nobody re-runs them.** Three in this one
+   loop; `signs-episodes.md` §"The fix was to a RECORD" has them. This is the sub-case of "a
+   finding sits inside the previous round's fix" that gets skipped because prose does not look
+   like something you execute.
+2. **A pin can pin a contradiction.** Round 4 pinned both tie-break sentences positively, which was
+   the right move against a digest-only guard — and one of them ordered a verdict the rubric's own
+   `major` bullet forbids, so the literal pin froze the disagreement instead of surfacing it.
+   Pinning a sentence proves it survived; it proves nothing about whether it agrees with the
+   sentence three lines up. Round 5 found it by RENDERING the leaf's prompt and reading the
+   documents against each other, which no mutation sweep and no census can do.
+
+**What the cap bought.** Round 5 was the most productive round of the loop by severity: the
+shadowed-test-method defect (which had silently removed four of the branch's own checks), the
+tie-break contradiction, and an end anchor that made three documents' promise to the operator false
+(`## On-failure behavior and retry` still matched a word-boundary terminator). Stopping at the
+default of three would have shipped all three. That is not an argument for raising the cap — it is
+the cost side of the budget, recorded so the next reader can weigh it (§"The budget" below).
+
+**The shape changes the signs prescribe were all made, and all made late**: predicate → set identity
+(round 4, after the predicate was broken from both sides), source-substring pin → drive the
+artifact (round 4), re-enumerating a rule → defer to its single statement (round 5, after two
+successive half-fixes of the same enumeration). A loop that reached the cap with the shape changes
+only just landed is `SKILL.md`'s "five rounds without the class descending → the shape of the rule
+is wrong" arriving at the same reading from the other side.
+
 ## Census practical notes: the episode behind each (restored 2026-08-25)
 
 These six were compressed to one line each in `SKILL.md` §"Stopping conditions" and their

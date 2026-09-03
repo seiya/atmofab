@@ -871,6 +871,19 @@ that tells you how it closed.
   as the focus** in the next round's prompt. The more the change is a move or rename whose body is
   known correct, the more the review is really about **your own fixes** — put that instruction in
   from round 1
+- **The fix was to a RECORD, so you verified it by reading** → a record fix carries the same
+  defect rate as a code fix, and this is the sub-case of the row above that gets skipped, because
+  prose does not look like something you run. Criterion: **the corrected sentence must pass the
+  check the wrong one failed.** If the defect was "this key does not exist", resolve the new key
+  against the artifact; if it was "this count is wrong", compute the new count; if it was "this
+  function is not named", drive the function. PR #146 shipped three in a row — a half-followable
+  operator remedy replaced by an unfollowable one (a `failure_analysis.json` key nothing writes on
+  that route), a commit message that described the author's uncommitted working tree as the
+  previous commit's state, and a "measured" claim repeated from a reviewer's report without
+  re-running it. **And the check written to hold a corrected record must observe the thing the
+  record describes**: the first of those was pinned by asserting the key's name occurred in a
+  module — it did, in a CONSUMER the same sentence says never runs — so the check ratified the
+  error (`references/signs-episodes.md`)
 - **You have rewritten the same string three times** → the problem is not the rule but the prose
   citing it. Switch to the grep sweep
   (`.claude/skills/atmofab-enforcement-change/references/verification.md`). **Rewriting one
