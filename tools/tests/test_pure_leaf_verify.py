@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import tempfile
 import unittest
@@ -178,13 +179,34 @@ class PureVerifyContextTests(unittest.TestCase):
             # again, so the two cannot drift apart. The extraction is self-tested.
             tpl = (Path(wc.__file__).resolve().parents[1] / "tools" / "prompt_templates"
                    / "pure_generate_verify.txt").read_text(encoding="utf-8")
-            head, sep, rest = tpl.partition(
+            _, sep, rest = tpl.partition(
                 "can only OVERRULE one kind of claim — a claim about ")
-            self.assertTrue(sep, "the template no longer states the droppable class")
-            claim_class = rest.split(" — so drop a finding")[0]
-            self.assertGreater(len(claim_class), 40, claim_class)
-            self.assertIn(claim_class, doc,
-                          "the rubric names a different droppable class from the template's")
+            self.assertTrue(sep, "the template's droppable-class sentence no longer opens with "
+                                 "'can only OVERRULE one kind of claim — a claim about '; "
+                                 "re-read the TEMPLATE and re-derive this marker")
+            claim_class, sep2, _ = rest.partition(" — so drop a finding")
+            self.assertTrue(sep2, "the template's droppable-class sentence no longer ends with "
+                                  "' — so drop a finding'; the class could not be delimited, so "
+                                  "the comparison below would be against the rest of the "
+                                  "TEMPLATE, not against a class")
+            self.assertTrue(40 < len(claim_class) < 300,
+                            f"the extracted class is {len(claim_class)} characters, which is not "
+                            f"a claim class; the template's markers moved: {claim_class[:120]!r}")
+            # EXCLUSIVITY, not presence. `assertIn` passed on a bullet that stated the template's
+            # class AND MORE — appending "or about what the harness does with any value the
+            # bundle returns" was green, which is the very widening this coupling exists to
+            # refuse. Compare the rubric bullet's own class span for EQUALITY.
+            opener, closer = "- A claim about ", " is dropped and takes no severity"
+            bullet = [ln for ln in doc.splitlines() if ln.startswith(opener)]
+            self.assertEqual(len(bullet), 1,
+                             f"the rubric must carry exactly one {opener!r} bullet; found "
+                             f"{len(bullet)}")
+            rubric_class, sep3, _ = bullet[0][len(opener):].partition(closer)
+            self.assertTrue(sep3, f"the rubric's drop bullet no longer contains {closer!r}, so "
+                                  f"its class span could not be delimited")
+            self.assertEqual(rubric_class, claim_class,
+                             "the rubric's droppable class is not the template's, character for "
+                             "character; a WIDER class here drops findings the template keeps")
             # The two tie-break sentences decide the ambiguous case, and one direction of each
             # ends the run. A polarity, not prose: pin both, or an inversion ships on a version
             # bump alone.
@@ -225,22 +247,17 @@ class PureVerifyContextTests(unittest.TestCase):
             repo = Path(tmp)
             refs = _verify_node(repo)
             doc = _conductor(repo)._build_pure_verify_context(refs)["severity_rubric_document"]
-        # A VALUE bullet is one opening with a value of the enum — not "any bullet whose first
-        # token is backticked", which counted a legitimate clarifying bullet as a fourth value
-        # and reported "4 value bullets for 3 severities" (round 1's over-refusal probe).
-        def _openers(value: str) -> list[str]:
-            return [ln for ln in doc.splitlines() if ln.startswith(f"- `{value}`:")]
-
-        for sev in sorted(expected):
-            self.assertEqual(len(_openers(sev)), 1,
-                             f"the rubric must open exactly one bullet with `{sev}`:; found "
-                             f"{len(_openers(sev))}")
-        self.assertEqual(sum(len(_openers(s)) for s in VERDICT_SEVERITIES), len(expected),
-                         "the rubric states a value bullet for a severity outside the expected "
-                         "set, or repeats one")
-        self.assertEqual(_openers("none"), [],
-                         "`none` is the pass side; a rubric bullet for it would invite a "
-                         "findings-bearing pass")
+        # A VALUE bullet is one whose opener is `<word>`: — the shape the three value bullets
+        # use. Summing openers over the ENUM (round 1's fix) restored nothing: it could never see
+        # a bullet for a value outside the enum, so `- `fatal`: …` shipped green where the older
+        # count caught it. Collect the openers from the DOCUMENT and compare the set.
+        found = re.findall(r"^- `([a-z_]+)`:", doc, flags=re.MULTILINE)
+        self.assertEqual(sorted(found), sorted(expected),
+                         "the rubric's value bullets are not exactly the enum's failing values; "
+                         "a bullet naming a value the verdict schema refuses would send the "
+                         "reviewer into a schema-repair loop, and a missing one leaves a value "
+                         "unexplained. Note the shape this reads: a NON-value bullet must not "
+                         "open `- `identifier`:` — write it without the colon.")
 
     def test_missing_phase_02_raises_the_named_contract(self) -> None:
         # Same disposition as the checks contract, and for the same reason: "" satisfies the

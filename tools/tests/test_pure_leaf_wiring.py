@@ -24,6 +24,7 @@ from unittest.mock import patch
 os.environ.setdefault("ATMOFAB_DEP_READINESS_ALLOW_PERSISTED_FALLBACK", "1")
 
 import tools.orchestration_runtime as ort
+import tools.workflow_conductor as wc
 import tools.validate_pipeline_semantics as vps
 from tools.orchestration_runtime import (
     build_access_policy_payload,
@@ -715,13 +716,67 @@ class PureRenderTests(unittest.TestCase):
             self.assertIn(name, source, f"{name} is no longer raised by the conductor")
             self.assertIn(name, doc, f"{name} is raised but not spelled for the operator")
 
-    def test_the_generate_verify_skill_assigns_no_severity_of_its_own(self) -> None:
-        # The SKILL graded one G4-class defect `major` inline. On the repair-route axis that
-        # defect is producer-repairable, so the hand-assignment contradicted the rubric it now
-        # points at — and in `dev` the difference is a warm repair versus the end of the run.
-        skill = (Path(ort.__file__).resolve().parents[1]
-                 / "skills" / "workflow-generate-verify" / "SKILL.md").read_text(encoding="utf-8")
-        self.assertNotIn("a `fail` (`major`)", skill)
+    # The three surfaces that tell a `Generate.verify` leaf what to do: the phase contract the
+    # agentic leaf is pointed at, its SKILL, and the pure leaf's launch template. A severity
+    # value spelled beside a checklist item on any of them is a hand-assignment the rubric is
+    # supposed to have replaced.
+    # Each entry is (path, begin marker, end marker); a `None` pair scans the whole file, which
+    # is right for the two surfaces that are nothing but leaf instruction. phase_02 is bounded to
+    # §2-2 — the reviewer's own checklist — because its §Generate-executor prose legitimately
+    # names `Compile.verify`'s V2 `major` while recounting the `pure-5` carve-out, and that is a
+    # statement ABOUT another phase's assignment, not one of this phase's own.
+    _SEVERITY_ASSIGNMENT_SURFACES = (
+        ("docs/workflow/phases/phase_02_generate.md",
+         "### 2-2. Generate.verify substep", "\n## On-failure behavior"),
+        ("skills/workflow-generate-verify/SKILL.md", None, None),
+        ("tools/prompt_templates/pure_generate_verify.txt", None, None),
+    )
+    # A backticked or bolded severity value — the two spellings this repository's hand-assignments actually
+    # use (`skills/workflow-generate-verify/SKILL.md:42` before this branch removed it, and
+    # `docs/workflow/phases/phase_01_compile.md:280`, which is the residual recorded in TODO.md).
+    _SEVERITY_LITERAL_RE = re.compile(r"[`*](minor|major|critical)[`*]")
+
+    def test_no_leaf_surface_hand_assigns_a_severity_outside_the_rubric(self) -> None:
+        """A leaf-read surface may ROUTE on a severity or POINT at the rubric; it may not assign
+        one beside a checklist item.
+
+        PINNED, as a set: on each surface, every line naming a severity value outside the rubric
+        subsection also names `phase_02_generate.md` — i.e. it is a routing or pointer statement.
+        The set is empty of assignments today (measured), so this is emptiness, not an allowlist:
+        a re-introduced hand-assigned `major` beside a G-item is red on any wording, which the previous
+        one-byte-string `assertNotIn` was not.
+        SAMPLED, and the limit worth writing down: only the two SPELLINGS this repository's
+        hand-assignments have actually used are recognised. A severity written as bare prose
+        ("this is a major fail") or in double quotes is not seen — the launch template's own
+        output contract states the enum in double quotes, which is why quotes cannot be in the
+        pattern.
+        """
+        repo_root = Path(ort.__file__).resolve().parents[1]
+        rubric = wc._generate_verify_severity_rubric_section(
+            (repo_root / "docs" / "workflow" / "phases"
+             / "phase_02_generate.md").read_text(encoding="utf-8"))
+        rubric_lines = set(rubric.splitlines())
+        self.assertTrue(any(self._SEVERITY_LITERAL_RE.search(ln) for ln in rubric_lines),
+                        "the rubric names no severity value, so excluding its lines below would "
+                        "exclude nothing and this check would be reading the wrong text")
+        offenders: list[str] = []
+        for rel, begin_marker, end_marker in self._SEVERITY_ASSIGNMENT_SURFACES:
+            text = (repo_root / rel).read_text(encoding="utf-8")
+            if begin_marker is not None:
+                self.assertEqual(text.count(begin_marker), 1, f"{rel}: {begin_marker!r}")
+                self.assertEqual(text.count(end_marker), 1, f"{rel}: {end_marker!r}")
+                begin, end = text.index(begin_marker), text.index(end_marker)
+                self.assertGreater(end, begin, rel)
+                text = text[begin:end]
+            for n, line in enumerate(text.splitlines(), start=1):
+                if line in rubric_lines or not self._SEVERITY_LITERAL_RE.search(line):
+                    continue
+                if "phase_02_generate.md" in line:
+                    continue        # a routing statement that hands the choice to the rubric
+                offenders.append(f"{rel}:{n}: {line[:90]}")
+        self.assertEqual(offenders, [],
+                         "a leaf-read surface assigns a severity outside the rubric; the rubric "
+                         "is the only place a value is chosen:\n" + "\n".join(offenders))
 
     def test_runbook_names_both_dev_verify_fail_closed_reasons_in_the_resume_section(self) -> None:
         """The two `reason_detail` values an operator greps after a `dev` verify stop are
