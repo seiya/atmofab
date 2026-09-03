@@ -661,6 +661,18 @@ class PureRenderTests(unittest.TestCase):
     # code, and the documents are checked against it), so a moved phase doc breaks both together;
     # only the section number is spelled here, having no representation in the code.
     _RUBRIC_SECTION_BY_STEP = {"compile": "§1-2", "generate": "§2-2"}
+    # The repair-route axis AT EACH VALUE'S OWN STATEMENT POSITION
+    # (`atmofab-enforcement-change` rule 3-a, trap 5: an enumeration is coupled element by
+    # element where it is stated, not by "does the token appear somewhere"). `{producer}` is
+    # filled from the step, so the same three phrases must hold in two documents naming two
+    # different producers — the family can fail, and a phrase generated from one constant could
+    # not have. phase_02's bullets are additionally byte-pinned by the pure-prompt drift digest;
+    # phase_01's are not pinned by anything else, which is the asymmetry this closes.
+    _RUBRIC_VALUE_AXIS_PHRASE = {
+        "minor": "the defect lies in",
+        "major": "no re-run of `{producer}` from the same",
+        "critical": "cannot serve as the base of a repair",
+    }
 
     def test_every_routing_statement_points_at_the_severity_rubric(self) -> None:
         """Six documents stated what `issue_severity` CAUSES and none stated how to choose it
@@ -1119,15 +1131,26 @@ class PureRenderTests(unittest.TestCase):
         this, the phase_01 rubric could be re-grounded on the consequence axis (the axis
         `skills/workflow-escalate/SKILL.md` uses, per `TODO.md`) with every other check green.
 
-        PINNED: (a) both slices carry the axis sentence; (b) phase_01's rubric reaches phase_02's
-        ON ONE LINE, which is where the deliberate DISAGREEMENT is explained — the same thin
-        lowering is `minor` at `Compile.verify` and `major` at `Generate.verify`, because
-        `spec.ir.yaml` is the artifact under review in one and an input in the other; (c)
-        phase_01's rubric grades a FAILING finding only, so a `pass`-side rule cannot be smuggled
-        into the span a leaf reads as "how to choose the value".
-        SAMPLED: the tie-break sentences are NOT pinned. A literal pin would prove they survived,
-        not that they agree with the `major` / `critical` bullets, and a pin can pin a
-        contradiction; reading them against the bullets is a manual step of the review loop.
+        PINNED: (a) both slices carry the axis sentence; (b) EACH VALUE BULLET grounds itself on
+        the repair route at its own statement position, with the producer name filled from the
+        step; (c) phase_01's rubric reaches phase_02's ON ONE LINE, which is where the
+        deliberate DISAGREEMENT is explained — the same thin lowering is `minor` at
+        `Compile.verify` and `major` at `Generate.verify`, because `spec.ir.yaml` is the artifact
+        under review in one and an input in the other; (d) phase_01's rubric grades a FAILING
+        finding only, so a `pass`-side rule cannot be smuggled into the span a leaf reads as "how
+        to choose the value".
+        (b) is round 1's: this docstring previously claimed (a) alone stopped a re-grounding on
+        the weight-of-consequence axis, and a reviewer rewrote ALL THREE phase_01 value bullets
+        to that axis, left the lead sentence untouched, and every check in the tree stayed green.
+        The claim was false where it mattered most, because the asymmetry it hid is real —
+        phase_02's bullets are byte-pinned by the pure-prompt drift digest and phase_01's, this
+        branch's own new text, were pinned by nothing.
+        SAMPLED, and both limits are worth writing down: the axis phrase is matched as a LITERAL,
+        so an equivalent rewording of it goes red and the message says which phrase to restore —
+        the examples inside each bullet are free. And the tie-break sentences are NOT pinned: a
+        literal pin would prove they survived, not that they agree with the `major` / `critical`
+        bullets, and a pin can pin a contradiction; reading them against the bullets is a manual
+        step of the review loop.
         """
         repo_root = Path(ort.__file__).resolve().parents[1]
         axis = "`issue_severity` names the repair a finding calls for"
@@ -1140,6 +1163,23 @@ class PureRenderTests(unittest.TestCase):
                               f"states the repair-route axis. Both phases grade on it; a rubric "
                               f"that drops the sentence is free to be read on the "
                               f"weight-of-consequence axis, which routes the run differently.")
+                for value, phrase in self._RUBRIC_VALUE_AXIS_PHRASE.items():
+                    want = phrase.format(producer=f"{step.capitalize()}.generate")
+                    bullet = next((ln for ln in doc.splitlines()
+                                   if ln.startswith(f"- `{value}`:")), None)
+                    self.assertIsNotNone(
+                        bullet,
+                        f"{ort.WORKFLOW_PHASE_DOC_BY_STEP[step]}: no `- `{value}`:` bullet; the "
+                        f"enumeration tests own that, and this check cannot read the axis "
+                        f"without it")
+                    self.assertIn(want, bullet,
+                                  f"{ort.WORKFLOW_PHASE_DOC_BY_STEP[step]}: the `{value}` bullet "
+                                  f"does not ground itself on the repair route — it must contain "
+                                  f"{want!r}. The lead sentence naming the axis is not enough: "
+                                  f"round 1 rewrote all three bullets of phase_01 to the "
+                                  f"weight-of-consequence axis, left the lead alone, and every "
+                                  f"check was green. Reword the EXAMPLES freely; this phrase is "
+                                  f"the axis at the value's own statement position.")
         lead = next((ln for ln in slices["compile"].splitlines() if axis in ln), "")
         self.assertTrue(lead, "phase_01's axis sentence is not on a line of its own slice")
         for token in ("phase_02_generate.md", "§2-2"):
