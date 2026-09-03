@@ -663,15 +663,25 @@ class PureRenderTests(unittest.TestCase):
     _RUBRIC_SECTION_BY_STEP = {"compile": "§1-2", "generate": "§2-2"}
     # The repair-route axis AT EACH VALUE'S OWN STATEMENT POSITION
     # (`atmofab-enforcement-change` rule 3-a, trap 5: an enumeration is coupled element by
-    # element where it is stated, not by "does the token appear somewhere"). `{producer}` is
-    # filled from the step, so the same three phrases must hold in two documents naming two
-    # different producers — the family can fail, and a phrase generated from one constant could
-    # not have. phase_02's bullets are additionally byte-pinned by the pure-prompt drift digest;
-    # phase_01's are not pinned by anything else, which is the asymmetry this closes.
+    # element where it is stated, not by "does the token appear somewhere"). Every phrase is
+    # filled from the step — `{artifact}` is what the substep REVIEWS, `{producer}` is what
+    # re-running would repair — so all three must hold in two documents that name two different
+    # artifacts and two different producers. The family can therefore fail, which a phrase
+    # spelled from one constant could not. phase_02's bullets are additionally byte-pinned by the
+    # pure-prompt drift digest; phase_01's are not pinned by anything else, which is the
+    # asymmetry this closes.
+    # Round 2: `minor` was `"the defect lies in"` — a preposition satisfied by whatever follows
+    # it. Two reviewers independently rewrote phase_01's whole `minor` bullet onto the
+    # weight-of-consequence axis ("the defect lies in the mild end of the consequence scale"),
+    # dropping the artifact, the faithfulness clause and every example, and measured green. A
+    # phrase must carry the axis, not merely open a sentence that could.
+    _RUBRIC_VALUE_AXIS_ARTIFACT = {"compile": "`spec.ir.yaml`",
+                                   "generate": "the sources under review"}
     _RUBRIC_VALUE_AXIS_PHRASE = {
-        "minor": "the defect lies in",
+        "minor": "the defect lies in {artifact}, and `last_fail_reason` names a correction that "
+                 "keeps",
         "major": "no re-run of `{producer}` from the same",
-        "critical": "cannot serve as the base of a repair",
+        "critical": "{artifact} cannot serve as the base of a repair",
     }
 
     def test_every_routing_statement_points_at_the_severity_rubric(self) -> None:
@@ -1218,9 +1228,13 @@ class PureRenderTests(unittest.TestCase):
         step; (c) phase_01's rubric reaches phase_02's ON ONE LINE, which is where the
         deliberate DISAGREEMENT is explained — the same thin lowering is `minor` at
         `Compile.verify` and `major` at `Generate.verify`, because `spec.ir.yaml` is the artifact
-        under review in one and an input in the other; (d) phase_01's rubric grades a FAILING
-        finding only, so a `pass`-side rule cannot be smuggled into the span a leaf reads as "how
-        to choose the value".
+        under review in one and an input in the other; (d) phase_01's rubric names neither
+        `verification_status` nor `` `pass` ``, the two tokens a verdict-side rule would reach
+        for. (d) is a TOKEN ABSENCE and nothing more — round 2 read the earlier wording here ("a
+        `pass`-side rule cannot be smuggled in") as a guarantee and disproved it in one line, by
+        adding a non-value bullet saying a cosmetic finding "records no severity and the substep
+        records the IR as verified". Nothing catches that; the enumeration test governs bullets
+        that OPEN `- `identifier`:` and this one does not. Stated as the limit it is.
         (b) is round 1's: this docstring previously claimed (a) alone stopped a re-grounding on
         the weight-of-consequence axis, and a reviewer rewrote ALL THREE phase_01 value bullets
         to that axis, left the lead sentence untouched, and every check in the tree stayed green.
@@ -1246,7 +1260,9 @@ class PureRenderTests(unittest.TestCase):
                               f"that drops the sentence is free to be read on the "
                               f"weight-of-consequence axis, which routes the run differently.")
                 for value, phrase in self._RUBRIC_VALUE_AXIS_PHRASE.items():
-                    want = phrase.format(producer=f"{step.capitalize()}.generate")
+                    want = phrase.format(
+                        producer=f"{step.capitalize()}.generate",
+                        artifact=self._RUBRIC_VALUE_AXIS_ARTIFACT[step])
                     bullet = next((ln for ln in doc.splitlines()
                                    if ln.startswith(f"- `{value}`:")), None)
                     self.assertIsNotNone(
@@ -1271,6 +1287,18 @@ class PureRenderTests(unittest.TestCase):
                           f"where the two phases' different values for the SAME defect are "
                           f"explained; a leaf that meets one rubric and not the pointer reads "
                           f"the disagreement as an error.")
+        # The DIRECTION of the cross-phase disagreement, not just the pointer to it. This one
+        # sentence is the whole reason the two rubrics may give one defect two values; round 2
+        # inverted it (`major` here and `minor` there) and every check in the tree stayed green,
+        # while the sweep skipped the line as one of phase_01's own rubric lines. Inverted, it
+        # tells a `Compile.verify` leaf to terminalize a `dev` run on the exact defect issue #148
+        # re-graded — issue #142's episode, restored by one word swap.
+        self.assertIn("takes `minor` here and `major` there", lead,
+                      "phase_01 §1-2's lead no longer states WHICH WAY the two phases differ on "
+                      "a thin lowering. `spec.ir.yaml` is the artifact under review at "
+                      "`Compile.verify` and an input at `Generate.verify`, so it is `minor` HERE "
+                      "and `major` THERE; the pointer to phase_02 without the direction leaves a "
+                      "leaf to guess, and the inverted sentence is a run-ending misgrade.")
         for pass_side in ("verification_status", "`pass`"):
             self.assertNotIn(pass_side, slices["compile"],
                              f"phase_01 §1-2's rubric names {pass_side}: the rubric grades a "

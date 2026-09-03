@@ -30518,12 +30518,17 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # `iterative`/`columnwise`, an absent one included. An author cannot predict a
         # finding the doc does not describe. Set from the measured 56463 plus this table's
         # conventional ~150 B of slack, the same rule as the two SKILL entries below.
-        # Bumped 56650->59600 (issue #148): §1-2 gained the `#### Severity of a finding
+        # Bumped 56650->59700 (issue #148): §1-2 gained the `#### Severity of a finding
         # (`issue_severity`)` rubric — the repair-route axis, one bullet per value, and the
         # tie-breaks — which `Compile.verify` had none of, so the two hand-assigned `major`s it
         # carried terminalized a `dev` run on defects `Compile.generate` can repair. Same slack
-        # rule as the entries below: measured 59455 plus this table's conventional ~150 B.
-        "docs/workflow/phases/phase_01_compile.md": 59600,
+        # rule as the entries below: measured 59523 plus this table's conventional ~150 B.
+        # (59600 first, from 59455 measured at the branch's first commit; the review rounds then
+        # corrected the rubric's own prose twice and left the figure stale at 108 B of slack —
+        # under the band this table's own comments call a tripwire. Re-measured at the round-2
+        # HEAD. A ceiling is a record of a measurement, and it goes stale on the commit AFTER the
+        # one that took it.)
+        "docs/workflow/phases/phase_01_compile.md": 59700,
         # Per-substep SKILLs — each force-read by its own LLM leaf.
         # Bumped 10800->11500: Compile.generate now authors the io_contract section (G2 /
         # docs/design/deterministic_followups.md) — it was moved here from Compile.verify so the
