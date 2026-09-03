@@ -581,11 +581,13 @@ class PureRenderTests(unittest.TestCase):
         # satisfy a checklist item looped the producer instead of stopping (round 3).
         self.assertIn("the defect is on the input side — report it, name the input in "
                       "`last_fail_reason`, and let the inlined severity rubric grade it", prompt)
-        # The clause must cover the same subjects the rubric's `major` bullet does. `pure-27`
-        # licensed only "the IR omits or distorts", while the rubric also covers a faithful IR
-        # reproducing a `controlled_spec.md`/`tests.md` contradiction — read as an exhaustive
-        # permission, that left a template-authorized `pass` on a spec-level contradiction.
-        self.assertIn("or those two contradict each other and the IR reproduces both", prompt)
+        # The clause must not RE-ENUMERATE the rubric's `major` cases. `pure-27` listed one of
+        # four and `pure-28` two of four, each time read as an exhaustive permission and each
+        # time leaving a template-authorized `pass` on the cases it omitted; the rubric is
+        # inlined three paragraphs below, so the fix is to defer to it rather than to keep two
+        # lists in step (`docs/DEVELOPMENT.md` §Design Policy).
+        self.assertIn("the rubric's `major` bullet enumerates the cases, and this sentence is "
+                      "not a shorter list than that one", prompt)
         # The refused wording, in the exact spelling this issue removed: it told the reviewer to
         # decide the value from the defect, which is the whole defect.
         self.assertNotIn("the severity the defect warrants", prompt)
@@ -927,6 +929,11 @@ class PureRenderTests(unittest.TestCase):
         " #615c7d56bffa",
         "skills/workflow-generate-verify/SKILL.md: - A finding always sets "
         "`verification_status=fail` (record ` #4a2a99cfe8e9",
+        # `pure-30`: the checklist's input-side clause points at the rubric's `major` bullet
+        # instead of re-enumerating its cases, which is a POINTER — and the gate did its job by
+        # making that new mention be read before it shipped.
+        "tools/prompt_templates/pure_generate_verify.txt: Review checklist (the semantic items "
+        "to judge the bundle aga #13a2cbb5bb66",
     )
 
     def test_no_leaf_surface_hand_assigns_a_severity_outside_the_rubric(self) -> None:

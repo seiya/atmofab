@@ -245,7 +245,17 @@ PINNED: dict[str, str] = {
     # literally, so the contradiction was pinned rather than caught. The tie-break now reads
     # `minor`, which is the same side the first tie-break takes and the side the cost asymmetry
     # argues for: an under-grade spends one repair round, an over-grade ends the `dev` run.
-    "pure-29": "fe832b26c532f3aef26bb485e012dcd889e9ec9b45fa25b3be3bd031c0d887e4",}
+    "pure-29": "fe832b26c532f3aef26bb485e012dcd889e9ec9b45fa25b3be3bd031c0d887e4",
+    # pure-30: the checklist stopped RE-ENUMERATING the rubric's `major` cases and defers to it.
+    # `pure-27` named one of the four, `pure-28` two — each written to fix the previous one, each
+    # read as the exhaustive permission its wording implies ("One kind of finding …"), and each
+    # leaving the reviewer a template-authorized `pass` on the cases it omitted. `pure-28`'s
+    # blind spot was the sharpest: the same commit added a §3-1 arm BECAUSE the rubric's third
+    # case is "`spec.ir.yaml` contradicts the checks-module contract", and did not add that case
+    # to the clause it was widening for that reason. Keeping two lists in step is the twin the
+    # rubric exists to avoid (`docs/DEVELOPMENT.md` §Design Policy), and the rubric is inlined
+    # three paragraphs below the checklist, so the clause now grants the permission and points.
+    "pure-30": "7039408f93b3be3e3fa7d075081cea0eae8c95740fdc9f25e55448a359376c82",}
 
 
 def _contract_tuple() -> dict[str, object]:

@@ -223,6 +223,11 @@ class PureVerifyContextTests(unittest.TestCase):
             # contract-conforming bundle terminalizing the run — on a version bump alone.
             self.assertIn("Every G1-G7 finding whose subject is the generated code takes this "
                           "value", doc)
+            # `ir_inconsistency` is what routes the operator to `reopen-phase --from-phase
+            # compile` (`docs/RUNBOOK.md` §3-1 keys its first arm on that literal), and deleting
+            # the obligation to write it turned only the drift digest red (round 5).
+            self.assertIn("contains the literal `ir_inconsistency` when the input is "
+                          "`spec.ir.yaml`", doc)
             # The rubric grades a FAIL. It must never authorize a pass: a bullet saying an
             # unattributable finding means `pass` is a template-authorized zero-work verdict,
             # and round 5 appended exactly that with only the digest red. Measured: the slice
