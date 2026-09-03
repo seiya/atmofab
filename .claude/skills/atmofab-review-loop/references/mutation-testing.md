@@ -40,6 +40,33 @@ non-observing command cannot pass). Handwriting keeps neither for free. When you
 reproduce both: run the baseline, and compare its COUNT — not its exit status — against what you
 expect, before you believe a single mutant.
 
+## A reviewer mutated the TEST and reported the sweep vacuous (issue #149, 2026-09-03)
+
+The branch added a sweep that scans, among other host literals, `tools/pure_leaf.py`'s
+`PURE_SYSTEM_PROMPT` — the system prompt every pure leaf receives outside its launch prompt — for
+a hand-assigned severity. The constant carries none today, so the block is a growth bound.
+
+Round 1's security axis reported it as **vacuous, unpinned dead machinery**, and named its
+mutation: replace the sweep's own `for line in PURE_SYSTEM_PROMPT.splitlines():` with
+`for line in []:`. Green, as it must be — that edit deletes the loop that produces the finding,
+which is an assertion, and **an assertion you delete cannot fail**. It is the same shape as
+`--include-tests` reverting an ADDED test hunk, written down elsewhere in this file for the
+script and never handed to a reviewer.
+
+The same round's correctness axis mutated the SUBJECT instead — it appended
+``Record `issue_severity=major`.`` to the constant in `tools/pure_leaf.py` — and the sweep was
+RED. The author reproduced the second independently before rejecting the first. Two axes, one
+question, opposite answers, and the disagreement was entirely in the choice of mutant.
+
+**What it cost**: nothing, because a second axis happened to ask the same question properly. Had
+only the first run, the honest response to "this block observes nothing" is to delete the block —
+and the branch would have shipped having removed a real growth bound on a leaf-read host literal,
+justified by a measurement of the wrong thing. That is `atmofab-enforcement-change` rule 1-b's
+failure mode arriving through a reviewer rather than through the author.
+
+**The rule** (SKILL.md, "Running a round"): tell reviewers to mutate the subject, ask for the
+mutation to be named beside any vacuity claim, and re-run the ones that mutated a test.
+
 ## The harness's own scratch paths reddened the baseline (TODO:414, 2026-08-21)
 
 Two of the script's defaults were themselves inputs to the suite under test, and together they

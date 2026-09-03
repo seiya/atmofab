@@ -340,6 +340,14 @@ nor resets the two-consecutive-clean-security-rounds condition.**
   mechanism level; handing over your mutation list breaks independence
 - **Include "build your own mutants that delete one mechanism at a time, run them, and report
   survivors"**
+- **Say "mutate the SUBJECT, not the test", in the launch prompt.** Round 0's rules already state
+  that reverting an added test hunk deletes an assertion and survives by construction, but that is
+  written for the script and reviewers do not read it: on issue #149 a security axis reported a
+  whole sweep as vacuous on the strength of replacing the test's own `for line in CONSTANT:` with
+  `for line in []:` — which of course stayed green. A second axis mutated the CONSTANT in the
+  production module the same round and it was red. **A vacuity claim is only worth the mutation
+  behind it**, so ask for the mutation to be named with the claim, and re-run any that mutated the
+  test rather than the thing the test is about
 - **Spell out the process and shared-resource rules**: no unscoped `pkill`; **create only waits
   whose exit condition can be satisfied, and no background polling**; `/tmp` is a shared tmpfs,
   delete the trees you create. Four accidents happened for real, each spilling into other
@@ -382,6 +390,17 @@ nor resets the two-consecutive-clean-security-rounds condition.**
 - **If the reported HEAD is a hash you do not recognize, find out what commit it is first** —
   the user or another session can commit to the same branch. That is concurrency, not staleness:
   read it and **judge whether it collides with your scope**
+- **When a round's reviewers cannot LAUNCH, the round is not clean and it is not spent.** A
+  subagent that dies to a transport error before its first tool call has reviewed nothing; check
+  the transcript for tool calls rather than reading the failure as a result. Retry once, and if
+  the up-model stays unavailable there are two moves and they are not equal: **convert the axis
+  into an enumerated checklist and delegate it** (that is verifiable work, so the sonnet line
+  applies), or **run it yourself and lose the independence**. Say which you did, in the commit and
+  to the user — an axis run by the author advances neither stopping condition. On issue #149 SEVEN
+  consecutive up-model launches died to HTTP 500 / 529 across two rounds, and the round that
+  recovered did so as a checklist of seventeen named mutations plus five over-refusal probes; what
+  that CANNOT tell you is whether an open-ended attacker would have found an eighteenth, because
+  the list was the author's
 - **Hand over the premises in one paragraph** (`AGENTS.md` §"Development premises" is canonical;
   hand over this short form): "a single-operator research workflow platform. What is defended
   against is a **`leaf shortcut`** — an `LLM` leaf is not malicious and takes shortcuts, so
@@ -494,7 +513,7 @@ same run — it is a reason to re-run the positive verdicts your change actually
 
 ## Delegate verifiable work to sonnet
 
-**Operational conclusion (10 data points; the confound resolved in PR #72 by giving both models
+**Operational conclusion (13 data points; the confound resolved in PR #72 by giving both models
 the same checklist, the axis run as delegated in PR #88): sonnet ⊂ opus, with real misses.** Move **the mechanical-recomputation axis**
 permanently to sonnet and keep judgment on the up-model. Costs came out roughly equal, so "it is
 cheap, so run more" does not hold — **use it only to free up a slot**. Run one via `Agent` with
@@ -523,9 +542,11 @@ numbers" does not give "it matches on parser semantics". **Measure per axis.**
 
 **Tell it to report claims it cannot locate rather than accounting for them** — refusing a false
 premise I had put in its prompt is the most valuable thing this axis has done — and the most
-reproducible, having now happened in five of the ten data points (5, twice on PR #107, on issue #142, and on
-PR #116, where it reported that the ten-item mutant list a commit message referenced was recorded
-nowhere it could find — true, and the thing I would least have checked myself).
+reproducible, having now happened in six of the thirteen data points (5, twice on PR #107, on issue
+#142, on PR #116 — where it reported that the ten-item mutant list a commit message referenced was
+recorded nowhere it could find, true, and the thing I would least have checked myself — and on
+issue #149, where it refused a checklist item of mine asserting a sweep was vacuous, by mutating
+the subject rather than the test and getting RED).
 **This stays an experiment**: collect real/total findings, elapsed time and the overlap count,
 add a data point each time, and delete this section if it stops paying. How to read overlap, how
 not to confound the comparison, and why the reverse (opus reviewing sonnet's implementation) is

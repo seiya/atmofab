@@ -1,6 +1,63 @@
 # Delegating verifiable review work to sonnet: the experiment log
 
-Nine data points. SKILL.md carries the operational conclusion; this is the evidence, newest first.
+Twelve runs narrated here, newest first. SKILL.md counts THIRTEEN, and the extra one is not a
+miscount: PR #116's run is cited there (it reported that a ten-item mutant list a commit message
+referenced was recorded nowhere it could find) and was never written up in this file. Numbering
+skips 10 for that reason. SKILL.md carries the operational conclusion; this is the evidence.
+
+## Data points 11-13 (issue #149 / PR #151, rounds 2 and 3) — three runs, and the first time the axis was load-bearing
+
+**The circumstance is the point.** Five consecutive up-model launches died to HTTP 500 / 529
+before their first tool call (`references/round-conduct.md`), so for two rounds sonnet was not an
+added axis in parallel with opus — it was the only reviewer that ran. That makes these three runs
+evidence about a question the previous nine could not answer: what does the delegation cover when
+it is carrying the round rather than supplementing it?
+
+**11. Census + doc-truth (round 2).** Re-measured every numeric claim in four commit messages and
+the docstrings and matched all of them (74/51, 1303/378, 5685/2949, 31 configurations, the ruff
+histogram at both revisions, 3031/1602 for a stub measurement in a pristine base worktree).
+Reproduced six of twelve stated controls, deliberately including both a RED claim and a green one,
+all six matching. Verified both exemption reasons in the new machinery by mutation. Established
+that a `sys.settrace`-based test measures under `pytest` and under `python3 -m unittest` and leaks
+no tracer. **0 findings, and it named the six controls and the several census rows it did not
+run** rather than accounting for them — the instruction that keeps paying.
+Its one substantive contribution was a REFUSAL, and it is data point five of the same kind:
+handed a checklist item asserting a sweep was vacuous, it mutated the SUBJECT instead of the test
+and reported RED, contradicting the up-model security axis that had reported the opposite
+(`references/mutation-testing.md`).
+
+**12. Attack checklist (round 3, blank-slate).** The security-bypass axis, converted from an
+open-ended brief into seventeen NAMED mutations across three mechanisms plus five over-refusal
+probes, each with a stated expected verdict. Executed all of them; every severity-injection
+attempt in the first three parts was correctly RED, it
+enumerated one helper's field coverage against the renderer's call sites and reported no gap, and
+it correctly classified two results as over-refusals rather than holes plus one as borderline. It
+also checked, unprompted, whether a regex matched a probe string it had been told to use — and
+reported that it did not, which changed why one row was red. **0 holes, 2 over-refusals, 0 false
+positives.**
+**What this run does NOT establish**: the items were the author's. A checklist measures
+the author's imagination with someone else's hands, and that is the whole of the difference
+between this and the axis it replaced.
+
+**13. Disclosure (round 3).** Two jobs — verify every claim in the commit messages at HEAD, and
+read the branch as the next maintainer. 602 s, 61 tool calls (the other two runs' figures were not
+captured). **1 finding, real, found by no other axis**: a sentence in a fix commit's message, and
+its twin in a docstring, spliced two configurations' measurements — "`generate.verify` claimed 42
+lines of which 41 rendered from nothing, one of them the severity-bearing line". It rebuilt both
+configurations at the parent commit and showed 42/41 belongs to `generate.generate`, while the
+line is `generate.verify`'s at 36/35, so no single configuration has both properties. It then
+answered the deletion question properly — enumerated the three assertions the branch removed,
+named each one's successor, red-then-red tested the pairing that mattered, and **reported the one
+residual it could not clear** (a defect shape the removed textual-diff check might have caught
+that the membership check replacing it does not).
+
+**Reading.** The delegation held on all three, including the disclosure brief, which is the least
+mechanical thing it has been given and which produced the round's only defect. What did NOT get
+tested is the line SKILL.md actually draws: the open-ended security brief was converted to a
+checklist rather than delegated as-is, so **"sonnet carried the security axis" is not what
+happened and must not be read out of this**. What happened is that three checklist-shaped axes
+carried a round, and the one finding they produced was a false record — the same descriptive class
+every earlier data point has returned.
 
 ## Data point 9 (issue #142 / PR #144, round 1) — three findings, all real, one overlap
 
