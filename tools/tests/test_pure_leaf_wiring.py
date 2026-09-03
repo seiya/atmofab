@@ -1149,7 +1149,13 @@ class PureRenderTests(unittest.TestCase):
         # contract. The pure template had been here since issue #143 and its agentic counterpart
         # had not; that was survivable while the rubric governed `Generate.verify` alone, and
         # stopped being survivable when this branch put an agentic-only substep under it.
-        # Derived, so the next template added to this directory is covered the day it lands.
+        # This is a COVERAGE SELF-TEST, not a replacement for the tuple: the surfaces above
+        # still list every template by name, and this makes a NEW one red until it is listed.
+        # `c01ddbf`'s message called it "a derivation replacing the list" and said it found "two
+        # more"; both are wrong and round 3 measured it — the commit newly scans FIVE templates,
+        # four of them beyond `substep_agent.txt` (`step_agent.txt` and `common_boilerplate.txt`
+        # as well as the two producer-side ones), and the tuple is still hand-listed. Correcting
+        # here because a commit message cannot be amended once it is not HEAD.
         templates_dir = repo_root / "tools" / "prompt_templates"
         found_templates = {f"tools/prompt_templates/{p.name}"
                            for p in templates_dir.iterdir() if p.suffix == ".txt"}
