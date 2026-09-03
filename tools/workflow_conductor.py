@@ -939,10 +939,21 @@ def _checks_contract_abi_sections(text: str) -> str:
     the contract's sections is a contract change, and it should stop here with a named error rather
     than silently widen the slice. `(?:\\s|$)` keeps `## 1.5` / `## 5.1` from anchoring.
 
+    Both anchors are LINE-ANCHORED and FENCE-UNAWARE: a ``` block containing a line that begins
+    `## 1.` or `## 5.` would anchor, cutting the slice inside the fence. The real document's six
+    fences hold no such line (measured), and only an operator editing `docs/` could introduce one
+    — but a maintainer reading "the `## 5.` heading line" would not otherwise know that a heading
+    QUOTED in an example counts. Section MEMBERSHIP is not re-derived here: what belongs to the
+    slice is pinned by `test_checks_contract_document_is_sections_1_to_4_of_the_real_doc`, which
+    goes red when §2, §3 or §4 leaves the document (measured, all three), rather than by a second
+    enumeration of the contract's structure inside this function.
+
     This slice is a pure-leaf INPUT: changing what it spans — extending the terminator to EOF if
     §5 is ever removed, for instance — changes what the reviewer reads and therefore requires a
-    `PURE_PROMPT_CONTRACT_VERSION` bump (`tools/tests/test_pure_prompt_contract_drift.py` does not
-    cover this function, only the template bytes)."""
+    `PURE_PROMPT_CONTRACT_VERSION` bump. Since issue #142's round 2 the drift guard hashes the
+    slice ITSELF (`tools/tests/test_pure_prompt_contract_drift.py`), so a silent re-slice — an
+    anchor moved here, or the document renumbered so a different section terminates it — now
+    changes the digest instead of shipping unversioned."""
     lines = text.splitlines()
     begin = next((i for i, ln in enumerate(lines)
                   if _CHECKS_CONTRACT_ABI_BEGIN_RE.match(ln)), None)

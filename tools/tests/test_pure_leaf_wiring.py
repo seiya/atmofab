@@ -354,7 +354,8 @@ class PureRenderTests(unittest.TestCase):
         text = ort._render_pure_repair_prompt(req)
         self.assertIn("public :: case_setup, case_run", text)            # the document
         self.assertIn("**Checks-module contract (", text)                # its label
-        self.assertIn("authority for ONE question only", text)           # its scope bound
+        self.assertIn("can only OVERRULE one kind of claim", text)       # its scope bound
+        self.assertIn("Its SILENCE overrules nothing", text)             # ... and its polarity
         self.assertIn("G1 — case coverage", text)                        # what it does NOT narrow
         self.assertIn("do NOT re-check style", text)                     # the gate already ran
         # The lift drops trailing slot lines, so no metavariable ships as a literal token.
@@ -517,18 +518,27 @@ class PureRenderTests(unittest.TestCase):
         # state" reads as "only fail for what the contract states", which hands the reviewer leaf
         # a template-authorized route to a zero-findings `pass` on G1-G7. Pin the narrowing
         # clauses, not merely the fact that the rule is stated.
+        # The load-bearing half is the POLARITY: the contract may overrule a runner-behaviour
+        # claim and its SILENCE may not. Round 2 showed the earlier "contradicts or does not
+        # state" turned §1-4's silence about a wrong `found` into an instruction to drop the only
+        # finding that catches a stub `metric_compute` — so pin the overrule/silence pair in both
+        # statements, not merely that a scope rule is present.
         self.assertIn(
-            "The inlined checks-module contract is the authority for ONE question only — what "
-            "the host-rendered runner does with the RESULT a checks-module callback returns",
+            "The inlined checks-module contract can only OVERRULE one kind of claim — a claim "
+            "about what the host-rendered runner does with the RESULT a checks-module callback "
+            "returns",
             prompt)
         self.assertIn(
-            "It narrows nothing else: G1-G7 below each stay fully in scope, and the contract's "
-            "silence about them is not a licence to pass.",
+            "so drop a finding whose justification the contract CONTRADICTS. Its SILENCE "
+            "overrules nothing: where the contract says nothing, judge the model/checks "
+            "obligation itself as the rule above directs, and G1-G7 below each stay fully in "
+            "scope.",
             prompt)
         self.assertIn(
-            "It is the authority for what the runner does with the RESULT a callback returns, "
-            "and for nothing else — it narrows no checklist item:**",
+            "It can OVERRULE a claim about what the runner does with the RESULT a callback "
+            "returns; its silence overrules nothing and it narrows no checklist item:**",
             prompt)
+        self.assertNotIn("does not state", prompt)  # the fail-open half must not come back
         self.assertLess(prompt.index("IR (authoritative"), prompt.index("Checks-module contract"))
         self.assertLess(prompt.index("Checks-module contract"),
                         prompt.index("Generated CodegenBundle under review"))
