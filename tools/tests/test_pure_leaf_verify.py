@@ -161,7 +161,10 @@ class PureVerifyContextTests(unittest.TestCase):
             refs = _verify_node(repo)
             doc = _conductor(repo)._build_pure_verify_context(refs)["severity_rubric_document"]
             self.assertTrue(doc.startswith("#### Severity of a finding"), doc[:80])
-            self.assertIn("names the repair a finding calls for", doc)
+            self.assertIn("names the repair", doc,
+                          "the rubric's lead sentence no longer says what the value names; this "
+                          "is the witness that the slot carries the RUBRIC and not some other "
+                          "subsection, so a reworded lead sentence means re-reading it here")
             # The rubric restates #142's scope rule as a severity clause, which makes it a THIRD
             # statement of that rule inside phase_02. Pin its polarity POSITIVELY: the sibling
             # `test_phase_02_states_the_scope_rule_with_its_bound` refuses one spelling of the

@@ -651,13 +651,19 @@ class PureRenderTests(unittest.TestCase):
         for rel, sentence in self._RUBRIC_POINTER_SURFACES:
             with self.subTest(surface=rel):
                 text = (repo_root / rel).read_text(encoding="utf-8")
-                self.assertEqual(text.count(sentence), 1,
-                                 f"{rel}: the anchor sentence must occur exactly once, or this "
-                                 f"check is reading a line it did not mean to")
+                found = text.count(sentence)
+                self.assertEqual(found, 1,
+                                 f"{rel}: the anchor sentence {sentence!r} occurs {found} times, "
+                                 f"not once — reworded away at 0, ambiguous above 1; either way "
+                                 f"this check would read a line it did not mean to")
                 line = next(ln for ln in text.splitlines() if sentence in ln)
                 self.assertIn("phase_02_generate.md", line,
-                              f"{rel}: the routing statement does not point at the rubric")
-                self.assertIn("§2-2", line, rel)
+                              f"{rel}: the pointer to the rubric is not on the SAME LINE as the "
+                              f"routing statement (it may well be elsewhere in the file; the "
+                              f"rule is that a reader who meets the routing meets the pointer)")
+                self.assertIn("§2-2", line,
+                              f"{rel}: the pointer on the routing line does not name §2-2, so it "
+                              f"does not reach the rubric")
 
     # Every document that records WHAT the pure reviewer is handed, with the section each
     # statement lives in. Round 0's doc sweep found all three unpinned: reverting any of them
