@@ -712,6 +712,72 @@ class PureRenderTests(unittest.TestCase):
                     self.assertIn(key, section,
                                   f"{rel} no longer records that the reviewer is handed {key}")
 
+    def test_phase_02_is_not_a_generate_leaf_must_read_as_its_own_prose_says(self) -> None:
+        """§Generate-executor states that the agentic leaf is NOT handed the rubric and reaches
+        it through the `SKILL` pointer. That is a claim about `leaf_contract_doc_refs`, so it is
+        driven, not read: if a phase document ever became a `Generate` must-read the sentence
+        would be false in the direction that matters (a maintainer would stop looking for the
+        pointer). The prose is required to say so, and the closed statement is checked against
+        the function.
+        """
+        for m3c in (False, True):
+            with self.subTest(is_m3c_physics=m3c):
+                refs = ort.leaf_contract_doc_refs("generate", is_m3c_physics=m3c)
+                self.assertTrue(refs, "no contract docs at all; this check reads nothing")
+                self.assertNotIn("docs/workflow/phases/phase_02_generate.md", refs)
+        doc = (Path(ort.__file__).resolve().parents[1] / "docs" / "workflow" / "phases"
+               / "phase_02_generate.md").read_text(encoding="utf-8")
+        self.assertIn("The agentic leaf is NOT handed it", doc,
+                      "§Generate-executor no longer says the agentic leaf reaches the rubric by "
+                      "pointer; without that sentence 'this document' reads as the rubric and "
+                      "the reader concludes it is force-read")
+
+    def test_phase_02_warns_its_editor_that_the_last_subsection_is_sliced(self) -> None:
+        """The editing note in §2-2's preamble — outside the slice the reviewer receives — is
+        what tells someone appending a subsection why 26 tests went red. Its two load-bearing
+        names are derived from the code so a rename breaks both together.
+        """
+        doc = (Path(ort.__file__).resolve().parents[1] / "docs" / "workflow" / "phases"
+               / "phase_02_generate.md").read_text(encoding="utf-8")
+        note, _, rest = doc.partition("**Editing note.**")
+        self.assertTrue(rest, "§2-2 carries no editing note")
+        rubric = wc._generate_verify_severity_rubric_section(doc)
+        self.assertNotIn("**Editing note.**", rubric,
+                         "the editing note is INSIDE the slice, so the reviewer is being handed "
+                         "instructions written for a document editor")
+        for name in ("_generate_verify_severity_rubric_section",
+                     "pure_severity_rubric_document_unsliceable",
+                     "PURE_PROMPT_CONTRACT_VERSION"):
+            self.assertIn(name, rest.split("### 2-3")[0],
+                          f"the editing note does not name {name}, so an editor cannot reach "
+                          f"what refuses the edit")
+            self.assertIn(name, (Path(ort.__file__).resolve().parent
+                                 / "workflow_conductor.py").read_text(encoding="utf-8")
+                          if name != "PURE_PROMPT_CONTRACT_VERSION"
+                          else (Path(ort.__file__).resolve().parent
+                                / "pure_leaf.py").read_text(encoding="utf-8"),
+                          f"{name} is named by the editing note but no longer exists in code")
+
+    def test_runbook_names_the_reopen_trigger_field_the_code_actually_reads(self) -> None:
+        """The `ir_inconsistency` arm of §3-1's dev-verify entry sends the operator to run
+        `reopen-phase` BY HAND, and its `--trigger-agent-run-id` is the one parameter that is not
+        obvious. The field name is coupled to the deriver that reads it, so a rename cannot leave
+        the operator following a remedy that half-works.
+        """
+        field = "failed_substep_agent_run_id"
+        source = (Path(ort.__file__).resolve().parent
+                  / "orchestration_runtime.py").read_text(encoding="utf-8")
+        self.assertIn(f'finding.get("{field}")', source,
+                      f"{field} is no longer the field `_derive_resume_directive` reads; the "
+                      f"RUNBOOK remedy below now names the wrong one")
+        runbook = (Path(ort.__file__).resolve().parents[1]
+                   / "docs" / "RUNBOOK.md").read_text(encoding="utf-8")
+        entry = [ln for ln in runbook.splitlines() if "dev_verify_major" in ln]
+        self.assertEqual(len(entry), 1)
+        self.assertIn(field, entry[0],
+                      "the dev-verify entry sends the operator to run `reopen-phase` by hand "
+                      "without naming where its trigger arid comes from")
+
     def test_launch_prompt_reference_spells_both_rubric_fail_closed_names(self) -> None:
         """The two `pure_severity_rubric_document_*` tags reach an operator only through the run
         log and the `pure_context_assembly_failed` outcome, so the reference document is where
