@@ -251,6 +251,21 @@ done
 available (1 hidden fix can be enabled with the --unsafe-fixes option).` — in both cases the count
 is on the line above. Read the full output whenever the last lines differ.
 
+**A FILTER you write over the output is a third thing that can be empty, and an empty-vs-empty
+diff is green.** Issue #149 compared the two sides with
+`ruff check <f> | grep -E "^tools/" | sed … | uniq -c` and diffed the results: ruff's default
+output puts the path on a `-->` continuation line, not at the start of a line, so the filter
+selected NOTHING on either side and the diff printed clean. The branch shipped a commit message
+saying "histogram identical to the baseline" while it had in fact gone 13 -> 22 errors (four new
+`C408`, `RUF012` 3 -> 8), and a review round found it. Two rules, both one line:
+
+- **Assert the filter selected rows on at least one side before you compare.** `[ -s base.txt ]`,
+  or print the row counts beside the diff. A comparison of two empty sets is the same shape as
+  `assertEqual(rule(corpus), set())` for a rule that returns the empty set unconditionally.
+- **Ask for a STABLE format rather than parsing the human one**: `--output-format concise` is one
+  finding per line, `path:line:col: CODE message`, and it does not move between ruff versions the
+  way the default rendering does. `--statistics` is better still where a count is what you want.
+
 **If you want a NUMBER, ask ruff for it: `ruff check --statistics <f>`.** Do not write a counter
 for the occasion. On TODO:269 the count went into the ledger from `ruff check <f> | grep -c
 "^[A-Z][0-9]*"`, where `[0-9]*` matches zero digits, so `No fixes available` and its neighbours

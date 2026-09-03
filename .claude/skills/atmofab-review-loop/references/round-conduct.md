@@ -183,6 +183,37 @@ alone (`origin/main...HEAD` equals stage B's diff). That is the shape the stagin
     keeps working has NOT waited, and the loop is still out there. On PR #81 I noticed
     that mid-session, said so, and still left two behind for the user to find
 
+## When the round's reviewers cannot launch at all (issue #149, 2026-09-03)
+
+Round 2 of issue #149 was launched as the usual two up-model axes. Both died to HTTP 500 / 529.
+Relaunched, both died again; two further attempts at the security axis died too, the second
+carrying an explicit "if you hit a transient error, continue from where you are" clause, and so
+did round 3's blank-slate launch. **Seven consecutive up-model launches across two rounds, and the
+transcripts show no tool calls at all** — the failure lands before the agent's first command, so
+nothing was reviewed and nothing was learned. Round 1's three launches, hours earlier, had all
+succeeded, so this is a window rather than a property of the prompt.
+
+Three things this makes clear, none of which was written down:
+
+- **Read the transcript, not the status.** A launch that failed and a launch that returned nothing
+  look the same in a summary line. The distinction that matters is whether any tool ran; if none
+  did, the round is not spent, and relaunching is not a second round.
+- **The recovery is not free, and the two options differ in what they buy.** Converting the axis
+  into an ENUMERATED CHECKLIST of named mutations makes it verifiable work, which is exactly the
+  line the sonnet delegation is drawn on, so it can be delegated and it will be run properly. What
+  it cannot do is find the attack you did not think of: the list is the author's, so the round
+  measures the author's imagination with someone else's hands. Running the axis YOURSELF is worse
+  on independence and better on nothing.
+- **Say which happened.** Round 2 shipped with its security axis run by the author, stated in the
+  commit message and in the PR body as advancing neither stopping condition. Round 3 recovered a
+  delegated blank-slate attack axis (seventeen enumerated mutations plus five over-refusal probes,
+  no holes) and a disclosure axis (one real record defect, found by nothing else). Writing "round 2 was clean" would have
+  been false in a way no later reader could detect.
+
+The budget question this leaves open: a round that could not launch is not a round, so it does not
+count against round 0 plus three — but the wall-clock and the token cost were spent anyway, and
+the decision to keep paying for retries belongs to the user once the second one fails.
+
 ## Over-refusal: the five countermeasures and where each came from
 
 - **For a change that adds checking machinery, include "construct legitimate work that this check
