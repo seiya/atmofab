@@ -578,8 +578,13 @@ class PureRenderTests(unittest.TestCase):
         # all code-subject, the checklist said "verify only the code-vs-IR semantics", and the
         # rubric's own tie-break sends an unsettled subject to `minor` — so an IR that cannot
         # satisfy a checklist item looped the producer instead of stopping (round 3).
-        self.assertIn("the defect is on the INPUT side — report it, name the input in "
+        self.assertIn("the defect is on the input side — report it, name the input in "
                       "`last_fail_reason`, and let the inlined severity rubric grade it", prompt)
+        # The clause must cover the same subjects the rubric's `major` bullet does. `pure-27`
+        # licensed only "the IR omits or distorts", while the rubric also covers a faithful IR
+        # reproducing a `controlled_spec.md`/`tests.md` contradiction — read as an exhaustive
+        # permission, that left a template-authorized `pass` on a spec-level contradiction.
+        self.assertIn("or those two contradict each other and the IR reproduces both", prompt)
         # The refused wording, in the exact spelling this issue removed: it told the reviewer to
         # decide the value from the defect, which is the whole defect.
         self.assertNotIn("the severity the defect warrants", prompt)

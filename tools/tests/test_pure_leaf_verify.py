@@ -217,6 +217,16 @@ class PureVerifyContextTests(unittest.TestCase):
                           "input, the value is `minor`", doc)
             self.assertIn("do not settle whether the sources under review can serve as the base "
                           "of a repair, the value is `major`", doc)
+            # …and the AXIS the tie-breaks tie-break FOR. Round 4 inverted the lead paragraph to
+            # "the value grades the consequence … One question selects the value: how severe the
+            # consequence of the defect is", kept "names the repair" so the witness above still
+            # passed, and turned only the drift digest red — whose remedy line says to bump the
+            # version, which is what an intentional doc edit does. The axis is the whole rule.
+            self.assertIn("the value does not grade the consequence the defect would have at "
+                          "`Validate`, and the size of the correction does not change it", doc)
+            self.assertIn("One question selects the value: whether `Generate.generate`, re-run "
+                          "with the finding and the same `spec.ir.yaml` and `tests.md`, can "
+                          "resolve the finding", doc)
             # Every literal here must occur in the REAL document, or the assertion is true of any
             # slice and pins nothing (the checks-contract test above records why). Note what is
             # NOT usable as an absent literal: `ir_inconsistency` occurs inside the rubric itself.

@@ -219,12 +219,23 @@ PINNED: dict[str, str] = {
     # steers an unsettled subject to `minor`, so `major` was close to unreachable for this
     # persona: an IR that cannot satisfy a checklist item looped the producer to
     # `MAX_ATTEMPTS_PER_PHASE` instead of stopping with a name the operator can act on. (The
-    # AGENTIC reviewer never had this: its SKILL and phase_02 §On-failure state `ir_inconsistency`
-    # directly — the issue #22 asymmetry again, roles swapped.) The checklist now says the
+    # AGENTIC reviewer never had this: `phase_02` §On-failure behavior states
+    # `ir_inconsistency` directly and its SKILL tells it to catch a requirement the
+    # `spec.ir.yaml` translation dropped or distorted (SKILL.md:18) — the literal itself
+    # occurs 0 times in that SKILL, on this branch and on `origin/main`, and an earlier
+    # version of this note said it was there — the issue #22 asymmetry again, roles swapped.) The checklist now says the
     # input-side finding is the reviewer's to make; the `major` bullet's enumeration becomes the
     # cases the question usually takes rather than a closed list, which left a `tests.md`-only
     # defect the IR faithfully reproduces with no value at all.
-    "pure-27": "14b882c6af0edf1e8d0e525f43c3bd29dbcb079616f7d73e2809114d892d2ecf",}
+    "pure-27": "14b882c6af0edf1e8d0e525f43c3bd29dbcb079616f7d73e2809114d892d2ecf",
+    # pure-28: `pure-27`'s checklist clause was NARROWER than the rubric bullet it routes to. It
+    # licensed one input-side finding — "the IR itself omits or distorts what `controlled_spec.md`
+    # or `tests.md` requires" — while the rubric's `major` also covers a faithful IR reproducing a
+    # `controlled_spec.md`/`tests.md` CONTRADICTION, which is not an omission or a distortion.
+    # Read as an exhaustive permission ("One kind of finding …"), it left the reviewer with a
+    # template-authorized route to `pass` on a spec-level contradiction — the zero-work verdict.
+    # `pure-27` opened the rubric side of exactly this case and did not open the checklist side.
+    "pure-28": "779836ad22d646196b037be001c90ad0a724e2db24ed90814f998de5b4cfe742",}
 
 
 def _contract_tuple() -> dict[str, object]:
