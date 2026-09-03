@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -744,6 +745,22 @@ class PureRenderTests(unittest.TestCase):
             self.assertIn(reason, section,
                           f"§3-1 does not name {reason}, so the operator who greps the "
                           f"reason_detail finds no recovery")
+        # The entry's conclusion — a plain `--resume` injects nothing — is justified by an
+        # ENUMERATION of the resume-directive derivers, and round 1 found that enumeration short
+        # by one (the `_ir` deriver, which the dispatch tries FIRST). Prose that enumerates
+        # entities in the code is checked, not re-measured: the members and the count come from
+        # the module that defines them, so a fifth deriver turns this red NAMING itself.
+        derivers = re.findall(r"^def (_derive_\w*resume_directive)\(",
+                              (Path(ort.__file__).resolve().parent
+                               / "orchestration_runtime.py").read_text(encoding="utf-8"),
+                              flags=re.MULTILINE)
+        self.assertGreater(len(derivers), 1,
+                           "no resume-directive derivers found; this check is reading the wrong "
+                           "module and would pass vacuously")
+        for name in derivers:
+            self.assertIn(name, section,
+                          f"§3-1 justifies its conclusion by enumerating the resume-directive "
+                          f"derivers and does not name {name}")
 
     def test_every_required_pure_context_key_has_exactly_one_template_slot(self) -> None:
         # Structural closure of "a required key with no template slot is silently dropped": the
