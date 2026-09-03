@@ -864,57 +864,64 @@ class PureRenderTests(unittest.TestCase):
             self.assertIn(name, source, f"{name} is no longer raised by the conductor")
             self.assertIn(name, doc, f"{name} is raised but not spelled for the operator")
 
-    # The three surfaces that tell a `Generate.verify` leaf what to do: the phase contract the
-    # agentic leaf is pointed at, its SKILL, and the pure leaf's launch template. A severity
-    # value spelled beside a checklist item on any of them is a hand-assignment the rubric is
-    # supposed to have replaced.
-    # Each entry is (path, begin marker, end marker); a `None` pair scans the whole file, which
-    # is right for the two surfaces that are nothing but leaf instruction. phase_02 is bounded to
-    # §2-2 — the reviewer's own checklist — because its §Generate-executor prose legitimately
-    # names `Compile.verify`'s V2 `major` while recounting the `pure-5` carve-out, and that is a
-    # statement ABOUT another phase's assignment, not one of this phase's own.
+    # Every surface a `Generate.verify` leaf is handed or force-reads. `phase_02` is bounded to
+    # §2-2 (its §Generate-executor prose legitimately names `Compile.verify`'s V2 `major` while
+    # recounting the `pure-5` carve-out); the rest are nothing but leaf instruction.
+    # `AGENT_CONTRACT.md` and `CHECKS_MODULE_CONTRACT.md` are here because
+    # `leaf_contract_doc_refs("generate", …)` force-reads both on either branch, and the checks
+    # contract is ALSO inlined into the pure prompt — a severity written there reaches every
+    # reviewer on both transports.
     _SEVERITY_ASSIGNMENT_SURFACES = (
         ("docs/workflow/phases/phase_02_generate.md",
          "### 2-2. Generate.verify substep", "\n## On-failure behavior"),
         ("skills/workflow-generate-verify/SKILL.md", None, None),
         ("tools/prompt_templates/pure_generate_verify.txt", None, None),
-        # The fourth surface, added by round 3: `docs/AGENT_CONTRACT.md` is the only one of these
-        # FORCE-READ by both transports (`leaf_contract_doc_refs`: "AGENT_CONTRACT.md: every
-        # leaf"), so a severity assigned there reaches every reviewer, and the sweep did not look
-        # at it. A probe inserting `- A verify finding whose subject is a generated source file
-        # is a `fail` (`major`).` after its line 39 — flatly contradicting the rubric's `minor`
-        # bullet — was green before this entry.
         ("docs/AGENT_CONTRACT.md", None, None),
+        ("docs/workflow/CHECKS_MODULE_CONTRACT.md", None, None),
     )
-    # A backticked or bolded severity value — the two spellings this repository's hand-assignments actually
-    # use (`skills/workflow-generate-verify/SKILL.md:42` before this branch removed it, and
-    # `docs/workflow/phases/phase_01_compile.md:280`, which is the residual recorded in TODO.md).
-    _SEVERITY_LITERAL_RE = re.compile(r"[`*](minor|major|critical)[`*]")
+    # A backticked or bolded severity value, or one assigned to the field by name. The second
+    # spelling is round 4's: `` `issue_severity=major` `` is the most natural form for an
+    # instruction that ASSIGNS rather than describes, and the first pattern did not see it.
+    _SEVERITY_LITERAL_RE = re.compile(
+        r"[`*](minor|major|critical)[`*]|issue_severity\s*=\s*[`\"']?(minor|major|critical)")
+    # The lines outside the rubric that may name a severity, normalized to their first 60
+    # characters. This is an ALLOWLIST, deliberately, and it replaced a predicate — "the line
+    # cites the phase doc" and then "cites it with §2-2" — that round 4 broke from both sides in
+    # one round: a hand-assignment written WITH the pointer (`it is a `fail` (`major`) — see
+    # …§2-2`) passed, while correct routing prose about `prod` escalation, and about
+    # `Compile.verify`'s own rule, was refused with a message calling it an assignment. Deciding
+    # "routes" from "assigns" by pattern is the losing line (`atmofab-enforcement-change`
+    # §"when the gate reads the source text"), so the rule is now: a NEW severity mention on a
+    # leaf-read surface is refused until someone reads it and adds it here. That is a review
+    # gate, not a judgment, and adding an entry is one line.
+    _SEVERITY_ROUTING_ALLOWLIST = (
+        "skills/workflow-generate-verify/SKILL.md: "
+        "- A finding always sets `verification_status=fail` (record `",
+        "docs/AGENT_CONTRACT.md: "
+        "- A verify-family finding always sets `verification_status=f",
+    )
 
     def test_no_leaf_surface_hand_assigns_a_severity_outside_the_rubric(self) -> None:
-        """A leaf-read surface may ROUTE on a severity or POINT at the rubric; it may not assign
-        one beside a checklist item.
+        """A leaf-read surface may ROUTE on a severity; it may not assign one beside a checklist
+        item. The rubric is the only place a value is chosen.
 
-        PINNED, as a set: on each surface, every line naming a severity value outside the rubric
-        subsection also names `phase_02_generate.md` — i.e. it is a routing or pointer statement.
-        The set is empty of assignments today (measured), so this is emptiness, not an allowlist:
-        a re-introduced hand-assigned `major` beside a G-item is red on any wording, which the previous
-        one-byte-string `assertNotIn` was not.
-        SAMPLED, and the limit worth writing down: only the two SPELLINGS this repository's
-        hand-assignments have actually used are recognised. A severity written as bare prose
-        ("this is a major fail") or in double quotes is not seen — the launch template's own
-        output contract states the enum in double quotes, which is why quotes cannot be in the
-        pattern.
+        PINNED, as a set: the lines naming a severity outside the rubric, across every surface a
+        `Generate.verify` leaf is handed or force-reads, are EXACTLY the allowlisted routing
+        sentences. A new one — of any wording, with or without a pointer — is red, and the
+        failure says to read it and allowlist it if it routes.
+        SAMPLED, and the limit worth writing down: the SPELLINGS recognised are a backticked or
+        bolded value and `issue_severity=<value>`. A severity in double quotes or in bare prose
+        ("this is a major fail") is not seen; the launch template's own output contract states
+        the enum in double quotes, which is why quotes cannot be in the pattern.
         """
         repo_root = Path(ort.__file__).resolve().parents[1]
-        rubric = wc._generate_verify_severity_rubric_section(
+        rubric_lines = set(wc._generate_verify_severity_rubric_section(
             (repo_root / "docs" / "workflow" / "phases"
-             / "phase_02_generate.md").read_text(encoding="utf-8"))
-        rubric_lines = set(rubric.splitlines())
+             / "phase_02_generate.md").read_text(encoding="utf-8")).splitlines())
         self.assertTrue(any(self._SEVERITY_LITERAL_RE.search(ln) for ln in rubric_lines),
                         "the rubric names no severity value, so excluding its lines below would "
                         "exclude nothing and this check would be reading the wrong text")
-        offenders: list[str] = []
+        found: list[str] = []
         for rel, begin_marker, end_marker in self._SEVERITY_ASSIGNMENT_SURFACES:
             text = (repo_root / rel).read_text(encoding="utf-8")
             if begin_marker is not None:
@@ -923,23 +930,171 @@ class PureRenderTests(unittest.TestCase):
                 begin, end = text.index(begin_marker), text.index(end_marker)
                 self.assertGreater(end, begin, rel)
                 text = text[begin:end]
-            for n, line in enumerate(text.splitlines(), start=1):
+            for line in text.splitlines():
                 if line in rubric_lines or not self._SEVERITY_LITERAL_RE.search(line):
                     continue
-                # A routing statement that hands the CHOICE to the rubric is exempt — but the
-                # exemption is the POINTER, not the file name. Round 3's probe: several ordinary
-                # checklist items already cite `phase_02_generate.md` for unrelated reasons
-                # (`skills/workflow-generate-verify/SKILL.md:44` names it beside the forbidden
-                # `verdict.json` filenames), and inserting the exact byte string the replaced
-                # `assertNotIn` used into one of THOSE lines shipped green. Requiring `§2-2`
-                # narrows the exempt set from 8 lines on the SKILL to 1 — its routing sentence —
-                # plus `AGENT_CONTRACT.md:40` and the template's own rubric label.
-                if "phase_02_generate.md" in line and "§2-2" in line:
-                    continue
-                offenders.append(f"{rel}:{n}: {line[:90]}")
-        self.assertEqual(offenders, [],
-                         "a leaf-read surface assigns a severity outside the rubric; the rubric "
-                         "is the only place a value is chosen:\n" + "\n".join(offenders))
+                found.append(f"{rel}: {line[:60]}")
+        self.assertEqual(sorted(found), sorted(self._SEVERITY_ROUTING_ALLOWLIST),
+                         "the severity mentions on the leaf-read surfaces are not the "
+                         "allowlisted routing sentences. READ each line the diff below adds: if "
+                         "it ROUTES on a value (states what the conductor does with it) or "
+                         "points at the rule that chooses it, add it to "
+                         "`_SEVERITY_ROUTING_ALLOWLIST`; if it ASSIGNS one beside a checklist "
+                         "item, that is the defect issue #143 removed — the rubric is the only "
+                         "place a value is chosen. A line that vanished from the list is a "
+                         "routing statement that was deleted or reworded.")
+
+    def test_phase_02_is_not_a_generate_leaf_must_read_as_its_own_prose_says(self) -> None:
+        """§Generate-executor states that the agentic leaf is NOT handed the rubric and reaches
+        it through the `SKILL` pointer. That is a claim about `leaf_contract_doc_refs`, so it is
+        driven, not read: if a phase document ever became a `Generate` must-read the sentence
+        would be false in the direction that matters (a maintainer would stop looking for the
+        pointer). The prose is required to say so, and the closed statement is checked against
+        the function.
+        """
+        for m3c in (False, True):
+            with self.subTest(is_m3c_physics=m3c):
+                refs = ort.leaf_contract_doc_refs("generate", is_m3c_physics=m3c)
+                self.assertTrue(refs, "no contract docs at all; this check reads nothing")
+                self.assertNotIn("docs/workflow/phases/phase_02_generate.md", refs)
+        doc = (Path(ort.__file__).resolve().parents[1] / "docs" / "workflow" / "phases"
+               / "phase_02_generate.md").read_text(encoding="utf-8")
+        self.assertIn("The agentic leaf is NOT handed it", doc,
+                      "§Generate-executor no longer says the agentic leaf reaches the rubric by "
+                      "pointer; without that sentence 'this document' reads as the rubric and "
+                      "the reader concludes it is force-read")
+
+    def test_phase_02_warns_its_editor_that_the_last_subsection_is_sliced(self) -> None:
+        """The editing note in §2-2's preamble — outside the slice the reviewer receives — is
+        what tells someone appending a subsection why 26 tests went red.
+
+        The reader is the NOTE ITSELF: from `**Editing note.**` to the blank line that ends its
+        paragraph. Round 3 bounded it with `rest.split("### 2-3")[0]`, and `### 2-3` occurs ZERO
+        times in the document, so the split was the identity and the three identifier assertions
+        were satisfied by an occurrence anywhere downstream — two round-4 reviewers independently
+        gutted the note (one replacing it with the OPPOSITE instruction, "you may append
+        subsections freely") and kept the suite green. The bound is self-tested now, as every
+        other reader on this branch already was.
+
+        PINNED: the note states the constraint (that the subsection must stay LAST) and names the
+        three identifiers a reader needs to reach what refuses the edit, each of which must still
+        exist in code. SAMPLED: nothing about the note's phrasing beyond those.
+        """
+        repo_root = Path(ort.__file__).resolve().parents[1]
+        doc = (repo_root / "docs" / "workflow" / "phases"
+               / "phase_02_generate.md").read_text(encoding="utf-8")
+        marker = "**Editing note.**"
+        self.assertEqual(doc.count(marker), 1,
+                         "§2-2 must carry exactly one editing note; without it an editor "
+                         "appending a subsection gets a wall of red with no signal at the site")
+        note = doc.split(marker, 1)[1].split("\n\n", 1)[0]
+        self.assertTrue(note.strip(), "the editing note is empty")
+        self.assertLess(len(note), 1200,
+                        "the editing note ran past its paragraph, so the bound below is reading "
+                        "more than the note")
+        rubric = wc._generate_verify_severity_rubric_section(doc)
+        self.assertNotIn(marker, rubric,
+                         "the editing note is INSIDE the slice, so the reviewer is being handed "
+                         "instructions written for a document editor")
+        self.assertIn("last", note.lower(),
+                      "the editing note does not state the constraint it exists for — that the "
+                      "rubric must stay the LAST subsection of §2-2")
+        sources = {
+            "_generate_verify_severity_rubric_section": "workflow_conductor.py",
+            "pure_severity_rubric_document_unsliceable": "workflow_conductor.py",
+            "PURE_PROMPT_CONTRACT_VERSION": "pure_leaf.py",
+        }
+        for name, module in sources.items():
+            self.assertIn(name, note,
+                          f"the editing note does not name {name}, so an editor cannot reach "
+                          f"what refuses the edit")
+            self.assertIn(name, (Path(ort.__file__).resolve().parent
+                                 / module).read_text(encoding="utf-8"),
+                          f"{name} is named by the editing note but no longer exists in "
+                          f"{module}")
+
+    def test_runbook_reopen_trigger_path_resolves_in_the_artifact_it_names(self) -> None:
+        """The `ir_inconsistency` arm of §3-1's dev-verify entry sends the operator to run
+        `reopen-phase` BY HAND, and `--trigger-agent-run-id` is the one parameter that is not
+        obvious. The path it names is DRIVEN against the artifact of this failure.
+
+        Round 3 wrote `failure_analysis.json#original_finding.failed_substep_agent_run_id` here
+        and pinned it by asserting that string occurs in `orchestration_runtime.py` — which it
+        does, in `_derive_resume_directive`, a CONSUMER the same entry correctly says never fires
+        for this reason. Nothing writes that key on this route: two round-4 reviewers measured it
+        independently, one over the repository (five reads, zero writers) and one over the local
+        `workspace/orchestrations/` corpus (9 `failure_analysis.json`, 0 carrying it). The
+        operator was sent to a key that is never there.
+
+        So this drives the WRITER instead: build the artifact `_collect_failure_analysis`
+        produces for this stop and resolve the documented dotted path against it. A pin on a
+        source substring cannot see this class of defect; a pin on the artifact can.
+        """
+        import tools.run_workflow as rw
+
+        runbook = (Path(ort.__file__).resolve().parents[1]
+                   / "docs" / "RUNBOOK.md").read_text(encoding="utf-8")
+        entry = [ln for ln in runbook.splitlines()
+                 if ln.startswith("- Recovery from a **`conductor_phase_fail_closed` whose "
+                                  "`reason_detail` is `dev_verify_major`")]
+        self.assertEqual(len(entry), 1,
+                         "§3-1 must carry exactly one dev-verify recovery bullet, opening with "
+                         "its own `- Recovery from a …` sentence")
+        documented = re.search(r"`failure_analysis\.json#([A-Za-z0-9_.]+)`", entry[0])
+        self.assertIsNotNone(documented,
+                             "the dev-verify entry no longer names a `failure_analysis.json#…` "
+                             "path for the reopen trigger")
+        path = documented.group(1).split(".")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            oid = "orch_runbook_trigger"
+            ort.init_orchestration(repo_root=repo_root, orchestration_id=oid)
+            root = repo_root / "workspace" / "orchestrations" / oid
+            arid = "ar_generate_verify_001"
+            with (root / "agent_runs.jsonl").open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps({
+                    "agent_run_id": arid, "agent_role": "substep",
+                    "node_key": "problem/shallow_water2d@0.3.0",
+                    "step": "generate", "substep": "verify", "status": "fail",
+                    "started_at": "2026-09-03T00:00:00Z",
+                    "finished_at": "2026-09-03T00:01:00Z",
+                }) + "\n")
+            ort.update_orchestration_status(
+                repo_root=repo_root, orchestration_id=oid, status="fail_closed",
+                reason_code="conductor_phase_fail_closed", reason_detail="dev_verify_major")
+            analysis = rw._collect_failure_analysis(repo_root, oid)
+
+        cursor = analysis
+        for key in path:
+            self.assertIsInstance(cursor, dict,
+                                  f"the documented path {'.'.join(path)} does not resolve in the "
+                                  f"artifact this stop writes: {key!r} has no container")
+            self.assertIn(key, cursor,
+                          f"the dev-verify entry sends the operator to "
+                          f"failure_analysis.json#{'.'.join(path)}, and {key!r} is not a key of "
+                          f"the artifact `_collect_failure_analysis` writes for this stop")
+            cursor = cursor[key]
+        self.assertEqual(cursor, arid,
+                         "the documented path resolves, but not to the failing substep's "
+                         "agent_run_id, so `reopen-phase` would be given the wrong trigger")
+
+    def test_launch_prompt_reference_spells_both_rubric_fail_closed_names(self) -> None:
+        """The two `pure_severity_rubric_document_*` tags reach an operator only through the run
+        log and the `pure_context_assembly_failed` outcome, so the reference document is where
+        they are spelled out — the same argument the checks-contract pair is written under.
+
+        Coupled by requiring each name in BOTH the document and the module that raises it: a
+        rename that touches one side turns this red naming the side that moved.
+        """
+        repo_root = Path(ort.__file__).resolve().parents[1]
+        source = (repo_root / "tools" / "workflow_conductor.py").read_text(encoding="utf-8")
+        doc = (repo_root / "docs" / "workflow"
+               / "LAUNCH_PROMPT_REFERENCE.md").read_text(encoding="utf-8")
+        for name in ("pure_severity_rubric_document_missing",
+                     "pure_severity_rubric_document_unsliceable"):
+            self.assertIn(name, source, f"{name} is no longer raised by the conductor")
+            self.assertIn(name, doc, f"{name} is raised but not spelled for the operator")
 
     _COUNT_WORDS = {1: "one", 2: "two", 3: "three", 4: "four", 5: "five", 6: "six"}
 
