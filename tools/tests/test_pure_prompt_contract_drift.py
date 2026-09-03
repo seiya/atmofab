@@ -22,13 +22,16 @@ The pin set is deliberately NARROW (a churn magnet if widened): the three templa
 fixed `PURE_SYSTEM_PROMPT` (the `--system-prompt` string, a documented version-bump trigger in
 `pure_leaf.py`), the cold-repair static-paragraph prefix list, the checks-ABI constants the
 templates distill verbatim (`CHECKS_PUBLIC_NAMES` and the two character widths), and — since
-issue #142 — the §1-4 slice of `docs/workflow/CHECKS_MODULE_CONTRACT.md` that the reviewer's
-prompt inlines verbatim. That last one is a DOCUMENT, which the bar above would normally exclude;
-it qualifies because those sections stopped being a document the leaf reads and became a document
-the host pastes into the leaf's prompt, which is the same category as the template bytes. §5 is
-outside the slice and therefore outside the pin, so editing the deterministic-gate section costs
-no bump. Every member is a
-STABLE, behavior-defining input (not a churny one); do NOT grow it beyond that bar.
+issue #142 — the §1-4 slice of `docs/workflow/CHECKS_MODULE_CONTRACT.md` and — since issue #143 —
+the `#### Severity of a finding` slice of `docs/workflow/phases/phase_02_generate.md`, both of
+which the reviewer's prompt inlines verbatim. Those last two are DOCUMENTS, which the bar above
+would normally exclude; they qualify because those sections stopped being a document the leaf
+reads and became a document the host pastes into the leaf's prompt, which is the same category as
+the template bytes. Each is hashed as its SLICE, so the rest of its file stays outside the pin:
+editing §5 (the deterministic-gate section) or a G1-G7 checklist item costs no bump. Every member
+is a STABLE, behavior-defining input (not a churny one); do NOT grow it beyond that bar. A third
+document slice needs the same argument made for it — that the host pastes it into a leaf prompt
+and that the leaf's decision depends on it — not this precedent alone.
 
 Every pinned member is either a production constant IMPORTED from its authority
 (`CHECKS_PUBLIC_NAMES`, the status width, the prefixes, `PURE_SYSTEM_PROMPT`) or the template file
@@ -182,7 +185,19 @@ PINNED: dict[str, str] = {
     # pure launch row whose `prompt_contract_version` is not the current one, so an orchestration
     # whose `generate` ran under pure-23 cannot be `--resume`d across this bump. Both are inherent
     # to bumping and neither is new; they are named because a bump is where an operator meets them.
-    "pure-24": "4ae194a27f650d2edc45ed1d7fc3a77cf1a15a7f5481b058963d13ed2745c751",}
+    "pure-24": "4ae194a27f650d2edc45ed1d7fc3a77cf1a15a7f5481b058963d13ed2745c751",
+    # pure-25: the verify template gained a SIXTH data-fenced document,
+    # `<severity_rubric_document>` (the `#### Severity of a finding` subsection of
+    # docs/workflow/phases/phase_02_generate.md §2-2, sliced host-side), and its checklist now
+    # hands the choice of `issue_severity` to that rubric instead of to the leaf ("fail with the
+    # severity the defect warrants" — the wording it replaces) (issue #143). A verdict issued
+    # under pure-24 chose the value with no rule to choose it by, and in `dev` the two upper
+    # values terminalize the run, so the two vintages must stay distinguishable. The same two
+    # known side effects as pure-24 apply, unchanged: `_resolve_exemplar_source` stops offering
+    # exemplars certified at pure-24 or earlier, and an orchestration whose `generate` ran under
+    # pure-24 cannot be `--resume`d across this bump
+    # (`validate_pipeline_semantics._validate_orchestration_hierarchy`).
+    "pure-25": "b929666c3119e3e18cd2500e7d1b5691457990f41fa181f0beead402cd364d56",}
 
 
 def _contract_tuple() -> dict[str, object]:
@@ -206,6 +221,17 @@ def _contract_tuple() -> dict[str, object]:
         "checks_contract_abi_sections": wc._checks_contract_abi_sections(
             (Path(wc.__file__).resolve().parents[1]
              / "docs" / "workflow" / "CHECKS_MODULE_CONTRACT.md").read_text(encoding="utf-8")),
+        # The severity-rubric SLICE of phase_02_generate.md, on the same ground and with the same
+        # scoping (issue #143): since `pure-25` the `#### Severity of a finding` subsection is
+        # inlined verbatim into the reviewer's prompt and is the sole rule for the
+        # `issue_severity` a verdict carries, so it is a leaf INPUT, not a document the leaf
+        # reads. Hashing the slice keeps G1-G7 and the phase's retry policy out of the tuple —
+        # editing a checklist item is not a spurious bump — and makes
+        # `_generate_verify_severity_rubric_section`'s own anchors part of the contract.
+        "generate_verify_severity_rubric_section": wc._generate_verify_severity_rubric_section(
+            (Path(wc.__file__).resolve().parents[1]
+             / "docs" / "workflow" / "phases" / "phase_02_generate.md").read_text(
+                encoding="utf-8")),
     }
 
 
@@ -224,8 +250,9 @@ class PurePromptContractDriftTests(unittest.TestCase):
             "KEEP the existing PINNED entries, and add PINNED['<new-version>'] = '" + computed
             + "' here (its digest must differ from every existing pin — else it is an empty bump).\n"
             "  (2) UNINTENTIONAL drift: revert the edit to the pinned surface "
-            "(the three pure_*.txt templates, PURE_REPAIR_STATIC_PARAGRAPH_PREFIXES, or the "
-            "language backend runner's checks-ABI constants)."
+            "(the three pure_*.txt templates, PURE_REPAIR_STATIC_PARAGRAPH_PREFIXES, the "
+            "language backend runner's checks-ABI constants, or an inlined document slice — "
+            "CHECKS_MODULE_CONTRACT.md §1-4, phase_02_generate.md's severity rubric)."
         )
         self.assertIn(
             PURE_PROMPT_CONTRACT_VERSION, PINNED,

@@ -967,6 +967,59 @@ def _checks_contract_abi_sections(text: str) -> str:
     return "\n".join(lines[begin:end]).rstrip("\n")
 
 
+
+# The `Generate.verify` severity rubric — the `#### Severity of a finding` subsection of
+# `docs/workflow/phases/phase_02_generate.md` §2-2 — as it reaches the pure `generate.verify`
+# reviewer (issue #143). Before it, the routing consequence of `issue_severity` was stated in six
+# documents and the CHOICE of value in none, so a reviewer graded a contract-conforming bundle
+# `major` and the run terminalized `fail_closed`. G1-G7 are outside the slice: they are already
+# the template's own checklist, and re-inlining them would state one rule twice.
+_SEVERITY_RUBRIC_BEGIN_RE = re.compile(r"^#### Severity of a finding(?:\s|$)")
+_SEVERITY_RUBRIC_END_RE = re.compile(r"^## On-failure behavior(?:\s|$)")
+
+
+def _generate_verify_severity_rubric_section(text: str) -> str:
+    """Return the severity rubric of `docs/workflow/phases/phase_02_generate.md` — from the
+    `#### Severity of a finding` heading line (inclusive) to the `## On-failure behavior` heading
+    line (exclusive), trailing blank lines stripped.
+
+    Raises `ValueError` when either anchor is absent, rather than degrading to a shorter or empty
+    slice: the caller turns that into a named fail-closed contract, because a reviewer handed a
+    truncated rubric chooses `issue_severity` by the guess this injection exists to remove.
+
+    The terminator is the LITERAL `## On-failure behavior`, not "the next `##` heading". The
+    rubric is the LAST subsection of §2-2, so a renamed following section is a document change
+    that should stop here with a named error rather than silently run the slice to EOF and hand
+    the reviewer the phase's own retry policy as if it were part of the rubric. `(?:\\s|$)` keeps
+    a longer heading that merely starts with either phrase from anchoring.
+
+    Both anchors are LINE-ANCHORED and FENCE-UNAWARE: a ``` block containing a line that begins
+    `#### Severity of a finding` or `## On-failure behavior` would anchor, cutting the slice
+    inside the fence. The real document holds ZERO fenced blocks (measured), and only an operator
+    editing `docs/` could introduce one. Rubric MEMBERSHIP is not re-derived here: which severity
+    values the slice must state is pinned against the code's own enum by
+    `test_severity_rubric_states_every_verdict_severity_at_its_own_bullet`, rather than by a
+    second enumeration inside this function.
+
+    This slice is a pure-leaf INPUT: changing what it spans changes what the reviewer reads and
+    therefore requires a `PURE_PROMPT_CONTRACT_VERSION` bump. The drift guard hashes the slice
+    ITSELF (`tools/tests/test_pure_prompt_contract_drift.py`), so a silent re-slice changes the
+    digest instead of shipping unversioned."""
+    lines = text.splitlines()
+    begin = next((i for i, ln in enumerate(lines)
+                  if _SEVERITY_RUBRIC_BEGIN_RE.match(ln)), None)
+    if begin is None:
+        raise ValueError(
+            "phase_02_generate.md has no '#### Severity of a finding' subsection heading")
+    end = next((i for i in range(begin + 1, len(lines))
+                if _SEVERITY_RUBRIC_END_RE.match(lines[i])), None)
+    if end is None:
+        raise ValueError(
+            "phase_02_generate.md has no '## On-failure behavior' heading after "
+            "'#### Severity of a finding'")
+    return "\n".join(lines[begin:end]).rstrip("\n")
+
+
 _TRUNCATION_MARKER = "\n…[truncated]"
 
 
@@ -7193,8 +7246,18 @@ clean:
             ValueError and not an OSError), because an empty string would satisfy the renderer's
             presence check and ship a prompt whose ABI section is blank — precisely the blindness
             this injection removes. The caller converts it into a `pure_context_assembly_failed`
-            fail_closed transport outcome; no leaf is spawned."""
-        from tools.orchestration_runtime import CHECKS_MODULE_CONTRACT_REF
+            fail_closed transport outcome; no leaf is spawned.
+
+        The SIXTH document is the `#### Severity of a finding` subsection of
+        `docs/workflow/phases/phase_02_generate.md` §2-2, sliced by
+        `_generate_verify_severity_rubric_section` (issue #143). It carries the same RAISING
+        disposition as the contract slice and for the same reason: a blank rubric satisfies the
+        renderer's presence check and returns the reviewer to choosing `issue_severity` by how
+        heavy the defect looks, which is what terminalized a run on a contract-conforming bundle.
+        The phase-doc path is taken from `WORKFLOW_PHASE_DOC_BY_STEP` rather than restated here,
+        so the reviewer reads the same document the phase contract names."""
+        from tools.orchestration_runtime import (CHECKS_MODULE_CONTRACT_REF,
+                                                 WORKFLOW_PHASE_DOC_BY_STEP)
         def _read(rel: str) -> str:
             try:
                 return (self.repo_root / rel).read_text(encoding="utf-8")
@@ -7211,11 +7274,23 @@ clean:
         except ValueError as exc:
             raise RuntimeError(
                 f"pure_checks_contract_document_unsliceable: {contract_path}: {exc}") from exc
+        phase_doc_path = self.repo_root / WORKFLOW_PHASE_DOC_BY_STEP["generate"]
+        try:
+            phase_doc_text = phase_doc_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            raise RuntimeError(
+                f"pure_severity_rubric_document_missing: {phase_doc_path}: {exc}") from exc
+        try:
+            severity_rubric = _generate_verify_severity_rubric_section(phase_doc_text)
+        except ValueError as exc:
+            raise RuntimeError(
+                f"pure_severity_rubric_document_unsliceable: {phase_doc_path}: {exc}") from exc
         return {
             "controlled_spec_document": _read(f"{refs.spec_path}/controlled_spec.md"),
             "tests_document": _read(f"{refs.spec_path}/tests.md"),
             "ir_document": _read(f"{refs.ir_ref}/spec.ir.yaml"),
             "checks_module_contract_document": contract_abi,
+            "severity_rubric_document": severity_rubric,
             "bundle_document": _read(f"{refs.source_dir()}/codegen_bundle.json"),
         }
 

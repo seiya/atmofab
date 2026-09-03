@@ -12097,7 +12097,8 @@ PURE_CONTEXT_REQUIRED_KEYS: dict[tuple[str, str], tuple[str, ...]] = {
                                "ir_document",
                                "tests_document", "runner_document"),
     ("generate", "verify"): ("controlled_spec_document", "tests_document", "ir_document",
-                             "checks_module_contract_document", "bundle_document"),
+                             "checks_module_contract_document", "severity_rubric_document",
+                             "bundle_document"),
 }
 
 
@@ -12234,12 +12235,16 @@ def _pure_output_contract_text(request_payload: dict[str, Any]) -> str:
 # deterministic gate already settled the ABI, do NOT re-check it" and the contract's scope sentence
 # live) nor the contract's own label. Measured before the fix: label False, ABI verbatim True,
 # scope sentence False, `G1 — case coverage` False.
+# Issue #143 added the severity-rubric label for the same reason once more: `pure_context`
+# re-inlines the rubric into a cold repair, and without its label paragraph the reviewer holds the
+# rubric text with no statement that `issue_severity` is chosen BY it.
 PURE_REPAIR_STATIC_PARAGRAPH_PREFIXES: tuple[str, ...] = (
     "Authoring rules",
     "Review checklist",
     "**Host-rendered runner",
     "**Checks-module behavioral contract",
     "**Checks-module contract (",
+    "**Severity rubric (",
 )
 
 # A line that is nothing but a `<placeholder>` token — the launch template's document slots.

@@ -23,7 +23,7 @@ from zoneinfo import ZoneInfo
 os.environ.setdefault("ATMOFAB_DEP_READINESS_ALLOW_PERSISTED_FALLBACK", "1")
 
 import tools.workflow_conductor as wc
-from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION
+from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION, VERDICT_SEVERITIES
 from tools.tests.test_pure_leaf_producer import (
     _NODE, _SPEC_ID, _write_node, _PureFakeConductor, _valid_bundle, _envelope, _conductor,
 )
@@ -40,19 +40,22 @@ def _verdict(status: str = "pass", *, severity: str | None = None,
             "findings": findings or [{"summary": "mass is not conserved"}]}
 
 
-# The real checks-module contract, copied into each fixture repo. Deliberately the REAL document
-# and not a synthetic stand-in: every reviewer-loop test below renders the live slice, so a
-# reorganization of the document that `_checks_contract_abi_sections` cannot cut turns this whole
-# file red — the early warning that a billed run would otherwise be the first to give.
-# `ChecksContractSlicerTests` covers the helper's own contract on synthetic text.
+# The two real documents the reviewer context slices, copied into each fixture repo. Deliberately
+# the REAL documents and not synthetic stand-ins: every reviewer-loop test below renders the live
+# slices, so a reorganization either slicer cannot cut turns this whole file red — the early
+# warning that a billed run would otherwise be the first to give. `ChecksContractSlicerTests` and
+# `SeverityRubricSlicerTests` cover the two helpers' own contracts on synthetic text.
 _REAL_CHECKS_CONTRACT = (
     Path(wc.__file__).resolve().parents[1] / "docs" / "workflow" / "CHECKS_MODULE_CONTRACT.md")
+_REAL_PHASE_02 = (Path(wc.__file__).resolve().parents[1]
+                  / "docs" / "workflow" / "phases" / "phase_02_generate.md")
 
 
-def _verify_node(repo: Path, *, stage_checks_contract: bool = True) -> wc.NodeRefs:
+def _verify_node(repo: Path, *, stage_checks_contract: bool = True,
+                 stage_phase_02: bool = True) -> wc.NodeRefs:
     """A pure node with the producer's codegen_bundle.json already on disk (the reviewer input),
-    and — unless `stage_checks_contract=False` — the repository's checks-module contract staged
-    where `_build_pure_verify_context` reads it."""
+    and — unless the corresponding `stage_*` argument is False — the repository's checks-module
+    contract and phase_02 contract staged where `_build_pure_verify_context` reads them."""
     refs = _write_node(repo)
     src = repo / refs.source_dir()
     src.mkdir(parents=True, exist_ok=True)
@@ -64,6 +67,10 @@ def _verify_node(repo: Path, *, stage_checks_contract: bool = True) -> wc.NodeRe
         dest = repo / "docs" / "workflow" / "CHECKS_MODULE_CONTRACT.md"
         dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(_REAL_CHECKS_CONTRACT, dest)
+    if stage_phase_02:
+        dest = repo / "docs" / "workflow" / "phases" / "phase_02_generate.md"
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(_REAL_PHASE_02, dest)
     return refs
 
 
@@ -71,7 +78,7 @@ def _verify_node(repo: Path, *, stage_checks_contract: bool = True) -> wc.NodeRe
 # _build_pure_verify_context
 # ======================================================================================
 class PureVerifyContextTests(unittest.TestCase):
-    def test_context_has_the_five_verify_keys(self) -> None:
+    def test_context_has_the_six_verify_keys(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = _verify_node(repo)
@@ -79,7 +86,7 @@ class PureVerifyContextTests(unittest.TestCase):
             self.assertEqual(set(ctx),
                              {"controlled_spec_document", "tests_document",
                               "ir_document", "checks_module_contract_document",
-                              "bundle_document"})
+                              "severity_rubric_document", "bundle_document"})
             self.assertIn("conserves mass", ctx["controlled_spec_document"])
             self.assertIn("bundle_schema_version", ctx["bundle_document"])
 
@@ -144,6 +151,108 @@ class PureVerifyContextTests(unittest.TestCase):
                 _conductor(repo)._build_pure_verify_context(refs)
             self.assertIn("pure_checks_contract_document_unsliceable", str(cm.exception))
 
+    def test_severity_rubric_document_is_the_rubric_subsection_of_the_real_phase_02(self) -> None:
+        # issue #143: the reviewer receives §2-2's severity rubric and nothing else of phase_02.
+        # What is pinned is the SPAN — the subsection heading opens it, its own bullets are
+        # inside, and the checklist above it and the retry policy below it are out.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = _verify_node(repo)
+            doc = _conductor(repo)._build_pure_verify_context(refs)["severity_rubric_document"]
+            self.assertTrue(doc.startswith("#### Severity of a finding"), doc[:80])
+            self.assertIn("names the repair a finding calls for", doc)
+            # The rubric restates #142's scope rule as a severity clause, which makes it a THIRD
+            # statement of that rule inside phase_02. Pin its polarity POSITIVELY: the sibling
+            # `test_phase_02_states_the_scope_rule_with_its_bound` refuses one spelling of the
+            # fail-open ("the contract does not state is out of scope"), and a negative phrase
+            # pin stops catching the moment the sentence is reworded.
+            self.assertIn("is dropped and takes no severity when the checks-module contract "
+                          "contradicts it", doc)
+            self.assertIn("Where the contract is silent, the finding stands and takes the value "
+                          "its subject earns", doc)
+            # Every literal here must occur in the REAL document, or the assertion is true of any
+            # slice and pins nothing (the checks-contract test above records why). Note what is
+            # NOT usable as an absent literal: `ir_inconsistency` occurs inside the rubric itself.
+            real = _REAL_PHASE_02.read_text(encoding="utf-8")
+            for absent in ("#### G7. dependency consistency",
+                           "See the `verify` `SKILL`.",
+                           "## On-failure behavior",
+                           "A `Generate fail` retry defaults to an in-phase retry."):
+                self.assertIn(absent, real, f"{absent!r} no longer occurs in the document, so "
+                                            f"asserting its absence from the slice pins nothing")
+                self.assertNotIn(absent, doc)
+
+    def test_severity_rubric_states_every_verdict_severity_at_its_own_bullet(self) -> None:
+        """Enumeration coupling (`atmofab-enforcement-change` rule 3-a): the rubric must state
+        each severity the CODE accepts, at its own bullet, and state no other.
+
+        PINNED: that every member of `VERDICT_SEVERITIES` except the pass-side `none` opens
+        exactly one `- `<value>`:` bullet of the slice, and that the bullet count equals that
+        membership — so a value added to the enum, or a bullet deleted from the document, is red
+        and NAMES the value. The count comes from the code; the document is checked against it.
+        SAMPLED: nothing about what each bullet SAYS — the wording is prose a leaf reads, and
+        `test_severity_rubric_document_is_the_rubric_subsection_of_the_real_phase_02` pins only
+        the span. `none` has no named constant of its own (the pass side is the bare literal in
+        `pure_leaf.validate_verdict`), so its exclusion is self-tested against the tuple rather
+        than written out."""
+        self.assertIn("none", VERDICT_SEVERITIES,
+                      "the pass-side literal left the enum; the exclusion below now removes "
+                      "nothing and the count would be off by one")
+        expected = set(VERDICT_SEVERITIES) - {"none"}
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = _verify_node(repo)
+            doc = _conductor(repo)._build_pure_verify_context(refs)["severity_rubric_document"]
+        bullets = [ln for ln in doc.splitlines() if ln.startswith("- `")]
+        for sev in sorted(expected):
+            opening = [ln for ln in bullets if ln.startswith(f"- `{sev}`:")]
+            self.assertEqual(len(opening), 1,
+                             f"the rubric must open exactly one bullet with `{sev}`:; found "
+                             f"{len(opening)}")
+        self.assertEqual(len(bullets), len(expected),
+                         f"the rubric states {len(bullets)} value bullets for "
+                         f"{len(expected)} severities")
+        self.assertEqual([ln for ln in bullets if ln.startswith("- `none`")], [],
+                         "`none` is the pass side; a rubric bullet for it would invite a "
+                         "findings-bearing pass")
+
+    def test_missing_phase_02_raises_the_named_contract(self) -> None:
+        # Same disposition as the checks contract, and for the same reason: "" satisfies the
+        # renderer's presence check and would ship a reviewer prompt whose rubric is blank.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = _verify_node(repo, stage_phase_02=False)
+            with self.assertRaises(RuntimeError) as cm:
+                _conductor(repo)._build_pure_verify_context(refs)
+            self.assertIn("pure_severity_rubric_document_missing", str(cm.exception))
+
+    def test_non_utf8_phase_02_raises_the_named_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = _verify_node(repo)
+            (repo / "docs" / "workflow" / "phases" / "phase_02_generate.md").write_bytes(
+                b"#### Severity of a finding\n\xff\xfe\n## On-failure behavior\n")
+            with self.assertRaises(RuntimeError) as cm:
+                _conductor(repo)._build_pure_verify_context(refs)
+            self.assertIn("pure_severity_rubric_document_missing", str(cm.exception))
+
+    def test_unsliceable_phase_02_raises_the_named_contract(self) -> None:
+        # A readable document whose anchors moved is a DIFFERENT diagnosis from an absent one:
+        # the operator's repair is the document's headings, not a missing file. Driven by the
+        # REAL document with its terminator heading removed, so the fixture is the failure an
+        # operator would actually produce.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = _verify_node(repo)
+            real = _REAL_PHASE_02.read_text(encoding="utf-8")
+            self.assertIn("\n## On-failure behavior\n", real)
+            (repo / "docs" / "workflow" / "phases" / "phase_02_generate.md").write_text(
+                real.replace("\n## On-failure behavior\n", "\n## Retry policy\n"),
+                encoding="utf-8")
+            with self.assertRaises(RuntimeError) as cm:
+                _conductor(repo)._build_pure_verify_context(refs)
+            self.assertIn("pure_severity_rubric_document_unsliceable", str(cm.exception))
+
 
 # ======================================================================================
 # _checks_contract_abi_sections (the slicer's own contract, on synthetic text)
@@ -190,13 +299,58 @@ class ChecksContractSlicerTests(unittest.TestCase):
 
 
 # ======================================================================================
+# _generate_verify_severity_rubric_section (the slicer's own contract, on synthetic text)
+# ======================================================================================
+class SeverityRubricSlicerTests(unittest.TestCase):
+    _DOC = ("# Title\n\npreamble\n\n"
+            "#### G7. dependency consistency\ng7 body\n\n"
+            "#### Severity of a finding (`issue_severity`)\nlead sentence\n"
+            "- `minor`: m\n\n"
+            "## On-failure behavior\nretry body\n")
+
+    def test_keeps_the_subsection_and_drops_the_checklist_and_on_failure(self) -> None:
+        self.assertEqual(
+            wc._generate_verify_severity_rubric_section(self._DOC),
+            "#### Severity of a finding (`issue_severity`)\nlead sentence\n- `minor`: m")
+
+    def test_missing_begin_anchor_raises(self) -> None:
+        with self.assertRaises(ValueError):
+            wc._generate_verify_severity_rubric_section(
+                "#### G7. x\nbody\n\n## On-failure behavior\nb\n")
+
+    def test_missing_end_anchor_raises(self) -> None:
+        # Degrading to "everything after the heading" would hand the reviewer the phase's own
+        # retry policy as if it were part of the rubric.
+        with self.assertRaises(ValueError):
+            wc._generate_verify_severity_rubric_section(
+                "#### Severity of a finding\n- `minor`: m\n")
+
+    def test_a_longer_heading_that_merely_starts_with_the_phrase_does_not_anchor(self) -> None:
+        # `(?:\s|$)` is the word boundary: `#### Severity of a findings table` is a different
+        # subsection, and anchoring on it would slice a document the rubric is not in.
+        with self.assertRaises(ValueError):
+            wc._generate_verify_severity_rubric_section(
+                "#### Severity of a findingsTable\nbody\n\n## On-failure behavior\nb\n")
+
+    def test_an_end_anchor_before_the_begin_anchor_is_not_counted(self) -> None:
+        # The end search starts AFTER the begin index; a back-reference above the heading must
+        # not produce an empty (or reversed) slice.
+        doc = ("## On-failure behavior\nearly\n\n#### Severity of a finding\n- `minor`: m\n\n"
+               "## On-failure behavior\nretry body\n")
+        self.assertEqual(wc._generate_verify_severity_rubric_section(doc),
+                         "#### Severity of a finding\n- `minor`: m")
+
+
+# ======================================================================================
 # _run_pure_verify_substep: happy path, fail verdict, repair, exhaustion, transport
 # ======================================================================================
 class PureVerifySubstepTests(unittest.TestCase):
-    def _run(self, envelopes, *, cls=_PureFakeConductor, stage_checks_contract=True):
+    def _run(self, envelopes, *, cls=_PureFakeConductor, stage_checks_contract=True,
+             stage_phase_02=True):
         self._tmp = tempfile.TemporaryDirectory()
         repo = Path(self._tmp.name)
-        refs = _verify_node(repo, stage_checks_contract=stage_checks_contract)
+        refs = _verify_node(repo, stage_checks_contract=stage_checks_contract,
+                            stage_phase_02=stage_phase_02)
         (repo / "workspace" / "orchestrations" / "o").mkdir(parents=True, exist_ok=True)
         c = cls(repo_root=repo, orchestration_id="o", orchestration_agent_run_id="orch",
                 llm_config=_cfg("claude"), env={})
@@ -246,6 +400,24 @@ class PureVerifySubstepTests(unittest.TestCase):
         self.assertEqual(len(events), 1, c.events)
         self.assertEqual(events[0]["node_key"], refs.node_key)
         self.assertIn("pure_checks_contract_document_missing", events[0]["detail"])
+
+    def test_a_missing_severity_rubric_is_the_same_recorded_fail_closed_outcome(self) -> None:
+        """Twin of the test above for the SECOND sliced document (issue #143).
+
+        The builder reads the checks contract first, so the assertion above would still pass with
+        the rubric read deleted — the contract's own name reaches the outcome either way. This
+        drives the second read on its own: contract staged, phase_02 absent.
+        """
+        c, refs, oc = self._run([_envelope(_verdict("pass"))], stage_phase_02=False)
+        self.assertEqual(oc.status, "fail")
+        self.assertEqual(oc.infra_error[0], "pure_context_assembly_failed")
+        self.assertIn("pure_severity_rubric_document_missing", oc.infra_error[1])
+        self.assertEqual(getattr(c, "_spawn", 0), 0)  # no leaf was billed
+        base = c.repo_root / refs.source_dir()
+        self.assertFalse((base / "source_meta.json").exists())
+        events = [e for e in c.events if e["event"] == "pure_context_assembly_failed"]
+        self.assertEqual(len(events), 1, c.events)
+        self.assertIn("pure_severity_rubric_document_missing", events[0]["detail"])
 
     def test_the_reviewer_loop_takes_its_launch_instant_from_the_filesystem(self) -> None:
         """Mirror of the producer's #113 pin — one witness per OCCURRENCE, not per rule.
