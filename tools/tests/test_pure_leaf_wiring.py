@@ -930,8 +930,14 @@ class PureRenderTests(unittest.TestCase):
         for rel, begin_marker, end_marker in self._SEVERITY_ASSIGNMENT_SURFACES:
             text = (repo_root / rel).read_text(encoding="utf-8")
             if begin_marker is not None:
-                self.assertEqual(text.count(begin_marker), 1, f"{rel}: {begin_marker!r}")
-                self.assertEqual(text.count(end_marker), 1, f"{rel}: {end_marker!r}")
+                self.assertEqual(text.count(begin_marker), 1,
+                                 f"{rel}: {begin_marker!r} is not a unique heading, so this scan "
+                                 f"would read the wrong span. It is a hardcoded bound of this "
+                                 f"check: renaming the heading means updating "
+                                 f"`_SEVERITY_ASSIGNMENT_SURFACES` too")
+                self.assertEqual(text.count(end_marker), 1,
+                                 f"{rel}: {end_marker!r} is not a unique heading; same bound, "
+                                 f"same repair")
                 begin, end = text.index(begin_marker), text.index(end_marker)
                 self.assertGreater(end, begin, rel)
                 text = text[begin:end]
@@ -1135,10 +1141,16 @@ class PureRenderTests(unittest.TestCase):
             self.assertIn(reason, section,
                           f"§3-1 does not name {reason}, so the operator who greps the "
                           f"reason_detail finds no recovery")
-        bullets = [ln for ln in section.splitlines() if "dev_verify_major" in ln]
+        # Select by the bullet's OPENING, not by the token: the entry mentions `dev_verify_major`
+        # twice on its own line (the second is the `Compile.verify` scoping), so a token count
+        # reported "found 2" for any reformat that split the bullet across lines — a message that
+        # misdescribes the edit (round 4's over-refusal probe).
+        opener = "- Recovery from a **`conductor_phase_fail_closed` whose `reason_detail` is "
+        bullets = [ln for ln in section.splitlines() if ln.startswith(opener)]
         self.assertEqual(len(bullets), 1,
-                         f"§3-1 must carry exactly one `dev_verify_major` bullet; found "
-                         f"{len(bullets)}")
+                         f"§3-1 must carry exactly one bullet opening {opener!r}; found "
+                         f"{len(bullets)}. Splitting the entry across lines needs this bound "
+                         f"updated — the enumeration below is read from the opening line")
         entry = bullets[0]
         derivers = re.findall(r"^def (_derive_\w*resume_directive)\(",
                               (Path(ort.__file__).resolve().parent
