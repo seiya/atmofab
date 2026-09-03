@@ -351,6 +351,29 @@ class SeverityRubricSlicerTests(unittest.TestCase):
             wc._generate_verify_severity_rubric_section(
                 "#### Severity of a finding\n- `minor`: m\n")
 
+    def test_a_subsection_appended_after_the_rubric_raises(self) -> None:
+        # Round 2's probe: a new `#### …` subsection between the rubric and `## On-failure
+        # behavior` was ABSORBED into the slice and shipped to the reviewer inside a fence
+        # labelled "choose `issue_severity` by it" — green everywhere but the drift digest, whose
+        # remedy line then tells the maintainer to bump the version. The slice now ends at the
+        # first heading and refuses one that is not the expected terminator, by name.
+        doc = self._DOC.replace(
+            "\n## On-failure behavior",
+            "\n#### Recording a finding\n- Each `findings[]` entry names its checklist item.\n"
+            "\n## On-failure behavior")
+        with self.assertRaises(ValueError) as cm:
+            wc._generate_verify_severity_rubric_section(doc)
+        self.assertIn("Recording a finding", str(cm.exception))
+        self.assertIn("last subsection", str(cm.exception))
+
+    def test_a_renamed_following_section_still_raises_by_name(self) -> None:
+        # The other half: ending at the first heading must not turn a RENAMED terminator into a
+        # silent success. The named error is what tells an operator which document to repair.
+        doc = self._DOC.replace("## On-failure behavior", "## Retry policy")
+        with self.assertRaises(ValueError) as cm:
+            wc._generate_verify_severity_rubric_section(doc)
+        self.assertIn("Retry policy", str(cm.exception))
+
     def test_a_longer_heading_that_merely_starts_with_the_phrase_does_not_anchor(self) -> None:
         # `(?:\s|$)` is the word boundary: `#### Severity of a findings table` is a different
         # subsection, and anchoring on it would slice a document the rubric is not in.

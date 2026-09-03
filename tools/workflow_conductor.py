@@ -976,6 +976,7 @@ def _checks_contract_abi_sections(text: str) -> str:
 # the template's own checklist, and re-inlining them would state one rule twice.
 _SEVERITY_RUBRIC_BEGIN_RE = re.compile(r"^#### Severity of a finding(?:\s|$)")
 _SEVERITY_RUBRIC_END_RE = re.compile(r"^## On-failure behavior(?:\s|$)")
+_ANY_MARKDOWN_HEADING_RE = re.compile(r"^#{1,6} ")
 
 
 def _generate_verify_severity_rubric_section(text: str) -> str:
@@ -987,11 +988,16 @@ def _generate_verify_severity_rubric_section(text: str) -> str:
     slice: the caller turns that into a named fail-closed contract, because a reviewer handed a
     truncated rubric chooses `issue_severity` by the guess this injection exists to remove.
 
-    The terminator is the LITERAL `## On-failure behavior`, not "the next `##` heading". The
-    rubric is the LAST subsection of §2-2, so a renamed following section is a document change
-    that should stop here with a named error rather than silently run the slice to EOF and hand
-    the reviewer the phase's own retry policy as if it were part of the rubric. `(?:\\s|$)` keeps
-    a longer heading that merely starts with either phrase from anchoring.
+    The slice ends at the FIRST heading after the rubric, and that heading must be the literal
+    `## On-failure behavior` — anything else raises. Both halves are load-bearing and each closes
+    a different hole. Terminating on the first heading refuses ABSORPTION: with a literal-only
+    terminator, a subsection appended to §2-2 between the rubric and `## On-failure behavior` was
+    swallowed into the slice and shipped to the reviewer inside a fence labelled "choose
+    `issue_severity` by it", caught by nothing but the drift digest — whose own remedy line tells
+    a maintainer to bump the version, which is exactly what a maintainer making an intentional doc
+    edit does. Requiring that heading to be the expected one keeps the NAMED error for a renamed
+    or reordered following section, instead of silently accepting whatever now follows.
+    `(?:\\s|$)` keeps a longer heading that merely starts with either phrase from anchoring.
 
     Both anchors are LINE-ANCHORED and FENCE-UNAWARE: a ``` block containing a line that begins
     `#### Severity of a finding` or `## On-failure behavior` would anchor, cutting the slice
@@ -1012,11 +1018,16 @@ def _generate_verify_severity_rubric_section(text: str) -> str:
         raise ValueError(
             "phase_02_generate.md has no '#### Severity of a finding' subsection heading")
     end = next((i for i in range(begin + 1, len(lines))
-                if _SEVERITY_RUBRIC_END_RE.match(lines[i])), None)
+                if _ANY_MARKDOWN_HEADING_RE.match(lines[i])), None)
     if end is None:
         raise ValueError(
             "phase_02_generate.md has no '## On-failure behavior' heading after "
             "'#### Severity of a finding'")
+    if not _SEVERITY_RUBRIC_END_RE.match(lines[end]):
+        raise ValueError(
+            "phase_02_generate.md: the heading after '#### Severity of a finding' is "
+            f"{lines[end]!r}, not '## On-failure behavior'; the rubric must stay the last "
+            "subsection of §2-2 or the slice would carry text that is not the rubric")
     return "\n".join(lines[begin:end]).rstrip("\n")
 
 
