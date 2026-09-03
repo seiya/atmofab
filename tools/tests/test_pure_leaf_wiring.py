@@ -11,6 +11,7 @@ pipeline-semantics launch-record sweep's pure checks.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -765,13 +766,22 @@ class PureRenderTests(unittest.TestCase):
         self.assertLess(len(note), 1200,
                         "the editing note ran past its paragraph, so the bound below is reading "
                         "more than the note")
+        # Stated because it is enforced: the reader is the FIRST paragraph after the marker, so
+        # a note split into two paragraphs loses whatever is in the second. Round 5 reworded it
+        # into two DOC_STYLE-compliant paragraphs and was told a name was missing that was not.
+        self.assertNotIn("\n\n", note.strip(),
+                         "the editing note must be ONE paragraph — this check reads the "
+                         "paragraph that follows the marker, so anything after a blank line is "
+                         "invisible to it and to the reader who stops at the first paragraph")
         rubric = wc._generate_verify_severity_rubric_section(doc)
         self.assertNotIn(marker, rubric,
                          "the editing note is INSIDE the slice, so the reviewer is being handed "
                          "instructions written for a document editor")
-        self.assertIn("last", note.lower(),
-                      "the editing note does not state the constraint it exists for — that the "
-                      "rubric must stay the LAST subsection of §2-2")
+        self.assertIn("must stay the LAST subsection of §2-2", note,
+                      "the editing note does not state the constraint it exists for. Round 5 "
+                      "satisfied the earlier `\"last\" in note.lower()` check with the words "
+                      "\"last revised\" while telling the editor the OPPOSITE — that subsections "
+                      "may be appended freely — so the phrase is pinned, not the token")
         sources = {
             "_generate_verify_severity_rubric_section": "workflow_conductor.py",
             "pure_severity_rubric_document_unsliceable": "workflow_conductor.py",
@@ -807,13 +817,11 @@ class PureRenderTests(unittest.TestCase):
 
         runbook = (Path(ort.__file__).resolve().parents[1]
                    / "docs" / "RUNBOOK.md").read_text(encoding="utf-8")
-        entry = [ln for ln in runbook.splitlines()
-                 if ln.startswith("- Recovery from a **`conductor_phase_fail_closed` whose "
-                                  "`reason_detail` is `dev_verify_major`")]
-        self.assertEqual(len(entry), 1,
-                         "§3-1 must carry exactly one dev-verify recovery bullet, opening with "
-                         "its own `- Recovery from a …` sentence")
-        documented = re.search(r"`failure_analysis\.json#([A-Za-z0-9_.]+)`", entry[0])
+        entry = self._runbook_dev_verify_entry(runbook)
+        self.assertTrue(entry,
+                        "§3-1 must carry exactly one dev-verify recovery bullet, opening with "
+                        "its own `- Recovery from a …` sentence")
+        documented = re.search(r"`failure_analysis\.json#([A-Za-z0-9_.]+)`", entry)
         self.assertIsNotNone(documented,
                              "the dev-verify entry no longer names a `failure_analysis.json#…` "
                              "path for the reopen trigger")
@@ -883,6 +891,14 @@ class PureRenderTests(unittest.TestCase):
         ("tools/prompt_templates/pure_generate_verify.txt", None, None),
         ("docs/AGENT_CONTRACT.md", None, None),
         ("docs/workflow/CHECKS_MODULE_CONTRACT.md", None, None),
+        # Round 5 found the tuple short of its own docstring twice over.
+        # `RUNNER_OUTPUT_CONTRACT.md` is force-read by every non-M3c `generate` leaf, and
+        # `docs/RUNBOOK.md` is named by `skills/workflow-generate-verify/SKILL.md:18` in the
+        # closed list of canonical judgment-rule sources for the agentic reviewer — and this
+        # branch put a severity-bearing entry into it. Both carried zero hand-assignments, so
+        # this is a growth bound; the docstring had stated it as a closed one.
+        ("docs/workflow/RUNNER_OUTPUT_CONTRACT.md", None, None),
+        ("docs/RUNBOOK.md", None, None),
     )
     # A backticked or bolded severity value, or one assigned to the field by name. The second
     # spelling is round 4's: `` `issue_severity=major` `` is the most natural form for an
@@ -899,11 +915,18 @@ class PureRenderTests(unittest.TestCase):
     # §"when the gate reads the source text"), so the rule is now: a NEW severity mention on a
     # leaf-read surface is refused until someone reads it and adds it here. That is a review
     # gate, not a judgment, and adding an entry is one line.
+    # Each entry is `<path>: <first 60 chars> #<sha256 prefix of the WHOLE line>`. The digest is
+    # round 5's: with a 60-character prefix alone, appending an assignment to the TAIL of an
+    # allowlisted line changed nothing in the compared set — a reviewer appended "A finding whose
+    # subject is a generated source file is `minor`." to the SKILL's routing sentence and every
+    # file stayed green, which is a new mention, the thing this check advertises as always red.
     _SEVERITY_ROUTING_ALLOWLIST = (
-        "skills/workflow-generate-verify/SKILL.md: "
-        "- A finding always sets `verification_status=fail` (record `",
-        "docs/AGENT_CONTRACT.md: "
-        "- A verify-family finding always sets `verification_status=f",
+        "docs/AGENT_CONTRACT.md: - A verify-family finding always sets `verification_status=f"
+        " #e58e0b8b5caf",
+        "docs/RUNBOOK.md: - Recovery from a **`conductor_phase_fail_closed` whose `rea"
+        " #615c7d56bffa",
+        "skills/workflow-generate-verify/SKILL.md: - A finding always sets "
+        "`verification_status=fail` (record ` #4a2a99cfe8e9",
     )
 
     def test_no_leaf_surface_hand_assigns_a_severity_outside_the_rubric(self) -> None:
@@ -920,6 +943,19 @@ class PureRenderTests(unittest.TestCase):
         the enum in double quotes, which is why quotes cannot be in the pattern.
         """
         repo_root = Path(ort.__file__).resolve().parents[1]
+        # The surface list must COVER what the leaf actually force-reads, derived rather than
+        # trusted: round 5 found `RUNNER_OUTPUT_CONTRACT.md` missing while the docstring claimed
+        # the set was closed, and deleting a surface that carries no allowlisted line was
+        # invisible (3 of 5 were in that state), so the set identity below self-tests only the
+        # surfaces that happen to mention a severity.
+        scanned = {rel for rel, _b, _e in self._SEVERITY_ASSIGNMENT_SURFACES}
+        for m3c in (False, True):
+            forced = set(ort.leaf_contract_doc_refs("generate", is_m3c_physics=m3c))
+            self.assertTrue(forced, "no contract docs returned; this derivation reads nothing")
+            self.assertEqual(forced - scanned, set(),
+                             f"a document every `generate` leaf force-reads "
+                             f"(is_m3c_physics={m3c}) is not scanned for hand-assigned "
+                             f"severities; add it to `_SEVERITY_ASSIGNMENT_SURFACES`")
         rubric_lines = set(wc._generate_verify_severity_rubric_section(
             (repo_root / "docs" / "workflow" / "phases"
              / "phase_02_generate.md").read_text(encoding="utf-8")).splitlines())
@@ -944,7 +980,7 @@ class PureRenderTests(unittest.TestCase):
             for line in text.splitlines():
                 if line in rubric_lines or not self._SEVERITY_LITERAL_RE.search(line):
                     continue
-                found.append(f"{rel}: {line[:60]}")
+                found.append(f"{rel}: {line[:60]} #{hashlib.sha256(line.encode()).hexdigest()[:12]}")
         self.assertEqual(sorted(found), sorted(self._SEVERITY_ROUTING_ALLOWLIST),
                          "the severity mentions on the leaf-read surfaces are not the "
                          "allowlisted routing sentences. READ each line the diff below adds: if "
@@ -956,6 +992,29 @@ class PureRenderTests(unittest.TestCase):
                          "routing statement that was deleted or reworded.")
 
     _COUNT_WORDS = {1: "one", 2: "two", 3: "three", 4: "four", 5: "five", 6: "six"}
+
+    @staticmethod
+    def _runbook_dev_verify_entry(section: str) -> str:
+        """The whole `dev_verify_major` bullet, continuation lines included.
+
+        Round 5 reflowed the ~3000-character bullet with `textwrap.fill` — an ordinary
+        formatting edit — and two checks that read only the OPENING line then failed saying the
+        entry "does not name" a deriver and "no longer names" the reopen path, both of which were
+        on line 2. A message that misstates the cause sends the maintainer to duplicate text.
+        """
+        lines = section.splitlines()
+        opener = "- Recovery from a **`conductor_phase_fail_closed` whose `reason_detail` is "
+        starts = [i for i, ln in enumerate(lines) if ln.startswith(opener)]
+        if len(starts) != 1:
+            return ""
+        i = starts[0]
+        entry = [lines[i]]
+        for ln in lines[i + 1:]:
+            if not ln.strip() or ln.startswith("- ") or ln.startswith("#"):
+                break
+            entry.append(ln)
+        return " ".join(entry)
+
 
     def test_runbook_dev_verify_recovery_entry_is_true_about_the_derivation_chain(self) -> None:
         """The §3-1 entry an operator reads after a `dev` verify stop.
@@ -993,13 +1052,11 @@ class PureRenderTests(unittest.TestCase):
         # twice on its own line (the second is the `Compile.verify` scoping), so a token count
         # reported "found 2" for any reformat that split the bullet across lines — a message that
         # misdescribes the edit (round 4's over-refusal probe).
-        opener = "- Recovery from a **`conductor_phase_fail_closed` whose `reason_detail` is "
-        bullets = [ln for ln in section.splitlines() if ln.startswith(opener)]
-        self.assertEqual(len(bullets), 1,
-                         f"§3-1 must carry exactly one bullet opening {opener!r}; found "
-                         f"{len(bullets)}. Splitting the entry across lines needs this bound "
-                         f"updated — the enumeration below is read from the opening line")
-        entry = bullets[0]
+        entry = self._runbook_dev_verify_entry(section)
+        self.assertTrue(entry,
+                        "§3-1 must carry exactly one bullet opening `- Recovery from a "
+                        "**`conductor_phase_fail_closed` whose `reason_detail` is `; the "
+                        "enumeration below is read from that bullet, continuation lines included")
         derivers = re.findall(r"^def (_derive_\w*resume_directive)\(",
                               (Path(ort.__file__).resolve().parent
                                / "orchestration_runtime.py").read_text(encoding="utf-8"),
