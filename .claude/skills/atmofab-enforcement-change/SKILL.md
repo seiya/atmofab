@@ -139,7 +139,7 @@ operator does not lower the count — it decides which site you check first.
 **Reach for the pattern this repository already uses three times** (`_SCRATCH_SURFACES`,
 `_REDIRECT_RULE_SURFACES`, `_SURFACES` in `tools/tests/test_hooks_cli.py`) — but they are three
 DIFFERENT shapes and **they duplicate each other**, so read the one nearest your rule and treat
-copying as the starting point. The four traps, each of which cost a round:
+copying as the starting point. The six traps, each of which cost a round (the count was wrong here — "four" over five bullets — until issue #143 added the sixth, which is this rule's own enumeration trap turned on itself):
 
 - **Anchor on text that PRECEDES the rule and is byte-identical in the wording you are refusing.**
   Anchoring on your own corrected sentence pins that the correction survived, not that the rule is
@@ -164,6 +164,23 @@ copying as the starting point. The four traps, each of which cost a round:
   requiring each element to OPEN its own bullet there. The count is the other half: a document
   that says "three channels" and lists two is only wrong if something compares the two, and the
   number belongs to the code
+- **An EXEMPTION is a rule too, and it gets broken from both sides.** When the check must let
+  something through — a routing sentence that legitimately names the thing you are refusing —
+  do not decide the exemption by pattern. Issue #143 tried "the line cites the phase doc", then
+  "cites it WITH the section pointer", and one review round broke both directions at once: a
+  hand-assignment written WITH the pointer passed, while correct routing prose about another
+  phase's rule was refused with a message calling it an assignment, whose only satisfying edit
+  made the document wrong. Deciding "routes" from "assigns" by pattern is §1's source-text
+  surface asked of an exemption, and it loses the same way. **What closed it: an explicit
+  allowlist of the exempt lines, compared as a set** — a new mention of any wording is refused
+  until someone reads it and adds an entry, which is a review gate rather than a judgment, and
+  adding one is a line. Two follow-through traps, both hit on the same branch: **normalize the
+  allowlist entry to the WHOLE line** (a 60-character prefix let an assignment ride on an
+  allowlisted line's tail — a new mention, which the check advertised as always red — so each
+  entry carries a digest of the full line), and **an emptiness set does not self-test its own
+  surface list**: deleting a surface that happens to carry no exempt line is invisible, which was
+  3 of 5 there, so derive the surfaces from the code that decides them
+  (`leaf_contract_doc_refs`) and assert the coverage
 
 **Before adding a check, ask whether the sites should exist.** The cheaper fix is this
 repository's ordinary practice — one canonical statement, everyone else cites it (`AGENTS.md`
