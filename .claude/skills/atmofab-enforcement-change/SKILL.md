@@ -194,7 +194,7 @@ prompt assembled at runtime **that nothing renders under test**. For those the o
 remove the statement or to make it derived; say in the commit which sites you could not couple.
 **Check before assuming a site is out of reach** — an issue or PR body can be edited
 (`gh issue edit --body`), and `docs/examples/*.yaml` is coupled today by
-`tools/tests/test_llm_config.py`. **A runtime-assembled prompt stops being out of reach the moment
+`tools/tests/test_llm_config.py` — as is THIS file: `tools/tests/test_skill_citations.py` reads every skill document out of the git index and requires each backticked repository path in it to be tracked, so a stale pointer written here is red. What stays uncoupled is the CLAIM a sentence makes, not the paths it cites. **A runtime-assembled prompt stops being out of reach the moment
 you render it through the production entry point with a fixed payload**: issue #149's sweep drives
 `build_launch_request` -> `prepare_launch_request_payload` -> `render_launch_prompt_text` over every
 `(step, substep)` an LLM leaf runs, in every renderer shape, and scans the render minus the lines a
