@@ -197,7 +197,20 @@ PINNED: dict[str, str] = {
     # exemplars certified at pure-24 or earlier, and an orchestration whose `generate` ran under
     # pure-24 cannot be `--resume`d across this bump
     # (`validate_pipeline_semantics._validate_orchestration_hierarchy`).
-    "pure-25": "b929666c3119e3e18cd2500e7d1b5691457990f41fa181f0beead402cd364d56",}
+    "pure-25": "b929666c3119e3e18cd2500e7d1b5691457990f41fa181f0beead402cd364d56",
+    # pure-26: the rubric's drop bullet was strictly WIDER than the two statements of the same
+    # rule it joins — "the host-rendered runner **or the harness** … with **a value the bundle
+    # returns**", against "the runner … with the RESULT a checks-module callback returns" in both
+    # the verify template and phase_02 §Generate-executor. A G5 dataflow finding justified by
+    # what the harness does with a model-produced value was therefore droppable under the rubric
+    # and not under the template, on a document (`CHECKS_MODULE_CONTRACT.md` §2) titled
+    # "Semantics the harness relies on". The bullet now names the template's class in the
+    # template's words, and a check derives that class FROM the template. The same edit
+    # generalizes the `minor` / `critical` subjects from "the bundle" to "the sources under
+    # review", because the AGENTIC verify leaf reviews a node whose runner it authored and no
+    # bullet's subject named it. A verdict issued under pure-25 was reached against a wider drop
+    # class, so the vintages stay distinguishable. Side effects as for every bump, unchanged.
+    "pure-26": "f1e92b91e76df84c71b224e873c91246beec63efc894f75f85248db4afabd569",}
 
 
 def _contract_tuple() -> dict[str, object]:

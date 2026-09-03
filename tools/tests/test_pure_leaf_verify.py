@@ -170,6 +170,28 @@ class PureVerifyContextTests(unittest.TestCase):
                           "contradicts it", doc)
             self.assertIn("Where the contract is silent, the finding stands and takes the value "
                           "its subject earns", doc)
+            # …and its CLASS, which is what round 1 found wrong: this bullet was strictly wider
+            # than the two statements of the same rule it joins ("or the harness", "a value the
+            # bundle returns"), so a G5 dataflow finding justified by what the harness does with
+            # a MODEL-produced value fell inside the droppable class here and outside it there.
+            # The class is taken FROM the template — the pre-existing authority — never spelled
+            # again, so the two cannot drift apart. The extraction is self-tested.
+            tpl = (Path(wc.__file__).resolve().parents[1] / "tools" / "prompt_templates"
+                   / "pure_generate_verify.txt").read_text(encoding="utf-8")
+            head, sep, rest = tpl.partition(
+                "can only OVERRULE one kind of claim — a claim about ")
+            self.assertTrue(sep, "the template no longer states the droppable class")
+            claim_class = rest.split(" — so drop a finding")[0]
+            self.assertGreater(len(claim_class), 40, claim_class)
+            self.assertIn(claim_class, doc,
+                          "the rubric names a different droppable class from the template's")
+            # The two tie-break sentences decide the ambiguous case, and one direction of each
+            # ends the run. A polarity, not prose: pin both, or an inversion ships on a version
+            # bump alone.
+            self.assertIn("do not settle whether the subject is the sources under review or an "
+                          "input, the value is `minor`", doc)
+            self.assertIn("do not settle whether the sources under review can serve as the base "
+                          "of a repair, the value is `major`", doc)
             # Every literal here must occur in the REAL document, or the assertion is true of any
             # slice and pins nothing (the checks-contract test above records why). Note what is
             # NOT usable as an absent literal: `ir_inconsistency` occurs inside the rubric itself.
@@ -203,16 +225,20 @@ class PureVerifyContextTests(unittest.TestCase):
             repo = Path(tmp)
             refs = _verify_node(repo)
             doc = _conductor(repo)._build_pure_verify_context(refs)["severity_rubric_document"]
-        bullets = [ln for ln in doc.splitlines() if ln.startswith("- `")]
+        # A VALUE bullet is one opening with a value of the enum — not "any bullet whose first
+        # token is backticked", which counted a legitimate clarifying bullet as a fourth value
+        # and reported "4 value bullets for 3 severities" (round 1's over-refusal probe).
+        def _openers(value: str) -> list[str]:
+            return [ln for ln in doc.splitlines() if ln.startswith(f"- `{value}`:")]
+
         for sev in sorted(expected):
-            opening = [ln for ln in bullets if ln.startswith(f"- `{sev}`:")]
-            self.assertEqual(len(opening), 1,
+            self.assertEqual(len(_openers(sev)), 1,
                              f"the rubric must open exactly one bullet with `{sev}`:; found "
-                             f"{len(opening)}")
-        self.assertEqual(len(bullets), len(expected),
-                         f"the rubric states {len(bullets)} value bullets for "
-                         f"{len(expected)} severities")
-        self.assertEqual([ln for ln in bullets if ln.startswith("- `none`")], [],
+                             f"{len(_openers(sev))}")
+        self.assertEqual(sum(len(_openers(s)) for s in VERDICT_SEVERITIES), len(expected),
+                         "the rubric states a value bullet for a severity outside the expected "
+                         "set, or repeats one")
+        self.assertEqual(_openers("none"), [],
                          "`none` is the pass side; a rubric bullet for it would invite a "
                          "findings-bearing pass")
 
