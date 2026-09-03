@@ -30287,7 +30287,9 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # authoritative for the attempt it just made, is what stops that shortcut — the
         # most expensive place in the repository to add a sentence, and the only one where
         # this one works. 19700 then left ~100 bytes, a tripwire again by the same rule.
-        "docs/AGENT_CONTRACT.md": 20100,
+        # Bumped 20100->20170 (issue #148): the verify-family routing sentence now names both
+        # phase rubrics, `Compile.verify` having gained one. Measured 20018; 20100 left 82 B.
+        "docs/AGENT_CONTRACT.md": 20170,
         # Consolidated runner-output contract (was duplicated across phase_02/04 +
         # PERF §2/§6); M3d: a validate.judge-only leaf must-read (generate dropped it).
         # Bumped 7600->8100: §3 disambiguated the guard-case snapshot rule (declared
@@ -30516,7 +30518,29 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # `iterative`/`columnwise`, an absent one included. An author cannot predict a
         # finding the doc does not describe. Set from the measured 56463 plus this table's
         # conventional ~150 B of slack, the same rule as the two SKILL entries below.
-        "docs/workflow/phases/phase_01_compile.md": 56650,
+        # Bumped 56650->59700 (issue #148): §1-2 gained the `#### Severity of a finding
+        # (`issue_severity`)` rubric — the repair-route axis, one bullet per value, and the
+        # tie-breaks — which `Compile.verify` had none of, so the two hand-assigned `major`s it
+        # carried terminalized a `dev` run on defects `Compile.generate` can repair. Same slack
+        # rule as the entries below: measured 59523 plus this table's conventional ~150 B.
+        # (59600 first, from 59455 measured at the branch's first commit; the review rounds then
+        # corrected the rubric's own prose twice and left the figure stale at 108 B of slack —
+        # under the band this table's own comments call a tripwire. Re-measured at the round-2
+        # HEAD. A ceiling is a record of a measurement, and it goes stale on the commit AFTER the
+        # one that took it.)
+        # Bumped 59700->59810 at the round-3 HEAD (measured 59654): the rubric restored
+        # `spec_catalog.yaml` to its input list, which round 2 had wrongly removed on the
+        # strength of the conductor's must_read alone, and narrowed the `major` bullet's subject
+        # list to agree with `docs/RUNBOOK.md` §3-1. Same slack rule; 59700 would have left 46 B.
+        # Bumped 59810->59990 at the round-4 HEAD (measured 59837): the `major` bullet regained a
+        # subject category for the `fail`s the verify `SKILL` mandates outside V1-V8, which
+        # round 3 had narrowed away and left ungradable. Measured with `wc -c` in
+        # /home/seiya/atmofab, and set by the ~150 B slack rule THIS entry follows. Not every
+        # entry does, and a round-5 reviewer was right to say so: measured at that HEAD the
+        # slacks ran 152 / 71 / 35 / 153 / 174 / 156 / 105 / 137 / 22 B down the table, so three
+        # of the nine sit in the band this block's own header calls a tripwire. Nothing is red
+        # today; re-measure the entry you are bumping rather than trusting a table-wide rule.
+        "docs/workflow/phases/phase_01_compile.md": 59990,
         # Per-substep SKILLs — each force-read by its own LLM leaf.
         # Bumped 10800->11500: Compile.generate now authors the io_contract section (G2 /
         # docs/design/deterministic_followups.md) — it was moved here from Compile.verify so the
@@ -30611,7 +30635,11 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # still pass": a ceiling 65 B above the file is a tripwire that fails the next
         # one-sentence correction, which is how a doc rule ends up edited around instead of
         # edited. Reverted to 27850 mid-review on the wrong criterion, then restored. (27785.)
-        "skills/workflow-compile-generate/SKILL.md": 27950,
+        # Bumped 27950->28100 (issue #148): the self-sufficiency item no longer spells the
+        # verifier's severity ("a `Compile.verify` **major**" -> "a `Compile.verify` `fail`
+        # remanded to you") — a producer does not choose the value. Measured 27926; the old
+        # ceiling left 24 B, which is the tripwire this table's comments warn about.
+        "skills/workflow-compile-generate/SKILL.md": 28100,
         # Bumped 11800->12100: G7 — compile.verify checks V4c only (operations ⊆ published); the
         # closure/topo consistency is conductor-authored + gate-checked, no longer LLM-verified (G7).
         # Bumped 12100->13100: R2 (G8) — compile.verify owns the SEMANTIC test_predicates fidelity
@@ -30652,7 +30680,11 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # Bumped 15700->16750 across the issue-#43 rounds: this leaf is now told the three
         # shapes the Compile.static gate cannot see and therefore owns. Same slack rule as
         # above — 16616 measured, and 16650 would leave 34 B, which is not a ceiling.
-        "skills/workflow-compile-verify/SKILL.md": 16750,
+        # Bumped 16750->16900 (issue #148): the routing line now points at phase_01 §1-2's
+        # rubric (the mirror of `workflow-generate-verify/SKILL.md`'s pointer), and the
+        # self-sufficiency item states a `fail` instead of assigning `major`. Measured 16744 —
+        # the old ceiling left 6 B.
+        "skills/workflow-compile-verify/SKILL.md": 16900,
         # Bumped 22000->22400: inlined the leaf-actionable C003 directive placement
         # + the f2008 63-char identifier limit (previously only in phase_02, which
         # generate.generate no longer force-reads) to avoid a lint/build round-trip.

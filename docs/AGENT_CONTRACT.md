@@ -37,7 +37,7 @@
 - If `skill_name` and `skill_ref` are unspecified, stop with fail. Read only the single file `skill_ref` specified in the launch prompt, and **do not additionally Read a SKILL.md of any phase other than your own**.
 - **Do not `Read` the raw launch-prompt templates under `tools/prompt_templates/`.** Your prompt is already rendered and passed to you; `tools/` is not in your `read_manifest` (`forbid_tools_direct_read`). The required contract is this file (`docs/AGENT_CONTRACT.md`), your launch prompt, `docs/`, and the `skill_ref` / `skill_must_read_refs` passed at launch; resolve all requirements from those sources only.
 - On input shortage, do not complete by guessing; stop with fail.
-- A verify-family finding always sets `verification_status=fail` (record `issue_severity` by the phase contract's rubric where one exists — `Generate.verify`: `docs/workflow/phases/phase_02_generate.md` §2-2); `minor` is not tolerated/passed. With `workflow_mode=dev`, a `major|critical` verify finding stops with fail immediately (the conductor warm-repairs `minor`).
+- A verify-family finding always sets `verification_status=fail` (record `issue_severity` by the phase contract's rubric where one exists — `Compile.verify`: `docs/workflow/phases/phase_01_compile.md` §1-2; `Generate.verify`: `docs/workflow/phases/phase_02_generate.md` §2-2); `minor` is not tolerated/passed. With `workflow_mode=dev`, a `major|critical` verify finding stops with fail immediately (the conductor warm-repairs `minor`).
 - When it fails with `workflow_mode=dev`, include in the reply the basis needed to generate `failure_analysis.json` (the failure reason, related output_refs, a summary of the main logs).
 
 ## Workflow behavioral invariants (every leaf)
