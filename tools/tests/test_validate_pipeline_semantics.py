@@ -20481,7 +20481,7 @@ class ExecutionModeContractCouplingGateTests(unittest.TestCase):
               # V2: the deterministic gate does not cover the semantic half, and the verify
               # leaf is told here that it owns it. Unique to that bullet.
               "Both directions are deterministically gated at `Compile.static`",
-              "The **semantic** half stays a V2 `major` this leaf owns",
+              "The **semantic** half is a V2 finding this leaf owns",
               # ... and WHAT that half is. The label alone told the verify leaf it owns
               # something without saying what to look for.
               "a declared `execution_mode` that contradicts the control structure"
@@ -20692,7 +20692,7 @@ class LocalOperationLoweringGateTests(unittest.TestCase):
     """`_validate_local_operation_lowering` (compile stage): a LOCAL op (one an
     `algorithm.steps[].operation_ref` names but no `dependency.direct_deps[].operations[]`
     resolves) must carry SOME lowering signal in the IR — it may not be a bare name with nothing
-    behind it. Presence floor only: content completeness stays a Compile.verify V2 `major`.
+    behind it. Presence floor only: content completeness is a Compile.verify V2 finding.
     Signals: (1) a non-structural step field, (2) a step input/output naming a dfr entry,
     (3) the op name mentioned in dfr/invariants text. `infrastructure/` nodes are exempt."""
 
