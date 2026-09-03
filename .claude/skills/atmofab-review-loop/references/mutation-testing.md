@@ -11,6 +11,35 @@ scorer that reads only `FAILED` lines saw no failures and recorded them as kille
 `--continue-on-collection-errors` produced 41-47 real failures per mutant. Put the flag in your own
 scorer and in the reviewer's instructions.
 
+## A handwritten sweep that collected zero tests, and read as seven kills (issue #142, 2026-09-03)
+
+Round 0's manual mechanism-level mutants were driven by a shell helper:
+
+```sh
+run(){ (cd "$W" && python3 -m pytest $1 -q -p no:randomly) }
+run "tools/tests/test_pure_leaf_verify.py tools/tests/test_pure_leaf_wiring.py"
+```
+
+Every line of the run printed `no tests ran in 0.00s`. **This environment's shell is zsh**, which
+unlike bash does not word-split an unquoted `$var`, so pytest received one argument that was two
+paths glued together — a path that does not exist — and collected nothing. The mutants were applied
+correctly and the file was restored correctly; only the observation was missing.
+
+Two things saved it, both of them rules already in this file, and it is worth noting which:
+
+- **The baseline was run first and printed in the same format.** `no tests ran in 0.00s` where
+  `197 passed` was expected is the whole tell, and it is visible for exactly one line before the
+  mutants start. Had the baseline been skipped, seven mutants would have been recorded as killed.
+- **`tail -1` is what hid it.** The summary line of a zero-collection run is not red, so a scorer
+  that reads colour or greps for `FAILED` scores it as green. Read the COUNT.
+
+The generalisation is not "zsh": it is that a handwritten sweep has two failure surfaces the script
+has designed out, and they look identical from the outside. The script gives each hunk its own
+worktree (so a bad restore cannot leak) **and** refuses a baseline that is not green (so a
+non-observing command cannot pass). Handwriting keeps neither for free. When you must handwrite,
+reproduce both: run the baseline, and compare its COUNT — not its exit status — against what you
+expect, before you believe a single mutant.
+
 ## The harness's own scratch paths reddened the baseline (TODO:414, 2026-08-21)
 
 Two of the script's defaults were themselves inputs to the suite under test, and together they
