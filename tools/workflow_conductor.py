@@ -7370,8 +7370,10 @@ clean:
             _MISSING)
         entry = self.entry_for(phase, substep)
         self.reset_http_history(phase, substep)
-        # Assembling the reviewer's context reads a host-owned repository document and RAISES on a
-        # missing/unsliceable one (`pure_checks_contract_document_*`). run_substep's callers must
+        # Assembling the reviewer's context reads TWO host-owned repository documents and RAISES
+        # on a missing/unsliceable one (`pure_checks_contract_document_*` for
+        # CHECKS_MODULE_CONTRACT.md, `pure_severity_rubric_document_*` for phase_02_generate.md;
+        # the list is exhaustive and grows with `_build_pure_verify_context`). run_substep's callers must
         # never see an exception — recover it as the same fail_closed transport outcome the
         # producer's `_build_pure_context` failure produces. A repository document the leaf cannot
         # repair makes fail_closed (operator --resume) the correct terminus, not a reopen. No leaf
