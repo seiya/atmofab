@@ -778,44 +778,61 @@ class PureRenderTests(unittest.TestCase):
                          "a leaf-read surface assigns a severity outside the rubric; the rubric "
                          "is the only place a value is chosen:\n" + "\n".join(offenders))
 
-    def test_runbook_names_both_dev_verify_fail_closed_reasons_in_the_resume_section(self) -> None:
-        """The two `reason_detail` values an operator greps after a `dev` verify stop are
-        `dev_verify_major` / `dev_verify_critical`, and they are produced by
-        `classify_verify_severity` — a runtime string an operator meets only in
-        `orchestration_meta.json` and the run log, so §3-1 is where the recovery is written.
+    _COUNT_WORDS = {1: "one", 2: "two", 3: "three", 4: "four", 5: "five", 6: "six"}
 
-        The reader is BOUNDED to §3-1 and both bounds are self-tested: the section heading and
-        the heading that follows it must each occur, or the slice is not the section.
+    def test_runbook_dev_verify_recovery_entry_is_true_about_the_derivation_chain(self) -> None:
+        """The §3-1 entry an operator reads after a `dev` verify stop.
+
+        PINNED: (a) both `reason_detail` literals appear in §3-1 at all, so a `grep` finds the
+        recovery; (b) the entry's own BULLET — not the 60 KB section around it — names every
+        resume-directive deriver and states their number in words. Round 2 defeated the earlier
+        version twice: parking the four names in a throwaway line under the §3-1 heading left the
+        bullet's conclusion unjustified and the check green, and adding a fifth deriver while
+        correctly naming it in the sentence left the word "four" behind — which is round 1's own
+        defect, reintroduced.
+        The BEHAVIOURAL half of the claim — that no directive is derived for these two reasons —
+        is deliberately not pinned here but by driving it, in
+        `test_orchestration_runtime.DevVerifyResumeDirectiveTests`: a name-shape regex cannot see
+        a deriver that does not conform to it, and that test does not care what anything is
+        called.
         """
         runbook = (Path(ort.__file__).resolve().parents[1]
                    / "docs" / "RUNBOOK.md").read_text(encoding="utf-8")
         begin_marker, end_marker = "\n## 3-1. ", "\n## 4. "
-        self.assertEqual(runbook.count(begin_marker), 1)
-        self.assertEqual(runbook.count(end_marker), 1)
-        begin = runbook.index(begin_marker)
-        end = runbook.index(end_marker)
-        self.assertGreater(end, begin)
+        self.assertEqual(runbook.count(begin_marker), 1,
+                         f"RUNBOOK has no single {begin_marker!r} heading; the section bound "
+                         f"below would read the wrong text")
+        self.assertEqual(runbook.count(end_marker), 1,
+                         f"RUNBOOK has no single {end_marker!r} heading, so §3-1's end is not "
+                         f"where this check thinks it is")
+        begin, end = runbook.index(begin_marker), runbook.index(end_marker)
+        self.assertGreater(end, begin, "§3-1 does not precede §4 in RUNBOOK.md")
         section = runbook[begin:end]
         for reason in ("dev_verify_major", "dev_verify_critical"):
             self.assertIn(reason, section,
                           f"§3-1 does not name {reason}, so the operator who greps the "
                           f"reason_detail finds no recovery")
-        # The entry's conclusion — a plain `--resume` injects nothing — is justified by an
-        # ENUMERATION of the resume-directive derivers, and round 1 found that enumeration short
-        # by one (the `_ir` deriver, which the dispatch tries FIRST). Prose that enumerates
-        # entities in the code is checked, not re-measured: the members and the count come from
-        # the module that defines them, so a fifth deriver turns this red NAMING itself.
+        bullets = [ln for ln in section.splitlines() if "dev_verify_major" in ln]
+        self.assertEqual(len(bullets), 1,
+                         f"§3-1 must carry exactly one `dev_verify_major` bullet; found "
+                         f"{len(bullets)}")
+        entry = bullets[0]
         derivers = re.findall(r"^def (_derive_\w*resume_directive)\(",
                               (Path(ort.__file__).resolve().parent
                                / "orchestration_runtime.py").read_text(encoding="utf-8"),
                               flags=re.MULTILINE)
         self.assertGreater(len(derivers), 1,
-                           "no resume-directive derivers found; this check is reading the wrong "
-                           "module and would pass vacuously")
+                           "fewer than two resume-directive derivers were found; this check is "
+                           "reading the wrong module and would pass vacuously")
         for name in derivers:
-            self.assertIn(name, section,
-                          f"§3-1 justifies its conclusion by enumerating the resume-directive "
-                          f"derivers and does not name {name}")
+            self.assertIn(name, entry,
+                          f"the `dev_verify_major` entry justifies its conclusion by enumerating "
+                          f"the resume-directive derivers and does not name {name}")
+        word = self._COUNT_WORDS.get(len(derivers))
+        self.assertIsNotNone(word, f"no count word for {len(derivers)} derivers; extend the map")
+        self.assertIn(f"the {word} derivers", entry,
+                      f"there are {len(derivers)} resume-directive derivers and the entry does "
+                      f"not say 'the {word} derivers'")
 
     def test_every_required_pure_context_key_has_exactly_one_template_slot(self) -> None:
         # Structural closure of "a required key with no template slot is silently dropped": the

@@ -39803,3 +39803,93 @@ class LeafEnvLiveBwrapWitnessTests(unittest.TestCase):
         # ...and the poison controls, so "equal" cannot be "the parent env was empty".
         for name in poison:
             self.assertNotIn(name, child)
+
+
+class DevVerifyResumeDirectiveTests(unittest.TestCase):
+    """A `dev` verify stop must leave a plain `--resume` with nothing to inject (issue #143).
+
+    `docs/RUNBOOK.md` §3-1 tells the operator that resuming after a
+    `conductor_phase_fail_closed` whose `reason_detail` is `dev_verify_major` /
+    `dev_verify_critical` re-runs the phase's producer COLD from the same inputs and injects
+    nothing — so a finding the rubric graded correctly reproduces, and the repair is to fix the
+    input the finding names rather than to resume. If a directive were ever derived for these
+    reasons, the entry would be false in the direction that costs the operator a Generate budget.
+
+    This drives `enable_checkpoint_resume` rather than calling the derivers by name. The sibling
+    prose check (`test_pure_leaf_wiring.test_runbook_dev_verify_recovery_entry_is_true_about_the_
+    derivation_chain`) reads the deriver names out of this module with a regex, which cannot see
+    a deriver whose name does not fit the pattern, is defined elsewhere, or is a method — round 2
+    wired exactly such a deriver and left that check green. This one is indifferent to naming.
+    """
+
+    def _terminal_orchestration(self, repo_root: Path, oid: str, reason_detail: str) -> Path:
+        init_orchestration(repo_root=repo_root, orchestration_id=oid)
+        update_orchestration_status(
+            repo_root=repo_root,
+            orchestration_id=oid,
+            status="fail_closed",
+            reason_code="conductor_phase_fail_closed",
+            reason_detail=reason_detail,
+        )
+        return repo_root / "workspace" / "orchestrations" / oid
+
+    def test_no_resume_directive_is_derived_for_either_dev_verify_stop(self) -> None:
+        for detail in ("dev_verify_major", "dev_verify_critical"):
+            with self.subTest(reason_detail=detail):
+                with tempfile.TemporaryDirectory() as tmp:
+                    repo_root = Path(tmp)
+                    oid = f"orch_dev_verify_{detail}"
+                    root = self._terminal_orchestration(repo_root, oid, detail)
+                    before = json.loads(
+                        (root / "orchestration_meta.json").read_text(encoding="utf-8"))
+                    self.assertEqual(before["status"], "fail_closed")
+                    self.assertEqual(before["reason_detail"], detail)
+
+                    enable_checkpoint_resume(repo_root, oid)
+
+                    meta = json.loads(
+                        (root / "orchestration_meta.json").read_text(encoding="utf-8"))
+                    self.assertEqual(meta["status"], "running",
+                                     "the resume did not reopen the orchestration, so this test "
+                                     "is asserting about a resume that did not happen")
+                    self.assertEqual(meta.get("resumed_from_reason_detail"), detail,
+                                     "the terminal reason was not archived, so the resume path "
+                                     "under test is not the one the operator takes")
+                    self.assertIsNone(meta.get("resume_directive"),
+                                      "a resume_directive was derived for a dev verify stop; "
+                                      "docs/RUNBOOK.md §3-1 tells the operator nothing is "
+                                      "injected and would now be false")
+
+    def test_the_same_path_DOES_derive_a_directive_for_a_reason_that_has_one(self) -> None:
+        # Control: without it, "no directive" above is green whenever derivation is broken,
+        # dead, or reading a different file — which is indistinguishable from the property.
+        # The `_ir` attribution terminalizes as `fail`, not `fail_closed`: the `_ir` reason codes
+        # are not members of `FAIL_CLOSED_REASON_CODES` (measured — `set-status fail_closed`
+        # rejects one), which is why this control cannot reuse the helper above.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            oid = "orch_dev_verify_control"
+            init_orchestration(repo_root=repo_root, orchestration_id=oid)
+            root = repo_root / "workspace" / "orchestrations" / oid
+            update_orchestration_status(
+                repo_root=repo_root,
+                orchestration_id=oid,
+                status="fail",
+                reason_code="validate_judge_structural_violation_ir",
+                reason_detail="attribution=ir",
+            )
+            (root / "failure_analysis.json").write_text(json.dumps({
+                "node_key": "problem/shallow_water2d@0.3.0",
+                "original_finding": {
+                    "attribution": "ir",
+                    "failed_substep_agent_run_id": "ar_judge_001",
+                    "finding_id": "F1",
+                },
+            }), encoding="utf-8")
+            enable_checkpoint_resume(repo_root, oid)
+            meta = json.loads((root / "orchestration_meta.json").read_text(encoding="utf-8"))
+            self.assertEqual(meta["status"], "running")
+            self.assertIsNotNone(
+                meta.get("resume_directive"),
+                "no directive was derived for an `_ir` attribution either, so the negative "
+                "assertion above observes nothing about the dev_verify reasons")
