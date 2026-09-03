@@ -689,11 +689,22 @@ class PureRenderTests(unittest.TestCase):
         phase tuple is self-tested non-empty for the same reason.
         """
         repo_root = Path(ort.__file__).resolve().parents[1]
+        # The PHASE TUPLES are part of the literal, not just the file set. Round 1 narrowed
+        # `WORKFLOW_CORE.md` to `("generate",)` and deleted the `Compile.verify` pointer from
+        # its routing line in the same edit: green, because the old assertion pinned the paths
+        # and `assertTrue(steps, …)` pinned only non-emptiness.
         self.assertEqual(
-            {rel for rel, _s, _p in self._RUBRIC_POINTER_SURFACES},
-            {"docs/workflow/WORKFLOW_CORE.md", "docs/AGENT_CONTRACT.md", "docs/GLOSSARY.md",
-             "skills/workflow-generate-verify/SKILL.md",
-             "skills/workflow-compile-verify/SKILL.md", "docs/ORCHESTRATION.md"})
+            {(rel, steps) for rel, _s, steps in self._RUBRIC_POINTER_SURFACES},
+            {("docs/workflow/WORKFLOW_CORE.md", ("compile", "generate")),
+             ("docs/AGENT_CONTRACT.md", ("compile", "generate")),
+             ("docs/GLOSSARY.md", ("compile", "generate")),
+             ("docs/ORCHESTRATION.md", ("compile", "generate")),
+             ("skills/workflow-generate-verify/SKILL.md", ("generate",)),
+             ("skills/workflow-compile-verify/SKILL.md", ("compile",))},
+            "a surface was dropped, or the phases its routing line must reach were narrowed. A "
+            "verify `SKILL` is scoped to its own phase; every phase-independent statement of the "
+            "routing must reach BOTH rubrics, because a reader of the routing does not learn "
+            "from it which phase's rule to look for.")
         for rel, sentence, steps in self._RUBRIC_POINTER_SURFACES:
             with self.subTest(surface=rel):
                 text = (repo_root / rel).read_text(encoding="utf-8")
@@ -714,9 +725,20 @@ class PureRenderTests(unittest.TestCase):
                                   f"SAME LINE as the routing statement (it may well be elsewhere "
                                   f"in the file; the rule is that a reader who meets the routing "
                                   f"meets the pointer)")
-                    self.assertIn(section, line,
-                                  f"{rel}: the routing line does not name {section}, so it does "
-                                  f"not reach {step}'s rubric")
+                    # ADJACENT, not merely both present. Two independent `assertIn`s over a line
+                    # carrying two phases accept the CROSS PRODUCT: round 1 wrote
+                    # `phase_01_compile.md §2-2` and `phase_02_generate.md §1-2` on
+                    # `WORKFLOW_CORE.md`'s routing line — both pointers naming a section that
+                    # does not exist in the document beside them — and the check was green.
+                    # `[^;]` keeps the match inside one phase's clause, which is how these lines
+                    # separate their two pointers.
+                    self.assertRegex(
+                        line, re.escape(doc) + r"[^;]{0,40}?" + re.escape(section),
+                        f"{rel}: {section} does not follow {doc} on the routing line — the "
+                        f"section pointer must sit BESIDE the document it belongs to. Both "
+                        f"tokens being present somewhere on the line is not enough: with two "
+                        f"phases pointed at from one line, that accepts each section paired "
+                        f"with the OTHER phase's document, and neither pointer then resolves.")
 
     # Every document that records WHAT the pure reviewer is handed, with the section each
     # statement lives in. Round 0's doc sweep found all three unpinned: reverting any of them
