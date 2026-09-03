@@ -30528,11 +30528,15 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # under the band this table's own comments call a tripwire. Re-measured at the round-2
         # HEAD. A ceiling is a record of a measurement, and it goes stale on the commit AFTER the
         # one that took it.)
-        # Bumped 59600->59810 at the round-3 HEAD (measured 59654): the rubric restored
+        # Bumped 59700->59810 at the round-3 HEAD (measured 59654): the rubric restored
         # `spec_catalog.yaml` to its input list, which round 2 had wrongly removed on the
         # strength of the conductor's must_read alone, and narrowed the `major` bullet's subject
         # list to agree with `docs/RUNBOOK.md` §3-1. Same slack rule; 59700 would have left 46 B.
-        "docs/workflow/phases/phase_01_compile.md": 59810,
+        # Bumped 59810->59990 at the round-4 HEAD (measured 59837): the `major` bullet regained a
+        # subject category for the `fail`s the verify `SKILL` mandates outside V1-V8, which
+        # round 3 had narrowed away and left ungradable. Measured with `wc -c` in
+        # /home/seiya/atmofab; same ~150 B slack rule as every entry in this table.
+        "docs/workflow/phases/phase_01_compile.md": 59990,
         # Per-substep SKILLs — each force-read by its own LLM leaf.
         # Bumped 10800->11500: Compile.generate now authors the io_contract section (G2 /
         # docs/design/deterministic_followups.md) — it was moved here from Compile.verify so the

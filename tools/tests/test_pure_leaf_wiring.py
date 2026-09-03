@@ -680,7 +680,26 @@ class PureRenderTests(unittest.TestCase):
     # is why phase_02 was red for every mutant that phase_01 survived. phase_01 now has the same
     # standing. Re-taking the digest is one line, and the failure message says what to re-read
     # before taking it.
-    _PHASE_01_RUBRIC_DIGEST = "679ab43139321866f0a10c4084916457f10fd3615668be178345bd238918159e"
+    #
+    # BOTH phases, and that is round 4's correction. The phrase loop this replaced ran over
+    # `slices.items()` — phase_01 AND phase_02 — and the first digest covered phase_01 only, so
+    # the shape change silently DELETED phase_02's per-bullet axis pin. Measured: re-grounding
+    # phase_02's `minor` bullet on the consequence axis is red at `29f8f93` and green at
+    # `c27007d` in this file. Its only remaining guard was the pure-prompt drift digest, whose
+    # remedy line says "bump `PURE_PROMPT_CONTRACT_VERSION`" — which is exactly what a
+    # maintainer making an intentional documentation edit does, a trap
+    # `_generate_verify_severity_rubric_section`'s own docstring warns about in those words.
+    #
+    # DISCLOSED, because it is a grade demotion and not an equivalence: a digest is a REVIEW
+    # GATE, not a machine guarantee. The failure prints the new digest, and pasting it back is
+    # one line — so what stops a re-grounding is a human reading the checklist below, not the
+    # test. The phrase pins it replaced were weaker in the other direction (three rounds of
+    # reviewers reworded around them) but they named the axis in the failure. Both facts belong
+    # in the PR body.
+    _RUBRIC_DIGEST_BY_STEP = {
+        "compile": "41e1ed52731c88f0c5c259875a3be8c605db94c4744fb6e938e523c0ba795d3c",
+        "generate": "83bed963f6bf9233e4167ce3c1a1f47953102c147431b7234d67fc560c3a04bc",
+    }
 
     def test_every_routing_statement_points_at_the_severity_rubric(self) -> None:
         """Six documents stated what `issue_severity` CAUSES and none stated how to choose it
@@ -1091,7 +1110,7 @@ class PureRenderTests(unittest.TestCase):
         "docs/AGENT_CONTRACT.md: - A verify-family finding always sets `verification_status=f"
         " #12a92add46ae",
         "docs/RUNBOOK.md: - Recovery from a **`conductor_phase_fail_closed` whose `rea"
-        " #bd6eed3f2e08",
+        " #b55e7ec57c05",
         "skills/workflow-generate-verify/SKILL.md: - A finding always sets "
         "`verification_status=fail` (record ` #4a2a99cfe8e9",
         # Issue #148: the `Compile.verify` mirror of the line above. It routes and points; it
@@ -1350,29 +1369,39 @@ class PureRenderTests(unittest.TestCase):
         # `tools/tests/test_pure_prompt_contract_drift.py`, which hashes its slice because it is
         # a pure-leaf input; phase_01 is force-read whole and had no counterpart, which is
         # exactly the asymmetry every surviving mutant of rounds 1-3 lived in.
-        digest = hashlib.sha256(slices["compile"].encode("utf-8")).hexdigest()
-        self.assertEqual(
-            digest, self._PHASE_01_RUBRIC_DIGEST,
-            "docs/workflow/phases/phase_01_compile.md §1-2's severity rubric changed. This "
-            "is a REVIEW GATE, not an accusation: an intentional edit re-takes the digest, in "
-            "one line, AFTER reading the new text against every property below. It exists "
-            "because three rounds of literal-phrase pins were each defeated by rewording around "
-            "the phrase, in both directions.\n"
-            "Re-read, then update `_PHASE_01_RUBRIC_DIGEST`:\n"
-            "  1. AXIS. Every value is chosen by which REPAIR the finding calls for, never by "
-            "how bad the defect would be at `Generate` or `Validate`.\n"
-            "  2. `minor` = the subject is `spec.ir.yaml` and `Compile.generate`, re-run from "
-            "the same verification inputs, can fix it.\n"
-            "  3. `major` = the subject is an INPUT, so no such re-run reaches it. Its cases "
-            "must not name anything the conductor's own gates make unreachable.\n"
-            "  4. `critical` = `spec.ir.yaml` cannot be the base of a repair at all, and the "
-            "`minor` bullet's universal must still DEFER to it.\n"
-            "  5. The lead still says a thin lowering is `minor` HERE and `major` at "
-            "`Generate.verify`, and still points at phase_02 §2-2.\n"
-            "  6. Each tie-break still agrees with the `major` and `critical` bullets — a "
-            "pin cannot check this, which is why it is on this list.\n"
-            "  7. No `pass`-side rule has entered the span; this rubric grades a FAILING "
-            "finding only.")
+        artifact = {"compile": "`spec.ir.yaml`", "generate": "the sources under review"}
+        producer = {"compile": "`Compile.generate`", "generate": "`Generate.generate`"}
+        other = {"compile": "phase_02_generate.md §2-2", "generate": "phase_01_compile.md §1-2"}
+        for step, doc in slices.items():
+            with self.subTest(step=step, check="digest"):
+                digest = hashlib.sha256(doc.encode("utf-8")).hexdigest()
+                self.assertEqual(
+                    digest, self._RUBRIC_DIGEST_BY_STEP[step],
+                    f"{ort.WORKFLOW_PHASE_DOC_BY_STEP[step]}'s `#### Severity of a finding` "
+                    f"rubric changed. This is a REVIEW GATE, not an accusation: an intentional "
+                    f"edit re-takes the digest — printed above — in one line, AFTER reading the "
+                    f"new text against every property below. It replaced per-value literal "
+                    f"phrases because three rounds of them were each defeated by rewording "
+                    f"around the phrase, and it is WEAKER in one direction: nothing here stops "
+                    f"a re-take, so the properties are checked by you, not by this test.\n"
+                    f"Re-read, then update `_RUBRIC_DIGEST_BY_STEP[{step!r}]`:\n"
+                    f"  1. AXIS. Every value is chosen by which REPAIR the finding calls for, "
+                    f"never by how bad the defect would be downstream.\n"
+                    f"  2. `minor` = the subject is {artifact[step]}, and {producer[step]}, "
+                    f"re-run from the same inputs, can fix it.\n"
+                    f"  3. `major` = the subject is an INPUT, so no such re-run reaches it. Its "
+                    f"cases must not name anything the conductor's own gates make unreachable, "
+                    f"and every case must have a destination in `docs/RUNBOOK.md` §3-1.\n"
+                    f"  4. `critical` = {artifact[step]} cannot be the base of a repair at all, "
+                    f"and the `minor` bullet's universal must still DEFER to it.\n"
+                    f"  5. The lead still explains the disagreement with {other[step]} and "
+                    f"still points at it.\n"
+                    f"  6. Each tie-break still agrees with the `major` and `critical` bullets "
+                    f"— no pin can check this, which is why it is on this list.\n"
+                    f"  7. No `pass`-side rule has entered the span; this rubric grades a "
+                    f"FAILING finding only.\n"
+                    f"  8. Every `fail` the phase's verify `SKILL` mandates can still be graded "
+                    f"by one of the three bullets.")
 
     _COUNT_WORDS = {1: "one", 2: "two", 3: "three", 4: "four", 5: "five", 6: "six"}
 
