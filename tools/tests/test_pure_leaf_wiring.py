@@ -657,30 +657,62 @@ class PureRenderTests(unittest.TestCase):
                               f"{rel}: the routing statement does not point at the rubric")
                 self.assertIn("§2-2", line, rel)
 
-    def test_phase_02_names_the_injected_context_key_in_its_executor_section(self) -> None:
-        """The §Generate-executor paragraph is where phase_02 records WHAT the pure reviewer is
-        handed, and it is read by the agentic leaf as well. Round 0 found the sentence unpinned:
-        reverting it left the whole suite green, so a rename of the context key would leave the
-        phase contract describing a document that no longer arrives.
+    # Every document that records WHAT the pure reviewer is handed, with the section each
+    # statement lives in. Round 0's doc sweep found all three unpinned: reverting any of them
+    # left the suite green, so a renamed context key would leave three contracts — one of them
+    # read by the AGENTIC verify leaf — describing a document that no longer arrives.
+    _PROVENANCE_SURFACES = (
+        ("docs/workflow/phases/phase_02_generate.md", "\n## Generate-executor",
+         "\n## I/O contract"),
+        ("docs/workflow/LAUNCH_PROMPT_REFERENCE.md",
+         "\n#### Z2 pure-function leaf launch prompt", "\n#### Additional contract on"),
+        ("docs/AGENT_SKILLS.md", "\n## Requirements", "\n## Responsibility-decision flow"),
+    )
 
-        The literal is DERIVED from `PURE_CONTEXT_REQUIRED_KEYS` (the code that decides what the
-        host must supply), never spelled independently, so the two break together. The reader is
-        bounded to the section and the bound is self-tested.
+    def test_every_provenance_statement_names_the_injected_context_keys(self) -> None:
+        """PINNED: each surface names both host-sliced `(generate, verify)` context keys, inside
+        the section that states what the reviewer receives.
+
+        The literals are DERIVED from `PURE_CONTEXT_REQUIRED_KEYS` — the code that decides what
+        the host must supply — never spelled independently, so a rename breaks the code and the
+        three documents together. Each reader is bounded to its section and both bounds are
+        self-tested. SAMPLED: nothing about what the sentences SAY about those documents.
         """
         keys = ort.PURE_CONTEXT_REQUIRED_KEYS[("generate", "verify")]
-        self.assertIn("severity_rubric_document", keys)
-        doc = (Path(ort.__file__).resolve().parents[1] / "docs" / "workflow" / "phases"
-               / "phase_02_generate.md").read_text(encoding="utf-8")
-        begin_marker, end_marker = "\n## Generate-executor", "\n## I/O contract"
-        self.assertEqual(doc.count(begin_marker), 1)
-        self.assertEqual(doc.count(end_marker), 1)
-        begin, end = doc.index(begin_marker), doc.index(end_marker)
-        self.assertGreater(end, begin)
-        section = doc[begin:end]
-        for key in ("checks_module_contract_document", "severity_rubric_document"):
-            self.assertIn(key, section,
-                          f"§Generate-executor does not name {key}, so the phase contract no "
-                          f"longer records what the reviewer is handed")
+        named = tuple(k for k in ("checks_module_contract_document", "severity_rubric_document")
+                      if k in keys)
+        self.assertEqual(len(named), 2,
+                         "both host-sliced documents must still be declared context keys, or "
+                         "this check is asserting about a document nobody is handed")
+        repo_root = Path(ort.__file__).resolve().parents[1]
+        for rel, begin_marker, end_marker in self._PROVENANCE_SURFACES:
+            with self.subTest(surface=rel):
+                doc = (repo_root / rel).read_text(encoding="utf-8")
+                self.assertEqual(doc.count(begin_marker), 1, f"{rel}: {begin_marker!r}")
+                self.assertEqual(doc.count(end_marker), 1, f"{rel}: {end_marker!r}")
+                begin, end = doc.index(begin_marker), doc.index(end_marker)
+                self.assertGreater(end, begin, rel)
+                section = doc[begin:end]
+                for key in named:
+                    self.assertIn(key, section,
+                                  f"{rel} no longer records that the reviewer is handed {key}")
+
+    def test_launch_prompt_reference_spells_both_rubric_fail_closed_names(self) -> None:
+        """The two `pure_severity_rubric_document_*` tags reach an operator only through the run
+        log and the `pure_context_assembly_failed` outcome, so the reference document is where
+        they are spelled out — the same argument the checks-contract pair is written under.
+
+        Coupled by requiring each name in BOTH the document and the module that raises it: a
+        rename that touches one side turns this red naming the side that moved.
+        """
+        repo_root = Path(ort.__file__).resolve().parents[1]
+        source = (repo_root / "tools" / "workflow_conductor.py").read_text(encoding="utf-8")
+        doc = (repo_root / "docs" / "workflow"
+               / "LAUNCH_PROMPT_REFERENCE.md").read_text(encoding="utf-8")
+        for name in ("pure_severity_rubric_document_missing",
+                     "pure_severity_rubric_document_unsliceable"):
+            self.assertIn(name, source, f"{name} is no longer raised by the conductor")
+            self.assertIn(name, doc, f"{name} is raised but not spelled for the operator")
 
     def test_the_generate_verify_skill_assigns_no_severity_of_its_own(self) -> None:
         # The SKILL graded one G4-class defect `major` inline. On the repair-route axis that
