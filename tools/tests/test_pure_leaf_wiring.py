@@ -11,6 +11,7 @@ pipeline-semantics launch-record sweep's pure checks.
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import os
@@ -34,11 +35,13 @@ from tools.orchestration_runtime import (
     record_launch,
     write_preflight,
 )
+from tools.llm_config import LLM_LEAF_SUBSTEPS, PURE_CAPABLE_SUBSTEPS
 from tools.pure_leaf import (
     PURE_DOC_FENCE_BEGIN,
     PURE_DOC_FENCE_END,
     PURE_PROMPT_CONTRACT_VERSION,
     PURE_PROMPT_SENTINEL,
+    PURE_SYSTEM_PROMPT,
     VERDICT_SEVERITIES,
 )
 
@@ -1082,13 +1085,20 @@ class PureRenderTests(unittest.TestCase):
         ("docs/workflow/RUNNER_OUTPUT_CONTRACT.md", None, None),
         ("docs/RUNBOOK.md", None, None),
     )
-    # A backticked or bolded severity value, one assigned to the field by name, or one in bare
-    # parentheses. The second spelling is round 4's: `` `issue_severity=major` `` is the most
-    # natural form for an instruction that ASSIGNS rather than describes, and the first pattern
-    # did not see it. The third is issue #148's: `a `Generate.verify` `fail` (major)` was the
-    # hand-assignment issue #143 left in its own producer `SKILL`, invisible to both.
+    # A backticked or bolded severity value, one assigned to the field by name (with `=` or
+    # `:`), or one in bare parentheses. The second spelling is round 4's:
+    # `` `issue_severity=major` `` is the most natural form for an instruction that ASSIGNS
+    # rather than describes, and the first pattern did not see it. The third is issue #148's:
+    # `a `Generate.verify` `fail` (major)` was the hand-assignment issue #143 left in its own
+    # producer `SKILL`, invisible to both. Issue #149 added the COLON to the second: the
+    # rendered launch-metadata slot is spelled `issue_severity: major`
+    # (`substep_agent.txt:15` / `step_agent.txt:14` filled from the payload), so on the
+    # transport that sweep opened the `=`-only branch had nothing to catch. The JSON form
+    # `"issue_severity": "major"` stays invisible either way — the key's closing quote sits
+    # where the pattern wants `\s*` — which is why the conductor's six repair sites, which
+    # write the VALUE in exactly that form, are not swept.
     _SEVERITY_LITERAL_RE = re.compile(
-        r"[`*](minor|major|critical)[`*]|issue_severity\s*=\s*[`\"']?(minor|major|critical)"
+        r"[`*](minor|major|critical)[`*]|issue_severity\s*[:=]\s*[`\"']?(minor|major|critical)"
         r"|\((minor|major|critical)\)")
     # The lines outside the rubric that may name a severity, normalized to their first 60
     # characters. This is an ALLOWLIST, deliberately, and it replaced a predicate — "the line
@@ -1134,10 +1144,12 @@ class PureRenderTests(unittest.TestCase):
         any wording, with or without a pointer — is red, and the failure says to read it and
         allowlist it if it routes.
         SAMPLED, and the limits worth writing down. The SPELLINGS recognised are a backticked
-        or bolded value, `issue_severity=<value>`, and a bare `(value)`. A severity in double
-        quotes or in bare prose ("this is a major fail") is not seen; the launch template's own
-        output contract states the enum in double quotes, which is why quotes cannot be in the
-        pattern. And the bare `(value)` branch OVER-matches by design: an ordinary English
+        or bolded value, `issue_severity=<value>` and `issue_severity: <value>`, and a bare
+        `(value)`. A severity in double quotes or in bare prose ("this is a major fail") is not
+        seen; the launch template's own output contract states the enum in double quotes, which
+        is why quotes cannot be in the pattern. The colon form is issue #149's, added for the
+        RENDERED sweep below (where the launch-metadata slot is spelled that way); on the FILE
+        surfaces here it caught nothing new at `26e1b5e`, so it is a growth bound. And the bare `(value)` branch OVER-matches by design: an ordinary English
         `(minor)` used as an adjective is refused too. That is the deliberate polarity — this
         gate refuses a new mention until a human reads it — and the failure message names that
         third case, because round 1 constructed one and found the message offering only two.
@@ -1263,6 +1275,483 @@ class PureRenderTests(unittest.TestCase):
                          "round 4 of issue #143 measured. A line that vanished from the list is "
                          "a routing statement that was deleted or reworded.")
 
+    # ---- issue #149: the same sweep over what the RENDERER adds ------------------------
+    # The sweep above reads the leaf-read surfaces AS FILES. A `substep_agent.txt` slot
+    # (`<gate_runbook>` / `<task_card>` / `<dependency_facts>` / `<exemplar>`) is filled by a
+    # Python literal in `orchestration_runtime`, and three renderers
+    # (`_render_slim_repair_launch_prompt`, `_render_pure_launch_prompt`,
+    # `_render_pure_repair_prompt`) build their prompt WITHOUT a template at all — so a severity
+    # hand-assigned in host code reaches a verify leaf with no file for the sweep above to read.
+    # A Task Card is drawn BEFORE the must-read header, so a value written there outranks the
+    # SKILL and the phase rubric, and `Compile.verify` is agentic-only: this transport is its
+    # only one.
+    #
+    # What follows renders the production prompt through the production entry point
+    # (`wc.build_launch_request` -> `ort.prepare_launch_request_payload` ->
+    # `ort.render_launch_prompt_text`) and sweeps the RESULT MINUS the lines that came from a
+    # template file, which the file sweep already owns.
+
+    # The launch metadata slot is spelled with a COLON (`issue_severity: major`), so the
+    # `=`-only branch of `_SEVERITY_LITERAL_RE` saw nothing here; issue #149 added `[:=]`.
+    _RENDERED_SEVERITY_ROUTING_ALLOWLIST = (
+        # `substep_agent.txt:15`'s launch-metadata slot, filled from the payload. This is a VALUE
+        # the conductor passes on a repair launch (`workflow_conductor._repair_payload` and five
+        # sibling sites hard-code `major`), not prose that assigns a class of finding a value.
+        # A different value (`critical`) is a different line and is red until someone reads it.
+        "issue_severity: major #e54e592e6501",
+    )
+
+    # The fixture values are the production ones: `REPAIR` is what the conductor's six repair
+    # sites pass, and no payload value carries a severity WORD (`repair_reason` is a reason
+    # token, the findings excerpt is a real lint diagnostic) — so a hit below comes from the
+    # renderer, not from the fixture.
+    _RENDER_REFS = dict(node_key="component/demo_dep_top@0.1.0",
+                        spec_path="spec/component/demo/demo_dep_top",
+                        ir_id="d_002", pipeline_id="d_002",
+                        source_id="src_20260626_001", binary_id="bin_20260626_001",
+                        run_id="run_20260626_001", source_binary_id="bin_20260626_001")
+    _RENDER_COMMON = dict(orchestration_id="orch_149",
+                          orchestration_agent_run_id="arid-PARENT",
+                          child_agent_run_id="arid-149", agent_model="opus",
+                          workflow_mode="dev")
+    _RENDER_REPAIR = {"issue_severity": "major", "repair_strategy": "reuse",
+                      "repair_target_agent_run_id": "arid-PRIOR",
+                      "repair_reason": "lint_lint_findings"}
+    _RENDER_FINDINGS = ("x_model.f90:61:17: C061 subroutine argument 'u_l' missing "
+                        "'intent' attribute")
+    # `arguments[]` with an int `rank` is required: `_argument_detail_lines` returns [] without
+    # it, and the reach test below demands every pinned builder EMIT in at least one config.
+    _RENDER_DEP = {
+        "node_key": "component/demo_dep_base@0.1.0",
+        "pipeline_ref": "workspace/pipelines/component__demo_dep_base__0.1.0/p1",
+        "run_id": "run_b_001",
+        "aggregate_verdict_ref":
+            "workspace/pipelines/component__demo_dep_base__0.1.0/p1/runs/run_b_001/"
+            "component__demo_dep_base__0.1.0/aggregate_verdict.json",
+        "published_operations": [
+            {"operation": "bc__apply", "interface": "subroutine bc__apply(U)",
+             "argument_order": ["U"],
+             "arguments": [{"name": "U", "type": "real(dp)", "intent": "inout",
+                            "rank": 2, "dimension": ":, :"}]},
+        ],
+    }
+    # Both branches of `_build_dependency_surface_facts`' per-entry loop.
+    _RENDER_SURFACE = ({"node_key": "component/demo_dep_base@0.1.0", "source": "certified",
+                        "published_operations": ["demo_dep_base__scale"]},
+                       {"node_key": "component/demo_dep_other@0.1.0", "source": "unresolved"})
+    _RENDER_EXEMPLAR = {"node_key": "component/demo_sibling@0.1.0",
+                        "sources": [{"filename": "demo_sibling_model.f90",
+                                     "text": "module demo_sibling_model\nend module\n"}]}
+
+    def _host_built_launch_requests(self) -> list[tuple[str, dict]]:
+        """Every `(step, substep)` an LLM leaf runs, in each renderer shape, as the payload
+        `build_launch_request` produces. Label: `<step>.<substep>/<shape>`.
+
+        Every optional input is passed for every pair and the BUILDER decides what to scope
+        (`resolved_dependencies` to generate/validate, `dependency_surface` to compile.generate,
+        `exemplar` to generate.generate) — that is the production division of labour, and a
+        hand-scoped fixture here would pin this test's copy of it instead.
+        """
+        reqs: list[tuple[str, dict]] = []
+        pairs = sorted(LLM_LEAF_SUBSTEPS)
+        self.assertTrue(pairs, "no LLM leaf substeps; this renders nothing")
+        refs = wc.NodeRefs(**self._RENDER_REFS)
+        for step, substep in pairs:
+            for shape in ("cold", "repair-full", "slim"):
+                kw = dict(self._RENDER_COMMON)
+                if shape == "repair-full":
+                    kw["repair"] = dict(self._RENDER_REPAIR)
+                elif shape == "slim":
+                    # `repair_findings` rides INSIDE the `repair` dict: `build_launch_request`
+                    # has no separate kwarg for it and `rep.update(repair)` is what makes
+                    # `_is_slim_repair_request` true.
+                    kw["repair"] = dict(self._RENDER_REPAIR,
+                                        repair_findings=self._RENDER_FINDINGS)
+                    kw["warm_resume"] = True
+                reqs.append((f"{step}.{substep}/{shape}",
+                             wc.build_launch_request(
+                                 refs, step=step, substep=substep,
+                                 resolved_dependencies=(self._RENDER_DEP,),
+                                 dependency_surface=self._RENDER_SURFACE,
+                                 exemplar=self._RENDER_EXEMPLAR, **kw)))
+        pure_pairs = sorted(PURE_CAPABLE_SUBSTEPS)
+        self.assertTrue(pure_pairs, "no pure-capable substeps; this renders nothing")
+        for step, substep in pure_pairs:
+            ctx = (_pure_generate_context() if substep == "generate"
+                   else _pure_verify_context())
+            reason = "pure_bundle_repair" if substep == "generate" else "pure_verdict_repair"
+            for shape in ("pure-cold", "pure-repair-warm", "pure-repair-cold"):
+                kw = dict(self._RENDER_COMMON, pure_leaf=True, makefile_host_authored=True,
+                          runner_host_authored=True)
+                extra: dict = {}
+                if shape == "pure-cold":
+                    kw["pure_context"] = ctx
+                    extra = dict(resolved_dependencies=(self._RENDER_DEP,),
+                                 exemplar=self._RENDER_EXEMPLAR)
+                else:
+                    kw["repair"] = dict(self._RENDER_REPAIR,
+                                        repair_findings=self._RENDER_FINDINGS,
+                                        repair_reason=reason)
+                    if shape == "pure-repair-warm":
+                        kw["warm_resume"] = True
+                        kw["pure_context"] = None
+                    else:
+                        kw["warm_resume"] = False
+                        kw["pure_context"] = ctx
+                        extra = dict(resolved_dependencies=(self._RENDER_DEP,))
+                req = wc.build_launch_request(refs, step=step, substep=substep, **kw, **extra)
+                if shape == "pure-repair-cold":
+                    # `prior_document` is threaded onto the request by the producer repair loop
+                    # AFTER the build; `build_launch_request` has no kwarg for it.
+                    req["prior_document"] = '{"files": []}'
+                reqs.append((f"{step}.{substep}/{shape}", req))
+        return reqs
+
+    def _host_built_severity_mentions(self, validate: bool = True) -> dict[str, set[str]]:
+        """Severity mentions on the HOST-BUILT lines of every rendered launch prompt.
+
+        "Host-built" = the rendered prompt, minus the data regions, minus every line that is
+        byte-identical to a non-blank line of a `tools/prompt_templates/*.txt` file (those the
+        file sweep above owns). Blank lines are excluded from the subtraction set because every
+        template has them, which would make the self-tests below read a coincidence as coverage;
+        a blank line can carry no severity, so `found` is unaffected either way.
+
+        The data carve-out is NOT `_gate_allowlist_scan_text`: for a slim turn that helper drops
+        everything from the findings HEADER onwards, which would take
+        `SLIM_REPAIR_FINDINGS_WARNING` — host prose — out of the sweep. Only the fence BODY is
+        dropped here. (Inside the fence is DATA: an assignment planted in `repair_findings` is
+        deliberately green.)
+
+        Returns `entry -> {config labels it appeared in}`. `validate=False` is for the reach
+        test, whose wrappers prepend a canary line and so break the first-line witnesses and the
+        production launch validator.
+        """
+        repo_root = Path(ort.__file__).resolve().parents[1]
+        templates_dir = repo_root / "tools" / "prompt_templates"
+        template_lines = {ln for p in templates_dir.iterdir() if p.suffix == ".txt"
+                          for ln in p.read_text(encoding="utf-8").splitlines() if ln.strip()}
+        self.assertTrue(template_lines, "no launch-prompt templates read; nothing is subtracted")
+        slim_fence_re = re.compile(
+            re.escape(ort.SLIM_REPAIR_FINDINGS_FENCE_BEGIN) + r".*?"
+            + re.escape(ort.SLIM_REPAIR_FINDINGS_FENCE_END), re.DOTALL)
+        found: dict[str, set[str]] = {}
+        seen_shapes: set[tuple[str, str]] = set()
+        self._rendered_by_label = {}
+        for label, req in self._host_built_launch_requests():
+            self._render_label = label
+            prepared = ort.prepare_launch_request_payload(req)
+            rendered = prepared["launch_prompt_full"]
+            self._rendered_by_label[label] = rendered
+            pair, shape = label.split("/")
+            seen_shapes.add((pair, shape))
+            self.assertEqual(rendered, ort.render_launch_prompt_text(prepared), label)
+            self.assertNotIn(ort.DETERMINISTIC_PROMPT_SENTINEL, rendered, label)
+            if validate:
+                # (b) family witness: the config reached the renderer branch it claims.
+                ort._validate_launch_prompt_text(prepared, rendered)
+                first = rendered.splitlines()[0]
+                if shape == "slim":
+                    self.assertTrue(rendered.startswith(ort.SLIM_REPAIR_PROMPT_SENTINEL), label)
+                elif shape.startswith("pure"):
+                    self.assertTrue(first.startswith(PURE_PROMPT_SENTINEL), label)
+                else:
+                    self.assertEqual(first, "You are a substep agent.", label)
+            scan = ort._strip_exemplar_regions(ort._strip_pure_doc_regions(rendered))
+            scan = slim_fence_re.sub("", scan)
+            host_lines = [ln for ln in scan.splitlines() if ln not in template_lines]
+            if validate:
+                # (c) the data carve-out removed something exactly where a data region exists,
+                # derived from the code rather than from a hand-written table of labels.
+                expect_carve = (shape.startswith("pure") or shape == "slim"
+                                or bool(ort._build_exemplar(req)))
+                self.assertEqual(scan != rendered, expect_carve,
+                                 f"{label}: the data carve-out did not do what the request's "
+                                 f"own shape says it should")
+                # (d) template subtraction. A slim turn goes through no template at all, so
+                # nothing is subtracted from it — that is the witness for the split of labour
+                # between this sweep and the file sweep.
+                subtracted = len(scan.splitlines()) - len(host_lines)
+                if shape == "slim":
+                    self.assertEqual(subtracted, 0,
+                                     f"{label}: a slim repair turn is built without a template, "
+                                     f"so no line of it may be attributed to one")
+                else:
+                    self.assertGreater(subtracted, 0,
+                                       f"{label}: no template line was subtracted, so the file "
+                                       f"sweep and this one would both report the same lines")
+            for line in host_lines:
+                if self._SEVERITY_LITERAL_RE.search(line):
+                    key = (f"{line[:60]} "
+                           f"#{hashlib.sha256(line.encode()).hexdigest()[:12]}")
+                    found.setdefault(key, set()).add(label)
+        self._render_label = None
+        if validate:
+            # (a) every pair of both code tables was rendered in all three of its shapes.
+            self.assertEqual(
+                seen_shapes,
+                {(f"{s}.{ss}", shape) for s, ss in LLM_LEAF_SUBSTEPS
+                 for shape in ("cold", "repair-full", "slim")}
+                | {(f"{s}.{ss}", shape) for s, ss in PURE_CAPABLE_SUBSTEPS
+                   for shape in ("pure-cold", "pure-repair-warm", "pure-repair-cold")},
+                "the rendered configurations do not cover the substep tables the conductor "
+                "dispatches on")
+        # `PURE_SYSTEM_PROMPT` is a host literal too — a pure leaf receives it as
+        # `--system-prompt`, outside every launch prompt. Swept as one more surface.
+        for line in PURE_SYSTEM_PROMPT.splitlines():
+            if self._SEVERITY_LITERAL_RE.search(line):
+                key = f"{line[:60]} #{hashlib.sha256(line.encode()).hexdigest()[:12]}"
+                found.setdefault(key, set()).add("PURE_SYSTEM_PROMPT")
+        return found
+
+    def test_no_host_built_launch_prompt_line_hand_assigns_a_severity_outside_the_rubric(
+            self) -> None:
+        """The renderer's own lines may ROUTE on a severity; they may not assign one. Same rule
+        as the file sweep above, on the transport that has no file.
+
+        PINNED, as a set: across every `(step, substep)` of `LLM_LEAF_SUBSTEPS` in its three
+        agentic shapes and every pair of `PURE_CAPABLE_SUBSTEPS` in its three pure shapes, the
+        severity mentions on the lines the RENDER adds — the rendered prompt minus the data
+        regions minus the lines a template file already carries — are exactly
+        `_RENDERED_SEVERITY_ROUTING_ALLOWLIST`. `PURE_SYSTEM_PROMPT` is swept as one more host
+        literal.
+        SAMPLED, and the limits worth writing down:
+        - Only the branches these payloads DRIVE. A builder branch that returns "" renders no
+          line, so there is nothing for any sweep to read; a branch needing a payload shape not
+          built here (a task card with no deliverables) is not covered.
+          `test_host_built_severity_sweep_reaches_every_prompt_builder` is what keeps that
+          honest: it demands each pinned builder actually EMIT under some config here.
+        - `step_agent.txt` is not rendered. `child_agent_role` maps only `build` to `step`, and
+          `build` is deterministic, so no LLM leaf reads that template in production; its slot
+          set is the substep template's and every builder is reached through a substep config.
+          Its BYTES are read by the file sweep above.
+        - A host line that is byte-identical to a template line is subtracted, so a severity
+          the host DUPLICATED from a template is reported by the file sweep only. The converse
+          also holds: a template line carrying an id placeholder (`substep_agent.txt`'s tmp-area
+          paragraph, `common_boilerplate.txt`) no longer matches its file once filled, so a
+          severity written there needs an entry in BOTH allowlists. Double reporting is
+          accepted; it is one entry per surface the value actually reaches.
+        - The SPELLINGS are `_SEVERITY_LITERAL_RE`'s four (issue #149 added the colon form for
+          this sweep). The JSON form `"issue_severity": "major"` — how the conductor's six
+          repair sites write the value in Python — is still invisible: the key's closing quote
+          sits where the pattern wants `\\s*`. That is deliberate; those are values, not prose.
+        - `workflow_conductor._DIRECTIVE_SCHEMA` / `_diagnosis_prompt` are out of scope. They
+          are not a verify leaf's surface: `severity` there is the diagnostician's own field on
+          a consequence axis, and its rubric is inside that same string. `TODO.md`'s
+          rubric-twin entry owns them.
+        """
+        found = self._host_built_severity_mentions()
+        detail = "; ".join(f"{k!r} in {sorted(v)}" for k, v in sorted(found.items()))
+        self.assertEqual(
+            sorted(found), sorted(self._RENDERED_SEVERITY_ROUTING_ALLOWLIST),
+            "the severity mentions on the host-built lines of the rendered launch prompts are "
+            "not the allowlisted ones. READ each line the diff below adds: if it ROUTES on a "
+            "value or points at the rule that chooses it, add it to "
+            "`_RENDERED_SEVERITY_ROUTING_ALLOWLIST`; if it ASSIGNS one beside a checklist item "
+            "or a task card, that is the defect issue #143 removed, now on the transport issue "
+            "#149 opened — the rubric is the only place a value is chosen. If it does NEITHER, "
+            "it is still a new mention on a leaf-read surface and still gets allowlisted: this "
+            "gate refuses until a human has read, deliberately. A line that vanished was "
+            "deleted or reworded. Where each entry was rendered: " + (detail or "(nothing)"))
+
+    _HAND_ASSIGNMENT_CANARY = ("A finding on the IR self-sufficiency invariant records "
+                               "`issue_severity=major`.")
+    # Every `orchestration_runtime` function on the launch-render closure that returns PROSE a
+    # leaf reads. Each is wrapped below and must be shown to reach the sweep.
+    _HOST_BUILT_PROMPT_BUILDERS = (
+        "_build_gate_runbook", "_build_task_card", "_build_dependency_facts",
+        "_build_dependency_surface_facts", "_published_operations_lines",
+        "_argument_detail_lines", "_build_exemplar", "_render_slim_repair_launch_prompt",
+        "_render_pure_launch_prompt", "_render_pure_repair_prompt",
+        "_pure_output_contract_text", "_pure_authoring_rules_text",
+    )
+    # Dispatchers / value maps: they return no prose of their own but CALL builders, so the
+    # derivation below descends into them without wrapping them.
+    _PROMPT_RENDER_TRANSIT = frozenset({
+        "_render_launch_prompt_template", "_template_placeholder_values",
+    })
+    # Callees on the closure that add no prose of their own. Not descended into: the closure of
+    # `_allowed_file_tool_paths_for_launch` alone pulls in path normalization that has nothing
+    # to do with prompt text.
+    _NON_PROSE_PROMPT_HELPERS = frozenset({
+        "_load_launch_prompt_templates",     # reads the template files verbatim
+        "_launch_prompt_template_name",      # returns a template NAME
+        "_pure_launch_template_name",        # returns a template NAME
+        "_pure_template_paragraph",          # lifts a template paragraph VERBATIM (subtracted)
+        "_fence_pure_doc",                   # wraps a value in the data fence (carved out)
+        "_sanitize_pure_doc_body",           # neutralizes fence markers in a value
+        "_sanitize_exemplar_body",           # neutralizes fence markers in exemplar source
+        "_substitute_pure_placeholders",     # `<key>` substitution, adds no text of its own
+        "_is_pure_launch_request",           # predicate
+        "_is_slim_repair_request",           # predicate
+        "_allowed_file_tool_paths_for_launch",  # returns repository PATHS
+        "_agent_tmp_gate_result_dir_ref",    # returns a repository PATH
+        "_render_deterministic_launch_prompt",  # a prompt NO leaf reads (asserted absent above)
+    })
+
+    def test_host_built_severity_sweep_reaches_every_prompt_builder(self) -> None:
+        """The sweep above reports what each prompt builder emits — measured, not assumed.
+
+        PINNED, per builder and per configuration: with `<name>` wrapped so that a canary
+        hand-assignment is prepended to every NON-EMPTY return, the sweep reports the canary in
+        EXACTLY the configurations where that builder's text REACHES the rendered prompt. What
+        the assertion therefore pins is that nothing between the builder and the sweep — a data
+        carve-out, the template subtraction — swallows a line the leaf is going to read. A
+        builder no configuration puts into a prompt is red.
+        Reaching is derived per configuration, not tabulated: a spy pass records what each
+        builder returned and whether its first line is in the production render. The two are
+        NOT the same set, measured: a slim repair turn calls `_template_placeholder_values` and
+        so runs all four slot builders, then renders none of their output. Empty returns are
+        left alone: prepending to "" would only show the slot is on the path, not that the
+        builder's emitting branch was driven.
+        PINNED, structurally: every `orchestration_runtime` function the render closure calls by
+        bare name is classified as a wrapped builder, a transit node, or an explicit non-prose
+        helper. A new builder wired into the render is red until it is classified — the review
+        gate this file uses for prose is used here for the code that produces it.
+        SAMPLED: the closure is derived from `ast.Name` calls, so a callee reached through an
+        alias, an attribute or a computed name is invisible to it. And a renderer that STOPS
+        calling a builder is invisible: both sides of the equality are derived from the calls
+        that happen, so they drop together. MEASURED at `26e1b5e`: replacing
+        `_render_pure_launch_prompt`'s `_build_dependency_facts(...)` with `""` left this test,
+        both sweeps and 3033 further tests across five suite files green. What a renderer owes
+        at launch is a separate claim and needs its own witness —
+        `test_pure_cold_launch_prompt_carries_the_host_resolved_dependency_facts` below is that
+        one for the case measured, and `test_pure_leaf_producer
+        .test_cold_repair_includes_dependency_facts` is the repair-side mirror that already
+        existed.
+        """
+        canary_key = (f"{self._HAND_ASSIGNMENT_CANARY[:60]} "
+                      f"#{hashlib.sha256(self._HAND_ASSIGNMENT_CANARY.encode()).hexdigest()[:12]}")
+        self.assertRegex(self._HAND_ASSIGNMENT_CANARY, self._SEVERITY_LITERAL_RE,
+                         "the canary itself is not a severity mention, so nothing below "
+                         "observes anything")
+        baseline = set(self._RENDERED_SEVERITY_ROUTING_ALLOWLIST)
+        for name in self._HOST_BUILT_PROMPT_BUILDERS:
+            with self.subTest(builder=name):
+                original = getattr(ort, name)
+                returned: dict[str, object] = {}
+
+                def spy(*args, _orig=original, _returned=returned, **kwargs):
+                    result = _orig(*args, **kwargs)
+                    label = getattr(self, "_render_label", None)
+                    if label and result and isinstance(result, (str, list)):
+                        _returned[label] = result
+                    return result
+
+                with patch.object(ort, name, spy):
+                    self._host_built_severity_mentions(validate=False)
+                rendered_by_label = dict(self._rendered_by_label)
+                self.assertTrue(
+                    returned,
+                    f"no configuration in `_host_built_launch_requests` makes `{name}` return "
+                    f"anything; add one that drives its non-empty branch — this sweep cannot "
+                    f"see what it does not render")
+                # The probe is the builder's FIRST line, the position the canary takes below,
+                # so "reaches the prompt" and "the canary would be there" ask one question.
+                reached = {
+                    label for label, result in returned.items()
+                    if (result if isinstance(result, str) else str(result[0])
+                        ).splitlines()[0] in rendered_by_label[label]}
+                self.assertTrue(
+                    reached,
+                    f"`{name}` returns text in {sorted(returned)} and none of it reaches the "
+                    f"rendered prompt there; add a configuration whose renderer actually uses "
+                    f"it — a builder whose output is discarded is not a prompt surface")
+
+                def wrapper(*args, _orig=original, **kwargs):
+                    result = _orig(*args, **kwargs)
+                    if isinstance(result, str) and result:
+                        return self._HAND_ASSIGNMENT_CANARY + "\n" + result
+                    if isinstance(result, list) and result:
+                        return [self._HAND_ASSIGNMENT_CANARY, *result]
+                    return result
+
+                with patch.object(ort, name, wrapper):
+                    found = self._host_built_severity_mentions(validate=False)
+                self.assertEqual(
+                    found.get(canary_key, set()), reached,
+                    f"`{name}`'s text reaches the prompt in {sorted(reached)} but the sweep "
+                    f"reported its canary in {sorted(found.get(canary_key, set()))}. A "
+                    f"configuration in the first list and not the second is prose this sweep "
+                    f"cannot see — a data carve-out or the template subtraction is swallowing "
+                    f"a line a leaf reads; the reverse means the canary leaked from another "
+                    f"builder.")
+                self.assertEqual(
+                    set(found) - {canary_key}, baseline,
+                    f"wrapping `{name}` disturbed the rest of the sweep")
+        # The closure that decides which functions those are, derived from the code.
+        source = Path(ort.__file__).resolve().read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        by_name = {n.name: n for n in tree.body
+                   if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+        self.assertIn("_render_launch_prompt_template", by_name)
+        pinned = set(self._HOST_BUILT_PROMPT_BUILDERS)
+        self.assertEqual(pinned - set(by_name), set(),
+                         "a pinned builder is no longer a module-level function of "
+                         "`orchestration_runtime`")
+        seen: set[str] = set()
+        stack = ["_render_launch_prompt_template"]
+        unclassified: set[str] = set()
+        while stack:
+            current = stack.pop()
+            if current in seen:
+                continue
+            seen.add(current)
+            for node in ast.walk(by_name[current]):
+                if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)):
+                    continue
+                callee = node.func.id
+                if callee not in by_name:
+                    continue
+                if callee in pinned or callee in self._PROMPT_RENDER_TRANSIT:
+                    stack.append(callee)
+                elif callee not in self._NON_PROSE_PROMPT_HELPERS:
+                    unclassified.add(f"{current} -> {callee}")
+        self.assertEqual(
+            unclassified, set(),
+            "a function on the launch-render closure is classified as neither a prose builder "
+            "(`_HOST_BUILT_PROMPT_BUILDERS`, wrapped and required to emit above), a transit "
+            "node (`_PROMPT_RENDER_TRANSIT`), nor a non-prose helper "
+            "(`_NON_PROSE_PROMPT_HELPERS`). READ it: if it can put text into a leaf's prompt, "
+            "pin it as a builder and drive its emitting branch; otherwise exempt it with the "
+            "one-line reason the other entries carry.")
+        self.assertEqual(pinned - seen, set(),
+                         "a pinned builder is not reached from `_render_launch_prompt_template` "
+                         "any more; the sweep is wrapping a function the render no longer calls")
+
+    def test_pure_cold_launch_prompt_carries_the_host_resolved_dependency_facts(self) -> None:
+        """A COLD pure launch prompt injects `_build_dependency_facts`, for both pure pairs.
+
+        A gap the reach test above cannot close and this branch measured: with
+        `_render_pure_launch_prompt`'s call replaced by `""`, every test in
+        `test_pure_leaf_wiring`, `test_orchestration_runtime`, `test_pure_leaf_producer`,
+        `test_validate_pipeline_semantics` and `test_workflow_conductor` stayed green at
+        `26e1b5e`. The cold REPAIR path had a witness
+        (`test_pure_leaf_producer.test_cold_repair_includes_dependency_facts`) and the initial
+        LAUNCH did not — which is the wrong way round, since the repair only re-injects them
+        because the launch does.
+        A producer that authors a `call` into a component dependency without its published
+        argument order builds against a rank/type mismatch and is routed back to Generate every
+        retry; a reviewer without them cannot check the `call` it is judging.
+
+        PINNED: the block the renderer would build for that request appears in the rendered
+        prompt. Derived from `_build_dependency_facts`, not from a transcribed header string, so
+        a legitimate rewording of the block does not turn this red.
+        SAMPLED: the cold shapes only. A warm repair deliberately omits them (the resumed
+        session holds them) and the slim agentic turn does too.
+        """
+        for label, req in self._host_built_launch_requests():
+            if not label.endswith("/pure-cold"):
+                continue
+            with self.subTest(label=label):
+                block = ort._build_dependency_facts(req)
+                self.assertTrue(block,
+                                f"{label}: the fixture injects no dependency facts, so this "
+                                f"observes nothing")
+                rendered = ort.prepare_launch_request_payload(req)["launch_prompt_full"]
+                for line in block.splitlines():
+                    if line.strip():
+                        self.assertIn(line, rendered, label)
+
     def test_severity_literal_pattern_sees_each_spelling_it_claims(self) -> None:
         """`_SEVERITY_LITERAL_RE`'s branches, driven on synthetic input in both directions.
 
@@ -1271,7 +1760,7 @@ class PureRenderTests(unittest.TestCase):
         stayed green, because no line in the corpus needs it today. Set identity over a corpus is
         the wrong instrument for that; a constructed input is the right one.
 
-        PINNED: each of the three declared spellings matches, for EVERY value of
+        PINNED: each of the four declared spellings matches, for EVERY value of
         `VERDICT_SEVERITIES` except the pass-side `none` — so a branch deleted, or a value
         dropped from an alternation, is red and names the spelling. And the refusing direction:
         the pattern must NOT match `none`, nor a bare word with no delimiter around it, or the
@@ -1282,11 +1771,19 @@ class PureRenderTests(unittest.TestCase):
         self.assertTrue(expected, "the enum lost every failing value; this test reads nothing")
         for value in expected:
             for spelling in (f"a `{value}` finding", f"a **{value}** finding",
-                             f"set issue_severity={value} here", f"a fail ({value}) here"):
+                             f"set issue_severity={value} here",
+                             f"records issue_severity: {value} here",
+                             f"a fail ({value}) here"):
                 with self.subTest(value=value, spelling=spelling):
                     self.assertRegex(spelling, self._SEVERITY_LITERAL_RE)
-        for inert in ("a `none` finding", "issue_severity=none", "this is a major fail",
-                      'the enum is "major" in the output contract', "majority of the cases"):
+        for inert in ("a `none` finding", "issue_severity=none", "issue_severity: none",
+                      "this is a major fail",
+                      'the enum is "major" in the output contract', "majority of the cases",
+                      # The conductor's six repair sites spell the VALUE this way. It stays
+                      # unseen by design: the key's closing quote sits where the pattern wants
+                      # `\s*`, and a Python literal handing the field a value is not prose
+                      # assigning a class of finding one.
+                      '"issue_severity": "major"'):
             with self.subTest(inert=inert):
                 self.assertIsNone(self._SEVERITY_LITERAL_RE.search(inert),
                                   f"{inert!r} is matched; the sweep would report it as a new "
