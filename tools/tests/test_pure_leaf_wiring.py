@@ -939,8 +939,8 @@ class PureRenderTests(unittest.TestCase):
             self.assertIn(name, source, f"{name} is no longer raised by the conductor")
             self.assertIn(name, doc, f"{name} is raised but not spelled for the operator")
 
-    @staticmethod
-    def _rubric_slice(repo_root: Path, step: str) -> str:
+    @classmethod
+    def _rubric_slice(cls, repo_root: Path, step: str) -> str:
         """The `#### Severity of a finding` rubric of `step`'s phase document.
 
         Both rubrics are the LAST subsection of their verify substep section, so one slicer cuts
@@ -957,11 +957,15 @@ class PureRenderTests(unittest.TestCase):
         try:
             return wc._generate_verify_severity_rubric_section(text)
         except ValueError as exc:
+            section = cls._RUBRIC_SECTION_BY_STEP[step]
             raise AssertionError(
-                f"{rel}: its `#### Severity of a finding` rubric could not be sliced ({exc}). "
-                f"The rubric must be the LAST subsection before `## On-failure behavior`; a "
-                f"subsection appended after it is what breaks this. The slicer's message names "
-                f"phase_02 because it is shared — the document being cut here is {rel}."
+                f"{rel}: its `#### Severity of a finding` rubric could not be sliced. The rubric "
+                f"must be the LAST subsection of {section} — the one immediately before "
+                f"`## On-failure behavior` — and a subsection appended AFTER it is what breaks "
+                f"this. Move the new subsection above the rubric, or the rubric to the end of "
+                f"{section}. Verbatim from the shared slicer, whose wording is phase_02's "
+                f"because only that slice is a pure-leaf input — read `phase_02_generate.md` as "
+                f"{rel} and `\u00a72-2` as {section} in it: {exc}"
             ) from exc
 
     # Every surface a `Compile.verify` or `Generate.verify` leaf is handed or force-reads, plus
@@ -1046,10 +1050,18 @@ class PureRenderTests(unittest.TestCase):
         phases' producer `SKILL`s, are EXACTLY the allowlisted routing sentences. A new one — of
         any wording, with or without a pointer — is red, and the failure says to read it and
         allowlist it if it routes.
-        SAMPLED, and the limit worth writing down: the SPELLINGS recognised are a backticked or
-        bolded value, `issue_severity=<value>`, and a bare `(value)`. A severity in double quotes
-        or in bare prose ("this is a major fail") is not seen; the launch template's own output
-        contract states the enum in double quotes, which is why quotes cannot be in the pattern.
+        SAMPLED, and the limits worth writing down. The SPELLINGS recognised are a backticked
+        or bolded value, `issue_severity=<value>`, and a bare `(value)`. A severity in double
+        quotes or in bare prose ("this is a major fail") is not seen; the launch template's own
+        output contract states the enum in double quotes, which is why quotes cannot be in the
+        pattern. And the bare `(value)` branch OVER-matches by design: an ordinary English
+        `(minor)` used as an adjective is refused too. That is the deliberate polarity — this
+        gate refuses a new mention until a human reads it — and the failure message names that
+        third case, because round 1 constructed one and found the message offering only two.
+        Each branch is driven on synthetic input by
+        `test_severity_literal_pattern_sees_each_spelling_it_claims`, not left to the corpus:
+        deleting the bare-`(value)` branch survived every check in the tree, today's tree having
+        no line for it to catch.
         """
         repo_root = Path(ort.__file__).resolve().parents[1]
         # The surface list must COVER what the leaf actually force-reads, derived rather than
@@ -1122,8 +1134,42 @@ class PureRenderTests(unittest.TestCase):
                          "points at the rule that chooses it, add it to "
                          "`_SEVERITY_ROUTING_ALLOWLIST`; if it ASSIGNS one beside a checklist "
                          "item, that is the defect issue #143 removed — the rubric is the only "
-                         "place a value is chosen. A line that vanished from the list is a "
-                         "routing statement that was deleted or reworded.")
+                         "place a value is chosen. If it does NEITHER — the word is ordinary "
+                         "English that happens to be a value, `(minor)` as an adjective — the "
+                         "line is still a new mention on a leaf-read surface and still gets "
+                         "allowlisted: this gate refuses until a human has read, deliberately, "
+                         "and deciding `routes` from `assigns` by pattern is the losing line "
+                         "round 4 of issue #143 measured. A line that vanished from the list is "
+                         "a routing statement that was deleted or reworded.")
+
+    def test_severity_literal_pattern_sees_each_spelling_it_claims(self) -> None:
+        """`_SEVERITY_LITERAL_RE`'s branches, driven on synthetic input in both directions.
+
+        A rule whose answer on THIS tree is "nothing new" cannot be observed through the sweep
+        that consumes it: round 1 deleted the bare-`(value)` branch outright and every check
+        stayed green, because no line in the corpus needs it today. Set identity over a corpus is
+        the wrong instrument for that; a constructed input is the right one.
+
+        PINNED: each of the three declared spellings matches, for EVERY value of
+        `VERDICT_SEVERITIES` except the pass-side `none` — so a branch deleted, or a value
+        dropped from an alternation, is red and names the spelling. And the refusing direction:
+        the pattern must NOT match `none`, nor a bare word with no delimiter around it, or the
+        sweep would report every sentence containing "major" and the allowlist would become a
+        transcript of the documents.
+        """
+        expected = tuple(v for v in VERDICT_SEVERITIES if v != "none")
+        self.assertTrue(expected, "the enum lost every failing value; this test reads nothing")
+        for value in expected:
+            for spelling in (f"a `{value}` finding", f"a **{value}** finding",
+                             f"set issue_severity={value} here", f"a fail ({value}) here"):
+                with self.subTest(value=value, spelling=spelling):
+                    self.assertRegex(spelling, self._SEVERITY_LITERAL_RE)
+        for inert in ("a `none` finding", "issue_severity=none", "this is a major fail",
+                      'the enum is "major" in the output contract', "majority of the cases"):
+            with self.subTest(inert=inert):
+                self.assertIsNone(self._SEVERITY_LITERAL_RE.search(inert),
+                                  f"{inert!r} is matched; the sweep would report it as a new "
+                                  f"severity mention and the allowlist would have to absorb it")
 
     def test_compile_severity_rubric_states_every_verdict_severity_at_its_own_bullet(self) -> None:
         """Enumeration coupling (`atmofab-enforcement-change` rule 3-a) for phase_01 §1-2's
@@ -1137,10 +1183,14 @@ class PureRenderTests(unittest.TestCase):
         membership comes from the code; the document is checked against it.
         The enum lives in `tools/pure_leaf.py`, a `generate`-side module, and `Compile.verify` is
         an AGENTIC leaf that renders no pure verdict — the enum reaches it through the
-        conductor's routing, which is phase-independent, and
-        `tools/tests/test_pure_leaf.py` pins `VERDICT_SEVERITIES` against
-        `classify_verify_severity`'s own branches. That is why this is the right set for a
-        phase_01 rubric and why the coupling is worth restating for it.
+        conductor's routing, `classify_verify_severity`, which is phase-independent. That is why
+        this is the right set for a phase_01 rubric.
+        What connects the enum to that routing, stated at its real strength (round 1 corrected an
+        overstatement here): `test_pure_leaf.test_every_severity_routes_consistently` asserts only
+        that every non-`none` member routes to something other than `advance`. It does NOT pin
+        that each value has its own branch — `classify_verify_severity` ends in a catch-all
+        `escalate`, so deleting the `minor` branch would still satisfy it — and it does not pin
+        the reverse direction either.
         SAMPLED: nothing about what a bullet SAYS.
         """
         self.assertIn("none", VERDICT_SEVERITIES,
