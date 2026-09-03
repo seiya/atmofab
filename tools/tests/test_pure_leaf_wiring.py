@@ -1076,16 +1076,25 @@ class PureRenderTests(unittest.TestCase):
              "skills/workflow-compile-verify/SKILL.md",
              "skills/workflow-generate-generate/SKILL.md",
              "skills/workflow-compile-generate/SKILL.md"})
-        # Both rubrics are excluded, as a UNION: each phase's rubric legitimately states every
-        # value, and a line of one is not a line of the other.
-        rubric_lines: set[str] = set()
+        # Each rubric is excluded from ITS OWN document only, never as a union across phases.
+        # Round 1 measured the union version: pasting phase_02's `- `critical`: the sources
+        # under review …` bullet verbatim into `skills/workflow-compile-verify/SKILL.md`, and
+        # phase_01's `minor` bullet into phase_02 beside `#### G1`, were both green — a leaf
+        # handed the OTHER phase's subject question beside its own checklist, which is the
+        # hand-assignment this check exists to refuse. A rubric line is legitimate in exactly one
+        # document, so the exclusion belongs to that document.
+        rubric_lines_by_rel: dict[str, set[str]] = {}
         for step in ("compile", "generate"):
+            rel = ort.WORKFLOW_PHASE_DOC_BY_STEP[step]
             lines = set(self._rubric_slice(repo_root, step).splitlines())
             self.assertTrue(any(self._SEVERITY_LITERAL_RE.search(ln) for ln in lines),
                             f"{step}'s rubric names no severity value, so excluding its lines "
                             f"below would exclude nothing and this check would be reading the "
                             f"wrong text")
-            rubric_lines |= lines
+            rubric_lines_by_rel[rel] = lines
+        self.assertEqual(set(rubric_lines_by_rel) - scanned, set(),
+                         "a phase document whose rubric lines are excluded is not itself "
+                         "scanned; the exclusion would then be silently doing nothing")
         found: list[str] = []
         for rel, begin_marker, end_marker in self._SEVERITY_ASSIGNMENT_SURFACES:
             text = (repo_root / rel).read_text(encoding="utf-8")
@@ -1101,8 +1110,9 @@ class PureRenderTests(unittest.TestCase):
                 begin, end = text.index(begin_marker), text.index(end_marker)
                 self.assertGreater(end, begin, rel)
                 text = text[begin:end]
+            own_rubric = rubric_lines_by_rel.get(rel, frozenset())
             for line in text.splitlines():
-                if line in rubric_lines or not self._SEVERITY_LITERAL_RE.search(line):
+                if line in own_rubric or not self._SEVERITY_LITERAL_RE.search(line):
                     continue
                 found.append(f"{rel}: {line[:60]} #{hashlib.sha256(line.encode()).hexdigest()[:12]}")
         self.assertEqual(sorted(found), sorted(self._SEVERITY_ROUTING_ALLOWLIST),
