@@ -543,6 +543,40 @@ class PureRenderTests(unittest.TestCase):
         self.assertLess(prompt.index("Checks-module contract"),
                         prompt.index("Generated CodegenBundle under review"))
 
+    def test_lift_order_is_resolved_from_the_template_not_the_tuple(self) -> None:
+        # The order-property test in test_pure_leaf_producer.py passes under BOTH implementations
+        # today, because the tuple happens to be in template order — reverting the fix left it
+        # green (round-2 hunk mutation). What distinguishes them is a tuple that DISAGREES, so
+        # drive the production function with one: the lift must still come out in template order.
+        ordered = ort._pure_authoring_rules_text(_pure_request("verify"))
+        heads = [b.lstrip().splitlines()[0] for b in ordered.split("\n\n") if b.strip()]
+        self.assertGreater(len(heads), 1, "need >1 lifted paragraph for order to mean anything")
+        reversed_tuple = tuple(reversed(ort.PURE_REPAIR_STATIC_PARAGRAPH_PREFIXES))
+        self.assertNotEqual(reversed_tuple, ort.PURE_REPAIR_STATIC_PARAGRAPH_PREFIXES)
+        with patch.object(ort, "PURE_REPAIR_STATIC_PARAGRAPH_PREFIXES", reversed_tuple):
+            reordered = ort._pure_authoring_rules_text(_pure_request("verify"))
+        self.assertEqual(
+            [b.lstrip().splitlines()[0] for b in reordered.split("\n\n") if b.strip()], heads,
+            "lift order follows the prefix tuple, not the launch template")
+
+    def test_phase_02_states_the_scope_rule_with_its_bound(self) -> None:
+        # THIRD statement site of one rule (the two in the verify template are the others), and
+        # the one with the widest audience: `skills/workflow-generate-verify/SKILL.md` names
+        # phase_02_generate.md in the closed list of canonical judgment-rule sources for the
+        # AGENTIC verify leaf, so an unbounded wording there is a leaf shortcut on the transport
+        # the template does not reach. Round 2 found exactly that. Couple the doc to the rule.
+        doc = (Path(ort.__file__).resolve().parents[1] / "docs" / "workflow" / "phases"
+               / "phase_02_generate.md").read_text(encoding="utf-8")
+        # Anchor on text that PRECEDES the rule and is byte-identical in the wording being
+        # refused — so a failure names the missing bound, not a moved anchor. Self-tested: the
+        # anchor must be present, or this check is asserting about a document it did not find.
+        self.assertIn("checks_module_contract_document", doc)
+        self.assertIn("The document OVERRULES; it does not narrow.", doc)
+        self.assertIn("Its SILENCE settles nothing", doc)
+        self.assertIn("every G1-G7 item stays fully in scope", doc)
+        # The refused wording, in the exact spelling round 2 removed.
+        self.assertNotIn("the contract does not state is out of scope", doc)
+
     def test_every_required_pure_context_key_has_exactly_one_template_slot(self) -> None:
         # Structural closure of "a required key with no template slot is silently dropped": the
         # validator would accept the launch and the leaf would never see the document. Derived
