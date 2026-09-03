@@ -744,11 +744,37 @@ class PureRenderTests(unittest.TestCase):
                     # separate their two pointers.
                     self.assertRegex(
                         line, re.escape(doc) + r"[^;]{0,40}?" + re.escape(section),
-                        f"{rel}: {section} does not follow {doc} on the routing line — the "
-                        f"section pointer must sit BESIDE the document it belongs to. Both "
-                        f"tokens being present somewhere on the line is not enough: with two "
-                        f"phases pointed at from one line, that accepts each section paired "
-                        f"with the OTHER phase's document, and neither pointer then resolves.")
+                        f"{rel}: {section} does not follow {doc} on the routing line. TWO "
+                        f"constraints, and the message you are reading cannot tell you which "
+                        f"one you hit: the section must come AFTER its document, within 40 "
+                        f"characters, and with no `;` between them — `;` is what separates one "
+                        f"phase's clause from the next on these lines, so an aside containing "
+                        f"one splits the pair. Both tokens being present somewhere on the line "
+                        f"is not enough: with two phases pointed at from one line, that accepts "
+                        f"each section paired with the OTHER phase's document, and neither "
+                        f"pointer then resolves.")
+                    # And the phase LABEL must own the pair. The adjacency above adds
+                    # (doc <-> section); it does not stop `Compile.verify:` from carrying
+                    # `Generate`'s pointer and vice versa, which round 2 measured green on the
+                    # three files that have no second guard. Only asked of a line that points at
+                    # more than one phase: a single-phase surface names no label (the
+                    # `SKILL`s just say "Choose `issue_severity` by <doc> <section>"). The
+                    # window is 48 because `doc` is the BASENAME and the real lines put the
+                    # `docs/workflow/phases/` prefix between the label and it; `[^;]` is the
+                    # bound that matters, and it is what keeps the match inside one clause.
+                    if len(steps) > 1:
+                        label = f"`{step.capitalize()}"
+                        self.assertRegex(
+                            line,
+                            re.escape(label) + r"[^;]{0,48}?" + re.escape(doc)
+                            + r"[^;]{0,40}?" + re.escape(section),
+                            f"{rel}: the {label}` label does not introduce {doc} {section} on "
+                            f"the routing line. This line points at BOTH phases' rubrics, so "
+                            f"each pointer has to sit in the clause of the phase it belongs to "
+                            f"— otherwise a reader sent to a `{step.capitalize()}.verify` stop "
+                            f"reads the other phase's rule, and `docs/RUNBOOK.md` §3-1's "
+                            f"\"a verdict that disagrees with that rubric is a leaf defect\" "
+                            f"judgment inverts.")
 
     # Every document that records WHAT the pure reviewer is handed, with the section each
     # statement lives in. Round 0's doc sweep found all three unpinned: reverting any of them
@@ -998,6 +1024,20 @@ class PureRenderTests(unittest.TestCase):
         ("skills/workflow-generate-generate/SKILL.md", None, None),
         ("skills/workflow-compile-generate/SKILL.md", None, None),
         ("tools/prompt_templates/pure_generate_verify.txt", None, None),
+        # Round 2: the AGENTIC transport, and the only one `Compile.verify` has. The pure
+        # template was here from issue #143 and its agentic counterpart was not, which was
+        # survivable while the rubric governed `Generate.verify` only — `Generate.verify` also
+        # has a `SKILL` and a phase doc on this list. `Compile.verify` is agentic-only, so this
+        # template is where a hand-assigned value would reach it with nothing else to catch it.
+        # It already carries `issue_severity: <issue_severity>` as its output contract.
+        ("tools/prompt_templates/substep_agent.txt", None, None),
+        ("tools/prompt_templates/step_agent.txt", None, None),
+        ("tools/prompt_templates/common_boilerplate.txt", None, None),
+        # The derivation below found these two as well — the producer-side pure templates. A
+        # producer template does not choose the verifier's value any more than a producer
+        # `SKILL` does, and issue #143's leftover was in exactly that position.
+        ("tools/prompt_templates/pure_generate_generate.txt", None, None),
+        ("tools/prompt_templates/pure_bundle_repair.txt", None, None),
         ("docs/AGENT_CONTRACT.md", None, None),
         ("docs/workflow/CHECKS_MODULE_CONTRACT.md", None, None),
         # Round 5 found the tuple short of its own docstring twice over.
@@ -1089,6 +1129,22 @@ class PureRenderTests(unittest.TestCase):
                                  f"a document every `{step}` leaf force-reads "
                                  f"(is_m3c_physics={m3c}) is not scanned for hand-assigned "
                                  f"severities; add it to `_SEVERITY_ASSIGNMENT_SURFACES`")
+        # EVERY launch-prompt template, derived from the directory rather than listed. Round 2
+        # found `substep_agent.txt` missing — the agentic transport, and the ONLY one
+        # `Compile.verify` has, carrying `issue_severity: <issue_severity>` as its output
+        # contract. The pure template had been here since issue #143 and its agentic counterpart
+        # had not; that was survivable while the rubric governed `Generate.verify` alone, and
+        # stopped being survivable when this branch put an agentic-only substep under it.
+        # Derived, so the next template added to this directory is covered the day it lands.
+        templates_dir = repo_root / "tools" / "prompt_templates"
+        found_templates = {f"tools/prompt_templates/{p.name}"
+                           for p in templates_dir.iterdir() if p.suffix == ".txt"}
+        self.assertTrue(found_templates, "no launch-prompt templates found; this reads nothing")
+        self.assertEqual(found_templates - scanned, set(),
+                         "a launch-prompt template is not scanned for hand-assigned severities. "
+                         "Every template is a transport that reaches a leaf BEFORE its `SKILL` "
+                         "and its phase doc, so a value spelled in one outranks the rubric; add "
+                         "it to `_SEVERITY_ASSIGNMENT_SURFACES`.")
         # The producer `SKILL`s are not force-read by the VERIFIER, so the derivation above
         # cannot reach them; they are asserted as a literal set for the same reason the surface
         # list is (a silently dropped entry is invisible — issue #143 lost one there).
