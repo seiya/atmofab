@@ -917,6 +917,56 @@ def _load_escalate_persona(repo_root: Path) -> str:
     return persona
 
 
+# The checks-module contract's ABI half — §1 through §4 — as it reaches the pure
+# `generate.verify` reviewer (issue #142). §5 is deliberately outside the slice: it is the
+# deterministic source-legality / gate-guard section (§5's own scope note), and the verify
+# template already tells the reviewer not to re-check what `Generate.gate` settled. The title and
+# the preamble are outside it too: the preamble addresses the agentic leaf and describes how a
+# pure leaf is reached instead, which is orientation the reviewer is already living inside.
+_CHECKS_CONTRACT_ABI_BEGIN_RE = re.compile(r"^## 1\.(?:\s|$)")
+_CHECKS_CONTRACT_ABI_END_RE = re.compile(r"^## 5\.(?:\s|$)")
+
+
+def _checks_contract_abi_sections(text: str) -> str:
+    """Return §1-§4 of `docs/workflow/CHECKS_MODULE_CONTRACT.md` — from the `## 1.` heading line
+    (inclusive) to the `## 5.` heading line (exclusive), trailing blank lines stripped.
+
+    Raises `ValueError` when either anchor is absent, rather than degrading to a shorter or empty
+    slice: the caller turns that into a named fail-closed contract, because a reviewer handed a
+    truncated ABI is exactly the blindness this injection exists to remove.
+
+    The terminator is the LITERAL `## 5.`, not "the first heading numbered above 4". Renumbering
+    the contract's sections is a contract change, and it should stop here with a named error rather
+    than silently widen the slice. `(?:\\s|$)` keeps `## 1.5` / `## 5.1` from anchoring.
+
+    Both anchors are LINE-ANCHORED and FENCE-UNAWARE: a ``` block containing a line that begins
+    `## 1.` or `## 5.` would anchor, cutting the slice inside the fence. The real document holds
+    ONE fenced block (its two markers are the only ``` lines in the file) and no line in it takes
+    that shape (measured), and only an operator editing `docs/` could introduce one
+    — but a maintainer reading "the `## 5.` heading line" would not otherwise know that a heading
+    QUOTED in an example counts. Section MEMBERSHIP is not re-derived here: what belongs to the
+    slice is pinned by `test_checks_contract_document_is_sections_1_to_4_of_the_real_doc`, which
+    goes red when §2, §3 or §4 leaves the document (measured, all three), rather than by a second
+    enumeration of the contract's structure inside this function.
+
+    This slice is a pure-leaf INPUT: changing what it spans — extending the terminator to EOF if
+    §5 is ever removed, for instance — changes what the reviewer reads and therefore requires a
+    `PURE_PROMPT_CONTRACT_VERSION` bump. Since issue #142's round 2 the drift guard hashes the
+    slice ITSELF (`tools/tests/test_pure_prompt_contract_drift.py`), so a silent re-slice — an
+    anchor moved here, or the document renumbered so a different section terminates it — now
+    changes the digest instead of shipping unversioned."""
+    lines = text.splitlines()
+    begin = next((i for i, ln in enumerate(lines)
+                  if _CHECKS_CONTRACT_ABI_BEGIN_RE.match(ln)), None)
+    if begin is None:
+        raise ValueError("checks-module contract has no '## 1.' section heading")
+    end = next((i for i in range(begin + 1, len(lines))
+                if _CHECKS_CONTRACT_ABI_END_RE.match(lines[i])), None)
+    if end is None:
+        raise ValueError("checks-module contract has no '## 5.' section heading after '## 1.'")
+    return "\n".join(lines[begin:end]).rstrip("\n")
+
+
 _TRUNCATION_MARKER = "\n…[truncated]"
 
 
@@ -6411,7 +6461,9 @@ clean:
 
         The runner is injected VERBATIM (no interface extraction): it is the consumer of the
         checks-module ABI the leaf must author against, and `docs/workflow/CHECKS_MODULE_CONTRACT.md`
-        — where the agentic leaf reads that ABI — is unreachable from a closed-context pure leaf. Injecting
+        — where the agentic leaf reads that ABI — is NOT inlined into this producer context (the pure
+        `generate.verify` reviewer receives its §1-§4 as `checks_module_contract_document`, issue
+        #142; the producer takes the ABI's dynamic surface from the runner instead). Injecting
         the rendered artifact rather than a distilled restatement keeps the ABI's dynamic surface
         (which names the runner actually imports) exact by construction. `run_phase` renders it
         before any generate substep runs, so it is always on disk here."""
@@ -7126,16 +7178,44 @@ clean:
         allows it for verify but forbids it for generate) and the producer's `codegen_bundle.json`
         (the artifact under review), but NOT the host-rendered runner/Makefile glue (deterministic,
         not the reviewer's concern). All host-resolved from disk here so the closed-context prompt
-        supplies the complete review input."""
+        supplies the complete review input.
+
+        The FIFTH document is §1-§4 of `docs/workflow/CHECKS_MODULE_CONTRACT.md` — the same
+        contract the agentic leaf force-reads (`CHECKS_MODULE_CONTRACT_REF`), sliced by
+        `_checks_contract_abi_sections` (issue #142). Without it the reviewer judged the checks
+        module's callbacks against its own guess at what the runner does with each result, and
+        failed a bundle that followed the contract verbatim. §5 is excluded because it is the
+        deterministic legality/gate section the template already tells the reviewer not to
+        re-check. Two fail-closed dispositions differ here on purpose:
+          * the four NODE artifacts keep the `""` degradation (the same deliberate design as the
+            producer's ir/tests reads) — see TODO.md item on the residual;
+          * the contract slice RAISES (`UnicodeError` included, since a decode error is a
+            ValueError and not an OSError), because an empty string would satisfy the renderer's
+            presence check and ship a prompt whose ABI section is blank — precisely the blindness
+            this injection removes. The caller converts it into a `pure_context_assembly_failed`
+            fail_closed transport outcome; no leaf is spawned."""
+        from tools.orchestration_runtime import CHECKS_MODULE_CONTRACT_REF
         def _read(rel: str) -> str:
             try:
                 return (self.repo_root / rel).read_text(encoding="utf-8")
             except OSError:
                 return ""
+        contract_path = self.repo_root / CHECKS_MODULE_CONTRACT_REF
+        try:
+            contract_text = contract_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            raise RuntimeError(
+                f"pure_checks_contract_document_missing: {contract_path}: {exc}") from exc
+        try:
+            contract_abi = _checks_contract_abi_sections(contract_text)
+        except ValueError as exc:
+            raise RuntimeError(
+                f"pure_checks_contract_document_unsliceable: {contract_path}: {exc}") from exc
         return {
             "controlled_spec_document": _read(f"{refs.spec_path}/controlled_spec.md"),
             "tests_document": _read(f"{refs.spec_path}/tests.md"),
             "ir_document": _read(f"{refs.ir_ref}/spec.ir.yaml"),
+            "checks_module_contract_document": contract_abi,
             "bundle_document": _read(f"{refs.source_dir()}/codegen_bundle.json"),
         }
 
@@ -7215,7 +7295,21 @@ clean:
             _MISSING)
         entry = self.entry_for(phase, substep)
         self.reset_http_history(phase, substep)
-        pure_context = self._build_pure_verify_context(refs)
+        # Assembling the reviewer's context reads a host-owned repository document and RAISES on a
+        # missing/unsliceable one (`pure_checks_contract_document_*`). run_substep's callers must
+        # never see an exception — recover it as the same fail_closed transport outcome the
+        # producer's `_build_pure_context` failure produces. A repository document the leaf cannot
+        # repair makes fail_closed (operator --resume) the correct terminus, not a reopen. No leaf
+        # has been spawned yet, so the arid here names no child window; it only labels the row.
+        try:
+            pure_context = self._build_pure_verify_context(refs)
+        except Exception as exc:  # noqa: BLE001 — any context-assembly failure must recover
+            self.emit("pure_context_assembly_failed", node_key=refs.node_key,
+                      detail=str(exc)[:200])
+            return SubstepOutcome(
+                self.new_agent_run_id(), "fail", [], 1,
+                ("pure_context_assembly_failed", f"{type(exc).__name__}: {exc}"),
+                time.time(), 1)
         per_attempt: list[dict[str, Any]] = []
         resume_session_id: str | None = None
         cold_repair_target: str | None = None
@@ -12569,12 +12663,17 @@ class SubstepOutcome:
     # (`Conductor._launch_instant`), not from `time.time()`, so the comparison is between two
     # stamps of one clock — issue #113.
     #
-    # TWO construction sites pass a plain `time.time()` instead, and deliberately: the
-    # `pure_context_assembly_failed` and `pure_only_provider_on_agentic_path` early returns,
+    # THREE construction sites pass a plain `time.time()` instead, and deliberately: the two
+    # `pure_context_assembly_failed` early returns (the producer's and the verify reviewer's) and
+    # `pure_only_provider_on_agentic_path`,
     # which fail BEFORE any launch, so there is no launch instant to read and no artifact for
-    # it to judge. Both are unreachable by the only consumer today
-    # (`_maybe_warm_resume_verify_meta` returns first on their `leaf_returncode=1`, which
-    # `test_transport_failed_verify_is_not_repaired` pins). `0.0` would be the wrong filler if
+    # it to judge. All three are unreachable by the only consumer today
+    # (`_maybe_warm_resume_verify_meta`), but by three DIFFERENT guards, and naming only the last
+    # was wrong: the producer site returns at `SUBSTEPS[phase][...] != "verify"`, the pure verify
+    # site at the `_pure_leaf_substep` guard (unconditional for every node that can reach
+    # `_run_pure_verify_substep`), and only `pure_only_provider_on_agentic_path` — which can land
+    # on an AGENTIC verify substep — reaches the `leaf_returncode != 0` guard that
+    # `test_transport_failed_verify_is_not_repaired` pins. `0.0` would be the wrong filler if
     # that ever changed — every mtime is at or above it, so the attribution check would answer
     # YES to everything; a wall clock errs toward answering NO, which is the safe direction for
     # a substep that launched nothing.

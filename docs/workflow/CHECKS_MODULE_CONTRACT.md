@@ -9,9 +9,11 @@
 > host-rendered by the conductor (`tools/host_render.py` / `_write_makefile`) and are outside the leaf's `allowed_output_paths`. This is
 > not read by `Validate.judge`.
 >
-> Binds the **agentic** leaf. A `pure` leaf (`Z2`) cannot read this: it is told the ten names and
-> shown the rendered runner, gated by `m3c_checks_abi_violation`; the §2/§3 behavioral contract is
-> distilled into `pure_generate_generate.txt`. (pure-8's runner-driven per-id `checks_compute`
+> Force-read by the **agentic** leaf. A `pure` leaf (`Z2`) reads no document from disk, so it is
+> reached two ways: the `generate.generate` producer is told the ten names and shown the rendered
+> runner, gated by `m3c_checks_abi_violation`, with the §2/§3 behavioral contract distilled into
+> `pure_generate_generate.txt`; the `generate.verify` reviewer receives §1-4 of this document
+> inlined as `checks_module_contract_document` (issue #142). (pure-8's runner-driven per-id `checks_compute`
 > takes each id as a literal actual, so a dropped id is impossible — the former
 > `m3c_checks_ids_violation` gate is gone.) All ten bind every node. The language backend that
 > renders the runner owns the ABI (`host_render.checks_public_names`) — keep it, this doc, and

@@ -12097,7 +12097,7 @@ PURE_CONTEXT_REQUIRED_KEYS: dict[tuple[str, str], tuple[str, ...]] = {
                                "ir_document",
                                "tests_document", "runner_document"),
     ("generate", "verify"): ("controlled_spec_document", "tests_document", "ir_document",
-                             "bundle_document"),
+                             "checks_module_contract_document", "bundle_document"),
 }
 
 
@@ -12227,10 +12227,19 @@ def _pure_output_contract_text(request_payload: dict[str, Any]) -> str:
 # names as subroutines — Z2 defect D reproduced in the recovery path, which is reached exactly
 # when recovery is happening. A paragraph absent from a given template (the verify template has
 # no authoring rules) lifts to '' and is skipped, so one list serves both.
+# The verify entries were added by issue #142, and for the reason this list already records: the
+# reviewer's launch template gained an inlined checks-module contract, `pure_context` re-inlines it
+# into a cold repair automatically, and nothing lifted the text that GOVERNS it — so a cold-repaired
+# reviewer held 9 KB of ABI with neither the `Review checklist` paragraph (which is where "the
+# deterministic gate already settled the ABI, do NOT re-check it" and the contract's scope sentence
+# live) nor the contract's own label. Measured before the fix: label False, ABI verbatim True,
+# scope sentence False, `G1 — case coverage` False.
 PURE_REPAIR_STATIC_PARAGRAPH_PREFIXES: tuple[str, ...] = (
     "Authoring rules",
+    "Review checklist",
     "**Host-rendered runner",
     "**Checks-module behavioral contract",
+    "**Checks-module contract (",
 )
 
 # A line that is nothing but a `<placeholder>` token — the launch template's document slots.
@@ -12251,8 +12260,21 @@ def _pure_authoring_rules_text(request_payload: dict[str, Any]) -> str:
     the producer is re-authoring the whole document with no prior turn to carry the rules, and a
     bundle repaired into schema conformance still has to clear the `Generate.gate` union
     (lint / syntax / static checkers) afterwards."""
+    # TEMPLATE order, not tuple order — the docstring above states the first and the loop used to
+    # produce the second. That was inert while the generate template's three paragraphs happened to
+    # appear in tuple order; issue #142 added two verify prefixes, and any later insertion or a
+    # readability reorder of the tuple would have silently reordered a cold repair against the
+    # launch prompt a warm session holds, with nothing red. Resolve the order from the template.
+    try:
+        template = _load_launch_prompt_templates()[
+            _pure_launch_template_name(request_payload)]
+    except (KeyError, OSError):
+        template = ""
+    ordered = sorted(
+        (pfx for pfx in PURE_REPAIR_STATIC_PARAGRAPH_PREFIXES if pfx in template),
+        key=template.index)
     blocks = []
-    for prefix in PURE_REPAIR_STATIC_PARAGRAPH_PREFIXES:
+    for prefix in ordered:
         text = _pure_template_paragraph(request_payload, prefix)
         if not text:
             continue

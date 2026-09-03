@@ -20,8 +20,14 @@ historical pin. The assertions catch three drift directions:
 
 The pin set is deliberately NARROW (a churn magnet if widened): the three template files, the
 fixed `PURE_SYSTEM_PROMPT` (the `--system-prompt` string, a documented version-bump trigger in
-`pure_leaf.py`), the cold-repair static-paragraph prefix list, and the checks-ABI constants the
-templates distill verbatim (`CHECKS_PUBLIC_NAMES` and the two character widths). Every member is a
+`pure_leaf.py`), the cold-repair static-paragraph prefix list, the checks-ABI constants the
+templates distill verbatim (`CHECKS_PUBLIC_NAMES` and the two character widths), and — since
+issue #142 — the §1-4 slice of `docs/workflow/CHECKS_MODULE_CONTRACT.md` that the reviewer's
+prompt inlines verbatim. That last one is a DOCUMENT, which the bar above would normally exclude;
+it qualifies because those sections stopped being a document the leaf reads and became a document
+the host pastes into the leaf's prompt, which is the same category as the template bytes. §5 is
+outside the slice and therefore outside the pin, so editing the deterministic-gate section costs
+no bump. Every member is a
 STABLE, behavior-defining input (not a churny one); do NOT grow it beyond that bar.
 
 Every pinned member is either a production constant IMPORTED from its authority
@@ -55,6 +61,7 @@ from pathlib import Path
 
 import tools.codegen_bundle as cb
 import tools.orchestration_runtime as ort
+import tools.workflow_conductor as wc
 import tools.backends.language.fortran.runner as rr
 from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION, PURE_SYSTEM_PROMPT
 
@@ -160,7 +167,22 @@ PINNED: dict[str, str] = {
     # version, and a bundle produced under the old text must not be silently treated as
     # having been produced under the new one; re-pinning in place would have been the
     # reverse-drift hole this file exists to close.
-    "pure-23": "6c9d1ced2855e79f709e06122856885c93d9b50670973e8a81d5230ed1a9ec2d",}
+    "pure-23": "6c9d1ced2855e79f709e06122856885c93d9b50670973e8a81d5230ed1a9ec2d",
+    # pure-24: the verify template gained a FIFTH data-fenced document,
+    # `<checks_module_contract_document>` (§1-4 of docs/workflow/CHECKS_MODULE_CONTRACT.md,
+    # sliced host-side), and its scope paragraph now makes that document the authority for what
+    # the runner does with each checks-module callback's result (issue #142). A verdict issued
+    # under pure-23 was reached WITHOUT the document that defines the ABI it was judging — the
+    # observed failure was a `major` against a `case_setup(case_id, ok)` written exactly as the
+    # contract specifies — so the two vintages must stay distinguishable. Known side effect (as
+    # for every bump), TWO of them: `_resolve_exemplar_source` gates prior-art exemplars on this
+    # version, so every sibling exemplar certified at pure-23 or earlier stops being offered
+    # (advisory only — the producer takes the ABI from the rendered runner, not from an exemplar);
+    # and `validate_pipeline_semantics._validate_orchestration_hierarchy` hard-fails a persisted
+    # pure launch row whose `prompt_contract_version` is not the current one, so an orchestration
+    # whose `generate` ran under pure-23 cannot be `--resume`d across this bump. Both are inherent
+    # to bumping and neither is new; they are named because a bump is where an operator meets them.
+    "pure-24": "4ae194a27f650d2edc45ed1d7fc3a77cf1a15a7f5481b058963d13ed2745c751",}
 
 
 def _contract_tuple() -> dict[str, object]:
@@ -173,6 +195,17 @@ def _contract_tuple() -> dict[str, object]:
         "repair_static_prefixes": list(ort.PURE_REPAIR_STATIC_PARAGRAPH_PREFIXES),
         "checks_public_names": list(rr.CHECKS_PUBLIC_NAMES),
         "check_status_width": rr.CHECK_STATUS_WIDTH,
+        # The §1-4 SLICE of the checks-module contract, not the file: since issue #142 those
+        # sections are inlined verbatim into the reviewer's prompt, which puts them under this
+        # pin's own stated bar (a stable, behavior-defining leaf INPUT) exactly as the template
+        # bytes are. Hashing the slice rather than the whole document keeps §5 — the deterministic
+        # gate section the reviewer is told not to re-check — out of the tuple, so an edit there
+        # is not a spurious bump; and it makes the slicer's OWN behaviour part of the contract,
+        # closing the gap `_checks_contract_abi_sections`' docstring used to record: moving an
+        # anchor, or a document renumbering that silently re-slices, changes the digest.
+        "checks_contract_abi_sections": wc._checks_contract_abi_sections(
+            (Path(wc.__file__).resolve().parents[1]
+             / "docs" / "workflow" / "CHECKS_MODULE_CONTRACT.md").read_text(encoding="utf-8")),
     }
 
 
