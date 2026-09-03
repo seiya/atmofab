@@ -736,6 +736,13 @@ class PureRenderTests(unittest.TestCase):
          "### 2-2. Generate.verify substep", "\n## On-failure behavior"),
         ("skills/workflow-generate-verify/SKILL.md", None, None),
         ("tools/prompt_templates/pure_generate_verify.txt", None, None),
+        # The fourth surface, added by round 3: `docs/AGENT_CONTRACT.md` is the only one of these
+        # FORCE-READ by both transports (`leaf_contract_doc_refs`: "AGENT_CONTRACT.md: every
+        # leaf"), so a severity assigned there reaches every reviewer, and the sweep did not look
+        # at it. A probe inserting `- A verify finding whose subject is a generated source file
+        # is a `fail` (`major`).` after its line 39 — flatly contradicting the rubric's `minor`
+        # bullet — was green before this entry.
+        ("docs/AGENT_CONTRACT.md", None, None),
     )
     # A backticked or bolded severity value — the two spellings this repository's hand-assignments actually
     # use (`skills/workflow-generate-verify/SKILL.md:42` before this branch removed it, and
@@ -777,8 +784,16 @@ class PureRenderTests(unittest.TestCase):
             for n, line in enumerate(text.splitlines(), start=1):
                 if line in rubric_lines or not self._SEVERITY_LITERAL_RE.search(line):
                     continue
-                if "phase_02_generate.md" in line:
-                    continue        # a routing statement that hands the choice to the rubric
+                # A routing statement that hands the CHOICE to the rubric is exempt — but the
+                # exemption is the POINTER, not the file name. Round 3's probe: several ordinary
+                # checklist items already cite `phase_02_generate.md` for unrelated reasons
+                # (`skills/workflow-generate-verify/SKILL.md:44` names it beside the forbidden
+                # `verdict.json` filenames), and inserting the exact byte string the replaced
+                # `assertNotIn` used into one of THOSE lines shipped green. Requiring `§2-2`
+                # narrows the exempt set from 8 lines on the SKILL to 1 — its routing sentence —
+                # plus `AGENT_CONTRACT.md:40` and the template's own rubric label.
+                if "phase_02_generate.md" in line and "§2-2" in line:
+                    continue
                 offenders.append(f"{rel}:{n}: {line[:90]}")
         self.assertEqual(offenders, [],
                          "a leaf-read surface assigns a severity outside the rubric; the rubric "
