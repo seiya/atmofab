@@ -1508,10 +1508,14 @@ class PureRenderTests(unittest.TestCase):
         launch renders it, and a COLD repair lifts static paragraphs out of it
         (`_pure_output_contract_text` / `_pure_authoring_rules_text`) alongside
         `pure_bundle_repair.txt`. A WARM repair reads neither — the resumed session already
-        holds them — and claiming it there was round 2's own instance of the union defect above:
-        41 of the 42 lines it claimed were rendered from nothing, one of them
-        `pure_generate_verify.txt`'s allowlisted severity-bearing checklist line, so a host line
-        duplicating that line into a warm repair turn would have been subtracted unread.
+        holds them — and claiming it there was round 2's own instance of the union defect above.
+        MEASURED at `d9fd128`, per configuration, because a summary of the two spliced them
+        (round 3's disclosure axis caught that): `generate.generate/pure-repair-warm` claimed 42
+        template lines and rendered 41 of them from nothing;
+        `generate.verify/pure-repair-warm` claimed 36 and rendered 35 from nothing, and it is
+        that one whose claimed set held `pure_generate_verify.txt`'s allowlisted
+        severity-bearing checklist line — so a host line duplicating that line into a
+        `generate.verify` warm repair turn would have been subtracted unread.
         """
         templates = ort._load_launch_prompt_templates()
         names: set[str] = set()
