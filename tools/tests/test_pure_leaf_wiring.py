@@ -734,49 +734,118 @@ class PureRenderTests(unittest.TestCase):
 
     def test_phase_02_warns_its_editor_that_the_last_subsection_is_sliced(self) -> None:
         """The editing note in §2-2's preamble — outside the slice the reviewer receives — is
-        what tells someone appending a subsection why 26 tests went red. Its two load-bearing
-        names are derived from the code so a rename breaks both together.
+        what tells someone appending a subsection why 26 tests went red.
+
+        The reader is the NOTE ITSELF: from `**Editing note.**` to the blank line that ends its
+        paragraph. Round 3 bounded it with `rest.split("### 2-3")[0]`, and `### 2-3` occurs ZERO
+        times in the document, so the split was the identity and the three identifier assertions
+        were satisfied by an occurrence anywhere downstream — two round-4 reviewers independently
+        gutted the note (one replacing it with the OPPOSITE instruction, "you may append
+        subsections freely") and kept the suite green. The bound is self-tested now, as every
+        other reader on this branch already was.
+
+        PINNED: the note states the constraint (that the subsection must stay LAST) and names the
+        three identifiers a reader needs to reach what refuses the edit, each of which must still
+        exist in code. SAMPLED: nothing about the note's phrasing beyond those.
         """
-        doc = (Path(ort.__file__).resolve().parents[1] / "docs" / "workflow" / "phases"
+        repo_root = Path(ort.__file__).resolve().parents[1]
+        doc = (repo_root / "docs" / "workflow" / "phases"
                / "phase_02_generate.md").read_text(encoding="utf-8")
-        note, _, rest = doc.partition("**Editing note.**")
-        self.assertTrue(rest, "§2-2 carries no editing note")
+        marker = "**Editing note.**"
+        self.assertEqual(doc.count(marker), 1,
+                         "§2-2 must carry exactly one editing note; without it an editor "
+                         "appending a subsection gets a wall of red with no signal at the site")
+        note = doc.split(marker, 1)[1].split("\n\n", 1)[0]
+        self.assertTrue(note.strip(), "the editing note is empty")
+        self.assertLess(len(note), 1200,
+                        "the editing note ran past its paragraph, so the bound below is reading "
+                        "more than the note")
         rubric = wc._generate_verify_severity_rubric_section(doc)
-        self.assertNotIn("**Editing note.**", rubric,
+        self.assertNotIn(marker, rubric,
                          "the editing note is INSIDE the slice, so the reviewer is being handed "
                          "instructions written for a document editor")
-        for name in ("_generate_verify_severity_rubric_section",
-                     "pure_severity_rubric_document_unsliceable",
-                     "PURE_PROMPT_CONTRACT_VERSION"):
-            self.assertIn(name, rest.split("### 2-3")[0],
+        self.assertIn("last", note.lower(),
+                      "the editing note does not state the constraint it exists for — that the "
+                      "rubric must stay the LAST subsection of §2-2")
+        sources = {
+            "_generate_verify_severity_rubric_section": "workflow_conductor.py",
+            "pure_severity_rubric_document_unsliceable": "workflow_conductor.py",
+            "PURE_PROMPT_CONTRACT_VERSION": "pure_leaf.py",
+        }
+        for name, module in sources.items():
+            self.assertIn(name, note,
                           f"the editing note does not name {name}, so an editor cannot reach "
                           f"what refuses the edit")
             self.assertIn(name, (Path(ort.__file__).resolve().parent
-                                 / "workflow_conductor.py").read_text(encoding="utf-8")
-                          if name != "PURE_PROMPT_CONTRACT_VERSION"
-                          else (Path(ort.__file__).resolve().parent
-                                / "pure_leaf.py").read_text(encoding="utf-8"),
-                          f"{name} is named by the editing note but no longer exists in code")
+                                 / module).read_text(encoding="utf-8"),
+                          f"{name} is named by the editing note but no longer exists in "
+                          f"{module}")
 
-    def test_runbook_names_the_reopen_trigger_field_the_code_actually_reads(self) -> None:
+    def test_runbook_reopen_trigger_path_resolves_in_the_artifact_it_names(self) -> None:
         """The `ir_inconsistency` arm of §3-1's dev-verify entry sends the operator to run
-        `reopen-phase` BY HAND, and its `--trigger-agent-run-id` is the one parameter that is not
-        obvious. The field name is coupled to the deriver that reads it, so a rename cannot leave
-        the operator following a remedy that half-works.
+        `reopen-phase` BY HAND, and `--trigger-agent-run-id` is the one parameter that is not
+        obvious. The path it names is DRIVEN against the artifact of this failure.
+
+        Round 3 wrote `failure_analysis.json#original_finding.failed_substep_agent_run_id` here
+        and pinned it by asserting that string occurs in `orchestration_runtime.py` — which it
+        does, in `_derive_resume_directive`, a CONSUMER the same entry correctly says never fires
+        for this reason. Nothing writes that key on this route: two round-4 reviewers measured it
+        independently, one over the repository (five reads, zero writers) and one over the local
+        `workspace/orchestrations/` corpus (9 `failure_analysis.json`, 0 carrying it). The
+        operator was sent to a key that is never there.
+
+        So this drives the WRITER instead: build the artifact `_collect_failure_analysis`
+        produces for this stop and resolve the documented dotted path against it. A pin on a
+        source substring cannot see this class of defect; a pin on the artifact can.
         """
-        field = "failed_substep_agent_run_id"
-        source = (Path(ort.__file__).resolve().parent
-                  / "orchestration_runtime.py").read_text(encoding="utf-8")
-        self.assertIn(f'finding.get("{field}")', source,
-                      f"{field} is no longer the field `_derive_resume_directive` reads; the "
-                      f"RUNBOOK remedy below now names the wrong one")
+        import tools.run_workflow as rw
+
         runbook = (Path(ort.__file__).resolve().parents[1]
                    / "docs" / "RUNBOOK.md").read_text(encoding="utf-8")
-        entry = [ln for ln in runbook.splitlines() if "dev_verify_major" in ln]
-        self.assertEqual(len(entry), 1)
-        self.assertIn(field, entry[0],
-                      "the dev-verify entry sends the operator to run `reopen-phase` by hand "
-                      "without naming where its trigger arid comes from")
+        entry = [ln for ln in runbook.splitlines()
+                 if ln.startswith("- Recovery from a **`conductor_phase_fail_closed` whose "
+                                  "`reason_detail` is `dev_verify_major`")]
+        self.assertEqual(len(entry), 1,
+                         "§3-1 must carry exactly one dev-verify recovery bullet, opening with "
+                         "its own `- Recovery from a …` sentence")
+        documented = re.search(r"`failure_analysis\.json#([A-Za-z0-9_.]+)`", entry[0])
+        self.assertIsNotNone(documented,
+                             "the dev-verify entry no longer names a `failure_analysis.json#…` "
+                             "path for the reopen trigger")
+        path = documented.group(1).split(".")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            oid = "orch_runbook_trigger"
+            ort.init_orchestration(repo_root=repo_root, orchestration_id=oid)
+            root = repo_root / "workspace" / "orchestrations" / oid
+            arid = "ar_generate_verify_001"
+            with (root / "agent_runs.jsonl").open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps({
+                    "agent_run_id": arid, "agent_role": "substep",
+                    "node_key": "problem/shallow_water2d@0.3.0",
+                    "step": "generate", "substep": "verify", "status": "fail",
+                    "started_at": "2026-09-03T00:00:00Z",
+                    "finished_at": "2026-09-03T00:01:00Z",
+                }) + "\n")
+            ort.update_orchestration_status(
+                repo_root=repo_root, orchestration_id=oid, status="fail_closed",
+                reason_code="conductor_phase_fail_closed", reason_detail="dev_verify_major")
+            analysis = rw._collect_failure_analysis(repo_root, oid)
+
+        cursor = analysis
+        for key in path:
+            self.assertIsInstance(cursor, dict,
+                                  f"the documented path {'.'.join(path)} does not resolve in the "
+                                  f"artifact this stop writes: {key!r} has no container")
+            self.assertIn(key, cursor,
+                          f"the dev-verify entry sends the operator to "
+                          f"failure_analysis.json#{'.'.join(path)}, and {key!r} is not a key of "
+                          f"the artifact `_collect_failure_analysis` writes for this stop")
+            cursor = cursor[key]
+        self.assertEqual(cursor, arid,
+                         "the documented path resolves, but not to the failing substep's "
+                         "agent_run_id, so `reopen-phase` would be given the wrong trigger")
 
     def test_launch_prompt_reference_spells_both_rubric_fail_closed_names(self) -> None:
         """The two `pure_severity_rubric_document_*` tags reach an operator only through the run
