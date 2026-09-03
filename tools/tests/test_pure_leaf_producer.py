@@ -1972,7 +1972,10 @@ class PureColdRepairPromptTests(unittest.TestCase):
         # tests green, because the previous test computed its expectation with `template.index(
         # "\n\n", start)`, the very mechanism under test. The terminators below are INDEPENDENT
         # of that split, exactly as the producer's `test_authoring_rules_lift_is_the_whole_
-        # paragraph` uses `**Harness capabilities`.
+        # paragraph` uses `**Harness capabilities`. Issue #143 added the severity-rubric label as
+        # a third pair rather than widening the contract pair's terminator: with one span running
+        # from the contract label to the bundle, the contract paragraph's own end would stop being
+        # pinned the moment a paragraph between them is lifted.
         req = self._req(substep="verify")
         lifted = ort._pure_authoring_rules_text(req)
         template = ort._load_launch_prompt_templates()["pure generate.verify"]
@@ -1987,7 +1990,8 @@ class PureColdRepairPromptTests(unittest.TestCase):
 
         # (b) each paragraph survives WHOLE, bounded by a terminator the split cannot move
         for prefix, terminator in (("Review checklist", "**Controlled spec"),
-                                   ("**Checks-module contract (", "**Generated CodegenBundle")):
+                                   ("**Checks-module contract (", "**Severity rubric ("),
+                                   ("**Severity rubric (", "**Generated CodegenBundle")):
             start = template.index(prefix)
             end = template.index(terminator)
             self.assertGreater(end, start, (prefix, terminator))

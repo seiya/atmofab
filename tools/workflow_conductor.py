@@ -967,6 +967,76 @@ def _checks_contract_abi_sections(text: str) -> str:
     return "\n".join(lines[begin:end]).rstrip("\n")
 
 
+
+# The `Generate.verify` severity rubric — the `#### Severity of a finding` subsection of
+# `docs/workflow/phases/phase_02_generate.md` §2-2 — as it reaches the pure `generate.verify`
+# reviewer (issue #143). Before it, the routing consequence of `issue_severity` was stated in six
+# documents and the CHOICE of value in none, so a reviewer graded a contract-conforming bundle
+# `major` and the run terminalized `fail_closed`. G1-G7 are outside the slice: they are already
+# the template's own checklist, and re-inlining them would state one rule twice.
+_SEVERITY_RUBRIC_BEGIN_RE = re.compile(r"^#### Severity of a finding(?:\s|$)")
+_SEVERITY_RUBRIC_END_RE = re.compile(r"^## On-failure behavior[ \t]*$")
+_ANY_MARKDOWN_HEADING_RE = re.compile(r"^#{1,6} ")
+
+
+def _generate_verify_severity_rubric_section(text: str) -> str:
+    """Return the severity rubric of `docs/workflow/phases/phase_02_generate.md` — from the
+    `#### Severity of a finding` heading line (inclusive) to the `## On-failure behavior` heading
+    line (exclusive), trailing blank lines stripped.
+
+    Raises `ValueError` when either anchor is absent, rather than degrading to a shorter or empty
+    slice: the caller turns that into a named fail-closed contract, because a reviewer handed a
+    truncated rubric chooses `issue_severity` by the guess this injection exists to remove.
+
+    The slice ends at the FIRST heading after the rubric, and that heading must be the literal
+    `## On-failure behavior` — anything else raises. Both halves are load-bearing and each closes
+    a different hole. Terminating on the first heading refuses ABSORPTION: with a literal-only
+    terminator, a subsection appended to §2-2 between the rubric and `## On-failure behavior` was
+    swallowed into the slice and shipped to the reviewer inside a fence labelled "choose
+    `issue_severity` by it", caught by nothing but the drift digest — whose own remedy line tells
+    a maintainer to bump the version, which is exactly what a maintainer making an intentional doc
+    edit does. Requiring that heading to be the expected one keeps the NAMED error for a renamed
+    or reordered following section, instead of silently accepting whatever now follows.
+    The two anchors are not symmetric, and the asymmetry is deliberate. The BEGIN anchor's
+    `(?:\\s|$)` is a word boundary — it must match the real heading, which continues
+    `(\u0060issue_severity\u0060)`, while refusing `#### Severity of a findingsTable`. The END anchor is
+    an EXACT line: three documents promise an operator that renaming `## On-failure behavior`
+    fails the substep closed, and under a word-boundary match `## On-failure behavior and retry`
+    still anchored, so the slice silently accepted a renamed section and only the drift digest —
+    whose remedy is "bump the version" — would have spoken. An exact match keeps that promise.
+
+    Both anchors are LINE-ANCHORED and FENCE-UNAWARE: a ``` block containing a line that begins
+    `#### Severity of a finding` or `## On-failure behavior` would anchor, cutting the slice
+    inside the fence. The real document holds ZERO fenced blocks (measured), and only an operator
+    editing `docs/` could introduce one. Rubric MEMBERSHIP is not re-derived here: which severity
+    values the slice must state is pinned against the code's own enum by
+    `test_severity_rubric_states_every_verdict_severity_at_its_own_bullet`, rather than by a
+    second enumeration inside this function.
+
+    This slice is a pure-leaf INPUT: changing what it spans changes what the reviewer reads and
+    therefore requires a `PURE_PROMPT_CONTRACT_VERSION` bump. The drift guard hashes the slice
+    ITSELF (`tools/tests/test_pure_prompt_contract_drift.py`), so a silent re-slice changes the
+    digest instead of shipping unversioned."""
+    lines = text.splitlines()
+    begin = next((i for i, ln in enumerate(lines)
+                  if _SEVERITY_RUBRIC_BEGIN_RE.match(ln)), None)
+    if begin is None:
+        raise ValueError(
+            "phase_02_generate.md has no '#### Severity of a finding' subsection heading")
+    end = next((i for i in range(begin + 1, len(lines))
+                if _ANY_MARKDOWN_HEADING_RE.match(lines[i])), None)
+    if end is None:
+        raise ValueError(
+            "phase_02_generate.md has no '## On-failure behavior' heading after "
+            "'#### Severity of a finding'")
+    if not _SEVERITY_RUBRIC_END_RE.match(lines[end]):
+        raise ValueError(
+            f"phase_02_generate.md: {lines[end][:48]!r} follows the rubric, not "
+            "'## On-failure behavior'. Move it above §2-2, or the rubric to the end of §2-2; "
+            "the rubric is sliced to that terminator")
+    return "\n".join(lines[begin:end]).rstrip("\n")
+
+
 _TRUNCATION_MARKER = "\n…[truncated]"
 
 
@@ -7193,8 +7263,18 @@ clean:
             ValueError and not an OSError), because an empty string would satisfy the renderer's
             presence check and ship a prompt whose ABI section is blank — precisely the blindness
             this injection removes. The caller converts it into a `pure_context_assembly_failed`
-            fail_closed transport outcome; no leaf is spawned."""
-        from tools.orchestration_runtime import CHECKS_MODULE_CONTRACT_REF
+            fail_closed transport outcome; no leaf is spawned.
+
+        The SIXTH document is the `#### Severity of a finding` subsection of
+        `docs/workflow/phases/phase_02_generate.md` §2-2, sliced by
+        `_generate_verify_severity_rubric_section` (issue #143). It carries the same RAISING
+        disposition as the contract slice and for the same reason: a blank rubric satisfies the
+        renderer's presence check and returns the reviewer to choosing `issue_severity` by how
+        heavy the defect looks, which is what terminalized a run on a contract-conforming bundle.
+        The phase-doc path is taken from `WORKFLOW_PHASE_DOC_BY_STEP` rather than restated here,
+        so the reviewer reads the same document the phase contract names."""
+        from tools.orchestration_runtime import (CHECKS_MODULE_CONTRACT_REF,
+                                                 WORKFLOW_PHASE_DOC_BY_STEP)
         def _read(rel: str) -> str:
             try:
                 return (self.repo_root / rel).read_text(encoding="utf-8")
@@ -7211,11 +7291,23 @@ clean:
         except ValueError as exc:
             raise RuntimeError(
                 f"pure_checks_contract_document_unsliceable: {contract_path}: {exc}") from exc
+        phase_doc_path = self.repo_root / WORKFLOW_PHASE_DOC_BY_STEP["generate"]
+        try:
+            phase_doc_text = phase_doc_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            raise RuntimeError(
+                f"pure_severity_rubric_document_missing: {phase_doc_path}: {exc}") from exc
+        try:
+            severity_rubric = _generate_verify_severity_rubric_section(phase_doc_text)
+        except ValueError as exc:
+            raise RuntimeError(
+                f"pure_severity_rubric_document_unsliceable: {phase_doc_path}: {exc}") from exc
         return {
             "controlled_spec_document": _read(f"{refs.spec_path}/controlled_spec.md"),
             "tests_document": _read(f"{refs.spec_path}/tests.md"),
             "ir_document": _read(f"{refs.ir_ref}/spec.ir.yaml"),
             "checks_module_contract_document": contract_abi,
+            "severity_rubric_document": severity_rubric,
             "bundle_document": _read(f"{refs.source_dir()}/codegen_bundle.json"),
         }
 
@@ -7295,8 +7387,10 @@ clean:
             _MISSING)
         entry = self.entry_for(phase, substep)
         self.reset_http_history(phase, substep)
-        # Assembling the reviewer's context reads a host-owned repository document and RAISES on a
-        # missing/unsliceable one (`pure_checks_contract_document_*`). run_substep's callers must
+        # Assembling the reviewer's context reads TWO host-owned repository documents and RAISES
+        # on a missing/unsliceable one (`pure_checks_contract_document_*` for
+        # CHECKS_MODULE_CONTRACT.md, `pure_severity_rubric_document_*` for phase_02_generate.md;
+        # the list is exhaustive and grows with `_build_pure_verify_context`). run_substep's callers must
         # never see an exception — recover it as the same fail_closed transport outcome the
         # producer's `_build_pure_context` failure produces. A repository document the leaf cannot
         # repair makes fail_closed (operator --resume) the correct terminus, not a reopen. No leaf

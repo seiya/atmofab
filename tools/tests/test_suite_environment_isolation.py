@@ -869,3 +869,56 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NoShadowedTestMethodTests(unittest.TestCase):
+    """A test method defined twice in one class is dead code that reads as coverage.
+
+    Python keeps the LAST definition, so the earlier one never runs while still being what a
+    `grep` lands on first. Issue #143's review loop shipped exactly that: a splice left four of
+    the branch's own new checks duplicated, three byte-identical and one not, and the suite
+    counted 62 collected against 66 `def test_` lines with nothing red. The commit that caused it
+    claimed in its message to have REMOVED a duplicate — the shape is invisible from inside the
+    suite, so a reader believes whichever half they land on.
+
+    Scans every `tools/tests/test_*.py` by AST rather than by regex, because a `def test_` inside
+    a string or a nested function is not a method. Repository-wide on purpose: the rule is not
+    about one file, and a check scoped to the file that broke would be a pin on the result.
+    """
+
+    def test_no_test_class_defines_the_same_test_twice(self) -> None:
+        import ast
+
+        tests_dir = Path(__file__).resolve().parent
+        files = sorted(tests_dir.glob("test_*.py"))
+        self.assertGreater(len(files), 20,
+                           "found almost no test modules; this scan is reading the wrong "
+                           "directory and would pass vacuously")
+        offenders: list[str] = []
+        scanned_classes = 0
+        for path in files:
+            try:
+                tree = ast.parse(path.read_text(encoding="utf-8"))
+            except SyntaxError as exc:                       # pragma: no cover - a broken tree
+                offenders.append(f"{path.name}: unparseable ({exc})")
+                continue
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.ClassDef):
+                    continue
+                scanned_classes += 1
+                seen: dict[str, int] = {}
+                for item in node.body:
+                    if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)) \
+                            and item.name.startswith("test"):
+                        if item.name in seen:
+                            offenders.append(
+                                f"{path.name}::{node.name}::{item.name} defined at line "
+                                f"{seen[item.name]} and again at line {item.lineno}; the first "
+                                f"never runs")
+                        seen[item.name] = item.lineno
+        self.assertGreater(scanned_classes, 50,
+                           "almost no test classes were scanned; the walk is not finding them")
+        self.assertEqual(offenders, [],
+                         "a test method is shadowed by a later definition of the same name in "
+                         "its class — the earlier one is dead code that reads as coverage:\n"
+                         + "\n".join(offenders))

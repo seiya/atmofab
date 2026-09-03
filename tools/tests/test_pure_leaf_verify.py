@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import tempfile
 import unittest
@@ -23,7 +24,7 @@ from zoneinfo import ZoneInfo
 os.environ.setdefault("ATMOFAB_DEP_READINESS_ALLOW_PERSISTED_FALLBACK", "1")
 
 import tools.workflow_conductor as wc
-from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION
+from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION, VERDICT_SEVERITIES
 from tools.tests.test_pure_leaf_producer import (
     _NODE, _SPEC_ID, _write_node, _PureFakeConductor, _valid_bundle, _envelope, _conductor,
 )
@@ -40,19 +41,22 @@ def _verdict(status: str = "pass", *, severity: str | None = None,
             "findings": findings or [{"summary": "mass is not conserved"}]}
 
 
-# The real checks-module contract, copied into each fixture repo. Deliberately the REAL document
-# and not a synthetic stand-in: every reviewer-loop test below renders the live slice, so a
-# reorganization of the document that `_checks_contract_abi_sections` cannot cut turns this whole
-# file red — the early warning that a billed run would otherwise be the first to give.
-# `ChecksContractSlicerTests` covers the helper's own contract on synthetic text.
+# The two real documents the reviewer context slices, copied into each fixture repo. Deliberately
+# the REAL documents and not synthetic stand-ins: every reviewer-loop test below renders the live
+# slices, so a reorganization either slicer cannot cut turns this whole file red — the early
+# warning that a billed run would otherwise be the first to give. `ChecksContractSlicerTests` and
+# `SeverityRubricSlicerTests` cover the two helpers' own contracts on synthetic text.
 _REAL_CHECKS_CONTRACT = (
     Path(wc.__file__).resolve().parents[1] / "docs" / "workflow" / "CHECKS_MODULE_CONTRACT.md")
+_REAL_PHASE_02 = (Path(wc.__file__).resolve().parents[1]
+                  / "docs" / "workflow" / "phases" / "phase_02_generate.md")
 
 
-def _verify_node(repo: Path, *, stage_checks_contract: bool = True) -> wc.NodeRefs:
+def _verify_node(repo: Path, *, stage_checks_contract: bool = True,
+                 stage_phase_02: bool = True) -> wc.NodeRefs:
     """A pure node with the producer's codegen_bundle.json already on disk (the reviewer input),
-    and — unless `stage_checks_contract=False` — the repository's checks-module contract staged
-    where `_build_pure_verify_context` reads it."""
+    and — unless the corresponding `stage_*` argument is False — the repository's checks-module
+    contract and phase_02 contract staged where `_build_pure_verify_context` reads them."""
     refs = _write_node(repo)
     src = repo / refs.source_dir()
     src.mkdir(parents=True, exist_ok=True)
@@ -64,6 +68,10 @@ def _verify_node(repo: Path, *, stage_checks_contract: bool = True) -> wc.NodeRe
         dest = repo / "docs" / "workflow" / "CHECKS_MODULE_CONTRACT.md"
         dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(_REAL_CHECKS_CONTRACT, dest)
+    if stage_phase_02:
+        dest = repo / "docs" / "workflow" / "phases" / "phase_02_generate.md"
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(_REAL_PHASE_02, dest)
     return refs
 
 
@@ -71,7 +79,7 @@ def _verify_node(repo: Path, *, stage_checks_contract: bool = True) -> wc.NodeRe
 # _build_pure_verify_context
 # ======================================================================================
 class PureVerifyContextTests(unittest.TestCase):
-    def test_context_has_the_five_verify_keys(self) -> None:
+    def test_context_has_the_six_verify_keys(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = _verify_node(repo)
@@ -79,7 +87,7 @@ class PureVerifyContextTests(unittest.TestCase):
             self.assertEqual(set(ctx),
                              {"controlled_spec_document", "tests_document",
                               "ir_document", "checks_module_contract_document",
-                              "bundle_document"})
+                              "severity_rubric_document", "bundle_document"})
             self.assertIn("conserves mass", ctx["controlled_spec_document"])
             self.assertIn("bundle_schema_version", ctx["bundle_document"])
 
@@ -144,6 +152,182 @@ class PureVerifyContextTests(unittest.TestCase):
                 _conductor(repo)._build_pure_verify_context(refs)
             self.assertIn("pure_checks_contract_document_unsliceable", str(cm.exception))
 
+    def test_severity_rubric_document_is_the_rubric_subsection_of_the_real_phase_02(self) -> None:
+        # issue #143: the reviewer receives §2-2's severity rubric and nothing else of phase_02.
+        # What is pinned is the SPAN — the subsection heading opens it, its own bullets are
+        # inside, and the checklist above it and the retry policy below it are out.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = _verify_node(repo)
+            doc = _conductor(repo)._build_pure_verify_context(refs)["severity_rubric_document"]
+            self.assertTrue(doc.startswith("#### Severity of a finding"), doc[:80])
+            self.assertIn("names the repair", doc,
+                          "the rubric's lead sentence no longer says what the value names; this "
+                          "is the witness that the slot carries the RUBRIC and not some other "
+                          "subsection, so a reworded lead sentence means re-reading it here")
+            # The rubric restates #142's scope rule as a severity clause, which makes it a THIRD
+            # statement of that rule inside phase_02. Pin its polarity POSITIVELY: the sibling
+            # `test_phase_02_states_the_scope_rule_with_its_bound` refuses one spelling of the
+            # fail-open ("the contract does not state is out of scope"), and a negative phrase
+            # pin stops catching the moment the sentence is reworded.
+            self.assertIn("is dropped and takes no severity when the checks-module contract "
+                          "contradicts it", doc)
+            self.assertIn("Where the contract is silent, the finding stands and takes the value "
+                          "its subject earns", doc)
+            # …and its CLASS, which is what round 1 found wrong: this bullet was strictly wider
+            # than the two statements of the same rule it joins ("or the harness", "a value the
+            # bundle returns"), so a G5 dataflow finding justified by what the harness does with
+            # a MODEL-produced value fell inside the droppable class here and outside it there.
+            # The class is taken FROM the template — the pre-existing authority — never spelled
+            # again, so the two cannot drift apart. The extraction is self-tested.
+            tpl = (Path(wc.__file__).resolve().parents[1] / "tools" / "prompt_templates"
+                   / "pure_generate_verify.txt").read_text(encoding="utf-8")
+            _, sep, rest = tpl.partition(
+                "can only OVERRULE one kind of claim — a claim about ")
+            self.assertTrue(sep, "the template's droppable-class sentence no longer opens with "
+                                 "'can only OVERRULE one kind of claim — a claim about '; "
+                                 "re-read the TEMPLATE and re-derive this marker")
+            claim_class, sep2, _ = rest.partition(" — so drop a finding")
+            self.assertTrue(sep2, "the template's droppable-class sentence no longer ends with "
+                                  "' — so drop a finding'; the class could not be delimited, so "
+                                  "the comparison below would be against the rest of the "
+                                  "TEMPLATE, not against a class")
+            self.assertTrue(40 < len(claim_class) < 300,
+                            f"the extracted class is {len(claim_class)} characters, which is not "
+                            f"a claim class; the template's markers moved: {claim_class[:120]!r}")
+            # EXCLUSIVITY, not presence. `assertIn` passed on a bullet that stated the template's
+            # class AND MORE — appending "or about what the harness does with any value the
+            # bundle returns" was green, which is the very widening this coupling exists to
+            # refuse. Compare the rubric bullet's own class span for EQUALITY.
+            opener, closer = "- A claim about ", " is dropped and takes no severity"
+            bullet = [ln for ln in doc.splitlines() if ln.startswith(opener)]
+            self.assertEqual(len(bullet), 1,
+                             f"the rubric must carry exactly one {opener!r} bullet; found "
+                             f"{len(bullet)}")
+            rubric_class, sep3, _ = bullet[0][len(opener):].partition(closer)
+            self.assertTrue(sep3, f"the rubric's drop bullet no longer contains {closer!r}, so "
+                                  f"its class span could not be delimited")
+            self.assertEqual(rubric_class, claim_class,
+                             "the rubric's droppable class is not the template's, character for "
+                             "character; a WIDER class here drops findings the template keeps")
+            # The two tie-break sentences decide the ambiguous case, and one direction of each
+            # ends the run. A polarity, not prose: pin both, or an inversion ships on a version
+            # bump alone.
+            self.assertIn("do not settle whether the subject is the sources under review or an "
+                          "input, the value is `minor`", doc)
+            self.assertIn("do not settle whether the sources under review can serve as the base "
+                          "of a repair, the value is `minor`", doc)
+            # …and the `minor` bullet's own routing sentence, which round 5 found held by
+            # nothing but the drift digest: flipping "Every G1-G7 finding whose subject is the
+            # generated code takes this value" to `major` reproduces #142's episode — a
+            # contract-conforming bundle terminalizing the run — on a version bump alone.
+            self.assertIn("Every G1-G7 finding whose subject is the generated code takes this "
+                          "value", doc)
+            # `ir_inconsistency` is what routes the operator to `reopen-phase --from-phase
+            # compile` (`docs/RUNBOOK.md` §3-1 keys its first arm on that literal), and deleting
+            # the obligation to write it turned only the drift digest red (round 5).
+            self.assertIn("contains the literal `ir_inconsistency` when the input is "
+                          "`spec.ir.yaml`", doc)
+            # The rubric grades a FAIL. It must never authorize a pass: a bullet saying an
+            # unattributable finding means `pass` is a template-authorized zero-work verdict,
+            # and round 5 appended exactly that with only the digest red. Measured: the slice
+            # contains neither literal today, so this is emptiness, not an allowlist.
+            for authorizing in ("verification_status", "'pass'", '"pass"', " is `pass`"):
+                self.assertNotIn(authorizing, doc,
+                                 "the rubric names the pass side; it grades a fail, and the "
+                                 "pass side is the launch template's output contract")
+            # …and the AXIS the tie-breaks tie-break FOR. Round 4 inverted the lead paragraph to
+            # "the value grades the consequence … One question selects the value: how severe the
+            # consequence of the defect is", kept "names the repair" so the witness above still
+            # passed, and turned only the drift digest red — whose remedy line says to bump the
+            # version, which is what an intentional doc edit does. The axis is the whole rule.
+            self.assertIn("the value does not grade the consequence the defect would have at "
+                          "`Validate`, and the size of the correction does not change it", doc)
+            self.assertIn("One question selects the value: whether `Generate.generate`, re-run "
+                          "with the finding and the same `spec.ir.yaml` and `tests.md`, can "
+                          "resolve the finding", doc)
+            # Every literal here must occur in the REAL document, or the assertion is true of any
+            # slice and pins nothing (the checks-contract test above records why). Note what is
+            # NOT usable as an absent literal: `ir_inconsistency` occurs inside the rubric itself.
+            real = _REAL_PHASE_02.read_text(encoding="utf-8")
+            for absent in ("#### G7. dependency consistency",
+                           "See the `verify` `SKILL`.",
+                           "## On-failure behavior",
+                           "A `Generate fail` retry defaults to an in-phase retry."):
+                self.assertIn(absent, real, f"{absent!r} no longer occurs in the document, so "
+                                            f"asserting its absence from the slice pins nothing")
+                self.assertNotIn(absent, doc)
+
+    def test_severity_rubric_states_every_verdict_severity_at_its_own_bullet(self) -> None:
+        """Enumeration coupling (`atmofab-enforcement-change` rule 3-a): the rubric must state
+        each severity the CODE accepts, at its own bullet, and state no other.
+
+        PINNED: that every member of `VERDICT_SEVERITIES` except the pass-side `none` opens
+        exactly one `- `<value>`:` bullet of the slice, and that the bullet count equals that
+        membership — so a value added to the enum, or a bullet deleted from the document, is red
+        and NAMES the value. The count comes from the code; the document is checked against it.
+        SAMPLED: nothing about what each bullet SAYS — the wording is prose a leaf reads, and
+        `test_severity_rubric_document_is_the_rubric_subsection_of_the_real_phase_02` pins only
+        the span. `none` has no named constant of its own (the pass side is the bare literal in
+        `pure_leaf.validate_verdict`), so its exclusion is self-tested against the tuple rather
+        than written out."""
+        self.assertIn("none", VERDICT_SEVERITIES,
+                      "the pass-side literal left the enum; the exclusion below now removes "
+                      "nothing and the count would be off by one")
+        expected = set(VERDICT_SEVERITIES) - {"none"}
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = _verify_node(repo)
+            doc = _conductor(repo)._build_pure_verify_context(refs)["severity_rubric_document"]
+        # A VALUE bullet is one whose opener is `<word>`: — the shape the three value bullets
+        # use. Summing openers over the ENUM (round 1's fix) restored nothing: it could never see
+        # a bullet for a value outside the enum, so `- `fatal`: …` shipped green where the older
+        # count caught it. Collect the openers from the DOCUMENT and compare the set.
+        found = re.findall(r"^- `([a-z_]+)`:", doc, flags=re.MULTILINE)
+        self.assertEqual(sorted(found), sorted(expected),
+                         "the rubric's value bullets are not exactly the enum's failing values; "
+                         "a bullet naming a value the verdict schema refuses would send the "
+                         "reviewer into a schema-repair loop, and a missing one leaves a value "
+                         "unexplained. Note the shape this reads: a NON-value bullet must not "
+                         "open `- `identifier`:` — write it without the colon.")
+
+    def test_missing_phase_02_raises_the_named_contract(self) -> None:
+        # Same disposition as the checks contract, and for the same reason: "" satisfies the
+        # renderer's presence check and would ship a reviewer prompt whose rubric is blank.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = _verify_node(repo, stage_phase_02=False)
+            with self.assertRaises(RuntimeError) as cm:
+                _conductor(repo)._build_pure_verify_context(refs)
+            self.assertIn("pure_severity_rubric_document_missing", str(cm.exception))
+
+    def test_non_utf8_phase_02_raises_the_named_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = _verify_node(repo)
+            (repo / "docs" / "workflow" / "phases" / "phase_02_generate.md").write_bytes(
+                b"#### Severity of a finding\n\xff\xfe\n## On-failure behavior\n")
+            with self.assertRaises(RuntimeError) as cm:
+                _conductor(repo)._build_pure_verify_context(refs)
+            self.assertIn("pure_severity_rubric_document_missing", str(cm.exception))
+
+    def test_unsliceable_phase_02_raises_the_named_contract(self) -> None:
+        # A readable document whose anchors moved is a DIFFERENT diagnosis from an absent one:
+        # the operator's repair is the document's headings, not a missing file. Driven by the
+        # REAL document with its terminator heading removed, so the fixture is the failure an
+        # operator would actually produce.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = _verify_node(repo)
+            real = _REAL_PHASE_02.read_text(encoding="utf-8")
+            self.assertIn("\n## On-failure behavior\n", real)
+            (repo / "docs" / "workflow" / "phases" / "phase_02_generate.md").write_text(
+                real.replace("\n## On-failure behavior\n", "\n## Retry policy\n"),
+                encoding="utf-8")
+            with self.assertRaises(RuntimeError) as cm:
+                _conductor(repo)._build_pure_verify_context(refs)
+            self.assertIn("pure_severity_rubric_document_unsliceable", str(cm.exception))
+
 
 # ======================================================================================
 # _checks_contract_abi_sections (the slicer's own contract, on synthetic text)
@@ -190,13 +374,102 @@ class ChecksContractSlicerTests(unittest.TestCase):
 
 
 # ======================================================================================
+# _generate_verify_severity_rubric_section (the slicer's own contract, on synthetic text)
+# ======================================================================================
+class SeverityRubricSlicerTests(unittest.TestCase):
+    _DOC = ("# Title\n\npreamble\n\n"
+            "#### G7. dependency consistency\ng7 body\n\n"
+            "#### Severity of a finding (`issue_severity`)\nlead sentence\n"
+            "- `minor`: m\n\n"
+            "## On-failure behavior\nretry body\n")
+
+    def test_keeps_the_subsection_and_drops_the_checklist_and_on_failure(self) -> None:
+        self.assertEqual(
+            wc._generate_verify_severity_rubric_section(self._DOC),
+            "#### Severity of a finding (`issue_severity`)\nlead sentence\n- `minor`: m")
+
+    def test_missing_begin_anchor_raises(self) -> None:
+        with self.assertRaises(ValueError):
+            wc._generate_verify_severity_rubric_section(
+                "#### G7. x\nbody\n\n## On-failure behavior\nb\n")
+
+    def test_missing_end_anchor_raises(self) -> None:
+        # Degrading to "everything after the heading" would hand the reviewer the phase's own
+        # retry policy as if it were part of the rubric.
+        with self.assertRaises(ValueError):
+            wc._generate_verify_severity_rubric_section(
+                "#### Severity of a finding\n- `minor`: m\n")
+
+    def test_a_subsection_appended_after_the_rubric_raises(self) -> None:
+        # Round 2's probe: a new `#### …` subsection between the rubric and `## On-failure
+        # behavior` was ABSORBED into the slice and shipped to the reviewer inside a fence
+        # labelled "choose `issue_severity` by it" — green everywhere but the drift digest, whose
+        # remedy line then tells the maintainer to bump the version. The slice now ends at the
+        # first heading and refuses one that is not the expected terminator, by name.
+        doc = self._DOC.replace(
+            "\n## On-failure behavior",
+            "\n#### Recording a finding\n- Each `findings[]` entry names its checklist item.\n"
+            "\n## On-failure behavior")
+        with self.assertRaises(ValueError) as cm:
+            wc._generate_verify_severity_rubric_section(doc)
+        self.assertIn("Recording a finding", str(cm.exception))
+        # The message must name a repair the editor can actually perform. Round 5's probe added
+        # a legitimate `### 2-3. Generate.gate substep`, and the earlier wording ("the rubric
+        # must stay the last subsection of §2-2") prescribed something that edit cannot satisfy
+        # while the rubric stays in §2-2 — it named neither real repair.
+        self.assertIn("Move it above §2-2, or the rubric to the end of §2-2",
+                      str(cm.exception))
+        # …and it must survive the run log, which keeps `str(exc)[:200]`. A remedy truncated
+        # before it is stated is the half-remedy this message exists to avoid.
+        self.assertLessEqual(len(str(cm.exception)), 200,
+                             "the raise is longer than the 200 characters the run-log detail "
+                             "keeps, so the operator sees it cut mid-sentence")
+
+    def test_a_terminator_rename_that_only_APPENDS_words_still_raises(self) -> None:
+        # Three documents promise an operator that renaming `## On-failure behavior` fails the
+        # substep closed. Under the word-boundary end anchor `## On-failure behavior and retry`
+        # still anchored, so the slice silently accepted a renamed section and only the drift
+        # digest — remedy: "bump the version" — would have spoken (round 5). The terminator is an
+        # exact line now, and this is the case that distinguishes the two.
+        doc = self._DOC.replace("## On-failure behavior", "## On-failure behavior and retry")
+        with self.assertRaises(ValueError) as cm:
+            wc._generate_verify_severity_rubric_section(doc)
+        self.assertIn("and retry", str(cm.exception))
+
+    def test_a_renamed_following_section_still_raises_by_name(self) -> None:
+        # The other half: ending at the first heading must not turn a RENAMED terminator into a
+        # silent success. The named error is what tells an operator which document to repair.
+        doc = self._DOC.replace("## On-failure behavior", "## Retry policy")
+        with self.assertRaises(ValueError) as cm:
+            wc._generate_verify_severity_rubric_section(doc)
+        self.assertIn("Retry policy", str(cm.exception))
+
+    def test_a_longer_heading_that_merely_starts_with_the_phrase_does_not_anchor(self) -> None:
+        # `(?:\s|$)` is the word boundary: `#### Severity of a findings table` is a different
+        # subsection, and anchoring on it would slice a document the rubric is not in.
+        with self.assertRaises(ValueError):
+            wc._generate_verify_severity_rubric_section(
+                "#### Severity of a findingsTable\nbody\n\n## On-failure behavior\nb\n")
+
+    def test_an_end_anchor_before_the_begin_anchor_is_not_counted(self) -> None:
+        # The end search starts AFTER the begin index; a back-reference above the heading must
+        # not produce an empty (or reversed) slice.
+        doc = ("## On-failure behavior\nearly\n\n#### Severity of a finding\n- `minor`: m\n\n"
+               "## On-failure behavior\nretry body\n")
+        self.assertEqual(wc._generate_verify_severity_rubric_section(doc),
+                         "#### Severity of a finding\n- `minor`: m")
+
+
+# ======================================================================================
 # _run_pure_verify_substep: happy path, fail verdict, repair, exhaustion, transport
 # ======================================================================================
 class PureVerifySubstepTests(unittest.TestCase):
-    def _run(self, envelopes, *, cls=_PureFakeConductor, stage_checks_contract=True):
+    def _run(self, envelopes, *, cls=_PureFakeConductor, stage_checks_contract=True,
+             stage_phase_02=True):
         self._tmp = tempfile.TemporaryDirectory()
         repo = Path(self._tmp.name)
-        refs = _verify_node(repo, stage_checks_contract=stage_checks_contract)
+        refs = _verify_node(repo, stage_checks_contract=stage_checks_contract,
+                            stage_phase_02=stage_phase_02)
         (repo / "workspace" / "orchestrations" / "o").mkdir(parents=True, exist_ok=True)
         c = cls(repo_root=repo, orchestration_id="o", orchestration_agent_run_id="orch",
                 llm_config=_cfg("claude"), env={})
@@ -246,6 +519,24 @@ class PureVerifySubstepTests(unittest.TestCase):
         self.assertEqual(len(events), 1, c.events)
         self.assertEqual(events[0]["node_key"], refs.node_key)
         self.assertIn("pure_checks_contract_document_missing", events[0]["detail"])
+
+    def test_a_missing_severity_rubric_is_the_same_recorded_fail_closed_outcome(self) -> None:
+        """Twin of the test above for the SECOND sliced document (issue #143).
+
+        The builder reads the checks contract first, so the assertion above would still pass with
+        the rubric read deleted — the contract's own name reaches the outcome either way. This
+        drives the second read on its own: contract staged, phase_02 absent.
+        """
+        c, refs, oc = self._run([_envelope(_verdict("pass"))], stage_phase_02=False)
+        self.assertEqual(oc.status, "fail")
+        self.assertEqual(oc.infra_error[0], "pure_context_assembly_failed")
+        self.assertIn("pure_severity_rubric_document_missing", oc.infra_error[1])
+        self.assertEqual(getattr(c, "_spawn", 0), 0)  # no leaf was billed
+        base = c.repo_root / refs.source_dir()
+        self.assertFalse((base / "source_meta.json").exists())
+        events = [e for e in c.events if e["event"] == "pure_context_assembly_failed"]
+        self.assertEqual(len(events), 1, c.events)
+        self.assertIn("pure_severity_rubric_document_missing", events[0]["detail"])
 
     def test_the_reviewer_loop_takes_its_launch_instant_from_the_filesystem(self) -> None:
         """Mirror of the producer's #113 pin — one witness per OCCURRENCE, not per rule.
