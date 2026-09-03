@@ -657,6 +657,31 @@ class PureRenderTests(unittest.TestCase):
                               f"{rel}: the routing statement does not point at the rubric")
                 self.assertIn("§2-2", line, rel)
 
+    def test_phase_02_names_the_injected_context_key_in_its_executor_section(self) -> None:
+        """The §Generate-executor paragraph is where phase_02 records WHAT the pure reviewer is
+        handed, and it is read by the agentic leaf as well. Round 0 found the sentence unpinned:
+        reverting it left the whole suite green, so a rename of the context key would leave the
+        phase contract describing a document that no longer arrives.
+
+        The literal is DERIVED from `PURE_CONTEXT_REQUIRED_KEYS` (the code that decides what the
+        host must supply), never spelled independently, so the two break together. The reader is
+        bounded to the section and the bound is self-tested.
+        """
+        keys = ort.PURE_CONTEXT_REQUIRED_KEYS[("generate", "verify")]
+        self.assertIn("severity_rubric_document", keys)
+        doc = (Path(ort.__file__).resolve().parents[1] / "docs" / "workflow" / "phases"
+               / "phase_02_generate.md").read_text(encoding="utf-8")
+        begin_marker, end_marker = "\n## Generate-executor", "\n## I/O contract"
+        self.assertEqual(doc.count(begin_marker), 1)
+        self.assertEqual(doc.count(end_marker), 1)
+        begin, end = doc.index(begin_marker), doc.index(end_marker)
+        self.assertGreater(end, begin)
+        section = doc[begin:end]
+        for key in ("checks_module_contract_document", "severity_rubric_document"):
+            self.assertIn(key, section,
+                          f"§Generate-executor does not name {key}, so the phase contract no "
+                          f"longer records what the reviewer is handed")
+
     def test_the_generate_verify_skill_assigns_no_severity_of_its_own(self) -> None:
         # The SKILL graded one G4-class defect `major` inline. On the repair-route axis that
         # defect is producer-repairable, so the hand-assignment contradicted the rubric it now
