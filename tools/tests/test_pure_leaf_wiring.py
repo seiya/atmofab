@@ -661,28 +661,26 @@ class PureRenderTests(unittest.TestCase):
     # code, and the documents are checked against it), so a moved phase doc breaks both together;
     # only the section number is spelled here, having no representation in the code.
     _RUBRIC_SECTION_BY_STEP = {"compile": "§1-2", "generate": "§2-2"}
-    # The repair-route axis AT EACH VALUE'S OWN STATEMENT POSITION
-    # (`atmofab-enforcement-change` rule 3-a, trap 5: an enumeration is coupled element by
-    # element where it is stated, not by "does the token appear somewhere"). Every phrase is
-    # filled from the step — `{artifact}` is what the substep REVIEWS, `{producer}` is what
-    # re-running would repair — so all three must hold in two documents that name two different
-    # artifacts and two different producers. The family can therefore fail, which a phrase
-    # spelled from one constant could not. phase_02's bullets are additionally byte-pinned by the
-    # pure-prompt drift digest; phase_01's are not pinned by anything else, which is the
-    # asymmetry this closes.
-    # Round 2: `minor` was `"the defect lies in"` — a preposition satisfied by whatever follows
-    # it. Two reviewers independently rewrote phase_01's whole `minor` bullet onto the
-    # weight-of-consequence axis ("the defect lies in the mild end of the consequence scale"),
-    # dropping the artifact, the faithfulness clause and every example, and measured green. A
-    # phrase must carry the axis, not merely open a sentence that could.
-    _RUBRIC_VALUE_AXIS_ARTIFACT = {"compile": "`spec.ir.yaml`",
-                                   "generate": "the sources under review"}
-    _RUBRIC_VALUE_AXIS_PHRASE = {
-        "minor": "the defect lies in {artifact}, and `last_fail_reason` names a correction that "
-                 "keeps",
-        "major": "no re-run of `{producer}` from the same",
-        "critical": "{artifact} cannot serve as the base of a repair",
-    }
+    # phase_01 §1-2's rubric, pinned by DIGEST — a review gate, not a pattern.
+    #
+    # Three rounds of issue #148 tried to pin the rubric's AXIS with required literal phrases,
+    # and a reviewer broke it every round by rewording around whatever the phrase was:
+    # `"the defect lies in"` was a preposition true of anything after it; its replacement ended
+    # in an unbounded `keeps`, so the faithfulness clause could be swapped out; the `critical`
+    # bullet was inverted with its required phrase left verbatim; and the `unless the `critical`
+    # bullet's condition holds` clause — the round-2 fix's whole point — was observed by nothing
+    # at all. Each rewrite also refused a legitimate rewording, in the other direction.
+    #
+    # The question "does this prose grade on the repair-route axis?" is not answerable by
+    # pattern (`atmofab-enforcement-change` §1: when a gate reads source TEXT rather than the
+    # meaning of an input, enumerating spellings is the losing line). So it is replaced by a
+    # question that IS answerable: "has this text changed since a human last read it against the
+    # axis?" That is the instrument this file already uses for `_SEVERITY_ROUTING_ALLOWLIST` and
+    # the one `tools/tests/test_pure_prompt_contract_drift.py` uses for phase_02's slice, which
+    # is why phase_02 was red for every mutant that phase_01 survived. phase_01 now has the same
+    # standing. Re-taking the digest is one line, and the failure message says what to re-read
+    # before taking it.
+    _PHASE_01_RUBRIC_DIGEST = "679ab43139321866f0a10c4084916457f10fd3615668be178345bd238918159e"
 
     def test_every_routing_statement_points_at_the_severity_rubric(self) -> None:
         """Six documents stated what `issue_severity` CAUSES and none stated how to choose it
@@ -763,13 +761,29 @@ class PureRenderTests(unittest.TestCase):
                     # `docs/workflow/phases/` prefix between the label and it; `[^;]` is the
                     # bound that matters, and it is what keeps the match inside one clause.
                     if len(steps) > 1:
-                        label = f"`{step.capitalize()}"
+                        # The label is `Compile` or `Compile.verify` — NOT `Compile.generate`.
+                        # A prefix match accepted the producer name, and round 3 broke the check
+                        # with it: it put "repaired by `Compile.generate`" into the OTHER
+                        # phase's clause as a decoy, swapped the two pointers, and every file
+                        # stayed green. Both decoys are natural sentences a maintainer would
+                        # write, which is what made it cheap.
+                        label = re.compile(
+                            r"`" + re.escape(step.capitalize()) + r"(?:\.verify)?`")
                         self.assertRegex(
                             line,
-                            re.escape(label) + r"[^;]{0,48}?" + re.escape(doc)
+                            label.pattern + r"[^;]{0,48}?" + re.escape(doc)
                             + r"[^;]{0,40}?" + re.escape(section),
-                            f"{rel}: the {label}` label does not introduce {doc} {section} on "
-                            f"the routing line. This line points at BOTH phases' rubrics, so "
+                            f"{rel}: `{step.capitalize()}` (or "
+                            f"`{step.capitalize()}.verify`) does not introduce {doc} {section} "
+                            f"on the routing line. THREE constraints, and this message cannot "
+                            f"tell you which one you hit: the label must come first, then its "
+                            f"document within 48 characters, then that document's section "
+                            f"within 40 more — and no `;` anywhere between them, `;` being what "
+                            f"separates one phase's clause from the next on these lines, so an "
+                            f"aside containing one splits the run. `{step.capitalize()}"
+                            f".generate` does NOT count as the label: it is the producer, and "
+                            f"naming it inside the other phase's clause is how round 3 defeated "
+                            f"the prefix match. This line points at BOTH phases' rubrics, so "
                             f"each pointer has to sit in the clause of the phase it belongs to "
                             f"— otherwise a reader sent to a `{step.capitalize()}.verify` stop "
                             f"reads the other phase's rule, and `docs/RUNBOOK.md` §3-1's "
@@ -1077,7 +1091,7 @@ class PureRenderTests(unittest.TestCase):
         "docs/AGENT_CONTRACT.md: - A verify-family finding always sets `verification_status=f"
         " #12a92add46ae",
         "docs/RUNBOOK.md: - Recovery from a **`conductor_phase_fail_closed` whose `rea"
-        " #9a8b699c97a6",
+        " #bd6eed3f2e08",
         "skills/workflow-generate-verify/SKILL.md: - A finding always sets "
         "`verification_status=fail` (record ` #4a2a99cfe8e9",
         # Issue #148: the `Compile.verify` mirror of the line above. It routes and points; it
@@ -1308,6 +1322,8 @@ class PureRenderTests(unittest.TestCase):
         axis = "`issue_severity` names the repair a finding calls for"
         slices = {step: self._rubric_slice(repo_root, step)
                   for step in ("compile", "generate")}
+        # The one sentence BOTH rubrics must share. Checked per phase rather than by digest,
+        # because it is the cross-phase invariant: two documents, one axis.
         for step, doc in slices.items():
             with self.subTest(step=step):
                 self.assertIn(axis, doc,
@@ -1315,51 +1331,42 @@ class PureRenderTests(unittest.TestCase):
                               f"states the repair-route axis. Both phases grade on it; a rubric "
                               f"that drops the sentence is free to be read on the "
                               f"weight-of-consequence axis, which routes the run differently.")
-                for value, phrase in self._RUBRIC_VALUE_AXIS_PHRASE.items():
-                    want = phrase.format(
-                        producer=f"{step.capitalize()}.generate",
-                        artifact=self._RUBRIC_VALUE_AXIS_ARTIFACT[step])
-                    bullet = next((ln for ln in doc.splitlines()
-                                   if ln.startswith(f"- `{value}`:")), None)
-                    self.assertIsNotNone(
-                        bullet,
-                        f"{ort.WORKFLOW_PHASE_DOC_BY_STEP[step]}: no `- `{value}`:` bullet; the "
-                        f"enumeration tests own that, and this check cannot read the axis "
-                        f"without it")
-                    self.assertIn(want, bullet,
-                                  f"{ort.WORKFLOW_PHASE_DOC_BY_STEP[step]}: the `{value}` bullet "
-                                  f"does not ground itself on the repair route — it must contain "
-                                  f"{want!r}. The lead sentence naming the axis is not enough: "
-                                  f"round 1 rewrote all three bullets of phase_01 to the "
-                                  f"weight-of-consequence axis, left the lead alone, and every "
-                                  f"check was green. Reword the EXAMPLES freely; this phrase is "
-                                  f"the axis at the value's own statement position.")
         lead = next((ln for ln in slices["compile"].splitlines() if axis in ln), "")
         self.assertTrue(lead, "phase_01's axis sentence is not on a line of its own slice")
         for token in ("phase_02_generate.md", "§2-2"):
             self.assertIn(token, lead,
-                          f"phase_01 §1-2's lead paragraph does not name {token}. It must reach "
-                          f"phase_02's rubric on the SAME line as the axis, because that is "
-                          f"where the two phases' different values for the SAME defect are "
+                          f"phase_01 §1-2's lead paragraph does not name {token}. It must "
+                          f"reach phase_02's rubric on the SAME line as the axis, because that "
+                          f"is where the two phases' different values for the SAME defect are "
                           f"explained; a leaf that meets one rubric and not the pointer reads "
                           f"the disagreement as an error.")
-        # The DIRECTION of the cross-phase disagreement, not just the pointer to it. This one
-        # sentence is the whole reason the two rubrics may give one defect two values; round 2
-        # inverted it (`major` here and `minor` there) and every check in the tree stayed green,
-        # while the sweep skipped the line as one of phase_01's own rubric lines. Inverted, it
-        # tells a `Compile.verify` leaf to terminalize a `dev` run on the exact defect issue #148
-        # re-graded — issue #142's episode, restored by one word swap.
-        self.assertIn("takes `minor` here and `major` there", lead,
-                      "phase_01 §1-2's lead no longer states WHICH WAY the two phases differ on "
-                      "a thin lowering. `spec.ir.yaml` is the artifact under review at "
-                      "`Compile.verify` and an input at `Generate.verify`, so it is `minor` HERE "
-                      "and `major` THERE; the pointer to phase_02 without the direction leaves a "
-                      "leaf to guess, and the inverted sentence is a run-ending misgrade.")
-        for pass_side in ("verification_status", "`pass`"):
-            self.assertNotIn(pass_side, slices["compile"],
-                             f"phase_01 §1-2's rubric names {pass_side}: the rubric grades a "
-                             f"FAILING finding's repair route only, and the verdict side is "
-                             f"stated in `## On-failure behavior` and the `SKILL`.")
+        # phase_01's rubric CONTENT, by digest. phase_02's equivalent is
+        # `tools/tests/test_pure_prompt_contract_drift.py`, which hashes its slice because it is
+        # a pure-leaf input; phase_01 is force-read whole and had no counterpart, which is
+        # exactly the asymmetry every surviving mutant of rounds 1-3 lived in.
+        digest = hashlib.sha256(slices["compile"].encode("utf-8")).hexdigest()
+        self.assertEqual(
+            digest, self._PHASE_01_RUBRIC_DIGEST,
+            "docs/workflow/phases/phase_01_compile.md §1-2's severity rubric changed. This "
+            "is a REVIEW GATE, not an accusation: an intentional edit re-takes the digest, in "
+            "one line, AFTER reading the new text against every property below. It exists "
+            "because three rounds of literal-phrase pins were each defeated by rewording around "
+            "the phrase, in both directions.\n"
+            "Re-read, then update `_PHASE_01_RUBRIC_DIGEST`:\n"
+            "  1. AXIS. Every value is chosen by which REPAIR the finding calls for, never by "
+            "how bad the defect would be at `Generate` or `Validate`.\n"
+            "  2. `minor` = the subject is `spec.ir.yaml` and `Compile.generate`, re-run from "
+            "the same verification inputs, can fix it.\n"
+            "  3. `major` = the subject is an INPUT, so no such re-run reaches it. Its cases "
+            "must not name anything the conductor's own gates make unreachable.\n"
+            "  4. `critical` = `spec.ir.yaml` cannot be the base of a repair at all, and the "
+            "`minor` bullet's universal must still DEFER to it.\n"
+            "  5. The lead still says a thin lowering is `minor` HERE and `major` at "
+            "`Generate.verify`, and still points at phase_02 §2-2.\n"
+            "  6. Each tie-break still agrees with the `major` and `critical` bullets — a "
+            "pin cannot check this, which is why it is on this list.\n"
+            "  7. No `pass`-side rule has entered the span; this rubric grades a FAILING "
+            "finding only.")
 
     _COUNT_WORDS = {1: "one", 2: "two", 3: "three", 4: "four", 5: "five", 6: "six"}
 

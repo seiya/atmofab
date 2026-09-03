@@ -30528,7 +30528,11 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # under the band this table's own comments call a tripwire. Re-measured at the round-2
         # HEAD. A ceiling is a record of a measurement, and it goes stale on the commit AFTER the
         # one that took it.)
-        "docs/workflow/phases/phase_01_compile.md": 59700,
+        # Bumped 59600->59810 at the round-3 HEAD (measured 59654): the rubric restored
+        # `spec_catalog.yaml` to its input list, which round 2 had wrongly removed on the
+        # strength of the conductor's must_read alone, and narrowed the `major` bullet's subject
+        # list to agree with `docs/RUNBOOK.md` §3-1. Same slack rule; 59700 would have left 46 B.
+        "docs/workflow/phases/phase_01_compile.md": 59810,
         # Per-substep SKILLs — each force-read by its own LLM leaf.
         # Bumped 10800->11500: Compile.generate now authors the io_contract section (G2 /
         # docs/design/deterministic_followups.md) — it was moved here from Compile.verify so the
