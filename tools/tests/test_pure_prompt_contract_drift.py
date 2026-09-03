@@ -235,7 +235,17 @@ PINNED: dict[str, str] = {
     # Read as an exhaustive permission ("One kind of finding …"), it left the reviewer with a
     # template-authorized route to `pass` on a spec-level contradiction — the zero-work verdict.
     # `pure-27` opened the rubric side of exactly this case and did not open the checklist side.
-    "pure-28": "779836ad22d646196b037be001c90ad0a724e2db24ed90814f998de5b4cfe742",}
+    "pure-28": "779836ad22d646196b037be001c90ad0a724e2db24ed90814f998de5b4cfe742",
+    # pure-29: the SECOND tie-break ordered a verdict the rubric's own `major` bullet forbids.
+    # It fires when the unsettled question is about the SOURCES (the `minor`/`critical`
+    # boundary), and `pure-27` had made `major` mean "the subject is an INPUT", requiring
+    # `last_fail_reason` to name one — so the rubric ordered `major` in exactly the case where
+    # the reviewer has no input to name, and `docs/RUNBOOK.md` §3-1 (added by this branch) then
+    # tells the operator that such a verdict is a leaf defect. Both sentences were pinned
+    # literally, so the contradiction was pinned rather than caught. The tie-break now reads
+    # `minor`, which is the same side the first tie-break takes and the side the cost asymmetry
+    # argues for: an under-grade spends one repair round, an over-grade ends the `dev` run.
+    "pure-29": "fe832b26c532f3aef26bb485e012dcd889e9ec9b45fa25b3be3bd031c0d887e4",}
 
 
 def _contract_tuple() -> dict[str, object]:

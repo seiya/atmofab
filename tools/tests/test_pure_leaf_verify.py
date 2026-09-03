@@ -216,7 +216,21 @@ class PureVerifyContextTests(unittest.TestCase):
             self.assertIn("do not settle whether the subject is the sources under review or an "
                           "input, the value is `minor`", doc)
             self.assertIn("do not settle whether the sources under review can serve as the base "
-                          "of a repair, the value is `major`", doc)
+                          "of a repair, the value is `minor`", doc)
+            # …and the `minor` bullet's own routing sentence, which round 5 found held by
+            # nothing but the drift digest: flipping "Every G1-G7 finding whose subject is the
+            # generated code takes this value" to `major` reproduces #142's episode — a
+            # contract-conforming bundle terminalizing the run — on a version bump alone.
+            self.assertIn("Every G1-G7 finding whose subject is the generated code takes this "
+                          "value", doc)
+            # The rubric grades a FAIL. It must never authorize a pass: a bullet saying an
+            # unattributable finding means `pass` is a template-authorized zero-work verdict,
+            # and round 5 appended exactly that with only the digest red. Measured: the slice
+            # contains neither literal today, so this is emptiness, not an allowlist.
+            for authorizing in ("verification_status", "'pass'", '"pass"', " is `pass`"):
+                self.assertNotIn(authorizing, doc,
+                                 "the rubric names the pass side; it grades a fail, and the "
+                                 "pass side is the launch template's output contract")
             # …and the AXIS the tie-breaks tie-break FOR. Round 4 inverted the lead paragraph to
             # "the value grades the consequence … One question selects the value: how severe the
             # consequence of the defect is", kept "names the repair" so the witness above still
@@ -394,7 +408,28 @@ class SeverityRubricSlicerTests(unittest.TestCase):
         with self.assertRaises(ValueError) as cm:
             wc._generate_verify_severity_rubric_section(doc)
         self.assertIn("Recording a finding", str(cm.exception))
-        self.assertIn("last subsection", str(cm.exception))
+        # The message must name a repair the editor can actually perform. Round 5's probe added
+        # a legitimate `### 2-3. Generate.gate substep`, and the earlier wording ("the rubric
+        # must stay the last subsection of §2-2") prescribed something that edit cannot satisfy
+        # while the rubric stays in §2-2 — it named neither real repair.
+        self.assertIn("Move it above §2-2, or the rubric to the end of §2-2",
+                      str(cm.exception))
+        # …and it must survive the run log, which keeps `str(exc)[:200]`. A remedy truncated
+        # before it is stated is the half-remedy this message exists to avoid.
+        self.assertLessEqual(len(str(cm.exception)), 200,
+                             "the raise is longer than the 200 characters the run-log detail "
+                             "keeps, so the operator sees it cut mid-sentence")
+
+    def test_a_terminator_rename_that_only_APPENDS_words_still_raises(self) -> None:
+        # Three documents promise an operator that renaming `## On-failure behavior` fails the
+        # substep closed. Under the word-boundary end anchor `## On-failure behavior and retry`
+        # still anchored, so the slice silently accepted a renamed section and only the drift
+        # digest — remedy: "bump the version" — would have spoken (round 5). The terminator is an
+        # exact line now, and this is the case that distinguishes the two.
+        doc = self._DOC.replace("## On-failure behavior", "## On-failure behavior and retry")
+        with self.assertRaises(ValueError) as cm:
+            wc._generate_verify_severity_rubric_section(doc)
+        self.assertIn("and retry", str(cm.exception))
 
     def test_a_renamed_following_section_still_raises_by_name(self) -> None:
         # The other half: ending at the first heading must not turn a RENAMED terminator into a

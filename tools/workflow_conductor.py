@@ -975,7 +975,7 @@ def _checks_contract_abi_sections(text: str) -> str:
 # `major` and the run terminalized `fail_closed`. G1-G7 are outside the slice: they are already
 # the template's own checklist, and re-inlining them would state one rule twice.
 _SEVERITY_RUBRIC_BEGIN_RE = re.compile(r"^#### Severity of a finding(?:\s|$)")
-_SEVERITY_RUBRIC_END_RE = re.compile(r"^## On-failure behavior(?:\s|$)")
+_SEVERITY_RUBRIC_END_RE = re.compile(r"^## On-failure behavior[ \t]*$")
 _ANY_MARKDOWN_HEADING_RE = re.compile(r"^#{1,6} ")
 
 
@@ -997,7 +997,13 @@ def _generate_verify_severity_rubric_section(text: str) -> str:
     a maintainer to bump the version, which is exactly what a maintainer making an intentional doc
     edit does. Requiring that heading to be the expected one keeps the NAMED error for a renamed
     or reordered following section, instead of silently accepting whatever now follows.
-    `(?:\\s|$)` keeps a longer heading that merely starts with either phrase from anchoring.
+    The two anchors are not symmetric, and the asymmetry is deliberate. The BEGIN anchor's
+    `(?:\\s|$)` is a word boundary — it must match the real heading, which continues
+    `(\u0060issue_severity\u0060)`, while refusing `#### Severity of a findingsTable`. The END anchor is
+    an EXACT line: three documents promise an operator that renaming `## On-failure behavior`
+    fails the substep closed, and under a word-boundary match `## On-failure behavior and retry`
+    still anchored, so the slice silently accepted a renamed section and only the drift digest —
+    whose remedy is "bump the version" — would have spoken. An exact match keeps that promise.
 
     Both anchors are LINE-ANCHORED and FENCE-UNAWARE: a ``` block containing a line that begins
     `#### Severity of a finding` or `## On-failure behavior` would anchor, cutting the slice
@@ -1025,9 +1031,9 @@ def _generate_verify_severity_rubric_section(text: str) -> str:
             "'#### Severity of a finding'")
     if not _SEVERITY_RUBRIC_END_RE.match(lines[end]):
         raise ValueError(
-            "phase_02_generate.md: the heading after '#### Severity of a finding' is "
-            f"{lines[end]!r}, not '## On-failure behavior'; the rubric must stay the last "
-            "subsection of §2-2 or the slice would carry text that is not the rubric")
+            f"phase_02_generate.md: {lines[end][:48]!r} follows the rubric, not "
+            "'## On-failure behavior'. Move it above §2-2, or the rubric to the end of §2-2; "
+            "the rubric is sliced to that terminator")
     return "\n".join(lines[begin:end]).rstrip("\n")
 
 
