@@ -1503,15 +1503,25 @@ class PureRenderTests(unittest.TestCase):
         The branch is resolved with the production predicates (`_is_pure_launch_request`,
         `_is_slim_repair_request`), not re-derived: a slim turn is built from no template at all,
         which is why the subtraction below is empty for it — a fact this returns rather than an
-        invariant asserted elsewhere. A cold pure repair lifts paragraphs from the pure LAUNCH
-        template as well as rendering `pure_bundle_repair.txt`, so a pure request claims both.
+        invariant asserted elsewhere.
+        A pure request claims the pure LAUNCH template only where something reads it: a cold
+        launch renders it, and a COLD repair lifts static paragraphs out of it
+        (`_pure_output_contract_text` / `_pure_authoring_rules_text`) alongside
+        `pure_bundle_repair.txt`. A WARM repair reads neither — the resumed session already
+        holds them — and claiming it there was round 2's own instance of the union defect above:
+        41 of the 42 lines it claimed were rendered from nothing, one of them
+        `pure_generate_verify.txt`'s allowlisted severity-bearing checklist line, so a host line
+        duplicating that line into a warm repair turn would have been subtracted unread.
         """
         templates = ort._load_launch_prompt_templates()
         names: set[str] = set()
         if ort._is_pure_launch_request(request_payload):
-            names.add(ort._pure_launch_template_name(request_payload))
             if str(request_payload.get("repair_findings", "")).strip():
                 names.add("pure bundle repair")
+                if not request_payload.get("warm_resume"):
+                    names.add(ort._pure_launch_template_name(request_payload))
+            else:
+                names.add(ort._pure_launch_template_name(request_payload))
         elif not ort._is_slim_repair_request(request_payload):
             names.add(ort._launch_prompt_template_name(request_payload))
             names.add("common boilerplate")
@@ -1845,7 +1855,8 @@ class PureRenderTests(unittest.TestCase):
                      if getattr(sub, f, None) is not None]
             literals = [c.value for part in parts for c in ast.walk(part)
                         if isinstance(c, ast.Constant) and isinstance(c.value, str)
-                        and len(c.value) > cls._PROSE_LITERAL_MIN]
+                        and (len(c.value) > cls._PROSE_LITERAL_MIN
+                             or cls._SEVERITY_LITERAL_RE.search(c.value))]
             if not literals:
                 continue
             longest = max(literals, key=len)
@@ -1857,6 +1868,11 @@ class PureRenderTests(unittest.TestCase):
     # reads. `rank-0 (scalar)` is 15 characters and IS prose the sweep must see, so the bound
     # sits below it; `parts` / `lines` / `- ` and the like sit above it in frequency and below
     # it in length.
+    # A literal the SEVERITY pattern matches counts whatever its length, because the shortest
+    # spelling that pattern sees is seven characters (`` `major` ``) and sits below this bound.
+    # Round 2 measured the gap: `lines.append("`major`")` added to the undriven directory
+    # paragraph was invisible to BOTH checks — to the sweep because the branch is never
+    # rendered, and to this one because the literal was too short to count as prose.
     _PROSE_LITERAL_MIN = 12
     # Statements of a pinned builder that carry prose and that NO configuration drives. An
     # entry is a decision, one line of reason each, in the same polarity as the allowlists
