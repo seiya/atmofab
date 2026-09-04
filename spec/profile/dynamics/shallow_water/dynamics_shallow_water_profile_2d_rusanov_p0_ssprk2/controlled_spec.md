@@ -10,9 +10,9 @@
 
 ## 1. Target `component` and compatibility range
 The target `component` are the following.
-- `dynamics_shallow_water_flux_2d_rusanov_p0` (`>=0.1.0 <1.0.0`)
-- `dynamics_shallow_water_boundary_2d_periodic_copy` (`>=0.1.0 <1.0.0`)
-- `dynamics_shallow_water_time_update_2d_ssprk2` (`>=0.1.0 <1.0.0`)
+- `dynamics_shallow_water_flux_2d_rusanov_p0` (`>=0.2.0 <1.0.0`)
+- `dynamics_shallow_water_boundary_2d_periodic_copy` (`>=0.2.0 <1.0.0`)
+- `dynamics_shallow_water_time_update_2d_ssprk2` (`>=0.4.0 <1.0.0`)
 
 ## 2. Selection rules
 When a `problem spec` requires `family=shallow_water` and a periodic boundary, select this `profile` by default.

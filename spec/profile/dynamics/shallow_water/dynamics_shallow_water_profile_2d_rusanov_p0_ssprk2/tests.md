@@ -15,9 +15,9 @@ This suite verifies the default-profile selection rule and the compatibility gua
 ## 2. Input-defaulting rules
 - The normal case takes `problem.family=shallow_water`, `dimension=2d`, `boundary=periodic` as input.
 - The normal-case `component` versions use the following.
-  - `dynamics_shallow_water_flux_2d_rusanov_p0@0.1.0`
-  - `dynamics_shallow_water_boundary_2d_periodic_copy@0.1.0`
-  - `dynamics_shallow_water_time_update_2d_ssprk2@0.1.0`
+  - `dynamics_shallow_water_flux_2d_rusanov_p0@0.2.0`
+  - `dynamics_shallow_water_boundary_2d_periodic_copy@0.2.0`
+  - `dynamics_shallow_water_time_update_2d_ssprk2@0.4.0`
 - The abnormal case uses `dynamics_shallow_water_time_update_2d_ssprk2@1.0.0` as an out-of-compatibility-range version.
 
 ## 3. Execution-control rules

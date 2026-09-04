@@ -10,9 +10,9 @@
 
 ## 1. Target `component` and compatibility range
 The target `component` are the following.
-- `dynamics_advdiff_flux_1d_upwind_center2` (`>=0.1.0 <1.0.0`)
-- `dynamics_advection_diffusion_boundary_1d_periodic_copy` (`>=0.1.0 <1.0.0`)
-- `dynamics_advection_diffusion_time_update_1d_euler1` (`>=0.1.0 <1.0.0`)
+- `dynamics_advdiff_flux_1d_upwind_center2` (`>=0.2.0 <1.0.0`)
+- `dynamics_advection_diffusion_boundary_1d_periodic_copy` (`>=0.2.0 <1.0.0`)
+- `dynamics_advection_diffusion_time_update_1d_euler1` (`>=0.2.0 <1.0.0`)
 
 ## 2. Selection rules
 When a `problem spec` requires `family=advection_diffusion` and a 1D periodic boundary, select this `profile` by default.

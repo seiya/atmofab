@@ -3606,6 +3606,19 @@ Five decisions worth keeping, and one non-decision:
    the second costs a re-certification of the sw2d closure. `boundary1d`'s §2 was rewritten with them,
    because it described an IN-PLACE mapping the pinned ABI contradicts.
 
+**Blast radius, stated as PR-1's is because it is a decision and not a surprise, and because the
+figure is not where an operator would look for it.** PR-2 raises the version floor on 3 of each
+profile's 4 dependencies — the components; `harness_fortran_cpu`'s constraint is untouched — above
+every version the catalog previously carried, so no pre-PR-2 certified artifact satisfies them and
+each of the 6 must be re-certified. The part that is easy to get wrong: `--until Compile` bounds the
+DEPENDENCY closure too, not only the target (`run_workflow.py`'s `dep_until_phase`, which also drops
+`required_stages` to `ir_ref` alone), so a dependency runs `Compile.generate` — ONE billed leaf —
+and not a full pipeline. The cost of `--until Compile --with-deps` on a profile therefore moves from
+**0 billed dependency nodes to 3**, because those deps used to be certified and now are not; on both
+problems, 6. Anchoring on `ir_ref` alone is also why PR-1's `pipeline_ref` binding-freshness demotion
+does not fire at this depth, so the two blast radii do not compound. An earlier draft of this
+paragraph said 4 per problem by counting `harness_fortran_cpu`, whose version PR-2 does not bump.
+
 **The non-decision, stated because it is the thing a reader will look for.** No billed run has been
 made. Every certified IR in the workspace is for a pre-bump version, so nothing is certified against
 these specs yet, and the acceptance vehicle L1's record calls for is still owed. What IS established
@@ -3617,7 +3630,9 @@ every clean checkout, and was removed in `f81c83f` (its message records why skip
 repository's recorded wrong answer). The measurement, at `2dd73cd`: every component's §5.1 agreed with
 its certified source on argument names, order, `intent` and `rank`, except
 `dynamics_advection_diffusion_boundary_1d_periodic_copy` — whose ABI the operator changed — which
-disagreed on argument order. **So a later spec edit that moves a §5.1 away from its certified source
+disagreed on argument ORDER **and on three of its five argument NAMES** (`nx_value`→`nx`,
+`ng_value`→`ng`, `guard_ok`→`guard_pass`); an earlier version of this sentence enumerated four fields
+and then named only one of them, which understated the exception it was describing. **So a later spec edit that moves a §5.1 away from its certified source
 reddens nothing.** That is the cost of the removal, stated here rather than left to be discovered; an
 earlier version of this paragraph cited the deleted row as a live test. What no unbilled check can see:
 whether a Compile leaf transcribes §5.1 correctly, and whether a Generate leaf emits the declaration
