@@ -12640,6 +12640,44 @@ _SECTION5_FORM_HINT: dict[str, str] = {
 }
 
 
+def _catalog_controlled_spec_path(repo_root: Path, kind: str, spec_id: str) -> str | None:
+    """The registry's ``controlled_spec_path`` for ``(kind, spec_id)``, or ``None``.
+
+    ``None`` means "the registry cannot answer" — absent, unreadable, unparseable, or carrying no
+    matching entry — and is deliberately NOT a violation here: the caller pairs this with a
+    containment check that does not depend on the registry, so a tree without one still refuses a
+    leaf-authored document. Returning ``None`` on a parse failure rather than raising keeps a
+    malformed registry from turning every surface gate into a crash; the registry has its own
+    validation elsewhere.
+
+    Read from ``spec/registry/spec_catalog.yaml``, which is operator-authored and outside every
+    write root ``_write_roots_for_launch`` hands a leaf except the ``promote`` step's, so a
+    `compile.generate` leaf cannot make this answer agree with a document it wrote."""
+    catalog = repo_root / "spec" / "registry" / "spec_catalog.yaml"
+    if not _is_readable_file(catalog):
+        return None
+    try:
+        doc = yaml.safe_load(catalog.read_text(encoding="utf-8", errors="ignore"))
+    except Exception:
+        return None
+    if not isinstance(doc, dict):
+        return None
+    entries = doc.get("specs")
+    if not isinstance(entries, list):
+        return None
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        if str(entry.get("spec_kind") or "").strip() != kind:
+            continue
+        if str(entry.get("spec_id") or "").strip() != spec_id:
+            continue
+        path = entry.get("controlled_spec_path")
+        if isinstance(path, str) and path.strip():
+            return path.strip()
+    return None
+
+
 def _validate_published_surface(
     repo_root: Path, ir_dir: Path, violations: list[str]
 ) -> None:
@@ -12730,6 +12768,53 @@ def _validate_published_surface(
             f"{derived_path}:controlled_spec ({cs_ref}) unresolvable "
             f"(cannot pin {kind} public_api to §5)")
         return
+
+    # WHOSE DOCUMENT IS THIS. Everything below compares the IR against `cs_path`, and until issue
+    # #153 round 5 the only thing asked of that path was that it be readable — while `meta.
+    # source_refs.controlled_spec` is authored by the `compile.generate` LEAF and `<ir_ref>/` is
+    # that leaf's entire write root (`orchestration_runtime._write_roots_for_launch`). So the leaf
+    # could write its own §5/§5.1 beside the IR, name it here, and the ABI pin became a comparison
+    # of the leaf's document with the leaf's IR. MEASURED: an IR publishing a one-argument
+    # operation against a spec pinning four takes 1 violation with the real ref and 0 with a decoy.
+    # `Generate.static` re-reads the SAME leaf-chosen ref, so the generated source was pinned to the
+    # decoy too, and `dependency_surface.json` then republished the decoy's names to consumers —
+    # a leaf reaches `compile.generate` AND `generate.generate` done without transcribing §5.1 at
+    # all, which is the whole of what issue #153 cause A exists to prevent.
+    #
+    # Two checks, because they fail in different circumstances and the weaker one must not be
+    # skipped when the stronger cannot answer:
+    #
+    # (1) CONTAINMENT. The document may not live inside the leaf's write root. This is expressed
+    #     against `ir_dir` rather than against a literal workspace path so it holds whatever the
+    #     layout is, and it is the check that still works when the registry cannot answer.
+    # (2) IDENTITY. When the operator-authored registry knows this `(spec_kind, spec_id)`, the ref
+    #     must resolve to exactly the file it names. Every certified IR in the tree already carries
+    #     that path verbatim, so this refuses nothing that exists today.
+    try:
+        cs_resolved = cs_path.resolve()
+        ir_resolved = Path(ir_dir).resolve()
+    except OSError:  # pragma: no cover - a path the filesystem refuses to resolve
+        cs_resolved, ir_resolved = cs_path, Path(ir_dir)
+    if cs_resolved == ir_resolved or ir_resolved in cs_resolved.parents:
+        violations.append(
+            f"{derived_path}:meta.source_refs.controlled_spec ({cs_ref}) resolves INSIDE the IR "
+            f"directory, which is the `compile.generate` leaf's write root — the {kind} public_api "
+            "would be pinned against a document the leaf itself can author, which is not a pin. "
+            "Point it at the operator-authored controlled_spec under the spec tree")
+        return
+    expected = _catalog_controlled_spec_path(repo_root, kind, spec_id)
+    if expected is not None:
+        try:
+            expected_resolved = (repo_root / expected).resolve()
+        except OSError:  # pragma: no cover
+            expected_resolved = repo_root / expected
+        if cs_resolved != expected_resolved:
+            violations.append(
+                f"{derived_path}:meta.source_refs.controlled_spec ({cs_ref}) is not the "
+                f"controlled_spec the registry records for {kind} `{spec_id}` ({expected}) — the "
+                "public_api pin reads the registry's document, so a ref naming any other file is "
+                "refused rather than followed")
+            return
 
     spec_ops, spec_types = _parse_public_api_from_controlled_spec(cs_path, spec_id)
     if not spec_ops:

@@ -3567,7 +3567,7 @@ freshness invalidates a stale certified IR only via its version stays TRUE and u
 SOURCE, not the IR. The `Generate.gate` syntax probe's closure `fail_closed` stays as a backstop. And §"Problem
 certified-dependency interface drift"'s "Undetermined" question — why the profile certified at all — stays open.
 
-**PR-2 (A-full), LANDED 2026-09-04.** `component` joined `infrastructure` in
+**PR-2 (A-full), PR #156, merged 2026-09-04 at `ab433ea`.** `component` joined `infrastructure` in
 `_EXACT_PUBLISHED_SURFACE_KINDS`: its §5.1 is REQUIRED, `Compile.static` pins §5.1 == the IR's
 `public_api.signatures` / `module_parameters`, and `Generate.gate` pins the IR == the generated source.
 So §5.1 ≡ IR ≡ SOURCE, and an ABI change is something a `spec_version` carries rather than something a
@@ -3618,6 +3618,20 @@ and not a full pipeline. The cost of `--until Compile --with-deps` on a profile 
 problems, 6. Anchoring on `ir_ref` alone is also why PR-1's `pipeline_ref` binding-freshness demotion
 does not fire at this depth, so the two blast radii do not compound. An earlier draft of this
 paragraph said 4 per problem by counting `harness_fortran_cpu`, whose version PR-2 does not bump.
+
+**Round 5, after the merge: one HIGH fail-open and three carried LOWs.** The uniqueness count split
+statements with `str.splitlines()`, which breaks on eight separators the target language treats as
+ordinary content — so a narrowing declaration written with one inside it vanished from the count
+while PRESENCE still found the pinned text in a contained procedure. Zero violations, publishing the
+narrower precision. Round 2's hole, reopened by round 3's IMPLEMENTATION of the fix for it and
+carried through round 4; fixed in `5e92d73` with a per-separator regression family. The rule it broke
+is the language backend's own (`split("\n")`, never `splitlines()`), already pinned at three other
+gates — so the lesson is narrower and more useful than "be careful": WHEN A BACKEND STATES A RULE
+ABOUT READING ITS SOURCE, THE SITE THAT DOES NOT CITE IT IS THE ONE TO CHECK. Three further findings
+are carried, none a fail-open: a multi-file over-refusal that the production path cannot reach today
+(`_model_files_in_src_dir` returns one file), an aliased import whose refusal falls back to the
+generic message when the pinned name is not first in the `only:` list, and a statement-labelled
+declaration that presence rejects and the count accepts — an over-refusal in the safe direction.
 
 **Known over-refusals of the signature comparison, measured in round 4 and CARRIED.** The stanza
 comparison pins the rendered form, so several ABI-identical spellings of an ordinary declaration are
