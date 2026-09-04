@@ -158,3 +158,38 @@ cannot converge in principle**, handed back to the leaf (flagged two rounds runn
   indistinguishable from a true negative, so the leaf reports absence and stops. When a remedy
   is a conjunction, say so, and say what doing one half produces
 
+
+## An evaluator whose contract is a VERDICT, and what a raise from it costs (2026-09-04, issue #153)
+
+A new branch of §The decision, and it is not "whose fault is it" — it is "what shape may the answer
+take". Some functions inside enforcement machinery are not gates that refuse; they are **evaluators
+that must always produce a verdict**, because the caller has no handler and the verdict is one input
+among several. This repository's readiness comparisons are the case: `_verify_dep_stage_detail` and
+the freshness functions under it are documented as pure and never raising.
+
+**What a raise from one of those costs is not a fail-closed, it is a lost run.** The closure driver
+(`run_workflow._run_with_dependency_closure`) calls readiness inside its per-node loop with no
+`except`, so an exception there aborts the whole `--with-deps` closure rather than reporting one node
+not-ready. An operator mid-closure loses every node still to come, and the `--resume` they reach for
+resolves nothing because the input that raised is unchanged. Compare a gate: a gate that raises is
+routed to a transport `fail_closed` by design, which is a correct and recoverable outcome. **The same
+exception, one layer over, is the difference between "this node is not ready" and "this run is
+over".**
+
+**Three things follow.**
+
+- **Decide which kind you are writing, and say so in the docstring.** "Pure and NEVER raises" is a
+  contract a later reader will rely on when adding a caller, and it is the sentence that makes the
+  guards below non-negotiable rather than defensive clutter.
+- **The contract is only as good as the operations it covers.** Issue #153 shipped three such
+  evaluators and all three could raise, on the same shape: a host-authored artifact that is not
+  schema-checked, read into an operation that raises on the wrong type (`for … in` on a non-iterable,
+  `list.sort` over mixed types). Enumerate the raising operations, not the input types.
+- **A guard added for this reason needs a witness that reaches the raising operation**, and the
+  family it is tested with has to straddle the type test — three review rounds went on that one
+  point (`atmofab-review-loop/references/mutation-testing.md` §"Issue #153").
+
+**Scope, stated because the premises govern it.** None of this was a `leaf shortcut`: the artifacts
+in question are host-authored and leaf-non-writable, so no leaf gains anything by malforming one. It
+is an availability and reproducibility class — the "loss of reproducibility" fix category in
+`atmofab-review-loop` — which is why it is in scope at all despite no leaf gain.

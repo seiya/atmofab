@@ -123,7 +123,13 @@ execute it**: numbers, rule ids, compiler diagnostics and "X catches this" are a
 claims, and **write a range when the number varies**; and **the flip side of rule 3 is that prose you newly write in the same commit is
 unverified until you run it** (L128 got four freshly written measurements or citations wrong
 inside the fix itself). **Do not write someone else's measurement as your own** — cite the source
-explicitly, or re-measure before writing. **Keep a list of every place you wrote a number and
+explicitly, or re-measure before writing. **The place this fires that you will not expect is a
+CORRECTION**: a reviewer's finding arrives already carrying evidence, so it feels verified before you
+write it, and issue #153 wrote a reviewer's HEAD-measured count into a corrections bullet as the count
+"when that commit landed" — replacing a correct figure with a wrong one, one item after condemning
+that exact substitution. **Re-measure at the commit you are about to NAME, not at HEAD**
+(`atmofab-review-loop`'s "the fix was to a RECORD" sign owns the procedure).
+**Keep a list of every place you wrote a number and
 re-measure them together at the end**; a commit message cannot be fixed afterwards, so either
 mark the number as measured at a point or rewrite it in the final round.
 

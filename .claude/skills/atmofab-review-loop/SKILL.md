@@ -158,6 +158,14 @@ when a rule does not obviously apply:
   is to go and write the test you already wrote. **Commit the tests before the sweep**, and when
   a survivor surprises you, revert that one hunk by hand against your working tree before
   believing it (`references/mutation-testing.md`)
+- **Hand-revert a KILL that surprises you, not only a survivor.** The rule above doubts survivors;
+  the reverse happened on issue #153. A re-run reported EVERY hunk killed, including one whose whole
+  content was a widened type annotation and a deleted unused local — no behaviour to pin — and a
+  hand revert of that same hunk was **green**. Cause unidentified; the runs differed in `--paths`
+  and `--test-cmd`, baseline green in both. **The verdict you keep is the one you can reproduce by
+  hand**; report an unreproducible kill as such rather than banking it, because "every hunk is
+  pinned" is what a reader will quote back. **The tell is a kill on a hunk you cannot name a
+  behaviour for**
 - **If the change's mechanism lives inside a test file, hunk mutation does not apply** — "nothing
   to check" with a correct base is **not applicable, not a pass**, and `--include-tests` does not
   rescue it (reverting an ADDED test hunk deletes an assertion, so it always survives; a hunk
@@ -230,6 +238,15 @@ when a rule does not obviously apply:
   - **one test per occurrence of a rule, not per rule** — and **the sharpest trigger is a TWIN**:
     when a change touches one of a matched pair, list the pair, list your witnesses, compare the
     two lists before handing over
+  - **when the guard tests a TYPE, the family must STRADDLE that type test, and assert that it
+    does** — the type case of the family sign below, and its own line because it recurred three
+    times in one branch after two diagnoses (issue #153). A family of malformed values assembled by
+    imagination comes out malformed the SAME WAY: ten members, every one iterable, cannot kill an
+    `isinstance(x, list)` guard. **More members do not close it; a self-test in the test body does**
+    — loop the members through `iter()` and require both a `TypeError` and a success, because that
+    is what a later member added on one side only turns red. **Trigger**: any `isinstance` /
+    `hasattr` in a guard whose purpose is to not raise — name the operation that would raise
+    (`for … in`, `sort`, `len`, `[k]`) and ask which member reaches it
   - **a hand-built fixture can test a shape that does not exist** — check the construct against
     the real corpus before writing the witness
   - **for stateful code, match the fixture to the lifetime of the state**, and always include a
@@ -513,7 +530,7 @@ same run — it is a reason to re-run the positive verdicts your change actually
 
 ## Delegate verifiable work to sonnet
 
-**Operational conclusion (13 data points; the confound resolved in PR #72 by giving both models
+**Operational conclusion (14 data points; the confound resolved in PR #72 by giving both models
 the same checklist, the axis run as delegated in PR #88): sonnet ⊂ opus, with real misses.** Move **the mechanical-recomputation axis**
 permanently to sonnet and keep judgment on the up-model. Costs came out roughly equal, so "it is
 cheap, so run more" does not hold — **use it only to free up a slot**. Run one via `Agent` with
@@ -542,11 +559,17 @@ numbers" does not give "it matches on parser semantics". **Measure per axis.**
 
 **Tell it to report claims it cannot locate rather than accounting for them** — refusing a false
 premise I had put in its prompt is the most valuable thing this axis has done — and the most
-reproducible, having now happened in six of the thirteen data points (5, twice on PR #107, on issue
-#142, on PR #116 — where it reported that the ten-item mutant list a commit message referenced was
-recorded nowhere it could find, true, and the thing I would least have checked myself — and on
+reproducible, having now happened in seven of the fourteen data points (5, twice on PR #107, on
+issue #142, on PR #116 — where it reported that the ten-item mutant list a commit message referenced
+was recorded nowhere it could find, true, and the thing I would least have checked myself — on
 issue #149, where it refused a checklist item of mine asserting a sweep was vacuous, by mutating
-the subject rather than the test and getting RED).
+the subject rather than the test and getting RED, and on issue #153, where a checklist item of mine
+attributed a "pure and NEVER raises" docstring to the wrong function: it reported the premise as not
+locatable, went and checked the functions that DO make that claim, and found one that could raise).
+**That last one is the shape to design the checklist for.** The item was wrong about WHERE the claim
+lived, and a reviewer that answered the question as asked would have returned "not applicable"; what
+made it pay is the instruction to report an unlocatable claim, which turned a defective checklist
+item into the round's live defect.
 **This stays an experiment**: collect real/total findings, elapsed time and the overlap count,
 add a data point each time, and delete this section if it stops paying. How to read overlap, how
 not to confound the comparison, and why the reverse (opus reviewing sonnet's implementation) is
@@ -788,9 +811,11 @@ it). It has **never been achieved in any recorded loop**. **Run assuming you wil
 not add rounds waiting for it.
 
 **Do not make "Codex is clean" a stopping condition** — as a condition it becomes a motive to
-relaunch a Codex you have no budget for. Clean came back once (PR #67) and the same round's two
-subagents produced unwitnessed mechanisms, over-refusals and an abandoned mirror; on TODO:269
-Codex was clean in round 2 and round 3 found a mechanism with no behavioural witness at all.
+relaunch a Codex you have no budget for. Clean has come back twice, and BOTH times the same round's
+subagent work was not: on PR #67 two subagents produced unwitnessed mechanisms, over-refusals and an
+abandoned mirror, and on issue #153 the blank-slate subagent sharing that round returned four
+findings, one of them a guard whose test family could not fail. On TODO:269 Codex was clean in round
+2 and round 3 found a mechanism with no behavioural witness at all.
 
 **Practical proxies for "the remainder is bounded"**, both of which must hold:
 
@@ -904,7 +929,17 @@ that tells you how it closed.
   re-running it. **And the check written to hold a corrected record must observe the thing the
   record describes**: the first of those was pinned by asserting the key's name occurred in a
   module — it did, in a CONSUMER the same sentence says never runs — so the check ratified the
-  error (`references/signs-episodes.md`)
+  error (`references/signs-episodes.md`).
+  **The sharpest form is a correction you make ON A REVIEWER'S MEASUREMENT**, where the rule you
+  already know does not fire: `atmofab-enforcement-change` rule 3 says not to write someone else's
+  measurement as your own, and issue #153 broke it there — replacing a correct figure with a wrong
+  one, one item after condemning that substitution. **A reviewer's finding arrives already carrying
+  evidence, so the correction feels verified before you write it**, and a corrections entry is the
+  one place a reader will not re-check. **Re-measure at the commit you are about to NAME, not at
+  HEAD**; for a per-commit figure take the whole series in one worktree-per-revision loop, so the
+  attribution is visible rather than inferred. **Do not delete a wrong correction — record that it
+  was wrong**, or nobody can tell an audited corrections bullet from an unaudited one
+  (`references/measurement-records.md`)
 - **You have rewritten the same string three times** → the problem is not the rule but the prose
   citing it. Switch to the grep sweep
   (`.claude/skills/atmofab-enforcement-change/references/verification.md`). **Rewriting one

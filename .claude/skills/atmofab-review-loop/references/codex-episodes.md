@@ -113,6 +113,21 @@ for "Codex is clean" never ends the loop**. Drop it from the superior condition 
 "does it exist in the real corpus". For the same reason the second and third launches waste the
 budget: replace them with blank-slate subagents.
 
+**And when it IS clean, the round is not.** Clean has now come back twice, and both times the
+subagent sharing that round was not clean. Issue #153: the round-2 launch (native `review`,
+`--base origin/main --scope branch`, no stall, exit 0) returned "The changes consistently record and
+validate dependency source bindings across both readiness evaluators and the closure driver. No
+actionable correctness regressions were identified in the changed code." The blank-slate subagent in
+the same round returned four findings — including a guard whose test family could not fail, and a
+corrections bullet that had committed the error it condemned. **Two readings, and the second is the
+useful one**: (a) Codex was right about what it was asked, which was correctness of the changed code,
+and every one of the four findings was about a WITNESS or a RECORD rather than about production
+behaviour; (b) that is exactly the class Codex does not look for, so a clean pass bounds a narrower
+question than the round does. Note also that this branch ADDS checking machinery, where the paragraph
+above predicts Codex almost always finds one more construct — it did not, so the prediction is a
+tendency and not a rule. Cheap to record, and it stops "Codex was clean" from being quoted as
+evidence about the round.
+
 ## Content filter drops
 
 L128 launched four times and **three were interrupted** (security-flavoured vocabulary plus

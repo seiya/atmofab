@@ -518,3 +518,50 @@ a mutant killed since two rounds earlier came back green. **An outer state of "e
 told from a missing restore** — write a sentinel into it first. The same shape had already been
 paid for once in that test, for the flag half, and was reintroduced for the record half.
 
+
+## Issue #153 — one family shape, three rounds, and the self-test that ended it
+
+The branch added a content-granular readiness comparison. Three of its guards exist for the same
+reason: the artifact they read is host-authored but not schema-checked, and the evaluator that reads
+it promises a verdict rather than an exception, so a malformed value has to become a stale verdict
+instead of a traceback. All three were tested with a family of malformed values, and all three
+families were built by imagination.
+
+What that cost, in order:
+
+- **Round 0.** `levels[nk] = n.get("topo_level") or 0` feeding `list.sort`. A `topo_level` of `"0"`
+  raises `TypeError: '<' not supported between instances of 'int' and 'str'`. Found while reading a
+  code-motion survivor pair, not by a family — the family did not exist yet.
+- **Round 1.** `for n in all_nodes or []`. Six "unusable documents" — `None`, `[]`, `"x"`, `{}`,
+  `{"all_nodes": None}`, `{"all_nodes": "x"}` — every one of which is either falsy or iterable, so
+  `{"all_nodes": 5}` raising was outside the family by construction. The fix added the guard, and a
+  self-test asserting the family straddles `iter()`.
+- **Round 2.** `if not isinstance(bindings, list) or not all(...)`, the sibling guard written in the
+  same change as round 1's. Its family's one non-list member was the string `"not-a-list"`, which is
+  iterable, so `all(... for b in bindings)` walked it character by character and the stale verdict
+  arrived through the SECOND clause. Deleting `not isinstance(bindings, list) or` left all three
+  suites green at their baseline counts — 1289 / 300 / 775, which is the unmutated per-file split
+  measured at the merge commit — while `closure_bindings: 5` raised inside the readiness evaluator.
+
+**Why more members would not have closed it.** Every family here was already 4-10 members. The
+members were numerous and all on one side; the count was never the problem. Two members with a
+self-test beat ten without one, because the self-test is what a later maintainer's added member has
+to satisfy.
+
+**What closed it.** Each family now loops its members through `iter()` in the test body and requires
+both a `TypeError` and a success before it uses them. The assertion is on the FAMILY, not on the
+subject, which is the only reason it survives the next edit: a member appended on one side turns the
+self-test red at the point of appending, rather than silently widening nothing.
+
+**The generalisation, and it is not limited to `iter()`.** A guard whose purpose is to not raise
+names an operation that raises — `for … in`, `sort`, `len`, subscripting, `.strip()` — and the
+family has to reach that operation from both sides. `isinstance(x, int)` accepting `bool` is the
+same trap one type down: round 0's fix wrote `isinstance(level, int) and not isinstance(level, bool)`,
+and round 2 found the test asserting `sorted(got)`, which is insensitive to every sort-key value the
+clause decides. **A guard about a SORT KEY needs an ordered assertion; a guard about ITERABILITY
+needs a non-iterable member. Read the clause and name what would observe it.**
+
+**Cross-reference.** This is the type case of "you measured a family and reported the conclusion" in
+SKILL.md, whose check (a) is "name a member for which the measurement could have failed". Asked of
+these three families, (a) answers immediately — and nobody asked it, three times, because a family of
+malformed values LOOKS like a family that could fail.
