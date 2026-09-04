@@ -34569,9 +34569,14 @@ class DependencyBindingFreshnessTests(unittest.TestCase):
             {"node_key": "component/d@0.1.0"},
             {"node_key": "component/top@0.1.0", "topo_level": 9},
         ]}
+        # Assert the ORDER, not `sorted()`. The claim this test exists for is about the SORT
+        # KEY, and `sorted()` is insensitive to it: with `and not isinstance(level, bool)`
+        # dropped, `topo_level: True` sorts as 1 and `c` moves behind `d`, which a sorted
+        # comparison cannot see (round 2). Every level here falls to 0, so the order is the
+        # document's own — `list.sort` is stable.
         got = _closure_nodes_from_graph(graph, "component/top@0.1.0")
-        self.assertEqual(sorted(got), ["component/a@0.1.0", "component/b@0.1.0",
-                                       "component/c@0.1.0", "component/d@0.1.0"])
+        self.assertEqual(got, ["component/a@0.1.0", "component/b@0.1.0",
+                               "component/c@0.1.0", "component/d@0.1.0"])
         # The same document reached through the readiness evaluator: a verdict, not a traceback.
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
@@ -34690,13 +34695,35 @@ class DependencyBindingFreshnessTests(unittest.TestCase):
             self.assertIn("compiled against closure []", detail)
 
     def test_malformed_bindings_are_stale(self) -> None:
+        """The record is refused rather than believed, over BOTH clauses of the guard.
+
+        The family spans both iterability classes on purpose. An earlier version listed one
+        non-list member, the string `"not-a-list"`, which is ITERABLE — so `all(... for b in
+        bindings)` walked it character by character and the stale verdict arrived through the
+        second clause. Deleting `not isinstance(bindings, list) or` then left all three suites
+        byte-identically green while `closure_bindings: 5` raised
+        `TypeError: 'int' object is not iterable` inside `_verify_dep_stage_detail`, whose
+        contract is that it returns a verdict. Round 2 found that; it is the same blind spot
+        `test_a_malformed_topo_level_does_not_raise` was written for one function up, reproduced
+        in the sibling family written in the same change."""
         from tools.orchestration_runtime import _dependency_binding_freshness
+        non_iterable = (5, 3.5, True)
+        iterable = ("not-a-list", {"component/c@0.1.0": "deadbeef"},
+                    [{"node_key": "component/c@0.1.0"}],
+                    [{"model_source_sha256": "deadbeef"}],
+                    [{"node_key": "component/c@0.1.0", "model_source_sha256": ""}],
+                    [{"node_key": "", "model_source_sha256": "deadbeef"}],
+                    ["component/c@0.1.0"])
+        # Self-test of the family: the two halves really are on opposite sides of `iter()`, so
+        # neither clause of the guard can be deleted without a member noticing.
+        for value in non_iterable:
+            with self.assertRaises(TypeError):
+                iter(value)
+        for value in iterable:
+            iter(value)
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            for shape in ("not-a-list",
-                          [{"node_key": "component/c@0.1.0"}],
-                          [{"model_source_sha256": "deadbeef"}],
-                          [{"node_key": "component/c@0.1.0", "model_source_sha256": ""}]):
+            for shape in non_iterable + iterable:
                 self._seed(repo_root, bindings=shape)
                 fresh, detail = _dependency_binding_freshness(
                     repo_root, "component", "b", "0.1.0")

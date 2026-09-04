@@ -226,7 +226,7 @@ The conductor writes this from the leaf's own output (`workflow_conductor._leaf_
 | `workspace/pipelines/.../<pipeline_id>/source/<source_id>/src/` | Generate | substep agent | subsequent phases | |
 | `workspace/pipelines/.../<pipeline_id>/source/<source_id>/source_meta.json` | Generate | substep agent (Edit/Write) | Build / validator | |
 | `workspace/pipelines/.../<pipeline_id>/source/<source_id>/gate_meta.json` | Generate (`Generate.gate`) | conductor (deterministic in-process; `_gate_inproc` composing `_gate_lint_check` / `_gate_syntax_check` / `_gate_static_check`) | validator (`post_generate`) / conductor routing | single union verdict of the lint / syntax / static checks (`checkers`, `failure_categories`, composed `failure_excerpt`); the leaf cannot write it |
-| `workspace/pipelines/.../<pipeline_id>/binary/<binary_id>/binary_meta.json` | Build | step agent (Edit/Write) | Validate / validator | pins `source_source_id`; its `dependency_check.closure_bindings[]` (host-authored) pins which certified dependency source each closure node contributed, by `sha256` |
+| `workspace/pipelines/.../<pipeline_id>/binary/<binary_id>/binary_meta.json` | Build | conductor (deterministic in-process; `_build_inproc`) | Validate / validator | pins `source_source_id`; its `dependency_check.closure_bindings[]` pins which certified dependency source each closure node contributed, by `sha256`; the leaf cannot write it |
 | `workspace/pipelines/.../<pipeline_id>/runs/<run_id>/<node_key_safe>/verdict.json` | Validate/judge | substep agent (Edit/Write) | runtime / validator / upper node | |
 | `workspace/pipelines/.../<pipeline_id>/lineage.json` | added by each phase | (via write-step-result) | runtime / validator | the phase id lineage |
 
