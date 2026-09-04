@@ -219,7 +219,6 @@
       "fortran": 6,
       "fortran-kind": 1,
       "fortran-standard": 1,
-      "fortran-subroutine": 1,
       "make-control-file": 1
     },
     "skills/workflow-generate-generate/SKILL.md": {
@@ -304,7 +303,7 @@
       "fortran": 17,
       "fortran-implicit-none": 4,
       "fortran-intent": 26,
-      "fortran-kind": 3,
+      "fortran-kind": 2,
       "fortran-standard": 2,
       "fortran-subroutine": 7,
       "linter-fortitude": 4,

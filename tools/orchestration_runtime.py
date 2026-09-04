@@ -2314,8 +2314,29 @@ def _resolve_dependency_facts(repo_root: Path, ir_ref: Any) -> list[dict[str, An
                         published: list[dict[str, Any]] = []
                         for op in op_names:
                             iface = _extract_subroutine_interface(source_text, op)
-                            if iface is not None:
-                                published.append({"operation": op, **iface})
+                            if iface is None:
+                                continue
+                            entry_out: dict[str, Any] = {"operation": op, **iface}
+                            # The interface a consumer is SHOWN stays the one extracted from the
+                            # certified SOURCE, because that is what Build stages and links (issue
+                            # #153 PR-1 made the consumer's binding to those bytes durable). Since
+                            # PR-2 the dependency's own §5.1 == IR == SOURCE is pinned by its
+                            # Compile and Generate gates, so a disagreement between the IR pin and
+                            # the source means one of THOSE gates has a hole — a canary, rendered as
+                            # a WARNING, never a refusal: refusing here would fail this consumer for
+                            # its dependency's defect.
+                            try:
+                                d_kind, d_id, d_ver = _parse_node_key_strict(node_key)
+                                drift = _signature_drift_fields(
+                                    _ir_published_signature(
+                                        repo_root, d_kind, d_id, d_ver, op),
+                                    iface)
+                            except Exception:
+                                drift = []
+                            if drift:
+                                entry_out["signature_drift"] = drift
+                            entry_out["interface_source"] = "certified_source"
+                            published.append(entry_out)
                         if published:
                             fact["published_operations"] = published
                         if declared_unresolved:
@@ -2454,6 +2475,94 @@ def _ir_published_operation_ids(
         return names
     except Exception:
         return None
+
+
+def _ir_published_signature(
+    repo_root: Path, kind: str, spec_id: str, version: str, symbol: str
+) -> dict[str, Any] | None:
+    """The structured `signature` the CURRENT certified IR of `(kind, spec_id, version)` publishes
+    for `symbol`, from `public_api.signatures[]` (each entry `{symbol, signature}`), or `None` when
+    the IR carries no such entry — a legacy IR with no `signatures` key included. NEVER raises.
+
+    Read for ONE purpose: the drift canary in `_resolve_dependency_facts`. It is NOT the truth source
+    for what a consumer is shown — see `_signature_drift_fields`."""
+    try:
+        ir_dir = _certified_ir_dir(repo_root, kind, spec_id, version)
+        if ir_dir is None:
+            return None
+        doc = _require_yaml().safe_load(
+            (ir_dir / "spec.ir.yaml").read_text(encoding="utf-8"))
+        pa = doc.get("public_api") if isinstance(doc, dict) else None
+        sigs = pa.get("signatures") if isinstance(pa, dict) else None
+        if not isinstance(sigs, list):
+            return None
+        for entry in sigs:
+            if not isinstance(entry, dict):
+                continue
+            if str(entry.get("symbol") or "").strip() == symbol.strip():
+                sig = entry.get("signature")
+                return sig if isinstance(sig, dict) else None
+        return None
+    except Exception:
+        return None
+
+
+def _signature_drift_fields(
+    ir_signature: dict[str, Any] | None, extracted: dict[str, Any]
+) -> list[str]:
+    """The LANGUAGE-NEUTRAL disagreements between a dependency's certified IR signature pin and the
+    interface extracted from its certified SOURCE. `[]` when they agree or when there is nothing to
+    compare (a legacy IR with no pin, an unparseable shape).
+
+    WHY THIS IS A CANARY AND NOT A GATE. What Build stages and links is the SOURCE, and issue #153
+    PR-1 made a consumer's binding to those source bytes durable — so the source is what a consumer
+    must be shown, and replacing it with the IR pin would show the leaf an interface Build does not
+    link. Since PR-2 the producer side pins §5.1 == IR == SOURCE at Compile and Generate, so the two
+    agreeing is an invariant and a disagreement here means one of THOSE gates has a hole. That is
+    worth a warning in the render and worth nothing as a refusal: refusing would fail a consumer for
+    its dependency's defect, on a node whose own source is fine.
+
+    WHAT IS COMPARED, and why not more. Argument NAMES in order, each argument's `intent`, and each
+    argument's `rank` — the three fields that are language-neutral on both sides and decide a call
+    site. TYPES are deliberately NOT compared: the IR carries neutral tokens (`real` + `kind: dp`)
+    while the extractor carries the author's own source tokens (`real(dp)`), and lowering one to the
+    other needs the language backend, which this module must not import
+    (`tools/tests/test_backend_boundary.py` pins the importer set). A type-only drift is therefore
+    invisible here — stated because a green canary must not be read as "the ABI agrees"."""
+    if not isinstance(ir_signature, dict) or not isinstance(extracted, dict):
+        return []
+    pinned_args = ir_signature.get("args")
+    if not isinstance(pinned_args, list):
+        return []
+    pinned_names = [str(a.get("name") or "").strip()
+                    for a in pinned_args if isinstance(a, dict)]
+    if len(pinned_names) != len(pinned_args) or not all(pinned_names):
+        return []
+    source_names = [str(n).strip() for n in (extracted.get("argument_order") or [])
+                    if isinstance(n, str)]
+    problems: list[str] = []
+    if [n.lower() for n in pinned_names] != [n.lower() for n in source_names]:
+        problems.append(
+            f"argument order: IR pins {pinned_names}, certified source has {source_names}")
+        # An order disagreement makes a per-argument comparison meaningless (the positions no
+        # longer correspond), so stop here rather than emit N more lines saying the same thing.
+        return problems
+    by_name = {str(a.get("name") or "").strip().lower(): a
+               for a in pinned_args if isinstance(a, dict)}
+    for arg in (extracted.get("arguments") or []):
+        if not isinstance(arg, dict):
+            continue
+        name = str(arg.get("name") or "").strip()
+        pinned = by_name.get(name.lower())
+        if not isinstance(pinned, dict):
+            continue
+        for field in ("intent", "rank"):
+            got, want = arg.get(field), pinned.get(field)
+            if got is None or want is None:
+                continue  # the extractor could not resolve it; not a disagreement
+            if str(got).strip().lower() != str(want).strip().lower():
+                problems.append(f"{name}.{field}: IR pins {want!r}, certified source has {got!r}")
+    return problems
 
 
 def _catalog_family_index(repo_root: Path) -> list[dict[str, str]]:
@@ -12130,6 +12239,23 @@ def _published_operations_lines(deps: list[Any]) -> list[str]:
             if not iface:
                 continue
             rows.append(f"- {node_key} :: {iface}")
+            # Signature-drift canary (issue #153 PR-2). The dependency's own gates pin
+            # §5.1 == its IR == its source, so a disagreement between its IR pin and the
+            # interface above means one of those gates has a hole. Rendered as a WARNING with
+            # the header still authoritative, because the header is what Build links — and
+            # self-explanatory, so the leaf needs no rule in its SKILL to act on it.
+            drift = op.get("signature_drift")
+            if isinstance(drift, list):
+                spelled = [str(d).strip() for d in drift if isinstance(d, str) and d.strip()]
+                if spelled:
+                    rows.append(
+                        f"  - WARNING — this dependency's certified IR pins a DIFFERENT "
+                        f"signature for `{op.get('operation')}` than its certified source "
+                        f"publishes ({'; '.join(spelled)}). That is a defect in the DEPENDENCY, "
+                        "not in your node: the header above is the one Build compiles and links, "
+                        "so author against it, and report the disagreement in your prose so a "
+                        "reviewer sees it."
+                    )
             detail = _argument_detail_lines(op.get("arguments"))
             if detail:
                 any_detail = True

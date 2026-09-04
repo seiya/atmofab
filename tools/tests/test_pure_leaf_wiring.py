@@ -1363,12 +1363,19 @@ class PureRenderTests(unittest.TestCase):
     }
     # (b) an older lineage with NO `arguments`, plus an IR-declared name the resolver could not
     # find in the certified source: drives the header-only `else` branch and the WARNING row.
+    # It also carries a `signature_drift` (issue #153 PR-2), which drives the signature-drift
+    # WARNING row — added here rather than allowlisted as undriven, following the same reasoning
+    # that put the dropped-operation WARNING under a fixture: a paragraph nothing drives is a
+    # paragraph a severity can be written into unswept.
     _RENDER_DEP_NO_DETAIL: ClassVar[dict[str, object]] = {
         **_RENDER_DEP_BASE,
         "declared_operations_unresolved": ["demo_dep_base__vanished"],
         "published_operations": [
             {"operation": "bc__apply", "interface": "subroutine bc__apply(U)",
-             "argument_order": ["U"]},
+             "argument_order": ["U"],
+             "interface_source": "certified_source",
+             "signature_drift": [
+                 "argument order: IR pins ['n', 'U'], certified source has ['U']"]},
         ],
     }
     # (c) per-argument detail the resolver could not fully read: an argument with no `rank`, and

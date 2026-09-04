@@ -19896,6 +19896,48 @@ class DependencyFactsRenderTests(unittest.TestCase):
         ],
     }
 
+    def test_signature_drift_renders_a_warning_that_keeps_the_header_authoritative(self) -> None:
+        """The canary (issue #153 PR-2): a dependency whose certified IR pins a different signature
+        than its certified source publishes. The WARNING must say the header still governs, because
+        the header is what Build compiles and links — and it must be self-explanatory, since the
+        leaf's SKILL deliberately carries no rule for it (the leaf-context ceiling)."""
+        from tools.orchestration_runtime import _build_dependency_facts
+
+        drifted = {
+            **self.DEP,
+            "published_operations": [
+                {"operation": "demo_dep_base__scale",
+                 "interface": "subroutine demo_dep_base__scale(x, n, y)",
+                 "argument_order": ["x", "n", "y"],
+                 "interface_source": "certified_source",
+                 "signature_drift": [
+                     "argument order: IR pins ['n', 'x', 'y'], certified source has "
+                     "['x', 'n', 'y']"],
+                 },
+            ],
+        }
+        block = _build_dependency_facts(
+            dict(self.BASE, resolved_dependencies=[drifted]))
+        self.assertIn("WARNING", block)
+        self.assertIn("certified IR pins a DIFFERENT signature", block)
+        self.assertIn("argument order: IR pins", block)
+        self.assertIn("defect in the DEPENDENCY", block)
+        # The remedy must be followable and must not be half-followable: it says WHICH of the two
+        # to author against, not merely that they disagree.
+        self.assertIn("the header above is the one Build compiles and links", block)
+        # ...and the header itself is still rendered.
+        self.assertIn("subroutine demo_dep_base__scale(x, n, y)", block)
+
+    def test_no_warning_when_the_ir_pin_and_the_source_agree(self) -> None:
+        """The other direction: an op with no `signature_drift` renders no WARNING. Without this the
+        row above would pass on a renderer that emitted the warning unconditionally."""
+        from tools.orchestration_runtime import _build_dependency_facts
+
+        block = _build_dependency_facts(
+            dict(self.BASE, resolved_dependencies=[self.DEP_WITH_OPS]))
+        self.assertNotIn("WARNING", block)
+        self.assertIn("subroutine demo_dep_base__scale(x, n, y)", block)
+
     def test_published_operations_block_present_with_order(self) -> None:
         from tools.orchestration_runtime import _build_dependency_facts
 
@@ -20071,6 +20113,192 @@ class DependencyFactsRenderTests(unittest.TestCase):
         self.assertNotIn("Dependency facts", rendered2)
         self.assertNotIn(self.DEP["aggregate_verdict_ref"], rendered2)
         _validate_launch_prompt_text(no_dep, rendered2)
+
+
+class SignatureDriftCanaryTests(unittest.TestCase):
+    """`_signature_drift_fields`: the language-neutral comparison behind the `<dependency_facts>`
+    drift WARNING (issue #153 PR-2).
+
+    It is a CANARY, not a gate. What a consumer is shown stays the interface extracted from the
+    dependency's certified SOURCE, because that is what Build stages and links; the dependency's own
+    Compile / Generate gates pin §5.1 == its IR == its source, so a disagreement here means one of
+    THOSE has a hole. Refusing would fail a consumer for its dependency's defect.
+
+    WHAT IS PINNED, AND WHAT IS DECLARED BLIND. Pinned: argument NAME ORDER, `intent`, and `rank`,
+    each in both directions, plus that nothing-to-compare yields no finding. Declared blind, with its
+    own row so the green is not read too widely: a TYPE-only drift is invisible, because the IR
+    carries neutral tokens and the extractor carries source tokens, and lowering one to the other
+    needs the language backend this module must not import."""
+
+    _PINNED = {
+        "kind": "subroutine", "name": "d__op",
+        "args": [
+            {"name": "x", "rank": 1, "intent": "in", "spec": {"type": "real", "kind": "dp"}},
+            {"name": "n", "rank": 0, "intent": "in", "spec": {"type": "integer"}},
+            {"name": "y", "rank": 1, "intent": "out", "spec": {"type": "real", "kind": "dp"}},
+        ],
+    }
+    _EXTRACTED = {
+        "interface": "subroutine d__op(x, n, y)",
+        "argument_order": ["x", "n", "y"],
+        "arguments": [
+            {"name": "x", "type": "real(dp)", "intent": "in", "rank": 1, "dimension": "n"},
+            {"name": "n", "type": "integer", "intent": "in", "rank": 0, "dimension": None},
+            {"name": "y", "type": "real(dp)", "intent": "out", "rank": 1, "dimension": "n"},
+        ],
+    }
+
+    def _drift(self, pinned=None, extracted=None):
+        import copy
+        from tools.orchestration_runtime import _signature_drift_fields
+        return _signature_drift_fields(
+            copy.deepcopy(self._PINNED if pinned is None else pinned),
+            copy.deepcopy(self._EXTRACTED if extracted is None else extracted))
+
+    def test_agreement_is_no_finding(self) -> None:
+        self.assertEqual(self._drift(), [])
+
+    def test_argument_order_drift_is_reported_and_stops_the_per_argument_pass(self) -> None:
+        import copy
+        pinned = copy.deepcopy(self._PINNED)
+        pinned["args"][0], pinned["args"][1] = pinned["args"][1], pinned["args"][0]
+        out = self._drift(pinned)
+        self.assertEqual(len(out), 1, out)
+        self.assertIn("argument order", out[0])
+        self.assertIn("['n', 'x', 'y']", out[0])
+        self.assertIn("['x', 'n', 'y']", out[0])
+
+    def test_intent_and_rank_drift_are_reported_per_argument(self) -> None:
+        import copy
+        pinned = copy.deepcopy(self._PINNED)
+        pinned["args"][2]["intent"] = "in"
+        pinned["args"][0]["rank"] = 2
+        out = self._drift(pinned)
+        self.assertEqual(len(out), 2, out)
+        self.assertTrue(any("y.intent" in x for x in out), out)
+        self.assertTrue(any("x.rank" in x for x in out), out)
+
+    def test_a_type_only_drift_is_invisible_and_that_is_declared(self) -> None:
+        """The declared limit, pinned so it cannot quietly become a claim of full coverage. The
+        comparison must not FABRICATE a finding from tokens it cannot lower, and it must not report
+        agreement as if the types had been checked — the docstring is where that is said, and this
+        row is what keeps the docstring honest."""
+        import copy
+        pinned = copy.deepcopy(self._PINNED)
+        pinned["args"][0]["spec"] = {"type": "real", "kind": "sp"}   # narrowed kind
+        self.assertEqual(self._drift(pinned), [])
+        pinned["args"][1]["spec"] = {"type": "logical"}              # a different type outright
+        self.assertEqual(self._drift(pinned), [])
+
+    def test_nothing_to_compare_is_no_finding(self) -> None:
+        # A legacy dependency IR carries no `signatures` pin at all, and a malformed one carries no
+        # usable `args`. Neither is a drift; a canary that fired on absence would warn on every
+        # pre-PR-2 dependency in the tree.
+        self.assertEqual(self._drift(None), [])
+        self.assertEqual(self._drift({}), [])
+        self.assertEqual(self._drift({"args": "not-a-list"}), [])
+        self.assertEqual(self._drift({"args": [{"name": ""}]}), [])
+        # A zero-argument op on BOTH sides is agreement, not absence.
+        self.assertEqual(
+            self._drift({"args": []}, {"argument_order": [], "arguments": []}), [])
+
+    def test_a_pin_with_arguments_against_a_source_with_none_is_a_drift(self) -> None:
+        # Not a "nothing to compare" case: an IR pinning three arguments while the source publishes
+        # a zero-argument subroutine of the same name is exactly the disagreement worth warning about.
+        # (In production `_extract_subroutine_interface` returns None for an ABSENT op and the caller
+        # skips it before reaching here, so this shape means the op exists and its ABI moved.)
+        out = self._drift(extracted={"argument_order": [], "arguments": []})
+        self.assertEqual(len(out), 1, out)
+        self.assertIn("argument order", out[0])
+
+    def test_case_differences_are_not_a_drift(self) -> None:
+        # Fortran identifiers are case-insensitive, so `Flux` and `flux` are the same dummy; a
+        # canary that reported them as drifted would warn on every legitimately-cased source.
+        import copy
+        pinned = copy.deepcopy(self._PINNED)
+        for arg in pinned["args"]:
+            arg["name"] = arg["name"].upper()
+            arg["intent"] = str(arg["intent"]).upper()
+        self.assertEqual(self._drift(pinned), [])
+
+    #: Components whose §5.1 DELIBERATELY differs from the source certified before this branch, and
+    #: what the difference is. Everything else must agree, and `test_the_real_corpus_...` below
+    #: requires each of these to actually disagree — so a transcription that silently reverted to the
+    #: old ABI turns red rather than passing as "agreement".
+    _DELIBERATE_ABI_CHANGE = {
+        # Operator decision 2026-09-04: order becomes dims -> in-array -> out-array -> flag (the 2D
+        # sibling's convention) and the guard flag becomes `logical guard_pass`. The certified source
+        # is `(u_in, nx_value, ng_value, u_out, guard_ok)`.
+        "dynamics_advection_diffusion_boundary_1d_periodic_copy": "argument order",
+    }
+
+    def test_the_real_corpus_agrees_with_the_section51_this_branch_wrote(self) -> None:
+        """End-to-end on real artifacts, and the only unbilled way to ask whether the six §5.1 blocks
+        this branch hand-authored are faithful transcriptions.
+
+        For every component EXCEPT those in `_DELIBERATE_ABI_CHANGE`, the signature §5.1 pins must
+        agree with the interface extracted from that node's certified source on names, order,
+        `intent` and `rank`. For those, it must DISAGREE in the recorded way — which doubles as the
+        canary's only real-data witness, since every other component agrees by construction.
+
+        One thing this cannot see, and it is the reason the sw2d flux guard change is not in the map:
+        that change is `real(dp)` -> `logical`, a TYPE, and the comparison is type-blind by design
+        (see the class docstring). So its row asserts agreement and says nothing about the type."""
+        from tools.orchestration_runtime import (
+            _certified_model_source, _extract_subroutine_interface, _latest_pipeline_dir,
+            _signature_drift_fields)
+        from tools.backends.language.fortran.signatures import load_structured_signatures
+        import tools.validate_pipeline_semantics as vps
+        import yaml
+
+        repo = Path(__file__).resolve().parents[2]
+        catalog = yaml.safe_load(
+            (repo / "spec" / "registry" / "spec_catalog.yaml").read_text(encoding="utf-8"))
+        checked = 0
+        for entry in catalog["specs"]:
+            if entry.get("spec_kind") != "component":
+                continue
+            cs = repo / Path(entry["deps_path"]).parent / "controlled_spec.md"
+            body, ferr = vps._section51_fence_body(cs)
+            self.assertIsNone(ferr, f'{entry["spec_id"]}: {ferr}')
+            struct, serr = load_structured_signatures(body or "")
+            self.assertIsNone(serr, f'{entry["spec_id"]}: {serr}')
+            # The certified pipeline is the PRE-bump one (this branch bumped the spec but has not
+            # re-certified), so resolve it by the version its workspace actually carries.
+            for version in {entry["spec_version"], "0.1.0", "0.3.0"}:
+                safe = f'component__{entry["spec_id"]}__{version}'
+                pipe = _latest_pipeline_dir(repo / "workspace" / "pipelines" / safe)
+                if pipe is not None:
+                    break
+            if pipe is None:
+                continue  # never certified in this workspace; nothing to compare
+            src_path = _certified_model_source(pipe, entry["spec_id"])
+            if src_path is None:
+                continue
+            source_text = src_path.read_text(encoding="utf-8")
+            for proc in struct["procedures"]:
+                extracted = _extract_subroutine_interface(source_text, proc["name"])
+                if extracted is None:
+                    continue  # the certified source predates this op name; not this row's subject
+                with self.subTest(spec=entry["spec_id"], op=proc["name"]):
+                    drift = _signature_drift_fields(proc, extracted)
+                    expected = self._DELIBERATE_ABI_CHANGE.get(entry["spec_id"])
+                    if expected is None:
+                        self.assertEqual(
+                            drift, [],
+                            f'{entry["spec_id"]}: §5.1 disagrees with its certified source')
+                    else:
+                        self.assertTrue(
+                            drift,
+                            f'{entry["spec_id"]}: §5.1 was expected to change the ABI '
+                            f'({expected}) but agrees with the old certified source')
+                        self.assertTrue(
+                            any(expected in x for x in drift),
+                            f'{entry["spec_id"]}: expected a {expected} difference, got {drift}')
+                    checked += 1
+        # Self-test: the loop really compared something. Without it a path change would leave this
+        # green over zero comparisons.
+        self.assertGreaterEqual(checked, 4, f"only {checked} op(s) compared")
 
 
 class ResolveDependencyFactsTests(unittest.TestCase):
