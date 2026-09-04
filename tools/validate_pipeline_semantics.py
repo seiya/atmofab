@@ -13298,7 +13298,9 @@ def _validate_generated_signatures(
                 violations.append(
                     f"{target}: procedure '{name}' drifts from controlled_spec §5.1 — missing the "
                     f"pinned interface line `{orig.strip()}` (argument name/type/rank/intent/"
-                    "result drift from the published surface)")
+                    "result drift from the published surface, OR a procedure prefix on the header "
+                    "that §5.1 does not declare — the header is compared as published, so a prefix "
+                    "is a difference even when every argument is right)")
 
     # The §5.1 module-level `parameter` declarations (dp / case_id_len) are part of the published
     # ABI but are not stanzas; pin their exact declaration (name AND value) against the source —

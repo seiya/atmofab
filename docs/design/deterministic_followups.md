@@ -3619,6 +3619,27 @@ problems, 6. Anchoring on `ir_ref` alone is also why PR-1's `pipeline_ref` bindi
 does not fire at this depth, so the two blast radii do not compound. An earlier draft of this
 paragraph said 4 per problem by counting `harness_fortran_cpu`, whose version PR-2 does not bump.
 
+**OPEN, carried deliberately rather than fixed: a published operation declared but never
+defined.** Round 3 measured it — a `component` model source that declares a §5.1 published
+procedure inside an `interface` block, with the pinned header, and implements nothing, produces
+ZERO violations from both `Generate.static` surface gates. The module compiles, and the node's own
+Build links as long as nothing calls it; the failure surfaces at a CONSUMER's build as an undefined
+reference. It is in scope by the decision criterion: a leaf that takes it is closer to reporting
+`Generate` done, having skipped the implementation.
+
+It is recorded rather than closed because the OBVIOUS fix carries a documented over-refusal. The
+tree already owns the distinction — the checks-module ABI scanner excludes `interface` bodies from
+its `defined_procs` set, and the comment there names this exact hazard ("else a module could publish
+an ABI name it only prototypes but never defines") — but that helper is scoped to the `<spec_id>_
+checks` module, so reusing it means generalising the module it targets, and its own docstring warns
+that rejecting on `n not in defined_procs` FAILS A LEGAL MODULE: a published name may be
+`use`-associated, reached through a generic interface, or implemented in a submodule. Adding that
+refusal without evidence about those three shapes would trade a bounded fail-open for an
+over-refusal that wedges a legal node, which is the worse of the two. The fix therefore needs its
+own attack record for each shape, and belongs to a round that can review it — not to the tail of
+the round that found it. Severity MEDIUM: bounded by the consumer's build, and by the node's own
+build whenever the operation is exercised.
+
 **The non-decision, stated because it is the thing a reader will look for.** No billed run has been
 made. Every certified IR in the workspace is for a pre-bump version, so nothing is certified against
 these specs yet, and the acceptance vehicle L1's record calls for is still owed. What IS established

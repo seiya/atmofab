@@ -19195,6 +19195,32 @@ class ComponentPublicApiGateTests(unittest.TestCase):
         self.assertTrue(any("declares operation_id 'dep_base__apply' absent" in x
                             for x in v), v)
 
+    def test_an_ir_signature_absent_from_section51_is_refused(self) -> None:
+        """The IR declaring a signature §5.1 does not — measured UNPINNED in round 3.
+
+        Deleting the loop that reports it left the whole suite green. The omission direction is
+        separately covered (`test_missing_signatures_flagged` for an absent key), so this row is the
+        extras direction only; on this fixture, which publishes ONE operation, an emptied
+        `signatures` reads as the absent key rather than as an omission, so the two directions
+        cannot share a row here.
+
+        It carries weight beyond Compile. `Generate.static`'s stale-IR guard reads the same
+        comparison to decide that an IR carrying a surface §5.1 does not declare is PRE-CONTRACT and
+        must be re-certified rather than repaired by a leaf — a terminal route. Unpinned, an edit
+        that weakened it would turn that terminal verdict into a silent pass."""
+        import copy
+        api = self._full_api()
+        extra = copy.deepcopy(api["signatures"][0])
+        extra["symbol"] = "dep_base__not_in_section51"
+        sig = extra.get("signature")
+        if isinstance(sig, dict):
+            sig["name"] = "dep_base__not_in_section51"
+        api["signatures"] = list(api["signatures"]) + [extra]
+        v = self._run(public_api=api)
+        self.assertTrue(
+            any("declares a signature 'dep_base__not_in_section51' absent from controlled_spec §5.1"
+                in x for x in v), v)
+
     def test_a_yaml_comment_inside_the_section51_fence_is_content(self) -> None:
         """Round 1's over-refusal. `_extract_subsection_51` ended the subsection at any `#`-led line,
         and §5.1's fence is YAML — where `# the published kind` is ordinary. MEASURED on the real
