@@ -20310,6 +20310,89 @@ class ResolveDependencyFactsTests(unittest.TestCase):
                 _verify_dep_stage(repo_root, "component", "dep_base", "0.1.0",
                                   "aggregate_verdict"))
 
+    def _write_dep_ir_signature(self, repo_root: Path, safe: str, ir_id: str,
+                                symbol: str, args: list[dict]) -> None:
+        """A certified dependency IR pinning ONE published signature, the shape `Compile.static`
+        transcribes from §5.1 since issue #153 PR-2."""
+        import yaml as _yaml
+        d = repo_root / "workspace" / "ir" / safe / ir_id
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "ir_meta.json").write_text(
+            json.dumps({"verification_status": "pass"}), encoding="utf-8")
+        (d / "spec.ir.yaml").write_text(_yaml.safe_dump({
+            "public_api": {"signatures": [
+                {"symbol": symbol,
+                 "signature": {"kind": "subroutine", "name": symbol, "args": args}},
+            ]},
+        }), encoding="utf-8")
+
+    _DRIFT_SOURCE = (
+        "module dep_base_model\n"
+        "contains\n"
+        "  subroutine dep_base__scale(x, n, y)\n"
+        "    real(dp), intent(in) :: x(:)\n"
+        "    integer, intent(in) :: n\n"
+        "    real(dp), intent(out) :: y(:)\n"
+        "  end subroutine dep_base__scale\n"
+        "end module dep_base_model\n"
+    )
+
+    def _facts_for_drift(self, repo_root: Path, pinned_args: list[dict]) -> dict:
+        safe = "component__dep_base__0.1.0"
+        self._write_dep_pipeline(
+            repo_root, safe, "p_20260101_001", "bin_20260101_001", "run_20260101_001",
+            source_id="src_20260101_001", spec_id="dep_base", model_text=self._DRIFT_SOURCE)
+        self._write_dep_ir_signature(
+            repo_root, safe, "d_20260101_001", "dep_base__scale", pinned_args)
+        self._write_ir(
+            repo_root, "workspace/ir/component__dep_top__0.1.0/top_001",
+            [{"node_key": "component/dep_base@0.1.0", "kind": "component",
+              "operations": ["dep_base__scale"]}],
+            impl_defaults={"toolchain": {"language": "fortran"}})
+        from tools.orchestration_runtime import _resolve_dependency_facts
+        facts = _resolve_dependency_facts(
+            repo_root, "workspace/ir/component__dep_top__0.1.0/top_001")
+        self.assertEqual(len(facts), 1, facts)
+        ops = facts[0].get("published_operations")
+        self.assertTrue(ops, facts[0])
+        return ops[0]
+
+    def test_facts_flag_a_source_interface_that_disagrees_with_the_dep_ir_signatures(self) -> None:
+        """The WIRING, not the comparison. `_signature_drift_fields` is pinned on its own by
+        `SignatureDriftCanaryTests`; round 0's sweep found that reverting the CALL in
+        `_resolve_dependency_facts` — so no fact ever carries `signature_drift` — was noticed by
+        nothing. This is that pin: a dependency whose certified IR pins `(n, x, y)` while its
+        certified source publishes `(x, n, y)`."""
+        with tempfile.TemporaryDirectory() as tmp:
+            op = self._facts_for_drift(Path(tmp), [
+                {"name": "n", "rank": 0, "intent": "in", "spec": {"type": "integer"}},
+                {"name": "x", "rank": 1, "intent": "in",
+                 "spec": {"type": "real", "kind": "dp"}},
+                {"name": "y", "rank": 1, "intent": "out",
+                 "spec": {"type": "real", "kind": "dp"}},
+            ])
+        self.assertEqual(op["argument_order"], ["x", "n", "y"],
+                         "the SOURCE order is what a consumer must be shown")
+        self.assertEqual(op["interface_source"], "certified_source")
+        drift = op.get("signature_drift")
+        self.assertTrue(drift, op)
+        self.assertTrue(any("argument order" in d for d in drift), drift)
+
+    def test_facts_carry_no_drift_when_source_matches_ir_signatures(self) -> None:
+        """The other direction, so the row above cannot pass on a resolver that flags everything —
+        and `interface_source` is present either way, because it states WHERE the shown interface
+        came from rather than whether it drifted."""
+        with tempfile.TemporaryDirectory() as tmp:
+            op = self._facts_for_drift(Path(tmp), [
+                {"name": "x", "rank": 1, "intent": "in",
+                 "spec": {"type": "real", "kind": "dp"}},
+                {"name": "n", "rank": 0, "intent": "in", "spec": {"type": "integer"}},
+                {"name": "y", "rank": 1, "intent": "out",
+                 "spec": {"type": "real", "kind": "dp"}},
+            ])
+        self.assertNotIn("signature_drift", op)
+        self.assertEqual(op["interface_source"], "certified_source")
+
     def test_infra_dep_published_operations_suppressed(self) -> None:
         # R1/M3c-β: an infrastructure (harness) dependency never surfaces published_operations
         # to the leaf (the physics leaf never calls the harness API), even if `operations` is

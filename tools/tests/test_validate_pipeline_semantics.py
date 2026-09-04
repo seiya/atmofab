@@ -18799,14 +18799,21 @@ class ComponentPublicApiGateTests(unittest.TestCase):
 
     def _seed(self, tmp: Path, *, public_api: object, spec_kind: str = "component",
               cs_ref: str | None = "cs.md", write_cs: bool = True,
-              section_51: str | None = None) -> Path:
+              section_51: str | None = None, spec_id: str | None = None,
+              language: str | None = None) -> Path:
+        """`spec_id=""` and `language="rust"` exist so `_refusal_shapes` can reach the
+        missing-spec_id and no-signature-backend refusals; both are paths the gate takes before it
+        reads §5, and round 0 found each one's kind word unpinned."""
         if write_cs:
             (tmp / "cs.md").write_text(
                 self._controlled_spec(section_51), encoding="utf-8")
-        meta = {"spec_kind": spec_kind, "spec_id": self._SPEC_ID}
+        meta = {"spec_kind": spec_kind,
+                "spec_id": self._SPEC_ID if spec_id is None else spec_id}
         if cs_ref is not None:
             meta["source_refs"] = {"controlled_spec": cs_ref}
         ir: dict = {"meta": meta}
+        if language is not None:
+            ir["impl_defaults"] = {"toolchain": {"language": language}}
         if public_api is not _OMIT:
             ir["public_api"] = public_api
         (tmp / "spec.ir.yaml").write_text(yaml.safe_dump(ir), encoding="utf-8")
@@ -18873,28 +18880,80 @@ class ComponentPublicApiGateTests(unittest.TestCase):
             self.assertTrue(v, f"{label} drift produced no violation")
             self.assertTrue(any("signature" in x.lower() for x in v), (label, v))
 
-    def test_component_and_infrastructure_produce_the_same_violation_set_for_the_same_drift(
-            self) -> None:
-        """The unification is one gate, not two that happen to agree. `_EXACT_PUBLISHED_SURFACE_KINDS`
-        decides membership, so driving the SAME tree under each kind token must differ only in the
-        kind word the messages carry — a divergence would mean the merge left a per-kind branch."""
-        api = self._full_api()
-        del api["signatures"]
-        def normalized(kind: str) -> list[str]:
-            # Each `_run` builds its own tmp dir, so the leading path is noise; the kind token is
-            # the only difference the messages are allowed to carry.
-            return [x.split("spec.ir.yaml", 1)[-1].replace(kind, "<kind>")
-                    for x in self._run(public_api=copy.deepcopy(api), spec_kind=kind)]
+    def _refusal_shapes(self) -> dict[str, dict]:
+        """Every path on which the gate refuses, as `_run` kwargs. One entry per refusal, because the
+        rule under test — a refusal names the node's ACTUAL kind — lives in each message separately,
+        and round 0's sweep found five of them unpinned when only one shape was driven."""
+        no_sigs = self._full_api()
+        del no_sigs["signatures"]
+        no_params = self._full_api()
+        del no_params["module_parameters"]
+        return {
+            "missing spec_id": dict(public_api=self._full_api(), spec_id=""),
+            "missing controlled_spec ref": dict(public_api=self._full_api(), cs_ref=None),
+            "unresolvable controlled_spec": dict(public_api=self._full_api(), write_cs=False),
+            "missing public_api": dict(public_api=_OMIT),
+            "missing signatures": dict(public_api=no_sigs),
+            "missing module_parameters": dict(public_api=no_params),
+            "unsupported language": dict(public_api=self._full_api(), language="rust"),
+        }
 
-        component = normalized("component")
-        infrastructure = normalized("infrastructure")
-        self.assertTrue(component, "expected a violation to compare")
-        self.assertEqual(component, infrastructure)
-        # Self-test of the comparison: the kind token really IS in the messages, so the
-        # normalization above is doing work rather than comparing two identical lists.
-        self.assertTrue(
-            any("component" in x for x in self._run(
-                public_api=copy.deepcopy(api), spec_kind="component")))
+    def test_every_refusal_names_the_node_kind_it_was_given(self) -> None:
+        """One gate, not two that happen to agree — asserted over EVERY refusal path, not one.
+
+        `_EXACT_PUBLISHED_SURFACE_KINDS` decides membership, so driving the same tree under each kind
+        token must produce messages differing ONLY in the kind word. Round 0's sweep is why this is a
+        family: with a single shape driven, reverting `{kind}` to a hardcoded "infrastructure" in five
+        other refusals survived the whole suite — so a `component` author could be sent to fix an
+        infrastructure node on any of five paths.
+
+        The §5-parse refusal is a deliberate exception with its own row below: its remedy names the §5
+        prose form, which genuinely differs per kind."""
+        def fresh(kwargs: dict) -> dict:
+            # Deepcopy the VALUES, never the `_OMIT` sentinel: copying it yields a new `object()`
+            # whose `is not _OMIT` is True, so the seeder would try to YAML-dump the sentinel
+            # instead of omitting `public_api`. Identity sentinels do not survive deepcopy.
+            return {k: (v if v is _OMIT else copy.deepcopy(v)) for k, v in kwargs.items()}
+
+        for label, kwargs in self._refusal_shapes().items():
+            with self.subTest(refusal=label):
+                def normalized(kind: str) -> list[str]:
+                    # Each `_run` builds its own tmp dir, so the leading path is noise; the kind
+                    # token is the only difference the messages may carry.
+                    return [x.split("spec.ir.yaml", 1)[-1].replace(kind, "<kind>")
+                            for x in self._run(spec_kind=kind, **fresh(kwargs))]
+
+                component = self._run(spec_kind="component", **fresh(kwargs))
+                self.assertTrue(component, f"{label}: expected a violation to compare")
+                self.assertEqual(normalized("component"), normalized("infrastructure"))
+                # Self-test per shape: the kind word really IS in this message, so the normalization
+                # is doing work. Without it, a message naming NO kind would pass this row silently.
+                self.assertTrue(
+                    any("component" in x for x in component),
+                    f"{label}: no message names the kind, so this row proves nothing: {component}")
+
+    def test_the_section5_parse_refusal_names_the_form_that_kind_must_write(self) -> None:
+        """`_SECTION5_FORM_HINT` is a per-kind DECISION, not an accident of the merge: the two kinds
+        state their published surface in different prose, so a remedy naming the wrong form sends the
+        author to rewrite §5 into a shape their kind does not use. Round 0 found it unpinned."""
+        spec = self._controlled_spec().replace(
+            "The only published `operation_id` is `dep_base__scale`.", "No operations here.")
+        for kind in ("component", "infrastructure"):
+            with self.subTest(kind=kind):
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    tmp = Path(tmpdir)
+                    (tmp / "cs.md").write_text(spec, encoding="utf-8")
+                    ir_dir = self._seed(tmp, public_api=self._full_api(), spec_kind=kind,
+                                        write_cs=False)
+                    v: list[str] = []
+                    vps._validate_published_surface(tmp, ir_dir, v)
+                self.assertEqual(len(v), 1, v)
+                self.assertIn("§5 parsed 0 published operation_ids", v[0])
+                self.assertIn(vps._SECTION5_FORM_HINT[kind], v[0])
+                self.assertIn(f"cannot pin {kind} public_api", v[0])
+        # The two hints really differ, so the rows above cannot both pass on one string.
+        self.assertNotEqual(vps._SECTION5_FORM_HINT["component"],
+                            vps._SECTION5_FORM_HINT["infrastructure"])
 
     def test_non_component_is_noop(self) -> None:
         # A profile/problem node has no component-name pin — the gate no-ops (its public_api,
