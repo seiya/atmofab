@@ -34033,9 +34033,11 @@ class DependencyFreshnessTests(unittest.TestCase):
             repo_root = Path(tmp)
             self._seed(repo_root, dep_version="0.2.0", recorded_dep_version="0.1.0")
             node = {"spec_kind": "component", "spec_id": "b", "spec_versions": ["0.1.0"]}
-            self.assertFalse(run_workflow._dependency_node_ready(repo_root, node, ["ir_ref"]))
+            self.assertFalse(
+                run_workflow._dependency_node_readiness(repo_root, node, ["ir_ref"])["ready"])
             self._seed(repo_root, dep_version="0.1.0", recorded_dep_version="0.1.0")
-            self.assertTrue(run_workflow._dependency_node_ready(repo_root, node, ["ir_ref"]))
+            self.assertTrue(
+                run_workflow._dependency_node_readiness(repo_root, node, ["ir_ref"])["ready"])
 
     def test_an_edge_moved_between_direct_and_transitive_is_stale(self) -> None:
         """Same nodes, same topo_levels, different SHAPE. `a` is certified against
@@ -34446,8 +34448,110 @@ class DependencyBindingFreshnessTests(unittest.TestCase):
         # An unusable document yields no closure rather than raising: both readers treat "no
         # sidecar" as a leaf, and a raise here would break `_dependency_binding_freshness`'s
         # never-raises contract and crash the conductor's staging with an attribution error.
-        for bad in (None, [], "x", {}, {"all_nodes": None}, {"all_nodes": "x"}):
+        #
+        # The family deliberately spans BOTH iterability classes. An earlier version of this test
+        # listed six members that were every one of them iterable, so it could not have failed:
+        # `for n in all_nodes or []` raises `TypeError` on a non-iterable, and round 1 of the
+        # review found that by construction rather than from this list.
+        for bad in (None, [], "x", {}, {"all_nodes": None}, {"all_nodes": "x"},
+                    {"all_nodes": 5}, {"all_nodes": 3.5}, {"all_nodes": True},
+                    {"all_nodes": {"component/base@0.1.0": 0}}):
             self.assertEqual(_closure_nodes_from_graph(bad, "component/top@0.1.0"), [], bad)
+        # Self-test of the family: at least one member is NOT iterable, and at least one IS — a
+        # family in which every member falls on one side answers for one side.
+        nodes = [b.get("all_nodes") if isinstance(b, dict) else b
+                 for b in ({"all_nodes": 5}, {"all_nodes": "x"})]
+        iterability = []
+        for value in nodes:
+            try:
+                iter(value)
+                iterability.append(True)
+            except TypeError:
+                iterability.append(False)
+        self.assertEqual(sorted(iterability), [False, True])
+
+    def test_resolve_certified_closure_binding_refusals(self) -> None:
+        """The three reasons the selection can fail, each returned as `(None, reason)` rather than
+        raised — the conductor re-raises the reason verbatim as a transport `fail_closed`, and the
+        readiness comparison folds it into a stale detail. Round 1 found all three unwitnessed."""
+        from tools.orchestration_runtime import _resolve_certified_closure_binding
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            # (a) an unparseable node_key never reaches a path composition.
+            for bad_key in ("component/c", "c@0.1.0", "", "component/c@0.1.0@extra",
+                            "component/../c@0.1.0"):
+                binding, err = _resolve_certified_closure_binding(repo_root, bad_key)
+                self.assertIsNone(binding, bad_key)
+                self.assertIn("unparseable dependency node_key", err or "", bad_key)
+            # (b) no pipeline at all.
+            binding, err = _resolve_certified_closure_binding(
+                repo_root, "component/absent@0.1.0")
+            self.assertIsNone(binding)
+            self.assertIn("no ready pipeline under workspace/pipelines/", err)
+            self.assertIn("--with-deps", err)
+            # (c) a pipeline whose certified binary cannot name a source file.
+            meta = (repo_root / "workspace" / "pipelines" / "component__c__0.1.0"
+                    / "c_20260101_001" / "binary" / "bin_20260725_001" / "binary_meta.json")
+            doc = json.loads(meta.read_text(encoding="utf-8"))
+            del doc["source_source_id"]
+            meta.write_text(json.dumps(doc) + "\n", encoding="utf-8")
+            binding, err = _resolve_certified_closure_binding(repo_root, "component/c@0.1.0")
+            self.assertIsNone(binding)
+            self.assertIn("cannot resolve the certified model source under", err)
+            self.assertIn("component__c__0.1.0/c_20260101_001", err)
+
+    def test_an_unsafe_identifier_token_is_stale_not_ready(self) -> None:
+        """The defence-in-depth guard at the head of both new evaluators. It sits behind
+        `_verify_dep_stage_detail`'s identical guard, so it decides nothing today — which is
+        exactly why it needs its own probe rather than being inferred from the caller's."""
+        from tools.orchestration_runtime import (
+            _dep_binary_meta_passes, _dependency_binding_freshness, _verify_dep_stage_detail)
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            for kind, sid, version in (("../component", "b", "0.1.0"),
+                                       ("component", "b/../c", "0.1.0"),
+                                       ("component", "b", "0.1.0/.."),
+                                       ("component", "b", "")):
+                fresh, detail = _dependency_binding_freshness(repo_root, kind, sid, version)
+                self.assertFalse(fresh, (kind, sid, version))
+                self.assertIn("unsafe identifier token", detail)
+                self.assertFalse(_dep_binary_meta_passes(repo_root, kind, sid, version))
+                for stage in ("ir_ref", "pipeline_ref", "aggregate_verdict"):
+                    ok, why = _verify_dep_stage_detail(repo_root, kind, sid, version, stage)
+                    self.assertFalse(ok, (kind, sid, version, stage))
+                    self.assertIn("unsafe identifier token", why)
+
+    def test_the_resolver_prefers_the_certified_source_over_a_newer_uncertified_one(self) -> None:
+        """The selection rule the whole comparison rests on, asserted from the READINESS side.
+        `test_stage_dependency_sources_binds_to_certified_binary_source` pins it from the
+        conductor's side only, so replacing the chain with "the latest source dir" left this
+        module entirely green (round 1, security axis M18) while re-opening the fail-open the
+        docstring warns about: staging a source a Generate retry produced but no Build certified."""
+        from tools.orchestration_runtime import (
+            _dependency_binding_freshness, _resolve_certified_closure_binding)
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            pipe = (repo_root / "workspace" / "pipelines" / "component__c__0.1.0"
+                    / "c_20260101_001")
+            # A LATER source_id with no binary certifying it — a Generate retry not yet built.
+            later = pipe / "source" / "src_20260903_001" / "src"
+            later.mkdir(parents=True, exist_ok=True)
+            (later / "c_model.f90").write_text(
+                "module c_model ! UNCERTIFIED\nend module c_model\n", encoding="utf-8")
+            (pipe / "lineage.json").write_text(
+                json.dumps({"source_id": "src_20260903_001"}) + "\n", encoding="utf-8")
+            binding, err = _resolve_certified_closure_binding(repo_root, "component/c@0.1.0")
+            self.assertIsNone(err)
+            self.assertEqual(binding["source_id"], "src_20260725_001")
+            self.assertNotIn(
+                "UNCERTIFIED",
+                (repo_root / binding["model_source_ref"]).read_text(encoding="utf-8"))
+            # ... and the consumer stays FRESH, because nothing it linked has moved.
+            self.assertEqual(
+                _dependency_binding_freshness(repo_root, "component", "b", "0.1.0"), (True, None))
 
     def test_a_malformed_topo_level_does_not_raise(self) -> None:
         """`topo_level` decides a SORT KEY, and the sidecar is host-authored but not
@@ -34656,7 +34760,23 @@ class DependencyBindingFreshnessTests(unittest.TestCase):
                            body="module c_model ! REGENERATED\nend module c_model\n")
             stale_level = _certify_and_collect_dep_artifacts(
                 repo_root, "spec/problem/a")["certified_entries"][0][3]
+            # The LEVEL itself, not only its downstream flags: the demotion's threshold
+            # (`level >= 2`) and its target (`1`) are both decisions, and round 1 found that
+            # widening the threshold to `>= 3` left this module green when only the flags were
+            # asserted, because this fixture seeds a level-3 dep.
             self.assertEqual(stale_level, 1)
+            readiness = _compute_dep_readiness_and_fingerprint(repo_root, "spec/problem/a")[0]
+            self.assertTrue(readiness["ir_ref_verified"])
+            self.assertFalse(readiness["pipeline_ref_verified"])
+
+            # A dep at level exactly 2 — ir + pipeline certify, no aggregate_verdict — is the
+            # version the threshold decides. It must demote too.
+            shutil.rmtree(repo_root / "workspace" / "pipelines" / "component__b__0.1.0"
+                          / "b_20260101_001" / "runs")
+            self.assertEqual(
+                _certify_and_collect_dep_artifacts(
+                    repo_root, "spec/problem/a")["certified_entries"][0][3],
+                1)
             readiness = _compute_dep_readiness_and_fingerprint(repo_root, "spec/problem/a")[0]
             self.assertTrue(readiness["ir_ref_verified"])
             self.assertFalse(readiness["pipeline_ref_verified"])

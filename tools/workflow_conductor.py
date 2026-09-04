@@ -8740,9 +8740,11 @@ clean:
             # against — one entry per closure node in staging/compile order, carrying the
             # certified source's identity and its sha256. `_dependency_binding_freshness` reads
             # it to decide whether a later regeneration of a dependency has left this consumer
-            # linked to code that no longer exists. A LEAF records `[]` explicitly: the key's
-            # PRESENCE is what tells a leaf apart from a legacy binary certified before this
-            # contract, and a legacy binary with a non-empty closure fails closed.
+            # linked to code that no longer exists. A node whose CLOSURE is empty — a leaf of the
+            # dependency graph, never an `LLM` leaf, which authors none of this — records `[]`
+            # explicitly: the key's PRESENCE is what tells such a node apart from a legacy binary
+            # certified before this contract, and a legacy binary with a non-empty closure fails
+            # closed.
             "dependency_check": {"direct_deps": dep_keys,
                                  "resolved": "match" if ok else "unresolved",
                                  "closure_bindings": closure_bindings},

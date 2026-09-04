@@ -4104,41 +4104,34 @@ def _run_node(
         node_claim.close()
 
 
-def _dependency_node_ready(
-    repo_root: Path, node: dict[str, Any], required_stages: list[str]
-) -> bool:
-    """True iff the dependency node already satisfies `required_stages`.
-
-    Mirrors the runtime readiness contract (`_verify_dependency_readiness`): a
-    node is ready when ANY single matching catalog version has a coherent
-    artifact chain across all required stages (the same version V must satisfy
-    every stage). Kept module-level so the closure driver uses one consistent
-    readiness rule for both the pre-run skip check and the post-run
-    verification.
-
-    R6-lite rides on the same `_verify_dep_stage` call: its `ir_ref` stage also requires the
-    node's RECORDED dependency resolution (its `dependency_graph.json` sidecar) to match the
-    one today's `deps.yaml` + `spec_catalog.yaml` derive. So a node certified against an older
-    version of one of ITS dependencies (e.g. harness 0.2.1 after the catalog moved to 0.3.0)
-    reports not-ready here and this driver re-runs it — which is how "a dependency spec was
-    updated, so its dependents are regenerated" becomes a mechanism rather than an operator
-    ritual. No content-free version bump of the dependents is required.
-
-    R6 proper (closure-source half) rides on the same call one stage down: `pipeline_ref` also
-    requires the dependency SOURCES the node's certified binary was compiled against to be the
-    ones a build would stage for it today (`_dependency_binding_freshness`). So a consumer whose
-    dependency was regenerated and re-certified under an unchanged `spec_version` is re-run here
-    too, instead of being skipped and then failing closed inside the target's own gates.
-
-    The boolean face of `_dependency_node_readiness`, kept because two suites monkeypatch a
-    boolean here and because a bool is all the post-run re-verification needs."""
-    return _dependency_node_readiness(repo_root, node, required_stages)["ready"]
-
-
 def _dependency_node_readiness(
     repo_root: Path, node: dict[str, Any], required_stages: list[str]
 ) -> dict[str, Any]:
-    """The readiness of a closure node WITH the grounds for the answer.
+    """Whether a closure node already satisfies `required_stages`, WITH the grounds for the answer.
+
+    Mirrors the runtime readiness contract (`_verify_dependency_readiness`): a node is ready when
+    ANY single matching catalog version has a coherent artifact chain across all required stages
+    (the same version V must satisfy every stage). Kept module-level so the closure driver uses one
+    consistent readiness rule for both the pre-run skip check and the post-run verification.
+
+    R6-lite rides on the `_verify_dep_stage_detail` call below: its `ir_ref` stage also requires the
+    node's RECORDED dependency resolution (its `dependency_graph.json` sidecar) to match the one
+    today's `deps.yaml` + `spec_catalog.yaml` derive. So a node certified against an older version
+    of one of ITS dependencies (e.g. harness 0.2.1 after the catalog moved to 0.3.0) reports
+    not-ready here and this driver re-runs it — which is how "a dependency spec was updated, so its
+    dependents are regenerated" becomes a mechanism rather than an operator ritual. No content-free
+    version bump of the dependents is required.
+
+    R6 proper (closure-source half) rides on the same call one stage down: `pipeline_ref` also
+    requires the dependency SOURCES the node's certified binary was compiled against to be the ones
+    a build would stage for it today (`_dependency_binding_freshness`). So a consumer whose
+    dependency was regenerated and re-certified under an unchanged `spec_version` is re-run here
+    too, instead of being skipped and then failing closed inside the target's own gates.
+
+    This is the ONLY wire by which either invariant decides skip-vs-re-run, so it is the wire a
+    witness has to drive on real artifacts:
+    `test_run_workflow.py::test_the_driver_re_runs_a_consumer_whose_dependency_source_was_regenerated`
+    is that witness, and every other driver test in its class fakes this function.
 
     Returns `{"ready": bool, "version": str | None, "failed_stage": str | None,
     "detail": str | None}`. When ready, `version` is the matching catalog version that satisfied

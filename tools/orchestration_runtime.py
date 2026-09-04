@@ -1530,12 +1530,22 @@ def _closure_nodes_from_graph(graph: Any, self_node_key: str) -> list[str]:
     `topo_level` ascending, deepest first, because a deeper dep provides what the shallower
     ones consume and must be built first.
 
-    Pure and NEVER raises: a missing / malformed / non-dict document yields `[]`. Single-sourced
-    here so the conductor's staging order and the readiness comparison
-    (`_dependency_binding_freshness`) cannot disagree on WHICH nodes the closure holds or in
-    what order — the caller adds its own policy (the conductor keeps the L6 spec_id-collision
-    guard, which is a build-naming rule and not part of the closure derivation)."""
+    Pure and NEVER raises: a missing / malformed / non-dict document, and an `all_nodes` that is
+    not a list, each yield `[]`. Single-sourced here so the conductor's staging order and the
+    readiness comparison (`_dependency_binding_freshness`) cannot disagree on WHICH nodes the
+    closure holds or in what order — the caller adds its own policy (the conductor keeps the L6
+    spec_id-collision guard, which is a build-naming rule and not part of the closure derivation).
+
+    The never-raises contract is load-bearing rather than decorative, and it costs two type tests
+    that read as redundant. `for n in all_nodes or []` raises `TypeError` on a non-iterable
+    (`all_nodes: 5`), and `list.sort` raises `TypeError` when a `topo_level` is not comparable with
+    an `int` (`"0"`) — both inside a readiness evaluator whose callers are promised a verdict. So
+    `all_nodes` must be a `list` (a `str` is iterable and would otherwise be walked character by
+    character), and a `topo_level` that is not an `int` — `bool` included, which `isinstance(x,
+    int)` alone accepts — falls to 0."""
     all_nodes = graph.get("all_nodes") if isinstance(graph, dict) else None
+    if not isinstance(all_nodes, list):
+        return []
     levels: dict[str, int] = {}
     closure: list[str] = []
     seen: set[str] = set()

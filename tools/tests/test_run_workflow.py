@@ -5455,6 +5455,145 @@ class DependencyClosureTests(unittest.TestCase):
             self.assertEqual(rerun["rerun_reason"],
                              {"failed_stage": "pipeline_ref", "detail": "fake: stale binding"})
 
+    def _seed_certified_node(self, repo_root: Path, kind: str, sid: str, version: str, *,
+                             closure_bindings: Any, dep_body: str | None = None) -> str:
+        """A fully certified node — IR (with a sidecar), pipeline, certified binary, verdict.
+
+        `closure_bindings` is written verbatim into `binary_meta.dependency_check`; pass a list
+        for a node that links a closure and `[]` for a leaf. When `dep_body` is given, a model
+        source is written under the certified `source_id` and its sha256 returned, so a caller can
+        record a binding against it."""
+        import hashlib
+        safe = f"{kind}__{sid}__{version}"
+        node_key = f"{kind}/{sid}@{version}"
+        ir_dir = repo_root / "workspace" / "ir" / safe / f"{sid}_20260101_001"
+        ir_dir.mkdir(parents=True, exist_ok=True)
+        (ir_dir / "ir_meta.json").write_text(
+            json.dumps({"verification_status": "pass"}), encoding="utf-8")
+        recorded = [b["node_key"] for b in closure_bindings] if closure_bindings else []
+        (ir_dir / "dependency_graph.json").write_text(json.dumps({
+            "node_key": node_key,
+            "all_nodes": [{"node_key": nk, "topo_level": 0} for nk in recorded]
+            + [{"node_key": node_key, "topo_level": 1}],
+            "transitive_deps": [], "generated_by": "conductor",
+        }), encoding="utf-8")
+        pipe = repo_root / "workspace" / "pipelines" / safe / f"{sid}_20260101_001"
+        src_dir = pipe / "source" / "src_20260101_001" / "src"
+        src_dir.mkdir(parents=True, exist_ok=True)
+        digest = ""
+        if dep_body is not None:
+            (src_dir / f"{sid}_model.f90").write_text(dep_body, encoding="utf-8")
+            digest = hashlib.sha256(dep_body.encode("utf-8")).hexdigest()
+        bin_dir = pipe / "binary" / "bin_20260101_001"
+        bin_dir.mkdir(parents=True, exist_ok=True)
+        (bin_dir / "binary_meta.json").write_text(json.dumps({
+            "binary_id": "bin_20260101_001", "node_key": node_key,
+            "verification_status": "pass", "source_source_id": "src_20260101_001",
+            "dependency_check": {"direct_deps": recorded, "resolved": "match",
+                                 "closure_bindings": closure_bindings},
+        }) + "\n", encoding="utf-8")
+        verdict_dir = pipe / "runs" / "run_20260101_001" / safe
+        verdict_dir.mkdir(parents=True, exist_ok=True)
+        (verdict_dir / "aggregate_verdict.json").write_text(
+            json.dumps({"aggregate_verdict": "pass"}), encoding="utf-8")
+        (verdict_dir / "trial_meta.json").write_text(
+            json.dumps({"source_binary_id": "bin_20260101_001"}), encoding="utf-8")
+        return digest
+
+    def test_the_driver_re_runs_a_consumer_whose_dependency_source_was_regenerated(self) -> None:
+        """The issue #153 route, driven end to end through the REAL readiness machinery.
+
+        Every other test in this class monkeypatches readiness, so none of them crosses the wire
+        by which the new invariant decides skip-vs-re-run. Round 1 measured what that costs: with
+        readiness faked, `for st in required_stages` narrowed to `required_stages[:1]`, and
+        forcing the `pipeline_ref` answer to `(True, None)` inside the driver's loop — i.e.
+        deleting the whole closure-binding comparison from the driver — both survive the suite.
+        So this one seeds real artifacts and fakes only `_run_node`.
+
+        The shape is the issue's own: the leaf `c` is certified, the consumer `b` is certified
+        against `c`'s CURRENT source, then `c` is re-certified with a different source under the
+        same `spec_version`. `b`'s IR is untouched, so R6-lite sees nothing; only the binding
+        moved."""
+        from tools.orchestration_runtime import _load_spec_catalog
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            _seed_shape_expr_schema_into(repo_root)
+            self._seed_diamond(repo_root)
+            _load_spec_catalog.cache_clear()
+
+            leaf_body = "module c_model\nend module c_model\n"
+            sha = self._seed_certified_node(
+                repo_root, "infrastructure", "c", "0.1.0", closure_bindings=[],
+                dep_body=leaf_body)
+            binding = {
+                "node_key": "infrastructure/c@0.1.0",
+                "pipeline_ref": "workspace/pipelines/infrastructure__c__0.1.0/c_20260101_001",
+                "binary_id": "bin_20260101_001", "source_id": "src_20260101_001",
+                "model_source_ref": ("workspace/pipelines/infrastructure__c__0.1.0/"
+                                     "c_20260101_001/source/src_20260101_001/src/c_model.f90"),
+                "model_source_sha256": sha,
+            }
+            self._seed_certified_node(repo_root, "component", "b", "0.1.0",
+                                      closure_bindings=[binding])
+
+            def drive() -> list[dict[str, Any]]:
+                # The driver hands the summary to the TARGET's `_run_node` as `extra_output`;
+                # when every node is ready no failure event carries it, so capture it there.
+                seen: dict[str, Any] = {}
+
+                def fake_run_node(**kw):
+                    if kw.get("spec_ref") == "spec/problem/a":
+                        seen["extra_output"] = kw.get("extra_output") or {}
+                    return 0
+
+                orig = run_workflow._run_node
+                run_workflow._run_node = fake_run_node  # type: ignore[assignment]
+                try:
+                    buf = io.StringIO()
+                    with redirect_stdout(buf):
+                        run_workflow._run_with_dependency_closure(
+                            repo_root=repo_root,
+                            base_env={"PATH": os.environ.get("PATH", "")},
+                            target_orchestration_id="orch_target",
+                            target_spec_ref="spec/problem/a",
+                            target_source_dependency_ref="spec/problem/a/deps.yaml",
+                            until_phase="Validate", llm="claude", llm_command="claude",
+                            llm_config=_sample_config("claude"), workflow_mode="dev",
+                            agent_model=None, status="running", run_conductor=False,
+                            stdout_format="jsonl")
+                finally:
+                    run_workflow._run_node = orig  # type: ignore[assignment]
+                events = [json.loads(ln) for ln in buf.getvalue().splitlines() if ln.strip()]
+                fails = [e for e in events if e.get("dependency_runs")]
+                if fails:
+                    return fails[-1]["dependency_runs"]
+                return list(seen.get("extra_output", {}).get("dependency_runs") or [])
+
+            # BEFORE: both dependency nodes are ready, so both are skipped.
+            runs = drive()
+            by_ref = {r["spec_ref"]: r for r in runs}
+            for ref in ("spec/component/c", "spec/component/b"):
+                self.assertTrue(by_ref[ref]["skipped"], runs)
+                self.assertEqual(by_ref[ref]["version"], "0.1.0")
+
+            # `c` regenerates and re-certifies under the SAME spec_version.
+            src = (repo_root / "workspace" / "pipelines" / "infrastructure__c__0.1.0"
+                   / "c_20260101_001" / "source" / "src_20260101_001" / "src" / "c_model.f90")
+            src.write_text("module c_model ! REGENERATED\nend module c_model\n",
+                           encoding="utf-8")
+
+            runs = drive()
+            by_ref = {r["spec_ref"]: r for r in runs}
+            # `c` itself is a leaf and stays ready — nothing it links moved.
+            self.assertTrue(by_ref["spec/component/c"]["skipped"], runs)
+            # `b` is the consumer, and it is NOT skipped. This is the assertion the issue is
+            # about: before this change it reported `{"skipped": true, "status": "ready"}`.
+            b = by_ref["spec/component/b"]
+            self.assertFalse(b["skipped"], runs)
+            self.assertEqual(b["rerun_reason"]["failed_stage"], "pipeline_ref")
+            self.assertIn("was compiled against", b["rerun_reason"]["detail"])
+            self.assertIn("infrastructure/c@0.1.0", b["rerun_reason"]["detail"])
+
     def test_driver_stops_when_dependency_not_ready_after_run(self) -> None:
         # A dependency that exits 0 without producing readiness evidence
         # (e.g. --no-run-conductor) must stop the run before the dependent/target.
