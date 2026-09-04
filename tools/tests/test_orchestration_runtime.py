@@ -34427,6 +34427,58 @@ class DependencyBindingFreshnessTests(unittest.TestCase):
                     json.dumps({"source_binary_id": "bin_20260725_001"}))
         _load_spec_catalog.cache_clear()
 
+    # ---- the closure derivation the two readers share -------------------------------------
+
+    def test_closure_nodes_from_graph_orders_deepest_first_and_drops_self(self) -> None:
+        from tools.orchestration_runtime import _closure_nodes_from_graph
+        graph = {"all_nodes": [
+            {"node_key": "component/mid@0.1.0", "topo_level": 1},
+            {"node_key": "component/top@0.1.0", "topo_level": 2},
+            {"node_key": "component/base@0.1.0", "topo_level": 0},
+            {"node_key": " component/mid@0.1.0 ", "topo_level": 9},   # duplicate after strip
+            {"node_key": "", "topo_level": 0},                        # empty
+            "not-a-dict",
+            {"topo_level": 0},                                        # no node_key
+        ]}
+        self.assertEqual(
+            _closure_nodes_from_graph(graph, "component/top@0.1.0"),
+            ["component/base@0.1.0", "component/mid@0.1.0"])
+        # An unusable document yields no closure rather than raising: both readers treat "no
+        # sidecar" as a leaf, and a raise here would break `_dependency_binding_freshness`'s
+        # never-raises contract and crash the conductor's staging with an attribution error.
+        for bad in (None, [], "x", {}, {"all_nodes": None}, {"all_nodes": "x"}):
+            self.assertEqual(_closure_nodes_from_graph(bad, "component/top@0.1.0"), [], bad)
+
+    def test_a_malformed_topo_level_does_not_raise(self) -> None:
+        """`topo_level` decides a SORT KEY, and the sidecar is host-authored but not
+        schema-checked here. Reading it as `level or 0` — which is what the conductor's inlined
+        version did before this derivation was single-sourced — puts a `str` into the key and
+        `list.sort` then raises `TypeError` comparing it with an `int`. That is now a crash
+        inside a readiness evaluator whose contract is that it never raises, so a non-`int`
+        (and `bool`, which `isinstance(x, int)` alone accepts) falls to 0."""
+        from tools.orchestration_runtime import (
+            _closure_nodes_from_graph, _dependency_binding_freshness)
+        graph = {"all_nodes": [
+            {"node_key": "component/a@0.1.0", "topo_level": "1"},
+            {"node_key": "component/b@0.1.0", "topo_level": 0},
+            {"node_key": "component/c@0.1.0", "topo_level": True},
+            {"node_key": "component/d@0.1.0"},
+            {"node_key": "component/top@0.1.0", "topo_level": 9},
+        ]}
+        got = _closure_nodes_from_graph(graph, "component/top@0.1.0")
+        self.assertEqual(sorted(got), ["component/a@0.1.0", "component/b@0.1.0",
+                                       "component/c@0.1.0", "component/d@0.1.0"])
+        # The same document reached through the readiness evaluator: a verdict, not a traceback.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            sidecar = (repo_root / "workspace" / "ir" / "component__b__0.1.0"
+                       / "b_20260101_001" / "dependency_graph.json")
+            sidecar.write_text(json.dumps(graph), encoding="utf-8")
+            fresh, detail = _dependency_binding_freshness(repo_root, "component", "b", "0.1.0")
+            self.assertFalse(fresh)          # the recorded closure no longer matches
+            self.assertIsInstance(detail, str)
+
     # ---- the invariant itself -------------------------------------------------------------
 
     def test_matching_binding_is_fresh_and_ready(self) -> None:

@@ -13660,6 +13660,31 @@ class WriteMakefileTest(unittest.TestCase):
             self.assertIn("src_cert", staged[0]["model_source_ref"])
             self.assertEqual(staged[0]["source_id"], "src_cert")
 
+    def test_dependency_closure_nodes_survives_a_malformed_topo_level(self) -> None:
+        """The closure ORDER is single-sourced in `orchestration_runtime._closure_nodes_from_graph`
+        so that Build's staging and the readiness comparison cannot disagree — and the move is not
+        a pure move: the inlined version this replaced read `n.get("topo_level") or 0`, which puts
+        a `str` into the sort key and makes `list.sort` raise `TypeError`. That is a crash where
+        readiness promises a verdict, so a non-`int` level falls to 0. This is the conductor half
+        of that pin: it is RED against the inlined implementation."""
+        from tools.orchestration_runtime import _closure_nodes_from_graph
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = wc.NodeRefs(node_key="component/top@0.1.0", spec_path="spec/component/top",
+                               ir_id="i", pipeline_id="p", source_id="s", binary_id="b")
+            self._write_dep_ir(repo, refs)
+            self._write_dep_graph_sidecar(repo, refs, all_nodes=[
+                {"node_key": "component/base@0.1.0", "topo_level": "0"},
+                {"node_key": "component/mid@0.1.0", "topo_level": 1},
+                {"node_key": "component/top@0.1.0", "topo_level": 2},
+            ], transitive_deps=[])
+            got = self._conductor(repo)._dependency_closure_nodes(refs)
+            self.assertEqual(sorted(got), ["component/base@0.1.0", "component/mid@0.1.0"])
+            # ... and it is the SAME derivation the readiness comparison runs.
+            from tools.validate_pipeline_semantics import _read_dependency_graph_sidecar
+            graph = _read_dependency_graph_sidecar(repo, refs.ir_ref) or {}
+            self.assertEqual(got, _closure_nodes_from_graph(graph, refs.node_key))
+
     def test_stage_dependency_sources_returns_the_binding_of_each_staged_source(self) -> None:
         """The record `binary_meta.dependency_check.closure_bindings` is built from: one entry
         per closure node, in staging order, and the recorded `sha256` is the sha256 of the bytes
