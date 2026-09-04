@@ -441,7 +441,7 @@ end-to-end (orch `orch_20260626T020724Z_0d7b9e28`): `demo_dep_top` reused the re
 (skipped) and passed all phases on attempt 1 in dev mode. The D4 snapshot-naming blocker is fixed and
 confirmed. No known blockers remain for the demo dependency chain.
 
-## D5 — dependency call-site argument order surfaced to the consumer (IMPLEMENTED 2026-06-26; the "no producer-side gate" half is to be SUPERSEDED by issue #153 PR-2, NOT YET LANDED as of 2026-09-04)
+## D5 — dependency call-site argument order surfaced to the consumer (IMPLEMENTED 2026-06-26; the "no producer-side gate" half SUPERSEDED 2026-09-04 by issue #153 PR-2, which LANDED)
 
 **Symptom.** With D1–D4 closed, the demo chain's `--with-deps` E2E was still not
 deterministic across runs: a consumer (`demo_dep_top`) emits `call <dep>__<op>(...)` to a
@@ -3280,11 +3280,12 @@ the `operations ⊆ published` check (V4c-ii) was LLM-only and let the wrong nam
 gate (`use` present) AND the static gate (`use` absent) every retry, a pincer with no repairable signal.
 
 The fix is a four-layer truth path for the op NAME (the argument ABI stays derived post-hoc — user decision: pin names
-only, never full signatures, on a component). **The operator decision of 2026-09-04 (issue #153) REVERSES that user
-decision, and issue #153 PR-2 is what implements the reversal. PR-2 HAS NOT LANDED as of 2026-09-04**, so every sentence
-below is still true of the code: `_validate_component_public_api` still refuses `signatures` and `module_parameters` as
-forbidden keys on a `component`, and `phase_01_compile.md` V8b still states NAMES ONLY. When PR-2 lands it extends the
-NAME path below rather than replacing it; until then, read this paragraph as the decision and not as the state.
+only, never full signatures, on a component). **That user decision is REVERSED by the operator decision of 2026-09-04
+(issue #153), and issue #153 PR-2 IMPLEMENTED the reversal.** A `component`'s §5.1 signatures and module parameters are
+now pinned == its IR by `_validate_published_surface` at `Compile.static` and == its generated source by
+`_validate_generated_signatures` at `Generate.gate`; `phase_01_compile.md` states this as one V8 over both kinds. The
+four layers below still describe the NAME path, which PR-2 EXTENDS rather than replaces — read any sentence below calling
+`signatures` / `module_parameters` forbidden keys as a record of the state before 2026-09-04.
 - **L1 — the name gets a carrier.** A component IR now pins its published op names in `public_api.published_operations`
   (`_validate_component_public_api`, `Compile.static`, V8b — names only; `signatures`/`module_parameters` are forbidden
   keys). Its generation-side mate `_validate_component_generated_surface` (`Generate.gate`) pins the generated
@@ -3566,13 +3567,56 @@ freshness invalidates a stale certified IR only via its version stays TRUE and u
 SOURCE, not the IR. The `Generate.gate` syntax probe's closure `fail_closed` stays as a backstop. And §"Problem
 certified-dependency interface drift"'s "Undetermined" question — why the profile certified at all — stays open.
 
-**PR-2 (A-full), planned.** `component` §5.1 becomes REQUIRED with the same language-neutral grammar
-`infrastructure` already uses; `Compile.static` pins IR `public_api.signatures` + `module_parameters` against it and
-`Generate.gate` pins the generated source against it, with V8a / V8b folded into one gate parameterized by
-`spec_kind`. It REVERSES the "pin names only, never full signatures, on a component" user decision, on the authority of
-the operator decision of 2026-09-04. The five affected `component` specs bump `0.1.0 → 0.2.0` and
-`dynamics_shallow_water_time_update_2d_ssprk2` `0.3.0 → 0.4.0`; consumers do not bump. One trap the plan measured in
-advance: the component sources obtain their kind parameter by rename (`use, intrinsic :: iso_fortran_env, only: dp =>
-real64`) while the §5.1 parameter pin requires the declaration form, so a rename to a narrower kind would pass the
-stanza comparison — a fail-open of this same class. `module_parameters` must therefore pin the parameter itself, which
-changes the component idiom.
+**PR-2 (A-full), LANDED 2026-09-04.** `component` joined `infrastructure` in
+`_EXACT_PUBLISHED_SURFACE_KINDS`: its §5.1 is REQUIRED, `Compile.static` pins §5.1 == the IR's
+`public_api.signatures` / `module_parameters`, and `Generate.gate` pins the IR == the generated source.
+So §5.1 ≡ IR ≡ SOURCE, and an ABI change is something a `spec_version` carries rather than something a
+regeneration decides. It REVERSES the "pin names only, never full signatures, on a component" user
+decision recorded in §"Dependency operation-name truth path", on the authority of the operator decision
+of 2026-09-04.
+
+Five decisions worth keeping, and one non-decision:
+
+1. **V8a and V8b became one gate**, not two that agree. The twins shared ~70 lines of preamble and had
+   drifted three times on `.strip()` normalization alone. The parity test drives the same tree under
+   each kind token and requires the messages to differ only in the kind word — which immediately found
+   that two shared helpers hardcoded "an infrastructure node" in their refusals, so a component was
+   being told to fix an infrastructure node.
+2. **The stale-IR guard covers `signatures`, not only `module_parameters`.** A component IR certified
+   before PR-2 carries no `signatures` — the key was forbidden — so a `--resume` into Generate, where
+   `Compile.static` does not re-run, would hand the leaf nothing to publish and no way to obtain it.
+   Without the guard the stanza comparison reports a source drift every attempt and the warm retry
+   cannot converge. Terminal by the violation's TYPE.
+3. **The `dp` idiom changes, and that was measured before it was written.** The parameter pin renders
+   `integer, parameter :: dp = real64` and `stanza_atoms` finds it in the DECLARATION form only; the
+   `use`-rename every physics node uses today declares no parameter for the pin to find, and an aliased
+   NARROWING (`dp => real32`) also fails. That is the fail-open `module_parameters` closes, and it is
+   why all six components change idiom when they regenerate.
+4. **The `<dependency_facts>` drift check is a CANARY, not a gate**, and it is TYPE-BLIND. What a
+   consumer is shown stays the SOURCE interface, because that is what Build stages and links and what
+   PR-1 made its binding durable against. Since the producer side now pins §5.1 ≡ IR ≡ SOURCE, a
+   disagreement means one of THOSE gates has a hole — worth a warning, worth nothing as a refusal,
+   which would fail a consumer for its dependency's defect. It compares argument name ORDER, `intent`
+   and `rank`; TYPES are not compared, because the IR carries neutral tokens and the extractor carries
+   source tokens, and lowering one to the other needs the language backend `orchestration_runtime` must
+   not import. `test_a_type_only_drift_is_invisible_and_that_is_declared` pins the blindness so a green
+   canary is never read as "the ABI agrees".
+5. **The two `real(dp)` guard flags become `logical`** (`boundary1d`, `sw2d flux`), and `boundary1d`'s
+   argument order becomes the sibling convention — both operator decisions of 2026-09-04, taken knowing
+   the second costs a re-certification of the sw2d closure. `boundary1d`'s §2 was rewritten with them,
+   because it described an IN-PLACE mapping the pinned ABI contradicts.
+
+**The non-decision, stated because it is the thing a reader will look for.** No billed run has been
+made. Every certified IR in the workspace is for a pre-bump version, so nothing is certified against
+these specs yet, and the acceptance vehicle L1's record calls for is still owed. What IS established
+without a billed run: `RealCorpusPublishedSurfaceTests` builds the IR each real spec's §5.1 implies and
+requires the production gate to accept it — all seven surface-publishing specs pass — and
+`SignatureDriftCanaryTests::test_the_real_corpus_agrees_with_the_section51_this_branch_wrote` compares
+each §5.1 against that node's certified SOURCE, requiring agreement everywhere except the one node
+whose ABI was deliberately changed. What neither can see: whether a Compile leaf transcribes §5.1
+correctly, and whether a Generate leaf emits the declaration form. Those are what the billed run buys.
+
+**§5.1 was not hand-written.** Each block was generated from the intended Fortran through
+`parse_signatures_from_fortran`, rendered back with `render_symbol_to_fortran`, and compared with
+`stanza_atoms` — the gate's own normalizer — then compacted to the harness spec's house style and
+re-checked to render to the same atoms. `dims` survives the lowering (`['nx - 1']`).
