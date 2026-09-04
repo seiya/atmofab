@@ -20221,84 +20221,24 @@ class SignatureDriftCanaryTests(unittest.TestCase):
             arg["intent"] = str(arg["intent"]).upper()
         self.assertEqual(self._drift(pinned), [])
 
-    #: Components whose §5.1 DELIBERATELY differs from the source certified before this branch, and
-    #: what the difference is. Everything else must agree, and `test_the_real_corpus_...` below
-    #: requires each of these to actually disagree — so a transcription that silently reverted to the
-    #: old ABI turns red rather than passing as "agreement".
-    _DELIBERATE_ABI_CHANGE = {
-        # Operator decision 2026-09-04: order becomes dims -> in-array -> out-array -> flag (the 2D
-        # sibling's convention) and the guard flag becomes `logical guard_pass`. The certified source
-        # is `(u_in, nx_value, ng_value, u_out, guard_ok)`.
-        "dynamics_advection_diffusion_boundary_1d_periodic_copy": "argument order",
-    }
-
-    def test_the_real_corpus_agrees_with_the_section51_this_branch_wrote(self) -> None:
-        """End-to-end on real artifacts, and the only unbilled way to ask whether the six §5.1 blocks
-        this branch hand-authored are faithful transcriptions.
-
-        For every component EXCEPT those in `_DELIBERATE_ABI_CHANGE`, the signature §5.1 pins must
-        agree with the interface extracted from that node's certified source on names, order,
-        `intent` and `rank`. For those, it must DISAGREE in the recorded way — which doubles as the
-        canary's only real-data witness, since every other component agrees by construction.
-
-        One thing this cannot see, and it is the reason the sw2d flux guard change is not in the map:
-        that change is `real(dp)` -> `logical`, a TYPE, and the comparison is type-blind by design
-        (see the class docstring). So its row asserts agreement and says nothing about the type."""
-        from tools.orchestration_runtime import (
-            _certified_model_source, _extract_subroutine_interface, _latest_pipeline_dir,
-            _signature_drift_fields)
-        from tools.backends.language.fortran.signatures import load_structured_signatures
-        import tools.validate_pipeline_semantics as vps
-        import yaml
-
-        repo = Path(__file__).resolve().parents[2]
-        catalog = yaml.safe_load(
-            (repo / "spec" / "registry" / "spec_catalog.yaml").read_text(encoding="utf-8"))
-        checked = 0
-        for entry in catalog["specs"]:
-            if entry.get("spec_kind") != "component":
-                continue
-            cs = repo / Path(entry["deps_path"]).parent / "controlled_spec.md"
-            body, ferr = vps._section51_fence_body(cs)
-            self.assertIsNone(ferr, f'{entry["spec_id"]}: {ferr}')
-            struct, serr = load_structured_signatures(body or "")
-            self.assertIsNone(serr, f'{entry["spec_id"]}: {serr}')
-            # The certified pipeline is the PRE-bump one (this branch bumped the spec but has not
-            # re-certified), so resolve it by the version its workspace actually carries.
-            for version in {entry["spec_version"], "0.1.0", "0.3.0"}:
-                safe = f'component__{entry["spec_id"]}__{version}'
-                pipe = _latest_pipeline_dir(repo / "workspace" / "pipelines" / safe)
-                if pipe is not None:
-                    break
-            if pipe is None:
-                continue  # never certified in this workspace; nothing to compare
-            src_path = _certified_model_source(pipe, entry["spec_id"])
-            if src_path is None:
-                continue
-            source_text = src_path.read_text(encoding="utf-8")
-            for proc in struct["procedures"]:
-                extracted = _extract_subroutine_interface(source_text, proc["name"])
-                if extracted is None:
-                    continue  # the certified source predates this op name; not this row's subject
-                with self.subTest(spec=entry["spec_id"], op=proc["name"]):
-                    drift = _signature_drift_fields(proc, extracted)
-                    expected = self._DELIBERATE_ABI_CHANGE.get(entry["spec_id"])
-                    if expected is None:
-                        self.assertEqual(
-                            drift, [],
-                            f'{entry["spec_id"]}: §5.1 disagrees with its certified source')
-                    else:
-                        self.assertTrue(
-                            drift,
-                            f'{entry["spec_id"]}: §5.1 was expected to change the ABI '
-                            f'({expected}) but agrees with the old certified source')
-                        self.assertTrue(
-                            any(expected in x for x in drift),
-                            f'{entry["spec_id"]}: expected a {expected} difference, got {drift}')
-                    checked += 1
-        # Self-test: the loop really compared something. Without it a path change would leave this
-        # green over zero comparisons.
-        self.assertGreaterEqual(checked, 4, f"only {checked} op(s) compared")
+    # NO ROW HERE READS `workspace/`, and that is deliberate rather than an omission.
+    #
+    # The first version of this class ended with `test_the_real_corpus_agrees_with_the_section51_this_
+    # branch_wrote`, comparing each component's §5.1 against the model source certified in THIS
+    # operator's `workspace/`. It is a valuable comparison and it is not a test: `workspace/` is
+    # gitignored machine-local runtime state, absent from every fresh clone, so the row failed in any
+    # clean checkout — it took down the round-0 mutation sweep's own baseline, since the sweep runs in
+    # worktrees. Making it `skipTest` instead is the recorded WRONG answer in this repository:
+    # `tools/tests/test_skip_reasons_are_declared.py` exists because a calibration row pinned inside
+    # `workspace/` skipped silently for weeks while its comment called itself the real-shape line.
+    #
+    # So the comparison stays a MEASUREMENT, taken once and recorded where a measurement belongs (the
+    # `spec:` commit's message and `TODO.md`): at `2dd73cd`, every component's §5.1 agreed with its
+    # certified source on argument names, order, `intent` and `rank`, except
+    # `dynamics_advection_diffusion_boundary_1d_periodic_copy`, whose ABI the operator decided to
+    # change — that one disagreed on argument order, which is also the canary's only real-data witness.
+    # What IS a standing test is the tracked-input half: `RealCorpusPublishedSurfaceTests` reads
+    # `spec/` only and requires the production gate to accept the IR each §5.1 implies.
 
 
 class ResolveDependencyFactsTests(unittest.TestCase):
