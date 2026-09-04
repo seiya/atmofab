@@ -16934,7 +16934,7 @@ class InfrastructureGeneratedSignatureGateTests(unittest.TestCase):
     )
 
     def _seed(self, tmp: Path, *, source: str, spec_kind: str = "infrastructure",
-              section_51: str | None = None) -> NodeExecution:
+              section_51: str | None = None, language: str | None = None) -> NodeExecution:
         ir_ref = "workspace/ir/x"
         ir_dir = tmp / ir_ref
         ir_dir.mkdir(parents=True)
@@ -16948,14 +16948,17 @@ class InfrastructureGeneratedSignatureGateTests(unittest.TestCase):
         # stale / pre-contract path strip one explicitly). `signatures` joined this fixture in issue
         # #153 PR-2, which extended the guard to it — the shape a `component` IR certified BEFORE
         # PR-2 has, since the key was forbidden then.
-        _write_json(ir_dir / "spec.ir.yaml", {
+        ir_doc: dict = {
             "meta": {"spec_kind": spec_kind, "spec_id": "hx",
                      "source_refs": {"controlled_spec": "cs.md"}},
             "public_api": {
                 "signatures": copy.deepcopy(
                     InfrastructurePublicApiGateTests._SIGNATURES),
                 "module_parameters": copy.deepcopy(
-                    InfrastructurePublicApiGateTests._MODULE_PARAMETERS)}})
+                    InfrastructurePublicApiGateTests._MODULE_PARAMETERS)}}
+        if language is not None:
+            ir_doc["impl_defaults"] = {"toolchain": {"language": language}}
+        _write_json(ir_dir / "spec.ir.yaml", ir_doc)
         pipe = tmp / "pipe"
         src_dir = pipe / "src"
         src_dir.mkdir(parents=True)
@@ -17092,6 +17095,26 @@ class InfrastructureGeneratedSignatureGateTests(unittest.TestCase):
             violations = self._run(ex, tmp)
             self.assertTrue(any("hx__h_named" in v and "component layout" in v
                                 for v in violations), violations)
+
+    def test_the_no_backend_refusal_names_the_node_kind_it_was_given(self) -> None:
+        """This gate has its own backend refusal, and its own kind word. The Compile-side family
+        (`ComponentPublicApiGateTests::test_every_refusal_names_the_node_kind_it_was_given`) does not
+        reach it: round 0 measured that reverting `{ir_kind}` here to a hardcoded "infrastructure"
+        survived the whole suite, so a `component` author would be told a different node's kind is the
+        one that cannot be pinned."""
+        import tempfile
+        for kind in ("component", "infrastructure"):
+            with self.subTest(kind=kind):
+                with tempfile.TemporaryDirectory() as t:
+                    tmp = Path(t)
+                    ex = self._seed(tmp, source=self._GOOD_SOURCE, spec_kind=kind,
+                                    language="rust")
+                    violations = self._run(ex, tmp)
+                self.assertTrue(violations, kind)
+                self.assertTrue(
+                    any(f"this {kind} node's signatures cannot be pinned" in v
+                        for v in violations),
+                    (kind, violations))
 
     def test_a_kind_outside_the_pinned_set_is_a_noop(self) -> None:
         # A `profile` node's interface is derived post-hoc, so a garbage source must not fire the
