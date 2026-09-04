@@ -13374,7 +13374,9 @@ def _validate_generated_signatures(
     # empty-named entries, which would have shifted every later pair and checked one parameter's
     # uniqueness against another's pinned line. That is unreachable today for a reason external to
     # this loop (an empty name makes the language backend's parameter renderer raise, so
-    # `param_lines` is `[]` and a violation is already recorded), and relaxing that renderer would turn
+    # `param_lines` is `[]` and a violation is already recorded) — so the `if not name` skip below is
+    # defensive and NOT pinned: deleting it keeps the suite green, which is recorded here rather than
+    # taken as grounds to remove it. Relaxing that renderer would turn
     # a coincidence into a silent mispairing. Pairing by index cannot go wrong that way.
     for pline, name in zip(param_lines, param_names):
         if not name:
