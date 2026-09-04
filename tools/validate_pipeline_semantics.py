@@ -13431,9 +13431,19 @@ def _validate_generated_signatures(
         # procedure changes THAT procedure's dummy declarations, and so its ABI.
         binding_statements = [
             stmt.strip()
-            for stmt in _joined_masked_fortran_view(combined.lower()).splitlines()
+            for stmt in _joined_masked_fortran_view(combined.lower()).split("\n")
             if stmt.strip() and name.lower() in set().union(*_fortran_declared_names(stmt))
         ]
+        # `split("\n")`, NEVER `str.splitlines()`. That is the language backend's own rule — its
+        # line module states it and three other gates already pin it — and this site was the one
+        # place on the branch that did not follow it. `splitlines()` breaks on eight separators the
+        # target language treats as ordinary content, so a narrowing declaration written with one
+        # inside it was torn into fragments that bind nothing and vanished from the count, while
+        # PRESENCE (which reads the atom set, built with the correct split) still saw the pinned
+        # text in a contained procedure. Zero violations, compiles under the standard the syntax
+        # gate enforces, every published argument at the narrower precision: round 2's hole,
+        # reopened by round 3's implementation of the fix for it and carried through round 4.
+        #
         # A COUNT, and deliberately nothing more. Round 3's first version also subtracted the pinned
         # line as raw text — `set(binding_statements) - {pline.strip().lower()}` — which compares
         # SPELLING in the one check of this gate that had no business doing so: every other

@@ -17427,6 +17427,47 @@ class InfrastructureGeneratedSignatureGateTests(unittest.TestCase):
         self.assertTrue(all("`case_id_len`" in v for v in hits), hits)
         self.assertFalse([v for v in hits if "`dp`" in v], hits)
 
+    def test_a_second_binding_cannot_hide_behind_a_non_newline_separator(self) -> None:
+        """`split("\\n")`, never `str.splitlines()` — the backend's rule, at the one site that broke it.
+
+        `str.splitlines()` breaks on eight separators Fortran treats as ordinary content. The
+        language backend's line module states the rule and three other gates already pin it; the
+        uniqueness count was the one place that did not follow it, from round 3 through round 4.
+
+        MEASURED consequence, all eight: a module-level narrowing declaration written with the
+        separator inside it was torn into fragments binding nothing, so the count saw ONE binding,
+        while PRESENCE — which reads the atom set, built with the correct split — still found the
+        pinned text in a contained procedure. Zero violations, and every published argument at the
+        narrower precision against a §5.1 pinning the wider. That is round 2's hole, reopened by the
+        implementation of the fix for it.
+
+        Reachable without intent: a form feed is a traditional page separator in Fortran source and
+        is a blank to the compiler, so this is not a construct a leaf has to be trying to write.
+
+        The whole family is checked one separator at a time, per the rule that an enumeration is
+        killed element by element — checked together, a missing element goes unnoticed."""
+        import tempfile
+        pinned = "  integer, parameter :: dp = real64\n"
+        shadow = ("contains\n"
+                  "  subroutine separator_note(x)\n"
+                  "    integer, parameter :: dp = real64\n"
+                  "    real(dp), intent(out) :: x\n"
+                  "    x = 0.0_dp\n"
+                  "  end subroutine separator_note\n")
+        for label, sep in (
+            ("form feed", "\x0c"), ("vertical tab", "\x0b"), ("file separator", "\x1c"),
+            ("group separator", "\x1d"), ("record separator", "\x1e"), ("next line", "\x85"),
+            ("line separator", "\u2028"), ("paragraph separator", "\u2029"),
+        ):
+            with self.subTest(separator=label):
+                source = self._GOOD_SOURCE.replace(
+                    pinned, f"  integer, parameter ::{sep} dp = real32\n", 1
+                ).replace("contains\n", shadow, 1)
+                with tempfile.TemporaryDirectory() as t:
+                    tmp = Path(t)
+                    violations = self._run(self._seed(tmp, source=source), tmp)
+                self.assertTrue(violations, f"{label}: a second binding hid behind the separator")
+
     def test_a_rename_import_of_the_pinned_name_is_a_binding(self) -> None:
         """A `use ..., <pinned> => <other>` with NO `only:` list is a second binding, and is refused.
 
