@@ -3619,6 +3619,21 @@ problems, 6. Anchoring on `ir_ref` alone is also why PR-1's `pipeline_ref` bindi
 does not fire at this depth, so the two blast radii do not compound. An earlier draft of this
 paragraph said 4 per problem by counting `harness_fortran_cpu`, whose version PR-2 does not bump.
 
+**Known over-refusals of the signature comparison, measured in round 4 and CARRIED.** The stanza
+comparison pins the rendered form, so several ABI-identical spellings of an ordinary declaration are
+refused: the `dimension` attribute instead of an explicit shape on the entity, `real(kind=dp)`
+instead of `real(dp)`, an explicit lower bound (`flux_adv(1:nx - 1)`), two declarations separated by
+`;` on one line, and an extra accessibility attribute on the pinned parameter declaration itself
+(which the PRESENCE check reads as absent — presence is attribute-sensitive, uniqueness is not, and
+the six §5.1 blocks now state that difference). None is a fail-open and none wedges a node: each
+refusal QUOTES THE EXACT TEXT to write, so it converges on the warm retry, and the prompt template
+already steers a leaf to the accepted form for the first three. They are recorded rather than fixed
+because each fix is a widening of the source-text comparison — the surface that has produced four
+defects on this branch — and buying one saved attempt with a new grammar is the trade that keeps
+losing here. The one that WAS worth fixing is the procedure prefix, because its message misrouted
+(it blamed argument drift for a source whose arguments were correct) and because the construct
+occurs in the corpus today; the message now names the prefix and the prompt template states the rule.
+
 **OPEN, carried deliberately rather than fixed: a published operation declared but never
 defined.** Round 3 measured it — a `component` model source that declares a §5.1 published
 procedure inside an `interface` block, with the pinned header, and implements nothing, produces

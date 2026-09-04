@@ -280,7 +280,12 @@ PINNED: dict[str, str] = {
     # narrower kind with the pinned text shadowed in a procedure passed a presence check while
     # publishing single precision — and a leaf judged by uniqueness but never told about it would
     # have spent an attempt on a refusal its instructions did not state.
-    "pure-31": "22b0de0b9a01dba7fc93d43474481055bba418d961507fc7c839603522304544",}
+    # Round 4 folds in one more, same contract change, same rule: the published HEADER is compared
+    # as emitted, so a procedure prefix the signature does not carry is a drift. Measured as an
+    # over-refusal with a MISROUTING message — it blamed argument drift for a source whose arguments
+    # were all correct — and the construct occurs in the corpus today, so a generator writes it
+    # unprompted. The six specs already said so; a leaf does not read specs.
+    "pure-31": "404fed5ddc0077954b8b38e5294a7fd3a56d22064f87430824b2ad4db27dc37f",}
 
 
 def _contract_tuple() -> dict[str, object]:
