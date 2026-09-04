@@ -37,7 +37,7 @@ from tools.validate_pipeline_semantics import (
     _validate_makefile_test_invokes_cases,
     _validate_source_meta_json_files,
     _validate_compile_dependency_consistency,
-    _validate_infrastructure_public_api,
+    _validate_published_surface,
     _parse_public_api_from_controlled_spec,
     _dependency_expected_node_keys,
     _algorithm_state_contract,
@@ -16092,7 +16092,7 @@ class CompileDependencyConsistencyTests(unittest.TestCase):
 
 
 class InfrastructurePublicApiGateTests(unittest.TestCase):
-    """_validate_infrastructure_public_api: the R1 deterministic gate pinning an
+    """_validate_published_surface: the R1 deterministic gate pinning an
     infrastructure node's IR public_api == controlled_spec §5 published surface."""
 
     _SPEC_ID = "hx"
@@ -16233,7 +16233,7 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             ir_dir = self._seed(Path(tmp), public_api=self._full_api())
             violations: list[str] = []
-            _validate_infrastructure_public_api(Path(tmp), ir_dir, violations)
+            _validate_published_surface(Path(tmp), ir_dir, violations)
             self.assertEqual(violations, [])
 
     def test_dropped_operation_flagged(self) -> None:
@@ -16245,7 +16245,7 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
                 if e["operation_id"] not in ("hx__emit_int", "hx__write_metrics_basis")]
             ir_dir = self._seed(Path(tmp), public_api=api)
             violations: list[str] = []
-            _validate_infrastructure_public_api(Path(tmp), ir_dir, violations)
+            _validate_published_surface(Path(tmp), ir_dir, violations)
             self.assertTrue(any("omits controlled_spec §5 operation_id 'hx__emit_int'" in v
                                 for v in violations), violations)
             self.assertTrue(any("hx__write_metrics_basis" in v for v in violations), violations)
@@ -16256,7 +16256,7 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
             api["published_operations"].append({"operation_id": "hx__not_in_spec"})
             ir_dir = self._seed(Path(tmp), public_api=api)
             violations: list[str] = []
-            _validate_infrastructure_public_api(Path(tmp), ir_dir, violations)
+            _validate_published_surface(Path(tmp), ir_dir, violations)
             self.assertTrue(any("declares operation_id 'hx__not_in_spec' absent" in v
                                 for v in violations), violations)
 
@@ -16266,7 +16266,7 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
             api["published_types"] = ["h_named"]  # short alias, not fully-qualified
             ir_dir = self._seed(Path(tmp), public_api=api)
             violations: list[str] = []
-            _validate_infrastructure_public_api(Path(tmp), ir_dir, violations)
+            _validate_published_surface(Path(tmp), ir_dir, violations)
             self.assertTrue(any("omits controlled_spec §5 derived type 'hx__h_named'" in v
                                 for v in violations), violations)
             self.assertTrue(any("declares type 'h_named' absent" in v for v in violations),
@@ -16276,21 +16276,21 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             ir_dir = self._seed(Path(tmp), public_api=_OMIT)
             violations: list[str] = []
-            _validate_infrastructure_public_api(Path(tmp), ir_dir, violations)
+            _validate_published_surface(Path(tmp), ir_dir, violations)
             self.assertTrue(any("public_api missing" in v for v in violations), violations)
 
     def test_unresolvable_controlled_spec_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             ir_dir = self._seed(Path(tmp), public_api=self._full_api(), write_cs=False)
             violations: list[str] = []
-            _validate_infrastructure_public_api(Path(tmp), ir_dir, violations)
+            _validate_published_surface(Path(tmp), ir_dir, violations)
             self.assertTrue(any("unresolvable" in v for v in violations), violations)
 
     def test_missing_controlled_spec_ref_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             ir_dir = self._seed(Path(tmp), public_api=self._full_api(), cs_ref=None)
             violations: list[str] = []
-            _validate_infrastructure_public_api(Path(tmp), ir_dir, violations)
+            _validate_published_surface(Path(tmp), ir_dir, violations)
             self.assertTrue(any("source_refs.controlled_spec missing" in v for v in violations),
                             violations)
 
@@ -16302,7 +16302,7 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
                          "source_refs": {"controlled_spec": "cs.md"}},
                 "public_api": self._full_api()})
             violations: list[str] = []
-            _validate_infrastructure_public_api(Path(tmp), Path(tmp), violations)
+            _validate_published_surface(Path(tmp), Path(tmp), violations)
             self.assertTrue(any("meta.spec_id missing" in v for v in violations), violations)
 
     def test_section5_parsing_zero_ops_fails_closed(self) -> None:
@@ -16317,18 +16317,27 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
                          "source_refs": {"controlled_spec": "cs.md"}},
                 "public_api": self._full_api()})
             violations: list[str] = []
-            _validate_infrastructure_public_api(Path(tmp), Path(tmp), violations)
+            _validate_published_surface(Path(tmp), Path(tmp), violations)
             self.assertTrue(any("parsed 0 published operation_ids" in v for v in violations),
                             violations)
 
-    def test_non_infrastructure_is_noop(self) -> None:
-        # A physics node has no exact-published contract; the gate must not fire even with
-        # no public_api present.
+    def test_a_kind_outside_the_pinned_set_is_a_noop(self) -> None:
+        # A `profile` / `problem` node's interface is legitimately derived post-hoc, so the gate must
+        # not fire even with no public_api present. `component` used to be this test's subject and is
+        # NOT one any more: issue #153 PR-2 put it in `_EXACT_PUBLISHED_SURFACE_KINDS`, so asserting a
+        # no-op on it would now assert the absence of the pin the branch exists to add.
+        for kind in ("profile", "problem"):
+            with tempfile.TemporaryDirectory() as tmp:
+                ir_dir = self._seed(Path(tmp), public_api=_OMIT, spec_kind=kind)
+                violations: list[str] = []
+                _validate_published_surface(Path(tmp), ir_dir, violations)
+                self.assertEqual(violations, [], kind)
+        # ...and the set really is the decider: the same tree under a pinned kind DOES fire.
         with tempfile.TemporaryDirectory() as tmp:
             ir_dir = self._seed(Path(tmp), public_api=_OMIT, spec_kind="component")
-            violations: list[str] = []
-            _validate_infrastructure_public_api(Path(tmp), ir_dir, violations)
-            self.assertEqual(violations, [])
+            violations = []
+            _validate_published_surface(Path(tmp), ir_dir, violations)
+            self.assertTrue(violations)
 
     def test_signatures_missing_flagged(self) -> None:
         # public_api present but without a `signatures` block: the leaf would have no source of
@@ -16338,7 +16347,7 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
             del api["signatures"]
             ir_dir = self._seed(Path(tmp), public_api=api)
             violations: list[str] = []
-            _validate_infrastructure_public_api(Path(tmp), ir_dir, violations)
+            _validate_published_surface(Path(tmp), ir_dir, violations)
             self.assertTrue(any("public_api.signatures missing" in v for v in violations),
                             violations)
 
@@ -16354,7 +16363,7 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
                 "impl_defaults": {"toolchain": {"language": "c"}},
                 "public_api": self._full_api()})
             violations: list[str] = []
-            _validate_infrastructure_public_api(tmpp, tmpp, violations)
+            _validate_published_surface(tmpp, tmpp, violations)
             # The expected clause is ASKED OF THE GATE'S OWN PREDICATE rather than written out
             # here, so that a test cannot go on passing after the gate stops consulting it. The
             # earlier version asked `registry.unsupported_reason`, which is the MEMBERSHIP
@@ -16376,7 +16385,7 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
             }
             ir_dir = self._seed(Path(tmp), public_api=api)
             violations: list[str] = []
-            _validate_infrastructure_public_api(Path(tmp), ir_dir, violations)
+            _validate_published_surface(Path(tmp), ir_dir, violations)
             self.assertTrue(any("signatures['hx__write_metrics_basis'] does not match" in v
                                 for v in violations), violations)
 
@@ -16388,7 +16397,7 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
             api["signatures"][3]["signature"]["components"].reverse()
             ir_dir = self._seed(Path(tmp), public_api=api)
             violations: list[str] = []
-            _validate_infrastructure_public_api(Path(tmp), ir_dir, violations)
+            _validate_published_surface(Path(tmp), ir_dir, violations)
             self.assertTrue(any("signatures['hx__h_named'] does not match" in v
                                 for v in violations), violations)
 
@@ -16399,7 +16408,7 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
             api["signatures"][0]["symbol"] = "hx__not_emit_real"
             ir_dir = self._seed(Path(tmp), public_api=api)
             violations: list[str] = []
-            _validate_infrastructure_public_api(Path(tmp), ir_dir, violations)
+            _validate_published_surface(Path(tmp), ir_dir, violations)
             self.assertTrue(any("declares a different symbol" in v for v in violations),
                             violations)
 
@@ -16409,7 +16418,7 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
             api["signatures"].append("not a mapping")
             ir_dir = self._seed(Path(tmp), public_api=api)
             violations: list[str] = []
-            _validate_infrastructure_public_api(Path(tmp), ir_dir, violations)
+            _validate_published_surface(Path(tmp), ir_dir, violations)
             self.assertTrue(any("is not a mapping" in v for v in violations), violations)
 
     def test_signatures_independent_struct_copy_passes(self) -> None:
@@ -16422,7 +16431,7 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
                 self._SECTION_51_FORTRAN)
             ir_dir = self._seed(Path(tmp), public_api=api)
             violations: list[str] = []
-            _validate_infrastructure_public_api(Path(tmp), ir_dir, violations)
+            _validate_published_surface(Path(tmp), ir_dir, violations)
             self.assertEqual(violations, [])
 
     def test_section51_missing_fence_fails_closed(self) -> None:
@@ -16436,7 +16445,7 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
                          "source_refs": {"controlled_spec": "cs.md"}},
                 "public_api": self._full_api()})
             violations: list[str] = []
-            _validate_infrastructure_public_api(Path(tmp), Path(tmp), violations)
+            _validate_published_surface(Path(tmp), Path(tmp), violations)
             self.assertTrue(any("§5.1" in v and "missing" in v for v in violations), violations)
 
     def test_section51_op_set_mismatch_flagged(self) -> None:
@@ -16456,7 +16465,7 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
                          "source_refs": {"controlled_spec": "cs.md"}},
                 "public_api": self._full_api()})
             violations: list[str] = []
-            _validate_infrastructure_public_api(Path(tmp), Path(tmp), violations)
+            _validate_published_surface(Path(tmp), Path(tmp), violations)
             self.assertTrue(any("§5.1 omits a signature for §5 operation_id 'hx__emit_int'" in v
                                 for v in violations), violations)
 
@@ -16482,7 +16491,7 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
                          "source_refs": {"controlled_spec": "cs.md"}},
                 "public_api": self._full_api()})
             violations: list[str] = []
-            _validate_infrastructure_public_api(Path(tmp), Path(tmp), violations)
+            _validate_published_surface(Path(tmp), Path(tmp), violations)
             self.assertTrue(any("defines a derived type 'hx__h_extra' absent" in v
                                 for v in violations), violations)
 
@@ -16494,7 +16503,7 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
             del api["module_parameters"]
             ir_dir = self._seed(Path(tmp), public_api=api)
             violations: list[str] = []
-            _validate_infrastructure_public_api(Path(tmp), ir_dir, violations)
+            _validate_published_surface(Path(tmp), ir_dir, violations)
             self.assertTrue(any("public_api.module_parameters missing" in v for v in violations),
                             violations)
 
@@ -16505,7 +16514,7 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
             api["module_parameters"] = None
             ir_dir = self._seed(Path(tmp), public_api=api)
             violations: list[str] = []
-            _validate_infrastructure_public_api(Path(tmp), ir_dir, violations)
+            _validate_published_surface(Path(tmp), ir_dir, violations)
             self.assertTrue(any("module_parameters must be a list" in v for v in violations),
                             violations)
 
@@ -16516,7 +16525,7 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
             api["module_parameters"][0]["value"] = "float32"
             ir_dir = self._seed(Path(tmp), public_api=api)
             violations: list[str] = []
-            _validate_infrastructure_public_api(Path(tmp), ir_dir, violations)
+            _validate_published_surface(Path(tmp), ir_dir, violations)
             self.assertTrue(any("module_parameters['dp'] value" in v and "does not match" in v
                                 for v in violations), violations)
 
@@ -16528,7 +16537,7 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
                 {"name": "case_id_len", "base": "integer", "value": 64})
             ir_dir = self._seed(Path(tmp), public_api=api)
             violations: list[str] = []
-            _validate_infrastructure_public_api(Path(tmp), ir_dir, violations)
+            _validate_published_surface(Path(tmp), ir_dir, violations)
             self.assertTrue(any("declares parameter 'case_id_len' absent" in v
                                 for v in violations), violations)
 
@@ -16539,7 +16548,7 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
             api["module_parameters"][0]["base"] = "real"
             ir_dir = self._seed(Path(tmp), public_api=api)
             violations: list[str] = []
-            _validate_infrastructure_public_api(Path(tmp), ir_dir, violations)
+            _validate_published_surface(Path(tmp), ir_dir, violations)
             self.assertTrue(any("module_parameters[0].base must be 'integer'" in v
                                 for v in violations), violations)
 
@@ -16550,7 +16559,7 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
                 {"name": "dp", "base": "integer", "value": "float64"})
             ir_dir = self._seed(Path(tmp), public_api=api)
             violations: list[str] = []
-            _validate_infrastructure_public_api(Path(tmp), ir_dir, violations)
+            _validate_published_surface(Path(tmp), ir_dir, violations)
             self.assertTrue(any("declares parameter 'dp' more than once" in v
                                 for v in violations), violations)
 
@@ -16571,7 +16580,7 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
                          "source_refs": {"controlled_spec": "cs.md"}},
                 "public_api": api})
             violations: list[str] = []
-            _validate_infrastructure_public_api(Path(tmp), Path(tmp), violations)
+            _validate_published_surface(Path(tmp), Path(tmp), violations)
             self.assertEqual(violations, [])
 
     def test_module_parameters_omitted_flagged(self) -> None:
@@ -16583,7 +16592,7 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
             api["module_parameters"] = []
             ir_dir = self._seed(Path(tmp), public_api=api)
             violations: list[str] = []
-            _validate_infrastructure_public_api(Path(tmp), ir_dir, violations)
+            _validate_published_surface(Path(tmp), ir_dir, violations)
             self.assertTrue(any("omits controlled_spec §5.1 module parameter 'dp'" in v
                                 for v in violations), violations)
 
@@ -16607,7 +16616,7 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
                          "source_refs": {"controlled_spec": "cs.md"}},
                 "public_api": api})
             violations: list[str] = []
-            _validate_infrastructure_public_api(Path(tmp), Path(tmp), violations)
+            _validate_published_surface(Path(tmp), Path(tmp), violations)
             self.assertTrue(any("§5.1 declares module parameter 'dp' more than once" in v
                                 for v in violations), violations)
 
@@ -16631,7 +16640,7 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
                          "source_refs": {"controlled_spec": "cs.md"}},
                 "public_api": api})
             violations: list[str] = []
-            _validate_infrastructure_public_api(Path(tmp), Path(tmp), violations)
+            _validate_published_surface(Path(tmp), Path(tmp), violations)
             self.assertTrue(any("more than once (case-insensitively)" in v for v in violations),
                             violations)
 
@@ -16643,7 +16652,7 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
             api["module_parameters"][0]["name"] = "DP"  # §5.1 has "dp"; same symbol
             ir_dir = self._seed(Path(tmp), public_api=api)
             violations: list[str] = []
-            _validate_infrastructure_public_api(Path(tmp), ir_dir, violations)
+            _validate_published_surface(Path(tmp), ir_dir, violations)
             self.assertEqual(violations, [])
 
     def test_module_parameters_fortran_expression_value_rejected(self) -> None:
@@ -16667,7 +16676,7 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
                          "source_refs": {"controlled_spec": "cs.md"}},
                 "public_api": api})
             violations: list[str] = []
-            _validate_infrastructure_public_api(Path(tmp), Path(tmp), violations)
+            _validate_published_surface(Path(tmp), Path(tmp), violations)
             self.assertTrue(any("no neutral form" in v or "has no neutral form" in v
                                 for v in violations), violations)
 
@@ -16693,7 +16702,7 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
                          "source_refs": {"controlled_spec": "cs.md"}},
                 "public_api": api})
             violations: list[str] = []
-            _validate_infrastructure_public_api(Path(tmp), Path(tmp), violations)
+            _validate_published_surface(Path(tmp), Path(tmp), violations)
             self.assertTrue(any("real64" in v and "float64" in v for v in violations), violations)
 
     def test_section51_stale_fortran_len_token_rejected_at_compile(self) -> None:
@@ -16717,7 +16726,7 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
                          "source_refs": {"controlled_spec": "cs.md"}},
                 "public_api": self._full_api()})
             violations: list[str] = []
-            _validate_infrastructure_public_api(Path(tmp), Path(tmp), violations)
+            _validate_published_surface(Path(tmp), Path(tmp), violations)
             self.assertTrue(any("deferred" in v for v in violations), violations)
 
     def test_module_parameters_value_normalization_equivalence_passes(self) -> None:
@@ -16742,7 +16751,7 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
                          "source_refs": {"controlled_spec": "cs.md"}},
                 "public_api": api})
             violations: list[str] = []
-            _validate_infrastructure_public_api(Path(tmp), Path(tmp), violations)
+            _validate_published_surface(Path(tmp), Path(tmp), violations)
             self.assertEqual(violations, [])
 
 
@@ -16887,7 +16896,7 @@ end program p
                          ["integer,parameter::dp=real64"])
 
 class InfrastructureGeneratedSignatureGateTests(unittest.TestCase):
-    """_validate_infrastructure_generated_signatures: the Generate.static gate pinning the
+    """_validate_generated_signatures: the Generate.static gate pinning the
     generated model source against the §5.1 canonical signatures."""
 
     _FENCE = InfrastructurePublicApiGateTests._SECTION_51
@@ -16932,15 +16941,21 @@ class InfrastructureGeneratedSignatureGateTests(unittest.TestCase):
         (tmp / "cs.md").write_text(
             "## 5. Public API\nprose.\n" + (self._FENCE if section_51 is None else section_51)
             + "## 6. x\n", encoding="utf-8")
-        # Seed a realistic POST-contract IR: an infrastructure IR carries public_api.module_parameters
-        # (Compile pins it == §5.1). The Generate.static gate's stale-IR guard fires when that key is
-        # absent while §5.1 declares parameters, so the fixture must include it to represent a
-        # freshly-compiled IR (tests exercising the stale/pre-contract path strip it explicitly).
+        # Seed a realistic POST-contract IR: a surface-publishing IR carries BOTH
+        # public_api.signatures and public_api.module_parameters (Compile pins each == §5.1). The
+        # Generate.static gate's stale-IR guard fires when either is absent while §5.1 declares them,
+        # so the fixture must include both to represent a freshly-compiled IR (tests exercising the
+        # stale / pre-contract path strip one explicitly). `signatures` joined this fixture in issue
+        # #153 PR-2, which extended the guard to it — the shape a `component` IR certified BEFORE
+        # PR-2 has, since the key was forbidden then.
         _write_json(ir_dir / "spec.ir.yaml", {
             "meta": {"spec_kind": spec_kind, "spec_id": "hx",
                      "source_refs": {"controlled_spec": "cs.md"}},
-            "public_api": {"module_parameters": copy.deepcopy(
-                InfrastructurePublicApiGateTests._MODULE_PARAMETERS)}})
+            "public_api": {
+                "signatures": copy.deepcopy(
+                    InfrastructurePublicApiGateTests._SIGNATURES),
+                "module_parameters": copy.deepcopy(
+                    InfrastructurePublicApiGateTests._MODULE_PARAMETERS)}})
         pipe = tmp / "pipe"
         src_dir = pipe / "src"
         src_dir.mkdir(parents=True)
@@ -16954,7 +16969,7 @@ class InfrastructureGeneratedSignatureGateTests(unittest.TestCase):
     def _run(self, execution: NodeExecution, tmp: Path) -> list[str]:
         model = tmp / "pipe" / "src" / "hx_model.f90"
         violations: list[str] = []
-        vps._validate_infrastructure_generated_signatures(
+        vps._validate_generated_signatures(
             tmp, execution, [model], violations)
         return violations
 
@@ -17078,12 +17093,19 @@ class InfrastructureGeneratedSignatureGateTests(unittest.TestCase):
             self.assertTrue(any("hx__h_named" in v and "component layout" in v
                                 for v in violations), violations)
 
-    def test_non_infrastructure_is_noop(self) -> None:
+    def test_a_kind_outside_the_pinned_set_is_a_noop(self) -> None:
+        # A `profile` node's interface is derived post-hoc, so a garbage source must not fire the
+        # signature pin. `component` was this test's subject until issue #153 PR-2 moved it into
+        # `_EXACT_PUBLISHED_SURFACE_KINDS`; the second half asserts the set is what decides, because
+        # a no-op reached for the wrong reason (an unresolvable IR, say) looks identical here.
         with tempfile.TemporaryDirectory() as t:
             tmp = Path(t)
-            # a component node with a garbage source: gate must not fire
-            ex = self._seed(tmp, source="module m\nend module m\n", spec_kind="component")
+            ex = self._seed(tmp, source="module m\nend module m\n", spec_kind="profile")
             self.assertEqual(self._run(ex, tmp), [])
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            ex = self._seed(tmp, source="module m\nend module m\n", spec_kind="component")
+            self.assertTrue(self._run(ex, tmp))
 
     def test_stale_pre_contract_ir_fails_closed(self) -> None:
         # A certified IR that predates the public_api.module_parameters contract (public_api present
@@ -17096,14 +17118,19 @@ class InfrastructureGeneratedSignatureGateTests(unittest.TestCase):
             ex = self._seed(tmp, source=self._GOOD_SOURCE)
             ir_path = tmp / "workspace" / "ir" / "x" / "spec.ir.yaml"
             ir = json.loads(ir_path.read_text(encoding="utf-8"))
-            ir["public_api"] = {"signatures": []}  # pre-contract shape: no module_parameters key
+            # Pre-contract shape: `signatures` present, no `module_parameters` key. Keep the
+            # signatures realistic so ONLY the module-parameter half of the guard can fire — the
+            # sibling test below strips signatures instead.
+            ir["public_api"] = {"signatures": copy.deepcopy(
+                InfrastructurePublicApiGateTests._SIGNATURES)}
             ir_path.write_text(json.dumps(ir), encoding="utf-8")
             violations = self._run(ex, tmp)
             # Carries the sentinel for a human reader. What routes this TERMINAL (fail_closed)
             # rather than as a futile warm Generate retry is the violation's TYPE, mapped by
             # `main` to a dedicated exit code; the conductor keys on nothing in this text.
             self.assertTrue(any(vps.STALE_DEPENDENCY_IR_MARKER in v
-                                and "does not carry the controlled_spec §5.1 module parameters" in v
+                                and "does not carry the controlled_spec §5.1 surface" in v
+                                and "public_api.module_parameters" in v
                                 and "re-certify" in v for v in violations), violations)
 
     def test_stale_ir_empty_or_drifted_module_parameters_fails_closed(self) -> None:
@@ -17624,9 +17651,11 @@ class SpecKindNormalizationParityTests(unittest.TestCase):
     decides nothing, so it is never a finding by itself — that shortcut was the previous
     version's false-positive source (it flagged `detail = f"...{meta.get('spec_kind')}"`).
 
-    Ignored on purpose: a comparison against a non-literal (`== SOME_CONST`, `in KNOWN_KINDS`)
-    does not decide a kind from a fixed vocabulary, and a value handed to a call that is not a
-    string method is treated as normalized by that call rather than second-guessed here.
+    Ignored on purpose: a comparison against a constant this scan cannot resolve to string
+    literals does not present a fixed vocabulary it can reason about, and a value handed to a call
+    that is not a string method is treated as normalized by that call rather than second-guessed
+    here. A module-level name bound to a collection of string literals IS resolved
+    (`in _EXACT_PUBLISHED_SURFACE_KINDS`) — excusing it once cost this rule two readers.
     """
 
     # String operations this scan can reason about. Anything else wrapping the value is
@@ -17668,15 +17697,48 @@ class SpecKindNormalizationParityTests(unittest.TestCase):
         return False
 
     @classmethod
-    def _kind_literal(cls, node) -> bool:
-        """A fixed kind vocabulary: one string literal, or a literal collection of them."""
+    def _kind_literal(cls, node, module_vocabularies=None) -> bool:
+        """A fixed kind vocabulary: one string literal, a literal collection of them, or a
+        module-level NAME bound to such a collection.
+
+        The name case was added in issue #153 PR-2. Merging the two public-API gates moved their
+        kind decisions from `== "infrastructure"` / `== "component"` to
+        `in _EXACT_PUBLISHED_SURFACE_KINDS`, and this scan's carve-out for non-literals meant BOTH
+        readers silently left the parity rule — the vacuity floor below is what noticed. A
+        module-level tuple of string constants IS a fixed vocabulary and is resolvable statically, so
+        it is resolved rather than excused. What stays ignored is a constant this scan cannot resolve
+        to string literals (an import, a computed value): there the vocabulary is somebody else's
+        contract, and guessing would produce a finding nobody can act on."""
         import ast
         if isinstance(node, ast.Constant):
             return isinstance(node.value, str) and node.value != "spec_kind"
         if isinstance(node, (ast.Tuple, ast.List, ast.Set)):
             return bool(node.elts) and all(
                 isinstance(e, ast.Constant) and isinstance(e.value, str) for e in node.elts)
+        if isinstance(node, ast.Name) and module_vocabularies is not None:
+            return node.id in module_vocabularies
         return False
+
+    @staticmethod
+    def _module_kind_vocabularies(tree) -> set[str]:
+        """Module-level names bound to a non-empty collection of string literals."""
+        import ast
+        names: set[str] = set()
+        for node in ast.iter_child_nodes(tree):
+            targets = []
+            if isinstance(node, ast.Assign):
+                targets = [x for x in node.targets if isinstance(x, ast.Name)]
+                value = node.value
+            elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                targets, value = [node.target], node.value
+            else:
+                continue
+            if value is None or not isinstance(value, (ast.Tuple, ast.List, ast.Set)):
+                continue
+            if value.elts and all(isinstance(e, ast.Constant) and isinstance(e.value, str)
+                                  for e in value.elts):
+                names.update(x.id for x in targets)
+        return names
 
     @classmethod
     def _spec_kind_sites(cls, source: str | None = None):
@@ -17690,6 +17752,7 @@ class SpecKindNormalizationParityTests(unittest.TestCase):
         if source is None:
             source = Path(vps.__file__).read_text(encoding="utf-8")
         tree = ast.parse(source)
+        vocabularies = cls._module_kind_vocabularies(tree)
 
         def seg(node) -> str:
             return " ".join((ast.get_source_segment(source, node) or "").split())
@@ -17739,7 +17802,7 @@ class SpecKindNormalizationParityTests(unittest.TestCase):
                 pairs = ([(left, right)] if isinstance(op, (ast.In, ast.NotIn))
                          else [(left, right), (right, left)])
                 for value_side, literal_side in pairs:
-                    if not cls._kind_literal(literal_side):
+                    if not cls._kind_literal(literal_side, vocabularies):
                         continue
                     names = {n.id for n in ast.walk(value_side)
                              if isinstance(n, ast.Name) and n.id in bound}
@@ -17758,8 +17821,18 @@ class SpecKindNormalizationParityTests(unittest.TestCase):
         # Vacuity guard: if a refactor moves every comparison out of the shapes above, the
         # parity assertion would pass by examining nothing. The floor is the count of
         # DISTINCT reader lines that exist today, so deleting one also trips it.
+        #
+        # 7 -> 6 in issue #153 PR-2, and the drop is the guard working rather than being relaxed.
+        # Merging `_validate_component_public_api` into `_validate_infrastructure_public_api` as
+        # `_validate_published_surface` removed one of two readers that each decided the same
+        # question. The guard first reported 4, not 6, because the merged gate and the generalized
+        # `_validate_generated_signatures` both compare `in _EXACT_PUBLISHED_SURFACE_KINDS` and the
+        # scan excused a non-literal comparand — so two live readers had left the parity rule
+        # silently. `_kind_literal` now resolves a module-level vocabulary, which brought them back;
+        # only then was 6 the honest count. Lower this number only with the same reasoning written
+        # down: a reader that DISAPPEARED, not a reader the scan stopped seeing.
         lines = {lineno for lineno, _seg in self._spec_kind_sites()}
-        self.assertGreaterEqual(len(lines), 7, sorted(lines))
+        self.assertGreaterEqual(len(lines), 6, sorted(lines))
 
     @classmethod
     def _parity_problems(cls, sites) -> list[str]:
@@ -18171,7 +18244,7 @@ class ToolchainBackendGateTests(unittest.TestCase):
 
     def test_a_non_fortran_harness_is_rejected_by_the_gate_that_owns_that_rule(self) -> None:
         # This gate exempts an infrastructure node from the `fortran` half on the grounds
-        # that `_validate_infrastructure_public_api` — the only enforcement of the
+        # that `_validate_published_surface` — the only enforcement of the
         # fortran-only language backend — rejects a non-fortran harness itself. That hand-off
         # holds only while both gates spell the exemption the same way. They did not: this
         # one strips, the other matched exactly, so a padded `meta.spec_kind` took the
@@ -18191,7 +18264,7 @@ class ToolchainBackendGateTests(unittest.TestCase):
                 v: list[str] = []
                 vps._validate_toolchain_backend_supported(tmp, ir_dir, v)
                 self.assertEqual(v, [], f"{spelling}: exempt from the language half")
-                vps._validate_infrastructure_public_api(tmp, ir_dir, v)
+                vps._validate_published_surface(tmp, ir_dir, v)
                 reason = vps._signature_backend_refusal("c")
                 self.assertIsNotNone(reason)
                 self.assertTrue(any(reason in x for x in v),
@@ -18209,7 +18282,7 @@ class ToolchainBackendGateTests(unittest.TestCase):
                                   "target": {"class": "cpu"}},
             }))
             v = []
-            vps._validate_infrastructure_public_api(tmp, ir_dir, v)
+            vps._validate_published_surface(tmp, ir_dir, v)
             self.assertEqual(v, [], "the sibling gate must not case-fold either")
 
     def test_message_names_the_supported_backend_and_the_remedy(self) -> None:
@@ -18579,24 +18652,64 @@ class ComponentDepOperationsGateTests(unittest.TestCase):
 
 
 class ComponentPublicApiGateTests(unittest.TestCase):
-    """`_validate_component_public_api` (compile stage): the L1 gate pinning a component node's
-    IR public_api == controlled_spec §5 published operation NAME surface. NAMES ONLY —
-    `signatures` / `module_parameters` are forbidden on a component."""
+    """`_validate_published_surface` (compile stage) asked of a `component` node: its IR
+    `public_api` must pin the controlled_spec §5 published operation NAME surface AND, since issue
+    #153 PR-2, the §5.1 canonical signatures + module parameters.
+
+    Before PR-2 a component pinned NAMES ONLY and `signatures` / `module_parameters` were FORBIDDEN
+    keys. The reversal is the operator decision of 2026-09-04: an ABI derived post-hoc from the
+    generated source is whatever the generation produced, so one `spec_version` could republish six
+    different argument lists — which it did.
+
+    WHAT IS PINNED HERE, AND WHAT IS SAMPLED. Pinned: that a component with no §5.1 fails, that a
+    drift in either direction between §5.1 and the IR fails, and — by
+    `test_component_and_infrastructure_produce_the_same_violation_set_for_the_same_drift` — that the
+    two kinds are one gate rather than two that agree today. Sampled: the §5 parse forms and the
+    §5.1 malformed shapes, which `InfrastructurePublicApiGateTests` covers over a wider corpus."""
 
     _SPEC_ID = "dep_base"
 
-    def _controlled_spec(self) -> str:
+    # Readable Fortran stays the fixture's truth; the helper lowers it to the language-neutral
+    # structured YAML §5.1 publishes. `logical` for the guard flag and the declaration form for
+    # `dp` are the shapes the real component specs use after PR-2.
+    _SECTION_51_FORTRAN = (
+        "integer, parameter :: dp = real64\n"
+        "subroutine dep_base__scale(n, x, y, guard_pass)\n"
+        "  integer, intent(in) :: n\n"
+        "  real(dp), intent(in) :: x(n)\n"
+        "  real(dp), intent(out) :: y(n)\n"
+        "  logical, intent(out) :: guard_pass\n"
+        "end subroutine dep_base__scale\n"
+    )
+    _SECTION_51 = _structured_section51_from_fortran(_SECTION_51_FORTRAN)
+    _SIGNATURES = _structured_ir_signatures_from_fortran(_SECTION_51_FORTRAN)
+    _MODULE_PARAMETERS = _structured_ir_module_parameters_from_fortran(_SECTION_51_FORTRAN)
+
+    def _full_api(self) -> dict:
+        return {
+            "published_operations": [{"operation_id": "dep_base__scale"}],
+            "published_types": [],
+            "signatures": copy.deepcopy(self._SIGNATURES),
+            "module_parameters": copy.deepcopy(self._MODULE_PARAMETERS),
+        }
+
+    def _controlled_spec(self, section_51: str | None = None) -> str:
+        if section_51 is None:
+            section_51 = self._SECTION_51
         return (
             "# Controlled Spec\n"
             "## 5. Public API and compatibility\n"
             "The only published `operation_id` is `dep_base__scale`. On a `major` "
             "compatibility break, separate the `spec_id`.\n"
+            + section_51 +
             "## 6. Prohibitions\n- none.\n")
 
     def _seed(self, tmp: Path, *, public_api: object, spec_kind: str = "component",
-              cs_ref: str | None = "cs.md", write_cs: bool = True) -> Path:
+              cs_ref: str | None = "cs.md", write_cs: bool = True,
+              section_51: str | None = None) -> Path:
         if write_cs:
-            (tmp / "cs.md").write_text(self._controlled_spec(), encoding="utf-8")
+            (tmp / "cs.md").write_text(
+                self._controlled_spec(section_51), encoding="utf-8")
         meta = {"spec_kind": spec_kind, "spec_id": self._SPEC_ID}
         if cs_ref is not None:
             meta["source_refs"] = {"controlled_spec": cs_ref}
@@ -18611,13 +18724,11 @@ class ComponentPublicApiGateTests(unittest.TestCase):
             tmp = Path(t)
             ir_dir = self._seed(tmp, **kw)
             v: list[str] = []
-            vps._validate_component_public_api(tmp, ir_dir, v)
+            vps._validate_published_surface(tmp, ir_dir, v)
             return v
 
-    def test_exact_match_no_violation(self) -> None:
-        self.assertEqual(
-            self._run(public_api={"published_operations": [
-                {"operation_id": "dep_base__scale"}], "published_types": []}), [])
+    def test_exact_match_with_section51_no_violation(self) -> None:
+        self.assertEqual(self._run(public_api=self._full_api()), [])
 
     def test_missing_public_api_flagged(self) -> None:
         v = self._run(public_api=_OMIT)
@@ -18625,26 +18736,72 @@ class ComponentPublicApiGateTests(unittest.TestCase):
         self.assertIn("public_api missing", v[0])
 
     def test_wrong_name_flagged_both_directions(self) -> None:
-        v = self._run(public_api={"published_operations": [
-            {"operation_id": "dep_base__apply"}]})
+        api = self._full_api()
+        api["published_operations"] = [{"operation_id": "dep_base__apply"}]
+        v = self._run(public_api=api)
         self.assertTrue(any("omits controlled_spec §5 operation_id 'dep_base__scale'" in x
                             for x in v), v)
         self.assertTrue(any("declares operation_id 'dep_base__apply' absent" in x
                             for x in v), v)
 
-    def test_forbidden_signatures_key_flagged(self) -> None:
-        v = self._run(public_api={
-            "published_operations": [{"operation_id": "dep_base__scale"}],
-            "signatures": {"operations": []}})
-        self.assertTrue(any("public_api.signatures is forbidden on a component" in x
-                            for x in v), v)
+    def test_component_without_section51_is_a_compile_fail(self) -> None:
+        """The reversal, from the spec side: a component §5 with no §5.1 no longer certifies.
+        Before PR-2 this was the ONLY legal shape for a component."""
+        api = self._full_api()
+        v = self._run(public_api=api, section_51="")
+        self.assertTrue(any("§5.1" in x and "missing" in x for x in v), v)
 
-    def test_forbidden_module_parameters_key_flagged(self) -> None:
-        v = self._run(public_api={
-            "published_operations": [{"operation_id": "dep_base__scale"}],
-            "module_parameters": []})
-        self.assertTrue(any("public_api.module_parameters is forbidden on a component" in x
-                            for x in v), v)
+    def test_missing_signatures_flagged(self) -> None:
+        api = self._full_api()
+        del api["signatures"]
+        v = self._run(public_api=api)
+        self.assertTrue(any("signatures" in x for x in v), v)
+
+    def test_missing_module_parameters_flagged_when_section51_declares_any(self) -> None:
+        api = self._full_api()
+        del api["module_parameters"]
+        v = self._run(public_api=api)
+        self.assertTrue(any("module_parameters" in x for x in v), v)
+
+    def test_signature_drift_between_ir_and_section51_flagged(self) -> None:
+        """The defect issue #153 cause A is about, caught at Compile: the IR publishes an ABI the
+        spec does not. Both directions of one argument — its ORDER and its TYPE — because the
+        boundary component's real drift was an order change and a `logical` -> `real` change."""
+        reordered = self._SECTION_51_FORTRAN.replace(
+            "subroutine dep_base__scale(n, x, y, guard_pass)",
+            "subroutine dep_base__scale(x, n, y, guard_pass)")
+        retyped = self._SECTION_51_FORTRAN.replace(
+            "  logical, intent(out) :: guard_pass",
+            "  real(dp), intent(out) :: guard_pass")
+        for label, block in (("reordered", reordered), ("retyped", retyped)):
+            api = self._full_api()
+            api["signatures"] = _structured_ir_signatures_from_fortran(block)
+            v = self._run(public_api=api)
+            self.assertTrue(v, f"{label} drift produced no violation")
+            self.assertTrue(any("signature" in x.lower() for x in v), (label, v))
+
+    def test_component_and_infrastructure_produce_the_same_violation_set_for_the_same_drift(
+            self) -> None:
+        """The unification is one gate, not two that happen to agree. `_EXACT_PUBLISHED_SURFACE_KINDS`
+        decides membership, so driving the SAME tree under each kind token must differ only in the
+        kind word the messages carry — a divergence would mean the merge left a per-kind branch."""
+        api = self._full_api()
+        del api["signatures"]
+        def normalized(kind: str) -> list[str]:
+            # Each `_run` builds its own tmp dir, so the leading path is noise; the kind token is
+            # the only difference the messages are allowed to carry.
+            return [x.split("spec.ir.yaml", 1)[-1].replace(kind, "<kind>")
+                    for x in self._run(public_api=copy.deepcopy(api), spec_kind=kind)]
+
+        component = normalized("component")
+        infrastructure = normalized("infrastructure")
+        self.assertTrue(component, "expected a violation to compare")
+        self.assertEqual(component, infrastructure)
+        # Self-test of the comparison: the kind token really IS in the messages, so the
+        # normalization above is doing work rather than comparing two identical lists.
+        self.assertTrue(
+            any("component" in x for x in self._run(
+                public_api=copy.deepcopy(api), spec_kind="component")))
 
     def test_non_component_is_noop(self) -> None:
         # A profile/problem node has no component-name pin — the gate no-ops (its public_api,
@@ -21584,8 +21741,8 @@ class IrFixtureShapeTests(unittest.TestCase):
         infrastructure gates probe it. Without the total probe an over-long ref raises ENAMETOOLONG
         out of the gate."""
         from tools.validate_pipeline_semantics import (
-            _validate_infrastructure_generated_signatures,
-            _validate_infrastructure_public_api,
+            _validate_generated_signatures,
+            _validate_published_surface,
         )
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -21602,8 +21759,8 @@ class IrFixtureShapeTests(unittest.TestCase):
             (ir_dir / "spec.ir.yaml").write_text(json.dumps(doc), encoding="utf-8")
 
             for gate in (
-                _validate_infrastructure_public_api,
-                _validate_infrastructure_generated_signatures,
+                _validate_published_surface,
+                _validate_generated_signatures,
             ):
                 violations: list[str] = []
                 try:
@@ -22351,9 +22508,12 @@ class StaleDependencyIRExitCodeTests(unittest.TestCase):
         """A minimal post_generate tree whose model source is faithful to §5.1.
 
         The only thing under the test's control is ``public_api.module_parameters``: pass None for
-        the pre-contract (stale) shape, or the §5.1 values for a healthy IR. The IR carries no
-        ``io_contract`` / ``raw_requirements``, so ORDINARY violations always co-occur — which is
-        the point for the exit-code precedence.
+        the pre-contract (stale) shape, or the §5.1 values for a healthy IR. ``signatures`` is always
+        seeded faithfully, because issue #153 PR-2 put the signature half under the same stale-IR
+        guard — leaving it empty would make the "healthy IR" row stale for the OTHER reason and turn
+        the exit-code precedence row green for the wrong cause. The IR carries no ``io_contract`` /
+        ``raw_requirements``, so ORDINARY violations always co-occur — which is the point for the
+        exit-code precedence.
         """
         ir_ref = "workspace/ir/x"
         ir_dir = tmp / ir_ref
@@ -22363,9 +22523,10 @@ class StaleDependencyIRExitCodeTests(unittest.TestCase):
             + InfrastructureGeneratedSignatureGateTests._FENCE
             + "## 6. x\n",
             encoding="utf-8")
-        public_api: dict[str, object] = {"signatures": []}
+        public_api: dict[str, object] = {
+            "signatures": copy.deepcopy(InfrastructurePublicApiGateTests._SIGNATURES)}
         if module_parameters is not None:
-            public_api = {"module_parameters": module_parameters}
+            public_api["module_parameters"] = module_parameters
         _write_json(ir_dir / "spec.ir.yaml", {
             "meta": {"spec_kind": "infrastructure", "spec_id": "hx",
                      "source_refs": {"controlled_spec": "cs.md"}},

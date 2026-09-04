@@ -487,7 +487,7 @@ AGENT_TERMINAL_STATUSES = {"pass", "fail", "blocked", "timeout", "cancel"}
 #: (`_section51_module_parameters`, `_section51_parameter_lines`,
 #: `_parse_canonical_interface_from_controlled_spec`, `_validate_ir_signatures_against_section51`,
 #: `_validate_ir_module_parameters_against_section51`,
-#: `_validate_infrastructure_generated_signatures`). None of them takes a `language` argument, so
+#: `_validate_generated_signatures`). None of them takes a `language` argument, so
 #: none of them dispatches: they render and compare through one concrete backend whatever the IR
 #: says. Until they resolve their backend through `tools/backends/registry.py`, the two
 #: infrastructure signature gates must refuse any OTHER language — a registry answer of "this
@@ -5306,9 +5306,11 @@ def _validate_generate_outputs_for_generation(
             model_files, dep_spec_ids, violations
         )
 
-    # R1/M3c-α: an infrastructure node's generated model must publish every §5.1 canonical
-    # signature verbatim (no-op for physics nodes, whose interface is derived post-hoc).
-    _validate_infrastructure_generated_signatures(
+    # §5.1 signature pin: a node whose `spec_kind` publishes an EXACT surface
+    # (`_EXACT_PUBLISHED_SURFACE_KINDS` — `infrastructure` since R1/M3c-α, `component` since issue
+    # #153 PR-2) must publish every §5.1 canonical signature verbatim in its generated model. A
+    # no-op for `profile` / `problem`, whose interface is legitimately derived post-hoc.
+    _validate_generated_signatures(
         repo_root, execution, model_files, violations
     )
     # L1b: a component node's generated model must publish EXACTLY its IR public_api op NAMES
@@ -6444,7 +6446,7 @@ def _section51_parameter_lines(controlled_spec_path: Path) -> list[str]:
 
     ``render_module_parameter_to_fortran`` validates each parameter and can raise
     ``SignatureParseError`` on a malformed / stale-token §5.1 value; this helper lets it propagate,
-    and the ONE gate that renders it (``_validate_infrastructure_generated_signatures``) both calls
+    and the ONE gate that renders it (``_validate_generated_signatures``) both calls
     this only AFTER ``_parse_canonical_interface_from_controlled_spec`` — which renders the whole
     §5.1 struct first and short-circuits with a violation on any unrenderable parameter — and wraps
     this call in ``except SignatureParseError`` as defense-in-depth, so a malformed §5.1 fails closed
@@ -11245,8 +11247,7 @@ def _validate_compile_stage_impl(
     _validate_local_operation_lowering(repo_root, ir_dir, violations)
     _validate_test_predicates(repo_root, ir_dir, violations)
     _validate_case_ids(ir_dir, violations)
-    _validate_infrastructure_public_api(repo_root, ir_dir, violations)
-    _validate_component_public_api(repo_root, ir_dir, violations)
+    _validate_published_surface(repo_root, ir_dir, violations)
     _validate_harness_dependency_consistency(repo_root, ir_dir, violations)
     _validate_toolchain_backend_supported(repo_root, ir_dir, violations)
     _validate_harness_render_preconditions(repo_root, ir_dir, violations)
@@ -12593,34 +12594,70 @@ def _validate_public_api_name_surface(
             "absent from controlled_spec §5")
 
 
-def _validate_component_public_api(
+#: The `spec_kind`s whose controlled_spec publishes an EXACT surface that `Compile.static` pins:
+#: §5 published NAMES and §5.1 canonical signatures + module parameters. Every other kind's
+#: interface stays derived post-hoc from the certified source.
+#:
+#: `component` joined `infrastructure` here in issue #153 PR-2. Before that a component pinned
+#: NAMES ONLY and `signatures` / `module_parameters` were FORBIDDEN keys, on a recorded user
+#: decision (`deterministic_followups.md` §"Dependency operation-name truth path") that the
+#: argument ABI stay derived. That decision was reversed by the operator decision of 2026-09-04:
+#: a component's ABI derived post-hoc is whatever the generation produced, and the boundary
+#: component's six certified sources carried six different argument lists — two of them from the
+#: SAME IR — which is how a certified consumer came to be linked against an interface that had
+#: moved (issue #153 cause A).
+_EXACT_PUBLISHED_SURFACE_KINDS: tuple[str, ...] = ("infrastructure", "component")
+
+#: Per-kind hint for the "§5 parsed zero operations" refusal. The two kinds state their published
+#: surface in different prose, so the remedy has to name the form the author actually has to write.
+_SECTION5_FORM_HINT: dict[str, str] = {
+    "infrastructure": "unrecognized 'published operation_ids are exactly' form",
+    "component": "unrecognized published-operation form",
+}
+
+
+def _validate_published_surface(
     repo_root: Path, ir_dir: Path, violations: list[str]
 ) -> None:
-    """L1 deterministic public-API gate (``component`` nodes only): the IR's ``public_api``
-    must enumerate EXACTLY the published operation NAME surface the controlled_spec §5 declares
-    ("The only published ``operation_id`` is ...") — NAMES ONLY.
+    """Deterministic public-API gate for every `spec_kind` that publishes an EXACT surface
+    (`_EXACT_PUBLISHED_SURFACE_KINDS`): the IR's `public_api` must enumerate exactly the
+    controlled_spec §5 published NAMES, and its `signatures` / `module_parameters` must equal the
+    §5.1 canonical interface block.
 
-    This is the source-of-truth pin for a component's public op names. Without it the pure
-    generate leaf re-picks a component's public op name on every regeneration (the 2026-07-23
-    closure fail: the three advdiff components each authored a fresh name — ``__compute_flux`` /
-    ``__advance`` / ``__apply`` — and the profile consumer then authored a fabricated dep
-    ``operations`` entry the facts resolver silently dropped, starving the leaf's mandatory
-    ``call`` until the retry budget exhausted). Pinning the names into the certified component IR
-    lets a consumer's Compile be shown a real catalog (the L2 ``dependency_surface.json`` sidecar)
-    and lets L1b prove the generated source realizes exactly those names.
+    Why the surface is pinned at all. An `infrastructure` node (the R1 runner harness) exists to
+    publish a reusable operation surface that consuming physics runners link against; if Compile→IR
+    drops a published operation no single test exercises as its primary op, Generate never publishes
+    it and the runner reimplements it locally, defeating the harness. A `component` publishes an
+    operation its consumers CALL, so the same argument applies to its names — and, since issue #153
+    PR-2, to its argument ABI: an ABI derived post-hoc from the generated source is whatever the
+    generation produced, so re-generating one `spec_version` republishes a different interface and
+    strands every consumer certified against the old one. Pinning at Compile is cheap and
+    pre-Generate, instead of leaving the drift for a ~17-min `Generate.verify` leaf to catch
+    nondeterministically, or for a downstream node's Build to hit as a type mismatch.
 
-    Unlike the infrastructure gate this pins NAMES ONLY: ``signatures`` and ``module_parameters``
-    are FORBIDDEN keys on a component (the argument ABI stays derived post-hoc from the certified
-    source at Build — freezing an unverified signature into a component IR both breaks the spec's
-    language-neutrality and pins an ABI no gate checks). §5 is parsed with the same
-    ``_parse_public_api_from_controlled_spec`` the infrastructure gate uses; it extracts exactly
-    the component's one published op across the whole component corpus.
+    What is checked, in order, all fail-closed rather than silently no-op:
 
-    Fail-closed, mirroring the infrastructure gate: a missing/unresolvable controlled_spec ref, a
-    §5 parsing to zero operations, an absent ``public_api``, or a forbidden ``signatures`` /
-    ``module_parameters`` key is a violation that routes (via ``classify_compile_static_failure``)
-    back to ``compile.generate``. No-op on a non-component node or a missing/unparseable IR
-    (flagged upstream)."""
+    - `meta.spec_kind` (`.strip()`-normalized, the spelling rule every `meta.spec_kind` reader uses;
+      an exact match here was once the outlier and let `"  infrastructure  "` skip the gate whose
+      language check is the ONLY enforcement of the language backend) — a kind outside the set is a
+      no-op, because its interface is legitimately derived post-hoc.
+    - a usable signature backend for `impl_defaults.toolchain.language`. The §5.1 pin renders the
+      structured signatures to the target language, so a language with no backend is refused rather
+      than silently rendered as Fortran and compared against non-Fortran source. The question asked
+      is `unavailable_reason`, NOT `unsupported_reason`: a declared member whose knowledge still
+      sits in the neutral core would be rendered by the hard-coded Fortran import below, so
+      membership is not usability. The set lives in `tools/backends/registry.py`, not here.
+    - `meta.spec_id`, `meta.source_refs.controlled_spec`, and that the §5 parse yields at least one
+      operation.
+    - `public_api` present, its NAME surface == §5 (`_validate_public_api_name_surface`).
+    - §5.1 fences exactly the §5 surface, and the IR's `signatures` / `module_parameters` == §5.1.
+      §5.1 is the leaf's ONLY carrier of the signature bodies and parameter values, because
+      `Generate.generate` is walled off from controlled_spec.md (phase_02 §2-1). The bodies are
+      pinned against the GENERATED source separately, by `_validate_generated_signatures`
+      at `Generate.gate`.
+
+    A violation routes (via `classify_compile_static_failure`) back to `compile.generate` to
+    re-author the IR's `public_api`. No-op on a missing / unparseable IR (flagged upstream)."""
     derived_path = ir_dir / "spec.ir.yaml"
     if not derived_path.exists():
         return  # missing IR already flagged upstream
@@ -12632,132 +12669,17 @@ def _validate_component_public_api(
         return
 
     meta = ir.get("meta") if isinstance(ir.get("meta"), dict) else {}
-    # `.strip()`-normalized, like every other `meta.spec_kind` reader. An exact match here
-    # let `spec_kind: "  component  "` skip the public-API name pin entirely — the same gap
-    # the infrastructure twin had (`_validate_infrastructure_public_api`).
-    if str(meta.get("spec_kind") or "").strip() != "component":
-        return  # name-surface pin is component-only (infra has its own fuller gate)
+    kind = str(meta.get("spec_kind") or "").strip()
+    if kind not in _EXACT_PUBLISHED_SURFACE_KINDS:
+        return  # every other kind's interface is derived post-hoc, by design
 
-    spec_id = meta.get("spec_id")
-    if not isinstance(spec_id, str) or not spec_id.strip():
-        violations.append(
-            f"{derived_path}:meta.spec_id missing "
-            "(required to pin a component node's public_api to controlled_spec §5)")
-        return
-    spec_id = spec_id.strip()
-
-    source_refs = meta.get("source_refs") if isinstance(meta.get("source_refs"), dict) else {}
-    cs_ref = source_refs.get("controlled_spec")
-    if not isinstance(cs_ref, str) or not cs_ref.strip():
-        violations.append(
-            f"{derived_path}:meta.source_refs.controlled_spec missing "
-            "(cannot pin component public_api to §5)")
-        return
-    cs_path = Path(cs_ref.strip())
-    if not cs_path.is_absolute():
-        cs_path = repo_root / cs_path
-    if not _is_readable_file(cs_path):
-        violations.append(
-            f"{derived_path}:controlled_spec ({cs_ref}) unresolvable "
-            "(cannot pin component public_api to §5)")
-        return
-
-    spec_ops, spec_types = _parse_public_api_from_controlled_spec(cs_path, spec_id)
-    if not spec_ops:
-        violations.append(
-            f"{derived_path}:controlled_spec ({cs_ref}) §5 parsed 0 published operation_ids "
-            "(unrecognized published-operation form — cannot pin component public_api)")
-        return
-
-    public_api = ir.get("public_api")
-    if not isinstance(public_api, dict):
-        violations.append(
-            f"{derived_path}:public_api missing — a component node must enumerate its "
-            "controlled_spec §5 published operation NAMES (public_api.published_operations, "
-            "and public_api.published_types if any)")
-        return
-
-    # FORBIDDEN keys: a component pins names only. `signatures` / `module_parameters` belong to
-    # an infrastructure node (a full §5.1 signature pin); on a component they would freeze an ABI
-    # no gate checks and break the spec's backend-agnostic language-neutrality.
-    for forbidden in ("signatures", "module_parameters"):
-        if forbidden in public_api:
-            violations.append(
-                f"{derived_path}:public_api.{forbidden} is forbidden on a component node — a "
-                "component publishes operation NAMES only (the argument ABI is derived from the "
-                "certified source at Build, never frozen into the IR)")
-
-    _validate_public_api_name_surface(
-        derived_path, spec_ops, spec_types, public_api, violations)
-
-
-def _validate_infrastructure_public_api(
-    repo_root: Path, ir_dir: Path, violations: list[str]
-) -> None:
-    """R1 deterministic public-API gate (``infrastructure`` nodes only): the IR's
-    ``public_api`` block must enumerate EXACTLY the published surface the controlled_spec
-    §5 declares ("the published operation_ids are exactly: ..."). An infrastructure node
-    (the R1 runner harness) exists to publish a reusable operation surface that consuming
-    physics-node runners link against; if Compile→IR drops a published operation that no
-    single test exercises as its primary op (e.g. a helper emitter or a writer), Generate
-    never publishes it and the runner reimplements it locally — defeating the harness. This
-    gate pins the surface at Compile (cheap, pre-Generate) instead of leaving the drift for
-    the ~17-min Generate.verify leaf to catch nondeterministically.
-
-    Checks: ``meta.spec_kind == "infrastructure"`` (else no-op — physics nodes have no
-    exact-published contract; their interface is derived post-hoc). The controlled_spec is
-    resolved via ``meta.source_refs.controlled_spec`` and its §5 parsed with
-    ``_parse_public_api_from_controlled_spec``; the IR's
-    ``public_api.published_operations[].operation_id`` set must equal the §5 operation set
-    and ``public_api.published_types`` must equal the §5 derived-type set. The IR's
-    ``public_api.signatures`` and ``public_api.module_parameters`` are additionally pinned == the
-    §5.1 canonical interface block (the leaf's only carrier of the signature bodies and the
-    module-parameter values, since Generate.generate is walled off from controlled_spec). Fail-closed
-    (never a silent no-op): a missing/unresolvable controlled_spec ref, a §5 parsing to zero
-    operations, or an absent ``public_api`` block is itself a violation.
-
-    A violation routes (via ``classify_compile_static_failure``) back to ``compile.generate``
-    to re-author the IR's ``public_api``."""
-    derived_path = ir_dir / "spec.ir.yaml"
-    if not derived_path.exists():
-        return  # missing IR already flagged upstream
-    try:
-        ir = _read_yaml(derived_path)
-    except yaml.YAMLError:
-        return  # malformed IR already flagged upstream
-    if not isinstance(ir, dict):
-        return
-
-    meta = ir.get("meta") if isinstance(ir.get("meta"), dict) else {}
-    # `.strip()`-normalized, the same spelling rule as every other reader of `meta.spec_kind`
-    # (`_conductor_authors_runner`, `_validate_toolchain_backend_supported`,
-    # `_validate_harness_dependency_consistency`). An exact match here was the outlier, and it
-    # left a hole: `spec_kind: "  infrastructure  "` took the toolchain gate's language
-    # exemption (that gate strips) while this gate — the ONLY enforcement of the fortran-only
-    # language backend — skipped the node, so a non-fortran harness produced no violation at
-    # all in the whole pass.
-    if str(meta.get("spec_kind") or "").strip() != "infrastructure":
-        return  # exact-published-surface contract is infrastructure-only
-
-    # The §5.1 signature pin renders the structured signatures to the target language, so it needs
-    # a language backend. A language this repository has no backend for is fail-closed here — never
-    # silently rendered as Fortran and compared against non-Fortran source — until one is added.
-    # (No such node exists yet: the sole harness is fortran/cpu.) The §5 published-NAME surface is
-    # language-neutral, but without a signature backend the node cannot certify at all, so stop
-    # early with one clear message. WHICH languages have a usable backend is not spelled here:
-    # the set lives in `tools/backends/registry.py` (docs/BACKEND_BOUNDARY.md), and the reason
-    # string comes from there too rather than being this module's second spelling of it. The
-    # question asked is `unavailable_reason`, NOT `unsupported_reason`: a member declared with
-    # `module=None` is a language this repository knows about but whose knowledge still sits in
-    # the neutral core, so the renderer below — a hard-coded import of the Fortran backend —
-    # would pin its signatures by rendering them as Fortran. Membership is not usability.
     impl = ir.get("impl_defaults") if isinstance(ir.get("impl_defaults"), dict) else {}
     tc = impl.get("toolchain") if isinstance(impl.get("toolchain"), dict) else {}
     language = str(tc.get("language") or "").strip().lower()
     unsupported = _signature_backend_refusal(language)
     if unsupported:
         violations.append(
-            f"{derived_path}: infrastructure signature pinning needs a language backend — "
+            f"{derived_path}: {kind} signature pinning needs a language backend — "
             f"{unsupported}")
         return
 
@@ -12765,7 +12687,7 @@ def _validate_infrastructure_public_api(
     if not isinstance(spec_id, str) or not spec_id.strip():
         violations.append(
             f"{derived_path}:meta.spec_id missing "
-            "(required to pin an infrastructure node's public_api to controlled_spec §5)")
+            f"(required to pin a {kind} node's public_api to controlled_spec §5)")
         return
     spec_id = spec_id.strip()
 
@@ -12774,7 +12696,7 @@ def _validate_infrastructure_public_api(
     if not isinstance(cs_ref, str) or not cs_ref.strip():
         violations.append(
             f"{derived_path}:meta.source_refs.controlled_spec missing "
-            "(cannot pin infrastructure public_api to §5)")
+            f"(cannot pin {kind} public_api to §5)")
         return
     cs_path = Path(cs_ref.strip())
     if not cs_path.is_absolute():
@@ -12782,34 +12704,32 @@ def _validate_infrastructure_public_api(
     if not _is_readable_file(cs_path):
         violations.append(
             f"{derived_path}:controlled_spec ({cs_ref}) unresolvable "
-            "(cannot pin infrastructure public_api to §5)")
+            f"(cannot pin {kind} public_api to §5)")
         return
 
     spec_ops, spec_types = _parse_public_api_from_controlled_spec(cs_path, spec_id)
     if not spec_ops:
         violations.append(
             f"{derived_path}:controlled_spec ({cs_ref}) §5 parsed 0 published operation_ids "
-            "(unrecognized 'published operation_ids are exactly' form — cannot pin public_api)")
+            f"({_SECTION5_FORM_HINT[kind]} — cannot pin {kind} public_api)")
         return
 
     public_api = ir.get("public_api")
     if not isinstance(public_api, dict):
         violations.append(
-            f"{derived_path}:public_api missing — an infrastructure node must enumerate its "
-            "complete controlled_spec §5 published surface (public_api.published_operations "
-            "and public_api.published_types)")
+            f"{derived_path}:public_api missing — a {kind} node must enumerate its complete "
+            "controlled_spec §5 published surface (public_api.published_operations and "
+            "public_api.published_types) and its §5.1 signatures / module_parameters")
         return
 
     _validate_public_api_name_surface(
         derived_path, spec_ops, spec_types, public_api, violations)
 
-    # §5.1 canonical interface block: cross-check its signature set against §5's name lists so
-    # the two halves of the spec (prose surface + machine-readable signatures) cannot drift, and
-    # pin the IR's public_api.signatures AND public_api.module_parameters == §5.1 so the
-    # Generate.generate leaf — which is walled off from controlled_spec.md (phase_02 §2-1) —
-    # carries the exact signatures and module-parameter values to publish in its IR. The signature
-    # bodies and the parameter declarations are pinned against the GENERATED source separately by
-    # the Generate.static gate (_validate_infrastructure_generated_signatures).
+    # §5.1 canonical interface block: cross-check its signature set against §5's name lists so the
+    # two halves of the spec (prose surface + machine-readable signatures) cannot drift, and pin the
+    # IR's public_api.signatures AND public_api.module_parameters == §5.1 so the Generate.generate
+    # leaf — walled off from controlled_spec.md — carries the exact signatures and parameter values
+    # to publish in its IR.
     op_stanzas, type_stanzas, iface_err = _parse_canonical_interface_from_controlled_spec(cs_path)
     if iface_err:
         violations.append(
@@ -12835,20 +12755,15 @@ def _validate_infrastructure_public_api(
             f"{derived_path}:controlled_spec §5.1 defines a derived type '{extra}' absent from "
             "the §5 derived-type list")
 
-    # IR public_api.signatures == §5.1 (the leaf's only source of the signatures to publish).
     _validate_ir_signatures_against_section51(
-        derived_path, public_api, op_stanzas, type_stanzas, violations)
-
-    # IR public_api.module_parameters == §5.1 module_parameters (value-pinned). The Generate.static
-    # gate pins these declarations (name AND value) against the GENERATED source, but the
-    # Generate.generate leaf is walled off from controlled_spec.md — so, like the signatures, the IR
-    # is the only carrier that gets the values (dp / case_id_len) to the leaf. Pin them here.
+        derived_path, kind, public_api, op_stanzas, type_stanzas, violations)
     _validate_ir_module_parameters_against_section51(
-        derived_path, public_api, cs_path, violations)
+        derived_path, kind, public_api, cs_path, violations)
 
 
 def _validate_ir_signatures_against_section51(
     derived_path: Path,
+    kind: str,
     public_api: dict[str, Any],
     op_stanzas: dict[str, list[str]],
     type_stanzas: dict[str, list[str]],
@@ -12873,7 +12788,7 @@ def _validate_ir_signatures_against_section51(
     sigs_raw = public_api.get("signatures")
     if not isinstance(sigs_raw, list) or not sigs_raw:
         violations.append(
-            f"{derived_path}:public_api.signatures missing — an infrastructure node must "
+            f"{derived_path}:public_api.signatures missing — a {kind} node must "
             "transcribe every controlled_spec §5.1 signature (each {symbol, signature}) so the "
             "Generate leaf can publish them verbatim")
         return
@@ -12948,6 +12863,7 @@ def _validate_ir_signatures_against_section51(
 
 def _validate_ir_module_parameters_against_section51(
     derived_path: Path,
+    kind: str,
     public_api: dict[str, Any],
     cs_path: Path,
     violations: list[str],
@@ -13022,7 +12938,7 @@ def _validate_ir_module_parameters_against_section51(
     if "module_parameters" not in public_api:
         if spec_params:
             violations.append(
-                f"{derived_path}:public_api.module_parameters missing — an infrastructure node must "
+                f"{derived_path}:public_api.module_parameters missing — a {kind} node must "
                 "transcribe every controlled_spec §5.1 module-level parameter (each {name, base?, "
                 "value}); the Generate.generate leaf is walled off from controlled_spec so the IR "
                 "is the only carrier of the pinned values")
@@ -13155,77 +13071,88 @@ def _as_host_authored(violation: str, producer: str) -> HostAuthoredArtifactViol
         f"in the IR it renders from: fix it (or re-compile the IR), then --resume.")
 
 
-def _validate_infrastructure_generated_signatures(
+def _validate_generated_signatures(
     repo_root: Path, execution: NodeExecution, model_files: list[Path], violations: list[str]
 ) -> None:
-    """R1/M3c-α deterministic signature gate (``infrastructure`` nodes only, ``Generate.static``):
-    the generated model source must publish every §5.1 canonical signature verbatim (normalized:
-    comments stripped, ``&`` continuations joined, case-folded, whitespace-insensitive).
+    """Deterministic signature gate at ``Generate.static``, for every `spec_kind` that publishes an
+    EXACT surface (`_EXACT_PUBLISHED_SURFACE_KINDS`): the generated model source must publish every
+    §5.1 canonical signature verbatim (normalized: comments stripped, ``&`` continuations joined,
+    case-folded, whitespace-insensitive).
 
-    The Compile-stage ``_validate_infrastructure_public_api`` pins the published *names* (the IR's
-    ``public_api`` set == §5 == §5.1). This gate pins the published *signatures*: each argument
-    name, order, type, rank, ``intent``, and ``result`` name the §5.1 block declares must appear
-    in the generated ``<spec_id>_model.f90``. It closes the known scope gap where the exact
-    published signature of the generated ``.f90`` rested on the ~17-min ``Generate.verify`` leaf
-    plus a Build link error — moving it to a cheap deterministic ``Generate.static`` check so a
-    signature drift routes straight back to ``Generate.generate``.
+    The Compile-stage ``_validate_published_surface`` pins the published *names* and pins the IR's
+    ``signatures`` / ``module_parameters`` == §5.1. This gate pins the *generated source*: each
+    argument name, order, type, rank, ``intent``, and ``result`` name §5.1 declares must appear in
+    the generated model. Together the two make §5.1 ≡ IR ≡ SOURCE, which is what stops one
+    ``spec_version`` from republishing a different ABI.
 
-    Infra-only: resolved via the IR ``meta.spec_kind``. A non-infra node is a no-op. But when the
-    node is INFRASTRUCTURE (per its ``node_key``) yet the IR / §5.1 cannot be resolved, that is
-    fail-closed, never a silent skip — Compile has already certified the IR + §5.1 exist, so their
-    absence at Generate is a real regression that must not let a drifted model pass unchecked."""
-    infra_by_key = str(execution.node_key).split("/", 1)[0].strip() == "infrastructure"
+    `component` joined `infrastructure` here in issue #153 PR-2. Before that a component's ABI was
+    derived post-hoc from whatever the generation produced, and the boundary component's six
+    certified sources carried six different argument lists — two of them from the SAME IR — which is
+    how a certified consumer came to be linked against an interface that had moved. `Generate.verify`
+    plus a Build link error was the only backstop, and it caught this one at a downstream node's
+    syntax probe rather than at the producer.
 
-    def _fail_closed_if_infra(reason: str) -> None:
-        if infra_by_key:
+    Kind resolution is BY NODE_KEY for the fail-closed decision and BY IR for the no-op decision, and
+    the asymmetry is deliberate: when the node_key says the kind publishes an exact surface but the
+    IR / §5.1 cannot be resolved, that is fail-closed rather than a silent skip — Compile has already
+    certified the IR + §5.1 exist, so their absence at Generate is a regression that must not let a
+    drifted model pass unchecked."""
+    kind_by_key = str(execution.node_key).split("/", 1)[0].strip()
+    pinned_by_key = kind_by_key in _EXACT_PUBLISHED_SURFACE_KINDS
+
+    def _fail_closed_if_pinned(reason: str) -> None:
+        if pinned_by_key:
             violations.append(
-                f"{execution.pipeline_dir}: infrastructure node's published signatures cannot be "
+                f"{execution.pipeline_dir}: {kind_by_key} node's published signatures cannot be "
                 f"pinned at Generate.static ({reason}) — Compile certified them, so this is "
                 "fail-closed")
 
     ir_dir = _ir_dir_for_execution(repo_root, execution)
     if ir_dir is None:
-        _fail_closed_if_infra("IR unresolvable from lineage")
+        _fail_closed_if_pinned("IR unresolvable from lineage")
         return
     ir_path = ir_dir / "spec.ir.yaml"
     if not ir_path.is_file():
-        _fail_closed_if_infra("IR spec.ir.yaml missing")
+        _fail_closed_if_pinned("IR spec.ir.yaml missing")
         return
     try:
         ir = _read_yaml(ir_path)
     except yaml.YAMLError:
-        _fail_closed_if_infra("IR spec.ir.yaml is malformed YAML")
+        _fail_closed_if_pinned("IR spec.ir.yaml is malformed YAML")
         return
     if not isinstance(ir, dict):
-        _fail_closed_if_infra("IR spec.ir.yaml is not a mapping")
+        _fail_closed_if_pinned("IR spec.ir.yaml is not a mapping")
         return
     meta = ir.get("meta") if isinstance(ir.get("meta"), dict) else {}
     # `.strip()`-normalized like every other `meta.spec_kind` reader. Matching exactly here
     # while the compile gates strip made them disagree: a padded value passed compile as an
     # infrastructure node and then fail-closed HERE with "meta.spec_kind is not
     # 'infrastructure'" — an accurate-sounding message about an IR compile had accepted.
-    if str(meta.get("spec_kind") or "").strip() != "infrastructure":
-        _fail_closed_if_infra("IR meta.spec_kind is not 'infrastructure'")
+    ir_kind = str(meta.get("spec_kind") or "").strip()
+    if ir_kind not in _EXACT_PUBLISHED_SURFACE_KINDS:
+        _fail_closed_if_pinned(
+            f"IR meta.spec_kind {ir_kind!r} does not publish an exact surface "
+            f"(expected one of {list(_EXACT_PUBLISHED_SURFACE_KINDS)})")
         return
-    # Past this point the IR confirms an infrastructure node, so a missing/unresolvable
+    # Past this point the IR confirms a surface-publishing node, so a missing/unresolvable
     # controlled_spec is fail-closed here too (Compile certified it resolves).
     source_refs = meta.get("source_refs") if isinstance(meta.get("source_refs"), dict) else {}
     cs_ref = source_refs.get("controlled_spec")
     if not isinstance(cs_ref, str) or not cs_ref.strip():
-        _fail_closed_if_infra("IR meta.source_refs.controlled_spec missing")
+        _fail_closed_if_pinned("IR meta.source_refs.controlled_spec missing")
         return
     cs_path = Path(cs_ref.strip())
     if not cs_path.is_absolute():
         cs_path = repo_root / cs_path
     if not _is_readable_file(cs_path):
-        _fail_closed_if_infra(f"controlled_spec ({cs_ref}) unresolvable")
+        _fail_closed_if_pinned(f"controlled_spec ({cs_ref}) unresolvable")
         return
 
     # The render+compare below is a hard-coded import of the Fortran backend. A node whose
     # language has no EXTRACTED backend is fail-closed rather than pinned against the wrong
     # language — `unavailable_reason`, not `unsupported_reason`, because a declared-but-
     # unextracted member has no renderer of its own and would silently take Fortran's.
-    # (Compile's `_validate_infrastructure_public_api` already fail-closes it with the same
+    # (Compile's `_validate_published_surface` already fail-closes it with the same
     # registry clause, so this is a defense-in-depth stop; no non-Fortran infra node exists.)
     impl = ir.get("impl_defaults") if isinstance(ir.get("impl_defaults"), dict) else {}
     tc = impl.get("toolchain") if isinstance(impl.get("toolchain"), dict) else {}
@@ -13234,7 +13161,7 @@ def _validate_infrastructure_generated_signatures(
     if unsupported:
         loc = model_files[0] if model_files else ir_path
         violations.append(
-            f"{loc}: this infrastructure node's signatures cannot be pinned — {unsupported}")
+            f"{loc}: this {ir_kind} node's signatures cannot be pinned — {unsupported}")
         return
 
     op_stanzas, type_stanzas, iface_err = _parse_canonical_interface_from_controlled_spec(cs_path)
@@ -13259,17 +13186,28 @@ def _validate_infrastructure_generated_signatures(
     pub = ir.get("public_api")
     stale_ir_violations: list[str] = []
     _validate_ir_module_parameters_against_section51(
-        ir_path, pub if isinstance(pub, dict) else {}, cs_path, stale_ir_violations)
+        ir_path, ir_kind, pub if isinstance(pub, dict) else {}, cs_path, stale_ir_violations)
+    # SIGNATURES take the same guard, and issue #153 PR-2 is why. A `component` IR certified before
+    # PR-2 carries no `public_api.signatures` at all — the key was FORBIDDEN then — so on a
+    # `--resume` into Generate, where Compile.static does not re-run, the leaf has no signatures to
+    # publish and cannot obtain them (it is walled off from controlled_spec.md). Without this guard
+    # the stanza comparison below would report a source drift on every attempt and the warm retry
+    # would never converge: the leaf would be told to fix source that is not the problem. The
+    # module-parameter half above has the same shape for the harness; both are terminal by the
+    # violation's TYPE, which `main` maps to a dedicated exit code.
+    _validate_ir_signatures_against_section51(
+        ir_path, ir_kind, pub if isinstance(pub, dict) else {},
+        op_stanzas, type_stanzas, stale_ir_violations)
     if stale_ir_violations:
         loc = model_files[0] if model_files else ir_path
         violations.append(StaleDependencyIRViolation(
             f"{loc}: {STALE_DEPENDENCY_IR_MARKER} the certified IR at {ir_path} does not carry the "
-            "controlled_spec §5.1 module parameters the current contract pins (absent, empty, null, "
-            "or drifted public_api.module_parameters — a pre-contract or corrupt IR that "
-            "Compile.static, skipped on this resume, would have rejected) — re-certify the harness "
-            "(run_workflow.py --with-deps, which the harness version bump makes freshness re-run) so "
-            "Compile transcribes the module-parameter values into the IR; a certified IR cannot be "
-            "repaired by re-running Generate"))
+            f"controlled_spec §5.1 surface the current contract pins for a {ir_kind} node (absent, "
+            "empty, null, or drifted public_api.signatures / public_api.module_parameters — a "
+            "pre-contract or corrupt IR that Compile.static, skipped on this resume, would have "
+            "rejected) — re-certify the node (run_workflow.py --with-deps, which the spec_version "
+            "bump makes freshness re-run) so Compile transcribes the §5.1 surface into the IR; a "
+            "certified IR cannot be repaired by re-running Generate"))
         return
 
     target = model_files[0] if model_files else (repo_root / "<model>")
