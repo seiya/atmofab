@@ -441,7 +441,7 @@ end-to-end (orch `orch_20260626T020724Z_0d7b9e28`): `demo_dep_top` reused the re
 (skipped) and passed all phases on attempt 1 in dev mode. The D4 snapshot-naming blocker is fixed and
 confirmed. No known blockers remain for the demo dependency chain.
 
-## D5 — dependency call-site argument order surfaced to the consumer (IMPLEMENTED 2026-06-26; the "no producer-side gate" half SUPERSEDED 2026-09-04 by issue #153 PR-2)
+## D5 — dependency call-site argument order surfaced to the consumer (IMPLEMENTED 2026-06-26; the "no producer-side gate" half is to be SUPERSEDED by issue #153 PR-2, NOT YET LANDED as of 2026-09-04)
 
 **Symptom.** With D1–D4 closed, the demo chain's `--with-deps` E2E was still not
 deterministic across runs: a consumer (`demo_dep_top`) emits `call <dep>__<op>(...)` to a
@@ -1358,7 +1358,7 @@ dependency node to the HIGHEST catalog version satisfying the consumer constrain
 (`matched[0]`), matching the closure driver's `node_label` (`run_workflow.py`
 `spec_versions[0]`). Three EXISTING version conventions are mutually inconsistent when a spec
 has >1 catalog version: `resolve_node` builds the dependency under the FIRST catalog entry
-(ignoring the constraint), `_dependency_node_ready` accepts ANY matching version, and
+(ignoring the constraint), `_dependency_node_readiness` accepts ANY matching version, and
 `node_label`/sidecar/`_stage_dependency_sources` use the highest. For a spec with a single
 catalog version (all 12 today) these coincide and the pin is exact. If they ever diverge,
 `_stage_dependency_sources` FAILS CLOSED ("no ready pipeline") rather than substitute a sibling
@@ -2009,7 +2009,7 @@ Enforcement is at the two — and only two — readiness evaluators, because the
 is missed:
 
 - `_verify_dep_stage`, anchored on the `ir_ref` stage (every caller requires it, and the cumulative chains in
-  `_verify_dependency_readiness` short-circuit on it). This covers `run_workflow._dependency_node_ready`, so
+  `_verify_dependency_readiness` short-circuit on it). This covers `run_workflow._dependency_node_readiness`, so
   `--with-deps` re-runs a stale dependency instead of skipping it as ready.
 - `_certify_and_collect_dep_artifacts`, which the launch gate's own recomputation
   (`_compute_dep_readiness_and_fingerprint` → `_dependency_ready`) uses and which does **not** route through
@@ -3280,10 +3280,11 @@ the `operations ⊆ published` check (V4c-ii) was LLM-only and let the wrong nam
 gate (`use` present) AND the static gate (`use` absent) every retry, a pincer with no repairable signal.
 
 The fix is a four-layer truth path for the op NAME (the argument ABI stays derived post-hoc — user decision: pin names
-only, never full signatures, on a component). **That user decision is REVERSED as of the operator decision of
-2026-09-04 (issue #153): a `component`'s §5.1 signatures ARE pinned, by PR-2 of that issue.** The four layers below
-still describe the NAME path, which PR-2 extends rather than replaces; where a sentence below says `signatures` /
-`module_parameters` are forbidden keys, read "were, until issue #153 PR-2".
+only, never full signatures, on a component). **The operator decision of 2026-09-04 (issue #153) REVERSES that user
+decision, and issue #153 PR-2 is what implements the reversal. PR-2 HAS NOT LANDED as of 2026-09-04**, so every sentence
+below is still true of the code: `_validate_component_public_api` still refuses `signatures` and `module_parameters` as
+forbidden keys on a `component`, and `phase_01_compile.md` V8b still states NAMES ONLY. When PR-2 lands it extends the
+NAME path below rather than replacing it; until then, read this paragraph as the decision and not as the state.
 - **L1 — the name gets a carrier.** A component IR now pins its published op names in `public_api.published_operations`
   (`_validate_component_public_api`, `Compile.static`, V8b — names only; `signatures`/`module_parameters` are forbidden
   keys). Its generation-side mate `_validate_component_generated_surface` (`Generate.gate`) pins the generated
