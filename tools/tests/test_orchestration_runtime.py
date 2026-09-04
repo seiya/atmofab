@@ -34304,6 +34304,407 @@ class DependencyFreshnessTests(unittest.TestCase):
             self.assertEqual(stale_level, 0)
 
 
+class DependencyBindingFreshnessTests(unittest.TestCase):
+    """R6 proper, the closure-source half (CONTENT granularity): a certified binary whose
+    dependency SOURCES have been regenerated since it was compiled is stale — not ready — so
+    `--with-deps` re-certifies the closure bottom-up instead of linking drifted code into a
+    certified consumer (issue #153).
+
+    `DependencyFreshnessTests` above covers the version-granularity half, which compares node_key
+    SETS and is blind to a dependency re-certified WITHIN one `spec_version` — exactly the shape
+    that let a 07-25 profile binary be skipped as ready and then fail closed against a 09-03
+    boundary source.
+
+    WHAT IS PINNED HERE, AND WHAT IS SAMPLED. Pinned: that the comparison is over the source
+    BYTES (`test_identical_source_under_a_new_certification_stays_fresh` is the other direction of
+    `test_a_regenerated_dependency_source_makes_the_consumer_stale`), that both readiness
+    evaluators carry it, that a legacy binary fails closed while a leaf does not, and that the
+    selection Build stages from is the selection readiness compares
+    (`test_binding_resolution_mirrors_build_staging` drives the production stager). Sampled: the
+    malformed shapes — the entry validation rejects more shapes than the one probed."""
+
+    def _write(self, path: Path, text: str) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+
+    def _seed_dep(self, repo_root: Path, node_key: str, *, pipeline_id: str, source_id: str,
+                  binary_id: str, body: str, status: str = "pass") -> str:
+        """A certified pipeline for `node_key` whose binary was built from `source_id`.
+
+        Returns the sha256 of the staged source body — what a consumer compiled against it must
+        record."""
+        import hashlib
+        from tools.orchestration_runtime import _node_key_to_safe, _parse_node_key_strict
+        safe = _node_key_to_safe(node_key)
+        sid = _parse_node_key_strict(node_key)[1]
+        pipe = repo_root / "workspace" / "pipelines" / safe / pipeline_id
+        self._write(pipe / "source" / source_id / "src" / f"{sid}_model.f90", body)
+        self._write(pipe / "binary" / binary_id / "binary_meta.json", json.dumps({
+            "binary_id": binary_id, "node_key": node_key, "pipeline_id": pipeline_id,
+            "verification_status": status, "source_source_id": source_id,
+            "dependency_check": {"direct_deps": [], "resolved": "match",
+                                 "closure_bindings": []},
+        }) + "\n")
+        return hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+    def _seed(self, repo_root: Path, *, dep_body: str = "module c_model\nend module c_model\n",
+              recorded_sha: str | None = None, bindings: Any = "auto",
+              recorded_closure: list[str] | None = None,
+              consumer_binary_status: str = "pass") -> None:
+        """`b@0.1.0` (a component) depends on `c@0.1.0`; the problem `a@0.1.0` depends on `b`.
+
+        `c` is certified from `dep_body`. `b` is certified with a binary whose
+        `dependency_check.closure_bindings` records `recorded_closure` (default: just `c`) at
+        `recorded_sha` (default: the sha of `dep_body`, i.e. FRESH). `bindings` overrides the
+        recorded list wholesale — pass `None` to omit the key (a legacy binary) or any other
+        value to write it verbatim (a malformed record)."""
+        from tools.orchestration_runtime import _load_spec_catalog
+        self._write(repo_root / "spec" / "registry" / "spec_catalog.yaml",
+                    "catalog_version: 0.2.0\nspecs:\n"
+                    "  - spec_kind: component\n    spec_id: b\n    spec_version: 0.1.0\n"
+                    "    deps_path: spec/component/b/deps.yaml\n"
+                    "  - spec_kind: component\n    spec_id: c\n    spec_version: 0.1.0\n"
+                    "    deps_path: spec/component/c/deps.yaml\n"
+                    "  - spec_kind: problem\n    spec_id: a\n    spec_version: 0.1.0\n"
+                    "    deps_path: spec/problem/a/deps.yaml\n")
+        self._write(repo_root / "spec" / "component" / "b" / "deps.yaml",
+                    "spec_id: b\nspec_kind: component\ndependencies:\n"
+                    "  components:\n    - component_id: c\n"
+                    '      version_constraint: ">=0.1.0 <1.0.0"\n'
+                    "  profiles: []\n")
+        self._write(repo_root / "spec" / "component" / "c" / "deps.yaml",
+                    "spec_id: c\nspec_kind: component\ndependencies:\n"
+                    "  components: []\n  profiles: []\n")
+        self._write(repo_root / "spec" / "problem" / "a" / "deps.yaml",
+                    "spec_id: a\nspec_kind: problem\ndependencies:\n"
+                    "  components:\n    - component_id: b\n"
+                    '      version_constraint: ">=0.1.0 <1.0.0"\n'
+                    "  profiles: []\n")
+
+        dep_sha = self._seed_dep(repo_root, "component/c@0.1.0", pipeline_id="c_20260101_001",
+                                 source_id="src_20260725_001", binary_id="bin_20260725_001",
+                                 body=dep_body)
+
+        closure = ["component/c@0.1.0"] if recorded_closure is None else recorded_closure
+        ir_dir = repo_root / "workspace" / "ir" / "component__b__0.1.0" / "b_20260101_001"
+        self._write(ir_dir / "ir_meta.json", json.dumps({"verification_status": "pass"}))
+        self._write(ir_dir / "dependency_graph.json", json.dumps({
+            "node_key": "component/b@0.1.0",
+            "all_nodes": [{"node_key": "component/c@0.1.0", "topo_level": 0},
+                          {"node_key": "component/b@0.1.0", "topo_level": 1}],
+            "transitive_deps": [], "generated_by": "conductor",
+        }))
+
+        if bindings == "auto":
+            bindings = [{
+                "node_key": nk,
+                "pipeline_ref": "workspace/pipelines/component__c__0.1.0/c_20260101_001",
+                "binary_id": "bin_20260725_001", "source_id": "src_20260725_001",
+                "model_source_ref": ("workspace/pipelines/component__c__0.1.0/c_20260101_001"
+                                     "/source/src_20260725_001/src/c_model.f90"),
+                "model_source_sha256": recorded_sha if recorded_sha is not None else dep_sha,
+            } for nk in closure]
+        dep_check: dict[str, Any] = {"direct_deps": ["component/c@0.1.0"], "resolved": "match"}
+        if bindings is not None:
+            dep_check["closure_bindings"] = bindings
+        b_pipe = (repo_root / "workspace" / "pipelines" / "component__b__0.1.0"
+                  / "b_20260101_001")
+        self._write(b_pipe / "source" / "src_20260725_001" / "src" / "b_model.f90",
+                    "module b_model\nend module b_model\n")
+        self._write(b_pipe / "binary" / "bin_20260725_001" / "binary_meta.json", json.dumps({
+            "binary_id": "bin_20260725_001", "node_key": "component/b@0.1.0",
+            "pipeline_id": "b_20260101_001",
+            "verification_status": consumer_binary_status,
+            "source_source_id": "src_20260725_001",
+            "dependency_check": dep_check,
+        }) + "\n")
+        # `runs/<run_id>/<node>/` — `_latest_aggregate_verdict_under` requires the canonical
+        # depth AND a sibling trial_meta.json binding the verdict to the certified binary.
+        verdict_dir = b_pipe / "runs" / "run_20260101_001" / "component__b__0.1.0"
+        self._write(verdict_dir / "aggregate_verdict.json",
+                    json.dumps({"aggregate_verdict": "pass"}))
+        self._write(verdict_dir / "trial_meta.json",
+                    json.dumps({"source_binary_id": "bin_20260725_001"}))
+        _load_spec_catalog.cache_clear()
+
+    # ---- the invariant itself -------------------------------------------------------------
+
+    def test_matching_binding_is_fresh_and_ready(self) -> None:
+        from tools.orchestration_runtime import (
+            _dependency_binding_freshness, _verify_dep_stage)
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            fresh, detail = _dependency_binding_freshness(repo_root, "component", "b", "0.1.0")
+            self.assertTrue(fresh, detail)
+            self.assertIsNone(detail)
+            self.assertTrue(
+                _verify_dep_stage(repo_root, "component", "b", "0.1.0", "pipeline_ref"))
+
+    def test_a_regenerated_dependency_source_makes_the_consumer_stale(self) -> None:
+        """The issue #153 witness. `b` was compiled against `c`'s 07-25 source; `c` is
+        regenerated and re-certified under the SAME `spec_version`, so R6-lite sees nothing —
+        the node_key set is unchanged — and the old `b` binary would be skipped as ready and
+        then link code whose interface has moved."""
+        from tools.orchestration_runtime import (
+            _dependency_binding_freshness, _verify_dep_stage)
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            # R6-lite is green on this tree: the recorded and derived closures agree.
+            from tools.orchestration_runtime import _dependency_resolution_freshness
+            self.assertTrue(
+                _dependency_resolution_freshness(repo_root, "component", "b", "0.1.0")[0])
+            # `c` regenerates: a new source + a new certified binary under the same version.
+            self._seed_dep(repo_root, "component/c@0.1.0", pipeline_id="c_20260101_001",
+                           source_id="src_20260903_001", binary_id="bin_20260903_001",
+                           body="module c_model ! REGENERATED\nend module c_model\n")
+            fresh, detail = _dependency_binding_freshness(repo_root, "component", "b", "0.1.0")
+            self.assertFalse(fresh)
+            self.assertIn("src_20260725_001", detail)
+            self.assertIn("src_20260903_001", detail)
+            self.assertIn("--with-deps", detail)
+            self.assertFalse(
+                _verify_dep_stage(repo_root, "component", "b", "0.1.0", "pipeline_ref"))
+            # The IR is untouched, so the resolution stage stays green — the binding is what moved.
+            self.assertTrue(_verify_dep_stage(repo_root, "component", "b", "0.1.0", "ir_ref"))
+
+    def test_identical_source_under_a_new_certification_stays_fresh(self) -> None:
+        """CONTENT, not identity: re-certifying a dependency whose source bytes are unchanged
+        must not invalidate its consumers, however many new source/binary ids it produced."""
+        from tools.orchestration_runtime import _dependency_binding_freshness
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            body = "module c_model\nend module c_model\n"
+            self._seed(repo_root, dep_body=body)
+            self._seed_dep(repo_root, "component/c@0.1.0", pipeline_id="c_20260101_001",
+                           source_id="src_20260903_001", binary_id="bin_20260903_001",
+                           body=body)
+            fresh, detail = _dependency_binding_freshness(repo_root, "component", "b", "0.1.0")
+            self.assertTrue(fresh, detail)
+
+    # ---- the legacy / leaf asymmetry ------------------------------------------------------
+
+    def test_missing_bindings_on_a_binary_with_a_closure_is_stale(self) -> None:
+        from tools.orchestration_runtime import (
+            _dependency_binding_freshness, _verify_dep_stage)
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root, bindings=None)
+            fresh, detail = _dependency_binding_freshness(repo_root, "component", "b", "0.1.0")
+            self.assertFalse(fresh)
+            self.assertIn("records no dependency_check.closure_bindings", detail)
+            self.assertIn("component/c@0.1.0", detail)
+            self.assertFalse(
+                _verify_dep_stage(repo_root, "component", "b", "0.1.0", "pipeline_ref"))
+
+    def test_a_leaf_binary_is_fresh_without_bindings(self) -> None:
+        """A leaf's closure is empty, so a legacy leaf binary has nothing that could have
+        drifted — the same asymmetry the R6-lite sidecar rule uses. Without this, the harness
+        (every closure's leaf) would be re-run on every `--with-deps` forever."""
+        from tools.orchestration_runtime import (
+            _dependency_binding_freshness, _verify_dep_stage)
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            # `c` is the leaf: its own binary records `closure_bindings: []`. Strip the key to
+            # make it a LEGACY leaf binary, which must still be fresh.
+            meta = (repo_root / "workspace" / "pipelines" / "component__c__0.1.0"
+                    / "c_20260101_001" / "binary" / "bin_20260725_001" / "binary_meta.json")
+            doc = json.loads(meta.read_text(encoding="utf-8"))
+            del doc["dependency_check"]["closure_bindings"]
+            meta.write_text(json.dumps(doc) + "\n", encoding="utf-8")
+            fresh, detail = _dependency_binding_freshness(repo_root, "component", "c", "0.1.0")
+            self.assertTrue(fresh, detail)
+            self.assertTrue(
+                _verify_dep_stage(repo_root, "component", "c", "0.1.0", "pipeline_ref"))
+
+    def test_a_node_whose_leaf_owns_its_dependency_build_is_refused(self) -> None:
+        """The declared availability limit (see `_dependency_binding_freshness`'s docstring): the
+        conductor stages — and so records bindings — only for a node whose control file the
+        neutral core authors. A node with dependencies that records `[]` is therefore refused
+        rather than special-cased. No such node can be certified today; this pins the behaviour
+        so extending that scope trips a red test instead of silently locking the node out."""
+        from tools.orchestration_runtime import _dependency_binding_freshness
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root, bindings=[])
+            fresh, detail = _dependency_binding_freshness(repo_root, "component", "b", "0.1.0")
+            self.assertFalse(fresh)
+            self.assertIn("compiled against closure []", detail)
+
+    def test_malformed_bindings_are_stale(self) -> None:
+        from tools.orchestration_runtime import _dependency_binding_freshness
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            for shape in ("not-a-list",
+                          [{"node_key": "component/c@0.1.0"}],
+                          [{"model_source_sha256": "deadbeef"}],
+                          [{"node_key": "component/c@0.1.0", "model_source_sha256": ""}]):
+                self._seed(repo_root, bindings=shape)
+                fresh, detail = _dependency_binding_freshness(
+                    repo_root, "component", "b", "0.1.0")
+                self.assertFalse(fresh, shape)
+                self.assertIn("closure_bindings is malformed", detail)
+
+    def test_a_binding_whose_dependency_is_no_longer_certified_is_stale(self) -> None:
+        from tools.orchestration_runtime import _dependency_binding_freshness
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            shutil.rmtree(repo_root / "workspace" / "pipelines" / "component__c__0.1.0")
+            fresh, detail = _dependency_binding_freshness(repo_root, "component", "b", "0.1.0")
+            self.assertFalse(fresh)
+            self.assertIn("no longer has a certified staged source", detail)
+
+    def test_recorded_closure_must_equal_the_certified_ir_closure(self) -> None:
+        """A binary that predates its node's current IR: the IR now declares a closure member
+        the binary never linked. R6-lite cannot see it — the sidecar it compares IS the current
+        IR's, and it agrees with the registry."""
+        from tools.orchestration_runtime import _dependency_binding_freshness
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root, recorded_closure=["component/gone@0.1.0"])
+            fresh, detail = _dependency_binding_freshness(repo_root, "component", "b", "0.1.0")
+            self.assertFalse(fresh)
+            self.assertIn("component/gone@0.1.0", detail)
+            self.assertIn("component/c@0.1.0", detail)
+
+    def test_absence_of_a_pipeline_is_not_staleness(self) -> None:
+        """A dep with no pipeline / no certified binary is answered by the `pipeline_ref` stage
+        itself; manufacturing staleness here would mask that verdict."""
+        from tools.orchestration_runtime import _dependency_binding_freshness
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            shutil.rmtree(repo_root / "workspace" / "pipelines" / "component__b__0.1.0")
+            self.assertEqual(
+                _dependency_binding_freshness(repo_root, "component", "b", "0.1.0"), (True, None))
+
+    # ---- the second evaluator, and the reporting -----------------------------------------
+
+    def test_launch_gate_certification_demotes_a_stale_binding_to_ir_level(self) -> None:
+        """The launch gate recomputes readiness through `_certify_and_collect_dep_artifacts`,
+        which does NOT route through `_verify_dep_stage`. A drifted binding demotes the dep to
+        level 1 (its IR still certifies), so `workflow-launch-check` refuses a single-node run
+        on the same tree `--with-deps` would re-certify. Twin of
+        `DependencyFreshnessTests::test_launch_gate_certification_demotes_a_stale_dependency`,
+        which demotes to level 0 because the IR itself is what went stale there."""
+        from tools.orchestration_runtime import (
+            _certify_and_collect_dep_artifacts, _compute_dep_readiness_and_fingerprint)
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            fresh_level = _certify_and_collect_dep_artifacts(
+                repo_root, "spec/problem/a")["certified_entries"][0][3]
+            self.assertGreaterEqual(fresh_level, 2)
+
+            self._seed_dep(repo_root, "component/c@0.1.0", pipeline_id="c_20260101_001",
+                           source_id="src_20260903_001", binary_id="bin_20260903_001",
+                           body="module c_model ! REGENERATED\nend module c_model\n")
+            stale_level = _certify_and_collect_dep_artifacts(
+                repo_root, "spec/problem/a")["certified_entries"][0][3]
+            self.assertEqual(stale_level, 1)
+            readiness = _compute_dep_readiness_and_fingerprint(repo_root, "spec/problem/a")[0]
+            self.assertTrue(readiness["ir_ref_verified"])
+            self.assertFalse(readiness["pipeline_ref_verified"])
+
+    def test_stale_details_names_the_stale_binding_of_a_consumer(self) -> None:
+        from tools.orchestration_runtime import _stale_dependency_details
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            self.assertEqual(_stale_dependency_details(repo_root, "spec/problem/a"), [])
+            self._seed_dep(repo_root, "component/c@0.1.0", pipeline_id="c_20260101_001",
+                           source_id="src_20260903_001", binary_id="bin_20260903_001",
+                           body="module c_model ! REGENERATED\nend module c_model\n")
+            details = _stale_dependency_details(repo_root, "spec/problem/a")
+            self.assertEqual(len(details), 1, details)
+            self.assertIn("src_20260903_001", details[0])
+
+    def test_stale_details_ignores_a_binding_whose_consumer_never_built(self) -> None:
+        """An unbuilt dep is "not ready", a distinct condition with a distinct remedy, so its
+        binding must not be reported as stale — the twin of the `_dep_ir_meta_passes` guard."""
+        from tools.orchestration_runtime import _stale_dependency_details
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root, consumer_binary_status="fail")
+            self._seed_dep(repo_root, "component/c@0.1.0", pipeline_id="c_20260101_001",
+                           source_id="src_20260903_001", binary_id="bin_20260903_001",
+                           body="module c_model ! REGENERATED\nend module c_model\n")
+            self.assertEqual(_stale_dependency_details(repo_root, "spec/problem/a"), [])
+
+    def test_verify_dep_stage_detail_names_the_failing_stage(self) -> None:
+        """The grounds the closure driver records. Each stage's own refusal reaches the caller
+        instead of an opaque boolean."""
+        from tools.orchestration_runtime import _verify_dep_stage_detail
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            for stage in ("ir_ref", "pipeline_ref", "aggregate_verdict"):
+                self.assertEqual(
+                    _verify_dep_stage_detail(repo_root, "component", "b", "0.1.0", stage),
+                    (True, None), stage)
+            # A binding drift refuses `pipeline_ref` and names both sources.
+            self._seed_dep(repo_root, "component/c@0.1.0", pipeline_id="c_20260101_001",
+                           source_id="src_20260903_001", binary_id="bin_20260903_001",
+                           body="module c_model ! REGENERATED\nend module c_model\n")
+            ok, detail = _verify_dep_stage_detail(
+                repo_root, "component", "b", "0.1.0", "pipeline_ref")
+            self.assertFalse(ok)
+            self.assertIn("src_20260903_001", detail)
+            # A missing IR refuses `ir_ref` by name.
+            shutil.rmtree(repo_root / "workspace" / "ir" / "component__b__0.1.0")
+            ok, detail = _verify_dep_stage_detail(
+                repo_root, "component", "b", "0.1.0", "ir_ref")
+            self.assertFalse(ok)
+            self.assertIn("no certified IR", detail)
+            # A missing pipeline refuses `pipeline_ref` / `aggregate_verdict` by name.
+            shutil.rmtree(repo_root / "workspace" / "pipelines" / "component__b__0.1.0")
+            for stage in ("pipeline_ref", "aggregate_verdict"):
+                ok, detail = _verify_dep_stage_detail(
+                    repo_root, "component", "b", "0.1.0", stage)
+                self.assertFalse(ok)
+                self.assertIn("no pipeline", detail)
+
+    def test_binding_resolution_mirrors_build_staging(self) -> None:
+        """The parity that makes CERTIFIED-AGAINST == STAGED-NOW true rather than intended: the
+        readiness comparison and the deterministic Build stage must resolve the same artifact.
+        This drives the PRODUCTION stager (`Conductor._stage_dependency_sources`), not a
+        reconstruction of it, so a divergence between the two selections cannot hide."""
+        import tools.workflow_conductor as wc
+        from tools.orchestration_runtime import _resolve_certified_closure_binding
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            # A second, NEWER certification of `c` — the case where a naive selection diverges.
+            self._seed_dep(repo_root, "component/c@0.1.0", pipeline_id="c_20260101_001",
+                           source_id="src_20260903_001", binary_id="bin_20260903_001",
+                           body="module c_model ! REGENERATED\nend module c_model\n")
+            refs = wc.NodeRefs(node_key="component/b@0.1.0", spec_path="spec/component/b",
+                               ir_id="b_20260101_001", pipeline_id="b_20260101_001",
+                               source_id="src_x", binary_id="bin_x")
+            (repo_root / refs.ir_ref).mkdir(parents=True, exist_ok=True)
+            (repo_root / refs.ir_ref / "spec.ir.yaml").write_text(
+                "impl_defaults:\n  toolchain:\n    language: fortran\n"
+                "    build_system: make\n"
+                'dependency:\n  node_key: "component/b@0.1.0"\n'
+                '  direct_deps:\n    - node_key: "component/c@0.1.0"\n',
+                encoding="utf-8")
+            conductor = wc.Conductor.__new__(wc.Conductor)
+            conductor.repo_root = repo_root
+            obj_dir = repo_root / "workspace" / "tmp" / "arid_parity" / "build"
+            staged = conductor._stage_dependency_sources(refs, obj_dir)
+            resolved, err = _resolve_certified_closure_binding(repo_root, "component/c@0.1.0")
+            self.assertIsNone(err)
+            self.assertEqual(staged, [resolved])
+            # And the recorded hash is the hash of the bytes that landed in the build dir.
+            import hashlib
+            self.assertEqual(
+                resolved["model_source_sha256"],
+                hashlib.sha256((obj_dir / "c_model.f90").read_bytes()).hexdigest())
+
+
 class HostPycacheRedirectExemptionTest(unittest.TestCase):
     """The in-process conductor host redirects its bytecode cache to workspace/.pycache/
     (run_workflow sets sys.pycache_prefix); _is_host_pycache_redirect_write exempts only that

@@ -6293,22 +6293,13 @@ class Conductor:
         on which dep / which version. The spec_id basenames must nonetheless be unique across the
         closure (the staged `<spec_id>_model.f90` / object rules are keyed on the bare spec_id);
         a same-spec_id clash (diamond) raises here (L6)."""
+        from tools.orchestration_runtime import _closure_nodes_from_graph
         from tools.validate_pipeline_semantics import _read_dependency_graph_sidecar
         graph = _read_dependency_graph_sidecar(self.repo_root, refs.ir_ref) or {}
-        all_nodes = graph.get("all_nodes") if isinstance(graph, dict) else None
-        levels: dict[str, int] = {}
-        closure: list[str] = []
-        seen: set[str] = set()
-        for n in all_nodes or []:
-            if not (isinstance(n, dict) and isinstance(n.get("node_key"), str)):
-                continue
-            nk = n["node_key"].strip()
-            if not nk or nk == refs.node_key or nk in seen:
-                continue
-            seen.add(nk)
-            levels[nk] = n.get("topo_level") or 0
-            closure.append(nk)
-        closure.sort(key=lambda nk: levels.get(nk, 0))
+        # The ordering itself lives in `_closure_nodes_from_graph`, so the readiness comparison
+        # (`_dependency_binding_freshness`) derives the SAME closure from the SAME sidecar. What
+        # stays here is this caller's own policy: reading the sidecar, and the L6 guard below.
+        closure = _closure_nodes_from_graph(graph, refs.node_key)
         # L6 guard: the Model B staged source basename (`<spec_id>_model.f90`) and the
         # Makefile object rules (`$(OBJDIR)/<spec_id>_model.o`) are keyed on the bare
         # spec_id (kind/@version dropped), and the dep's generated source declares a Fortran
@@ -8550,7 +8541,7 @@ clean:
             return ProcResult(1, "", f"deterministic_{phase}_error: {exc}")
         return ProcResult(int(out.get("returncode", 0)), out.get("stdout", ""), out.get("stderr", ""))
 
-    def _stage_dependency_sources(self, refs: NodeRefs, obj_dir: Path) -> list[str]:
+    def _stage_dependency_sources(self, refs: NodeRefs, obj_dir: Path) -> list[dict[str, Any]]:
         """Model B (docs/design): stage each dependency-closure `<dep>_model.f90` into the
         per-run build tmp `$(OBJDIR)` so the conductor-authored dependency Makefile
         (`_write_makefile` non-leaf branch) compiles + links the closure. Never touches the
@@ -8565,9 +8556,16 @@ clean:
         guarantees the staged code is the exact source the ready binary/verdict was built from.
         node_keys carry `@<version>`, so the per-version workspace path is unambiguous.
 
-        Returns the repo-relative refs of the staged sources (deepest-first). Raises on an
-        unresolvable dependency: a missing dep source means the dependency was not built
-        ready (run `--with-deps` first), which is a build precondition failure routed to
+        Returns the BINDING of each staged source (deepest-first, i.e. staging/compile order):
+        `{node_key, pipeline_ref, binary_id, source_id, model_source_ref, model_source_sha256}`,
+        as resolved by `orchestration_runtime._resolve_certified_closure_binding` — the single
+        selection the readiness comparison (`_dependency_binding_freshness`) re-runs, so
+        CERTIFIED-AGAINST and STAGED-NOW are decided by one rule. The `sha256` and the copy read
+        the same immutable file: a `source_id` directory's content is written once and never
+        rewritten, so the hash recorded in `binary_meta` is the hash of the bytes compiled.
+
+        Raises on an unresolvable dependency: a missing dep source means the dependency was not
+        built ready (run `--with-deps` first), which is a build precondition failure routed to
         transport fail_closed (operator --resume), NOT a content failure the generate retry
         loop could fix.
 
@@ -8576,7 +8574,7 @@ clean:
         only consumer of the staged `<dep>_model.f90`. For a c/cpp/mixed dependency node the
         Generate child still owns the (LLM-authored) Makefile and its own dependency build, so
         the conductor must not stage Fortran sources (they do not exist under those names)."""
-        from tools.orchestration_runtime import _certified_model_source, _latest_pipeline_dir
+        from tools.orchestration_runtime import _resolve_certified_closure_binding
         if not self._conductor_authors_makefile(refs):
             return []
         nodes = self._dependency_closure_nodes(refs)
@@ -8599,9 +8597,8 @@ clean:
                     f"re-author it; phase_01 §V4 closure contract)")
             return []
         obj_dir.mkdir(parents=True, exist_ok=True)
-        staged: list[str] = []
+        staged: list[dict[str, Any]] = []
         for nk in nodes:
-            safe = node_key_safe(nk)
             sid = spec_id_of(nk)
             # Bind the staged source to the SAME binary the readiness gate certified, NOT to
             # the pipeline-level lineage.json. `_verify_dep_stage` certifies the latest
@@ -8610,36 +8607,27 @@ clean:
             # `source_source_id`. The pipeline lineage.json, by contrast, tracks the latest
             # GENERATED source, which a Generate retry may have advanced past the certified
             # binary's source (newer source, not yet rebuilt/validated) — staging from lineage
-            # would then compile the depending node against UNVERIFIED dependency code. Use the
-            # certified binary's `source_source_id` so the staged source == the validated one.
-            # `_certified_model_source` is the single-sourced selection the Generate-time
-            # interface hint (`_resolve_dependency_facts`) reads too, so the interface a
-            # consumer is SHOWN equals the source Build COMPILES (no drift).
-            # Locate the dependency's own pipeline by its EXACT sidecar-pinned version. The
-            # sidecar pins the highest catalog version satisfying the consumer constraint
-            # (matching run_workflow's node_label / `--with-deps` scheduling), so a correctly
-            # built closure has that exact version's pipeline. If it is absent, FAIL CLOSED
-            # rather than substitute a sibling version: staging a different version could link
-            # stale/constraint-incompatible dependency code, and the version-tolerant readiness
-            # gate (which accepts any matching version) diverging from exact-version staging is
-            # the L6-deferred multi-version concern — kept fail-closed until that lands. (All
-            # current specs are single-version, so the pinned version == the built version.)
-            pipe_dir = _latest_pipeline_dir(
-                self.repo_root / "workspace" / "pipelines" / safe)
-            if pipe_dir is None:
-                raise RuntimeError(
-                    f"dependency {nk}: no ready pipeline under workspace/pipelines/{safe} "
-                    f"to stage {sid}_model.f90 from (build the dependency closure first, "
-                    f"e.g. run_workflow.py --with-deps)")
-            model_src = _certified_model_source(pipe_dir, sid)
-            if model_src is None:
-                raise RuntimeError(
-                    f"dependency {nk}: cannot resolve certified {sid}_model.f90 under "
-                    f"{self._rel(pipe_dir)} (no binary_meta.json / no source_source_id / "
-                    f"missing source file; dependency not built ready — "
-                    f"run_workflow.py --with-deps first)")
-            shutil.copy2(model_src, obj_dir / f"{sid}_model.f90")
-            staged.append(self._rel(model_src))
+            # would then compile the depending node against UNVERIFIED dependency code.
+            # `_resolve_certified_closure_binding` is that single-sourced selection: the
+            # Generate-time interface hint (`_resolve_dependency_facts`) reads the same chain, so
+            # the interface a consumer is SHOWN equals the source Build COMPILES, and readiness
+            # (`_dependency_binding_freshness`) re-runs it so CERTIFIED-AGAINST equals
+            # STAGED-NOW. It locates the dependency's own pipeline by its EXACT sidecar-pinned
+            # version: the sidecar pins the highest catalog version satisfying the consumer
+            # constraint (matching run_workflow's node_label / `--with-deps` scheduling), so a
+            # correctly built closure has that exact version's pipeline. If it is absent, FAIL
+            # CLOSED rather than substitute a sibling version — staging a different version
+            # could link stale/constraint-incompatible dependency code, and the version-tolerant
+            # readiness gate (which accepts any matching version) diverging from exact-version
+            # staging is the L6-deferred multi-version concern. (All current specs are
+            # single-version, so the pinned version == the built version.)
+            binding, err = _resolve_certified_closure_binding(self.repo_root, nk)
+            if binding is None:
+                raise RuntimeError(f"dependency {nk}: {err}")
+            shutil.copy2(
+                self.repo_root / binding["model_source_ref"],
+                obj_dir / f"{sid}_model.f90")
+            staged.append(binding)
         return staged
 
     def _build_inproc(self, refs: NodeRefs, child_arid: str, cap_token: str) -> dict[str, str]:
@@ -8668,8 +8656,13 @@ clean:
         # c/cpp/mixed nodes (LLM-authored Makefile owns its own dependency build). A staging
         # failure raises -> _run_deterministic_substep catches it as a transport fail_closed
         # (build precondition: the dependency must be built ready first). The transient OBJDIR
-        # stage never touches canonical src/ (phase_02 §41 carve-out).
-        self._stage_dependency_sources(refs, obj_dir)
+        # stage never touches canonical src/ (phase_02 §41 carve-out). The returned bindings —
+        # which certified source of each closure node was staged, and its sha256 — are recorded
+        # in binary_meta below, and are what readiness later compares against
+        # (`_dependency_binding_freshness`, R6 proper closure-source half). They are resolved
+        # BEFORE the compile, so a failing build records them too: the binding describes what
+        # was linked, not whether linking succeeded.
+        closure_bindings = self._stage_dependency_sources(refs, obj_dir)
 
         result = tool_compile_project({
             "project_dir": str(src_dir),
@@ -8743,8 +8736,16 @@ clean:
             "command_log_ref": command_log_ref,
             "command_log_path": command_log_ref,
             "build_log_ref": command_log_ref,
+            # `closure_bindings` is the DURABLE record of what this binary was compiled
+            # against — one entry per closure node in staging/compile order, carrying the
+            # certified source's identity and its sha256. `_dependency_binding_freshness` reads
+            # it to decide whether a later regeneration of a dependency has left this consumer
+            # linked to code that no longer exists. A LEAF records `[]` explicitly: the key's
+            # PRESENCE is what tells a leaf apart from a legacy binary certified before this
+            # contract, and a legacy binary with a non-empty closure fails closed.
             "dependency_check": {"direct_deps": dep_keys,
-                                 "resolved": "match" if ok else "unresolved"},
+                                 "resolved": "match" if ok else "unresolved",
+                                 "closure_bindings": closure_bindings},
             "failure_category": None,
             "failure_source_refs": [],
             "failure_excerpt": None,

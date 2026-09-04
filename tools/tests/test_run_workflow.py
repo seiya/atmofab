@@ -5033,12 +5033,16 @@ class DependencyClosureTests(unittest.TestCase):
             # without a real workflow). Exercises both the pre-run skip check and
             # the post-run readiness verification.
             def fake_ready(repo_root, node, required_stages):
-                return node["spec_ref"] in ran
+                # The driver reads the DICT form; a bool fake here would be bypassed.
+                ready = node["spec_ref"] in ran
+                return {"ready": ready, "version": node["spec_versions"][0],
+                        "failed_stage": None if ready else "ir_ref",
+                        "detail": None if ready else "fake: not run yet"}
 
             orig = run_workflow._run_node
-            orig_ready = run_workflow._dependency_node_ready
+            orig_ready = run_workflow._dependency_node_readiness
             run_workflow._run_node = fake_run_node  # type: ignore[assignment]
-            run_workflow._dependency_node_ready = fake_ready  # type: ignore[assignment]
+            run_workflow._dependency_node_readiness = fake_ready  # type: ignore[assignment]
             try:
                 buf = io.StringIO()
                 with redirect_stdout(buf):
@@ -5059,7 +5063,7 @@ class DependencyClosureTests(unittest.TestCase):
                     )
             finally:
                 run_workflow._run_node = orig  # type: ignore[assignment]
-                run_workflow._dependency_node_ready = orig_ready  # type: ignore[assignment]
+                run_workflow._dependency_node_readiness = orig_ready  # type: ignore[assignment]
 
             self.assertEqual(rc, 0)
             # deps (c, b) run before the target a; target last.
@@ -5083,12 +5087,16 @@ class DependencyClosureTests(unittest.TestCase):
             return 0
 
         def fake_ready(repo_root, node, required_stages):
-            return node["spec_ref"] in ran
+            # The driver reads the DICT form; a bool fake here would be bypassed.
+            ready = node["spec_ref"] in ran
+            return {"ready": ready, "version": node["spec_versions"][0],
+                    "failed_stage": None if ready else "ir_ref",
+                    "detail": None if ready else "fake: not run yet"}
 
         orig = run_workflow._run_node
-        orig_ready = run_workflow._dependency_node_ready
+        orig_ready = run_workflow._dependency_node_readiness
         run_workflow._run_node = fake_run_node  # type: ignore[assignment]
-        run_workflow._dependency_node_ready = fake_ready  # type: ignore[assignment]
+        run_workflow._dependency_node_readiness = fake_ready  # type: ignore[assignment]
         try:
             buf = io.StringIO()
             with redirect_stdout(buf):
@@ -5112,7 +5120,7 @@ class DependencyClosureTests(unittest.TestCase):
                 )
         finally:
             run_workflow._run_node = orig  # type: ignore[assignment]
-            run_workflow._dependency_node_ready = orig_ready  # type: ignore[assignment]
+            run_workflow._dependency_node_readiness = orig_ready  # type: ignore[assignment]
         return rc, captured, buf.getvalue()
 
     def _drive_closure_capture(self, repo_root, *, resume, prior_orch_by_spec):
@@ -5334,11 +5342,13 @@ class DependencyClosureTests(unittest.TestCase):
             # No raw JSON braces leak onto the terminal in human mode.
             self.assertFalse(
                 any(ln.lstrip().startswith("{") for ln in lines), lines)
-            # dependency_node_begin renders with the [dep ] prefix.
+            # dependency_node_begin renders with the [dep ] prefix, and carries WHY the node
+            # is being re-run rather than skipped (issue #153: a re-run left no trace).
+            dep_lines = [ln for ln in lines if ln.startswith("[dep ]")]
+            self.assertTrue(any("component/c" in ln for ln in dep_lines), lines)
             self.assertTrue(
-                any(ln.startswith("[dep ]") and "component/c" in ln
-                    for ln in lines),
-                lines,
+                all("stale=ir_ref:" in ln and "no certified IR" in ln for ln in dep_lines),
+                dep_lines,
             )
             # The closure failure summary renders with the [FAIL] prefix.
             self.assertTrue(
@@ -5347,6 +5357,103 @@ class DependencyClosureTests(unittest.TestCase):
                     for ln in lines),
                 lines,
             )
+
+    def test_driver_rerun_entry_carries_the_failed_stage_and_detail(self) -> None:
+        """The run log must say WHY each closure node was re-run. Before issue #153 a re-run
+        entry carried only `exit_code`, so a node re-run because its dependency had been
+        regenerated was indistinguishable from one that had never been built — and the drifted
+        consumer that WAS skipped left the single line `{"skipped": true, "status": "ready"}`."""
+        from tools.orchestration_runtime import _load_spec_catalog
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            _seed_shape_expr_schema_into(repo_root)
+            self._seed_diamond(repo_root)
+            _load_spec_catalog.cache_clear()
+
+            orig = run_workflow._run_node
+            run_workflow._run_node = lambda **kw: 0  # type: ignore[assignment]
+            try:
+                buf = io.StringIO()
+                with redirect_stdout(buf):
+                    rc = run_workflow._run_with_dependency_closure(
+                        repo_root=repo_root,
+                        base_env={"PATH": os.environ.get("PATH", "")},
+                        target_orchestration_id="orch_target",
+                        target_spec_ref="spec/problem/a",
+                        target_source_dependency_ref="spec/problem/a/deps.yaml",
+                        until_phase="Validate", llm="claude", llm_command="claude",
+                        llm_config=_sample_config("claude"), workflow_mode="dev",
+                        agent_model=None, status="running", run_conductor=False,
+                        stdout_format="jsonl",
+                    )
+            finally:
+                run_workflow._run_node = orig  # type: ignore[assignment]
+
+            self.assertEqual(rc, 2)
+            events = [json.loads(ln) for ln in buf.getvalue().splitlines() if ln.strip()]
+            fail = [e for e in events
+                    if e.get("reason") == "dependency_not_ready_after_run"][0]
+            entry = fail["dependency_runs"][-1]
+            self.assertFalse(entry["skipped"])
+            self.assertEqual(entry["rerun_reason"]["failed_stage"], "ir_ref")
+            self.assertIn("no certified IR", entry["rerun_reason"]["detail"])
+            # And the post-run re-verification records the stage that STILL refuses.
+            self.assertEqual(entry["readiness"]["failed_stage"], "ir_ref")
+            self.assertIn("stage ir_ref:", fail["detail"])
+            # The begin event carries the same grounds, so the stream and the summary agree.
+            begin = [e for e in events if e.get("event") == "dependency_node_begin"][0]
+            self.assertEqual(begin["failed_stage"], "ir_ref")
+
+    def test_driver_skip_entry_records_the_certified_version(self) -> None:
+        """A skipped node records the version that satisfied readiness. Without it the log says
+        a node was skipped without saying what was accepted as ready."""
+        from tools.orchestration_runtime import _load_spec_catalog
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            _seed_shape_expr_schema_into(repo_root)
+            self._seed_diamond(repo_root)
+            _load_spec_catalog.cache_clear()
+
+            def fake_readiness(repo_root_, node, required_stages):
+                ready = node["spec_id"] == "c"
+                return {"ready": ready, "version": node["spec_versions"][0],
+                        "failed_stage": None if ready else "pipeline_ref",
+                        "detail": None if ready else "fake: stale binding"}
+
+            orig = run_workflow._run_node
+            orig_ready = run_workflow._dependency_node_readiness
+            run_workflow._run_node = lambda **kw: 0  # type: ignore[assignment]
+            run_workflow._dependency_node_readiness = (  # type: ignore[assignment]
+                fake_readiness)
+            try:
+                buf = io.StringIO()
+                with redirect_stdout(buf):
+                    rc = run_workflow._run_with_dependency_closure(
+                        repo_root=repo_root,
+                        base_env={"PATH": os.environ.get("PATH", "")},
+                        target_orchestration_id="orch_target",
+                        target_spec_ref="spec/problem/a",
+                        target_source_dependency_ref="spec/problem/a/deps.yaml",
+                        until_phase="Validate", llm="claude", llm_command="claude",
+                        llm_config=_sample_config("claude"), workflow_mode="dev",
+                        agent_model=None, status="running", run_conductor=False,
+                        stdout_format="jsonl",
+                    )
+            finally:
+                run_workflow._run_node = orig  # type: ignore[assignment]
+                run_workflow._dependency_node_readiness = orig_ready  # type: ignore[assignment]
+
+            self.assertEqual(rc, 2)
+            events = [json.loads(ln) for ln in buf.getvalue().splitlines() if ln.strip()]
+            fail = [e for e in events
+                    if e.get("reason") == "dependency_not_ready_after_run"][0]
+            skipped = [e for e in fail["dependency_runs"] if e["skipped"]]
+            self.assertEqual(len(skipped), 1, fail["dependency_runs"])
+            self.assertEqual(skipped[0]["spec_ref"], "spec/component/c")
+            self.assertEqual(skipped[0]["version"], "0.1.0")
+            rerun = [e for e in fail["dependency_runs"] if not e["skipped"]][0]
+            self.assertEqual(rerun["rerun_reason"],
+                             {"failed_stage": "pipeline_ref", "detail": "fake: stale binding"})
 
     def test_driver_stops_when_dependency_not_ready_after_run(self) -> None:
         # A dependency that exits 0 without producing readiness evidence
@@ -5701,13 +5808,17 @@ class DependencyClosureTests(unittest.TestCase):
                 return 0
 
             def fake_ready(repo_root_, node, required_stages):
-                return node["spec_ref"] in ran
+                # The driver reads the DICT form; a bool fake here would be bypassed.
+                ready = node["spec_ref"] in ran
+                return {"ready": ready, "version": node["spec_versions"][0],
+                        "failed_stage": None if ready else "ir_ref",
+                        "detail": None if ready else "fake: not run yet"}
 
             from tools.orchestration_runtime import _load_spec_catalog
             _load_spec_catalog.cache_clear()
-            orig, orig_ready = run_workflow._run_node, run_workflow._dependency_node_ready
+            orig, orig_ready = run_workflow._run_node, run_workflow._dependency_node_readiness
             run_workflow._run_node = fake_run_node  # type: ignore[assignment]
-            run_workflow._dependency_node_ready = fake_ready  # type: ignore[assignment]
+            run_workflow._dependency_node_readiness = fake_ready  # type: ignore[assignment]
             buf = io.StringIO()
             try:
                 with _forced_liveness(), redirect_stdout(buf):
@@ -5726,7 +5837,7 @@ class DependencyClosureTests(unittest.TestCase):
                     )
             finally:
                 run_workflow._run_node = orig  # type: ignore[assignment]
-                run_workflow._dependency_node_ready = orig_ready  # type: ignore[assignment]
+                run_workflow._dependency_node_readiness = orig_ready  # type: ignore[assignment]
             self.assertEqual(rc, 2)
             # Both dependencies ran; the target was refused because of the run that
             # appeared after the closure started.
@@ -8265,7 +8376,7 @@ class LlmConfigStartupTests(unittest.TestCase):
             DependencyClosureTests._seed_diamond(self, repo_root)   # type: ignore[arg-type]
             _load_spec_catalog.cache_clear()
             self._runtime_calls = []
-            orig_ready = run_workflow._dependency_node_ready
+            orig_ready = run_workflow._dependency_node_readiness
             orig_rt = run_workflow._runtime_command
             real_run_node = run_workflow._run_node
             ran: set[str] = set()
@@ -8276,8 +8387,12 @@ class LlmConfigStartupTests(unittest.TestCase):
 
             try:
                 run_workflow._runtime_command = self._fake_runtime  # type: ignore[assignment]
-                run_workflow._dependency_node_ready = (            # type: ignore[assignment]
-                    lambda root, node, stages: node["spec_ref"] in ran)
+                run_workflow._dependency_node_readiness = (        # type: ignore[assignment]
+                    lambda root, node, stages: {
+                        "ready": node["spec_ref"] in ran,
+                        "version": node["spec_versions"][0],
+                        "failed_stage": None if node["spec_ref"] in ran else "ir_ref",
+                        "detail": None if node["spec_ref"] in ran else "fake: not run yet"})
                 run_workflow._run_node = _tracking_run_node        # type: ignore[assignment]
                 with redirect_stdout(io.StringIO()):
                     rc = run_workflow.main([
@@ -8287,7 +8402,7 @@ class LlmConfigStartupTests(unittest.TestCase):
                         "--no-run-conductor", "--stdout-format", "jsonl"])
             finally:
                 run_workflow._run_node = real_run_node             # type: ignore[assignment]
-                run_workflow._dependency_node_ready = orig_ready   # type: ignore[assignment]
+                run_workflow._dependency_node_readiness = orig_ready   # type: ignore[assignment]
                 run_workflow._runtime_command = orig_rt            # type: ignore[assignment]
             self.assertEqual(rc, 0)
             self.assertEqual(ran, {"spec/component/c", "spec/component/b", "spec/problem/a"})
