@@ -6193,19 +6193,46 @@ def _extract_controlled_spec_section(text: str, section_num: str) -> str | None:
     heading and the next ``## <m>.`` heading), or ``None`` when the section is absent.
 
     controlled_spec sections are numbered ``## 0.`` .. ``## 8.``; only these top-level
-    numbered headings delimit a section (a ``### `` subsection does not)."""
+    numbered headings delimit a section (a ``### `` subsection does not).
+
+    FENCE-AWARE, and that is not cosmetic. `_extract_subsection_51` was made fence-aware in issue
+    #153 PR-2 round 1, after a YAML comment inside §5.1's fence truncated the SUBSECTION mid-fence
+    and both gates reported "§5.1 canonical interface block (a fenced code block) is missing" about
+    a block plainly present. This function is one level up and had the same defect for the same
+    reason: a fenced line that happens to look like a numbered heading — `## 6. legacy note` as a
+    YAML comment — ended §5 mid-fence, with the identical symptom, the identical message, and the
+    identical unrepairability, because `compile.generate` cannot edit `controlled_spec.md` and every
+    retry is byte-identical. Fixing only the inner scan fixed only the inner half.
+
+    A REAL following heading must still terminate the section, so the repair is fence STATE, not
+    "stop looking": a heading outside a fence ends the section exactly as before. Corpus-zero today,
+    which is why neither half was ever hit; this branch makes §5.1 required on every component and
+    so multiplies the authoring surface that can produce it."""
     lines = text.splitlines()
     start: int | None = None
+    in_fence = False
     for i, line in enumerate(lines):
-        match = _CONTROLLED_SPEC_SECTION_HEADING.match(line.strip())
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        match = _CONTROLLED_SPEC_SECTION_HEADING.match(stripped)
         if match and match.group(1) == section_num:
             start = i
             break
     if start is None:
         return None
     body: list[str] = []
+    in_fence = False
     for line in lines[start + 1 :]:
-        if _CONTROLLED_SPEC_SECTION_HEADING.match(line.strip()):
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            in_fence = not in_fence
+            body.append(line)
+            continue
+        if not in_fence and _CONTROLLED_SPEC_SECTION_HEADING.match(stripped):
             break
         body.append(line)
     return "\n".join(body)

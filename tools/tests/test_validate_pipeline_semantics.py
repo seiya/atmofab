@@ -19447,6 +19447,74 @@ class ComponentPublicApiGateTests(unittest.TestCase):
             any("declares a signature 'dep_base__not_in_section51' absent from controlled_spec §5.1"
                 in x for x in v), v)
 
+    def test_a_duplicate_signature_symbol_is_refused_in_both_orders(self) -> None:
+        """The duplicate-`symbol` guard, which no row observed — and ORDER is why.
+
+        Measured in round 5: deleting `if symbol in ir_stanzas` leaves the whole file green. The
+        guard is load-bearing in exactly one direction. `ir_stanzas[symbol]` keeps the LAST entry,
+        so a DRIFTED-then-CORRECT pair ends up holding the correct signature and the comparison
+        passes, while the drifted entry sits in the certified IR for the `Generate.generate` leaf to
+        transcribe. The reverse order is caught by the ordinary drift comparison whether or not the
+        guard exists, so a row testing only that order proves nothing about the guard.
+
+        Both orders are checked here, and the drifted-then-correct one is the row that fails when
+        the guard is removed."""
+        import copy
+        good = self._full_api()["signatures"][0]
+        drifted = copy.deepcopy(good)
+        drifted["signature"]["args"] = drifted["signature"]["args"][:1]
+        for label, pair in (
+            ("drifted then correct", [drifted, good]),
+            ("correct then drifted", [good, drifted]),
+        ):
+            with self.subTest(order=label):
+                api = self._full_api()
+                api["signatures"] = copy.deepcopy(pair)
+                v = self._run(public_api=api)
+                self.assertTrue(
+                    any("more than once" in x for x in v),
+                    f"{label}: the duplicate symbol was not refused: {v}")
+
+    def test_a_heading_shaped_line_inside_a_fence_does_not_end_the_section(self) -> None:
+        """The OUTER section scan is fence-aware too — round 1 fixed only the inner one.
+
+        Round 1 made `_extract_subsection_51` fence-aware after a YAML comment inside §5.1's fence
+        truncated the SUBSECTION and both gates reported the fenced block "missing" about a block
+        plainly present. `_extract_controlled_spec_section` is one level up and had the same defect:
+        `## 6. legacy note` written as a YAML comment ended §5 mid-fence, with the same symptom, the
+        same message, and the same unrepairability — `compile.generate` cannot edit
+        `controlled_spec.md`, so every retry is byte-identical and the node is uncertifiable until
+        an operator deletes the comment.
+
+        The controls are the point of this row: a REAL following heading must still terminate the
+        section, and must itself still be findable. A fence-aware scan that simply stopped looking
+        for headings would pass the attack and break every spec in the tree."""
+        body = ("## 5. Public API\n"
+                "The only published `operation_id` is `dep_base__scale`.\n"
+                "### 5.1 Canonical interface block\n"
+                "```yaml\n"
+                "module_parameters: []\n"
+                "## 6. legacy note\n"
+                "  ## 2. indented note\n"
+                "types: []\n"
+                "procedures: []\n"
+                "```\n"
+                "## 6. Prohibitions\n"
+                "the real section six\n")
+        five = vps._extract_controlled_spec_section(body, "5")
+        self.assertIsNotNone(five)
+        self.assertEqual(five.count("```"), 2, f"§5 was truncated mid-fence: {five!r}")
+        # Control 1: the real heading still ends §5.
+        self.assertNotIn("the real section six", five)
+        # Control 2: the real heading is still findable as its own section.
+        six = vps._extract_controlled_spec_section(body, "6")
+        self.assertIsNotNone(six)
+        self.assertIn("the real section six", six)
+        # Control 3: a heading-shaped line inside the fence must not be mistaken for the START of a
+        # section either — the scan that FINDS §5 is fence-aware for the same reason.
+        self.assertIsNone(vps._extract_controlled_spec_section(
+            "## 5. x\n```yaml\n## 2. not a heading\n```\n", "2"))
+
     def test_an_unrecognised_spec_kind_is_refused_rather_than_skipping_the_gate(self) -> None:
         """An unknown `spec_kind` spelling must not silently turn this gate off.
 
