@@ -18817,7 +18817,22 @@ class ToolchainBackendGateTests(unittest.TestCase):
             }))
             v = []
             vps._validate_published_surface(tmp, ir_dir, v)
-            self.assertEqual(v, [], "the sibling gate must not case-fold either")
+            # The property is NOT "this gate stays silent" — it is "this gate does not treat
+            # `Infrastructure` AS `infrastructure`". Those were the same assertion until issue #153
+            # round 5 made an unrecognised spelling a REFUSAL instead of a silent skip, which is a
+            # third behaviour neither `assertEqual(v, [])` nor case-folding describes. Pin the
+            # meaning: the language-backend refusal, which only a case-folding gate could produce,
+            # must be absent.
+            self.assertFalse(
+                [x for x in v if vps._signature_backend_refusal("c") in x],
+                f"the sibling gate case-folded: {v}")
+            # And the hand-off still covers this spelling from BOTH sides, which is what the
+            # exemption above depends on: the toolchain gate does not exempt `Infrastructure`, and
+            # the surface gate now refuses the spelling outright.
+            t_v: list[str] = []
+            vps._validate_toolchain_backend_supported(tmp, ir_dir, t_v)
+            self.assertTrue(t_v, "the toolchain gate must not exempt a spelling it does not strip")
+            self.assertTrue(any("is not a known spec_kind" in x for x in v), v)
 
     def test_message_names_the_supported_backend_and_the_remedy(self) -> None:
         v = self._run(toolchain={"build_system": "cmake", "language": "cpp"})
@@ -19431,6 +19446,42 @@ class ComponentPublicApiGateTests(unittest.TestCase):
         self.assertTrue(
             any("declares a signature 'dep_base__not_in_section51' absent from controlled_spec §5.1"
                 in x for x in v), v)
+
+    def test_an_unrecognised_spec_kind_is_refused_rather_than_skipping_the_gate(self) -> None:
+        """An unknown `spec_kind` spelling must not silently turn this gate off.
+
+        `spec_kind` is leaf-authored and decides whether this gate runs at all, so an unrecognised
+        spelling used to be a TOTAL NO-OP: measured, `Component` took an IR carrying a wrong
+        operation name and no `signatures`/`module_parameters` from 4 violations to 0.
+
+        Case-sensitivity is a deliberate repo-wide convention pinned elsewhere (folding case here is
+        refused by `ToolchainBackendGateTests`), so the repair is not to accept `Component` — it is
+        to refuse what the convention does not admit, instead of skipping.
+
+        What makes it expensive rather than merely wrong is the ASYMMETRY with its Generate twin,
+        which resolves the same decision from the conductor-authored `node_key` and whose docstring
+        says that is deliberate. A leaf writing `Component` cleared Compile.static and then met a
+        fail-closed `Generate.static` routed as a WARM RESUME to `generate.generate` — a substep
+        that cannot edit the certified IR — so every retry failed identically until the budget was
+        spent, and the operator paid a Generate loop for a defect authored at Compile.
+
+        The `profile` / `problem` rows are the control: those kinds legitimately publish no exact
+        surface, so they must still pass through untouched rather than being caught by a rule that
+        refuses everything it does not pin."""
+        broken = {"published_operations": [{"operation_id": f"{self._SPEC_ID}__wrong"}],
+                  "published_types": []}
+        for kind in ("Component", "COMPONENT", "Infrastructure", "compnent"):
+            with self.subTest(unrecognised=kind):
+                v = self._run(public_api=broken, spec_kind=kind)
+                self.assertTrue(any("is not a known spec_kind" in x for x in v), (kind, v))
+        for kind in ("profile", "problem"):
+            with self.subTest(derived_post_hoc=kind):
+                self.assertEqual(self._run(public_api=broken, spec_kind=kind), [], kind)
+        for kind in ("component", "infrastructure"):
+            with self.subTest(pinned=kind):
+                v = self._run(public_api=broken, spec_kind=kind)
+                self.assertTrue(v, kind)
+                self.assertFalse([x for x in v if "is not a known spec_kind" in x], (kind, v))
 
     def test_the_controlled_spec_ref_may_not_name_a_document_the_leaf_can_author(self) -> None:
         """The ABI pin must not become a self-comparison. Round 5, and the worst defect of the five.

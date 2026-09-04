@@ -2372,9 +2372,14 @@ def _resolve_component_dep_surface(
         links (via the shared ``_certified_model_source``);
       - ``unresolved``      — neither resolvable (``published_operations == []``).
 
-    NAMES ONLY — the argument ABI is deliberately NOT carried here (the op-name-pin design;
-    the ABI stays derived from the certified source at Generate, never frozen into the
-    IR/sidecar). Best-effort: NEVER raises; a malformed / missing graph yields ``[]``.
+    NAMES ONLY here, and since issue #153 PR-2 that is a statement about THIS sidecar rather than
+    about the design. The clause this docstring used to carry — "the ABI stays derived from the
+    certified source at Generate, never frozen into the IR/sidecar" — described the decision PR-2
+    REVERSED: a `component`'s argument ABI is now authored into its own IR's
+    ``public_api.signatures`` and pinned == controlled_spec §5.1 at ``Compile.static``. What stays
+    true is the CONSUMER side: what a consumer is shown is still the SOURCE interface, because that
+    is what Build stages and links, and a rendered-ABI comparison is a WARN canary rather than a
+    gate. Best-effort: NEVER raises; a malformed / missing graph yields ``[]``.
     """
     try:
         if not isinstance(graph, dict):
@@ -12014,8 +12019,11 @@ def _build_task_card(request_payload: dict[str, Any]) -> str:
 def _build_dependency_surface_facts(surface: Any) -> str:
     """Render the L2 ``compile.generate`` dependency-surface catalog: for each COMPONENT
     dependency, its published operation NAMES (conductor-resolved into
-    ``<ir_ref>/dependency_surface.json`` at compile-phase start). Op names only — the argument ABI
-    is derived from the certified source later, never authored into the IR.
+    ``<ir_ref>/dependency_surface.json`` at compile-phase start). Op names only — what a CONSUMER
+    is shown is the source interface, because that is what Build stages and links. Since issue #153
+    PR-2 the producing node's own IR DOES carry its argument ABI (``public_api.signatures``, pinned
+    == §5.1); an earlier version of this sentence said the ABI is "never authored into the IR",
+    which was the design PR-2 reversed.
 
     This is the authoring leaf's ONLY source of the real dependency op names. It must copy each
     listed name VERBATIM into that dependency's ``direct_deps[].operations``; a name NOT in this

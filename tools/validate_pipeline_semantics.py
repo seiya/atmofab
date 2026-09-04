@@ -12618,6 +12618,12 @@ def _validate_public_api_name_surface(
             "absent from controlled_spec §5")
 
 
+#: Every `spec_kind` the registry admits. `_EXACT_PUBLISHED_SURFACE_KINDS` below is the subset
+#: that publishes an exact surface; this is the WHOLE set, and it exists so an unrecognised
+#: spelling can be REFUSED rather than silently skipping the surface gate a node needs.
+#: Derived from the kinds `spec/registry/spec_catalog.yaml` carries.
+_CANONICAL_SPEC_KINDS = ("component", "infrastructure", "problem", "profile")
+
 #: The `spec_kind`s whose controlled_spec publishes an EXACT surface that `Compile.static` pins:
 #: §5 published NAMES and §5.1 canonical signatures + module parameters. Every other kind's
 #: interface stays derived post-hoc from the certified source.
@@ -12732,6 +12738,26 @@ def _validate_published_surface(
 
     meta = ir.get("meta") if isinstance(ir.get("meta"), dict) else {}
     kind = str(meta.get("spec_kind") or "").strip()
+    # A SPELLING THIS GATE DOES NOT RECOGNISE IS A VIOLATION, NOT A SKIP. `spec_kind` is authored by
+    # the `compile.generate` leaf, and the line below decides whether this gate runs at all, so an
+    # unrecognised spelling used to be a total no-op: MEASURED, `Component` (or `COMPONENT`) took an
+    # IR with a wrong operation name and no `signatures`/`module_parameters` from 4 violations to 0.
+    # Case-sensitivity itself is a deliberate repo-wide convention and is pinned elsewhere, so the
+    # repair is not to fold case here — it is to refuse what the convention does not admit.
+    #
+    # The asymmetry that makes this expensive rather than merely wrong: `_validate_generated_
+    # signatures` resolves the same decision from `execution.node_key`, which the CONDUCTOR authors,
+    # and its docstring says that asymmetry is deliberate. So a leaf writing `Component` passes
+    # Compile.static and then meets a fail-closed `Generate.static` that routes as a WARM RESUME to
+    # `generate.generate` — a substep that cannot edit the certified IR. Every retry fails
+    # identically until the budget is spent, and the operator pays a Generate loop for a defect
+    # authored at Compile.
+    if kind and kind not in _CANONICAL_SPEC_KINDS:
+        violations.append(
+            f"{derived_path}:meta.spec_kind '{kind}' is not a known spec_kind "
+            f"({', '.join(sorted(_CANONICAL_SPEC_KINDS))}) — spelling is exact, and an unrecognised "
+            "one would silently skip the published-surface gate that this node's kind may require")
+        return
     if kind not in _EXACT_PUBLISHED_SURFACE_KINDS:
         return  # every other kind's interface is derived post-hoc, by design
 
