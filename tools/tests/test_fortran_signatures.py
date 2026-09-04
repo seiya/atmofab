@@ -427,7 +427,7 @@ class FortranStanzaParserTests(unittest.TestCase):
         # in-tree corpus and had NO test input, so deleting the attribute group from
         # `_TYPE_HEADER_RE` left the whole suite green. The consequence on a real run is
         # over-rejection, not bypass: the splitter returns no stanza for the header, and
-        # `_validate_infrastructure_generated_signatures` then reports a published type as missing
+        # `_validate_generated_signatures` then reports a published type as missing
         # from a source that declares it correctly. Found by a witness census; it is the sharpest
         # gap this branch's own sweeps did not reach, because the decision is in code the move
         # relocated without changing.

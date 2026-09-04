@@ -37,7 +37,7 @@ from tools.validate_pipeline_semantics import (
     _validate_makefile_test_invokes_cases,
     _validate_source_meta_json_files,
     _validate_compile_dependency_consistency,
-    _validate_infrastructure_public_api,
+    _validate_published_surface,
     _parse_public_api_from_controlled_spec,
     _dependency_expected_node_keys,
     _algorithm_state_contract,
@@ -16092,7 +16092,7 @@ class CompileDependencyConsistencyTests(unittest.TestCase):
 
 
 class InfrastructurePublicApiGateTests(unittest.TestCase):
-    """_validate_infrastructure_public_api: the R1 deterministic gate pinning an
+    """_validate_published_surface: the R1 deterministic gate pinning an
     infrastructure node's IR public_api == controlled_spec §5 published surface."""
 
     _SPEC_ID = "hx"
@@ -16233,7 +16233,7 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             ir_dir = self._seed(Path(tmp), public_api=self._full_api())
             violations: list[str] = []
-            _validate_infrastructure_public_api(Path(tmp), ir_dir, violations)
+            _validate_published_surface(Path(tmp), ir_dir, violations)
             self.assertEqual(violations, [])
 
     def test_dropped_operation_flagged(self) -> None:
@@ -16245,7 +16245,7 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
                 if e["operation_id"] not in ("hx__emit_int", "hx__write_metrics_basis")]
             ir_dir = self._seed(Path(tmp), public_api=api)
             violations: list[str] = []
-            _validate_infrastructure_public_api(Path(tmp), ir_dir, violations)
+            _validate_published_surface(Path(tmp), ir_dir, violations)
             self.assertTrue(any("omits controlled_spec §5 operation_id 'hx__emit_int'" in v
                                 for v in violations), violations)
             self.assertTrue(any("hx__write_metrics_basis" in v for v in violations), violations)
@@ -16256,7 +16256,7 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
             api["published_operations"].append({"operation_id": "hx__not_in_spec"})
             ir_dir = self._seed(Path(tmp), public_api=api)
             violations: list[str] = []
-            _validate_infrastructure_public_api(Path(tmp), ir_dir, violations)
+            _validate_published_surface(Path(tmp), ir_dir, violations)
             self.assertTrue(any("declares operation_id 'hx__not_in_spec' absent" in v
                                 for v in violations), violations)
 
@@ -16266,7 +16266,7 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
             api["published_types"] = ["h_named"]  # short alias, not fully-qualified
             ir_dir = self._seed(Path(tmp), public_api=api)
             violations: list[str] = []
-            _validate_infrastructure_public_api(Path(tmp), ir_dir, violations)
+            _validate_published_surface(Path(tmp), ir_dir, violations)
             self.assertTrue(any("omits controlled_spec §5 derived type 'hx__h_named'" in v
                                 for v in violations), violations)
             self.assertTrue(any("declares type 'h_named' absent" in v for v in violations),
@@ -16276,21 +16276,21 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             ir_dir = self._seed(Path(tmp), public_api=_OMIT)
             violations: list[str] = []
-            _validate_infrastructure_public_api(Path(tmp), ir_dir, violations)
+            _validate_published_surface(Path(tmp), ir_dir, violations)
             self.assertTrue(any("public_api missing" in v for v in violations), violations)
 
     def test_unresolvable_controlled_spec_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             ir_dir = self._seed(Path(tmp), public_api=self._full_api(), write_cs=False)
             violations: list[str] = []
-            _validate_infrastructure_public_api(Path(tmp), ir_dir, violations)
+            _validate_published_surface(Path(tmp), ir_dir, violations)
             self.assertTrue(any("unresolvable" in v for v in violations), violations)
 
     def test_missing_controlled_spec_ref_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             ir_dir = self._seed(Path(tmp), public_api=self._full_api(), cs_ref=None)
             violations: list[str] = []
-            _validate_infrastructure_public_api(Path(tmp), ir_dir, violations)
+            _validate_published_surface(Path(tmp), ir_dir, violations)
             self.assertTrue(any("source_refs.controlled_spec missing" in v for v in violations),
                             violations)
 
@@ -16302,7 +16302,7 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
                          "source_refs": {"controlled_spec": "cs.md"}},
                 "public_api": self._full_api()})
             violations: list[str] = []
-            _validate_infrastructure_public_api(Path(tmp), Path(tmp), violations)
+            _validate_published_surface(Path(tmp), Path(tmp), violations)
             self.assertTrue(any("meta.spec_id missing" in v for v in violations), violations)
 
     def test_section5_parsing_zero_ops_fails_closed(self) -> None:
@@ -16317,18 +16317,27 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
                          "source_refs": {"controlled_spec": "cs.md"}},
                 "public_api": self._full_api()})
             violations: list[str] = []
-            _validate_infrastructure_public_api(Path(tmp), Path(tmp), violations)
+            _validate_published_surface(Path(tmp), Path(tmp), violations)
             self.assertTrue(any("parsed 0 published operation_ids" in v for v in violations),
                             violations)
 
-    def test_non_infrastructure_is_noop(self) -> None:
-        # A physics node has no exact-published contract; the gate must not fire even with
-        # no public_api present.
+    def test_a_kind_outside_the_pinned_set_is_a_noop(self) -> None:
+        # A `profile` / `problem` node's interface is legitimately derived post-hoc, so the gate must
+        # not fire even with no public_api present. `component` used to be this test's subject and is
+        # NOT one any more: issue #153 PR-2 put it in `_EXACT_PUBLISHED_SURFACE_KINDS`, so asserting a
+        # no-op on it would now assert the absence of the pin the branch exists to add.
+        for kind in ("profile", "problem"):
+            with tempfile.TemporaryDirectory() as tmp:
+                ir_dir = self._seed(Path(tmp), public_api=_OMIT, spec_kind=kind)
+                violations: list[str] = []
+                _validate_published_surface(Path(tmp), ir_dir, violations)
+                self.assertEqual(violations, [], kind)
+        # ...and the set really is the decider: the same tree under a pinned kind DOES fire.
         with tempfile.TemporaryDirectory() as tmp:
             ir_dir = self._seed(Path(tmp), public_api=_OMIT, spec_kind="component")
-            violations: list[str] = []
-            _validate_infrastructure_public_api(Path(tmp), ir_dir, violations)
-            self.assertEqual(violations, [])
+            violations = []
+            _validate_published_surface(Path(tmp), ir_dir, violations)
+            self.assertTrue(violations)
 
     def test_signatures_missing_flagged(self) -> None:
         # public_api present but without a `signatures` block: the leaf would have no source of
@@ -16338,7 +16347,7 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
             del api["signatures"]
             ir_dir = self._seed(Path(tmp), public_api=api)
             violations: list[str] = []
-            _validate_infrastructure_public_api(Path(tmp), ir_dir, violations)
+            _validate_published_surface(Path(tmp), ir_dir, violations)
             self.assertTrue(any("public_api.signatures missing" in v for v in violations),
                             violations)
 
@@ -16354,7 +16363,7 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
                 "impl_defaults": {"toolchain": {"language": "c"}},
                 "public_api": self._full_api()})
             violations: list[str] = []
-            _validate_infrastructure_public_api(tmpp, tmpp, violations)
+            _validate_published_surface(tmpp, tmpp, violations)
             # The expected clause is ASKED OF THE GATE'S OWN PREDICATE rather than written out
             # here, so that a test cannot go on passing after the gate stops consulting it. The
             # earlier version asked `registry.unsupported_reason`, which is the MEMBERSHIP
@@ -16376,7 +16385,7 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
             }
             ir_dir = self._seed(Path(tmp), public_api=api)
             violations: list[str] = []
-            _validate_infrastructure_public_api(Path(tmp), ir_dir, violations)
+            _validate_published_surface(Path(tmp), ir_dir, violations)
             self.assertTrue(any("signatures['hx__write_metrics_basis'] does not match" in v
                                 for v in violations), violations)
 
@@ -16388,7 +16397,7 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
             api["signatures"][3]["signature"]["components"].reverse()
             ir_dir = self._seed(Path(tmp), public_api=api)
             violations: list[str] = []
-            _validate_infrastructure_public_api(Path(tmp), ir_dir, violations)
+            _validate_published_surface(Path(tmp), ir_dir, violations)
             self.assertTrue(any("signatures['hx__h_named'] does not match" in v
                                 for v in violations), violations)
 
@@ -16399,7 +16408,7 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
             api["signatures"][0]["symbol"] = "hx__not_emit_real"
             ir_dir = self._seed(Path(tmp), public_api=api)
             violations: list[str] = []
-            _validate_infrastructure_public_api(Path(tmp), ir_dir, violations)
+            _validate_published_surface(Path(tmp), ir_dir, violations)
             self.assertTrue(any("declares a different symbol" in v for v in violations),
                             violations)
 
@@ -16409,7 +16418,7 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
             api["signatures"].append("not a mapping")
             ir_dir = self._seed(Path(tmp), public_api=api)
             violations: list[str] = []
-            _validate_infrastructure_public_api(Path(tmp), ir_dir, violations)
+            _validate_published_surface(Path(tmp), ir_dir, violations)
             self.assertTrue(any("is not a mapping" in v for v in violations), violations)
 
     def test_signatures_independent_struct_copy_passes(self) -> None:
@@ -16422,7 +16431,7 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
                 self._SECTION_51_FORTRAN)
             ir_dir = self._seed(Path(tmp), public_api=api)
             violations: list[str] = []
-            _validate_infrastructure_public_api(Path(tmp), ir_dir, violations)
+            _validate_published_surface(Path(tmp), ir_dir, violations)
             self.assertEqual(violations, [])
 
     def test_section51_missing_fence_fails_closed(self) -> None:
@@ -16436,7 +16445,7 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
                          "source_refs": {"controlled_spec": "cs.md"}},
                 "public_api": self._full_api()})
             violations: list[str] = []
-            _validate_infrastructure_public_api(Path(tmp), Path(tmp), violations)
+            _validate_published_surface(Path(tmp), Path(tmp), violations)
             self.assertTrue(any("§5.1" in v and "missing" in v for v in violations), violations)
 
     def test_section51_op_set_mismatch_flagged(self) -> None:
@@ -16456,7 +16465,7 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
                          "source_refs": {"controlled_spec": "cs.md"}},
                 "public_api": self._full_api()})
             violations: list[str] = []
-            _validate_infrastructure_public_api(Path(tmp), Path(tmp), violations)
+            _validate_published_surface(Path(tmp), Path(tmp), violations)
             self.assertTrue(any("§5.1 omits a signature for §5 operation_id 'hx__emit_int'" in v
                                 for v in violations), violations)
 
@@ -16482,7 +16491,7 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
                          "source_refs": {"controlled_spec": "cs.md"}},
                 "public_api": self._full_api()})
             violations: list[str] = []
-            _validate_infrastructure_public_api(Path(tmp), Path(tmp), violations)
+            _validate_published_surface(Path(tmp), Path(tmp), violations)
             self.assertTrue(any("defines a derived type 'hx__h_extra' absent" in v
                                 for v in violations), violations)
 
@@ -16494,7 +16503,7 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
             del api["module_parameters"]
             ir_dir = self._seed(Path(tmp), public_api=api)
             violations: list[str] = []
-            _validate_infrastructure_public_api(Path(tmp), ir_dir, violations)
+            _validate_published_surface(Path(tmp), ir_dir, violations)
             self.assertTrue(any("public_api.module_parameters missing" in v for v in violations),
                             violations)
 
@@ -16505,7 +16514,7 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
             api["module_parameters"] = None
             ir_dir = self._seed(Path(tmp), public_api=api)
             violations: list[str] = []
-            _validate_infrastructure_public_api(Path(tmp), ir_dir, violations)
+            _validate_published_surface(Path(tmp), ir_dir, violations)
             self.assertTrue(any("module_parameters must be a list" in v for v in violations),
                             violations)
 
@@ -16516,7 +16525,7 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
             api["module_parameters"][0]["value"] = "float32"
             ir_dir = self._seed(Path(tmp), public_api=api)
             violations: list[str] = []
-            _validate_infrastructure_public_api(Path(tmp), ir_dir, violations)
+            _validate_published_surface(Path(tmp), ir_dir, violations)
             self.assertTrue(any("module_parameters['dp'] value" in v and "does not match" in v
                                 for v in violations), violations)
 
@@ -16528,7 +16537,7 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
                 {"name": "case_id_len", "base": "integer", "value": 64})
             ir_dir = self._seed(Path(tmp), public_api=api)
             violations: list[str] = []
-            _validate_infrastructure_public_api(Path(tmp), ir_dir, violations)
+            _validate_published_surface(Path(tmp), ir_dir, violations)
             self.assertTrue(any("declares parameter 'case_id_len' absent" in v
                                 for v in violations), violations)
 
@@ -16539,7 +16548,7 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
             api["module_parameters"][0]["base"] = "real"
             ir_dir = self._seed(Path(tmp), public_api=api)
             violations: list[str] = []
-            _validate_infrastructure_public_api(Path(tmp), ir_dir, violations)
+            _validate_published_surface(Path(tmp), ir_dir, violations)
             self.assertTrue(any("module_parameters[0].base must be 'integer'" in v
                                 for v in violations), violations)
 
@@ -16550,7 +16559,7 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
                 {"name": "dp", "base": "integer", "value": "float64"})
             ir_dir = self._seed(Path(tmp), public_api=api)
             violations: list[str] = []
-            _validate_infrastructure_public_api(Path(tmp), ir_dir, violations)
+            _validate_published_surface(Path(tmp), ir_dir, violations)
             self.assertTrue(any("declares parameter 'dp' more than once" in v
                                 for v in violations), violations)
 
@@ -16571,7 +16580,7 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
                          "source_refs": {"controlled_spec": "cs.md"}},
                 "public_api": api})
             violations: list[str] = []
-            _validate_infrastructure_public_api(Path(tmp), Path(tmp), violations)
+            _validate_published_surface(Path(tmp), Path(tmp), violations)
             self.assertEqual(violations, [])
 
     def test_module_parameters_omitted_flagged(self) -> None:
@@ -16583,7 +16592,7 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
             api["module_parameters"] = []
             ir_dir = self._seed(Path(tmp), public_api=api)
             violations: list[str] = []
-            _validate_infrastructure_public_api(Path(tmp), ir_dir, violations)
+            _validate_published_surface(Path(tmp), ir_dir, violations)
             self.assertTrue(any("omits controlled_spec §5.1 module parameter 'dp'" in v
                                 for v in violations), violations)
 
@@ -16607,7 +16616,7 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
                          "source_refs": {"controlled_spec": "cs.md"}},
                 "public_api": api})
             violations: list[str] = []
-            _validate_infrastructure_public_api(Path(tmp), Path(tmp), violations)
+            _validate_published_surface(Path(tmp), Path(tmp), violations)
             self.assertTrue(any("§5.1 declares module parameter 'dp' more than once" in v
                                 for v in violations), violations)
 
@@ -16631,7 +16640,7 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
                          "source_refs": {"controlled_spec": "cs.md"}},
                 "public_api": api})
             violations: list[str] = []
-            _validate_infrastructure_public_api(Path(tmp), Path(tmp), violations)
+            _validate_published_surface(Path(tmp), Path(tmp), violations)
             self.assertTrue(any("more than once (case-insensitively)" in v for v in violations),
                             violations)
 
@@ -16643,7 +16652,7 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
             api["module_parameters"][0]["name"] = "DP"  # §5.1 has "dp"; same symbol
             ir_dir = self._seed(Path(tmp), public_api=api)
             violations: list[str] = []
-            _validate_infrastructure_public_api(Path(tmp), ir_dir, violations)
+            _validate_published_surface(Path(tmp), ir_dir, violations)
             self.assertEqual(violations, [])
 
     def test_module_parameters_fortran_expression_value_rejected(self) -> None:
@@ -16667,7 +16676,7 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
                          "source_refs": {"controlled_spec": "cs.md"}},
                 "public_api": api})
             violations: list[str] = []
-            _validate_infrastructure_public_api(Path(tmp), Path(tmp), violations)
+            _validate_published_surface(Path(tmp), Path(tmp), violations)
             self.assertTrue(any("no neutral form" in v or "has no neutral form" in v
                                 for v in violations), violations)
 
@@ -16693,7 +16702,7 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
                          "source_refs": {"controlled_spec": "cs.md"}},
                 "public_api": api})
             violations: list[str] = []
-            _validate_infrastructure_public_api(Path(tmp), Path(tmp), violations)
+            _validate_published_surface(Path(tmp), Path(tmp), violations)
             self.assertTrue(any("real64" in v and "float64" in v for v in violations), violations)
 
     def test_section51_stale_fortran_len_token_rejected_at_compile(self) -> None:
@@ -16717,7 +16726,7 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
                          "source_refs": {"controlled_spec": "cs.md"}},
                 "public_api": self._full_api()})
             violations: list[str] = []
-            _validate_infrastructure_public_api(Path(tmp), Path(tmp), violations)
+            _validate_published_surface(Path(tmp), Path(tmp), violations)
             self.assertTrue(any("deferred" in v for v in violations), violations)
 
     def test_module_parameters_value_normalization_equivalence_passes(self) -> None:
@@ -16742,7 +16751,7 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
                          "source_refs": {"controlled_spec": "cs.md"}},
                 "public_api": api})
             violations: list[str] = []
-            _validate_infrastructure_public_api(Path(tmp), Path(tmp), violations)
+            _validate_published_surface(Path(tmp), Path(tmp), violations)
             self.assertEqual(violations, [])
 
 
@@ -16887,7 +16896,7 @@ end program p
                          ["integer,parameter::dp=real64"])
 
 class InfrastructureGeneratedSignatureGateTests(unittest.TestCase):
-    """_validate_infrastructure_generated_signatures: the Generate.static gate pinning the
+    """_validate_generated_signatures: the Generate.static gate pinning the
     generated model source against the §5.1 canonical signatures."""
 
     _FENCE = InfrastructurePublicApiGateTests._SECTION_51
@@ -16925,22 +16934,31 @@ class InfrastructureGeneratedSignatureGateTests(unittest.TestCase):
     )
 
     def _seed(self, tmp: Path, *, source: str, spec_kind: str = "infrastructure",
-              section_51: str | None = None) -> NodeExecution:
+              section_51: str | None = None, language: str | None = None) -> NodeExecution:
         ir_ref = "workspace/ir/x"
         ir_dir = tmp / ir_ref
         ir_dir.mkdir(parents=True)
         (tmp / "cs.md").write_text(
             "## 5. Public API\nprose.\n" + (self._FENCE if section_51 is None else section_51)
             + "## 6. x\n", encoding="utf-8")
-        # Seed a realistic POST-contract IR: an infrastructure IR carries public_api.module_parameters
-        # (Compile pins it == §5.1). The Generate.static gate's stale-IR guard fires when that key is
-        # absent while §5.1 declares parameters, so the fixture must include it to represent a
-        # freshly-compiled IR (tests exercising the stale/pre-contract path strip it explicitly).
-        _write_json(ir_dir / "spec.ir.yaml", {
+        # Seed a realistic POST-contract IR: a surface-publishing IR carries BOTH
+        # public_api.signatures and public_api.module_parameters (Compile pins each == §5.1). The
+        # Generate.static gate's stale-IR guard fires when either is absent while §5.1 declares them,
+        # so the fixture must include both to represent a freshly-compiled IR (tests exercising the
+        # stale / pre-contract path strip one explicitly). `signatures` joined this fixture in issue
+        # #153 PR-2, which extended the guard to it — the shape a `component` IR certified BEFORE
+        # PR-2 has, since the key was forbidden then.
+        ir_doc: dict = {
             "meta": {"spec_kind": spec_kind, "spec_id": "hx",
                      "source_refs": {"controlled_spec": "cs.md"}},
-            "public_api": {"module_parameters": copy.deepcopy(
-                InfrastructurePublicApiGateTests._MODULE_PARAMETERS)}})
+            "public_api": {
+                "signatures": copy.deepcopy(
+                    InfrastructurePublicApiGateTests._SIGNATURES),
+                "module_parameters": copy.deepcopy(
+                    InfrastructurePublicApiGateTests._MODULE_PARAMETERS)}}
+        if language is not None:
+            ir_doc["impl_defaults"] = {"toolchain": {"language": language}}
+        _write_json(ir_dir / "spec.ir.yaml", ir_doc)
         pipe = tmp / "pipe"
         src_dir = pipe / "src"
         src_dir.mkdir(parents=True)
@@ -16954,7 +16972,7 @@ class InfrastructureGeneratedSignatureGateTests(unittest.TestCase):
     def _run(self, execution: NodeExecution, tmp: Path) -> list[str]:
         model = tmp / "pipe" / "src" / "hx_model.f90"
         violations: list[str] = []
-        vps._validate_infrastructure_generated_signatures(
+        vps._validate_generated_signatures(
             tmp, execution, [model], violations)
         return violations
 
@@ -17078,12 +17096,471 @@ class InfrastructureGeneratedSignatureGateTests(unittest.TestCase):
             self.assertTrue(any("hx__h_named" in v and "component layout" in v
                                 for v in violations), violations)
 
-    def test_non_infrastructure_is_noop(self) -> None:
+    def test_the_fail_closed_half_fires_for_a_component_by_node_key(self) -> None:
+        """m2 / m6 from round 1: both GREEN over the whole tree. The gate's kind resolution is
+        deliberately asymmetric — by node_key for the FAIL-CLOSED decision, by IR for the no-op — and
+        only the no-op side was driven. So narrowing `pinned_by_key` to `== "infrastructure"`, or
+        replacing the `ir_kind not in ...` branch's `_fail_closed_if_pinned` with a no-op, turned the
+        declared fail-closed into a silent skip FOR A COMPONENT and nothing noticed.
+
+        What that costs: a component whose lineage `ir_ref` no longer resolves, or whose certified IR's
+        `meta.spec_kind` has drifted, ships a drifted ABI uncompared — Compile certified the §5.1 and
+        Generate then compares nothing."""
+        import tempfile
+        for label, break_it in (
+            ("IR missing", lambda ir: ir.unlink()),
+            ("IR spec_kind drifted", lambda ir: ir.write_text(
+                json.dumps({"meta": {"spec_kind": "profile", "spec_id": "hx",
+                                     "source_refs": {"controlled_spec": "cs.md"}}}),
+                encoding="utf-8")),
+        ):
+            with self.subTest(case=label):
+                with tempfile.TemporaryDirectory() as t:
+                    tmp = Path(t)
+                    ex = self._seed(tmp, source=self._GOOD_SOURCE, spec_kind="component")
+                    # The node_key says `component`, which is what decides fail-closed.
+                    ex = vps.NodeExecution(node_key="component/hx@0.2.0", node_dir=ex.node_dir,
+                                           exec_dir=ex.exec_dir, pipeline_dir=ex.pipeline_dir)
+                    break_it(tmp / "workspace" / "ir" / "x" / "spec.ir.yaml")
+                    violations = self._run(ex, tmp)
+                self.assertTrue(violations, label)
+                self.assertTrue(
+                    any("component node's published signatures cannot be pinned" in v
+                        for v in violations),
+                    (label, violations))
+        # The no-op side still no-ops: a node_key OUTSIDE the set with the same broken IR is silent.
         with tempfile.TemporaryDirectory() as t:
             tmp = Path(t)
-            # a component node with a garbage source: gate must not fire
-            ex = self._seed(tmp, source="module m\nend module m\n", spec_kind="component")
+            ex = self._seed(tmp, source=self._GOOD_SOURCE, spec_kind="component")
+            ex = vps.NodeExecution(node_key="profile/hx@0.1.0", node_dir=ex.node_dir,
+                                   exec_dir=ex.exec_dir, pipeline_dir=ex.pipeline_dir)
+            (tmp / "workspace" / "ir" / "x" / "spec.ir.yaml").unlink()
             self.assertEqual(self._run(ex, tmp), [])
+
+    def test_the_stale_ir_guard_covers_signatures_not_only_module_parameters(self) -> None:
+        """m3 from round 1: GREEN over the whole tree, on the branch's own HEADLINE claim.
+
+        Deleting the `_validate_ir_signatures_against_section51` call from the stale-IR guard was
+        invisible because every existing fixture drops BOTH keys, so the module-parameter half alone
+        carried them. The shape that matters is a **pre-PR-2 component IR**: `module_parameters`
+        present, `signatures` ABSENT — because the key was FORBIDDEN on a component before this
+        branch. On a `--resume` into Generate, where `Compile.static` does not re-run, that IR must be
+        terminal with a re-certify remedy; regress it and the leaf gets a source drift it cannot
+        repair and warm-retries until the budget burns."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            ex = self._seed(tmp, source=self._GOOD_SOURCE, spec_kind="component")
+            ir_path = tmp / "workspace" / "ir" / "x" / "spec.ir.yaml"
+            ir = json.loads(ir_path.read_text(encoding="utf-8"))
+            # The pre-PR-2 component shape: parameters yes, signatures no.
+            ir["public_api"] = {"module_parameters": copy.deepcopy(
+                InfrastructurePublicApiGateTests._MODULE_PARAMETERS)}
+            ir_path.write_text(json.dumps(ir), encoding="utf-8")
+            violations = self._run(ex, tmp)
+        self.assertTrue(
+            any(vps.STALE_DEPENDENCY_IR_MARKER in v and "re-certify" in v for v in violations),
+            violations)
+        # Terminal by the violation's TYPE, never by its text.
+        self.assertTrue(
+            any(isinstance(v, vps.StaleDependencyIRViolation) for v in violations), violations)
+
+    def test_a_second_declaration_of_a_published_symbol_is_refused(self) -> None:
+        """Round 1's first fail-open. `parse_interface_stanzas`' dict is LAST-WINS and its `errors`
+        list carries `duplicate signature for symbol`; the source-side caller discarded them while
+        the §5.1 side and the IR side honour theirs. MEASURED: a module publishing a DRIFTED
+        2-argument `__apply` plus a never-called private helper whose `interface` body re-declared
+        the pinned 5-argument signature produced ZERO violations — the gate compared §5.1 against the
+        decoy. Moving the decoy before the real subroutine restored the 4 violations, which is what
+        identified last-wins as the mechanism. A `Generate.gate` pass while publishing an ABI §5.1
+        does not declare is the `leaf shortcut` this gate exists to refuse."""
+        import tempfile
+        decoy = (
+            "  subroutine abi_note()\n"
+            "    interface\n"
+            "      function hx__emit_real(x) result(s)\n"
+            "        import :: dp\n"
+            "        real(dp), intent(in) :: x\n"
+            "        character(len=:), allocatable :: s\n"
+            "      end function hx__emit_real\n"
+            "    end interface\n"
+            "  end subroutine abi_note\n"
+        )
+        # The decoy re-declares a symbol the module already defines, in BOTH orderings — the point is
+        # that neither position may pass, because last-wins made only one of them fail.
+        for label, source in (
+            ("decoy after", self._GOOD_SOURCE.replace(
+                "end module hx_model\n", decoy + "end module hx_model\n")),
+            ("decoy before", self._GOOD_SOURCE.replace(
+                "contains\n", "contains\n" + decoy, 1)),
+        ):
+            with self.subTest(order=label):
+                with tempfile.TemporaryDirectory() as t:
+                    tmp = Path(t)
+                    ex = self._seed(tmp, source=source)
+                    violations = self._run(ex, tmp)
+                self.assertTrue(violations, label)
+                self.assertTrue(
+                    any("must be declared exactly once" in v for v in violations),
+                    (label, violations))
+        # ...and the same source WITHOUT the decoy passes, so the row is not just "any extra text
+        # fails".
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            self.assertEqual(self._run(self._seed(tmp, source=self._GOOD_SOURCE), tmp), [])
+
+    def test_a_pinned_module_parameter_may_be_bound_exactly_once(self) -> None:
+        """The FAMILY, pinned as a family — because patching it witness-by-witness lost twice.
+
+        All precision information routes through this one check: the stanza comparison pins types
+        only SYMBOLICALLY (`real(dp)`), so what `dp` MEANS is pinned nowhere else in the tree. The
+        check therefore has to answer "is the pinned text the binding the published signatures use",
+        and PRESENCE cannot answer that — it asks only whether the text occurs somewhere in the file.
+
+        Round 1 closed the import witness. Round 2 found the next member: a module-level declaration
+        of the same name with a NARROWER value, plus the pinned text inside a contained procedure
+        where a local `parameter` legally shadows the host one — 0 violations, compiles, lints clean,
+        and every published argument single precision while §5.1 pins double. Rather than a third
+        patch, the rule became UNIQUENESS. Round 3 then measured that round 2's IMPLEMENTATION of
+        that rule — a hand-written regex over the atom set — still admitted three ordinary
+        spellings, so changing the rule's shape paid off only once the question was asked with
+        the validator's own declaration reader instead of a second grammar."""
+        import tempfile
+        pinned = "  integer, parameter :: dp = real64\n"
+        shadow = ("contains\n"
+                  "  subroutine reference_precision_note(x)\n"
+                  "    integer, parameter :: dp = real64\n"
+                  "    real(dp), intent(out) :: x\n"
+                  "    x = 0.0_dp\n"
+                  "  end subroutine reference_precision_note\n")
+
+        def narrowed(decl: str) -> str:
+            return self._GOOD_SOURCE.replace(pinned, decl, 1).replace("contains\n", shadow, 1)
+
+        for label, source in (
+            # (a) a module-level narrowing declaration + the pinned text shadowed in a procedure.
+            ("shadowing declaration", narrowed("  integer, parameter :: dp = real32\n")),
+            # (a2)-(a5) THE SAME defect in four more spellings. Round 2 wrote (a) and (b) only, and
+            # both were spelled `integer, parameter :: dp = <x>` — one shape, so the family could
+            # not straddle the character class the round-2 implementation actually keyed on, and a
+            # regex whose prefix admitted letters and parens but neither a comma nor an `=` passed
+            # this test while accepting all four of these. Each compiles under `-std=f2008`; each
+            # publishes single precision against a §5.1 that pins double. `integer(int32)` is the
+            # BOUNDARY witness and is kept deliberately: it was the one spelling round 2 caught, so
+            # a family without it cannot show that the boundary moved.
+            ("attribute before parameter",
+             narrowed("  integer, private, parameter :: dp = real32\n")),
+            ("attribute after parameter",
+             narrowed("  integer, parameter, private :: dp = real32\n")),
+            ("kind= in the type spec",
+             narrowed("  integer(kind=4), parameter :: dp = real32\n")),
+            ("kind name in the type spec (round 2 caught this one)",
+             narrowed("  integer(int32), parameter :: dp = real32\n")),
+            # (a6) the `parameter (...)` statement form, which is a declaration in TWO statements
+            # and which no atom-shaped rule sees at all.
+            ("parameter statement form",
+             narrowed("  integer, private :: dp\n  parameter (dp = real32)\n")),
+            # (a7)-(a8) THE SECOND BINDING SPLIT ACROSS PHYSICAL LINES, and joined onto one. Every
+            # member above is a single physical line, so the family could not straddle the LINE
+            # STRUCTURE the implementation keys on — `_joined_masked_fortran_view` is what makes the
+            # scan see a statement rather than a line, and round 4 measured that removing it left
+            # all 840 rows of this file green while reopening the continuation case as a fail-open.
+            # That is the same error commit a305885 diagnosed on the ACCEPT side, still standing on
+            # the refuse side one commit later. It is not an exotic spelling either: the prompt
+            # template instructs a leaf to keep lines under 100 columns and "split with a trailing
+            # `&` continuation", so this is what a leaf is TOLD to write.
+            #
+            # Which of the two does the work, stated because a family that claims more coverage than
+            # it has is the failure this file keeps repeating: the CONTINUATION row is the one that
+            # kills the joining mutant. The SEMICOLON row does not — with joining removed, that
+            # binding still sits on one physical line where the declaration reader finds it — and it
+            # is kept as a member of the shape rather than as a discriminator, because the view this
+            # scan reads is a COMPOSITION of joining and `;`-splitting whose own docstring calls the
+            # second half "required, not cosmetic".
+            ("second binding split by a continuation", self._GOOD_SOURCE.replace(
+                "contains\n",
+                "contains\n"
+                "  subroutine continuation_note(x)\n"
+                "    integer, parameter :: &\n"
+                "        dp = real32\n"
+                "    real(dp), intent(out) :: x\n"
+                "    x = 0.0_dp\n"
+                "  end subroutine continuation_note\n", 1)),
+            ("second binding joined by a semicolon", self._GOOD_SOURCE.replace(
+                "contains\n",
+                "contains\n"
+                "  subroutine semicolon_note(x)\n"
+                "    integer, parameter :: dp = real32; real(dp), intent(out) :: x\n"
+                "    x = 0.0_dp\n"
+                "  end subroutine semicolon_note\n", 1)),
+            # (b) the pinned declaration kept AND a second one added — order reversed, so neither
+            #     "first wins" nor "last wins" can make this pass.
+            ("second declaration after", self._GOOD_SOURCE.replace(
+                "contains\n",
+                "contains\n"
+                "  subroutine other_note(x)\n"
+                "    integer, parameter :: dp = real32\n"
+                "    real(dp), intent(out) :: x\n"
+                "    x = 0.0_dp\n"
+                "  end subroutine other_note\n", 1)),
+        ):
+            with self.subTest(member=label):
+                with tempfile.TemporaryDirectory() as t:
+                    tmp = Path(t)
+                    violations = self._run(self._seed(tmp, source=source), tmp)
+                self.assertTrue(
+                    any("binds the §5.1 module parameter `dp`" in v and " times" in v
+                        for v in violations), (label, violations))
+        # THE OTHER DIRECTION, and it is not one negative row. Round 3's version passed a
+        # single-member negative check — "the canonical spelling still passes" — and round 4
+        # measured what that missed: the check subtracted the pinned line as RAW TEXT, so a source
+        # carrying exactly ONE declaration that differed by a single space was told it bound the
+        # name more than once, printing two strings a reader cannot tell apart. No repair exists for
+        # that refusal, and `Generate.gate` warm-resumes into it. A combined declaration was refused
+        # too, which the presence check above explicitly endorses.
+        #
+        # So the negative side is a FAMILY as well, and it has to vary the property the
+        # implementation could key on: whitespace, and one declaration binding two names. The §5.1
+        # prose and this gate's docstring both promise formatting may differ; these rows are that
+        # promise.
+        for label, decl in (
+            ("canonical", "  integer, parameter :: dp = real64\n"),
+            ("no space after the comma", "  integer,parameter :: dp = real64\n"),
+            ("no spaces around the separator", "  integer, parameter::dp = real64\n"),
+            ("no spaces around the assignment", "  integer, parameter :: dp=real64\n"),
+            ("extra interior spaces", "  integer, parameter ::  dp  =  real64\n"),
+            ("continuation inside the declaration",
+             "  integer, parameter :: &\n      dp = real64\n"),
+            # One statement binding TWO names. The presence check's own comment endorses this shape
+            # ("Use per-entity atoms so a combined ... matches"), so refusing it here made the
+            # function contradict itself.
+            ("combined with a second parameter",
+             "  integer, parameter :: dp = real64, nvar = 3\n"),
+        ):
+            with self.subTest(accepted=label):
+                source = self._GOOD_SOURCE.replace(pinned, decl, 1)
+                with tempfile.TemporaryDirectory() as t:
+                    tmp = Path(t)
+                    self.assertEqual(self._run(self._seed(tmp, source=source), tmp), [], label)
+
+    def test_a_missing_declaration_is_reported_once_not_twice(self) -> None:
+        """A missing declaration stops that parameter's checks; it does not also report uniqueness.
+
+        Not a fail-open either way — both paths refuse — so this pins MESSAGE quality, which is a
+        leaf-facing property: the source is regenerated by a leaf reading these violations, and two
+        overlapping refusals about one parameter ("missing the declaration" AND "binds it more than
+        once") describe a contradiction that has no single repair. Measured as a survivor in the
+        targeted sweep over this hunk, where the whole-hunk verdict had read `killed`."""
+        import tempfile
+        # The pinned `dp = real64` declaration is GONE, and a different binding of the same name is
+        # present — the one combination that reaches both branches.
+        source = self._GOOD_SOURCE.replace(
+            "  integer, parameter :: dp = real32\n", "", 1).replace(
+            "  integer, parameter :: dp = real64\n",
+            "  integer, parameter :: dp = real32\n", 1)
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            violations = self._run(self._seed(tmp, source=source), tmp)
+        about_dp = [v for v in violations if "module parameter" in v]
+        self.assertTrue(any("is missing the §5.1 module parameter" in v for v in about_dp),
+                        violations)
+        self.assertFalse([v for v in about_dp if " times" in v], violations)
+        self.assertEqual(len(about_dp), 1, about_dp)
+
+    def test_each_pinned_parameter_is_checked_against_its_own_declaration(self) -> None:
+        """The uniqueness check pairs a §5.1 parameter with ITS line, not with a neighbour's.
+
+        Two lists feed that loop and they come from DIFFERENT functions —
+        `_section51_parameter_lines` renders the lines, and the names are read from
+        `_section51_module_parameters`. They agree element-for-element only while neither side drops
+        an entry, and the first version of this check zipped the lines against a FILTERED name list,
+        so an entry dropped from one side would have shifted every later pair: one parameter's
+        uniqueness checked against another's pinned text, and the pinned one never presence-checked.
+
+        Every existing row of this class declares ONE parameter, where any pairing is the right
+        pairing — so none of them can see this, which is why the fixture here declares TWO and puts
+        the violation on the SECOND. The refusal must name `case_id_len`; naming `dp` would mean the
+        loop read index 0's name with index 1's line."""
+        import tempfile
+        fence = InfrastructurePublicApiGateTests._SECTION_51_FORTRAN.replace(
+            "integer, parameter :: dp = real64\n",
+            "integer, parameter :: dp = real64\n"
+            "integer, parameter :: case_id_len = 32\n", 1)
+        section_51 = _structured_section51_from_fortran(fence)
+        # `_seed` writes the IR from the class's ONE-parameter fixture, and the stale-IR guard
+        # compares it against §5.1 — so the IR has to gain the second parameter too, or the guard
+        # fires first and this row measures that instead.
+        ir_params = _structured_ir_module_parameters_from_fortran(fence)
+
+        def seed(tmp: Path, source: str) -> NodeExecution:
+            ex = self._seed(tmp, source=source, section_51=section_51)
+            ir_path = tmp / "workspace" / "ir" / "x" / "spec.ir.yaml"
+            doc = json.loads(ir_path.read_text(encoding="utf-8"))
+            doc["public_api"]["module_parameters"] = copy.deepcopy(ir_params)
+            _write_json(ir_path, doc)
+            return ex
+
+        base = self._GOOD_SOURCE.replace(
+            "  integer, parameter :: dp = real64\n",
+            "  integer, parameter :: dp = real64\n"
+            "  integer, parameter :: case_id_len = 32\n", 1)
+        # Both parameters are correctly declared once: the two-parameter fixture itself is clean, so
+        # a refusal below cannot be the fixture complaining about the extra parameter.
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            self.assertEqual(
+                self._run(seed(tmp, base), tmp), [])
+        # Now bind ONLY the second parameter a second time.
+        doubled = base.replace(
+            "contains\n",
+            "contains\n"
+            "  subroutine case_id_note(x)\n"
+            "    integer, parameter :: case_id_len = 16\n"
+            "    integer, intent(out) :: x\n"
+            "    x = case_id_len\n"
+            "  end subroutine case_id_note\n", 1)
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            violations = self._run(seed(tmp, doubled), tmp)
+        hits = [v for v in violations if " times" in v]
+        self.assertTrue(hits, violations)
+        self.assertTrue(all("`case_id_len`" in v for v in hits), hits)
+        self.assertFalse([v for v in hits if "`dp`" in v], hits)
+
+    def test_a_rename_import_of_the_pinned_name_is_a_binding(self) -> None:
+        """A `use ..., <pinned> => <other>` with NO `only:` list is a second binding, and is refused.
+
+        This row pins the choice to read BOTH sets the declared-names helper returns rather than the
+        constants set alone. An imported name is not a named constant, so it lives only in the second
+        set; narrowing to `[0]` left all 840 rows of this file green while letting this construct
+        through, which round 4 measured.
+
+        It is the member the import loop above cannot reach — that loop requires `only:` in the atom,
+        and this form has none — so uniqueness is the only place it is seen here. The residual behind
+        it is covered: an unrestricted `use` is refused by the linter's `use-all` rule, and
+        `workflow_conductor` runs static ONLY when lint and syntax both pass, so that refusal
+        arrives strictly earlier. Pinned anyway, because defence-in-depth that no test observes is
+        one edit from not existing, and this check is where all precision information routes."""
+        import tempfile
+        source = self._GOOD_SOURCE.replace(
+            "contains\n",
+            "contains\n"
+            "  subroutine rename_note(x)\n"
+            "    use kinds_mod, dp => sp\n"
+            "    real(dp), intent(out) :: x\n"
+            "    x = 0.0_dp\n"
+            "  end subroutine rename_note\n", 1)
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            violations = self._run(self._seed(tmp, source=source), tmp)
+        self.assertTrue(
+            any("binds the §5.1 module parameter `dp`" in v and " times" in v for v in violations),
+            violations)
+
+    def test_a_procedure_prefix_is_refused_and_the_message_says_so(self) -> None:
+        """A prefix marking the operation side-effect-free is a header difference, and is refused.
+
+        Two halves, and the SECOND is the one this row exists for. That the gate refuses it is
+        correct: the header is compared as published, so a prefix is a difference. But the refusal
+        used to blame `argument name/type/rank/intent/result drift` for a source whose arguments are
+        all correct, which sends the leaf to re-derive a signature that is already right — the
+        expensive kind of wrong message, because following it cannot converge.
+
+        Round 0 on the round-3 fixes reported the message improvement as an unexplained survivor:
+        no test read the text. It is pinned here for the same reason
+        `test_a_missing_declaration_is_reported_once_not_twice` exists — a refusal is the leaf's
+        only input for its next attempt, so its content is behaviour, not decoration.
+
+        The construct is not invented: a prefixed procedure occurs in the corpus today (in a
+        `profile` model, which publishes no §5.1 and so is unaffected), which is evidence that a
+        generator writes it unprompted."""
+        import tempfile
+        source = self._GOOD_SOURCE.replace(
+            "  function hx__emit_int(i) result(s)\n",
+            "  pure function hx__emit_int(i) result(s)\n", 1)
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            violations = self._run(self._seed(tmp, source=source), tmp)
+        self.assertTrue(violations, "a prefix on the published header must be refused")
+        self.assertTrue(
+            any("procedure prefix" in v for v in violations),
+            f"the refusal must name the prefix as a cause, not only argument drift: {violations}")
+
+    def test_an_imported_binding_of_a_pinned_module_parameter_is_refused(self) -> None:
+        """Round 1's second fail-open, and the one that made the §5.1 prose of six real specs false.
+
+        The value pin uses a WHOLE-FILE atom set, so MEASURED: a module binding
+        `use, intrinsic :: iso_fortran_env, only: dp => real32` — every published `real(dp)` argument
+        SINGLE precision — plus a dead private helper declaring `integer, parameter :: dp = real64`
+        produced ZERO violations. The six specs' own §5.1 text claims pinning `dp` means the source
+        must carry the DECLARATION and not a `use`-rename; it did not.
+
+        Refusing an IMPORT of the pinned name closes the `only:` forms: an alias and a plain
+        `use kinds, only: dp` both bring a binding whose value this gate cannot see. It does NOT
+        close the family — an unrestricted `use` supplies the name with nothing to match on — and
+        the sentence here used to claim otherwise. That form is refused by the lint rule `C121` in
+        the same substep instead. With
+        gfortran the pair is complete — a declaration only inside a dead procedure, with nothing
+        importing the name, leaves module-level `real(dp)` unresolved."""
+        import tempfile
+        for label, use_line in (
+            ("aliased narrowing", "  use, intrinsic :: iso_fortran_env, only: dp => real32\n"),
+            ("aliased same kind", "  use, intrinsic :: iso_fortran_env, only: dp => real64\n"),
+            ("plain import", "  use kinds_mod, only: dp\n"),
+        ):
+            with self.subTest(form=label):
+                source = self._GOOD_SOURCE.replace(
+                    "  use, intrinsic :: iso_fortran_env, only: real64\n", use_line, 1)
+                # The dead helper carries the declaration the presence-check wants, so ONLY the new
+                # import refusal can fail this.
+                source = source.replace(
+                    "contains\n",
+                    "contains\n"
+                    "  subroutine kind_note()\n"
+                    "    integer, parameter :: dp = real64\n"
+                    "    integer :: unused_local\n"
+                    "    unused_local = int(dp)\n"
+                    "  end subroutine kind_note\n", 1)
+                with tempfile.TemporaryDirectory() as t:
+                    tmp = Path(t)
+                    violations = self._run(self._seed(tmp, source=source), tmp)
+                self.assertTrue(
+                    any("imports the §5.1 module parameter" in v for v in violations),
+                    (label, violations))
+
+    def test_the_no_backend_refusal_names_the_node_kind_it_was_given(self) -> None:
+        """This gate has its own backend refusal, and its own kind word. The Compile-side family
+        (`ComponentPublicApiGateTests::test_every_refusal_names_the_node_kind_it_was_given`) does not
+        reach it: round 0 measured that reverting `{ir_kind}` here to a hardcoded "infrastructure"
+        survived the whole suite, so a `component` author would be told a different node's kind is the
+        one that cannot be pinned."""
+        import tempfile
+        for kind in ("component", "infrastructure"):
+            with self.subTest(kind=kind):
+                with tempfile.TemporaryDirectory() as t:
+                    tmp = Path(t)
+                    ex = self._seed(tmp, source=self._GOOD_SOURCE, spec_kind=kind,
+                                    language="rust")
+                    violations = self._run(ex, tmp)
+                self.assertTrue(violations, kind)
+                self.assertTrue(
+                    any(f"this {kind} node's signatures cannot be pinned" in v
+                        for v in violations),
+                    (kind, violations))
+
+    def test_a_kind_outside_the_pinned_set_is_a_noop(self) -> None:
+        # A `profile` node's interface is derived post-hoc, so a garbage source must not fire the
+        # signature pin. `component` was this test's subject until issue #153 PR-2 moved it into
+        # `_EXACT_PUBLISHED_SURFACE_KINDS`; the second half asserts the set is what decides, because
+        # a no-op reached for the wrong reason (an unresolvable IR, say) looks identical here.
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            ex = self._seed(tmp, source="module m\nend module m\n", spec_kind="profile")
+            self.assertEqual(self._run(ex, tmp), [])
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            ex = self._seed(tmp, source="module m\nend module m\n", spec_kind="component")
+            self.assertTrue(self._run(ex, tmp))
 
     def test_stale_pre_contract_ir_fails_closed(self) -> None:
         # A certified IR that predates the public_api.module_parameters contract (public_api present
@@ -17096,14 +17573,19 @@ class InfrastructureGeneratedSignatureGateTests(unittest.TestCase):
             ex = self._seed(tmp, source=self._GOOD_SOURCE)
             ir_path = tmp / "workspace" / "ir" / "x" / "spec.ir.yaml"
             ir = json.loads(ir_path.read_text(encoding="utf-8"))
-            ir["public_api"] = {"signatures": []}  # pre-contract shape: no module_parameters key
+            # Pre-contract shape: `signatures` present, no `module_parameters` key. Keep the
+            # signatures realistic so ONLY the module-parameter half of the guard can fire — the
+            # sibling test below strips signatures instead.
+            ir["public_api"] = {"signatures": copy.deepcopy(
+                InfrastructurePublicApiGateTests._SIGNATURES)}
             ir_path.write_text(json.dumps(ir), encoding="utf-8")
             violations = self._run(ex, tmp)
             # Carries the sentinel for a human reader. What routes this TERMINAL (fail_closed)
             # rather than as a futile warm Generate retry is the violation's TYPE, mapped by
             # `main` to a dedicated exit code; the conductor keys on nothing in this text.
             self.assertTrue(any(vps.STALE_DEPENDENCY_IR_MARKER in v
-                                and "does not carry the controlled_spec §5.1 module parameters" in v
+                                and "does not carry the controlled_spec §5.1 surface" in v
+                                and "public_api.module_parameters" in v
                                 and "re-certify" in v for v in violations), violations)
 
     def test_stale_ir_empty_or_drifted_module_parameters_fails_closed(self) -> None:
@@ -17624,9 +18106,11 @@ class SpecKindNormalizationParityTests(unittest.TestCase):
     decides nothing, so it is never a finding by itself — that shortcut was the previous
     version's false-positive source (it flagged `detail = f"...{meta.get('spec_kind')}"`).
 
-    Ignored on purpose: a comparison against a non-literal (`== SOME_CONST`, `in KNOWN_KINDS`)
-    does not decide a kind from a fixed vocabulary, and a value handed to a call that is not a
-    string method is treated as normalized by that call rather than second-guessed here.
+    Ignored on purpose: a comparison against a constant this scan cannot resolve to string
+    literals does not present a fixed vocabulary it can reason about, and a value handed to a call
+    that is not a string method is treated as normalized by that call rather than second-guessed
+    here. A module-level name bound to a collection of string literals IS resolved
+    (`in _EXACT_PUBLISHED_SURFACE_KINDS`) — excusing it once cost this rule two readers.
     """
 
     # String operations this scan can reason about. Anything else wrapping the value is
@@ -17668,15 +18152,48 @@ class SpecKindNormalizationParityTests(unittest.TestCase):
         return False
 
     @classmethod
-    def _kind_literal(cls, node) -> bool:
-        """A fixed kind vocabulary: one string literal, or a literal collection of them."""
+    def _kind_literal(cls, node, module_vocabularies=None) -> bool:
+        """A fixed kind vocabulary: one string literal, a literal collection of them, or a
+        module-level NAME bound to such a collection.
+
+        The name case was added in issue #153 PR-2. Merging the two public-API gates moved their
+        kind decisions from `== "infrastructure"` / `== "component"` to
+        `in _EXACT_PUBLISHED_SURFACE_KINDS`, and this scan's carve-out for non-literals meant BOTH
+        readers silently left the parity rule — the vacuity floor below is what noticed. A
+        module-level tuple of string constants IS a fixed vocabulary and is resolvable statically, so
+        it is resolved rather than excused. What stays ignored is a constant this scan cannot resolve
+        to string literals (an import, a computed value): there the vocabulary is somebody else's
+        contract, and guessing would produce a finding nobody can act on."""
         import ast
         if isinstance(node, ast.Constant):
             return isinstance(node.value, str) and node.value != "spec_kind"
         if isinstance(node, (ast.Tuple, ast.List, ast.Set)):
             return bool(node.elts) and all(
                 isinstance(e, ast.Constant) and isinstance(e.value, str) for e in node.elts)
+        if isinstance(node, ast.Name) and module_vocabularies is not None:
+            return node.id in module_vocabularies
         return False
+
+    @staticmethod
+    def _module_kind_vocabularies(tree) -> set[str]:
+        """Module-level names bound to a non-empty collection of string literals."""
+        import ast
+        names: set[str] = set()
+        for node in ast.iter_child_nodes(tree):
+            targets = []
+            if isinstance(node, ast.Assign):
+                targets = [x for x in node.targets if isinstance(x, ast.Name)]
+                value = node.value
+            elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                targets, value = [node.target], node.value
+            else:
+                continue
+            if value is None or not isinstance(value, (ast.Tuple, ast.List, ast.Set)):
+                continue
+            if value.elts and all(isinstance(e, ast.Constant) and isinstance(e.value, str)
+                                  for e in value.elts):
+                names.update(x.id for x in targets)
+        return names
 
     @classmethod
     def _spec_kind_sites(cls, source: str | None = None):
@@ -17690,6 +18207,7 @@ class SpecKindNormalizationParityTests(unittest.TestCase):
         if source is None:
             source = Path(vps.__file__).read_text(encoding="utf-8")
         tree = ast.parse(source)
+        vocabularies = cls._module_kind_vocabularies(tree)
 
         def seg(node) -> str:
             return " ".join((ast.get_source_segment(source, node) or "").split())
@@ -17739,7 +18257,7 @@ class SpecKindNormalizationParityTests(unittest.TestCase):
                 pairs = ([(left, right)] if isinstance(op, (ast.In, ast.NotIn))
                          else [(left, right), (right, left)])
                 for value_side, literal_side in pairs:
-                    if not cls._kind_literal(literal_side):
+                    if not cls._kind_literal(literal_side, vocabularies):
                         continue
                     names = {n.id for n in ast.walk(value_side)
                              if isinstance(n, ast.Name) and n.id in bound}
@@ -17758,8 +18276,18 @@ class SpecKindNormalizationParityTests(unittest.TestCase):
         # Vacuity guard: if a refactor moves every comparison out of the shapes above, the
         # parity assertion would pass by examining nothing. The floor is the count of
         # DISTINCT reader lines that exist today, so deleting one also trips it.
+        #
+        # 7 -> 6 in issue #153 PR-2, and the drop is the guard working rather than being relaxed.
+        # Merging `_validate_component_public_api` into `_validate_infrastructure_public_api` as
+        # `_validate_published_surface` removed one of two readers that each decided the same
+        # question. The guard first reported 4, not 6, because the merged gate and the generalized
+        # `_validate_generated_signatures` both compare `in _EXACT_PUBLISHED_SURFACE_KINDS` and the
+        # scan excused a non-literal comparand — so two live readers had left the parity rule
+        # silently. `_kind_literal` now resolves a module-level vocabulary, which brought them back;
+        # only then was 6 the honest count. Lower this number only with the same reasoning written
+        # down: a reader that DISAPPEARED, not a reader the scan stopped seeing.
         lines = {lineno for lineno, _seg in self._spec_kind_sites()}
-        self.assertGreaterEqual(len(lines), 7, sorted(lines))
+        self.assertGreaterEqual(len(lines), 6, sorted(lines))
 
     @classmethod
     def _parity_problems(cls, sites) -> list[str]:
@@ -18171,7 +18699,7 @@ class ToolchainBackendGateTests(unittest.TestCase):
 
     def test_a_non_fortran_harness_is_rejected_by_the_gate_that_owns_that_rule(self) -> None:
         # This gate exempts an infrastructure node from the `fortran` half on the grounds
-        # that `_validate_infrastructure_public_api` — the only enforcement of the
+        # that `_validate_published_surface` — the only enforcement of the
         # fortran-only language backend — rejects a non-fortran harness itself. That hand-off
         # holds only while both gates spell the exemption the same way. They did not: this
         # one strips, the other matched exactly, so a padded `meta.spec_kind` took the
@@ -18191,7 +18719,7 @@ class ToolchainBackendGateTests(unittest.TestCase):
                 v: list[str] = []
                 vps._validate_toolchain_backend_supported(tmp, ir_dir, v)
                 self.assertEqual(v, [], f"{spelling}: exempt from the language half")
-                vps._validate_infrastructure_public_api(tmp, ir_dir, v)
+                vps._validate_published_surface(tmp, ir_dir, v)
                 reason = vps._signature_backend_refusal("c")
                 self.assertIsNotNone(reason)
                 self.assertTrue(any(reason in x for x in v),
@@ -18209,7 +18737,7 @@ class ToolchainBackendGateTests(unittest.TestCase):
                                   "target": {"class": "cpu"}},
             }))
             v = []
-            vps._validate_infrastructure_public_api(tmp, ir_dir, v)
+            vps._validate_published_surface(tmp, ir_dir, v)
             self.assertEqual(v, [], "the sibling gate must not case-fold either")
 
     def test_message_names_the_supported_backend_and_the_remedy(self) -> None:
@@ -18578,29 +19106,184 @@ class ComponentDepOperationsGateTests(unittest.TestCase):
                 any("component dependency" in x and "empty `operations: []`" in x for x in v), v)
 
 
+class RealCorpusPublishedSurfaceTests(unittest.TestCase):
+    """Every REAL spec that publishes an exact surface must be certifiable by the gate that pins it.
+
+    The other classes in this file drive `_validate_published_surface` against hand-built fixtures,
+    which answers "does the gate work" and not "do this repository's specs satisfy it". This one
+    walks `spec/registry/spec_catalog.yaml`, and for each `component` / `infrastructure` entry builds
+    the IR that Compile is CONTRACTED to transcribe — names from §5, `signatures` and
+    `module_parameters` from §5.1, in the `{symbol, signature}` carrier shape — and requires the
+    production gate to accept it.
+
+    Why it earns its place. Issue #153 PR-2 added a §5.1 block to six component specs by hand, and
+    the only other way to learn whether the gate accepts them is a billed `--with-deps` run. This is
+    that answer, unbilled, and it keeps answering for the edits it can see: an operation renamed in
+    §5 without touching §5.1, a §5.1 the backend cannot render, a fence that will not parse.
+
+    WHAT IT CANNOT SEE, measured rather than reasoned. Adding an argument to a §5.1 block without
+    bumping `spec_version` leaves this class fully GREEN — measured at `e482a85` on the real flux
+    spec, whose published `compute_flux` takes 9 arguments, with a tenth inserted after `dx`:
+    836 passed, 127 subtests, the same verdict as the un-mutated tree. An earlier version of this docstring claimed the opposite, and the
+    reason it is wrong is structural: this class BUILDS the IR from §5.1, so widening §5.1 widens
+    both sides of its comparison at once. It is the same shape as `_SECTION5_FORM_HINT`'s test
+    earlier on this branch — a probe generated from the constant it is meant to check gives set
+    identity and can distinguish nothing — and it is why the control below renames §5 instead, which
+    is the one input this class holds fixed.
+
+    Nothing else catches it either: the node_key does not move, so readiness leaves the node `ready`,
+    no gate re-runs, and the widened §5.1 sits latent until something unrelated re-certifies the
+    node. The rule that a §5.1 change carries a `spec_version` bump is DISCIPLINE, not enforcement —
+    `docs/design/deterministic_followups.md` §"Issue #153" says the same, and this docstring said
+    otherwise for two commits.
+
+    What it does NOT check, stated so the green is not read too widely: it builds the IR the spec
+    implies rather than reading a certified one, so it cannot see a Compile leaf that transcribes
+    §5.1 wrongly — `_validate_published_surface` on the real certified IR is what catches that, in a
+    billed run. And it says nothing about the generated SOURCE, which is
+    `_validate_generated_signatures`' half."""
+
+    _REPO = Path(__file__).resolve().parents[2]
+    _CATALOG = _REPO / "spec" / "registry" / "spec_catalog.yaml"
+
+    def _pinned_entries(self) -> list[dict]:
+        doc = yaml.safe_load(self._CATALOG.read_text(encoding="utf-8"))
+        rows = [e for e in doc["specs"]
+                if e.get("spec_kind") in vps._EXACT_PUBLISHED_SURFACE_KINDS]
+        # Derived from the same constant the gate uses, so adding a kind to the set puts its specs
+        # under this check automatically rather than silently leaving them out.
+        self.assertTrue(rows, "no spec of a surface-publishing kind in the catalog")
+        return rows
+
+    def test_every_pinned_spec_declares_a_section51_matching_its_section5(self) -> None:
+        for entry in self._pinned_entries():
+            cs = self._REPO / Path(entry["deps_path"]).parent / "controlled_spec.md"
+            tag = f'{entry["spec_kind"]}/{entry["spec_id"]}@{entry["spec_version"]}'
+            with self.subTest(spec=tag):
+                ops, types = vps._parse_public_api_from_controlled_spec(cs, entry["spec_id"])
+                self.assertTrue(ops, f"{tag}: §5 parsed no published operation")
+                op_stanzas, type_stanzas, err = \
+                    vps._parse_canonical_interface_from_controlled_spec(cs)
+                self.assertIsNone(err, f"{tag}: §5.1 {err}")
+                self.assertEqual(set(op_stanzas), ops, f"{tag}: §5.1 procedures != §5 operations")
+                self.assertEqual(set(type_stanzas), types, f"{tag}: §5.1 types != §5 types")
+
+    def test_the_gate_accepts_the_ir_every_pinned_spec_implies(self) -> None:
+        from tools.backends.language.fortran.signatures import load_structured_signatures
+        for entry in self._pinned_entries():
+            cs = self._REPO / Path(entry["deps_path"]).parent / "controlled_spec.md"
+            tag = f'{entry["spec_kind"]}/{entry["spec_id"]}@{entry["spec_version"]}'
+            with self.subTest(spec=tag):
+                body, ferr = vps._section51_fence_body(cs)
+                self.assertIsNone(ferr, f"{tag}: {ferr}")
+                struct, serr = load_structured_signatures(body or "")
+                self.assertIsNone(serr, f"{tag}: {serr}")
+                ops, types = vps._parse_public_api_from_controlled_spec(cs, entry["spec_id"])
+                ir = {
+                    "meta": {"spec_kind": entry["spec_kind"], "spec_id": entry["spec_id"],
+                             "source_refs": {"controlled_spec": str(cs)}},
+                    "impl_defaults": {"toolchain": {"language": "fortran"}},
+                    "public_api": {
+                        "published_operations": [{"operation_id": o} for o in sorted(ops)],
+                        "published_types": sorted(types),
+                        "signatures": [{"symbol": s["name"], "signature": s}
+                                       for s in [*struct["procedures"], *struct["types"]]],
+                        "module_parameters": struct["module_parameters"],
+                    },
+                }
+                with tempfile.TemporaryDirectory() as tmp:
+                    ir_dir = Path(tmp)
+                    (ir_dir / "spec.ir.yaml").write_text(
+                        yaml.safe_dump(ir), encoding="utf-8")
+                    violations: list[str] = []
+                    vps._validate_published_surface(self._REPO, ir_dir, violations)
+                self.assertEqual(violations, [], f"{tag}: {violations}")
+
+    def test_this_check_is_not_vacuous(self) -> None:
+        """Self-test: a §5.1 that drops the published operation must be REJECTED. Without this, a
+        change that made `_parse_canonical_interface_from_controlled_spec` return nothing would
+        leave both rows above green over an empty comparison."""
+        entry = self._pinned_entries()[0]
+        cs = self._REPO / Path(entry["deps_path"]).parent / "controlled_spec.md"
+        ops, _types = vps._parse_public_api_from_controlled_spec(cs, entry["spec_id"])
+        op_stanzas, _t, err = vps._parse_canonical_interface_from_controlled_spec(cs)
+        self.assertIsNone(err)
+        # The corpus really does present a non-empty comparison on both sides.
+        self.assertTrue(ops)
+        self.assertTrue(op_stanzas)
+        self.assertEqual(set(op_stanzas), ops)
+
+
 class ComponentPublicApiGateTests(unittest.TestCase):
-    """`_validate_component_public_api` (compile stage): the L1 gate pinning a component node's
-    IR public_api == controlled_spec §5 published operation NAME surface. NAMES ONLY —
-    `signatures` / `module_parameters` are forbidden on a component."""
+    """`_validate_published_surface` (compile stage) asked of a `component` node: its IR
+    `public_api` must pin the controlled_spec §5 published operation NAME surface AND, since issue
+    #153 PR-2, the §5.1 canonical signatures + module parameters.
+
+    Before PR-2 a component pinned NAMES ONLY and `signatures` / `module_parameters` were FORBIDDEN
+    keys. The reversal is the operator decision of 2026-09-04: an ABI derived post-hoc from the
+    generated source is whatever the generation produced, so one `spec_version` could republish six
+    different argument lists — which it did.
+
+    WHAT IS PINNED HERE, AND WHAT IS SAMPLED. Pinned: that a component with no §5.1 fails, that a
+    drift in either direction between §5.1 and the IR fails, and — by
+    `test_component_and_infrastructure_produce_the_same_violation_set_for_the_same_drift` — that the
+    two kinds are one gate rather than two that agree today. Sampled: the §5 parse forms and the
+    §5.1 malformed shapes, which `InfrastructurePublicApiGateTests` covers over a wider corpus."""
 
     _SPEC_ID = "dep_base"
 
-    def _controlled_spec(self) -> str:
+    # Readable Fortran stays the fixture's truth; the helper lowers it to the language-neutral
+    # structured YAML §5.1 publishes. `logical` for the guard flag and the declaration form for
+    # `dp` are the shapes the real component specs use after PR-2.
+    _SECTION_51_FORTRAN = (
+        "integer, parameter :: dp = real64\n"
+        "subroutine dep_base__scale(n, x, y, guard_pass)\n"
+        "  integer, intent(in) :: n\n"
+        "  real(dp), intent(in) :: x(n)\n"
+        "  real(dp), intent(out) :: y(n)\n"
+        "  logical, intent(out) :: guard_pass\n"
+        "end subroutine dep_base__scale\n"
+    )
+    _SECTION_51 = _structured_section51_from_fortran(_SECTION_51_FORTRAN)
+    _SIGNATURES = _structured_ir_signatures_from_fortran(_SECTION_51_FORTRAN)
+    _MODULE_PARAMETERS = _structured_ir_module_parameters_from_fortran(_SECTION_51_FORTRAN)
+
+    def _full_api(self) -> dict:
+        return {
+            "published_operations": [{"operation_id": "dep_base__scale"}],
+            "published_types": [],
+            "signatures": copy.deepcopy(self._SIGNATURES),
+            "module_parameters": copy.deepcopy(self._MODULE_PARAMETERS),
+        }
+
+    def _controlled_spec(self, section_51: str | None = None) -> str:
+        if section_51 is None:
+            section_51 = self._SECTION_51
         return (
             "# Controlled Spec\n"
             "## 5. Public API and compatibility\n"
             "The only published `operation_id` is `dep_base__scale`. On a `major` "
             "compatibility break, separate the `spec_id`.\n"
+            + section_51 +
             "## 6. Prohibitions\n- none.\n")
 
     def _seed(self, tmp: Path, *, public_api: object, spec_kind: str = "component",
-              cs_ref: str | None = "cs.md", write_cs: bool = True) -> Path:
+              cs_ref: str | None = "cs.md", write_cs: bool = True,
+              section_51: str | None = None, spec_id: str | None = None,
+              language: str | None = None) -> Path:
+        """`spec_id=""` and `language="rust"` exist so `_refusal_shapes` can reach the
+        missing-spec_id and no-signature-backend refusals; both are paths the gate takes before it
+        reads §5, and round 0 found each one's kind word unpinned."""
         if write_cs:
-            (tmp / "cs.md").write_text(self._controlled_spec(), encoding="utf-8")
-        meta = {"spec_kind": spec_kind, "spec_id": self._SPEC_ID}
+            (tmp / "cs.md").write_text(
+                self._controlled_spec(section_51), encoding="utf-8")
+        meta = {"spec_kind": spec_kind,
+                "spec_id": self._SPEC_ID if spec_id is None else spec_id}
         if cs_ref is not None:
             meta["source_refs"] = {"controlled_spec": cs_ref}
         ir: dict = {"meta": meta}
+        if language is not None:
+            ir["impl_defaults"] = {"toolchain": {"language": language}}
         if public_api is not _OMIT:
             ir["public_api"] = public_api
         (tmp / "spec.ir.yaml").write_text(yaml.safe_dump(ir), encoding="utf-8")
@@ -18611,13 +19294,11 @@ class ComponentPublicApiGateTests(unittest.TestCase):
             tmp = Path(t)
             ir_dir = self._seed(tmp, **kw)
             v: list[str] = []
-            vps._validate_component_public_api(tmp, ir_dir, v)
+            vps._validate_published_surface(tmp, ir_dir, v)
             return v
 
-    def test_exact_match_no_violation(self) -> None:
-        self.assertEqual(
-            self._run(public_api={"published_operations": [
-                {"operation_id": "dep_base__scale"}], "published_types": []}), [])
+    def test_exact_match_with_section51_no_violation(self) -> None:
+        self.assertEqual(self._run(public_api=self._full_api()), [])
 
     def test_missing_public_api_flagged(self) -> None:
         v = self._run(public_api=_OMIT)
@@ -18625,26 +19306,207 @@ class ComponentPublicApiGateTests(unittest.TestCase):
         self.assertIn("public_api missing", v[0])
 
     def test_wrong_name_flagged_both_directions(self) -> None:
-        v = self._run(public_api={"published_operations": [
-            {"operation_id": "dep_base__apply"}]})
+        api = self._full_api()
+        api["published_operations"] = [{"operation_id": "dep_base__apply"}]
+        v = self._run(public_api=api)
         self.assertTrue(any("omits controlled_spec §5 operation_id 'dep_base__scale'" in x
                             for x in v), v)
         self.assertTrue(any("declares operation_id 'dep_base__apply' absent" in x
                             for x in v), v)
 
-    def test_forbidden_signatures_key_flagged(self) -> None:
-        v = self._run(public_api={
-            "published_operations": [{"operation_id": "dep_base__scale"}],
-            "signatures": {"operations": []}})
-        self.assertTrue(any("public_api.signatures is forbidden on a component" in x
-                            for x in v), v)
+    def test_an_ir_signature_absent_from_section51_is_refused(self) -> None:
+        """The IR declaring a signature §5.1 does not — measured UNPINNED in round 3.
 
-    def test_forbidden_module_parameters_key_flagged(self) -> None:
-        v = self._run(public_api={
-            "published_operations": [{"operation_id": "dep_base__scale"}],
-            "module_parameters": []})
-        self.assertTrue(any("public_api.module_parameters is forbidden on a component" in x
-                            for x in v), v)
+        Deleting the loop that reports it left the whole suite green. The omission direction is
+        separately covered (`test_missing_signatures_flagged` for an absent key), so this row is the
+        extras direction only; on this fixture, which publishes ONE operation, an emptied
+        `signatures` reads as the absent key rather than as an omission, so the two directions
+        cannot share a row here.
+
+        It carries weight beyond Compile. `Generate.static`'s stale-IR guard reads the same
+        comparison to decide that an IR carrying a surface §5.1 does not declare is PRE-CONTRACT and
+        must be re-certified rather than repaired by a leaf — a terminal route. Unpinned, an edit
+        that weakened it would turn that terminal verdict into a silent pass."""
+        import copy
+        api = self._full_api()
+        extra = copy.deepcopy(api["signatures"][0])
+        extra["symbol"] = "dep_base__not_in_section51"
+        sig = extra.get("signature")
+        if isinstance(sig, dict):
+            sig["name"] = "dep_base__not_in_section51"
+        api["signatures"] = list(api["signatures"]) + [extra]
+        v = self._run(public_api=api)
+        self.assertTrue(
+            any("declares a signature 'dep_base__not_in_section51' absent from controlled_spec §5.1"
+                in x for x in v), v)
+
+    def test_a_yaml_comment_inside_the_section51_fence_is_content(self) -> None:
+        """Round 1's over-refusal. `_extract_subsection_51` ended the subsection at any `#`-led line,
+        and §5.1's fence is YAML — where `# the published kind` is ordinary. MEASURED on the real
+        boundary spec: a comment inside the fence, indented or not, truncated the subsection so
+        `_FENCED_BLOCK_RE` found no complete block and both gates reported the block MISSING about a
+        block plainly present. `compile.generate` cannot edit `controlled_spec.md`, so every retry
+        failed identically. Zero occurrences in the corpus is why it was never hit — and this branch
+        makes §5.1 required on every component, which multiplies the surface."""
+        base = self._controlled_spec()
+        for label, injected in (
+            ("top-level comment", base.replace(
+                "module_parameters:\n", "# the published precision kind\nmodule_parameters:\n", 1)),
+            ("indented comment", base.replace(
+                "  value: float64\n", "  value: float64\n  # IEEE double\n", 1)),
+        ):
+            with self.subTest(case=label):
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    tmp = Path(tmpdir)
+                    (tmp / "cs.md").write_text(injected, encoding="utf-8")
+                    ir_dir = self._seed(tmp, public_api=self._full_api(), write_cs=False)
+                    v: list[str] = []
+                    vps._validate_published_surface(tmp, ir_dir, v)
+                self.assertEqual(v, [], label)
+        # A REAL following heading still ends the subsection, so the fix did not simply stop looking.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            (tmp / "cs.md").write_text(
+                base.replace("## 6. Prohibitions",
+                             "### 5.2 Notes\nprose.\n\n## 6. Prohibitions", 1),
+                encoding="utf-8")
+            body, err = vps._section51_fence_body(tmp / "cs.md")
+            self.assertIsNone(err)
+            self.assertNotIn("prose.", body or "")
+
+    def test_component_without_section51_is_a_compile_fail(self) -> None:
+        """The reversal, from the spec side: a component §5 with no §5.1 no longer certifies.
+        Before PR-2 this was the ONLY legal shape for a component."""
+        api = self._full_api()
+        v = self._run(public_api=api, section_51="")
+        self.assertTrue(any("§5.1" in x and "missing" in x for x in v), v)
+
+    def test_missing_signatures_flagged(self) -> None:
+        api = self._full_api()
+        del api["signatures"]
+        v = self._run(public_api=api)
+        self.assertTrue(any("signatures" in x for x in v), v)
+
+    def test_missing_module_parameters_flagged_when_section51_declares_any(self) -> None:
+        api = self._full_api()
+        del api["module_parameters"]
+        v = self._run(public_api=api)
+        self.assertTrue(any("module_parameters" in x for x in v), v)
+
+    def test_signature_drift_between_ir_and_section51_flagged(self) -> None:
+        """The defect issue #153 cause A is about, caught at Compile: the IR publishes an ABI the
+        spec does not. Both directions of one argument — its ORDER and its TYPE — because the
+        boundary component's real drift was an order change and a `logical` -> `real` change."""
+        reordered = self._SECTION_51_FORTRAN.replace(
+            "subroutine dep_base__scale(n, x, y, guard_pass)",
+            "subroutine dep_base__scale(x, n, y, guard_pass)")
+        retyped = self._SECTION_51_FORTRAN.replace(
+            "  logical, intent(out) :: guard_pass",
+            "  real(dp), intent(out) :: guard_pass")
+        for label, block in (("reordered", reordered), ("retyped", retyped)):
+            api = self._full_api()
+            api["signatures"] = _structured_ir_signatures_from_fortran(block)
+            v = self._run(public_api=api)
+            self.assertTrue(v, f"{label} drift produced no violation")
+            self.assertTrue(any("signature" in x.lower() for x in v), (label, v))
+
+    def _refusal_shapes(self) -> dict[str, dict]:
+        """Every path on which the gate refuses, as `_run` kwargs. One entry per refusal, because the
+        rule under test — a refusal names the node's ACTUAL kind — lives in each message separately.
+        Round 0 drove ONE shape and found the other SIX unpinned (seven shapes here; the driven one
+        was the missing-`signatures` refusal). An earlier version of this docstring said five, which
+        disagreed with the commit that added it — the count is six."""
+        no_sigs = self._full_api()
+        del no_sigs["signatures"]
+        no_params = self._full_api()
+        del no_params["module_parameters"]
+        return {
+            "missing spec_id": dict(public_api=self._full_api(), spec_id=""),
+            "missing controlled_spec ref": dict(public_api=self._full_api(), cs_ref=None),
+            "unresolvable controlled_spec": dict(public_api=self._full_api(), write_cs=False),
+            "missing public_api": dict(public_api=_OMIT),
+            "missing signatures": dict(public_api=no_sigs),
+            "missing module_parameters": dict(public_api=no_params),
+            "unsupported language": dict(public_api=self._full_api(), language="rust"),
+        }
+
+    def test_every_refusal_names_the_node_kind_it_was_given(self) -> None:
+        """One gate, not two that happen to agree — asserted over EVERY refusal path, not one.
+
+        `_EXACT_PUBLISHED_SURFACE_KINDS` decides membership, so driving the same tree under each kind
+        token must produce messages differing ONLY in the kind word. Round 0's sweep is why this is a
+        family: with a single shape driven, reverting `{kind}` to a hardcoded "infrastructure" in the
+        other SIX refusals survived the whole suite — so a `component` author could be sent to fix an
+        infrastructure node on any of six paths.
+
+        The §5-parse refusal is a deliberate exception with its own row below: its remedy names the §5
+        prose form, which genuinely differs per kind."""
+        def fresh(kwargs: dict) -> dict:
+            # Deepcopy the VALUES, never the `_OMIT` sentinel: copying it yields a new `object()`
+            # whose `is not _OMIT` is True, so the seeder would try to YAML-dump the sentinel
+            # instead of omitting `public_api`. Identity sentinels do not survive deepcopy.
+            return {k: (v if v is _OMIT else copy.deepcopy(v)) for k, v in kwargs.items()}
+
+        for label, kwargs in self._refusal_shapes().items():
+            with self.subTest(refusal=label):
+                def normalized(kind: str) -> list[str]:
+                    # Each `_run` builds its own tmp dir, so the leading path is noise; the kind
+                    # token is the only difference the messages may carry.
+                    return [x.split("spec.ir.yaml", 1)[-1].replace(kind, "<kind>")
+                            for x in self._run(spec_kind=kind, **fresh(kwargs))]
+
+                component = self._run(spec_kind="component", **fresh(kwargs))
+                self.assertTrue(component, f"{label}: expected a violation to compare")
+                self.assertEqual(normalized("component"), normalized("infrastructure"))
+                # Self-test per shape: the kind word really IS in this message, so the normalization
+                # is doing work. Without it, a message naming NO kind would pass this row silently.
+                self.assertTrue(
+                    any("component" in x for x in component),
+                    f"{label}: no message names the kind, so this row proves nothing: {component}")
+
+    def test_the_section5_parse_refusal_names_the_form_that_kind_must_write(self) -> None:
+        """`_SECTION5_FORM_HINT` is a per-kind DECISION, not an accident of the merge: the two kinds
+        state their published surface in different prose, so a remedy naming the wrong form sends the
+        author to rewrite §5 into a shape their kind does not use. Round 0 found it unpinned."""
+        spec = self._controlled_spec().replace(
+            "The only published `operation_id` is `dep_base__scale`.", "No operations here.")
+        for kind in ("component", "infrastructure"):
+            with self.subTest(kind=kind):
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    tmp = Path(tmpdir)
+                    (tmp / "cs.md").write_text(spec, encoding="utf-8")
+                    ir_dir = self._seed(tmp, public_api=self._full_api(), spec_kind=kind,
+                                        write_cs=False)
+                    v: list[str] = []
+                    vps._validate_published_surface(tmp, ir_dir, v)
+                self.assertEqual(len(v), 1, v)
+                self.assertIn("§5 parsed 0 published operation_ids", v[0])
+                self.assertIn(f"cannot pin {kind} public_api", v[0])
+                # Pin the ASSOCIATION by literal, not by indexing the same dict the subject indexes.
+                # Round 1 measured that `assertIn(vps._SECTION5_FORM_HINT[kind], v[0])` cannot see
+                # the two values SWAPPED — it reads whatever is bound to the kind and finds it — so
+                # the hint the wrong kind receives was invisible. That is this loop's "generating the
+                # probes FROM a constant gives set identity, not a family that can distinguish
+                # anything". The literals live here; the constant is the code's.
+                expected = {
+                    "component": "unrecognized published-operation form",
+                    "infrastructure": "unrecognized 'published operation_ids are exactly' form",
+                }[kind]
+                self.assertIn(expected, v[0])
+                self.assertNotIn(
+                    {"component": "unrecognized 'published operation_ids are exactly' form",
+                     "infrastructure": "unrecognized published-operation form"}[kind],
+                    v[0])
+        # And the code's own table must carry exactly those two associations, so a rename of a
+        # literal here cannot drift away from the subject silently.
+        self.assertEqual(
+            dict(vps._SECTION5_FORM_HINT),
+            {"component": "unrecognized published-operation form",
+             "infrastructure": "unrecognized 'published operation_ids are exactly' form"})
+        # Every pinned kind has a hint: a bare dict index would otherwise KeyError inside
+        # `Compile.static` the moment a third kind joins the set.
+        self.assertEqual(set(vps._SECTION5_FORM_HINT),
+                         set(vps._EXACT_PUBLISHED_SURFACE_KINDS))
 
     def test_non_component_is_noop(self) -> None:
         # A profile/problem node has no component-name pin — the gate no-ops (its public_api,
@@ -21584,8 +22446,8 @@ class IrFixtureShapeTests(unittest.TestCase):
         infrastructure gates probe it. Without the total probe an over-long ref raises ENAMETOOLONG
         out of the gate."""
         from tools.validate_pipeline_semantics import (
-            _validate_infrastructure_generated_signatures,
-            _validate_infrastructure_public_api,
+            _validate_generated_signatures,
+            _validate_published_surface,
         )
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -21602,8 +22464,8 @@ class IrFixtureShapeTests(unittest.TestCase):
             (ir_dir / "spec.ir.yaml").write_text(json.dumps(doc), encoding="utf-8")
 
             for gate in (
-                _validate_infrastructure_public_api,
-                _validate_infrastructure_generated_signatures,
+                _validate_published_surface,
+                _validate_generated_signatures,
             ):
                 violations: list[str] = []
                 try:
@@ -22351,9 +23213,12 @@ class StaleDependencyIRExitCodeTests(unittest.TestCase):
         """A minimal post_generate tree whose model source is faithful to §5.1.
 
         The only thing under the test's control is ``public_api.module_parameters``: pass None for
-        the pre-contract (stale) shape, or the §5.1 values for a healthy IR. The IR carries no
-        ``io_contract`` / ``raw_requirements``, so ORDINARY violations always co-occur — which is
-        the point for the exit-code precedence.
+        the pre-contract (stale) shape, or the §5.1 values for a healthy IR. ``signatures`` is always
+        seeded faithfully, because issue #153 PR-2 put the signature half under the same stale-IR
+        guard — leaving it empty would make the "healthy IR" row stale for the OTHER reason and turn
+        the exit-code precedence row green for the wrong cause. The IR carries no ``io_contract`` /
+        ``raw_requirements``, so ORDINARY violations always co-occur — which is the point for the
+        exit-code precedence.
         """
         ir_ref = "workspace/ir/x"
         ir_dir = tmp / ir_ref
@@ -22363,9 +23228,10 @@ class StaleDependencyIRExitCodeTests(unittest.TestCase):
             + InfrastructureGeneratedSignatureGateTests._FENCE
             + "## 6. x\n",
             encoding="utf-8")
-        public_api: dict[str, object] = {"signatures": []}
+        public_api: dict[str, object] = {
+            "signatures": copy.deepcopy(InfrastructurePublicApiGateTests._SIGNATURES)}
         if module_parameters is not None:
-            public_api = {"module_parameters": module_parameters}
+            public_api["module_parameters"] = module_parameters
         _write_json(ir_dir / "spec.ir.yaml", {
             "meta": {"spec_kind": "infrastructure", "spec_id": "hx",
                      "source_refs": {"controlled_spec": "cs.md"}},

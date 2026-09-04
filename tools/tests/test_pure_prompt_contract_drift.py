@@ -255,7 +255,37 @@ PINNED: dict[str, str] = {
     # to the clause it was widening for that reason. Keeping two lists in step is the twin the
     # rubric exists to avoid (`docs/DEVELOPMENT.md` §Design Policy), and the rubric is inlined
     # three paragraphs below the checklist, so the clause now grants the permission and points.
-    "pure-30": "7039408f93b3be3e3fa7d075081cea0eae8c95740fdc9f25e55448a359376c82",}
+    "pure-30": "7039408f93b3be3e3fa7d075081cea0eae8c95740fdc9f25e55448a359376c82",
+    # pure-31 (issue #153 PR-2): a `component` node's IR now carries `public_api.signatures` and
+    # `public_api.module_parameters`, so rule (6a)'s neutral-token lowering applies to it and rule
+    # (6b) says the NAMES are not the whole surface — the signatures pin each argument's name,
+    # order, type, rank and `intent`, compared against the emitted source by the `Generate.gate`
+    # static check. Rule (1) consequently splits the `dp` binding by IR shape: a node whose
+    # `module_parameters` declares the name must bind it with the parameter DECLARATION
+    # (`integer, parameter :: dp = real64`), because that is what the gate value-pins, and the
+    # `use`-rename that every physics node used until now declares no parameter and FAILS; a node
+    # with no module parameters keeps the rename form. The reason a component gained the keys at
+    # all is that an ABI derived post-hoc republished six different argument lists for one
+    # `spec_version`.
+    # `pure-31` is still the same contract change and has not shipped; round 1 added the `dims`
+    # lowering rule to it, which is part of the same "a component's IR now carries signatures"
+    # change rather than a second one. Round 1 measured what its absence cost: a leaf following rule
+    # 6b's enumerated fields exactly, and rendering rank as assumed-shape (which is what
+    # `docs/CONTROLLED_SPEC.md` named as the Fortran binding), earns 3 refusals on the flux
+    # component — `dims` is load-bearing in 5 of the 6 new §5.1 blocks and was documented nowhere a
+    # leaf or a spec author reads.
+    # Round 2 folds in one more sentence for the same reason, and it is the same rule again: rule
+    # (1) now says the pinned name must be declared EXACTLY ONCE, a second declaration inside a
+    # contained procedure included. That closed a measured fail-open — a module-level binding to a
+    # narrower kind with the pinned text shadowed in a procedure passed a presence check while
+    # publishing single precision — and a leaf judged by uniqueness but never told about it would
+    # have spent an attempt on a refusal its instructions did not state.
+    # Round 4 folds in one more, same contract change, same rule: the published HEADER is compared
+    # as emitted, so a procedure prefix the signature does not carry is a drift. Measured as an
+    # over-refusal with a MISROUTING message — it blamed argument drift for a source whose arguments
+    # were all correct — and the construct occurs in the corpus today, so a generator writes it
+    # unprompted. The six specs already said so; a leaf does not read specs.
+    "pure-31": "404fed5ddc0077954b8b38e5294a7fd3a56d22064f87430824b2ad4db27dc37f",}
 
 
 def _contract_tuple() -> dict[str, object]:

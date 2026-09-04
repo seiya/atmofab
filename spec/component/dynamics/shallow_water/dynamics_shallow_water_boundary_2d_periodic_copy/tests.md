@@ -6,7 +6,7 @@
 - `status`: `draft`
 - `spec_ref.spec_kind`: `component`
 - `spec_ref.spec_id`: `dynamics_shallow_water_boundary_2d_periodic_copy`
-- `spec_ref.spec_version`: `0.1.0`
+- `spec_ref.spec_version`: `0.2.0`
 - `spec_ref.controlled_spec_path`: `spec/component/dynamics/shallow_water/dynamics_shallow_water_boundary_2d_periodic_copy/controlled_spec.md`
 
 ## 1. Test purpose

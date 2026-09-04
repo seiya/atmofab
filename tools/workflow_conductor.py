@@ -10169,7 +10169,7 @@ clean:
             #
             # rc 4 and rc 5 are UNREACHABLE from this stage today, for the same reason and with
             # the same remedy. The stale-IR violation has one emit site
-            # (`_validate_infrastructure_generated_signatures`) and one caller
+            # (`_validate_generated_signatures`) and one caller
             # (`_validate_generate_outputs_for_generation`, post_generate only); the
             # host-authored wrap has one construction site, in that same post_generate caller —
             # post_execute reaches the runner gates through `_validate_runner_outputs`, which is

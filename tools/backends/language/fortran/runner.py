@@ -1061,7 +1061,7 @@ def assert_harness_pin(
 
     # Module parameter VALUES (see `_HARNESS_V3_PARAMETERS`). Per-entity atoms, so a combined
     # `integer, parameter :: dp = real64, case_id_len = 64` declaration matches — the same
-    # normalization `_validate_infrastructure_generated_signatures` uses to pin §5.1 against the
+    # normalization `_validate_generated_signatures` uses to pin §5.1 against the
     # source, applied here to pin the RENDERER against the source.
     src_atoms = source_atoms(harness_source or "")
     for pline in _HARNESS_V3_PARAMETERS:
@@ -1135,7 +1135,7 @@ def assert_harness_pin(
 
         # (2) Generated model source — a procedure stanza carries its body, so the pinned
         # interface atoms must be a SUBSET of the source stanza's atoms (a type block has no
-        # body, so it is compared exactly, matching _validate_infrastructure_generated_signatures).
+        # body, so it is compared exactly, matching _validate_generated_signatures).
         src_stanza = src_ops.get(symbol) or src_types.get(symbol)
         if src_stanza is None:
             raise RenderError(

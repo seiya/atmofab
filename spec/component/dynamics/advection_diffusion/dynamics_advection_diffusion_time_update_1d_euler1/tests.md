@@ -6,7 +6,7 @@
 - `status`: `draft`
 - `spec_ref.spec_kind`: `component`
 - `spec_ref.spec_id`: `dynamics_advection_diffusion_time_update_1d_euler1`
-- `spec_ref.spec_version`: `0.1.0`
+- `spec_ref.spec_version`: `0.2.0`
 - `spec_ref.controlled_spec_path`: `spec/component/dynamics/advection_diffusion/dynamics_advection_diffusion_time_update_1d_euler1/controlled_spec.md`
 
 ## 1. Test purpose

@@ -36,7 +36,7 @@
     "docs/CONTROLLED_SPEC.md": {
       "fortran": 7,
       "fortran-kind": 3,
-      "fortran-subroutine": 2
+      "fortran-subroutine": 1
     },
     "docs/DEVELOPMENT.md": {
       "fortran": 1,
@@ -137,8 +137,8 @@
       "compiler-driver": 1,
       "fortran": 13,
       "fortran-standard": 2,
-      "fortran-subroutine": 3,
-      "fortran-suffix": 3,
+      "fortran-subroutine": 2,
+      "fortran-suffix": 2,
       "make-control-file": 2
     },
     "docs/workflow/phases/phase_02_generate.md": {
@@ -219,7 +219,6 @@
       "fortran": 6,
       "fortran-kind": 1,
       "fortran-standard": 1,
-      "fortran-subroutine": 1,
       "make-control-file": 1
     },
     "skills/workflow-generate-generate/SKILL.md": {
@@ -304,7 +303,7 @@
       "fortran": 17,
       "fortran-implicit-none": 4,
       "fortran-intent": 26,
-      "fortran-kind": 3,
+      "fortran-kind": 2,
       "fortran-standard": 2,
       "fortran-subroutine": 7,
       "linter-fortitude": 4,
@@ -334,7 +333,7 @@
     "tools/validate_pipeline_semantics.py": {
       "compiler-driver": 37,
       "compiler-syntax-only": 8,
-      "fortran": 373,
+      "fortran": 371,
       "fortran-allocatable": 2,
       "fortran-implicit-none": 3,
       "fortran-intent": 42,
@@ -343,7 +342,7 @@
       "fortran-module-procedure": 3,
       "fortran-standard": 31,
       "fortran-subroutine": 77,
-      "fortran-suffix": 40,
+      "fortran-suffix": 38,
       "linter-cppcheck": 7,
       "linter-fortitude": 6,
       "linter-ruff": 3,
