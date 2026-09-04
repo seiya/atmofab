@@ -13330,10 +13330,12 @@ def _validate_generated_signatures(
     # Refusing an IMPORT of the pinned name is what closes it, and it closes the family rather than
     # the witness: an ALIASING import and a plain one both bring a binding this gate cannot see the
     # value of, and a legitimate source has no reason for either — it declares the parameter itself,
-    # which is the rule. Together with the syntax gate the pair is complete: if the declaration sits
-    # ONLY inside a dead procedure and nothing imports the name, then the module-level uses of that
-    # parameter do not resolve and the compiler front end rejects the source. So the published
-    # binding is forced to be the module-level declaration without this gate doing scope analysis.
+    # which is the rule. This half alone is NOT complete, and an earlier version of this comment
+    # claimed it was: it enumerated "imported, or declared only in a dead procedure" and omitted the
+    # case where the module declares the name ITSELF with another value — which resolves, compiles,
+    # and publishes the wrong precision. The uniqueness check below is what closes that; this one
+    # remains because an import is the member uniqueness cannot see (an imported name is bound
+    # without a `parameter` declaration to compare).
     param_names = [
         str(mp.get("name") or "").strip()
         for mp in _section51_module_parameters(cs_path) if isinstance(mp, dict)
@@ -13365,13 +13367,52 @@ def _validate_generated_signatures(
                     "cannot see")
                 break
 
-    for pline in param_lines:
-        missing_atoms = [a for a in fortran_signatures.stanza_atoms([pline]) if a not in all_src_atoms]
+    # Pair by INDEX over the unfiltered list, not by zipping against a FILTERED name list.
+    # `_section51_parameter_lines` maps one-to-one over the same `_section51_module_parameters`
+    # entries these names come from, so index i is the same parameter on both sides — but only while
+    # nothing is dropped from one side. `[n for n in param_names if n]` dropped exactly the
+    # empty-named entries, which would have shifted every later pair and checked one parameter's
+    # uniqueness against another's pinned line. That is unreachable today for a reason external to
+    # this loop (an empty name makes the language backend's parameter renderer raise, so
+    # `param_lines` is `[]` and a violation is already recorded), and relaxing that renderer would turn
+    # a coincidence into a silent mispairing. Pairing by index cannot go wrong that way.
+    for pline, name in zip(param_lines, param_names):
+        if not name:
+            continue
+        pinned_atoms = fortran_signatures.stanza_atoms([pline])
+        missing_atoms = [a for a in pinned_atoms if a not in all_src_atoms]
         if missing_atoms:
             violations.append(
                 f"{target}: generated model source is missing the §5.1 module parameter "
                 f"declaration `{pline.strip()}` (a drifted parameter value silently changes the "
                 "published ABI)")
+            continue
+        # UNIQUENESS, not presence. Presence alone asks "does the pinned text occur anywhere in the
+        # file", and a declaration is not where it occurs but where the published signatures BIND.
+        # Round 1 closed one way to satisfy presence with a non-published binding (an import) and
+        # left the family open; round 2 found the next member — a module-level declaration of the
+        # SAME name with a NARROWER value, plus the pinned text inside a contained procedure, where
+        # a local `parameter` legally shadows the host one. Measured: 0 violations, the source
+        # compiles, the linter passes, and every published argument is single precision while §5.1
+        # pins double. The stanza comparison pins types only SYMBOLICALLY (`real(dp)`), so all
+        # precision information routes through this one check.
+        #
+        # So the rule changes shape: the pinned name must have EXACTLY ONE binding in the source and
+        # it must be the pinned one. That is what protects a member nobody has thought of yet —
+        # another spelling of "bind this name to something else" is refused by construction rather
+        # than by a third patch.
+        others = sorted(
+            a for a in all_src_atoms
+            if re.match(rf"[a-z0-9_()]*,parameter::{re.escape(name.lower())}=", a)
+            and a not in pinned_atoms
+        )
+        if others:
+            violations.append(
+                f"{target}: generated model source binds the §5.1 module parameter `{name}` more "
+                f"than once — `{pline.strip()}` is pinned, and the source also declares "
+                f"{', '.join('`' + o + '`' for o in others)}. The published signatures bind to the "
+                "MODULE-level declaration, so a second binding of the same name means the pinned "
+                "text is not necessarily the one the published ABI uses; declare it once")
 
 
 def _validate_test_predicates(

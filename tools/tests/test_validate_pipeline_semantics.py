@@ -17209,6 +17209,115 @@ class InfrastructureGeneratedSignatureGateTests(unittest.TestCase):
             tmp = Path(t)
             self.assertEqual(self._run(self._seed(tmp, source=self._GOOD_SOURCE), tmp), [])
 
+    def test_a_pinned_module_parameter_may_be_bound_exactly_once(self) -> None:
+        """The FAMILY, pinned as a family — because patching it witness-by-witness lost twice.
+
+        All precision information routes through this one check: the stanza comparison pins types
+        only SYMBOLICALLY (`real(dp)`), so what `dp` MEANS is pinned nowhere else in the tree. The
+        check therefore has to answer "is the pinned text the binding the published signatures use",
+        and PRESENCE cannot answer that — it asks only whether the text occurs somewhere in the file.
+
+        Round 1 closed the import witness. Round 2 found the next member: a module-level declaration
+        of the same name with a NARROWER value, plus the pinned text inside a contained procedure
+        where a local `parameter` legally shadows the host one — 0 violations, compiles, lints clean,
+        and every published argument single precision while §5.1 pins double. Rather than a third
+        patch, the rule became UNIQUENESS, which refuses a member nobody has thought of yet."""
+        import tempfile
+        pinned = "  integer, parameter :: dp = real64\n"
+        for label, source in (
+            # (a) a module-level narrowing declaration + the pinned text shadowed in a procedure.
+            ("shadowing declaration", self._GOOD_SOURCE
+             .replace(pinned, "  integer, parameter :: dp = real32\n", 1)
+             .replace("contains\n",
+                      "contains\n"
+                      "  subroutine reference_precision_note(x)\n"
+                      "    integer, parameter :: dp = real64\n"
+                      "    real(dp), intent(out) :: x\n"
+                      "    x = 0.0_dp\n"
+                      "  end subroutine reference_precision_note\n", 1)),
+            # (b) the pinned declaration kept AND a second one added — order reversed, so neither
+            #     "first wins" nor "last wins" can make this pass.
+            ("second declaration after", self._GOOD_SOURCE.replace(
+                "contains\n",
+                "contains\n"
+                "  subroutine other_note(x)\n"
+                "    integer, parameter :: dp = real32\n"
+                "    real(dp), intent(out) :: x\n"
+                "    x = 0.0_dp\n"
+                "  end subroutine other_note\n", 1)),
+        ):
+            with self.subTest(member=label):
+                with tempfile.TemporaryDirectory() as t:
+                    tmp = Path(t)
+                    violations = self._run(self._seed(tmp, source=source), tmp)
+                self.assertTrue(
+                    any("more than once" in v for v in violations), (label, violations))
+        # The pinned declaration ALONE still passes — uniqueness did not become "any parameter
+        # declaration fails".
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            self.assertEqual(self._run(self._seed(tmp, source=self._GOOD_SOURCE), tmp), [])
+
+    def test_each_pinned_parameter_is_checked_against_its_own_declaration(self) -> None:
+        """The uniqueness check pairs a §5.1 parameter with ITS line, not with a neighbour's.
+
+        Two lists feed that loop and they come from DIFFERENT functions —
+        `_section51_parameter_lines` renders the lines, and the names are read from
+        `_section51_module_parameters`. They agree element-for-element only while neither side drops
+        an entry, and the first version of this check zipped the lines against a FILTERED name list,
+        so an entry dropped from one side would have shifted every later pair: one parameter's
+        uniqueness checked against another's pinned text, and the pinned one never presence-checked.
+
+        Every existing row of this class declares ONE parameter, where any pairing is the right
+        pairing — so none of them can see this, which is why the fixture here declares TWO and puts
+        the violation on the SECOND. The refusal must name `case_id_len`; naming `dp` would mean the
+        loop read index 0's name with index 1's line."""
+        import tempfile
+        fence = InfrastructurePublicApiGateTests._SECTION_51_FORTRAN.replace(
+            "integer, parameter :: dp = real64\n",
+            "integer, parameter :: dp = real64\n"
+            "integer, parameter :: case_id_len = 32\n", 1)
+        section_51 = _structured_section51_from_fortran(fence)
+        # `_seed` writes the IR from the class's ONE-parameter fixture, and the stale-IR guard
+        # compares it against §5.1 — so the IR has to gain the second parameter too, or the guard
+        # fires first and this row measures that instead.
+        ir_params = _structured_ir_module_parameters_from_fortran(fence)
+
+        def seed(tmp: Path, source: str) -> NodeExecution:
+            ex = self._seed(tmp, source=source, section_51=section_51)
+            ir_path = tmp / "workspace" / "ir" / "x" / "spec.ir.yaml"
+            doc = json.loads(ir_path.read_text(encoding="utf-8"))
+            doc["public_api"]["module_parameters"] = copy.deepcopy(ir_params)
+            _write_json(ir_path, doc)
+            return ex
+
+        base = self._GOOD_SOURCE.replace(
+            "  integer, parameter :: dp = real64\n",
+            "  integer, parameter :: dp = real64\n"
+            "  integer, parameter :: case_id_len = 32\n", 1)
+        # Both parameters are correctly declared once: the two-parameter fixture itself is clean, so
+        # a refusal below cannot be the fixture complaining about the extra parameter.
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            self.assertEqual(
+                self._run(seed(tmp, base), tmp), [])
+        # Now bind ONLY the second parameter a second time.
+        doubled = base.replace(
+            "contains\n",
+            "contains\n"
+            "  subroutine case_id_note(x)\n"
+            "    integer, parameter :: case_id_len = 16\n"
+            "    integer, intent(out) :: x\n"
+            "    x = case_id_len\n"
+            "  end subroutine case_id_note\n", 1)
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            violations = self._run(seed(tmp, doubled), tmp)
+        hits = [v for v in violations if "more than once" in v]
+        self.assertTrue(hits, violations)
+        self.assertTrue(all("`case_id_len`" in v for v in hits), hits)
+        self.assertFalse([v for v in hits if "`dp`" in v], hits)
+
     def test_an_imported_binding_of_a_pinned_module_parameter_is_refused(self) -> None:
         """Round 1's second fail-open, and the one that made the §5.1 prose of six real specs false.
 
@@ -18838,9 +18947,24 @@ class RealCorpusPublishedSurfaceTests(unittest.TestCase):
 
     Why it earns its place. Issue #153 PR-2 added a §5.1 block to six component specs by hand, and
     the only other way to learn whether the gate accepts them is a billed `--with-deps` run. This is
-    that answer, unbilled, and it keeps answering: a later spec edit that renames an operation in §5
-    without touching §5.1, adds an argument to §5.1 without bumping `spec_version`, or writes a
-    `dims` expression the backend cannot render, turns this red at the commit that does it.
+    that answer, unbilled, and it keeps answering for the edits it can see: an operation renamed in
+    §5 without touching §5.1, a §5.1 the backend cannot render, a fence that will not parse.
+
+    WHAT IT CANNOT SEE, measured rather than reasoned. Adding an argument to a §5.1 block without
+    bumping `spec_version` leaves this class fully GREEN — measured at `e482a85` on the real flux
+    spec, whose published `compute_flux` takes 9 arguments, with a tenth inserted after `dx`:
+    836 passed, 127 subtests, the same verdict as the un-mutated tree. An earlier version of this docstring claimed the opposite, and the
+    reason it is wrong is structural: this class BUILDS the IR from §5.1, so widening §5.1 widens
+    both sides of its comparison at once. It is the same shape as `_SECTION5_FORM_HINT`'s test
+    earlier on this branch — a probe generated from the constant it is meant to check gives set
+    identity and can distinguish nothing — and it is why the control below renames §5 instead, which
+    is the one input this class holds fixed.
+
+    Nothing else catches it either: the node_key does not move, so readiness leaves the node `ready`,
+    no gate re-runs, and the widened §5.1 sits latent until something unrelated re-certifies the
+    node. The rule that a §5.1 change carries a `spec_version` bump is DISCIPLINE, not enforcement —
+    `docs/design/deterministic_followups.md` §"Issue #153" says the same, and this docstring said
+    otherwise for two commits.
 
     What it does NOT check, stated so the green is not read too widely: it builds the IR the spec
     implies rather than reading a certified one, so it cannot see a Compile leaf that transcribes
