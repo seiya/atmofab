@@ -17367,6 +17367,35 @@ class InfrastructureGeneratedSignatureGateTests(unittest.TestCase):
         self.assertTrue(all("`case_id_len`" in v for v in hits), hits)
         self.assertFalse([v for v in hits if "`dp`" in v], hits)
 
+    def test_a_procedure_prefix_is_refused_and_the_message_says_so(self) -> None:
+        """A prefix marking the operation side-effect-free is a header difference, and is refused.
+
+        Two halves, and the SECOND is the one this row exists for. That the gate refuses it is
+        correct: the header is compared as published, so a prefix is a difference. But the refusal
+        used to blame `argument name/type/rank/intent/result drift` for a source whose arguments are
+        all correct, which sends the leaf to re-derive a signature that is already right — the
+        expensive kind of wrong message, because following it cannot converge.
+
+        Round 0 on the round-3 fixes reported the message improvement as an unexplained survivor:
+        no test read the text. It is pinned here for the same reason
+        `test_a_missing_declaration_is_reported_once_not_twice` exists — a refusal is the leaf's
+        only input for its next attempt, so its content is behaviour, not decoration.
+
+        The construct is not invented: a prefixed procedure occurs in the corpus today (in a
+        `profile` model, which publishes no §5.1 and so is unaffected), which is evidence that a
+        generator writes it unprompted."""
+        import tempfile
+        source = self._GOOD_SOURCE.replace(
+            "  function hx__emit_int(i) result(s)\n",
+            "  pure function hx__emit_int(i) result(s)\n", 1)
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            violations = self._run(self._seed(tmp, source=source), tmp)
+        self.assertTrue(violations, "a prefix on the published header must be refused")
+        self.assertTrue(
+            any("procedure prefix" in v for v in violations),
+            f"the refusal must name the prefix as a cause, not only argument drift: {violations}")
+
     def test_an_imported_binding_of_a_pinned_module_parameter_is_refused(self) -> None:
         """Round 1's second fail-open, and the one that made the §5.1 prose of six real specs false.
 
