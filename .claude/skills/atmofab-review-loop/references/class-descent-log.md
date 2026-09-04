@@ -319,6 +319,58 @@ descent not achieved, blank-slate zero-functional-defects not achieved twice. Th
 census is explicitly not closed — an independent census found 24 of 40 mutants surviving in round
 4, and the author's own 12-mutant sweep afterwards is a statement about those 12.
 
+## PR #154 / issue #153 — the class descended all the way to prose, and the loop still stopped short
+
+Content-granular closure bindings: a dependency regenerated under an unchanged `spec_version` no
+longer leaves its consumers recorded as READY. Round 0 plus **three** rounds — the default budget —
+two judgment axes plus a sonnet mechanical axis in rounds 1 and 2, the Codex launch spent in round 2,
+and round 3 given entirely to the disclosure axis (both agents, per SKILL.md's "before stopping
+rather than as an extra round after deciding to stop").
+
+**The descent, and it is the cleanest recorded here: original design -> my fix -> my witnesses -> my
+records -> my prose.**
+
+| round | findings | class |
+|---|---|---|
+| 0 | 1 live code defect in my own fix | hole in the fix |
+| 1 | 1 live code defect (same shape), 3 coverage gaps, 1 dead function with a false docstring, 1 trust-boundary wording, 5 wrong figures | fix + witnesses + records |
+| 2 | 0 code defects. 2 test families that could not fail, 1 record wording, and my own round-1 correction wrong in the shape it condemned | witnesses + records |
+| 3 | 0 code defects, 0 functional. 1 operator-facing mislabel, 3 record corrections | prose + records |
+
+**No fail-open in any round, and no finding in pre-existing machinery.** Every finding was in
+something the branch itself added. That is a different history from PR #146's, where the class did
+not descend at all.
+
+**What the round-3 disclosure axis bought, and nothing else could have.** Its brief included "what
+CHECK went with what was deleted", and it applied eleven defects the touched checks used to catch at
+BOTH revisions. Ten red-then-red; the eleventh ran the safe way — `origin/main`'s unsafe-token guard
+was UNTESTED there and is pinned at HEAD. **No red-then-green**, which is the finding that instrument
+exists to produce. It also surfaced the one guarantee the branch gives up (the replaced inline loop
+crashed on a malformed sidecar for a node declaring no dependencies; the replacement returns `[]`),
+which went into the design record as a named trade rather than staying in a round report. The other
+disclosure agent re-executed every executable claim in eight commit messages and found exactly one
+wrong — a claim about the LOOP's own regularity, which is worth noting: the false statement was not
+about the code but about the review process, offered as evidence for one of this skill's heuristics.
+
+**Why this loop stopped at the default instead of pushing to the cap.** The remainder is bounded on
+the sweep proxy: three reviewers built their own sweeps and reported 22, 26 and 11 mutants
+respectively (their counts, from their reports — I did not rebuild the lists). Three survivors came
+out of the first two, and those I did reproduce and close by hand: the launch-gate demotion threshold
+(`>= 2` -> `>= 3`, now RED with `AssertionError: 2 != 1`), the `isinstance(bindings, list)` clause, and
+the `topo_level` bool clause. So "fully killed" is a claim about the survivors, which I measured, and
+not about the 59 mutants, which I did not re-run. But the change ADDS checking machinery, and SKILL.md's proxy there is a blank-slate review
+with zero functional defects for **two consecutive** rounds. Only round 2 supplies one; round 3 was
+the disclosure round, which does not count toward it. So the honest statement is "stopped at the
+default budget with one of two proxy rounds", not convergence, and the PR body says so. Nothing in
+scope was left open.
+
+**The reading to carry forward.** A loop whose findings walk from code to witnesses to records to
+prose is descending correctly, and the temptation at the bottom is to call it converged because the
+last round found "only prose". Both of round 3's findings were in the first of SKILL.md's two prose
+categories — text an operator ACTS ON (`stale=` printed for a node that was never built) and a false
+record about the branch — so neither belonged in the bounded remainder. **The descent tells you the
+loop is working; it does not tell you it is finished, and the two proxies are what decide that.**
+
 ## PR #146 / issue #143 — the first loop to run to the cap, and what the cap bought
 
 A rubric for choosing a `verify` verdict's `issue_severity`, defined once in a phase document and

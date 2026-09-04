@@ -1,9 +1,43 @@
 # Delegating verifiable review work to sonnet: the experiment log
 
-Twelve runs narrated here, newest first. SKILL.md counts THIRTEEN, and the extra one is not a
+Thirteen runs narrated here, newest first. SKILL.md counts FOURTEEN, and the extra one is not a
 miscount: PR #116's run is cited there (it reported that a ten-item mutant list a commit message
 referenced was recorded nowhere it could find) and was never written up in this file. Numbering
 skips 10 for that reason. SKILL.md carries the operational conclusion; this is the evidence.
+
+## Data point 14 (issue #153 / PR #154, round 1) — the checklist item that was wrong, and paid anyway
+
+**Circumstance: a normal run.** Two up-model judgment axes ran in parallel and both returned; this
+was the added third axis, as the operational conclusion prescribes. Brief: a seven-part checklist
+(suite figures, ruff deltas, token counts, back-checks by subject mutation, a
+new-failure-class correspondence table, a call-site count, and a prose-vs-implementation
+contradiction sweep). ~14 minutes, 68 tool calls.
+
+**What it found: 3 real, 0 noise.** The two record defects it reported were both real and both
+confirmed independently by the up-model correctness axis the same round — the `59fb060` three-suite
+baseline (2314 recorded, 2336 measured) and a citation used in place of a measurement. Its
+back-check half re-ran all eight named subject mutations and confirmed each test fails when the
+thing it is about is broken. It also correctly reported that a phase document's "required keys" list
+is enforced by nothing, having looked in `tools/meta_contracts.py` and the `post_build` gate.
+
+**The valuable one was a REFUSAL, and it is the seventh of that kind.** Checklist item G asserted
+that `_dependency_binding_freshness`'s docstring claims to be "pure and NEVER raises" and asked it to
+find a counterexample. The docstring says no such thing — I had attributed the claim to the wrong
+function. It reported the premise as **not locatable**, then went and checked the functions that DO
+make that claim, and found `_closure_nodes_from_graph` raising `TypeError` on a non-iterable
+`all_nodes`. **That was the round's only live code defect.**
+
+**Why this is the shape to design a checklist for.** A reviewer answering the question as asked would
+have returned "not applicable" and been correct. What converted a defective item into the round's
+finding is the standing instruction to report an unlocatable claim rather than account for it — so the
+instruction is not merely a guard against my errors, it is the mechanism by which a wrong item still
+searches the right neighbourhood. **Keep the item's SUBJECT specific and its premise falsifiable**;
+a checklist that only asks about things I already have right cannot do this.
+
+**Limits, stated as usual.** The axis was mechanical throughout: it did not construct the driver-wire
+mutants that were the round's largest gap (three surviving mutants on the only production wire), and
+it did not attempt the over-refusal probe. Both went to the up-model axes, which is the split the
+operational conclusion already prescribes. Overlap with the up-model axes: 2 of its 3 findings.
 
 ## Data points 11-13 (issue #149 / PR #151, rounds 2 and 3) — three runs, and the first time the axis was load-bearing
 

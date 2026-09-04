@@ -82,3 +82,45 @@ N+1 between edit N and its write**. The general form is the same one the placeho
 teaches: the remedy for hand-typed numbers has its own failure mode, and so does the remedy for
 hand-edited prose. Verify the write, not the intent.
 
+
+## Issue #153 — a corrections bullet that committed the error it was condemning
+
+Round 1's two axes independently re-measured every number the branch recorded and found five wrong.
+The fix commit rewrote them as historical records naming the commit and the command, and added a
+`TODO.md` sub-bullet titled "Corrections to this branch's OWN records, because a wrong baseline makes
+the next delta wrong". Its three items:
+
+1. the three-suite baseline at `59fb060` was recorded as 2314 and is 2336 — 2314 was my own count
+   taken mid-implementation with 22 tests failing, written in as if it were the baseline;
+2. the full-tree baseline was **cited rather than measured** — "5683 / 2949 at `59fb060`, the figure
+   recorded by issue #149's own entry above", where that entry records 5683 at `de53c04`, nine
+   commits earlier; the measured figure is 5685;
+3. a `ruff` I001 delta "was 227 when that commit landed".
+
+**Item 3 was wrong, and wrong in item 2's shape.** Measured per revision, one fresh detached worktree
+each: `59fb060` 220, `17b7a8f` 226, **`8c77ad4` 226**, `bcaa99b` 227, `b134d68` 227, `aed433d` 229.
+The original figure (220 → 226) was correct at the commit carrying it; 227 is `bcaa99b`'s; the
+correction attributed a later commit's figure to `8c77ad4`. So the bullet performed the
+wrong-attribution error one item after condemning it, and replaced a correct number with a wrong one.
+
+**The cause is nameable and it is not carelessness about arithmetic.** Two round-1 reviewers reported
+227, both measured at branch HEAD. `atmofab-enforcement-change` rule 3 says, in these words, not to
+write someone else's measurement as your own — cite it or re-measure. I had read that rule the same
+session. What defeated it: **a reviewer's finding arrives already carrying evidence.** The number came
+with a table and a command, so the correction felt verified before it was written, and the one thing
+neither reviewer had done was measure at the commit the sentence would name.
+
+**Two rules that follow, both cheap:**
+
+- **Re-measure at the commit you are about to NAME, not at HEAD.** When the finding is about a
+  per-commit figure, take the whole series in one worktree-per-revision loop; the attribution is then
+  visible instead of inferred, and the loop is six lines.
+- **Record that a correction was wrong rather than deleting it.** Round 3 verified the branch's
+  records and the third item's own correction is now in the ledger with the per-revision table. A
+  corrections bullet that silently loses an entry is worse than one carrying its own history: the
+  next reader cannot tell an audited bullet from an unaudited one.
+
+**What the form change did buy.** Round 3 re-executed every other executable claim in eight commit
+messages — several to the exact traceback line, assertion text and per-file digit — and found nothing
+else wrong. The rewrite into "historical record naming the commit and the command" held; the one
+failure was the entry written from someone else's measurement.
