@@ -274,7 +274,13 @@ PINNED: dict[str, str] = {
     # `docs/CONTROLLED_SPEC.md` named as the Fortran binding), earns 3 refusals on the flux
     # component — `dims` is load-bearing in 5 of the 6 new §5.1 blocks and was documented nowhere a
     # leaf or a spec author reads.
-    "pure-31": "4e963d99596eae3353a1b3be471b5386b68a492017016c2ee8e038f763f7ac7f",}
+    # Round 2 folds in one more sentence for the same reason, and it is the same rule again: rule
+    # (1) now says the pinned name must be declared EXACTLY ONCE, a second declaration inside a
+    # contained procedure included. That closed a measured fail-open — a module-level binding to a
+    # narrower kind with the pinned text shadowed in a procedure passed a presence check while
+    # publishing single precision — and a leaf judged by uniqueness but never told about it would
+    # have spent an attempt on a refusal its instructions did not state.
+    "pure-31": "22b0de0b9a01dba7fc93d43474481055bba418d961507fc7c839603522304544",}
 
 
 def _contract_tuple() -> dict[str, object]:
