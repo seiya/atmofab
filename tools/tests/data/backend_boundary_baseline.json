@@ -333,7 +333,7 @@
     "tools/validate_pipeline_semantics.py": {
       "compiler-driver": 37,
       "compiler-syntax-only": 8,
-      "fortran": 369,
+      "fortran": 371,
       "fortran-allocatable": 2,
       "fortran-implicit-none": 3,
       "fortran-intent": 42,

@@ -17221,20 +17221,45 @@ class InfrastructureGeneratedSignatureGateTests(unittest.TestCase):
         of the same name with a NARROWER value, plus the pinned text inside a contained procedure
         where a local `parameter` legally shadows the host one — 0 violations, compiles, lints clean,
         and every published argument single precision while §5.1 pins double. Rather than a third
-        patch, the rule became UNIQUENESS, which refuses a member nobody has thought of yet."""
+        patch, the rule became UNIQUENESS. Round 3 then measured that round 2's IMPLEMENTATION of
+        that rule — a hand-written regex over the atom set — still admitted three ordinary
+        spellings, so changing the rule's shape paid off only once the question was asked with
+        the validator's own declaration reader instead of a second grammar."""
         import tempfile
         pinned = "  integer, parameter :: dp = real64\n"
+        shadow = ("contains\n"
+                  "  subroutine reference_precision_note(x)\n"
+                  "    integer, parameter :: dp = real64\n"
+                  "    real(dp), intent(out) :: x\n"
+                  "    x = 0.0_dp\n"
+                  "  end subroutine reference_precision_note\n")
+
+        def narrowed(decl: str) -> str:
+            return self._GOOD_SOURCE.replace(pinned, decl, 1).replace("contains\n", shadow, 1)
+
         for label, source in (
             # (a) a module-level narrowing declaration + the pinned text shadowed in a procedure.
-            ("shadowing declaration", self._GOOD_SOURCE
-             .replace(pinned, "  integer, parameter :: dp = real32\n", 1)
-             .replace("contains\n",
-                      "contains\n"
-                      "  subroutine reference_precision_note(x)\n"
-                      "    integer, parameter :: dp = real64\n"
-                      "    real(dp), intent(out) :: x\n"
-                      "    x = 0.0_dp\n"
-                      "  end subroutine reference_precision_note\n", 1)),
+            ("shadowing declaration", narrowed("  integer, parameter :: dp = real32\n")),
+            # (a2)-(a5) THE SAME defect in four more spellings. Round 2 wrote (a) and (b) only, and
+            # both were spelled `integer, parameter :: dp = <x>` — one shape, so the family could
+            # not straddle the character class the round-2 implementation actually keyed on, and a
+            # regex whose prefix admitted letters and parens but neither a comma nor an `=` passed
+            # this test while accepting all four of these. Each compiles under `-std=f2008`; each
+            # publishes single precision against a §5.1 that pins double. `integer(int32)` is the
+            # BOUNDARY witness and is kept deliberately: it was the one spelling round 2 caught, so
+            # a family without it cannot show that the boundary moved.
+            ("attribute before parameter",
+             narrowed("  integer, private, parameter :: dp = real32\n")),
+            ("attribute after parameter",
+             narrowed("  integer, parameter, private :: dp = real32\n")),
+            ("kind= in the type spec",
+             narrowed("  integer(kind=4), parameter :: dp = real32\n")),
+            ("kind name in the type spec (round 2 caught this one)",
+             narrowed("  integer(int32), parameter :: dp = real32\n")),
+            # (a6) the `parameter (...)` statement form, which is a declaration in TWO statements
+            # and which no atom-shaped rule sees at all.
+            ("parameter statement form",
+             narrowed("  integer, private :: dp\n  parameter (dp = real32)\n")),
             # (b) the pinned declaration kept AND a second one added — order reversed, so neither
             #     "first wins" nor "last wins" can make this pass.
             ("second declaration after", self._GOOD_SOURCE.replace(
@@ -17351,8 +17376,11 @@ class InfrastructureGeneratedSignatureGateTests(unittest.TestCase):
         produced ZERO violations. The six specs' own §5.1 text claims pinning `dp` means the source
         must carry the DECLARATION and not a `use`-rename; it did not.
 
-        Refusing an IMPORT of the pinned name closes the family rather than the witness: an alias and
-        a plain `use kinds, only: dp` both bring a binding whose value this gate cannot see. With
+        Refusing an IMPORT of the pinned name closes the `only:` forms: an alias and a plain
+        `use kinds, only: dp` both bring a binding whose value this gate cannot see. It does NOT
+        close the family — an unrestricted `use` supplies the name with nothing to match on — and
+        the sentence here used to claim otherwise. That form is refused by the lint rule `C121` in
+        the same substep instead. With
         gfortran the pair is complete — a declaration only inside a dead procedure, with nothing
         importing the name, leaves module-level `real(dp)` unresolved."""
         import tempfile

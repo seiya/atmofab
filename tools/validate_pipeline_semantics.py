@@ -13327,10 +13327,14 @@ def _validate_generated_signatures(
     # violations. That is precisely the narrowing the §5.1 prose of all six component specs claims
     # this pin closes, so the claim was false as enforced.
     #
-    # Refusing an IMPORT of the pinned name is what closes it, and it closes the family rather than
-    # the witness: an ALIASING import and a plain one both bring a binding this gate cannot see the
-    # value of, and a legitimate source has no reason for either — it declares the parameter itself,
-    # which is the rule. This half alone is NOT complete, and an earlier version of this comment
+    # Refusing an IMPORT of the pinned name is what closes it for the `only:` forms: an ALIASING
+    # import and a plain one both bring a binding this gate cannot see the value of, and a
+    # legitimate source has no reason for either — it declares the parameter itself, which is the
+    # rule. An earlier version of this comment said it "closes the family rather than the witness",
+    # which overstated it in the direction that matters: an UNRESTRICTED `use` supplies the name
+    # with nothing here to match on, and no declaration reader can see it either. That construct is
+    # refused by the lint rule `C121` (`use-all`) in this same `Generate.gate` substep — executed,
+    # not assumed — so it is covered, by another layer and not by this one. This half alone is NOT complete, and an earlier version of this comment
     # claimed it was: it enumerated "imported, or declared only in a dead procedure" and omitted the
     # case where the module declares the name ITSELF with another value — which resolves, compiles,
     # and publishes the wrong precision. The uniqueness check below is what closes that; this one
@@ -13399,16 +13403,37 @@ def _validate_generated_signatures(
         # pins double. The stanza comparison pins types only SYMBOLICALLY (`real(dp)`), so all
         # precision information routes through this one check.
         #
-        # So the rule changes shape: the pinned name must have EXACTLY ONE binding in the source and
-        # it must be the pinned one. That is what protects a member nobody has thought of yet —
-        # another spelling of "bind this name to something else" is refused by construction rather
-        # than by a third patch.
-        others = sorted(
-            a for a in all_src_atoms
-            if re.match(rf"[a-z0-9_()]*,parameter::{re.escape(name.lower())}=", a)
-            and a not in pinned_atoms
-        )
-        if others:
+        # So the rule is: the pinned name must have EXACTLY ONE binding in the source, and it must
+        # be the pinned one.
+        #
+        # HOW that question is asked is the part round 2 got wrong, and round 3 measured. Round 2
+        # answered it with a regex over the atom set, matching an attribute prefix with a character
+        # class before the pinned keyword. That is §1's source-text surface asked with a grammar
+        # written here, and it lost the way that always loses: the class admitted letters and
+        # parens but neither a comma nor an equals sign, so a declaration carrying a SECOND
+        # attribute — before or after the pinned keyword — and one whose type specification carries
+        # a keyword argument were both invisible, while the same declaration with a bare named type
+        # parameter was caught. The boundary tracked the character class, not the language. All
+        # three spellings are ordinary style, all compile under the standard the syntax gate
+        # enforces, and each publishes the narrower precision against a §5.1 that pins the wider.
+        # So the third patch was still a patch.
+        #
+        # The tree already owns the reader for this question — the declared-names helper this
+        # module defines above, which splits the attribute list on top-level commas and tests for
+        # the keyword EXACTLY, handles the two-statement declaration form, and reports a restricted
+        # import as a binding too, each of those behaviours having its own recorded fail-open.
+        # Asking it, per STATEMENT, "does this bind the pinned name" is the same question with no
+        # second grammar to keep correct. Statement granularity is what makes it a COUNT rather
+        # than a set: that helper's docstring says the caller decides scope, and the scope this
+        # rule needs is every binding anywhere in the file, because one local to a published
+        # procedure changes THAT procedure's dummy declarations, and so its ABI.
+        binding_statements = [
+            stmt.strip()
+            for stmt in _joined_masked_fortran_view(combined.lower()).splitlines()
+            if stmt.strip() and name.lower() in set().union(*_fortran_declared_names(stmt))
+        ]
+        others = sorted(set(binding_statements) - {pline.strip().lower()})
+        if len(binding_statements) > 1 or others:
             violations.append(
                 f"{target}: generated model source binds the §5.1 module parameter `{name}` more "
                 f"than once — `{pline.strip()}` is pinned, and the source also declares "
