@@ -289,7 +289,7 @@ python3 tools/run_workflow.py spec/problem/dynamics/advection_diffusion/advdiff1
 
 Behavior:
 - Dependency nodes run to **Compile** when `<until_phase>=compile` (compile readiness), else to **Validate** (execution readiness).
-- Dependency nodes that already satisfy the required readiness are **skipped** (idempotent).
+- Dependency nodes that already satisfy the required readiness are **skipped** (idempotent), and the skip entry records the version that was accepted as ready. A node whose certified binary was compiled against a dependency source that has since been regenerated is **not** skipped — see the closure-binding note below — and its re-run entry records `rerun_reason` (the readiness stage that refused, and why).
 - Execution is **sequential** in dependency order; on the first dependency-node failure the run **stops** before the dependent/target node, and the JSON output records `failed_dependency_node` + its `orchestration_id` + the `dependency_runs` summary.
 - The target node's final JSON result carries a `dependency_runs` summary of which nodes ran / were skipped.
 - Every node of a `--with-deps` closure (each dependency and the target) records a `closure_id` (= the target's orchestration id) in `orchestration_meta.json#invocation`, so a later `--resume` can re-derive and continue the **whole** closure — see the closure-aware resume note in §3-1. (Historically `--with-deps` was ignored with `--resume`, resuming only a single node.)
@@ -306,7 +306,11 @@ Re-certifying the dependents is then a single command. Each certified node recor
 python3 tools/run_workflow.py <target spec_ref> validate --with-deps
 ```
 
-Without `--with-deps` a single-node run stops at `workflow-launch-check` with `dependency_not_ready`, and the `reason_detail` names the drifted node and the resolution it was certified against versus the one derived now. Staleness is detected at **version granularity only**: a content edit that does not move `spec_version` is not seen, which is why the respec discipline is "content change ⇒ `spec_version` bump".
+Without `--with-deps` a single-node run stops at `workflow-launch-check` with `dependency_not_ready`, and the `reason_detail` names the drifted node and the resolution it was certified against versus the one derived now.
+
+**Resolution** staleness is detected at version granularity: an edit to a `spec` that does not move `spec_version` does not move any node_key, which is why the respec discipline is "content change ⇒ `spec_version` bump". **Closure-source** staleness is detected at content granularity, and covers the case the version rule cannot: a dependency REGENERATED under an unchanged `spec_version` (a Generate retry, a re-certification, an interface that moved between two passing runs). Each certified binary records the `sha256` of every dependency source it was compiled against (`binary_meta.json#dependency_check.closure_bindings[]`), and readiness compares those against what a build would stage now — so a consumer linked to a source that no longer exists is stale and gets re-run instead of being skipped and then failing closed inside its own gates (`docs/ORCHESTRATION.md` §13b).
+
+**One-time cost when this landed.** A binary certified before the binding was recorded carries no `closure_bindings` key, and fails closed when it has a non-empty closure — there is no record of what it linked. On a reused `workspace/`, the first `--with-deps` run after this change therefore re-runs **every non-leaf node of the closure** (for `advdiff1d_linear`: the three components, the profile, and the target), and skips only the closure's leaf, the harness node. That is the intended behaviour, not a defect: the alternative is to assume an unrecorded linkage was correct, which is exactly the wrong certification the mechanism exists to prevent. A fresh workspace pays nothing.
 
 ## 3-1. Resuming a failed workflow (`--resume`)
 
