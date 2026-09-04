@@ -178,7 +178,7 @@ Measured consequences of the current model (2026-07 baseline): 96-97% of node wa
 | aspect | current | zero-base |
 |--------|---------|-----------|
 | identity | hand-minted id families + format rules + indexes | derivation key + attempt id + output hash |
-| incremental / freshness | R6-lite version-granularity readiness | hash invalidation (R6 proper), structural |
+| incremental / freshness | R6-lite version-granularity readiness + closure-source content hashing (issue #153) | hash invalidation (R6 proper) over every input, structural |
 | resume / recovery | checkpoint + reopen-phase + supersede + backfill + overwrite-archiver | DAG re-evaluation over cache |
 | parallelism | forbidden by invariant, revision planned | native, concurrency-limited |
 | run records | ~15 JSON artifact kinds per orchestration, cross-validated by a 10.9k-line semantics validator | append-only event log + generated views |
