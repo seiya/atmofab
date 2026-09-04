@@ -36,7 +36,7 @@
     "docs/CONTROLLED_SPEC.md": {
       "fortran": 7,
       "fortran-kind": 3,
-      "fortran-subroutine": 2
+      "fortran-subroutine": 1
     },
     "docs/DEVELOPMENT.md": {
       "fortran": 1,
@@ -137,8 +137,8 @@
       "compiler-driver": 1,
       "fortran": 13,
       "fortran-standard": 2,
-      "fortran-subroutine": 3,
-      "fortran-suffix": 3,
+      "fortran-subroutine": 2,
+      "fortran-suffix": 2,
       "make-control-file": 2
     },
     "docs/workflow/phases/phase_02_generate.md": {

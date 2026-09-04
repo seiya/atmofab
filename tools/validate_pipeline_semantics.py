@@ -5386,7 +5386,7 @@ def _validate_component_generated_surface(
     IR's ``public_api.published_operations`` names — no more, no less.
 
     This closes the generation half of the L1 name pin. Compile pins the published op NAMES into
-    the component IR (``_validate_component_public_api``); this gate proves the generated ``.f90``
+    the component IR (``_validate_published_surface``); this gate proves the generated ``.f90``
     realizes exactly those names, so a component's published surface cannot drift between the IR a
     consumer's Compile is shown (via the sidecar) and the source Build links. A mismatch routes
     back to ``Generate.generate``.
@@ -5409,7 +5409,7 @@ def _validate_component_generated_surface(
     meta = ir.get("meta") if isinstance(ir.get("meta"), dict) else {}
     # `.strip()`-normalized, like every other `meta.spec_kind` reader. An exact match here
     # let `spec_kind: "  component  "` skip the public-API name pin entirely — the same gap
-    # the infrastructure twin had (`_validate_infrastructure_public_api`).
+    # the infrastructure twin had (`_validate_published_surface`).
     if str(meta.get("spec_kind") or "").strip() != "component":
         return
     public_api = ir.get("public_api")
@@ -12252,12 +12252,14 @@ def _validate_toolchain_backend_supported(
     the failure class this gate exists to remove — nor from the SHAPE checks below, which
     are about the host's readers disagreeing rather than about which backend is supported.
 
-    That language exemption admits nothing TODAY: ``_validate_infrastructure_public_api``
+    That language exemption admits nothing TODAY: ``_validate_published_surface``
     — in the same pass, so the order does not matter, both violations land in one list —
-    rejects a harness whose language has no EXTRACTED backend, carrying
+    rejects any node it covers whose language has no EXTRACTED backend, carrying
     ``tools/backends/registry.unavailable_reason``'s clause, which names the implemented
     set and where to register another. That is the accurate remedy for the shape, and
-    better than a second violation from here saying "use fortran".
+    better than a second violation from here saying "use fortran". Since issue #153 PR-2 the
+    set that gate covers is ``infrastructure`` AND ``component``, so the sentence above is
+    about the harness only because the harness is the only kind THIS gate exempts.
 
     THIS gate no longer spells ``(make, fortran)`` itself: it asks
     ``registry.missing_capability_reason`` for the capabilities a node needs of its toolchain
@@ -12557,10 +12559,15 @@ def _validate_public_api_name_surface(
     """Set-equality of the IR ``public_api`` NAME surface against the controlled_spec §5 name
     lists: ``public_api.published_operations[].operation_id`` == ``spec_ops`` and
     ``public_api.published_types`` == ``spec_types``. Appends one violation per missing / extra
-    name. Shared by the infrastructure gate (which then ALSO pins the §5.1 signatures /
-    module_parameters) and the component gate (``_validate_component_public_api``, NAMES ONLY).
-    The messages are language-neutral (they name §5, not any backend), so both callers reuse
-    them verbatim."""
+    name.
+
+    ONE caller now: ``_validate_published_surface``, which runs it for every kind in
+    ``_EXACT_PUBLISHED_SURFACE_KINDS`` and then pins the §5.1 signatures / module_parameters for
+    the same node. It was extracted when there were two gates — an infrastructure one that pinned
+    §5.1 and a component one that pinned NAMES ONLY — and issue #153 PR-2 merged them, which is
+    also what removed the reason a component's pin stopped at the names. Kept as its own function
+    because the NAME surface is the half whose messages are language-neutral (they name §5, not any
+    backend), while the §5.1 half needs a language backend to render the comparison."""
     ops_raw = public_api.get("published_operations")
     ir_ops = {
         entry["operation_id"].strip()
