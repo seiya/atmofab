@@ -18651,6 +18651,99 @@ class ComponentDepOperationsGateTests(unittest.TestCase):
                 any("component dependency" in x and "empty `operations: []`" in x for x in v), v)
 
 
+class RealCorpusPublishedSurfaceTests(unittest.TestCase):
+    """Every REAL spec that publishes an exact surface must be certifiable by the gate that pins it.
+
+    The other classes in this file drive `_validate_published_surface` against hand-built fixtures,
+    which answers "does the gate work" and not "do this repository's specs satisfy it". This one
+    walks `spec/registry/spec_catalog.yaml`, and for each `component` / `infrastructure` entry builds
+    the IR that Compile is CONTRACTED to transcribe — names from §5, `signatures` and
+    `module_parameters` from §5.1, in the `{symbol, signature}` carrier shape — and requires the
+    production gate to accept it.
+
+    Why it earns its place. Issue #153 PR-2 added a §5.1 block to six component specs by hand, and
+    the only other way to learn whether the gate accepts them is a billed `--with-deps` run. This is
+    that answer, unbilled, and it keeps answering: a later spec edit that renames an operation in §5
+    without touching §5.1, adds an argument to §5.1 without bumping `spec_version`, or writes a
+    `dims` expression the backend cannot render, turns this red at the commit that does it.
+
+    What it does NOT check, stated so the green is not read too widely: it builds the IR the spec
+    implies rather than reading a certified one, so it cannot see a Compile leaf that transcribes
+    §5.1 wrongly — `_validate_published_surface` on the real certified IR is what catches that, in a
+    billed run. And it says nothing about the generated SOURCE, which is
+    `_validate_generated_signatures`' half."""
+
+    _REPO = Path(__file__).resolve().parents[2]
+    _CATALOG = _REPO / "spec" / "registry" / "spec_catalog.yaml"
+
+    def _pinned_entries(self) -> list[dict]:
+        doc = yaml.safe_load(self._CATALOG.read_text(encoding="utf-8"))
+        rows = [e for e in doc["specs"]
+                if e.get("spec_kind") in vps._EXACT_PUBLISHED_SURFACE_KINDS]
+        # Derived from the same constant the gate uses, so adding a kind to the set puts its specs
+        # under this check automatically rather than silently leaving them out.
+        self.assertTrue(rows, "no spec of a surface-publishing kind in the catalog")
+        return rows
+
+    def test_every_pinned_spec_declares_a_section51_matching_its_section5(self) -> None:
+        for entry in self._pinned_entries():
+            cs = self._REPO / Path(entry["deps_path"]).parent / "controlled_spec.md"
+            tag = f'{entry["spec_kind"]}/{entry["spec_id"]}@{entry["spec_version"]}'
+            with self.subTest(spec=tag):
+                ops, types = vps._parse_public_api_from_controlled_spec(cs, entry["spec_id"])
+                self.assertTrue(ops, f"{tag}: §5 parsed no published operation")
+                op_stanzas, type_stanzas, err = \
+                    vps._parse_canonical_interface_from_controlled_spec(cs)
+                self.assertIsNone(err, f"{tag}: §5.1 {err}")
+                self.assertEqual(set(op_stanzas), ops, f"{tag}: §5.1 procedures != §5 operations")
+                self.assertEqual(set(type_stanzas), types, f"{tag}: §5.1 types != §5 types")
+
+    def test_the_gate_accepts_the_ir_every_pinned_spec_implies(self) -> None:
+        from tools.backends.language.fortran.signatures import load_structured_signatures
+        for entry in self._pinned_entries():
+            cs = self._REPO / Path(entry["deps_path"]).parent / "controlled_spec.md"
+            tag = f'{entry["spec_kind"]}/{entry["spec_id"]}@{entry["spec_version"]}'
+            with self.subTest(spec=tag):
+                body, ferr = vps._section51_fence_body(cs)
+                self.assertIsNone(ferr, f"{tag}: {ferr}")
+                struct, serr = load_structured_signatures(body or "")
+                self.assertIsNone(serr, f"{tag}: {serr}")
+                ops, types = vps._parse_public_api_from_controlled_spec(cs, entry["spec_id"])
+                ir = {
+                    "meta": {"spec_kind": entry["spec_kind"], "spec_id": entry["spec_id"],
+                             "source_refs": {"controlled_spec": str(cs)}},
+                    "impl_defaults": {"toolchain": {"language": "fortran"}},
+                    "public_api": {
+                        "published_operations": [{"operation_id": o} for o in sorted(ops)],
+                        "published_types": sorted(types),
+                        "signatures": [{"symbol": s["name"], "signature": s}
+                                       for s in [*struct["procedures"], *struct["types"]]],
+                        "module_parameters": struct["module_parameters"],
+                    },
+                }
+                with tempfile.TemporaryDirectory() as tmp:
+                    ir_dir = Path(tmp)
+                    (ir_dir / "spec.ir.yaml").write_text(
+                        yaml.safe_dump(ir), encoding="utf-8")
+                    violations: list[str] = []
+                    vps._validate_published_surface(self._REPO, ir_dir, violations)
+                self.assertEqual(violations, [], f"{tag}: {violations}")
+
+    def test_this_check_is_not_vacuous(self) -> None:
+        """Self-test: a §5.1 that drops the published operation must be REJECTED. Without this, a
+        change that made `_parse_canonical_interface_from_controlled_spec` return nothing would
+        leave both rows above green over an empty comparison."""
+        entry = self._pinned_entries()[0]
+        cs = self._REPO / Path(entry["deps_path"]).parent / "controlled_spec.md"
+        ops, _types = vps._parse_public_api_from_controlled_spec(cs, entry["spec_id"])
+        op_stanzas, _t, err = vps._parse_canonical_interface_from_controlled_spec(cs)
+        self.assertIsNone(err)
+        # The corpus really does present a non-empty comparison on both sides.
+        self.assertTrue(ops)
+        self.assertTrue(op_stanzas)
+        self.assertEqual(set(op_stanzas), ops)
+
+
 class ComponentPublicApiGateTests(unittest.TestCase):
     """`_validate_published_surface` (compile stage) asked of a `component` node: its IR
     `public_api` must pin the controlled_spec §5 published operation NAME surface AND, since issue

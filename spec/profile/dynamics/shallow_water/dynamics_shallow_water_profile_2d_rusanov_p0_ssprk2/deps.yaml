@@ -3,11 +3,11 @@ spec_kind: profile
 dependencies:
   components:
     - component_id: dynamics_shallow_water_flux_2d_rusanov_p0
-      version_constraint: ">=0.1.0 <1.0.0"
+      version_constraint: ">=0.2.0 <1.0.0"
     - component_id: dynamics_shallow_water_boundary_2d_periodic_copy
-      version_constraint: ">=0.1.0 <1.0.0"
+      version_constraint: ">=0.2.0 <1.0.0"
     - component_id: dynamics_shallow_water_time_update_2d_ssprk2
-      version_constraint: ">=0.1.0 <1.0.0"
+      version_constraint: ">=0.4.0 <1.0.0"
   profiles: []
   # R1/M3c-β → M3d: the (fortran, cpu) runner harness. Promotes this to an M3c node —
   # its runner is host-rendered glue over the certified harness plumbing + the

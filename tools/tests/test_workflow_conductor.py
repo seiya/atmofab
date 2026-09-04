@@ -6792,13 +6792,29 @@ class NodeAllocationTest(unittest.TestCase):
             (p / "other_20260101_009").mkdir()  # different prefix ignored
             self.assertEqual(wc._next_seq(p, "slug_20260101"), "005")
 
+    @staticmethod
+    def _catalog_version(spec_id: str) -> str:
+        """The version the REAL catalog carries for `spec_id`.
+
+        Derived, never transcribed: these rows assert what `resolve_node` reads OUT of
+        `spec_catalog.yaml`, so a hardcoded version turns an ordinary `spec_version` bump into a
+        failure that says nothing about `resolve_node` (it did, on issue #153 PR-2)."""
+        import yaml as _yaml
+        doc = _yaml.safe_load(
+            (Path(REPO_ROOT) / "spec" / "registry" / "spec_catalog.yaml").read_text(
+                encoding="utf-8"))
+        matches = [e["spec_version"] for e in doc["specs"] if e["spec_id"] == spec_id]
+        assert len(matches) == 1, (spec_id, matches)
+        return matches[0]
+
     def test_resolve_node_from_catalog(self) -> None:
+        spec_id = "dynamics_advdiff_flux_1d_upwind_center2"
         node_key, spec_path = wc.resolve_node(
             REPO_ROOT,
-            "spec/component/dynamics/advection_diffusion/dynamics_advdiff_flux_1d_upwind_center2",
+            f"spec/component/dynamics/advection_diffusion/{spec_id}",
         )
-        self.assertEqual(node_key, "component/dynamics_advdiff_flux_1d_upwind_center2@0.1.0")
-        self.assertTrue(spec_path.endswith("dynamics_advdiff_flux_1d_upwind_center2"))
+        self.assertEqual(node_key, f"component/{spec_id}@{self._catalog_version(spec_id)}")
+        self.assertTrue(spec_path.endswith(spec_id))
 
     def test_resolve_node_unknown_raises(self) -> None:
         with self.assertRaises(ValueError):
@@ -6966,12 +6982,13 @@ class NodeAllocationTest(unittest.TestCase):
             self.assertEqual(node_key, "infrastructure/n1@0.1.0")
 
     def test_resolve_node_accepts_file_style_spec_ref(self) -> None:
-        base = "spec/component/dynamics/advection_diffusion/dynamics_advdiff_flux_1d_upwind_center2"
-        expected = ("component/dynamics_advdiff_flux_1d_upwind_center2@0.1.0",)
+        spec_id = "dynamics_advdiff_flux_1d_upwind_center2"
+        base = f"spec/component/dynamics/advection_diffusion/{spec_id}"
+        expected = f"component/{spec_id}@{self._catalog_version(spec_id)}"
         for ref in (base + "/controlled_spec.md", base + "/tests.md",
                     base + "/deps.yaml", base + "/"):
             node_key, _ = wc.resolve_node(REPO_ROOT, ref)
-            self.assertEqual(node_key, expected[0], f"failed for {ref}")
+            self.assertEqual(node_key, expected, f"failed for {ref}")
 
     def test_prepare_node_allocates_and_reserves(self) -> None:
         c = _FakeConductor(
