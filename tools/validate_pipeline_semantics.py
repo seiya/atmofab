@@ -5409,7 +5409,8 @@ def _validate_component_generated_surface(
     meta = ir.get("meta") if isinstance(ir.get("meta"), dict) else {}
     # `.strip()`-normalized, like every other `meta.spec_kind` reader. An exact match here
     # let `spec_kind: "  component  "` skip the public-API name pin entirely — the same gap
-    # the infrastructure twin had (`_validate_published_surface`).
+    # the two public-API gates each had before issue #153 PR-2 merged them into
+    # `_validate_published_surface`, which is why the merged gate normalizes once for both kinds.
     if str(meta.get("spec_kind") or "").strip() != "component":
         return
     public_api = ir.get("public_api")
@@ -13246,13 +13247,13 @@ def _validate_generated_signatures(
     # HONOUR the parser's errors. `parse_interface_stanzas`' own docstring says a duplicate symbol
     # name is reported here and must be "fail-closed at the caller — a duplicate must never silently
     # overwrite", and this caller discarded them while the §5.1 side and the IR side both honour
-    # theirs. The consequence, measured on the real boundary §5.1 (issue #153 PR-2 round 1): a module
-    # publishing a DRIFTED 2-argument `__apply`, plus a never-called private helper carrying an
-    # `interface` body that re-declares the pinned 5-argument signature, produced ZERO violations —
-    # the stanza dict is last-wins, so the gate compared §5.1 against the decoy. Moving the decoy
-    # BEFORE the real subroutine restored all 4 violations, which is what identified the mechanism.
-    # That is a `leaf shortcut` of the exact class this gate exists to refuse: a `Generate.gate` pass
-    # while publishing an ABI §5.1 does not declare.
+    # theirs. The consequence, measured on a real component §5.1 (issue #153 PR-2 round 1): a model
+    # source publishing a DRIFTED 2-argument operation, plus a never-called private helper carrying a
+    # second declaration of the SAME published name with the pinned 5-argument shape, produced ZERO
+    # violations — the stanza dict is last-wins, so the gate compared §5.1 against the decoy. Moving
+    # the decoy earlier in the file restored all 4 violations, which is what identified the
+    # mechanism. That is a `leaf shortcut` of the exact class this gate exists to refuse: a
+    # `Generate.gate` pass while publishing an ABI §5.1 does not declare.
     if src_errors:
         target = model_files[0] if model_files else (repo_root / "<model>")
         for err in src_errors:
@@ -13320,44 +13321,48 @@ def _validate_generated_signatures(
         param_lines = []
     # The declaration must be PRESENT (below) and it must be the only binding of that name in the
     # model source (here). Presence alone is scope-blind: `source_atoms` is a whole-file atom set, so
-    # measured on the real boundary §5.1 (issue #153 PR-2 round 1) a module binding
-    # `use, intrinsic :: iso_fortran_env, only: dp => real32` — making every published `real(dp)`
-    # argument SINGLE precision — plus a dead private helper declaring `integer, parameter :: dp =
-    # real64` produced ZERO violations. That is precisely the narrowing the §5.1 prose of all six
-    # component specs claims this pin closes, so the claim was false as enforced.
+    # measured on a real component §5.1 (issue #153 PR-2 round 1) a module-level ALIASING import
+    # binding the pinned kind name to a NARROWER kind — making every published argument of that kind
+    # single precision — plus a dead private helper carrying the pinned declaration, produced ZERO
+    # violations. That is precisely the narrowing the §5.1 prose of all six component specs claims
+    # this pin closes, so the claim was false as enforced.
     #
     # Refusing an IMPORT of the pinned name is what closes it, and it closes the family rather than
-    # the witness: an alias (`only: dp => real32`) and a plain import (`use kinds, only: dp`) both
-    # bring a binding this gate cannot see the value of, and a legitimate source has no reason for
-    # either — it declares the parameter itself, which is the rule. Together with gfortran, the pair
-    # is complete: if the declaration sits ONLY inside a dead procedure and nothing imports the name,
-    # then module-level `real(dp)` does not resolve and the syntax gate rejects it. So the published
+    # the witness: an ALIASING import and a plain one both bring a binding this gate cannot see the
+    # value of, and a legitimate source has no reason for either — it declares the parameter itself,
+    # which is the rule. Together with the syntax gate the pair is complete: if the declaration sits
+    # ONLY inside a dead procedure and nothing imports the name, then the module-level uses of that
+    # parameter do not resolve and the compiler front end rejects the source. So the published
     # binding is forced to be the module-level declaration without this gate doing scope analysis.
     param_names = [
         str(mp.get("name") or "").strip()
         for mp in _section51_module_parameters(cs_path) if isinstance(mp, dict)
     ]
     for name in [n for n in param_names if n]:
-        for line in fortran_lines.fortran_logical_line_texts(combined):
-            low = " ".join(line.split()).lower()
-            # `use ...` and `use, intrinsic :: ...` are both imports, and the second has NO space
-            # after the keyword — `startswith("use ")` alone missed every intrinsic-module import,
-            # which is the only form the corpus uses. Match the keyword, then any non-name char.
-            if not re.match(r"use\s*[,:]|use\s+\w", low):
+        # Read the import statements out of the atom set the gate ALREADY built (`source_atoms`
+        # normalizes each entity and strips whitespace), rather than re-scanning the source through
+        # the line module — one fewer neutral-core mention of a backend module name, and one fewer
+        # place that has to agree about what a logical line is.
+        for atom in sorted(all_src_atoms):
+            # A plain import and an intrinsic-module import are both imports, and the second has NO
+            # space after the keyword — matching the keyword plus a space alone missed every
+            # intrinsic-module import, which is the only form the corpus uses. Atoms carry no
+            # whitespace, so match the keyword then any non-name character.
+            if not re.match(r"use[,:]|use\w", atom):
                 continue
-            if "only:" not in low:
+            if "only:" not in atom:
                 continue
-            imported = low.split("only:", 1)[1]
-            # `a => b` binds `a`; a bare `b` binds `b`. Either way the pinned name must not appear
-            # on the BINDING side of an import.
+            imported = atom.split("only:", 1)[1]
+            # `a=>b` binds `a`; a bare `b` binds `b`. Either way the pinned name must not appear on
+            # the BINDING side of an import.
             bound = [seg.split("=>")[0].strip() for seg in imported.split(",")]
             if name.lower() in bound:
                 violations.append(
                     f"{target}: generated model source imports the §5.1 module parameter "
-                    f"`{name}` (`{line.strip()}`) instead of declaring it — the published ABI's "
-                    f"kind must come from this module's own `integer, parameter :: {name} = "
-                    "<value>` declaration, which is what this gate value-pins; an imported "
-                    "binding carries a value the pin cannot see")
+                    f"`{name}` (`{atom}`) instead of declaring it — the published ABI's kind must "
+                    f"come from this module's own `parameter` declaration of `{name}`, which is "
+                    "what this gate value-pins; an imported binding carries a value the pin "
+                    "cannot see")
                 break
 
     for pline in param_lines:

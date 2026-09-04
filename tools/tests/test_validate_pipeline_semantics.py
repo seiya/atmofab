@@ -19091,8 +19091,10 @@ class ComponentPublicApiGateTests(unittest.TestCase):
 
     def _refusal_shapes(self) -> dict[str, dict]:
         """Every path on which the gate refuses, as `_run` kwargs. One entry per refusal, because the
-        rule under test — a refusal names the node's ACTUAL kind — lives in each message separately,
-        and round 0's sweep found five of them unpinned when only one shape was driven."""
+        rule under test — a refusal names the node's ACTUAL kind — lives in each message separately.
+        Round 0 drove ONE shape and found the other SIX unpinned (seven shapes here; the driven one
+        was the missing-`signatures` refusal). An earlier version of this docstring said five, which
+        disagreed with the commit that added it — the count is six."""
         no_sigs = self._full_api()
         del no_sigs["signatures"]
         no_params = self._full_api()
@@ -19112,9 +19114,9 @@ class ComponentPublicApiGateTests(unittest.TestCase):
 
         `_EXACT_PUBLISHED_SURFACE_KINDS` decides membership, so driving the same tree under each kind
         token must produce messages differing ONLY in the kind word. Round 0's sweep is why this is a
-        family: with a single shape driven, reverting `{kind}` to a hardcoded "infrastructure" in five
-        other refusals survived the whole suite — so a `component` author could be sent to fix an
-        infrastructure node on any of five paths.
+        family: with a single shape driven, reverting `{kind}` to a hardcoded "infrastructure" in the
+        other SIX refusals survived the whole suite — so a `component` author could be sent to fix an
+        infrastructure node on any of six paths.
 
         The §5-parse refusal is a deliberate exception with its own row below: its remedy names the §5
         prose form, which genuinely differs per kind."""

@@ -3490,7 +3490,7 @@ cross-scanner parity test (`test_cross_scanner_parity_with_runtime`) dropped its
 restriction and now runs over the pathological inputs the restriction existed to exclude, asserting per case that the
 scanners agree on something rather than agreeing on nothing.
 
-## Issue #153 — content-granular closure bindings (R6 proper, closure-source half) and the `component` ABI pinned in §5.1 (PR-1 LANDED 2026-09-04; PR-2 pending)
+## Issue #153 — content-granular closure bindings (R6 proper, closure-source half) and the `component` ABI pinned in §5.1 (PR-1 and PR-2 both LANDED 2026-09-04)
 
 **The instance.** `orch_20260903T215814Z_663512a0` (`advdiff1d_linear validate --with-deps`) re-ran the boundary
 `component` alone. `profile/dynamics_advdiff_profile_1d_upwind_center2_euler1@0.1.0` was recorded
@@ -3609,12 +3609,19 @@ Five decisions worth keeping, and one non-decision:
 **The non-decision, stated because it is the thing a reader will look for.** No billed run has been
 made. Every certified IR in the workspace is for a pre-bump version, so nothing is certified against
 these specs yet, and the acceptance vehicle L1's record calls for is still owed. What IS established
-without a billed run: `RealCorpusPublishedSurfaceTests` builds the IR each real spec's §5.1 implies and
-requires the production gate to accept it — all seven surface-publishing specs pass — and
-`SignatureDriftCanaryTests::test_the_real_corpus_agrees_with_the_section51_this_branch_wrote` compares
-each §5.1 against that node's certified SOURCE, requiring agreement everywhere except the one node
-whose ABI was deliberately changed. What neither can see: whether a Compile leaf transcribes §5.1
-correctly, and whether a Generate leaf emits the declaration form. Those are what the billed run buys.
+without a billed run is ONE standing test, not two: `RealCorpusPublishedSurfaceTests` builds the IR each
+real spec's §5.1 implies and requires the production gate to accept it — all seven surface-publishing
+specs pass. The comparison of each §5.1 against that node's certified SOURCE is a MEASUREMENT taken
+once, not a test: the row that checked it read `workspace/`, gitignored machine-local state absent from
+every clean checkout, and was removed in `f81c83f` (its message records why skipping instead is this
+repository's recorded wrong answer). The measurement, at `2dd73cd`: every component's §5.1 agreed with
+its certified source on argument names, order, `intent` and `rank`, except
+`dynamics_advection_diffusion_boundary_1d_periodic_copy` — whose ABI the operator changed — which
+disagreed on argument order. **So a later spec edit that moves a §5.1 away from its certified source
+reddens nothing.** That is the cost of the removal, stated here rather than left to be discovered; an
+earlier version of this paragraph cited the deleted row as a live test. What no unbilled check can see:
+whether a Compile leaf transcribes §5.1 correctly, and whether a Generate leaf emits the declaration
+form. Those are what the billed run buys.
 
 **§5.1 was not hand-written.** Each block was generated from the intended Fortran through
 `parse_signatures_from_fortran`, rendered back with `render_symbol_to_fortran`, and compared with

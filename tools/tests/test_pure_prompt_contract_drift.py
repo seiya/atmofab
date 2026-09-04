@@ -267,7 +267,14 @@ PINNED: dict[str, str] = {
     # with no module parameters keeps the rename form. The reason a component gained the keys at
     # all is that an ABI derived post-hoc republished six different argument lists for one
     # `spec_version`.
-    "pure-31": "3cc2a355a4828af0859ec18459d7439c0c677a5b8a43b1bcdbfa0133086d0bf1",}
+    # `pure-31` is still the same contract change and has not shipped; round 1 added the `dims`
+    # lowering rule to it, which is part of the same "a component's IR now carries signatures"
+    # change rather than a second one. Round 1 measured what its absence cost: a leaf following rule
+    # 6b's enumerated fields exactly, and rendering rank as assumed-shape (which is what
+    # `docs/CONTROLLED_SPEC.md` named as the Fortran binding), earns 3 refusals on the flux
+    # component — `dims` is load-bearing in 5 of the 6 new §5.1 blocks and was documented nowhere a
+    # leaf or a spec author reads.
+    "pure-31": "4e963d99596eae3353a1b3be471b5386b68a492017016c2ee8e038f763f7ac7f",}
 
 
 def _contract_tuple() -> dict[str, object]:
