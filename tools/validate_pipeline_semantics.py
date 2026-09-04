@@ -13434,14 +13434,31 @@ def _validate_generated_signatures(
             for stmt in _joined_masked_fortran_view(combined.lower()).splitlines()
             if stmt.strip() and name.lower() in set().union(*_fortran_declared_names(stmt))
         ]
-        others = sorted(set(binding_statements) - {pline.strip().lower()})
-        if len(binding_statements) > 1 or others:
+        # A COUNT, and deliberately nothing more. Round 3's first version also subtracted the pinned
+        # line as raw text — `set(binding_statements) - {pline.strip().lower()}` — which compares
+        # SPELLING in the one check of this gate that had no business doing so: every other
+        # comparison here goes through the atom normalizer, and both the §5.1 prose and this
+        # function's docstring promise that formatting may differ. Round 4 measured the cost. A
+        # source carrying exactly ONE declaration, differing from the rendered form only by
+        # interior spacing — a space dropped after the attribute separator, or around the assignment
+        # — was told it "binds the name more than once", and the message then printed two strings a
+        # reader cannot tell apart. That refusal has NO repair: the leaf can see one declaration, is
+        # told there are two, and `Generate.gate` warm-resumes into the same wall. A single
+        # declaration binding TWO parameters was refused for both names too — the shape the presence
+        # check fifteen lines above explicitly endorses, so the function contradicted itself.
+        #
+        # The subtraction was never load-bearing. Presence is settled ABOVE: `missing_atoms`
+        # `continue`s when the pinned atom is absent, so reaching here means the pinned declaration
+        # IS in the source. Given that, "exactly one statement binds this name" already says the
+        # single binding is the pinned one, and it says it without asking how anything is spelled.
+        if len(binding_statements) > 1:
+            listed = ", ".join(f"`{s}`" for s in sorted(binding_statements))
             violations.append(
-                f"{target}: generated model source binds the §5.1 module parameter `{name}` more "
-                f"than once — `{pline.strip()}` is pinned, and the source also declares "
-                f"{', '.join('`' + o + '`' for o in others)}. The published signatures bind to the "
-                "MODULE-level declaration, so a second binding of the same name means the pinned "
-                "text is not necessarily the one the published ABI uses; declare it once")
+                f"{target}: generated model source binds the §5.1 module parameter `{name}` "
+                f"{len(binding_statements)} times — {listed} — and `{pline.strip()}` is what §5.1 "
+                "pins. A published argument's type is pinned only SYMBOLICALLY, so which binding is "
+                "in effect is what decides the published precision; keep the pinned declaration and "
+                "delete the others, including one local to a contained procedure")
 
 
 def _validate_test_predicates(

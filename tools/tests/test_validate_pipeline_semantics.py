@@ -17276,12 +17276,39 @@ class InfrastructureGeneratedSignatureGateTests(unittest.TestCase):
                     tmp = Path(t)
                     violations = self._run(self._seed(tmp, source=source), tmp)
                 self.assertTrue(
-                    any("more than once" in v for v in violations), (label, violations))
-        # The pinned declaration ALONE still passes — uniqueness did not become "any parameter
-        # declaration fails".
-        with tempfile.TemporaryDirectory() as t:
-            tmp = Path(t)
-            self.assertEqual(self._run(self._seed(tmp, source=self._GOOD_SOURCE), tmp), [])
+                    any("binds the §5.1 module parameter `dp`" in v and " times" in v
+                        for v in violations), (label, violations))
+        # THE OTHER DIRECTION, and it is not one negative row. Round 3's version passed a
+        # single-member negative check — "the canonical spelling still passes" — and round 4
+        # measured what that missed: the check subtracted the pinned line as RAW TEXT, so a source
+        # carrying exactly ONE declaration that differed by a single space was told it bound the
+        # name more than once, printing two strings a reader cannot tell apart. No repair exists for
+        # that refusal, and `Generate.gate` warm-resumes into it. A combined declaration was refused
+        # too, which the presence check above explicitly endorses.
+        #
+        # So the negative side is a FAMILY as well, and it has to vary the property the
+        # implementation could key on: whitespace, and one declaration binding two names. The §5.1
+        # prose and this gate's docstring both promise formatting may differ; these rows are that
+        # promise.
+        for label, decl in (
+            ("canonical", "  integer, parameter :: dp = real64\n"),
+            ("no space after the comma", "  integer,parameter :: dp = real64\n"),
+            ("no spaces around the separator", "  integer, parameter::dp = real64\n"),
+            ("no spaces around the assignment", "  integer, parameter :: dp=real64\n"),
+            ("extra interior spaces", "  integer, parameter ::  dp  =  real64\n"),
+            ("continuation inside the declaration",
+             "  integer, parameter :: &\n      dp = real64\n"),
+            # One statement binding TWO names. The presence check's own comment endorses this shape
+            # ("Use per-entity atoms so a combined ... matches"), so refusing it here made the
+            # function contradict itself.
+            ("combined with a second parameter",
+             "  integer, parameter :: dp = real64, nvar = 3\n"),
+        ):
+            with self.subTest(accepted=label):
+                source = self._GOOD_SOURCE.replace(pinned, decl, 1)
+                with tempfile.TemporaryDirectory() as t:
+                    tmp = Path(t)
+                    self.assertEqual(self._run(self._seed(tmp, source=source), tmp), [], label)
 
     def test_a_missing_declaration_is_reported_once_not_twice(self) -> None:
         """A missing declaration stops that parameter's checks; it does not also report uniqueness.
@@ -17304,7 +17331,7 @@ class InfrastructureGeneratedSignatureGateTests(unittest.TestCase):
         about_dp = [v for v in violations if "module parameter" in v]
         self.assertTrue(any("is missing the §5.1 module parameter" in v for v in about_dp),
                         violations)
-        self.assertFalse([v for v in about_dp if "more than once" in v], violations)
+        self.assertFalse([v for v in about_dp if " times" in v], violations)
         self.assertEqual(len(about_dp), 1, about_dp)
 
     def test_each_pinned_parameter_is_checked_against_its_own_declaration(self) -> None:
@@ -17362,7 +17389,7 @@ class InfrastructureGeneratedSignatureGateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as t:
             tmp = Path(t)
             violations = self._run(seed(tmp, doubled), tmp)
-        hits = [v for v in violations if "more than once" in v]
+        hits = [v for v in violations if " times" in v]
         self.assertTrue(hits, violations)
         self.assertTrue(all("`case_id_len`" in v for v in hits), hits)
         self.assertFalse([v for v in hits if "`dp`" in v], hits)
