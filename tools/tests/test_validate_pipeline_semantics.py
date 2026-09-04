@@ -17260,6 +17260,39 @@ class InfrastructureGeneratedSignatureGateTests(unittest.TestCase):
             # and which no atom-shaped rule sees at all.
             ("parameter statement form",
              narrowed("  integer, private :: dp\n  parameter (dp = real32)\n")),
+            # (a7)-(a8) THE SECOND BINDING SPLIT ACROSS PHYSICAL LINES, and joined onto one. Every
+            # member above is a single physical line, so the family could not straddle the LINE
+            # STRUCTURE the implementation keys on — `_joined_masked_fortran_view` is what makes the
+            # scan see a statement rather than a line, and round 4 measured that removing it left
+            # all 840 rows of this file green while reopening the continuation case as a fail-open.
+            # That is the same error commit a305885 diagnosed on the ACCEPT side, still standing on
+            # the refuse side one commit later. It is not an exotic spelling either: the prompt
+            # template instructs a leaf to keep lines under 100 columns and "split with a trailing
+            # `&` continuation", so this is what a leaf is TOLD to write.
+            #
+            # Which of the two does the work, stated because a family that claims more coverage than
+            # it has is the failure this file keeps repeating: the CONTINUATION row is the one that
+            # kills the joining mutant. The SEMICOLON row does not — with joining removed, that
+            # binding still sits on one physical line where the declaration reader finds it — and it
+            # is kept as a member of the shape rather than as a discriminator, because the view this
+            # scan reads is a COMPOSITION of joining and `;`-splitting whose own docstring calls the
+            # second half "required, not cosmetic".
+            ("second binding split by a continuation", self._GOOD_SOURCE.replace(
+                "contains\n",
+                "contains\n"
+                "  subroutine continuation_note(x)\n"
+                "    integer, parameter :: &\n"
+                "        dp = real32\n"
+                "    real(dp), intent(out) :: x\n"
+                "    x = 0.0_dp\n"
+                "  end subroutine continuation_note\n", 1)),
+            ("second binding joined by a semicolon", self._GOOD_SOURCE.replace(
+                "contains\n",
+                "contains\n"
+                "  subroutine semicolon_note(x)\n"
+                "    integer, parameter :: dp = real32; real(dp), intent(out) :: x\n"
+                "    x = 0.0_dp\n"
+                "  end subroutine semicolon_note\n", 1)),
             # (b) the pinned declaration kept AND a second one added — order reversed, so neither
             #     "first wins" nor "last wins" can make this pass.
             ("second declaration after", self._GOOD_SOURCE.replace(
@@ -17393,6 +17426,36 @@ class InfrastructureGeneratedSignatureGateTests(unittest.TestCase):
         self.assertTrue(hits, violations)
         self.assertTrue(all("`case_id_len`" in v for v in hits), hits)
         self.assertFalse([v for v in hits if "`dp`" in v], hits)
+
+    def test_a_rename_import_of_the_pinned_name_is_a_binding(self) -> None:
+        """A `use ..., <pinned> => <other>` with NO `only:` list is a second binding, and is refused.
+
+        This row pins the choice to read BOTH sets the declared-names helper returns rather than the
+        constants set alone. An imported name is not a named constant, so it lives only in the second
+        set; narrowing to `[0]` left all 840 rows of this file green while letting this construct
+        through, which round 4 measured.
+
+        It is the member the import loop above cannot reach — that loop requires `only:` in the atom,
+        and this form has none — so uniqueness is the only place it is seen here. The residual behind
+        it is covered: an unrestricted `use` is refused by the linter's `use-all` rule, and
+        `workflow_conductor` runs static ONLY when lint and syntax both pass, so that refusal
+        arrives strictly earlier. Pinned anyway, because defence-in-depth that no test observes is
+        one edit from not existing, and this check is where all precision information routes."""
+        import tempfile
+        source = self._GOOD_SOURCE.replace(
+            "contains\n",
+            "contains\n"
+            "  subroutine rename_note(x)\n"
+            "    use kinds_mod, dp => sp\n"
+            "    real(dp), intent(out) :: x\n"
+            "    x = 0.0_dp\n"
+            "  end subroutine rename_note\n", 1)
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            violations = self._run(self._seed(tmp, source=source), tmp)
+        self.assertTrue(
+            any("binds the §5.1 module parameter `dp`" in v and " times" in v for v in violations),
+            violations)
 
     def test_a_procedure_prefix_is_refused_and_the_message_says_so(self) -> None:
         """A prefix marking the operation side-effect-free is a header difference, and is refused.
