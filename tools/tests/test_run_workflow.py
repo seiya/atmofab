@@ -5346,10 +5346,14 @@ class DependencyClosureTests(unittest.TestCase):
             # is being re-run rather than skipped (issue #153: a re-run left no trace).
             dep_lines = [ln for ln in lines if ln.startswith("[dep ]")]
             self.assertTrue(any("component/c" in ln for ln in dep_lines), lines)
+            # `not_ready=`, not `stale=`: these fixtures have no artifacts at all, so the nodes
+            # were never built, and a never-built node is not stale (round 3's disclosure axis
+            # found the operator reading the opposite in their own stdout).
             self.assertTrue(
-                all("stale=ir_ref:" in ln and "no certified IR" in ln for ln in dep_lines),
+                all("not_ready=ir_ref:" in ln and "no certified IR" in ln for ln in dep_lines),
                 dep_lines,
             )
+            self.assertFalse(any("stale=" in ln for ln in dep_lines), dep_lines)
             # The closure failure summary renders with the [FAIL] prefix.
             self.assertTrue(
                 any(ln.startswith("[FAIL]")

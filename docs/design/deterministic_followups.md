@@ -3545,6 +3545,21 @@ stage uses and compares the `sha256`. Four decisions worth keeping:
 - **`Z5`'s derivation-keyed store.** It was the recorded structural answer, and the one property it was wanted for here
   is obtained inside the existing readiness machinery.
 
+**One refusal `origin/main` had that PR-1 does not, recorded because only a backwards-looking reviewer
+can see it.** The closure derivation moved into `_closure_nodes_from_graph` under a never-raises
+contract, and the inlined loop it replaced RAISED on a malformed sidecar — `TypeError` on a
+non-iterable `all_nodes`, and on a `topo_level` that `list.sort` cannot compare with an `int`. For a
+node whose IR declares dependencies the substitute refusal is `_stage_dependency_sources`'
+"empty build closure … despite non-empty `dependency.direct_deps`" `RuntimeError`, which fails closed
+with a better cause. What is genuinely lost is the case of a malformed sidecar on a node whose IR
+declares NO dependencies: `origin/main` crashed, PR-1 yields `[]`. That trade is deliberate — the
+crash would now land inside a readiness evaluator that promises a verdict, and would abort a whole
+`--with-deps` closure rather than report one node — and a leaf gains nothing from it, the sidecar
+being host-authored and leaf-non-writable while `[]` is what both the stager and the comparison then
+agree on. Every OTHER check the change touched was measured red at both revisions (11 applied
+defects, round 3), and one guard `origin/main` left untested — the unsafe-token branch of
+`_verify_dep_stage` — is now pinned.
+
 **What PR-1 does NOT close.** The `spec`/IR side and the target profile of R6 proper stay at version granularity, which
 is what keeps the respec discipline load-bearing. `harness_fortran_cpu/controlled_spec.md`'s statement that dependency
 freshness invalidates a stale certified IR only via its version stays TRUE and untouched: PR-1 is about the closure

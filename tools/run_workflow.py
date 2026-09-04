@@ -3152,7 +3152,14 @@ def _format_event_human(payload: dict[str, Any], *, elide_detail: bool = True) -
         line = f"[dep ] node={node} spec={spec} until={until} orch={orch}"
         stage = payload.get("failed_stage")
         if stage:
-            line += f" stale={stage}: {payload.get('detail') or ''}"
+            # `not_ready=`, never `stale=`. Staleness is a PROPER SUBSET of not-ready: a node that
+            # was never built is not stale, and this repository keeps that distinction in three
+            # places (`_dep_ir_meta_passes` / `_dep_binary_meta_passes` guard
+            # `_stale_dependency_details` precisely so an unbuilt dep is not reported as drifted).
+            # An earlier version of this line labelled every refusal `stale=`, so an operator on a
+            # fresh workspace read `stale=ir_ref: … has no certified IR` — the label contradicting
+            # the detail beside it. `not_ready=` is true of both cases; the detail says which.
+            line += f" not_ready={stage}: {payload.get('detail') or ''}"
         return line
 
     if status == "info" and event == "phase_start":
