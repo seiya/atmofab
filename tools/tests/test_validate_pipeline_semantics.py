@@ -17096,6 +17096,158 @@ class InfrastructureGeneratedSignatureGateTests(unittest.TestCase):
             self.assertTrue(any("hx__h_named" in v and "component layout" in v
                                 for v in violations), violations)
 
+    def test_the_fail_closed_half_fires_for_a_component_by_node_key(self) -> None:
+        """m2 / m6 from round 1: both GREEN over the whole tree. The gate's kind resolution is
+        deliberately asymmetric — by node_key for the FAIL-CLOSED decision, by IR for the no-op — and
+        only the no-op side was driven. So narrowing `pinned_by_key` to `== "infrastructure"`, or
+        replacing the `ir_kind not in ...` branch's `_fail_closed_if_pinned` with a no-op, turned the
+        declared fail-closed into a silent skip FOR A COMPONENT and nothing noticed.
+
+        What that costs: a component whose lineage `ir_ref` no longer resolves, or whose certified IR's
+        `meta.spec_kind` has drifted, ships a drifted ABI uncompared — Compile certified the §5.1 and
+        Generate then compares nothing."""
+        import tempfile
+        for label, break_it in (
+            ("IR missing", lambda ir: ir.unlink()),
+            ("IR spec_kind drifted", lambda ir: ir.write_text(
+                json.dumps({"meta": {"spec_kind": "profile", "spec_id": "hx",
+                                     "source_refs": {"controlled_spec": "cs.md"}}}),
+                encoding="utf-8")),
+        ):
+            with self.subTest(case=label):
+                with tempfile.TemporaryDirectory() as t:
+                    tmp = Path(t)
+                    ex = self._seed(tmp, source=self._GOOD_SOURCE, spec_kind="component")
+                    # The node_key says `component`, which is what decides fail-closed.
+                    ex = vps.NodeExecution(node_key="component/hx@0.2.0", node_dir=ex.node_dir,
+                                           exec_dir=ex.exec_dir, pipeline_dir=ex.pipeline_dir)
+                    break_it(tmp / "workspace" / "ir" / "x" / "spec.ir.yaml")
+                    violations = self._run(ex, tmp)
+                self.assertTrue(violations, label)
+                self.assertTrue(
+                    any("component node's published signatures cannot be pinned" in v
+                        for v in violations),
+                    (label, violations))
+        # The no-op side still no-ops: a node_key OUTSIDE the set with the same broken IR is silent.
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            ex = self._seed(tmp, source=self._GOOD_SOURCE, spec_kind="component")
+            ex = vps.NodeExecution(node_key="profile/hx@0.1.0", node_dir=ex.node_dir,
+                                   exec_dir=ex.exec_dir, pipeline_dir=ex.pipeline_dir)
+            (tmp / "workspace" / "ir" / "x" / "spec.ir.yaml").unlink()
+            self.assertEqual(self._run(ex, tmp), [])
+
+    def test_the_stale_ir_guard_covers_signatures_not_only_module_parameters(self) -> None:
+        """m3 from round 1: GREEN over the whole tree, on the branch's own HEADLINE claim.
+
+        Deleting the `_validate_ir_signatures_against_section51` call from the stale-IR guard was
+        invisible because every existing fixture drops BOTH keys, so the module-parameter half alone
+        carried them. The shape that matters is a **pre-PR-2 component IR**: `module_parameters`
+        present, `signatures` ABSENT — because the key was FORBIDDEN on a component before this
+        branch. On a `--resume` into Generate, where `Compile.static` does not re-run, that IR must be
+        terminal with a re-certify remedy; regress it and the leaf gets a source drift it cannot
+        repair and warm-retries until the budget burns."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            ex = self._seed(tmp, source=self._GOOD_SOURCE, spec_kind="component")
+            ir_path = tmp / "workspace" / "ir" / "x" / "spec.ir.yaml"
+            ir = json.loads(ir_path.read_text(encoding="utf-8"))
+            # The pre-PR-2 component shape: parameters yes, signatures no.
+            ir["public_api"] = {"module_parameters": copy.deepcopy(
+                InfrastructurePublicApiGateTests._MODULE_PARAMETERS)}
+            ir_path.write_text(json.dumps(ir), encoding="utf-8")
+            violations = self._run(ex, tmp)
+        self.assertTrue(
+            any(vps.STALE_DEPENDENCY_IR_MARKER in v and "re-certify" in v for v in violations),
+            violations)
+        # Terminal by the violation's TYPE, never by its text.
+        self.assertTrue(
+            any(isinstance(v, vps.StaleDependencyIRViolation) for v in violations), violations)
+
+    def test_a_second_declaration_of_a_published_symbol_is_refused(self) -> None:
+        """Round 1's first fail-open. `parse_interface_stanzas`' dict is LAST-WINS and its `errors`
+        list carries `duplicate signature for symbol`; the source-side caller discarded them while
+        the §5.1 side and the IR side honour theirs. MEASURED: a module publishing a DRIFTED
+        2-argument `__apply` plus a never-called private helper whose `interface` body re-declared
+        the pinned 5-argument signature produced ZERO violations — the gate compared §5.1 against the
+        decoy. Moving the decoy before the real subroutine restored the 4 violations, which is what
+        identified last-wins as the mechanism. A `Generate.gate` pass while publishing an ABI §5.1
+        does not declare is the `leaf shortcut` this gate exists to refuse."""
+        import tempfile
+        decoy = (
+            "  subroutine abi_note()\n"
+            "    interface\n"
+            "      function hx__emit_real(x) result(s)\n"
+            "        import :: dp\n"
+            "        real(dp), intent(in) :: x\n"
+            "        character(len=:), allocatable :: s\n"
+            "      end function hx__emit_real\n"
+            "    end interface\n"
+            "  end subroutine abi_note\n"
+        )
+        # The decoy re-declares a symbol the module already defines, in BOTH orderings — the point is
+        # that neither position may pass, because last-wins made only one of them fail.
+        for label, source in (
+            ("decoy after", self._GOOD_SOURCE.replace(
+                "end module hx_model\n", decoy + "end module hx_model\n")),
+            ("decoy before", self._GOOD_SOURCE.replace(
+                "contains\n", "contains\n" + decoy, 1)),
+        ):
+            with self.subTest(order=label):
+                with tempfile.TemporaryDirectory() as t:
+                    tmp = Path(t)
+                    ex = self._seed(tmp, source=source)
+                    violations = self._run(ex, tmp)
+                self.assertTrue(violations, label)
+                self.assertTrue(
+                    any("must be declared exactly once" in v for v in violations),
+                    (label, violations))
+        # ...and the same source WITHOUT the decoy passes, so the row is not just "any extra text
+        # fails".
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            self.assertEqual(self._run(self._seed(tmp, source=self._GOOD_SOURCE), tmp), [])
+
+    def test_an_imported_binding_of_a_pinned_module_parameter_is_refused(self) -> None:
+        """Round 1's second fail-open, and the one that made the §5.1 prose of six real specs false.
+
+        The value pin uses a WHOLE-FILE atom set, so MEASURED: a module binding
+        `use, intrinsic :: iso_fortran_env, only: dp => real32` — every published `real(dp)` argument
+        SINGLE precision — plus a dead private helper declaring `integer, parameter :: dp = real64`
+        produced ZERO violations. The six specs' own §5.1 text claims pinning `dp` means the source
+        must carry the DECLARATION and not a `use`-rename; it did not.
+
+        Refusing an IMPORT of the pinned name closes the family rather than the witness: an alias and
+        a plain `use kinds, only: dp` both bring a binding whose value this gate cannot see. With
+        gfortran the pair is complete — a declaration only inside a dead procedure, with nothing
+        importing the name, leaves module-level `real(dp)` unresolved."""
+        import tempfile
+        for label, use_line in (
+            ("aliased narrowing", "  use, intrinsic :: iso_fortran_env, only: dp => real32\n"),
+            ("aliased same kind", "  use, intrinsic :: iso_fortran_env, only: dp => real64\n"),
+            ("plain import", "  use kinds_mod, only: dp\n"),
+        ):
+            with self.subTest(form=label):
+                source = self._GOOD_SOURCE.replace(
+                    "  use, intrinsic :: iso_fortran_env, only: real64\n", use_line, 1)
+                # The dead helper carries the declaration the presence-check wants, so ONLY the new
+                # import refusal can fail this.
+                source = source.replace(
+                    "contains\n",
+                    "contains\n"
+                    "  subroutine kind_note()\n"
+                    "    integer, parameter :: dp = real64\n"
+                    "    integer :: unused_local\n"
+                    "    unused_local = int(dp)\n"
+                    "  end subroutine kind_note\n", 1)
+                with tempfile.TemporaryDirectory() as t:
+                    tmp = Path(t)
+                    violations = self._run(self._seed(tmp, source=source), tmp)
+                self.assertTrue(
+                    any("imports the §5.1 module parameter" in v for v in violations),
+                    (label, violations))
+
     def test_the_no_backend_refusal_names_the_node_kind_it_was_given(self) -> None:
         """This gate has its own backend refusal, and its own kind word. The Compile-side family
         (`ComponentPublicApiGateTests::test_every_refusal_names_the_node_kind_it_was_given`) does not
@@ -18867,6 +19019,40 @@ class ComponentPublicApiGateTests(unittest.TestCase):
         self.assertTrue(any("declares operation_id 'dep_base__apply' absent" in x
                             for x in v), v)
 
+    def test_a_yaml_comment_inside_the_section51_fence_is_content(self) -> None:
+        """Round 1's over-refusal. `_extract_subsection_51` ended the subsection at any `#`-led line,
+        and §5.1's fence is YAML — where `# the published kind` is ordinary. MEASURED on the real
+        boundary spec: a comment inside the fence, indented or not, truncated the subsection so
+        `_FENCED_BLOCK_RE` found no complete block and both gates reported the block MISSING about a
+        block plainly present. `compile.generate` cannot edit `controlled_spec.md`, so every retry
+        failed identically. Zero occurrences in the corpus is why it was never hit — and this branch
+        makes §5.1 required on every component, which multiplies the surface."""
+        base = self._controlled_spec()
+        for label, injected in (
+            ("top-level comment", base.replace(
+                "module_parameters:\n", "# the published precision kind\nmodule_parameters:\n", 1)),
+            ("indented comment", base.replace(
+                "  value: float64\n", "  value: float64\n  # IEEE double\n", 1)),
+        ):
+            with self.subTest(case=label):
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    tmp = Path(tmpdir)
+                    (tmp / "cs.md").write_text(injected, encoding="utf-8")
+                    ir_dir = self._seed(tmp, public_api=self._full_api(), write_cs=False)
+                    v: list[str] = []
+                    vps._validate_published_surface(tmp, ir_dir, v)
+                self.assertEqual(v, [], label)
+        # A REAL following heading still ends the subsection, so the fix did not simply stop looking.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            (tmp / "cs.md").write_text(
+                base.replace("## 6. Prohibitions",
+                             "### 5.2 Notes\nprose.\n\n## 6. Prohibitions", 1),
+                encoding="utf-8")
+            body, err = vps._section51_fence_body(tmp / "cs.md")
+            self.assertIsNone(err)
+            self.assertNotIn("prose.", body or "")
+
     def test_component_without_section51_is_a_compile_fail(self) -> None:
         """The reversal, from the spec side: a component §5 with no §5.1 no longer certifies.
         Before PR-2 this was the ONLY legal shape for a component."""
@@ -18972,11 +19158,32 @@ class ComponentPublicApiGateTests(unittest.TestCase):
                     vps._validate_published_surface(tmp, ir_dir, v)
                 self.assertEqual(len(v), 1, v)
                 self.assertIn("§5 parsed 0 published operation_ids", v[0])
-                self.assertIn(vps._SECTION5_FORM_HINT[kind], v[0])
                 self.assertIn(f"cannot pin {kind} public_api", v[0])
-        # The two hints really differ, so the rows above cannot both pass on one string.
-        self.assertNotEqual(vps._SECTION5_FORM_HINT["component"],
-                            vps._SECTION5_FORM_HINT["infrastructure"])
+                # Pin the ASSOCIATION by literal, not by indexing the same dict the subject indexes.
+                # Round 1 measured that `assertIn(vps._SECTION5_FORM_HINT[kind], v[0])` cannot see
+                # the two values SWAPPED — it reads whatever is bound to the kind and finds it — so
+                # the hint the wrong kind receives was invisible. That is this loop's "generating the
+                # probes FROM a constant gives set identity, not a family that can distinguish
+                # anything". The literals live here; the constant is the code's.
+                expected = {
+                    "component": "unrecognized published-operation form",
+                    "infrastructure": "unrecognized 'published operation_ids are exactly' form",
+                }[kind]
+                self.assertIn(expected, v[0])
+                self.assertNotIn(
+                    {"component": "unrecognized 'published operation_ids are exactly' form",
+                     "infrastructure": "unrecognized published-operation form"}[kind],
+                    v[0])
+        # And the code's own table must carry exactly those two associations, so a rename of a
+        # literal here cannot drift away from the subject silently.
+        self.assertEqual(
+            dict(vps._SECTION5_FORM_HINT),
+            {"component": "unrecognized published-operation form",
+             "infrastructure": "unrecognized 'published operation_ids are exactly' form"})
+        # Every pinned kind has a hint: a bare dict index would otherwise KeyError inside
+        # `Compile.static` the moment a third kind joins the set.
+        self.assertEqual(set(vps._SECTION5_FORM_HINT),
+                         set(vps._EXACT_PUBLISHED_SURFACE_KINDS))
 
     def test_non_component_is_noop(self) -> None:
         # A profile/problem node has no component-name pin — the gate no-ops (its public_api,

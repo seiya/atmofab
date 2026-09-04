@@ -6348,8 +6348,24 @@ def _extract_subsection_51(section5_body: str) -> str | None:
     if start is None:
         return None
     body: list[str] = []
+    in_fence = False
     for line in lines[start + 1 :]:
-        if re.match(r"^#{1,6}\s", line.strip()):  # any following heading ends the subsection
+        stripped = line.strip()
+        # A heading ends the subsection — but ONLY outside a fence. Inside one, `#` opens a comment
+        # in most fenced languages, and §5.1's fence is YAML, where `# the published kind` is
+        # ordinary. Measured on the real boundary spec (issue #153 PR-2 round 1): a YAML comment on
+        # its own line inside the fence — indented or not, since `.strip()` removes the indent —
+        # truncated the subsection mid-fence, so `_FENCED_BLOCK_RE` found no complete block and both
+        # gates reported "§5.1 canonical interface block (a fenced code block) is missing" about a
+        # block plainly present. `compile.generate` cannot edit `controlled_spec.md`, so every retry
+        # failed identically and the node was uncertifiable until an operator deleted the comment.
+        # This branch makes §5.1 REQUIRED on every component, which newly multiplies that authoring
+        # surface — zero occurrences in the corpus today is why it was never hit.
+        if stripped.startswith("```"):
+            in_fence = not in_fence
+            body.append(line)
+            continue
+        if not in_fence and re.match(r"^#{1,6}\s", stripped):
             break
         body.append(line)
     return "\n".join(body)
@@ -13226,7 +13242,26 @@ def _validate_generated_signatures(
     combined = "\n".join(
         model_file.read_text(encoding="utf-8", errors="ignore") for model_file in model_files
     )
-    src_ops, src_types, _src_errors = fortran_signatures.parse_interface_stanzas(combined)
+    src_ops, src_types, src_errors = fortran_signatures.parse_interface_stanzas(combined)
+    # HONOUR the parser's errors. `parse_interface_stanzas`' own docstring says a duplicate symbol
+    # name is reported here and must be "fail-closed at the caller — a duplicate must never silently
+    # overwrite", and this caller discarded them while the §5.1 side and the IR side both honour
+    # theirs. The consequence, measured on the real boundary §5.1 (issue #153 PR-2 round 1): a module
+    # publishing a DRIFTED 2-argument `__apply`, plus a never-called private helper carrying an
+    # `interface` body that re-declares the pinned 5-argument signature, produced ZERO violations —
+    # the stanza dict is last-wins, so the gate compared §5.1 against the decoy. Moving the decoy
+    # BEFORE the real subroutine restored all 4 violations, which is what identified the mechanism.
+    # That is a `leaf shortcut` of the exact class this gate exists to refuse: a `Generate.gate` pass
+    # while publishing an ABI §5.1 does not declare.
+    if src_errors:
+        target = model_files[0] if model_files else (repo_root / "<model>")
+        for err in src_errors:
+            violations.append(
+                f"{target}: generated model source cannot be compared with controlled_spec §5.1 "
+                f"({err}) — a published symbol must be declared exactly once in the model source, "
+                "so remove the extra declaration (an `interface` body re-declaring a symbol this "
+                "module defines is one) and re-emit")
+        return
     src_lists: dict[str, tuple[str, ...]] = {}
     for name, lines in {**src_ops, **src_types}.items():
         src_lists[name] = fortran_signatures.stanza_line_list(lines)
@@ -13283,6 +13318,48 @@ def _validate_generated_signatures(
             f"cannot lower ({exc}) — re-certify the harness so §5.1 carries a neutral parameter "
             "value the generated source can be pinned against")
         param_lines = []
+    # The declaration must be PRESENT (below) and it must be the only binding of that name in the
+    # model source (here). Presence alone is scope-blind: `source_atoms` is a whole-file atom set, so
+    # measured on the real boundary §5.1 (issue #153 PR-2 round 1) a module binding
+    # `use, intrinsic :: iso_fortran_env, only: dp => real32` — making every published `real(dp)`
+    # argument SINGLE precision — plus a dead private helper declaring `integer, parameter :: dp =
+    # real64` produced ZERO violations. That is precisely the narrowing the §5.1 prose of all six
+    # component specs claims this pin closes, so the claim was false as enforced.
+    #
+    # Refusing an IMPORT of the pinned name is what closes it, and it closes the family rather than
+    # the witness: an alias (`only: dp => real32`) and a plain import (`use kinds, only: dp`) both
+    # bring a binding this gate cannot see the value of, and a legitimate source has no reason for
+    # either — it declares the parameter itself, which is the rule. Together with gfortran, the pair
+    # is complete: if the declaration sits ONLY inside a dead procedure and nothing imports the name,
+    # then module-level `real(dp)` does not resolve and the syntax gate rejects it. So the published
+    # binding is forced to be the module-level declaration without this gate doing scope analysis.
+    param_names = [
+        str(mp.get("name") or "").strip()
+        for mp in _section51_module_parameters(cs_path) if isinstance(mp, dict)
+    ]
+    for name in [n for n in param_names if n]:
+        for line in fortran_lines.fortran_logical_line_texts(combined):
+            low = " ".join(line.split()).lower()
+            # `use ...` and `use, intrinsic :: ...` are both imports, and the second has NO space
+            # after the keyword — `startswith("use ")` alone missed every intrinsic-module import,
+            # which is the only form the corpus uses. Match the keyword, then any non-name char.
+            if not re.match(r"use\s*[,:]|use\s+\w", low):
+                continue
+            if "only:" not in low:
+                continue
+            imported = low.split("only:", 1)[1]
+            # `a => b` binds `a`; a bare `b` binds `b`. Either way the pinned name must not appear
+            # on the BINDING side of an import.
+            bound = [seg.split("=>")[0].strip() for seg in imported.split(",")]
+            if name.lower() in bound:
+                violations.append(
+                    f"{target}: generated model source imports the §5.1 module parameter "
+                    f"`{name}` (`{line.strip()}`) instead of declaring it — the published ABI's "
+                    f"kind must come from this module's own `integer, parameter :: {name} = "
+                    "<value>` declaration, which is what this gate value-pins; an imported "
+                    "binding carries a value the pin cannot see")
+                break
+
     for pline in param_lines:
         missing_atoms = [a for a in fortran_signatures.stanza_atoms([pline]) if a not in all_src_atoms]
         if missing_atoms:
