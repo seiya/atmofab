@@ -6193,19 +6193,46 @@ def _extract_controlled_spec_section(text: str, section_num: str) -> str | None:
     heading and the next ``## <m>.`` heading), or ``None`` when the section is absent.
 
     controlled_spec sections are numbered ``## 0.`` .. ``## 8.``; only these top-level
-    numbered headings delimit a section (a ``### `` subsection does not)."""
+    numbered headings delimit a section (a ``### `` subsection does not).
+
+    FENCE-AWARE, and that is not cosmetic. `_extract_subsection_51` was made fence-aware in issue
+    #153 PR-2 round 1, after a YAML comment inside §5.1's fence truncated the SUBSECTION mid-fence
+    and both gates reported "§5.1 canonical interface block (a fenced code block) is missing" about
+    a block plainly present. This function is one level up and had the same defect for the same
+    reason: a fenced line that happens to look like a numbered heading — `## 6. legacy note` as a
+    YAML comment — ended §5 mid-fence, with the identical symptom, the identical message, and the
+    identical unrepairability, because `compile.generate` cannot edit `controlled_spec.md` and every
+    retry is byte-identical. Fixing only the inner scan fixed only the inner half.
+
+    A REAL following heading must still terminate the section, so the repair is fence STATE, not
+    "stop looking": a heading outside a fence ends the section exactly as before. Corpus-zero today,
+    which is why neither half was ever hit; this branch makes §5.1 required on every component and
+    so multiplies the authoring surface that can produce it."""
     lines = text.splitlines()
     start: int | None = None
+    in_fence = False
     for i, line in enumerate(lines):
-        match = _CONTROLLED_SPEC_SECTION_HEADING.match(line.strip())
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        match = _CONTROLLED_SPEC_SECTION_HEADING.match(stripped)
         if match and match.group(1) == section_num:
             start = i
             break
     if start is None:
         return None
     body: list[str] = []
+    in_fence = False
     for line in lines[start + 1 :]:
-        if _CONTROLLED_SPEC_SECTION_HEADING.match(line.strip()):
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            in_fence = not in_fence
+            body.append(line)
+            continue
+        if not in_fence and _CONTROLLED_SPEC_SECTION_HEADING.match(stripped):
             break
         body.append(line)
     return "\n".join(body)
@@ -12618,6 +12645,12 @@ def _validate_public_api_name_surface(
             "absent from controlled_spec §5")
 
 
+#: Every `spec_kind` the registry admits. `_EXACT_PUBLISHED_SURFACE_KINDS` below is the subset
+#: that publishes an exact surface; this is the WHOLE set, and it exists so an unrecognised
+#: spelling can be REFUSED rather than silently skipping the surface gate a node needs.
+#: Derived from the kinds `spec/registry/spec_catalog.yaml` carries.
+_CANONICAL_SPEC_KINDS = ("component", "infrastructure", "problem", "profile")
+
 #: The `spec_kind`s whose controlled_spec publishes an EXACT surface that `Compile.static` pins:
 #: §5 published NAMES and §5.1 canonical signatures + module parameters. Every other kind's
 #: interface stays derived post-hoc from the certified source.
@@ -12638,6 +12671,44 @@ _SECTION5_FORM_HINT: dict[str, str] = {
     "infrastructure": "unrecognized 'published operation_ids are exactly' form",
     "component": "unrecognized published-operation form",
 }
+
+
+def _catalog_controlled_spec_path(repo_root: Path, kind: str, spec_id: str) -> str | None:
+    """The registry's ``controlled_spec_path`` for ``(kind, spec_id)``, or ``None``.
+
+    ``None`` means "the registry cannot answer" — absent, unreadable, unparseable, or carrying no
+    matching entry — and is deliberately NOT a violation here: the caller pairs this with a
+    containment check that does not depend on the registry, so a tree without one still refuses a
+    leaf-authored document. Returning ``None`` on a parse failure rather than raising keeps a
+    malformed registry from turning every surface gate into a crash; the registry has its own
+    validation elsewhere.
+
+    Read from ``spec/registry/spec_catalog.yaml``, which is operator-authored and outside every
+    write root ``_write_roots_for_launch`` hands a leaf except the ``promote`` step's, so a
+    `compile.generate` leaf cannot make this answer agree with a document it wrote."""
+    catalog = repo_root / "spec" / "registry" / "spec_catalog.yaml"
+    if not _is_readable_file(catalog):
+        return None
+    try:
+        doc = yaml.safe_load(catalog.read_text(encoding="utf-8", errors="ignore"))
+    except Exception:
+        return None
+    if not isinstance(doc, dict):
+        return None
+    entries = doc.get("specs")
+    if not isinstance(entries, list):
+        return None
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        if str(entry.get("spec_kind") or "").strip() != kind:
+            continue
+        if str(entry.get("spec_id") or "").strip() != spec_id:
+            continue
+        path = entry.get("controlled_spec_path")
+        if isinstance(path, str) and path.strip():
+            return path.strip()
+    return None
 
 
 def _validate_published_surface(
@@ -12694,6 +12765,26 @@ def _validate_published_surface(
 
     meta = ir.get("meta") if isinstance(ir.get("meta"), dict) else {}
     kind = str(meta.get("spec_kind") or "").strip()
+    # A SPELLING THIS GATE DOES NOT RECOGNISE IS A VIOLATION, NOT A SKIP. `spec_kind` is authored by
+    # the `compile.generate` leaf, and the line below decides whether this gate runs at all, so an
+    # unrecognised spelling used to be a total no-op: MEASURED, `Component` (or `COMPONENT`) took an
+    # IR with a wrong operation name and no `signatures`/`module_parameters` from 4 violations to 0.
+    # Case-sensitivity itself is a deliberate repo-wide convention and is pinned elsewhere, so the
+    # repair is not to fold case here — it is to refuse what the convention does not admit.
+    #
+    # The asymmetry that makes this expensive rather than merely wrong: `_validate_generated_
+    # signatures` resolves the same decision from `execution.node_key`, which the CONDUCTOR authors,
+    # and its docstring says that asymmetry is deliberate. So a leaf writing `Component` passes
+    # Compile.static and then meets a fail-closed `Generate.static` that routes as a WARM RESUME to
+    # `generate.generate` — a substep that cannot edit the certified IR. Every retry fails
+    # identically until the budget is spent, and the operator pays a Generate loop for a defect
+    # authored at Compile.
+    if kind and kind not in _CANONICAL_SPEC_KINDS:
+        violations.append(
+            f"{derived_path}:meta.spec_kind '{kind}' is not a known spec_kind "
+            f"({', '.join(sorted(_CANONICAL_SPEC_KINDS))}) — spelling is exact, and an unrecognised "
+            "one would silently skip the published-surface gate that this node's kind may require")
+        return
     if kind not in _EXACT_PUBLISHED_SURFACE_KINDS:
         return  # every other kind's interface is derived post-hoc, by design
 
@@ -12730,6 +12821,53 @@ def _validate_published_surface(
             f"{derived_path}:controlled_spec ({cs_ref}) unresolvable "
             f"(cannot pin {kind} public_api to §5)")
         return
+
+    # WHOSE DOCUMENT IS THIS. Everything below compares the IR against `cs_path`, and until issue
+    # #153 round 5 the only thing asked of that path was that it be readable — while `meta.
+    # source_refs.controlled_spec` is authored by the `compile.generate` LEAF and `<ir_ref>/` is
+    # that leaf's entire write root (`orchestration_runtime._write_roots_for_launch`). So the leaf
+    # could write its own §5/§5.1 beside the IR, name it here, and the ABI pin became a comparison
+    # of the leaf's document with the leaf's IR. MEASURED: an IR publishing a one-argument
+    # operation against a spec pinning four takes 1 violation with the real ref and 0 with a decoy.
+    # `Generate.static` re-reads the SAME leaf-chosen ref, so the generated source was pinned to the
+    # decoy too, and `dependency_surface.json` then republished the decoy's names to consumers —
+    # a leaf reaches `compile.generate` AND `generate.generate` done without transcribing §5.1 at
+    # all, which is the whole of what issue #153 cause A exists to prevent.
+    #
+    # Two checks, because they fail in different circumstances and the weaker one must not be
+    # skipped when the stronger cannot answer:
+    #
+    # (1) CONTAINMENT. The document may not live inside the leaf's write root. This is expressed
+    #     against `ir_dir` rather than against a literal workspace path so it holds whatever the
+    #     layout is, and it is the check that still works when the registry cannot answer.
+    # (2) IDENTITY. When the operator-authored registry knows this `(spec_kind, spec_id)`, the ref
+    #     must resolve to exactly the file it names. Every certified IR in the tree already carries
+    #     that path verbatim, so this refuses nothing that exists today.
+    try:
+        cs_resolved = cs_path.resolve()
+        ir_resolved = Path(ir_dir).resolve()
+    except OSError:  # pragma: no cover - a path the filesystem refuses to resolve
+        cs_resolved, ir_resolved = cs_path, Path(ir_dir)
+    if cs_resolved == ir_resolved or ir_resolved in cs_resolved.parents:
+        violations.append(
+            f"{derived_path}:meta.source_refs.controlled_spec ({cs_ref}) resolves INSIDE the IR "
+            f"directory, which is the `compile.generate` leaf's write root — the {kind} public_api "
+            "would be pinned against a document the leaf itself can author, which is not a pin. "
+            "Point it at the operator-authored controlled_spec under the spec tree")
+        return
+    expected = _catalog_controlled_spec_path(repo_root, kind, spec_id)
+    if expected is not None:
+        try:
+            expected_resolved = (repo_root / expected).resolve()
+        except OSError:  # pragma: no cover
+            expected_resolved = repo_root / expected
+        if cs_resolved != expected_resolved:
+            violations.append(
+                f"{derived_path}:meta.source_refs.controlled_spec ({cs_ref}) is not the "
+                f"controlled_spec the registry records for {kind} `{spec_id}` ({expected}) — the "
+                "public_api pin reads the registry's document, so a ref naming any other file is "
+                "refused rather than followed")
+            return
 
     spec_ops, spec_types = _parse_public_api_from_controlled_spec(cs_path, spec_id)
     if not spec_ops:
@@ -13431,9 +13569,19 @@ def _validate_generated_signatures(
         # procedure changes THAT procedure's dummy declarations, and so its ABI.
         binding_statements = [
             stmt.strip()
-            for stmt in _joined_masked_fortran_view(combined.lower()).splitlines()
+            for stmt in _joined_masked_fortran_view(combined.lower()).split("\n")
             if stmt.strip() and name.lower() in set().union(*_fortran_declared_names(stmt))
         ]
+        # `split("\n")`, NEVER `str.splitlines()`. That is the language backend's own rule — its
+        # line module states it and three other gates already pin it — and this site was the one
+        # place on the branch that did not follow it. `splitlines()` breaks on eight separators the
+        # target language treats as ordinary content, so a narrowing declaration written with one
+        # inside it was torn into fragments that bind nothing and vanished from the count, while
+        # PRESENCE (which reads the atom set, built with the correct split) still saw the pinned
+        # text in a contained procedure. Zero violations, compiles under the standard the syntax
+        # gate enforces, every published argument at the narrower precision: round 2's hole,
+        # reopened by round 3's implementation of the fix for it and carried through round 4.
+        #
         # A COUNT, and deliberately nothing more. Round 3's first version also subtracted the pinned
         # line as raw text — `set(binding_statements) - {pline.strip().lower()}` — which compares
         # SPELLING in the one check of this gate that had no business doing so: every other

@@ -112,6 +112,28 @@ def _seed_shape_expr_schema_into(repo_root: Path) -> None:
     target.write_bytes(_BUNDLED_SHAPE_EXPR_SCHEMA_PATH.read_bytes())
 
 
+#: A real checkout keeps the operator-authored spec tree and the IR tree in DIFFERENT subtrees,
+#: and since issue #153 round 5 the surface gate refuses a `source_refs.controlled_spec` that
+#: resolves inside the IR directory — that directory is `compile.generate`'s write root, so a
+#: document there is one the leaf itself can author, and pinning against it is a self-comparison.
+#: These fixtures used to collapse the two (`ir_dir = tmp`, `cs.md` beside the IR), which models a
+#: layout the conductor cannot produce; that is why a decoy controlled_spec stayed invisible to
+#: five review rounds. Lay the tree out the way the conductor does.
+_SURFACE_SPEC_SUBDIR = "spec/infrastructure/infra/harness/hx"
+_SURFACE_IR_SUBDIR = "workspace/ir/infrastructure__hx__0.2.0/hx_20260101_001"
+_SURFACE_CS_REF = f"{_SURFACE_SPEC_SUBDIR}/controlled_spec.md"
+
+
+def _seed_surface_tree(tmp: Path, cs_text: str) -> Path:
+    """Write the controlled_spec under the spec tree and return the IR directory to fill."""
+    cs = tmp / _SURFACE_SPEC_SUBDIR / "controlled_spec.md"
+    cs.parent.mkdir(parents=True, exist_ok=True)
+    cs.write_text(cs_text, encoding="utf-8")
+    ir_dir = tmp / _SURFACE_IR_SUBDIR
+    ir_dir.mkdir(parents=True, exist_ok=True)
+    return ir_dir
+
+
 def _write_json(path: Path, data: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -16137,10 +16159,15 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
             "## 6. Prohibitions\n- none.\n")
 
     def _seed(self, tmp: Path, *, public_api: object, spec_kind: str = "infrastructure",
-              cs_ref: str | None = "cs.md", write_cs: bool = True) -> Path:
-        ir_dir = tmp
+              cs_ref: str | None = _OMIT, write_cs: bool = True) -> Path:
+        if cs_ref is _OMIT:
+            cs_ref = _SURFACE_CS_REF
+        ir_dir = tmp / _SURFACE_IR_SUBDIR
+        ir_dir.mkdir(parents=True, exist_ok=True)
         if write_cs:
-            (tmp / "cs.md").write_text(self._controlled_spec(), encoding="utf-8")
+            cs = tmp / _SURFACE_CS_REF
+            cs.parent.mkdir(parents=True, exist_ok=True)
+            cs.write_text(self._controlled_spec(), encoding="utf-8")
         meta = {"spec_kind": spec_kind, "spec_id": self._SPEC_ID}
         if cs_ref is not None:
             meta["source_refs"] = {"controlled_spec": cs_ref}
@@ -16296,28 +16323,29 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
 
     def test_missing_spec_id_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            (Path(tmp) / "cs.md").write_text(self._controlled_spec(), encoding="utf-8")
-            _write_json(Path(tmp) / "spec.ir.yaml", {
+            _ir = _seed_surface_tree(Path(tmp), self._controlled_spec())
+            _write_json(_ir / "spec.ir.yaml", {
                 "meta": {"spec_kind": "infrastructure",
-                         "source_refs": {"controlled_spec": "cs.md"}},
+                         "source_refs": {"controlled_spec": _SURFACE_CS_REF}},
                 "public_api": self._full_api()})
             violations: list[str] = []
-            _validate_published_surface(Path(tmp), Path(tmp), violations)
+            _validate_published_surface(Path(tmp), _ir, violations)
             self.assertTrue(any("meta.spec_id missing" in v for v in violations), violations)
 
     def test_section5_parsing_zero_ops_fails_closed(self) -> None:
         # A resolvable controlled_spec whose §5 yields no operation_ids (unrecognized form) is a
         # violation, never a silent pass.
         with tempfile.TemporaryDirectory() as tmp:
-            (Path(tmp) / "cs.md").write_text(
+            _ir = _seed_surface_tree(Path(tmp), "")
+            (Path(tmp) / _SURFACE_CS_REF).write_text(
                 "## 5. Public API\nNo backtick operation tokens here.\n## 6. x\n",
                 encoding="utf-8")
-            _write_json(Path(tmp) / "spec.ir.yaml", {
+            _write_json(_ir / "spec.ir.yaml", {
                 "meta": {"spec_kind": "infrastructure", "spec_id": self._SPEC_ID,
-                         "source_refs": {"controlled_spec": "cs.md"}},
+                         "source_refs": {"controlled_spec": _SURFACE_CS_REF}},
                 "public_api": self._full_api()})
             violations: list[str] = []
-            _validate_published_surface(Path(tmp), Path(tmp), violations)
+            _validate_published_surface(Path(tmp), _ir, violations)
             self.assertTrue(any("parsed 0 published operation_ids" in v for v in violations),
                             violations)
 
@@ -16359,7 +16387,7 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
             (tmpp / "cs.md").write_text(self._controlled_spec(), encoding="utf-8")
             _write_json(tmpp / "spec.ir.yaml", {
                 "meta": {"spec_kind": "infrastructure", "spec_id": self._SPEC_ID,
-                         "source_refs": {"controlled_spec": "cs.md"}},
+                         "source_refs": {"controlled_spec": _SURFACE_CS_REF}},
                 "impl_defaults": {"toolchain": {"language": "c"}},
                 "public_api": self._full_api()})
             violations: list[str] = []
@@ -16438,14 +16466,15 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
         # An infra controlled_spec whose §5 carries no §5.1 canonical interface block is a
         # violation — the spec must pin its own signatures machine-readably.
         with tempfile.TemporaryDirectory() as tmp:
-            (Path(tmp) / "cs.md").write_text(
+            _ir = _seed_surface_tree(Path(tmp), "")
+            (Path(tmp) / _SURFACE_CS_REF).write_text(
                 self._controlled_spec(section_51=""), encoding="utf-8")
-            _write_json(Path(tmp) / "spec.ir.yaml", {
+            _write_json(_ir / "spec.ir.yaml", {
                 "meta": {"spec_kind": "infrastructure", "spec_id": self._SPEC_ID,
-                         "source_refs": {"controlled_spec": "cs.md"}},
+                         "source_refs": {"controlled_spec": _SURFACE_CS_REF}},
                 "public_api": self._full_api()})
             violations: list[str] = []
-            _validate_published_surface(Path(tmp), Path(tmp), violations)
+            _validate_published_surface(Path(tmp), _ir, violations)
             self.assertTrue(any("§5.1" in v and "missing" in v for v in violations), violations)
 
     def test_section51_op_set_mismatch_flagged(self) -> None:
@@ -16458,14 +16487,15 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
             "### 5.1 Canonical interface block\n```yaml\n"
             + yaml.safe_dump(struct, sort_keys=False) + "```\n")
         with tempfile.TemporaryDirectory() as tmp:
-            (Path(tmp) / "cs.md").write_text(
+            _ir = _seed_surface_tree(Path(tmp), "")
+            (Path(tmp) / _SURFACE_CS_REF).write_text(
                 self._controlled_spec(section_51=broken_fence), encoding="utf-8")
-            _write_json(Path(tmp) / "spec.ir.yaml", {
+            _write_json(_ir / "spec.ir.yaml", {
                 "meta": {"spec_kind": "infrastructure", "spec_id": self._SPEC_ID,
-                         "source_refs": {"controlled_spec": "cs.md"}},
+                         "source_refs": {"controlled_spec": _SURFACE_CS_REF}},
                 "public_api": self._full_api()})
             violations: list[str] = []
-            _validate_published_surface(Path(tmp), Path(tmp), violations)
+            _validate_published_surface(Path(tmp), _ir, violations)
             self.assertTrue(any("§5.1 omits a signature for §5 operation_id 'hx__emit_int'" in v
                                 for v in violations), violations)
 
@@ -16484,14 +16514,15 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
             "### 5.1 Canonical interface block\n```yaml\n"
             + yaml.safe_dump(struct, sort_keys=False) + "```\n")
         with tempfile.TemporaryDirectory() as tmp:
-            (Path(tmp) / "cs.md").write_text(
+            _ir = _seed_surface_tree(Path(tmp), "")
+            (Path(tmp) / _SURFACE_CS_REF).write_text(
                 self._controlled_spec(section_51=extra_fence), encoding="utf-8")
-            _write_json(Path(tmp) / "spec.ir.yaml", {
+            _write_json(_ir / "spec.ir.yaml", {
                 "meta": {"spec_kind": "infrastructure", "spec_id": self._SPEC_ID,
-                         "source_refs": {"controlled_spec": "cs.md"}},
+                         "source_refs": {"controlled_spec": _SURFACE_CS_REF}},
                 "public_api": self._full_api()})
             violations: list[str] = []
-            _validate_published_surface(Path(tmp), Path(tmp), violations)
+            _validate_published_surface(Path(tmp), _ir, violations)
             self.assertTrue(any("defines a derived type 'hx__h_extra' absent" in v
                                 for v in violations), violations)
 
@@ -16571,16 +16602,17 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
             "### 5.1 Canonical interface block\n```yaml\n"
             + yaml.safe_dump(struct, sort_keys=False) + "```\n")
         with tempfile.TemporaryDirectory() as tmp:
-            (Path(tmp) / "cs.md").write_text(
+            _ir = _seed_surface_tree(Path(tmp), "")
+            (Path(tmp) / _SURFACE_CS_REF).write_text(
                 self._controlled_spec(section_51=no_param_fence), encoding="utf-8")
             api = self._full_api()
             del api["module_parameters"]
-            _write_json(Path(tmp) / "spec.ir.yaml", {
+            _write_json(_ir / "spec.ir.yaml", {
                 "meta": {"spec_kind": "infrastructure", "spec_id": self._SPEC_ID,
-                         "source_refs": {"controlled_spec": "cs.md"}},
+                         "source_refs": {"controlled_spec": _SURFACE_CS_REF}},
                 "public_api": api})
             violations: list[str] = []
-            _validate_published_surface(Path(tmp), Path(tmp), violations)
+            _validate_published_surface(Path(tmp), _ir, violations)
             self.assertEqual(violations, [])
 
     def test_module_parameters_omitted_flagged(self) -> None:
@@ -16607,16 +16639,17 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
             "### 5.1 Canonical interface block\n```yaml\n"
             + yaml.safe_dump(struct, sort_keys=False) + "```\n")
         with tempfile.TemporaryDirectory() as tmp:
-            (Path(tmp) / "cs.md").write_text(
+            _ir = _seed_surface_tree(Path(tmp), "")
+            (Path(tmp) / _SURFACE_CS_REF).write_text(
                 self._controlled_spec(section_51=dup_fence), encoding="utf-8")
             api = self._full_api()
             api["module_parameters"] = [{"name": "dp", "base": "integer", "value": "float32"}]
-            _write_json(Path(tmp) / "spec.ir.yaml", {
+            _write_json(_ir / "spec.ir.yaml", {
                 "meta": {"spec_kind": "infrastructure", "spec_id": self._SPEC_ID,
-                         "source_refs": {"controlled_spec": "cs.md"}},
+                         "source_refs": {"controlled_spec": _SURFACE_CS_REF}},
                 "public_api": api})
             violations: list[str] = []
-            _validate_published_surface(Path(tmp), Path(tmp), violations)
+            _validate_published_surface(Path(tmp), _ir, violations)
             self.assertTrue(any("§5.1 declares module parameter 'dp' more than once" in v
                                 for v in violations), violations)
 
@@ -16631,16 +16664,17 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
             "### 5.1 Canonical interface block\n```yaml\n"
             + yaml.safe_dump(struct, sort_keys=False) + "```\n")
         with tempfile.TemporaryDirectory() as tmp:
-            (Path(tmp) / "cs.md").write_text(
+            _ir = _seed_surface_tree(Path(tmp), "")
+            (Path(tmp) / _SURFACE_CS_REF).write_text(
                 self._controlled_spec(section_51=dup_fence), encoding="utf-8")
             api = self._full_api()
             api["module_parameters"] = [{"name": "dp", "base": "integer", "value": "float64"}]
-            _write_json(Path(tmp) / "spec.ir.yaml", {
+            _write_json(_ir / "spec.ir.yaml", {
                 "meta": {"spec_kind": "infrastructure", "spec_id": self._SPEC_ID,
-                         "source_refs": {"controlled_spec": "cs.md"}},
+                         "source_refs": {"controlled_spec": _SURFACE_CS_REF}},
                 "public_api": api})
             violations: list[str] = []
-            _validate_published_surface(Path(tmp), Path(tmp), violations)
+            _validate_published_surface(Path(tmp), _ir, violations)
             self.assertTrue(any("more than once (case-insensitively)" in v for v in violations),
                             violations)
 
@@ -16666,17 +16700,18 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
             "### 5.1 Canonical interface block\n```yaml\n"
             + yaml.safe_dump(struct, sort_keys=False) + "```\n")
         with tempfile.TemporaryDirectory() as tmp:
-            (Path(tmp) / "cs.md").write_text(
+            _ir = _seed_surface_tree(Path(tmp), "")
+            (Path(tmp) / _SURFACE_CS_REF).write_text(
                 self._controlled_spec(section_51=fence), encoding="utf-8")
             api = self._full_api()
             api["module_parameters"].append(
                 {"name": "wp", "base": "integer", "value": "selected_real_kind(15, 307)"})
-            _write_json(Path(tmp) / "spec.ir.yaml", {
+            _write_json(_ir / "spec.ir.yaml", {
                 "meta": {"spec_kind": "infrastructure", "spec_id": self._SPEC_ID,
-                         "source_refs": {"controlled_spec": "cs.md"}},
+                         "source_refs": {"controlled_spec": _SURFACE_CS_REF}},
                 "public_api": api})
             violations: list[str] = []
-            _validate_published_surface(Path(tmp), Path(tmp), violations)
+            _validate_published_surface(Path(tmp), _ir, violations)
             self.assertTrue(any("no neutral form" in v or "has no neutral form" in v
                                 for v in violations), violations)
 
@@ -16693,16 +16728,17 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
         fence = ("### 5.1 Canonical interface block\n```yaml\n"
                  + yaml.safe_dump(struct, sort_keys=False) + "```\n")
         with tempfile.TemporaryDirectory() as tmp:
-            (Path(tmp) / "cs.md").write_text(
+            _ir = _seed_surface_tree(Path(tmp), "")
+            (Path(tmp) / _SURFACE_CS_REF).write_text(
                 self._controlled_spec(section_51=fence), encoding="utf-8")
             api = self._full_api()
             api["module_parameters"][0]["value"] = "real64"  # IR side ALSO stale (equal → no drift)
-            _write_json(Path(tmp) / "spec.ir.yaml", {
+            _write_json(_ir / "spec.ir.yaml", {
                 "meta": {"spec_kind": "infrastructure", "spec_id": self._SPEC_ID,
-                         "source_refs": {"controlled_spec": "cs.md"}},
+                         "source_refs": {"controlled_spec": _SURFACE_CS_REF}},
                 "public_api": api})
             violations: list[str] = []
-            _validate_published_surface(Path(tmp), Path(tmp), violations)
+            _validate_published_surface(Path(tmp), _ir, violations)
             self.assertTrue(any("real64" in v and "float64" in v for v in violations), violations)
 
     def test_section51_stale_fortran_len_token_rejected_at_compile(self) -> None:
@@ -16719,14 +16755,15 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
         fence = ("### 5.1 Canonical interface block\n```yaml\n"
                  + yaml.safe_dump(struct, sort_keys=False) + "```\n")
         with tempfile.TemporaryDirectory() as tmp:
-            (Path(tmp) / "cs.md").write_text(
+            _ir = _seed_surface_tree(Path(tmp), "")
+            (Path(tmp) / _SURFACE_CS_REF).write_text(
                 self._controlled_spec(section_51=fence), encoding="utf-8")
-            _write_json(Path(tmp) / "spec.ir.yaml", {
+            _write_json(_ir / "spec.ir.yaml", {
                 "meta": {"spec_kind": "infrastructure", "spec_id": self._SPEC_ID,
-                         "source_refs": {"controlled_spec": "cs.md"}},
+                         "source_refs": {"controlled_spec": _SURFACE_CS_REF}},
                 "public_api": self._full_api()})
             violations: list[str] = []
-            _validate_published_surface(Path(tmp), Path(tmp), violations)
+            _validate_published_surface(Path(tmp), _ir, violations)
             self.assertTrue(any("deferred" in v for v in violations), violations)
 
     def test_module_parameters_value_normalization_equivalence_passes(self) -> None:
@@ -16740,18 +16777,19 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
             "### 5.1 Canonical interface block\n```yaml\n"
             + yaml.safe_dump(struct, sort_keys=False) + "```\n")
         with tempfile.TemporaryDirectory() as tmp:
-            (Path(tmp) / "cs.md").write_text(
+            _ir = _seed_surface_tree(Path(tmp), "")
+            (Path(tmp) / _SURFACE_CS_REF).write_text(
                 self._controlled_spec(section_51=fence), encoding="utf-8")
             api = self._full_api()
             api["module_parameters"][0]["value"] = "FLOAT64"       # vs §5.1 "float64" (case differs)
             api["module_parameters"].append(
                 {"name": "case_id_len", "base": "integer", "value": 64})  # int vs §5.1 "64" string
-            _write_json(Path(tmp) / "spec.ir.yaml", {
+            _write_json(_ir / "spec.ir.yaml", {
                 "meta": {"spec_kind": "infrastructure", "spec_id": self._SPEC_ID,
-                         "source_refs": {"controlled_spec": "cs.md"}},
+                         "source_refs": {"controlled_spec": _SURFACE_CS_REF}},
                 "public_api": api})
             violations: list[str] = []
-            _validate_published_surface(Path(tmp), Path(tmp), violations)
+            _validate_published_surface(Path(tmp), _ir, violations)
             self.assertEqual(violations, [])
 
 
@@ -17426,6 +17464,47 @@ class InfrastructureGeneratedSignatureGateTests(unittest.TestCase):
         self.assertTrue(hits, violations)
         self.assertTrue(all("`case_id_len`" in v for v in hits), hits)
         self.assertFalse([v for v in hits if "`dp`" in v], hits)
+
+    def test_a_second_binding_cannot_hide_behind_a_non_newline_separator(self) -> None:
+        """`split("\\n")`, never `str.splitlines()` — the backend's rule, at the one site that broke it.
+
+        `str.splitlines()` breaks on eight separators Fortran treats as ordinary content. The
+        language backend's line module states the rule and three other gates already pin it; the
+        uniqueness count was the one place that did not follow it, from round 3 through round 4.
+
+        MEASURED consequence, all eight: a module-level narrowing declaration written with the
+        separator inside it was torn into fragments binding nothing, so the count saw ONE binding,
+        while PRESENCE — which reads the atom set, built with the correct split — still found the
+        pinned text in a contained procedure. Zero violations, and every published argument at the
+        narrower precision against a §5.1 pinning the wider. That is round 2's hole, reopened by the
+        implementation of the fix for it.
+
+        Reachable without intent: a form feed is a traditional page separator in Fortran source and
+        is a blank to the compiler, so this is not a construct a leaf has to be trying to write.
+
+        The whole family is checked one separator at a time, per the rule that an enumeration is
+        killed element by element — checked together, a missing element goes unnoticed."""
+        import tempfile
+        pinned = "  integer, parameter :: dp = real64\n"
+        shadow = ("contains\n"
+                  "  subroutine separator_note(x)\n"
+                  "    integer, parameter :: dp = real64\n"
+                  "    real(dp), intent(out) :: x\n"
+                  "    x = 0.0_dp\n"
+                  "  end subroutine separator_note\n")
+        for label, sep in (
+            ("form feed", "\x0c"), ("vertical tab", "\x0b"), ("file separator", "\x1c"),
+            ("group separator", "\x1d"), ("record separator", "\x1e"), ("next line", "\x85"),
+            ("line separator", "\u2028"), ("paragraph separator", "\u2029"),
+        ):
+            with self.subTest(separator=label):
+                source = self._GOOD_SOURCE.replace(
+                    pinned, f"  integer, parameter ::{sep} dp = real32\n", 1
+                ).replace("contains\n", shadow, 1)
+                with tempfile.TemporaryDirectory() as t:
+                    tmp = Path(t)
+                    violations = self._run(self._seed(tmp, source=source), tmp)
+                self.assertTrue(violations, f"{label}: a second binding hid behind the separator")
 
     def test_a_rename_import_of_the_pinned_name_is_a_binding(self) -> None:
         """A `use ..., <pinned> => <other>` with NO `only:` list is a second binding, and is refused.
@@ -18738,7 +18817,22 @@ class ToolchainBackendGateTests(unittest.TestCase):
             }))
             v = []
             vps._validate_published_surface(tmp, ir_dir, v)
-            self.assertEqual(v, [], "the sibling gate must not case-fold either")
+            # The property is NOT "this gate stays silent" — it is "this gate does not treat
+            # `Infrastructure` AS `infrastructure`". Those were the same assertion until issue #153
+            # round 5 made an unrecognised spelling a REFUSAL instead of a silent skip, which is a
+            # third behaviour neither `assertEqual(v, [])` nor case-folding describes. Pin the
+            # meaning: the language-backend refusal, which only a case-folding gate could produce,
+            # must be absent.
+            self.assertFalse(
+                [x for x in v if vps._signature_backend_refusal("c") in x],
+                f"the sibling gate case-folded: {v}")
+            # And the hand-off still covers this spelling from BOTH sides, which is what the
+            # exemption above depends on: the toolchain gate does not exempt `Infrastructure`, and
+            # the surface gate now refuses the spelling outright.
+            t_v: list[str] = []
+            vps._validate_toolchain_backend_supported(tmp, ir_dir, t_v)
+            self.assertTrue(t_v, "the toolchain gate must not exempt a spelling it does not strip")
+            self.assertTrue(any("is not a known spec_kind" in x for x in v), v)
 
     def test_message_names_the_supported_backend_and_the_remedy(self) -> None:
         v = self._run(toolchain={"build_system": "cmake", "language": "cpp"})
@@ -19267,16 +19361,27 @@ class ComponentPublicApiGateTests(unittest.TestCase):
             + section_51 +
             "## 6. Prohibitions\n- none.\n")
 
+    #: See `_seed_surface_tree` for why the spec and the IR must live in different subtrees.
+    #: Neither path may contain a KIND word: `test_every_refusal_names_the_node_kind_it_was_given`
+    #: normalizes the kind token out of every message before comparing, so a fixture path spelling
+    #: "component" would be rewritten for one kind and not the other and the row would fail on the
+    #: fixture rather than on the subject.
+    _CS_REF = "spec/kd/dynamics/base/dep_base/controlled_spec.md"
+    _IR_SUBDIR = "workspace/ir/kd__dep_base__0.2.0/dep_base_20260101_001"
+
     def _seed(self, tmp: Path, *, public_api: object, spec_kind: str = "component",
-              cs_ref: str | None = "cs.md", write_cs: bool = True,
+              cs_ref: str | None = _OMIT, write_cs: bool = True,
               section_51: str | None = None, spec_id: str | None = None,
               language: str | None = None) -> Path:
         """`spec_id=""` and `language="rust"` exist so `_refusal_shapes` can reach the
         missing-spec_id and no-signature-backend refusals; both are paths the gate takes before it
         reads §5, and round 0 found each one's kind word unpinned."""
+        if cs_ref is _OMIT:
+            cs_ref = self._CS_REF
         if write_cs:
-            (tmp / "cs.md").write_text(
-                self._controlled_spec(section_51), encoding="utf-8")
+            cs = tmp / self._CS_REF
+            cs.parent.mkdir(parents=True, exist_ok=True)
+            cs.write_text(self._controlled_spec(section_51), encoding="utf-8")
         meta = {"spec_kind": spec_kind,
                 "spec_id": self._SPEC_ID if spec_id is None else spec_id}
         if cs_ref is not None:
@@ -19286,8 +19391,10 @@ class ComponentPublicApiGateTests(unittest.TestCase):
             ir["impl_defaults"] = {"toolchain": {"language": language}}
         if public_api is not _OMIT:
             ir["public_api"] = public_api
-        (tmp / "spec.ir.yaml").write_text(yaml.safe_dump(ir), encoding="utf-8")
-        return tmp
+        ir_dir = tmp / self._IR_SUBDIR
+        ir_dir.mkdir(parents=True, exist_ok=True)
+        (ir_dir / "spec.ir.yaml").write_text(yaml.safe_dump(ir), encoding="utf-8")
+        return ir_dir
 
     def _run(self, **kw) -> list[str]:
         with tempfile.TemporaryDirectory() as t:
@@ -19340,6 +19447,198 @@ class ComponentPublicApiGateTests(unittest.TestCase):
             any("declares a signature 'dep_base__not_in_section51' absent from controlled_spec §5.1"
                 in x for x in v), v)
 
+    def test_a_duplicate_signature_symbol_is_refused_in_both_orders(self) -> None:
+        """The duplicate-`symbol` guard, which no row observed — and ORDER is why.
+
+        Measured in round 5: deleting `if symbol in ir_stanzas` leaves the whole file green. The
+        guard is load-bearing in exactly one direction. `ir_stanzas[symbol]` keeps the LAST entry,
+        so a DRIFTED-then-CORRECT pair ends up holding the correct signature and the comparison
+        passes, while the drifted entry sits in the certified IR for the `Generate.generate` leaf to
+        transcribe. The reverse order is caught by the ordinary drift comparison whether or not the
+        guard exists, so a row testing only that order proves nothing about the guard.
+
+        Both orders are checked here, and the drifted-then-correct one is the row that fails when
+        the guard is removed."""
+        import copy
+        good = self._full_api()["signatures"][0]
+        drifted = copy.deepcopy(good)
+        drifted["signature"]["args"] = drifted["signature"]["args"][:1]
+        for label, pair in (
+            ("drifted then correct", [drifted, good]),
+            ("correct then drifted", [good, drifted]),
+        ):
+            with self.subTest(order=label):
+                api = self._full_api()
+                api["signatures"] = copy.deepcopy(pair)
+                v = self._run(public_api=api)
+                self.assertTrue(
+                    any("more than once" in x for x in v),
+                    f"{label}: the duplicate symbol was not refused: {v}")
+
+    def test_a_heading_shaped_line_inside_a_fence_does_not_end_the_section(self) -> None:
+        """The OUTER section scan is fence-aware too — round 1 fixed only the inner one.
+
+        Round 1 made `_extract_subsection_51` fence-aware after a YAML comment inside §5.1's fence
+        truncated the SUBSECTION and both gates reported the fenced block "missing" about a block
+        plainly present. `_extract_controlled_spec_section` is one level up and had the same defect:
+        `## 6. legacy note` written as a YAML comment ended §5 mid-fence, with the same symptom, the
+        same message, and the same unrepairability — `compile.generate` cannot edit
+        `controlled_spec.md`, so every retry is byte-identical and the node is uncertifiable until
+        an operator deletes the comment.
+
+        The controls are the point of this row: a REAL following heading must still terminate the
+        section, and must itself still be findable. A fence-aware scan that simply stopped looking
+        for headings would pass the attack and break every spec in the tree."""
+        body = ("## 5. Public API\n"
+                "The only published `operation_id` is `dep_base__scale`.\n"
+                "### 5.1 Canonical interface block\n"
+                "```yaml\n"
+                "module_parameters: []\n"
+                "## 6. legacy note\n"
+                "  ## 2. indented note\n"
+                "types: []\n"
+                "procedures: []\n"
+                "```\n"
+                "## 6. Prohibitions\n"
+                "the real section six\n")
+        five = vps._extract_controlled_spec_section(body, "5")
+        self.assertIsNotNone(five)
+        self.assertEqual(five.count("```"), 2, f"§5 was truncated mid-fence: {five!r}")
+        # Control 1: the real heading still ends §5.
+        self.assertNotIn("the real section six", five)
+        # Control 2: the real heading is still findable as its own section.
+        six = vps._extract_controlled_spec_section(body, "6")
+        self.assertIsNotNone(six)
+        self.assertIn("the real section six", six)
+        # Control 3: a heading-shaped line inside the fence must not be mistaken for the START of a
+        # section either — the scan that FINDS §5 is fence-aware for the same reason.
+        self.assertIsNone(vps._extract_controlled_spec_section(
+            "## 5. x\n```yaml\n## 2. not a heading\n```\n", "2"))
+
+    def test_an_unrecognised_spec_kind_is_refused_rather_than_skipping_the_gate(self) -> None:
+        """An unknown `spec_kind` spelling must not silently turn this gate off.
+
+        `spec_kind` is leaf-authored and decides whether this gate runs at all, so an unrecognised
+        spelling used to be a TOTAL NO-OP: measured, `Component` took an IR carrying a wrong
+        operation name and no `signatures`/`module_parameters` from 4 violations to 0.
+
+        Case-sensitivity is a deliberate repo-wide convention pinned elsewhere (folding case here is
+        refused by `ToolchainBackendGateTests`), so the repair is not to accept `Component` — it is
+        to refuse what the convention does not admit, instead of skipping.
+
+        What makes it expensive rather than merely wrong is the ASYMMETRY with its Generate twin,
+        which resolves the same decision from the conductor-authored `node_key` and whose docstring
+        says that is deliberate. A leaf writing `Component` cleared Compile.static and then met a
+        fail-closed `Generate.static` routed as a WARM RESUME to `generate.generate` — a substep
+        that cannot edit the certified IR — so every retry failed identically until the budget was
+        spent, and the operator paid a Generate loop for a defect authored at Compile.
+
+        The `profile` / `problem` rows are the control: those kinds legitimately publish no exact
+        surface, so they must still pass through untouched rather than being caught by a rule that
+        refuses everything it does not pin."""
+        broken = {"published_operations": [{"operation_id": f"{self._SPEC_ID}__wrong"}],
+                  "published_types": []}
+        for kind in ("Component", "COMPONENT", "Infrastructure", "compnent"):
+            with self.subTest(unrecognised=kind):
+                v = self._run(public_api=broken, spec_kind=kind)
+                self.assertTrue(any("is not a known spec_kind" in x for x in v), (kind, v))
+        for kind in ("profile", "problem"):
+            with self.subTest(derived_post_hoc=kind):
+                self.assertEqual(self._run(public_api=broken, spec_kind=kind), [], kind)
+        for kind in ("component", "infrastructure"):
+            with self.subTest(pinned=kind):
+                v = self._run(public_api=broken, spec_kind=kind)
+                self.assertTrue(v, kind)
+                self.assertFalse([x for x in v if "is not a known spec_kind" in x], (kind, v))
+
+    def test_the_controlled_spec_ref_may_not_name_a_document_the_leaf_can_author(self) -> None:
+        """The ABI pin must not become a self-comparison. Round 5, and the worst defect of the five.
+
+        `meta.source_refs.controlled_spec` is authored by the `compile.generate` LEAF, and
+        `<ir_ref>/` is that leaf's entire write root, so until this check the leaf could write its
+        own §5/§5.1 beside the IR, name it here, and be graded against its own document. MEASURED
+        before the fix: an IR publishing a ONE-argument operation against a spec pinning FOUR takes
+        1 violation with the real ref and 0 with a decoy. `Generate.static` re-reads the same
+        leaf-chosen ref, so the source was pinned to the decoy too, and `dependency_surface.json`
+        republished the decoy's names to consumers — a leaf reaches `compile.generate` AND
+        `generate.generate` done without transcribing §5.1 at all.
+
+        Two rows, because the two checks fail in different circumstances and the weaker one has to
+        keep working when the stronger cannot answer: CONTAINMENT (never a document inside the IR
+        directory, which holds with no registry present) and IDENTITY (when the registry knows this
+        `(spec_kind, spec_id)`, the ref must be exactly the file it names).
+
+        The control matters as much as the attack here: this fixture's own honest ref must still
+        pass, or the row would be green for a gate that refuses everything."""
+        import tempfile
+        drifted = self._full_api()
+        # Publish a one-argument ABI while the spec pins the full one.
+        sig = copy.deepcopy(drifted["signatures"][0])
+        sig["signature"]["args"] = sig["signature"]["args"][:1]
+        drifted["signatures"] = [sig]
+
+        # Control: the honest ref refuses the drift, which is what the decoy must not escape.
+        self.assertTrue(self._run(public_api=drifted), "the drift must be visible at all")
+
+        with self.subTest(check="containment"):
+            with tempfile.TemporaryDirectory() as tmpdir:
+                tmp = Path(tmpdir)
+                ir_dir = self._seed(tmp, public_api=drifted)
+                # The leaf writes its own §5/§5.1 beside the IR and points the ref at it.
+                decoy = ir_dir / "decoy.md"
+                decoy.write_text(
+                    self._controlled_spec(
+                        _structured_section51_from_fortran(
+                            "integer, parameter :: dp = real64\n"
+                            f"subroutine {self._SPEC_ID}__scale(n)\n"
+                            "  integer, intent(in) :: n\n"
+                            f"end subroutine {self._SPEC_ID}__scale\n")),
+                    encoding="utf-8")
+                ir = yaml.safe_load((ir_dir / "spec.ir.yaml").read_text(encoding="utf-8"))
+                ir["meta"]["source_refs"]["controlled_spec"] = str(
+                    decoy.relative_to(tmp))
+                (ir_dir / "spec.ir.yaml").write_text(yaml.safe_dump(ir), encoding="utf-8")
+                v: list[str] = []
+                vps._validate_published_surface(tmp, ir_dir, v)
+            self.assertTrue(
+                any("resolves INSIDE the IR directory" in x for x in v), v)
+
+        with self.subTest(check="identity"):
+            with tempfile.TemporaryDirectory() as tmpdir:
+                tmp = Path(tmpdir)
+                ir_dir = self._seed(tmp, public_api=drifted)
+                # A decoy OUTSIDE the IR directory — containment cannot see it, so only the
+                # registry can. Give the registry an entry naming the real document.
+                decoy = tmp / "elsewhere" / "controlled_spec.md"
+                decoy.parent.mkdir(parents=True, exist_ok=True)
+                decoy.write_text((tmp / self._CS_REF).read_text(encoding="utf-8"),
+                                 encoding="utf-8")
+                catalog = tmp / "spec" / "registry" / "spec_catalog.yaml"
+                catalog.parent.mkdir(parents=True, exist_ok=True)
+                catalog.write_text(yaml.safe_dump({"specs": [
+                    {"spec_kind": "component", "spec_id": self._SPEC_ID,
+                     "controlled_spec_path": self._CS_REF}]}), encoding="utf-8")
+                ir = yaml.safe_load((ir_dir / "spec.ir.yaml").read_text(encoding="utf-8"))
+                ir["meta"]["source_refs"]["controlled_spec"] = str(decoy.relative_to(tmp))
+                (ir_dir / "spec.ir.yaml").write_text(yaml.safe_dump(ir), encoding="utf-8")
+                v2: list[str] = []
+                vps._validate_published_surface(tmp, ir_dir, v2)
+            self.assertTrue(
+                any("is not the controlled_spec the registry records" in x for x in v2), v2)
+
+        with self.subTest(check="the registry's own path still passes"):
+            with tempfile.TemporaryDirectory() as tmpdir:
+                tmp = Path(tmpdir)
+                ir_dir = self._seed(tmp, public_api=self._full_api())
+                catalog = tmp / "spec" / "registry" / "spec_catalog.yaml"
+                catalog.parent.mkdir(parents=True, exist_ok=True)
+                catalog.write_text(yaml.safe_dump({"specs": [
+                    {"spec_kind": "component", "spec_id": self._SPEC_ID,
+                     "controlled_spec_path": self._CS_REF}]}), encoding="utf-8")
+                v3: list[str] = []
+                vps._validate_published_surface(tmp, ir_dir, v3)
+            self.assertEqual(v3, [], "the registry's own path must not be refused")
+
     def test_a_yaml_comment_inside_the_section51_fence_is_content(self) -> None:
         """Round 1's over-refusal. `_extract_subsection_51` ended the subsection at any `#`-led line,
         and §5.1's fence is YAML — where `# the published kind` is ordinary. MEASURED on the real
@@ -19358,7 +19657,9 @@ class ComponentPublicApiGateTests(unittest.TestCase):
             with self.subTest(case=label):
                 with tempfile.TemporaryDirectory() as tmpdir:
                     tmp = Path(tmpdir)
-                    (tmp / "cs.md").write_text(injected, encoding="utf-8")
+                    cs = tmp / self._CS_REF
+                    cs.parent.mkdir(parents=True, exist_ok=True)
+                    cs.write_text(injected, encoding="utf-8")
                     ir_dir = self._seed(tmp, public_api=self._full_api(), write_cs=False)
                     v: list[str] = []
                     vps._validate_published_surface(tmp, ir_dir, v)
@@ -19474,7 +19775,9 @@ class ComponentPublicApiGateTests(unittest.TestCase):
             with self.subTest(kind=kind):
                 with tempfile.TemporaryDirectory() as tmpdir:
                     tmp = Path(tmpdir)
-                    (tmp / "cs.md").write_text(spec, encoding="utf-8")
+                    cs = tmp / self._CS_REF
+                    cs.parent.mkdir(parents=True, exist_ok=True)
+                    cs.write_text(spec, encoding="utf-8")
                     ir_dir = self._seed(tmp, public_api=self._full_api(), spec_kind=kind,
                                         write_cs=False)
                     v: list[str] = []

@@ -3567,7 +3567,7 @@ freshness invalidates a stale certified IR only via its version stays TRUE and u
 SOURCE, not the IR. The `Generate.gate` syntax probe's closure `fail_closed` stays as a backstop. And §"Problem
 certified-dependency interface drift"'s "Undetermined" question — why the profile certified at all — stays open.
 
-**PR-2 (A-full), LANDED 2026-09-04.** `component` joined `infrastructure` in
+**PR-2 (A-full), PR #156, merged 2026-09-04 at `ab433ea`.** `component` joined `infrastructure` in
 `_EXACT_PUBLISHED_SURFACE_KINDS`: its §5.1 is REQUIRED, `Compile.static` pins §5.1 == the IR's
 `public_api.signatures` / `module_parameters`, and `Generate.gate` pins the IR == the generated source.
 So §5.1 ≡ IR ≡ SOURCE, and an ABI change is something a `spec_version` carries rather than something a
@@ -3618,6 +3618,53 @@ and not a full pipeline. The cost of `--until Compile --with-deps` on a profile 
 problems, 6. Anchoring on `ir_ref` alone is also why PR-1's `pipeline_ref` binding-freshness demotion
 does not fire at this depth, so the two blast radii do not compound. An earlier draft of this
 paragraph said 4 per problem by counting `harness_fortran_cpu`, whose version PR-2 does not bump.
+
+**Round 5, after the merge: TWO HIGH defects, both live on main when found.** The second is the
+worst of the whole loop and survived all five rounds: `_validate_published_surface` compared the IR
+against the file named by `meta.source_refs.controlled_spec`, asking of it only that it be readable
+— while that field is authored by the `compile.generate` LEAF and `<ir_ref>/` is that leaf's entire
+write root. A leaf could write its own §5/§5.1 beside the IR and be graded against its own document
+(measured: an IR publishing a one-argument operation against a spec pinning four takes 1 violation
+with the real ref, 0 with a decoy). `Generate.static` re-read the same leaf-chosen ref, so the
+source was pinned to the decoy too, and `dependency_surface.json` republished the decoy's names to
+consumers — a leaf reaches BOTH generate substeps done without transcribing §5.1 at all. Closed by
+containment (never a document inside the IR directory) plus registry identity (when
+`spec_catalog.yaml` knows the `(spec_kind, spec_id)`, the ref must be exactly the file it names);
+all 37 certified IRs already carry the registry's path verbatim, so nothing existing is refused.
+
+**WHY FIVE ROUNDS COULD NOT SEE IT, which is the transferable part.** Adding containment turned 42
+rows red, all for one cause: both gate fixtures set `ir_dir = tmp` and wrote the controlled_spec
+beside the IR — a layout the conductor cannot produce. With the spec INSIDE the IR directory a
+containment rule has nothing to distinguish, so no amount of attacking those fixtures could have
+reached this class. **A fixture that models an impossible tree is not a weak test; it is a test
+that cannot see a whole class of defect**, and the 42 red rows were the diagnosis, not the damage.
+Both fixtures now lay the tree out the way a real checkout does, with the reason recorded at the
+fixture.
+
+Three more from the same round, all fixed: an unrecognised `spec_kind` SPELLING silently disabled
+the gate (`Component` took a wrong-op-name IR from 4 violations to 0) and, because the Generate twin
+resolves the kind from the conductor's `node_key`, produced an unrepairable warm-retry loop billed
+to the wrong phase — now refused rather than skipped, after checking that the two-gate hand-off
+`ToolchainBackendGateTests` protects still covers both sides; the OUTER section scan was not
+fence-aware, so a heading-shaped line inside §5.1's fence truncated §5 exactly as round 1's inner
+defect did; and the duplicate-`symbol` guard was unpinned because `ir_stanzas` keeps the LAST entry,
+so only a drifted-then-correct pair can observe it. Two `orchestration_runtime` docstrings still
+asserted the design PR-2 reversed ("never frozen into the IR") — false evidence the round-3 prose
+sweep missed.
+
+**Round 5 also found one HIGH fail-open on the OTHER gate, and three carried LOWs.** The uniqueness count split
+statements with `str.splitlines()`, which breaks on eight separators the target language treats as
+ordinary content — so a narrowing declaration written with one inside it vanished from the count
+while PRESENCE still found the pinned text in a contained procedure. Zero violations, publishing the
+narrower precision. Round 2's hole, reopened by round 3's IMPLEMENTATION of the fix for it and
+carried through round 4; fixed in `5e92d73` with a per-separator regression family. The rule it broke
+is the language backend's own (`split("\n")`, never `splitlines()`), already pinned at three other
+gates — so the lesson is narrower and more useful than "be careful": WHEN A BACKEND STATES A RULE
+ABOUT READING ITS SOURCE, THE SITE THAT DOES NOT CITE IT IS THE ONE TO CHECK. Three further findings
+are carried, none a fail-open: a multi-file over-refusal that the production path cannot reach today
+(`_model_files_in_src_dir` returns one file), an aliased import whose refusal falls back to the
+generic message when the pinned name is not first in the `only:` list, and a statement-labelled
+declaration that presence rejects and the count accepts — an over-refusal in the safe direction.
 
 **Known over-refusals of the signature comparison, measured in round 4 and CARRIED.** The stanza
 comparison pins the rendered form, so several ABI-identical spellings of an ordinary declaration are
