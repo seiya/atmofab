@@ -13612,8 +13612,10 @@ class WriteMakefileTest(unittest.TestCase):
             staged = self._conductor(repo)._stage_dependency_sources(refs, obj_dir)
             # deepest-first (base before mid), matching the Makefile object order
             self.assertEqual(len(staged), 2)
-            self.assertTrue(staged[0].endswith("base_model.f90"))
-            self.assertTrue(staged[1].endswith("mid_model.f90"))
+            self.assertTrue(staged[0]["model_source_ref"].endswith("base_model.f90"))
+            self.assertTrue(staged[1]["model_source_ref"].endswith("mid_model.f90"))
+            self.assertEqual([b["node_key"] for b in staged],
+                             ["component/base@0.1.0", "component/mid@0.1.0"])
             self.assertEqual((obj_dir / "base_model.f90").read_text(encoding="utf-8"),
                              "module base_model\nend module base_model\n")
             self.assertEqual((obj_dir / "mid_model.f90").read_text(encoding="utf-8"),
@@ -13655,7 +13657,70 @@ class WriteMakefileTest(unittest.TestCase):
             staged = self._conductor(repo)._stage_dependency_sources(refs, obj_dir)
             self.assertEqual(len(staged), 1)
             self.assertIn("CERTIFIED", (obj_dir / "base_model.f90").read_text(encoding="utf-8"))
-            self.assertIn("src_cert", staged[0])
+            self.assertIn("src_cert", staged[0]["model_source_ref"])
+            self.assertEqual(staged[0]["source_id"], "src_cert")
+
+    def test_dependency_closure_nodes_survives_a_malformed_topo_level(self) -> None:
+        """The closure ORDER is single-sourced in `orchestration_runtime._closure_nodes_from_graph`
+        so that Build's staging and the readiness comparison cannot disagree — and the move is not
+        a pure move: the inlined version this replaced read `n.get("topo_level") or 0`, which puts
+        a `str` into the sort key and makes `list.sort` raise `TypeError`. That is a crash where
+        readiness promises a verdict, so a non-`int` level falls to 0. This is the conductor half
+        of that pin: it is RED against the inlined implementation."""
+        from tools.orchestration_runtime import _closure_nodes_from_graph
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = wc.NodeRefs(node_key="component/top@0.1.0", spec_path="spec/component/top",
+                               ir_id="i", pipeline_id="p", source_id="s", binary_id="b")
+            self._write_dep_ir(repo, refs)
+            self._write_dep_graph_sidecar(repo, refs, all_nodes=[
+                {"node_key": "component/base@0.1.0", "topo_level": "0"},
+                {"node_key": "component/mid@0.1.0", "topo_level": 1},
+                {"node_key": "component/top@0.1.0", "topo_level": 2},
+            ], transitive_deps=[])
+            got = self._conductor(repo)._dependency_closure_nodes(refs)
+            self.assertEqual(sorted(got), ["component/base@0.1.0", "component/mid@0.1.0"])
+            # ... and it is the SAME derivation the readiness comparison runs.
+            from tools.validate_pipeline_semantics import _read_dependency_graph_sidecar
+            graph = _read_dependency_graph_sidecar(repo, refs.ir_ref) or {}
+            self.assertEqual(got, _closure_nodes_from_graph(graph, refs.node_key))
+
+    def test_stage_dependency_sources_returns_the_binding_of_each_staged_source(self) -> None:
+        """The record `binary_meta.dependency_check.closure_bindings` is built from: one entry
+        per closure node, in staging order, and the recorded `sha256` is the sha256 of the bytes
+        that actually landed in `$(OBJDIR)`. Hashing something other than the staged copy is the
+        one way this whole mechanism can be silently wrong, so it is asserted against the copy
+        rather than against the fixture's own string."""
+        import hashlib
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = wc.NodeRefs(node_key="component/top@0.1.0", spec_path="spec/component/top",
+                               ir_id="i", pipeline_id="p", source_id="s", binary_id="b")
+            self._write_dep_ir(repo, refs)
+            self._seed_dep_pipeline(repo, "component/base@0.1.0", "base_20260101_001",
+                                    "src_base", "module base_model\nend module base_model\n")
+            self._seed_dep_pipeline(repo, "component/mid@0.1.0", "mid_20260101_001",
+                                    "src_mid", "module mid_model\nend module mid_model\n")
+            obj_dir = repo / "workspace" / "tmp" / "arid_x" / "build"
+            staged = self._conductor(repo)._stage_dependency_sources(refs, obj_dir)
+            self.assertEqual([b["node_key"] for b in staged],
+                             ["component/base@0.1.0", "component/mid@0.1.0"])
+            for binding, sid in zip(staged, ("base", "mid")):
+                self.assertEqual(
+                    binding["model_source_sha256"],
+                    hashlib.sha256((obj_dir / f"{sid}_model.f90").read_bytes()).hexdigest())
+                self.assertEqual(binding["pipeline_ref"],
+                                 f"workspace/pipelines/component__{sid}__0.1.0/"
+                                 f"{sid}_20260101_001")
+                self.assertEqual(binding["source_id"], f"src_{sid}")
+                self.assertTrue(binding["binary_id"])
+                self.assertTrue(
+                    binding["model_source_ref"].endswith(f"src_{sid}/src/{sid}_model.f90"),
+                    binding["model_source_ref"])
+            # Distinct sources give distinct hashes — the assertion above could not pass by
+            # comparing two copies of one file.
+            self.assertNotEqual(staged[0]["model_source_sha256"],
+                                staged[1]["model_source_sha256"])
 
     def test_stage_dependency_sources_noop_for_leaf(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -14590,6 +14655,106 @@ class DeterministicBuildTest(unittest.TestCase):
                 c._build_inproc(refs, "child-1", "captok")
 
             self.assertIn("BIN=spec_x_runner", captured["extra_args"])
+
+    def _seed_closure_dep(self, repo: Path, node_key: str, body: str) -> str:
+        """A certified dependency pipeline for `node_key`; returns the sha256 of `body`."""
+        import hashlib
+        safe, sid = wc.node_key_safe(node_key), wc.spec_id_of(node_key)
+        pipe = repo / "workspace" / "pipelines" / safe / f"{sid}_20260101_001"
+        (pipe / "source" / "src_dep" / "src").mkdir(parents=True, exist_ok=True)
+        (pipe / "source" / "src_dep" / "src" / f"{sid}_model.f90").write_text(
+            body, encoding="utf-8")
+        (pipe / "binary" / "bin_20260101_001").mkdir(parents=True, exist_ok=True)
+        (pipe / "binary" / "bin_20260101_001" / "binary_meta.json").write_text(
+            json.dumps({"verification_status": "pass", "source_source_id": "src_dep"}) + "\n",
+            encoding="utf-8")
+        return hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+    def test_build_records_closure_bindings_in_binary_meta(self) -> None:
+        """The PRODUCTION writer: `_build_inproc` must persist, in the certified
+        `binary_meta.json`, which dependency source it compiled against and that source's
+        sha256 — the record `orchestration_runtime._dependency_binding_freshness` reads. Driven
+        through `_build_inproc` rather than asserted on a hand-built dict, so the wiring between
+        the stager's return value and the record is what is pinned (issue #153)."""
+        import sys
+        import tempfile
+        from unittest import mock
+        sys.path.insert(0, str(Path("mcp_servers").resolve()))
+        import build_runtime_server  # type: ignore
+
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            c = wc.Conductor(repo_root=repo, orchestration_id="t",
+                             orchestration_agent_run_id="x", llm_config=_cfg("claude"), env={})
+            refs = wc.NodeRefs(
+                node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
+                ir_id="x_1", pipeline_id="x_1", source_id="src_1", binary_id="bin_1")
+            (repo / refs.ir_ref).mkdir(parents=True, exist_ok=True)
+            (repo / refs.ir_ref / "spec.ir.yaml").write_text(
+                "impl_defaults:\n  toolchain:\n    language: fortran\n"
+                "    build_system: make\n"
+                'dependency:\n  node_key: "component/spec_x@0.1.0"\n'
+                '  direct_deps:\n    - node_key: "component/depy@0.1.0"\n',
+                encoding="utf-8")
+            (repo / refs.ir_ref / "dependency_graph.json").write_text(json.dumps({
+                "node_key": refs.node_key,
+                "all_nodes": [{"node_key": "component/depy@0.1.0", "topo_level": 0},
+                              {"node_key": refs.node_key, "topo_level": 1}],
+                "transitive_deps": [], "generated_by": "conductor",
+            }) + "\n", encoding="utf-8")
+            (repo / refs.source_dir() / "src").mkdir(parents=True, exist_ok=True)
+            sha = self._seed_closure_dep(
+                repo, "component/depy@0.1.0",
+                "module depy_model\nend module depy_model\n")
+
+            def fake_compile(args):
+                (repo / refs.binary_dir() / "bin").mkdir(parents=True, exist_ok=True)
+                (repo / refs.binary_dir() / "bin" / "spec_x_runner").write_text("x")
+                return {"ok": True, "return_code": 0, "command_id": "cid"}
+
+            with mock.patch.object(build_runtime_server, "tool_compile_project", fake_compile), \
+                    mock.patch.object(wc.subprocess, "run",
+                                      lambda *a, **k: wc.subprocess.CompletedProcess(
+                                          a[0] if a else [], 0, "", "")):
+                c._build_inproc(refs, "child-1", "captok")
+
+            meta = json.loads((repo / refs.binary_dir() / "binary_meta.json").read_text())
+            bindings = meta["dependency_check"]["closure_bindings"]
+            self.assertEqual([b["node_key"] for b in bindings], ["component/depy@0.1.0"])
+            self.assertEqual(bindings[0]["model_source_sha256"], sha)
+            self.assertEqual(bindings[0]["source_id"], "src_dep")
+            self.assertEqual(bindings[0]["binary_id"], "bin_20260101_001")
+
+    def test_build_records_empty_closure_bindings_for_a_leaf(self) -> None:
+        """A leaf records the key with an EMPTY list. The key's PRESENCE is what tells a leaf
+        apart from a legacy binary certified before this contract, and a legacy binary with a
+        non-empty closure fails readiness closed — so omitting it here would make every leaf
+        (the harness of every closure) permanently stale."""
+        import sys
+        import tempfile
+        from unittest import mock
+        sys.path.insert(0, str(Path("mcp_servers").resolve()))
+        import build_runtime_server  # type: ignore
+
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            c = wc.Conductor(repo_root=repo, orchestration_id="t",
+                             orchestration_agent_run_id="x", llm_config=_cfg("claude"), env={})
+            refs = wc.NodeRefs(
+                node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
+                ir_id="x_1", pipeline_id="x_1", source_id="src_1", binary_id="bin_1")
+            (repo / refs.ir_ref).mkdir(parents=True, exist_ok=True)
+            (repo / refs.source_dir() / "src").mkdir(parents=True, exist_ok=True)
+
+            def fake_compile(args):
+                return {"ok": True, "return_code": 0, "command_id": "cid"}
+
+            with mock.patch.object(build_runtime_server, "tool_compile_project", fake_compile):
+                c._build_inproc(refs, "child-1", "captok")
+
+            meta = json.loads((repo / refs.binary_dir() / "binary_meta.json").read_text())
+            self.assertIn("closure_bindings", meta["dependency_check"])
+            self.assertEqual(meta["dependency_check"]["closure_bindings"], [])
 
     def test_build_inproc_stamps_source_ir_id(self) -> None:
         # binary_meta.json records the origin ir_id (refs.ir_id) alongside source_source_id
@@ -16522,6 +16687,57 @@ class DeterministicSyntaxTest(unittest.TestCase):
         sys.path.insert(0, str(Path("mcp_servers").resolve()))
         import build_runtime_server  # type: ignore
         return mock.patch.object(build_runtime_server, "tool_run_syntax_check", fn)
+
+    def test_syntax_probe_stages_the_closure_from_bindings(self) -> None:
+        """The syntax probe shares `_stage_dependency_sources` with Build, so it must survive the
+        stager returning BINDINGS rather than path strings: the staged closure sources still land
+        in the probe's `_deps` dir and are still handed to the compiler. Its truthiness test on
+        the return value is what would silently invert if the shape changed to something empty."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            refs = self._refs()
+            self._seed(repo, refs)
+            (repo / refs.ir_ref / "spec.ir.yaml").write_text(
+                "impl_defaults:\n  toolchain:\n    language: fortran\n"
+                "    standard: f2008\n    build_system: make\n  target:\n"
+                "    backend: openmp\n"
+                'dependency:\n  node_key: "component/spec_x@0.1.0"\n'
+                '  direct_deps:\n    - node_key: "component/depz@0.1.0"\n',
+                encoding="utf-8")
+            (repo / refs.ir_ref / "dependency_graph.json").write_text(json.dumps({
+                "node_key": refs.node_key,
+                "all_nodes": [{"node_key": "component/depz@0.1.0", "topo_level": 0},
+                              {"node_key": refs.node_key, "topo_level": 1}],
+                "transitive_deps": [], "generated_by": "conductor",
+            }) + "\n", encoding="utf-8")
+            pipe = (repo / "workspace" / "pipelines" / "component__depz__0.1.0"
+                    / "depz_20260101_001")
+            (pipe / "source" / "src_dep" / "src").mkdir(parents=True, exist_ok=True)
+            (pipe / "source" / "src_dep" / "src" / "depz_model.f90").write_text(
+                "module depz_model\nend module depz_model\n", encoding="utf-8")
+            (pipe / "binary" / "bin_20260101_001").mkdir(parents=True, exist_ok=True)
+            (pipe / "binary" / "bin_20260101_001" / "binary_meta.json").write_text(
+                json.dumps({"verification_status": "pass",
+                            "source_source_id": "src_dep"}) + "\n", encoding="utf-8")
+            c = self._conductor(repo)
+            seen: list[dict] = []
+
+            def fake(args):
+                seen.append(args)
+                return {"ok": True, "return_code": 0, "command_id": "sid",
+                        "compiler": args["compiler"], "compiler_version": "GNU Fortran 13",
+                        "skipped": False}
+
+            with self._patch_syntax(fake):
+                out = c._gate_syntax_check(refs, "child-1", "captok")
+            self.assertEqual(out["status"], "pass")
+            staged = repo / "workspace" / "tmp" / "child-1" / "syntax" / "_deps"
+            self.assertTrue((staged / "depz_model.f90").is_file())
+            # ... and reached the compiler's own per-stage project dir.
+            probe_dir = Path(seen[0]["project_dir"])
+            self.assertTrue((probe_dir / "depz_model.f90").is_file())
+            self.assertTrue((probe_dir / "spec_x_model.f90").is_file())
 
     def test_gate_syntax_check_pass_returns_section_and_writes_evidence(self) -> None:
         import tempfile

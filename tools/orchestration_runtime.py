@@ -1128,13 +1128,181 @@ def _dependency_resolution_freshness(
     return (True, None)
 
 
-def _stale_dependency_details(repo_root: Path, spec_ref: Any) -> list[str]:
-    """R6-lite: actionable staleness reports for the direct dependencies of `spec_ref`.
+def _dep_binary_meta_passes(repo_root: Path, kind: str, spec_id: str, version: str) -> bool:
+    """The artifact half of the `pipeline_ref` readiness stage: the certified binary of the
+    latest pipeline records `verification_status: pass`. The twin of `_dep_ir_meta_passes`, and
+    split out for the same reason — `_stale_dependency_details` must be able to ask "did this
+    dep ever BUILD?" before reporting a binding as stale, because a dep that never built is
+    "not ready", a distinct and already-reported condition."""
+    if not (
+        _is_safe_path_token(kind)
+        and _is_safe_path_token(spec_id)
+        and _is_safe_path_token(version)
+    ):
+        return False
+    safe = f"{kind}__{spec_id}__{version}"
+    pipe_dir = _latest_pipeline_dir(repo_root / "workspace" / "pipelines" / safe)
+    if pipe_dir is None:
+        return False
+    sel = _certified_binary_meta(pipe_dir)
+    if sel is None:
+        return False
+    return str(sel[1].get("verification_status", "")).strip().lower() == "pass"
 
-    Only a dependency that DID certify (its current `ir_meta.json` passes) can be stale — an
-    un-built one is merely "not ready", a distinct and already-reported condition. Used to
-    turn an opaque `direct_dependency_*_readiness_not_pass` into a message that names the
-    drifted node and the remedy."""
+
+def _dependency_binding_freshness(
+    repo_root: Path, kind: str, spec_id: str, version: str
+) -> tuple[bool, str | None]:
+    """R6 proper, the closure-source half (CONTENT granularity): was the certified binary of
+    `(kind, id, version)` compiled against the same dependency sources a build would stage for
+    it TODAY?
+
+    `_dependency_resolution_freshness` above compares node_key SETS, which is version
+    granularity: it cannot see a dependency that was re-certified WITHIN one version, because
+    the closure it derives and the closure the sidecar records are then identical. That is the
+    hole this closes. Build records, in the certified binary's
+    `dependency_check.closure_bindings[]`, the identity AND the `sha256` of every closure source
+    it staged (`workflow_conductor._build_inproc`); this re-resolves each of those nodes through
+    the SAME selection the stage uses (`_resolve_certified_closure_binding`) and compares the
+    hashes. So a dependency regenerated and re-certified under an unchanged `spec_version` makes
+    every consumer certified against its old source report stale, and `--with-deps` re-certifies
+    the closure bottom-up instead of linking a drifted dependency into a certified consumer.
+
+    Returns `(fresh, detail)`; `detail` is an actionable message when stale.
+
+    The comparison is over CONTENT, not identity: re-certifying a dependency whose source bytes
+    are unchanged does not make a consumer stale, however many new `source_id` / `binary_id`
+    directories it produced. The identity fields exist for the message and the audit trail.
+
+    Absence is NOT staleness — a dep with no pipeline or no certified binary is answered by the
+    `pipeline_ref` stage itself, and manufacturing staleness from a missing right-hand side
+    would mask that verdict (the same rule `_dependency_resolution_freshness` follows for an
+    unreadable registry).
+
+    A binary whose `dependency_check` records NO `closure_bindings` key at all is legacy — it
+    was certified before the binding was recorded — and fails CLOSED when its certified IR
+    declares a non-empty closure: there is no record of what it linked, so the comparison cannot
+    be made, and the consequence of guessing is exactly the wrong certification this function
+    exists to prevent. A closure that is empty (a leaf) has nothing to compare and is fresh,
+    which is the same asymmetry the R6-lite sidecar rule uses. The test is the KEY's presence, so
+    a leaf certified after this contract landed records `[]` explicitly and is told apart from a
+    legacy binary that records nothing.
+
+    ONE DECLARED LIMIT, and it is an availability limit rather than a hole. The conductor stages
+    a closure — and therefore records bindings — only for a node whose build control file the
+    neutral core authors. A node
+    with dependencies whose leaf owns its own dependency build instead would record `[]` while its
+    certified IR declares a non-empty closure, and this function reports it stale forever. No such
+    node exists in this tree and none can be certified today: the compile toolchain gate admits
+    only the `(build_system, language)` pair the core writes a control file for on a physics node
+    (`Conductor._core_authors_control_file`, which asks the registry),
+    and the one `spec_kind` that may differ, `infrastructure`, is a leaf. So the case is refused
+    rather than special-cased; `test_a_node_whose_leaf_owns_its_dependency_build_is_refused` pins
+    the behaviour so extending that scope trips a red test instead of silently locking the node out
+    of readiness."""
+    if not (
+        _is_safe_path_token(kind)
+        and _is_safe_path_token(spec_id)
+        and _is_safe_path_token(version)
+    ):
+        return (False, f"{kind}/{spec_id}@{version}: unsafe identifier token")
+    node_key = f"{kind}/{spec_id}@{version}"
+    safe = f"{kind}__{spec_id}__{version}"
+    pipe_dir = _latest_pipeline_dir(repo_root / "workspace" / "pipelines" / safe)
+    if pipe_dir is None:
+        return (True, None)
+    sel = _certified_binary_meta(pipe_dir)
+    if sel is None:
+        return (True, None)
+    binary_meta_path, binary_meta = sel
+    binary_id = binary_meta_path.parent.name
+
+    ir_dir = _certified_ir_dir(repo_root, kind, spec_id, version)
+    graph: Any = None
+    if ir_dir is not None:
+        sidecar = ir_dir / "dependency_graph.json"
+        if sidecar.is_file():
+            try:
+                graph = json.loads(sidecar.read_text(encoding="utf-8"))
+            except Exception:
+                graph = None
+    closure = _closure_nodes_from_graph(graph, node_key)
+
+    check = binary_meta.get("dependency_check")
+    check = check if isinstance(check, dict) else {}
+    if "closure_bindings" not in check:
+        if not closure:
+            return (True, None)
+        detail = (
+            f"{node_key} certified binary `{binary_id}` records no "
+            f"dependency_check.closure_bindings, so the dependency sources it was compiled "
+            f"against cannot be compared with the ones Build would stage now "
+            f"(closure: {closure}); re-run with `--with-deps` (re-certifies the closure "
+            f"bottom-up), or re-run `{node_key}` alone to Validate"
+        )
+        return (False, detail)
+    bindings = check.get("closure_bindings")
+    if not isinstance(bindings, list) or not all(
+        isinstance(b, dict)
+        and isinstance(b.get("node_key"), str)
+        and b["node_key"].strip()
+        and isinstance(b.get("model_source_sha256"), str)
+        and b["model_source_sha256"].strip()
+        for b in bindings
+    ):
+        detail = (
+            f"{node_key} certified binary `{binary_id}`: "
+            f"dependency_check.closure_bindings is malformed (expected a list of entries "
+            f"carrying node_key + model_source_sha256), so what it was compiled against "
+            f"cannot be compared with what Build would stage now"
+        )
+        return (False, detail)
+    recorded_keys = sorted(b["node_key"].strip() for b in bindings)
+    if recorded_keys != sorted(closure):
+        # The certified IR's closure moved while this binary stayed. R6-lite cannot see this
+        # when the registry and the latest sidecar already agree — the sidecar is the CURRENT
+        # IR's, and this binary may predate it.
+        detail = (
+            f"{node_key} certified binary `{binary_id}` was compiled against closure "
+            f"{recorded_keys} but its certified IR now declares {sorted(closure)}"
+        )
+        return (False, detail)
+    source_id = str(binary_meta.get("source_source_id") or "").strip()
+    for recorded in bindings:
+        dep_key = recorded["node_key"].strip()
+        current, err = _resolve_certified_closure_binding(repo_root, dep_key)
+        if err is not None or current is None:
+            detail = (
+                f"{node_key} certified binary `{binary_id}` was compiled against "
+                f"`{dep_key}`, which no longer has a certified staged source: {err}"
+            )
+            return (False, detail)
+        if current["model_source_sha256"] != recorded["model_source_sha256"].strip():
+            detail = (
+                f"{node_key} certified binary `{binary_id}` (source "
+                f"`{source_id}`) was compiled against `{dep_key}` source "
+                f"`{recorded.get('source_id')}` "
+                f"(`{recorded.get('pipeline_ref')}`, sha256 "
+                f"`{recorded['model_source_sha256'].strip()}`) but the certified selection now "
+                f"stages `{current['source_id']}` (`{current['pipeline_ref']}`, sha256 "
+                f"`{current['model_source_sha256']}`); re-run with `--with-deps` (re-certifies "
+                f"the closure bottom-up), or re-run `{node_key}` alone to Validate"
+            )
+            return (False, detail)
+    return (True, None)
+
+
+def _stale_dependency_details(repo_root: Path, spec_ref: Any) -> list[str]:
+    """Actionable staleness reports for the direct dependencies of `spec_ref` — both
+    granularities: R6-lite resolution drift (the closure's node_key set moved) and R6 proper
+    closure-source drift (a dependency source was regenerated within its version).
+
+    Only a dependency that DID certify can be stale — an un-built one is merely "not ready", a
+    distinct and already-reported condition. Each granularity is guarded on the artifact its
+    comparison needs: resolution drift on the current `ir_meta.json` passing, binding drift on
+    the certified binary passing. Used to turn an opaque
+    `direct_dependency_*_readiness_not_pass` into a message that names the drifted node and the
+    remedy."""
     deps_doc = _read_deps_yaml(repo_root, spec_ref)
     if not isinstance(deps_doc, dict):
         return []
@@ -1153,32 +1321,57 @@ def _stale_dependency_details(repo_root: Path, spec_ref: Any) -> list[str]:
             fresh, detail = _dependency_resolution_freshness(repo_root, kind, spec_id, version)
             if not fresh and detail:
                 details.append(detail)
+            # R6 proper (closure-source half). Guarded on the dep having BUILT for the same
+            # reason the IR guard above exists: a dep with no certified binary is "not ready",
+            # not stale, and reporting a binding for it would name the wrong remedy.
+            if not _dep_binary_meta_passes(repo_root, kind, spec_id, version):
+                continue
+            fresh, detail = _dependency_binding_freshness(repo_root, kind, spec_id, version)
+            if not fresh and detail:
+                details.append(detail)
     return details
 
 
 def _verify_dep_stage(
     repo_root: Path, kind: str, spec_id: str, version: str, stage: str
 ) -> bool:
-    """Check whether the **current** dep artifact for `(kind, id, version)`
-    evidences `stage` completion.
+    """Check whether the **current** dep artifact for `(kind, id, version)` evidences `stage`
+    completion. The boolean face of `_verify_dep_stage_detail`, which is the primitive — see
+    there for what each stage requires and why."""
+    return _verify_dep_stage_detail(repo_root, kind, spec_id, version, stage)[0]
 
-    "Current" = most recent by mtime under the versioned workspace directory.
-    Historical artifacts from earlier passing runs do NOT satisfy the gate
-    (Codex round 5 fix): a stale pass cannot unblock a new launch.
+
+def _verify_dep_stage_detail(
+    repo_root: Path, kind: str, spec_id: str, version: str, stage: str
+) -> tuple[bool, str | None]:
+    """Whether the **current** dep artifact for `(kind, id, version)` evidences `stage`
+    completion, WITH the reason when it does not.
+
+    "Current" = the latest artifact under the versioned workspace directory, selected by parsed
+    canonical id (not mtime). Historical artifacts from earlier passing runs do NOT satisfy the
+    gate (Codex round 5 fix): a stale pass cannot unblock a new launch.
 
     stage ∈ {"ir_ref", "pipeline_ref", "aggregate_verdict"}:
 
     - ir_ref: latest `workspace/ir/<safe>/*/ir_meta.json` has verification_status=pass,
       AND (R6-lite) the dependency resolution that IR was certified against still matches
       the one the current deps.yaml + spec_catalog.yaml derive
-      (`_dependency_resolution_freshness`). Anchoring freshness on the `ir_ref` stage makes
-      it a single choke point: every readiness caller requires `ir_ref`, and the cumulative
+      (`_dependency_resolution_freshness`). Anchoring resolution freshness on the `ir_ref` stage
+      makes it a single choke point: every readiness caller requires `ir_ref`, and the cumulative
       chains in `_verify_dependency_readiness` short-circuit on it.
     - pipeline_ref: latest `workspace/pipelines/<safe>/*/binary/*/binary_meta.json`
-      has verification_status=pass.
+      has verification_status=pass, AND (R6 proper, closure-source half) the dependency sources
+      that binary was compiled against are still the ones a build would stage for it today
+      (`_dependency_binding_freshness`). This stage is where the binding lives because a binding
+      is a property of a BINARY: the IR is unaffected by a dependency's regeneration, so anchoring
+      it on `ir_ref` would report a node stale whose IR is perfectly current.
     - aggregate_verdict: latest `workspace/pipelines/<safe>/**/aggregate_verdict.json`
       has its top-level `aggregate_verdict` field set to `pass` or `xfail`
-      (per docs/GLOSSARY.md).
+      (per docs/GLOSSARY.md), bound to the same binary `pipeline_ref` selects.
+
+    `detail` is `None` when fresh and an actionable one-line cause otherwise. It exists so
+    `_stale_dependency_details` and the closure driver can say WHICH stage refused and why,
+    instead of reporting an opaque `..._readiness_not_pass`.
     """
     # Defensive: every caller validates upstream, but recheck before
     # composing a filesystem path (Codex round 15 F2 defense-in-depth).
@@ -1187,12 +1380,17 @@ def _verify_dep_stage(
         and _is_safe_path_token(spec_id)
         and _is_safe_path_token(version)
     ):
-        return False
+        return (False, f"{kind}/{spec_id}@{version}: unsafe identifier token")
     safe = f"{kind}__{spec_id}__{version}"
+    node_key = f"{kind}/{spec_id}@{version}"
     if stage == "ir_ref":
         if not _dep_ir_meta_passes(repo_root, kind, spec_id, version):
-            return False
-        return _dependency_resolution_freshness(repo_root, kind, spec_id, version)[0]
+            detail = (
+                f"{node_key} has no certified IR with verification_status=pass under "
+                f"workspace/ir/{safe}"
+            )
+            return (False, detail)
+        return _dependency_resolution_freshness(repo_root, kind, spec_id, version)
     if stage in {"pipeline_ref", "aggregate_verdict"}:
         # Codex round 11 F2: both pipeline_ref and aggregate_verdict are
         # evaluated against the SAME selected pipeline run (latest pipeline_id
@@ -1203,41 +1401,64 @@ def _verify_dep_stage(
         safe_root = repo_root / "workspace" / "pipelines" / safe
         pipe_dir = _latest_pipeline_dir(safe_root)
         if pipe_dir is None:
-            return False
+            return (False, f"{node_key} has no pipeline under workspace/pipelines/{safe}")
         if stage == "pipeline_ref":
             latest = _latest_meta_under(pipe_dir, "binary/*/binary_meta.json")
             if latest is None:
-                return False
+                return (False, f"{node_key} has no binary_meta.json under {pipe_dir.name}")
             try:
                 doc = json.loads(latest.read_text(encoding="utf-8"))
             except Exception:
-                return False
-            return (
+                detail = (
+                    f"{node_key}: binary_meta.json of `{latest.parent.name}` is unreadable "
+                    f"or malformed"
+                )
+                return (False, detail)
+            if not (
                 isinstance(doc, dict)
                 and str(doc.get("verification_status", "")).strip().lower() == "pass"
-            )
+            ):
+                status = doc.get("verification_status") if isinstance(doc, dict) else None
+                detail = (
+                    f"{node_key}: latest binary `{latest.parent.name}` has "
+                    f"verification_status={status!r}"
+                )
+                return (False, detail)
+            # R6 proper (closure-source half): a passing binary is not ready if the dependency
+            # sources it links have been regenerated since it was certified.
+            return _dependency_binding_freshness(repo_root, kind, spec_id, version)
         # stage == "aggregate_verdict"
         # Codex round 24: bind the verdict to the SAME binary that
         # pipeline_ref would select; reject verdicts produced for a
         # different (older) binary even when newer binaries lack verdicts.
         latest_binary = _latest_meta_under(pipe_dir, "binary/*/binary_meta.json")
         if latest_binary is None:
-            return False
+            return (False, f"{node_key} has no binary_meta.json under {pipe_dir.name}")
         chosen_binary_id = latest_binary.parent.name
         latest = _latest_aggregate_verdict_under(
             pipe_dir, bound_to_binary_id=chosen_binary_id,
         )
         if latest is None:
-            return False
+            detail = (
+                f"{node_key} has no aggregate_verdict.json bound to binary "
+                f"`{chosen_binary_id}`"
+            )
+            return (False, detail)
         try:
             doc = json.loads(latest.read_text(encoding="utf-8"))
         except Exception:
-            return False
+            return (False, f"{node_key}: aggregate_verdict.json is unreadable or malformed")
         if not isinstance(doc, dict):
-            return False
+            return (False, f"{node_key}: aggregate_verdict.json is not an object")
         verdict = str(doc.get("aggregate_verdict", "")).strip().lower()
         # docs/GLOSSARY.md: "a state in which the latest aggregate_verdict is `pass` or `xfail`"
-        return verdict in {"pass", "xfail"}
+        if verdict in {"pass", "xfail"}:
+            return (True, None)
+        detail = (
+            f"{node_key}: aggregate_verdict bound to binary `{chosen_binary_id}` is "
+            f"{verdict!r}"
+        )
+        return (False, detail)
     raise ValueError(f"unknown readiness stage: {stage!r}")
 
 
@@ -1297,6 +1518,112 @@ def _certified_model_source(pipe_dir: Path, spec_id: str) -> Path | None:
     if sel is None:
         return None
     return _model_source_from_binary_meta(pipe_dir, spec_id, sel[1])
+
+
+def _closure_nodes_from_graph(graph: Any, self_node_key: str) -> list[str]:
+    """The build closure of `self_node_key` from a `dependency_graph.json` document, in
+    compile order (deepest first).
+
+    The complete closure is the sidecar's `all_nodes` (the conductor-authored derived graph;
+    see `workflow_conductor._write_dependency_graph`). `all_nodes` includes the subject
+    itself, so self is excluded here; the remainder — direct + transitive deps — is ordered by
+    `topo_level` ascending, deepest first, because a deeper dep provides what the shallower
+    ones consume and must be built first.
+
+    Pure and NEVER raises: a missing / malformed / non-dict document, and an `all_nodes` that is
+    not a list, each yield `[]`. Single-sourced here so the conductor's staging order and the
+    readiness comparison (`_dependency_binding_freshness`) cannot disagree on WHICH nodes the
+    closure holds or in what order — the caller adds its own policy (the conductor keeps the L6
+    spec_id-collision guard, which is a build-naming rule and not part of the closure derivation).
+
+    The never-raises contract is load-bearing rather than decorative, and it costs two type tests
+    that read as redundant. `for n in all_nodes or []` raises `TypeError` on a non-iterable
+    (`all_nodes: 5`), and `list.sort` raises `TypeError` when a `topo_level` is not comparable with
+    an `int` (`"0"`) — both inside a readiness evaluator whose callers are promised a verdict. So
+    `all_nodes` must be a `list` (a `str` is iterable and would otherwise be walked character by
+    character), and a `topo_level` that is not an `int` — `bool` included, which `isinstance(x,
+    int)` alone accepts — falls to 0."""
+    all_nodes = graph.get("all_nodes") if isinstance(graph, dict) else None
+    if not isinstance(all_nodes, list):
+        return []
+    levels: dict[str, int] = {}
+    closure: list[str] = []
+    seen: set[str] = set()
+    for n in all_nodes or []:
+        if not (isinstance(n, dict) and isinstance(n.get("node_key"), str)):
+            continue
+        nk = n["node_key"].strip()
+        if not nk or nk == self_node_key or nk in seen:
+            continue
+        seen.add(nk)
+        level = n.get("topo_level")
+        levels[nk] = level if isinstance(level, int) and not isinstance(level, bool) else 0
+        closure.append(nk)
+    closure.sort(key=lambda nk: levels.get(nk, 0))
+    return closure
+
+
+def _resolve_certified_closure_binding(
+    repo_root: Path, node_key: str
+) -> tuple[dict[str, Any] | None, str | None]:
+    """The binding of ONE closure node: which certified artifact of `node_key` a build of a
+    consumer stages and links right now, identified and hashed.
+
+    Returns `({node_key, pipeline_ref, binary_id, source_id, model_source_ref,
+    model_source_sha256}, None)` on success and `(None, <reason>)` otherwise. Pure and NEVER
+    raises; the reason is phrased as the build precondition it is (the dependency closure must
+    be certified first), because the conductor re-raises it verbatim as a transport fail_closed.
+
+    This is the SINGLE selection behind two readers that must never disagree: the deterministic
+    Build / syntax-probe staging (`workflow_conductor._stage_dependency_sources`) and the
+    readiness comparison (`_dependency_binding_freshness`). The chain is the same one
+    `_certified_model_source` documents — latest pipeline dir, then the certified binary's
+    `source_source_id` — so what a consumer was CERTIFIED AGAINST is compared with what Build
+    would STAGE NOW under one rule. The hash is taken over the same immutable file the stage
+    copies (a `source_id` directory's content is written once and never rewritten), so hashing
+    and copying cannot observe different bytes."""
+    try:
+        spec_kind, spec_id, spec_version = _parse_node_key_strict(node_key)
+    except Exception:
+        return (None, f"unparseable dependency node_key {node_key!r}")
+    safe = f"{spec_kind}__{spec_id}__{spec_version}"
+    pipe_dir = _latest_pipeline_dir(repo_root / "workspace" / "pipelines" / safe)
+    if pipe_dir is None:
+        reason = (
+            f"no ready pipeline under workspace/pipelines/{safe} to stage its certified "
+            f"model source from (build the dependency closure first, e.g. "
+            f"run_workflow.py --with-deps)"
+        )
+        return (None, reason)
+    sel = _certified_binary_meta(pipe_dir)
+    model_src = None if sel is None else _model_source_from_binary_meta(
+        pipe_dir, spec_id, sel[1])
+    if sel is None or model_src is None:
+        rel_pipe = _normalize_rel_posix(pipe_dir.relative_to(repo_root).as_posix())
+        reason = (
+            f"cannot resolve the certified model source under {rel_pipe} (no "
+            f"binary_meta.json / no source_source_id / missing source file; dependency not "
+            f"built ready — run_workflow.py --with-deps first)"
+        )
+        return (None, reason)
+    binary_meta_path, binary_meta = sel
+    try:
+        digest = hashlib.sha256(model_src.read_bytes()).hexdigest()
+    except Exception as exc:  # noqa: BLE001 - unreadable staged source is a precondition failure
+        return (None, f"cannot read the certified model source of {node_key}: {exc}")
+    return (
+        {
+            "node_key": node_key,
+            "pipeline_ref": _normalize_rel_posix(
+                pipe_dir.relative_to(repo_root).as_posix()),
+            "binary_id": binary_meta_path.parent.name,
+            "source_id": str(binary_meta.get("source_source_id") or "").strip(),
+            "model_source_ref": _normalize_rel_posix(
+                model_src.relative_to(repo_root).as_posix()),
+            "model_source_sha256": digest,
+        },
+        None,
+    )
 
 
 # `subroutine` header opener: optional prefixes (pure / elemental / recursive / impure /
@@ -2495,6 +2822,12 @@ def _certify_and_collect_dep_artifacts(
             # level 0 exactly as an ir_ref failure would.
             if level >= 1 and not _dependency_resolution_freshness(repo_root, kind, spec_id, v)[0]:
                 level = 0
+            # R6 proper (closure-source half), same reasoning one stage down: the binding is a
+            # property of the BINARY, so a drifted closure source demotes the version to level 1
+            # (its IR still certifies) exactly as a `pipeline_ref` failure would. Both evaluators
+            # must carry the invariant or it leaks through whichever path is missed.
+            if level >= 2 and not _dependency_binding_freshness(repo_root, kind, spec_id, v)[0]:
+                level = 1
             if level > best_level:
                 best_level = level
                 best_v = v

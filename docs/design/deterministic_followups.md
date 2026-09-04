@@ -441,7 +441,7 @@ end-to-end (orch `orch_20260626T020724Z_0d7b9e28`): `demo_dep_top` reused the re
 (skipped) and passed all phases on attempt 1 in dev mode. The D4 snapshot-naming blocker is fixed and
 confirmed. No known blockers remain for the demo dependency chain.
 
-## D5 — dependency call-site argument order surfaced to the consumer (IMPLEMENTED 2026-06-26)
+## D5 — dependency call-site argument order surfaced to the consumer (IMPLEMENTED 2026-06-26; the "no producer-side gate" half is to be SUPERSEDED by issue #153 PR-2, NOT YET LANDED as of 2026-09-04)
 
 **Symptom.** With D1–D4 closed, the demo chain's `--with-deps` E2E was still not
 deterministic across runs: a consumer (`demo_dep_top`) emits `call <dep>__<op>(...)` to a
@@ -1358,7 +1358,7 @@ dependency node to the HIGHEST catalog version satisfying the consumer constrain
 (`matched[0]`), matching the closure driver's `node_label` (`run_workflow.py`
 `spec_versions[0]`). Three EXISTING version conventions are mutually inconsistent when a spec
 has >1 catalog version: `resolve_node` builds the dependency under the FIRST catalog entry
-(ignoring the constraint), `_dependency_node_ready` accepts ANY matching version, and
+(ignoring the constraint), `_dependency_node_readiness` accepts ANY matching version, and
 `node_label`/sidecar/`_stage_dependency_sources` use the highest. For a spec with a single
 catalog version (all 12 today) these coincide and the pin is exact. If they ever diverge,
 `_stage_dependency_sources` FAILS CLOSED ("no ready pipeline") rather than substitute a sibling
@@ -2009,7 +2009,7 @@ Enforcement is at the two — and only two — readiness evaluators, because the
 is missed:
 
 - `_verify_dep_stage`, anchored on the `ir_ref` stage (every caller requires it, and the cumulative chains in
-  `_verify_dependency_readiness` short-circuit on it). This covers `run_workflow._dependency_node_ready`, so
+  `_verify_dependency_readiness` short-circuit on it). This covers `run_workflow._dependency_node_readiness`, so
   `--with-deps` re-runs a stale dependency instead of skipping it as ready.
 - `_certify_and_collect_dep_artifacts`, which the launch gate's own recomputation
   (`_compute_dep_readiness_and_fingerprint` → `_dependency_ready`) uses and which does **not** route through
@@ -2044,8 +2044,13 @@ Freshness passes `include_transitive=False` to the builder: it compares `all_nod
 `via_for` enumerates every simple path (exponential on a wide diamond). `all_nodes` is byte-identical either way, so
 the comparison still matches what the sidecar recorded.
 
-**Scope: version granularity.** A content change within one `spec_version` is invisible here, which the respec
-discipline (content change ⇒ `spec_version` bump) makes sufficient. Content-hash chaining is R6 proper.
+**Scope: version granularity.** A content change within one `spec_version` is invisible to THIS comparison, which
+compares node_key sets. **The closure-source half of that scope is SUPERSEDED 2026-09-04 by issue #153**: the
+`pipeline_ref` stage now additionally compares the `sha256` of every dependency source a certified binary was compiled
+against with the one a build would stage today ("## Issue #153" below), so a dependency regenerated within one
+`spec_version` does invalidate its consumers. What remains at version granularity — and what still makes the respec
+discipline load-bearing — is the `spec`/IR side and the target profile: an edit to a `spec` that does not move
+`spec_version` still produces no new node_key and no new dependency SOURCE for a consumer to notice.
 
 **Effect on the harness bump.** Registering `harness_fortran_cpu` 0.3.0 in the catalog (with the five consumers'
 `version_constraint` tightened to `>=0.3.0`) makes every dependent's recorded resolution stop matching, so a single
@@ -2615,7 +2620,7 @@ The Z4 enforcement-retirement of the migrated stages (capability/hook/preflight/
 here; the pure leaf keeps the truthful minimal `pure_readonly` capability doc so the ≥4 per-arid-capability verifiers
 still anchor.
 
-## Problem certified-dependency interface drift — a regenerated `component` republishes a different interface and strands its non-regenerated consumers (FILED 2026-07-16)
+## Problem certified-dependency interface drift — a regenerated `component` republishes a different interface and strands its non-regenerated consumers (FILED 2026-07-16; RESOLVED 2026-09-04 by issue #153, NOT by `Z5`)
 
 A `component`'s published interface is not pinned by its IR. It is derived post-hoc from the generated source
 (`phase_01_compile.md`), so **regenerating the same `spec` at the same `spec_version` can republish a different
@@ -2673,8 +2678,20 @@ names the same hazard from the gate-history direction; this is the interface dir
   interface. Until then the advdiff family cannot complete an E2E.
 - Selecting nodes for an A/B or a controlled experiment must exclude any node that is a dependency of another target:
   re-certifying a shared dependency perturbs every downstream consumer's staged closure.
-- The structural answer is `Z5`'s derivation-keyed store: content-hash derivation keys make an upstream re-certification
-  invalidate the closure that consumed it. Until `Z5`, the gap is accepted and this entry is its record.
+- The structural answer was expected to be `Z5`'s derivation-keyed store: content-hash derivation keys make an upstream
+  re-certification invalidate the closure that consumed it. Until `Z5`, the gap was accepted and this entry was its
+  record.
+
+**RESOLVED 2026-09-04 (issue #153), without `Z5`.** The gap's CONSEQUENCE is closed by content-granular closure
+bindings — the one property `Z5` was wanted for here, obtained inside the existing readiness machinery rather than by
+replacing the store. Build records the `sha256` of every dependency source it staged in the certified
+`binary_meta.json#dependency_check.closure_bindings[]`, and readiness re-resolves the same selection and compares, so an
+upstream re-certification now makes every downstream consumer that linked the old source **stale** and `--with-deps`
+re-certifies the closure bottom-up. See "## Issue #153" below for the mechanism and for the ABI pin that closes the
+CAUSE. Two things this resolution does not do: the "Undetermined" question above (why the profile certified at all)
+stays open — the binding comparison closes the consequence, not that question — and the experiment-selection rule above
+still holds, because a re-certified shared dependency still perturbs every downstream consumer's staged closure; what
+changed is that the perturbation is now detected rather than silent.
 
 ## Problem leaf token usage is unmeasurable from `agent_runs.jsonl` — the transcript lookup targets the wrong layout (FILED 2026-07-16; RESOLVED 2026-08-07 by issue #47, but NOT as prescribed below)
 
@@ -3263,7 +3280,11 @@ the `operations ⊆ published` check (V4c-ii) was LLM-only and let the wrong nam
 gate (`use` present) AND the static gate (`use` absent) every retry, a pincer with no repairable signal.
 
 The fix is a four-layer truth path for the op NAME (the argument ABI stays derived post-hoc — user decision: pin names
-only, never full signatures, on a component):
+only, never full signatures, on a component). **The operator decision of 2026-09-04 (issue #153) REVERSES that user
+decision, and issue #153 PR-2 is what implements the reversal. PR-2 HAS NOT LANDED as of 2026-09-04**, so every sentence
+below is still true of the code: `_validate_component_public_api` still refuses `signatures` and `module_parameters` as
+forbidden keys on a `component`, and `phase_01_compile.md` V8b still states NAMES ONLY. When PR-2 lands it extends the
+NAME path below rather than replacing it; until then, read this paragraph as the decision and not as the state.
 - **L1 — the name gets a carrier.** A component IR now pins its published op names in `public_api.published_operations`
   (`_validate_component_public_api`, `Compile.static`, V8b — names only; `signatures`/`module_parameters` are forbidden
   keys). Its generation-side mate `_validate_component_generated_surface` (`Generate.gate`) pins the generated
@@ -3467,3 +3488,91 @@ which also reaches the `interface` string of 335 procedures — whitespace-only 
 cross-scanner parity test (`test_cross_scanner_parity_with_runtime`) dropped its "only the domain a generator emits"
 restriction and now runs over the pathological inputs the restriction existed to exclude, asserting per case that the
 scanners agree on something rather than agreeing on nothing.
+
+## Issue #153 — content-granular closure bindings (R6 proper, closure-source half) and the `component` ABI pinned in §5.1 (PR-1 LANDED 2026-09-04; PR-2 pending)
+
+**The instance.** `orch_20260903T215814Z_663512a0` (`advdiff1d_linear validate --with-deps`) re-ran the boundary
+`component` alone. `profile/dynamics_advdiff_profile_1d_upwind_center2_euler1@0.1.0` was recorded
+`{"skipped": true, "status": "ready"}` on the strength of its 07-25 certification, and the target's `Generate.gate`
+syntax probe then staged the 07-25 profile source beside the 09-03 boundary source and fail-closed with
+`Type mismatch in argument 'u_in'`. The boundary node's six certified sources carry six different argument lists — two
+of them generated from the SAME IR (`_20260827_001`), differing only in order — so the drift is not a version event
+that any version-granularity mechanism could see. This is the same defect class as
+§"Problem certified-dependency interface drift" (FILED 2026-07-16), now closed on the consequence side.
+
+**Two independent causes, and each alone would have prevented this instance.**
+
+- **B — readiness cannot see what the consumer linked.** `_verify_dep_stage` reads `ir_ref` / `pipeline_ref` /
+  `aggregate_verdict`, and R6-lite adds the closure's node_key SET. None of them asks the consumer what it was compiled
+  against. The consumer's own record said only `{"direct_deps": [...], "resolved": "match"}`, where `resolved` means
+  "the compile succeeded".
+- **A — the `component` ABI is not pinned.** It is derived post-hoc from whatever the generation produced
+  (`phase_01_compile.md` V8b pinned NAMES only, by a user decision recorded in §"Dependency operation-name truth path").
+
+**PR-1 (B), the mechanism.** Build's staging returns, and `binary_meta.json#dependency_check.closure_bindings[]`
+records, one entry per closure node: `{node_key, pipeline_ref, binary_id, source_id, model_source_ref,
+model_source_sha256}`. The `pipeline_ref` readiness stage re-resolves each recorded node through the SAME selection the
+stage uses and compares the `sha256`. Four decisions worth keeping:
+
+1. **Content, not identity.** Re-certifying a dependency whose bytes are unchanged invalidates nobody, however many
+   new `source_id` / `binary_id` directories it produced. The identity fields are for the message and the audit trail.
+2. **One selection, two readers.** `_resolve_certified_closure_binding` is called by both the conductor's stager and
+   the readiness comparison, and `test_binding_resolution_mirrors_build_staging` drives the production stager against
+   it. Two independent selections would make the comparison answer a question about neither — this widens
+   `_certified_model_source`'s "SHOWN == COMPILED" to "CERTIFIED-AGAINST == STAGED-NOW".
+3. **Legacy fails closed; a leaf does not.** A binary with no `closure_bindings` KEY and a non-empty closure is stale:
+   there is no record of what it linked, and guessing produces exactly the wrong certification this closes. A leaf
+   records `[]` explicitly, and the key's presence is what tells the two apart. **Blast radius, stated because it is a
+   decision and not a surprise: on a reused `workspace/` the first `--with-deps` run after PR-1 re-runs every non-leaf
+   node of the closure.**
+4. **Anchored on `pipeline_ref`, not `ir_ref`.** A binding is a property of a BINARY; a dependency's regeneration
+   leaves the consumer's IR perfectly current, so anchoring it on `ir_ref` would report a node stale whose IR is not.
+   Both readiness evaluators carry it — `_verify_dep_stage` and the launch gate's own
+   `_certify_and_collect_dep_artifacts`, where a drifted binding demotes the dep to level 1 rather than level 0.
+
+**Alternatives rejected.**
+
+- **The interim "compare the last certified `io_contract`"** pins neither argument order nor type, and the two 08-27
+  sources from one IR differ only in order — it would not have prevented this instance.
+- **Signatures rendered from the dependency's IR into `<dependency_facts>` as a GATE.** What Build links is the SOURCE,
+  and PR-1 makes that binding durable; rendering an IR signature back into the target language needs backend dispatch
+  from the runtime, which `test_backend_boundary.py` pins. It stays a WARN canary (PR-2).
+- **Duplicating the ABI into the consumer's `dependency_surface.json` sidecar.** `docs/DEVELOPMENT.md` §"Do not persist
+  a value an existing artifact already carries": the dep's certified IR is the carrier. Note the asymmetry that makes
+  `closure_bindings` legitimate under the same rule — `lineage.json` also records `resolved_dependencies[]`, but it is
+  a LIVE snapshot overwritten at each phase start, not a certification record, which is the same reason
+  `binary_meta.source_source_id` exists.
+- **`Z5`'s derivation-keyed store.** It was the recorded structural answer, and the one property it was wanted for here
+  is obtained inside the existing readiness machinery.
+
+**One refusal `origin/main` had that PR-1 does not, recorded because only a backwards-looking reviewer
+can see it.** The closure derivation moved into `_closure_nodes_from_graph` under a never-raises
+contract, and the inlined loop it replaced RAISED on a malformed sidecar — `TypeError` on a
+non-iterable `all_nodes`, and on a `topo_level` that `list.sort` cannot compare with an `int`. For a
+node whose IR declares dependencies the substitute refusal is `_stage_dependency_sources`'
+"empty build closure … despite non-empty `dependency.direct_deps`" `RuntimeError`, which fails closed
+with a better cause. What is genuinely lost is the case of a malformed sidecar on a node whose IR
+declares NO dependencies: `origin/main` crashed, PR-1 yields `[]`. That trade is deliberate — the
+crash would now land inside a readiness evaluator that promises a verdict, and would abort a whole
+`--with-deps` closure rather than report one node — and a leaf gains nothing from it, the sidecar
+being host-authored and leaf-non-writable while `[]` is what both the stager and the comparison then
+agree on. Every OTHER check the change touched was measured red at both revisions (11 applied
+defects, round 3), and one guard `origin/main` left untested — the unsafe-token branch of
+`_verify_dep_stage` — is now pinned.
+
+**What PR-1 does NOT close.** The `spec`/IR side and the target profile of R6 proper stay at version granularity, which
+is what keeps the respec discipline load-bearing. `harness_fortran_cpu/controlled_spec.md`'s statement that dependency
+freshness invalidates a stale certified IR only via its version stays TRUE and untouched: PR-1 is about the closure
+SOURCE, not the IR. The `Generate.gate` syntax probe's closure `fail_closed` stays as a backstop. And §"Problem
+certified-dependency interface drift"'s "Undetermined" question — why the profile certified at all — stays open.
+
+**PR-2 (A-full), planned.** `component` §5.1 becomes REQUIRED with the same language-neutral grammar
+`infrastructure` already uses; `Compile.static` pins IR `public_api.signatures` + `module_parameters` against it and
+`Generate.gate` pins the generated source against it, with V8a / V8b folded into one gate parameterized by
+`spec_kind`. It REVERSES the "pin names only, never full signatures, on a component" user decision, on the authority of
+the operator decision of 2026-09-04. The five affected `component` specs bump `0.1.0 → 0.2.0` and
+`dynamics_shallow_water_time_update_2d_ssprk2` `0.3.0 → 0.4.0`; consumers do not bump. One trap the plan measured in
+advance: the component sources obtain their kind parameter by rename (`use, intrinsic :: iso_fortran_env, only: dp =>
+real64`) while the §5.1 parameter pin requires the declaration form, so a rename to a narrower kind would pass the
+stanza comparison — a fail-open of this same class. `module_parameters` must therefore pin the parameter itself, which
+changes the component idiom.

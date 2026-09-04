@@ -3149,7 +3149,18 @@ def _format_event_human(payload: dict[str, Any], *, elide_detail: bool = True) -
         spec = payload.get("spec_ref", "?")
         until = payload.get("until_phase", "?")
         orch = payload.get("orchestration_id", "?")
-        return f"[dep ] node={node} spec={spec} until={until} orch={orch}"
+        line = f"[dep ] node={node} spec={spec} until={until} orch={orch}"
+        stage = payload.get("failed_stage")
+        if stage:
+            # `not_ready=`, never `stale=`. Staleness is a PROPER SUBSET of not-ready: a node that
+            # was never built is not stale, and this repository keeps that distinction in three
+            # places (`_dep_ir_meta_passes` / `_dep_binary_meta_passes` guard
+            # `_stale_dependency_details` precisely so an unbuilt dep is not reported as drifted).
+            # An earlier version of this line labelled every refusal `stale=`, so an operator on a
+            # fresh workspace read `stale=ir_ref: … has no certified IR` — the label contradicting
+            # the detail beside it. `not_ready=` is true of both cases; the detail says which.
+            line += f" not_ready={stage}: {payload.get('detail') or ''}"
+        return line
 
     if status == "info" and event == "phase_start":
         phase = payload.get("phase", "?")
@@ -4100,32 +4111,64 @@ def _run_node(
         node_claim.close()
 
 
-def _dependency_node_ready(
+def _dependency_node_readiness(
     repo_root: Path, node: dict[str, Any], required_stages: list[str]
-) -> bool:
-    """True iff the dependency node already satisfies `required_stages`.
+) -> dict[str, Any]:
+    """Whether a closure node already satisfies `required_stages`, WITH the grounds for the answer.
 
-    Mirrors the runtime readiness contract (`_verify_dependency_readiness`): a
-    node is ready when ANY single matching catalog version has a coherent
-    artifact chain across all required stages (the same version V must satisfy
-    every stage). Kept module-level so the closure driver uses one consistent
-    readiness rule for both the pre-run skip check and the post-run
-    verification.
+    Mirrors the runtime readiness contract (`_verify_dependency_readiness`): a node is ready when
+    ANY single matching catalog version has a coherent artifact chain across all required stages
+    (the same version V must satisfy every stage). Kept module-level so the closure driver uses one
+    consistent readiness rule for both the pre-run skip check and the post-run verification.
 
-    R6-lite rides on the same `_verify_dep_stage` call: its `ir_ref` stage also requires the
-    node's RECORDED dependency resolution (its `dependency_graph.json` sidecar) to match the
-    one today's `deps.yaml` + `spec_catalog.yaml` derive. So a node certified against an older
-    version of one of ITS dependencies (e.g. harness 0.2.1 after the catalog moved to 0.3.0)
-    reports not-ready here and this driver re-runs it — which is how "a dependency spec was
-    updated, so its dependents are regenerated" becomes a mechanism rather than an operator
-    ritual. No content-free version bump of the dependents is required."""
-    from tools.orchestration_runtime import _verify_dep_stage
+    R6-lite rides on the `_verify_dep_stage_detail` call below: its `ir_ref` stage also requires the
+    node's RECORDED dependency resolution (its `dependency_graph.json` sidecar) to match the one
+    today's `deps.yaml` + `spec_catalog.yaml` derive. So a node certified against an older version
+    of one of ITS dependencies (e.g. harness 0.2.1 after the catalog moved to 0.3.0) reports
+    not-ready here and this driver re-runs it — which is how "a dependency spec was updated, so its
+    dependents are regenerated" becomes a mechanism rather than an operator ritual. No content-free
+    version bump of the dependents is required.
+
+    R6 proper (closure-source half) rides on the same call one stage down: `pipeline_ref` also
+    requires the dependency SOURCES the node's certified binary was compiled against to be the ones
+    a build would stage for it today (`_dependency_binding_freshness`). So a consumer whose
+    dependency was regenerated and re-certified under an unchanged `spec_version` is re-run here
+    too, instead of being skipped and then failing closed inside the target's own gates.
+
+    This is the ONLY wire by which either invariant decides skip-vs-re-run, so it is the wire a
+    witness has to drive on real artifacts:
+    `test_run_workflow.py::test_the_driver_re_runs_a_consumer_whose_dependency_source_was_regenerated`
+    is that witness, and every other driver test in its class fakes this function.
+
+    Returns `{"ready": bool, "version": str | None, "failed_stage": str | None,
+    "detail": str | None}`. When ready, `version` is the matching catalog version that satisfied
+    every required stage. When not ready, the report describes the HIGHEST matching version tried
+    (versions are evaluated in the order `spec_versions` gives, which is descending) and the
+    FIRST stage that refused it, with that stage's own cause.
+
+    The driver records this so a skip and a re-run both carry their reason: without it, a skipped
+    node reports `{"skipped": true, "status": "ready"}` and a re-run node reports nothing at all,
+    which is how issue #153's silent skip of a drifted consumer left no trace in the run log."""
+    from tools.orchestration_runtime import _verify_dep_stage_detail
 
     kind, sid = node["spec_kind"], node["spec_id"]
-    return any(
-        all(_verify_dep_stage(repo_root, kind, sid, v, st) for st in required_stages)
-        for v in node["spec_versions"]
-    )
+    first: tuple[str, str | None, str | None] | None = None
+    for v in node["spec_versions"]:
+        failed_stage: str | None = None
+        detail: str | None = None
+        for st in required_stages:
+            ok, why = _verify_dep_stage_detail(repo_root, kind, sid, v, st)
+            if not ok:
+                failed_stage, detail = st, why
+                break
+        if failed_stage is None:
+            return {"ready": True, "version": v, "failed_stage": None, "detail": None}
+        if first is None:
+            first = (v, failed_stage, detail)
+    if first is None:
+        # No matching catalog version at all — the closure resolver reports that separately.
+        return {"ready": False, "version": None, "failed_stage": None, "detail": None}
+    return {"ready": False, "version": first[0], "failed_stage": first[1], "detail": first[2]}
 
 
 def _resolve_dependency_closure(
@@ -4495,9 +4538,11 @@ def _run_with_dependency_closure(
     for node in ordered:
         kind, sid, spec_ref = node["spec_kind"], node["spec_id"], node["spec_ref"]
         node_label = f"{kind}/{sid}@{node['spec_versions'][0]}"
-        if _dependency_node_ready(repo_root, node, required_stages):
+        readiness = _dependency_node_readiness(repo_root, node, required_stages)
+        if readiness["ready"]:
             dependency_runs.append(
-                {"node": node_label, "spec_ref": spec_ref, "skipped": True, "status": "ready"}
+                {"node": node_label, "spec_ref": spec_ref, "skipped": True, "status": "ready",
+                 "version": readiness["version"]}
             )
             continue
 
@@ -4617,6 +4662,11 @@ def _run_with_dependency_closure(
                     "until_phase": dep_until_phase,
                     "orchestration_id": dep_orch_id,
                     "resume": dep_resume,
+                    # Why this node is being re-run rather than skipped. Without it the run log
+                    # records only that it ran, and a drifted-dependency re-run is
+                    # indistinguishable from a never-built one (issue #153).
+                    "failed_stage": readiness["failed_stage"],
+                    "detail": readiness["detail"],
                 },
                 stdout_format,
             )
@@ -4671,6 +4721,10 @@ def _run_with_dependency_closure(
                 "resumed": dep_resume,
                 "orchestration_id": dep_orch_id,
                 "exit_code": rc,
+                "rerun_reason": {
+                    "failed_stage": readiness["failed_stage"],
+                    "detail": readiness["detail"],
+                },
             }
         )
         if rc != 0:
@@ -4695,8 +4749,10 @@ def _run_with_dependency_closure(
         # non-terminal ("running") without producing the ir/pipeline/verdict
         # evidence. Re-verify before launching the dependent/target node;
         # otherwise the next node would just fail-close at workflow-launch-check.
-        if not _dependency_node_ready(repo_root, node, required_stages):
+        after = _dependency_node_readiness(repo_root, node, required_stages)
+        if not after["ready"]:
             dependency_runs[-1]["status"] = "not_ready_after_run"
+            dependency_runs[-1]["readiness"] = after
             _emit_unlogged_event(
                 {
                     "status": "fail",
@@ -4706,6 +4762,10 @@ def _run_with_dependency_closure(
                         f"required readiness ({'/'.join(required_stages)}); "
                         "common causes: --no-run-conductor, or the agent exited "
                         "without recording a terminal pass (status still running)."
+                        + (
+                            f" stage {after['failed_stage']}: {after['detail']}"
+                            if after["failed_stage"] else ""
+                        )
                     ),
                     "failed_dependency_node": node_label,
                     "spec_ref": spec_ref,
