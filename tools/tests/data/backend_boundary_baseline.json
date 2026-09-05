@@ -1,5 +1,12 @@
 {
   "token_counts": {
+    ".github/workflows/tests.yml": {
+      "compiler-driver": 2,
+      "fortran": 2,
+      "linter-cppcheck": 2,
+      "linter-fortitude": 1,
+      "linter-ruff": 1
+    },
     ".gitignore": {
       "linter-fortitude": 3
     },

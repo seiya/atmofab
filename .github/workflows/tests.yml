@@ -1,0 +1,85 @@
+# The suite, on a machine that is not the operator's.
+#
+# WHAT THIS IS FOR, because it decides most of the choices below. `docs/DEVELOPMENT.md`
+# §Repository environment says a green tree is a claim about the machine it was measured on, and
+# every check this repository has runs on the operator's own. That leaves one gap this job closes
+# and one it does not: it catches the round the operator forgot to measure, and it does NOT claim
+# the suite is green on machines other than the one the measurements come from. So the Python
+# version and every pinned package here are the DEVELOPMENT HOST's values (`requirements.txt`
+# records why), not a matrix — a second interpreter would be a new claim this repository has never
+# made, and making it silently inside a CI file is the wrong place to decide it.
+name: tests
+
+on:
+  # `pull_request` builds the merge with `main`, which is what catches a branch that silently
+  # drops a check `main` makes. `push` on `main` catches a direct push, which is possible here:
+  # `docs/DEVELOPMENT.md` §Repository environment records that `main` carries no protection rule.
+  # Not `push` on every branch — the same commit would then run twice per PR, and the two runs
+  # differ in `github.ref` so no concurrency group folds them.
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # Superseded pushes to a branch are cancelled; runs on `main` are not, because a `main` run is
+  # the record for that commit and there is nothing later to read it from.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  suite:
+    runs-on: ubuntu-latest
+    # The suite takes about 225s on the development host. The ceiling is generous against a
+    # slower shared runner and still far below the 6-hour default, which is long enough that a
+    # hung job would look like an outage rather than a failure.
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          # The development host's interpreter. `requirements.txt` records it as the version every
+          # measurement in this repository was taken on.
+          python-version: "3.10"
+
+      - name: Install host tools
+        # Not statically compared to any document, and that is a decision rather than an omission:
+        # matching this line to `docs/RUNBOOK.md` §0-1 would need a hand-written executable-name ->
+        # package-name map (the sandbox runtime's two spellings differ) and a pip-or-apt column
+        # (one linter's distribution name is not its executable), which is a third copy of a fact
+        # two documents already carry. What witnesses this line instead is the suite it installs for:
+        # `tools/tests/test_host_prerequisites.py` asserts the derived executables are on PATH at a
+        # supported version, and each linter backend's tests FAIL rather than skip when their tool
+        # is absent (`docs/DEVELOPMENT.md` §Fresh-machine setup step 6 says why).
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            gfortran make \
+            cppcheck \
+            jq \
+            bubblewrap
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Record the versions this run measured
+        # "A measured figure is recorded with the commit it was taken at" (`docs/DEVELOPMENT.md`
+        # §Repository environment), applied to the runner: without this, a red run cannot be
+        # attributed to a version, and the log is the only place that information exists.
+        # `|| true` because a missing tool must be reported by the suite, which says WHICH check
+        # wanted it, rather than by this step, which would only say a command failed.
+        run: |
+          which python3 && python3 --version
+          pip freeze
+          for tool in fortitude ruff cppcheck gfortran make bwrap; do
+            "$tool" --version 2>&1 | head -1 || true
+          done
+
+      - name: Run the suite
+        # `-rs` prints the reason for every skip. On this repository that is not diagnostics but
+        # the point: `tools/tests/test_skip_reasons_are_declared.py` requires every skip reason to
+        # be declared, and a skip that fires only on a runner is the one an operator never sees.
+        # No retry, deliberately: `TODO.md` records an intermittent failure in this suite, and a
+        # retry would hide on a second machine exactly what a second machine is here to expose.
+        run: python3 -m pytest tools/tests/ -q -rs
