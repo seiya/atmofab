@@ -120,7 +120,12 @@ no compiler installed).
 **3. Changing a rule is not done until you have swept the prose that cites that rule as grounds.**
 Use the grep procedure in `references/verification.md`. **Right after you write a sentence,
 execute it**: numbers, rule ids, compiler diagnostics and "X catches this" are all executable
-claims, and **write a range when the number varies**; and **the flip side of rule 3 is that prose you newly write in the same commit is
+claims, and **write a range when the number varies**; **executing it is not enough if the probe was
+contaminated** — a compiler writes artifacts beside its input and reads them back, so a shape can
+be answered by what the PREVIOUS shape left, and a cleanup line between two probes makes one
+recorded row into two environments (issue #153 recorded a `gfortran` rc=0 that holds only with a
+stale `.smod` present, beside a rc=1 taken after the `rm`; `references/verification.md`
+§"Verification steps that silently do not run" carries the reproduction); and **the flip side of rule 3 is that prose you newly write in the same commit is
 unverified until you run it** (L128 got four freshly written measurements or citations wrong
 inside the fix itself). **Do not write someone else's measurement as your own** — cite the source
 explicitly, or re-measure before writing. **The place this fires that you will not expect is a
