@@ -79,7 +79,20 @@ _PROCEDURE_KINDS = {
 #: Node types this module matches on beyond `_PROCEDURE_KINDS`. Listed so `_load_parser` can ask
 #: the grammar whether it still defines them — see the check there for why a rename is otherwise
 #: silent rather than loud.
-_REQUIRED_NODE_TYPES = ("interface", "internal_procedures", "contains_statement")
+_REQUIRED_NODE_TYPES = (
+    "interface", "internal_procedures", "contains_statement",
+    # The program-unit types `module_level_procedure_names` scopes by. Listed here for the same
+    # reason as the three above, but NOT for the reason a first version of this comment gave: it
+    # said a grammar rename "would otherwise make the scope silently universal again, which is
+    # the exact fail-open that scoping was added to close". Measured — with these entries gone
+    # and the collection predicate pointed at names no grammar defines, `units` is empty, the
+    # scope is empty, and `module_level_procedure_names` returns the empty set, so a faithful
+    # model gets one "never DEFINES it" per published operation. The failure is total
+    # OVER-REFUSAL, fail-CLOSED, which is why the guard is still worth having: it converts an
+    # unrepairable warm-retry loop into an operator-facing unavailable error. Two round-2
+    # reviewers found the direction stated backwards, independently.
+    "module", "submodule", "module_statement", "submodule_statement",
+)
 
 
 class FortranStructureUnavailableError(RuntimeError):
@@ -121,10 +134,27 @@ class Procedure:
 
 
 @dataclass(frozen=True)
+class ProgramUnit:
+    """One `module` / `submodule` program unit, located as offsets into the view.
+
+    ``parent`` is the ancestor module a submodule extends (``None`` for a module). Both names are
+    lowercased. A unit whose own name the parser does not report is not emitted at all, so a
+    caller scoping by name can never match one by accident.
+    """
+
+    kind: str
+    name: str
+    parent: str | None
+    start: int
+    end: int
+
+
+@dataclass(frozen=True)
 class StructureTree:
     view: str
     procedures: tuple[Procedure, ...]
     interface_spans: tuple[tuple[int, int], ...]
+    units: tuple[ProgramUnit, ...]
     errors: tuple[StructureError, ...]
 
 
@@ -234,6 +264,7 @@ def parse_view(view: str) -> StructureTree:
 
     procedures: list[Procedure] = []
     interface_spans: list[tuple[int, int]] = []
+    units: list[ProgramUnit] = []
     errors: list[StructureError] = []
 
     def record_error(node) -> None:
@@ -281,6 +312,10 @@ def parse_view(view: str) -> StructureTree:
                 )
             )
             inside_interface = True
+        if node.is_named and node.type in ("module", "submodule"):
+            unit = _program_unit(encoded, node, to_char)
+            if unit is not None:
+                units.append(unit)
         kind = _PROCEDURE_KINDS.get(node.type) if node.is_named else None
         if kind and node.children and not inside_interface:
             procedure = _procedure(view, encoded, node, kind, to_char)
@@ -298,6 +333,7 @@ def parse_view(view: str) -> StructureTree:
         view=view,
         procedures=tuple(procedures),
         interface_spans=tuple(sorted(interface_spans)),
+        units=tuple(sorted(units, key=lambda item: item.start)),
         errors=tuple(sorted(errors, key=lambda item: (item.line, item.snippet))),
     )
 
@@ -364,6 +400,38 @@ def _procedure(view: str, encoded: bytes, node, kind: str, to_char) -> Procedure
     )
 
 
+def _program_unit(encoded: bytes, node, to_char) -> ProgramUnit | None:
+    """The `module` / `submodule` unit at ``node``, or None when the parser reports no name.
+
+    The unit's own name and (for a submodule) its ancestor module come from the OPENING statement
+    only. The `end` statement may repeat the name and may omit it; reading either would make the
+    answer depend on which spelling the source used.
+    """
+    opener = f"{node.type}_statement"
+    for child in node.children:
+        if not (child.is_named and child.type == opener):
+            continue
+        name = None
+        parent = None
+        for part in child.children:
+            if not part.is_named:
+                continue
+            if part.type == "name" and name is None:
+                name = _text(encoded, part).strip().lower()
+            elif part.type == "module_name" and parent is None:
+                parent = _text(encoded, part).strip().lower()
+        if not name:
+            return None
+        return ProgramUnit(
+            kind=node.type,
+            name=name,
+            parent=parent,
+            start=to_char(node.start_byte),
+            end=to_char(node.end_byte),
+        )
+    return None
+
+
 def blank_interface_spans(view: str, spans: tuple[tuple[int, int], ...]) -> str:
     """``view`` with every interface span replaced by blanks, IN PLACE.
 
@@ -379,3 +447,120 @@ def blank_interface_spans(view: str, spans: tuple[tuple[int, int], ...]) -> str:
             if characters[index] != "\n":
                 characters[index] = " "
     return "".join(characters)
+
+
+#: What a leaf is told when a §5.1-published operation is declared but never defined. It lives
+#: here, not at the gate that raises it, because every noun in it is this language's: the block a
+#: prototype sits in, and the section a definition belongs to. The neutral gate interpolates it.
+UNDEFINED_PUBLISHED_PROCEDURE_REMEDY = (
+    "the pinned header appears only as a prototype — inside an `interface` block, or as a "
+    "procedure contained within another procedure — so the module publishes a name with no "
+    "implementation, and a consumer that calls it fails at LINK with `undefined reference`. "
+    "Define it in the module's own `contains` section with the published header, and remove "
+    "the prototype"
+)
+
+#: What a leaf is told when this front end cannot resolve a source. Same reason for living here:
+#: the shapes it names are spellings of THIS language. The class is not closed — see the module
+#: docstring, which is canonical for why an enumeration is the wrong instrument.
+STRUCTURE_REFUSAL_HINT = (
+    "the shape to look for is an identifier or a statement label sitting where the parser "
+    "expects structure — a VARIABLE or construct named after a keyword (`endsubroutine`, "
+    "`interface`, `contains` are legal names and are read as the statements they spell; rename "
+    "it), or a labelled `DO` / `FORMAT` alongside a labelled `contains` or procedure header "
+    "(give the loop an `end do` and drop the label from the specification statement). Neither "
+    "list is closed"
+)
+
+
+def publishing_unit_present(tree: StructureTree, unit_name: str) -> bool:
+    """Does ``tree`` declare the program unit ``unit_name``, or a submodule descended from it?
+
+    Separate from `module_level_procedure_names` because the two answer questions a caller must
+    not conflate. That function returns the empty set both for "the unit is here and implements
+    nothing" and for "the unit is not here at all", and a caller that cannot tell them apart tells
+    a leaf to define procedures its source already defines — measured on a correct model whose
+    module name did not match its file's: three violations, every clause of the remedy false for
+    the source, and no violation anywhere in the stage naming the actual fault."""
+    wanted = unit_name.strip().lower()
+    return any(
+        unit.name == wanted or (unit.parent is not None and unit.parent == wanted)
+        for unit in tree.units
+    )
+
+
+def module_level_procedure_names(
+    tree: StructureTree, unit_name: str | None = None
+) -> frozenset[str]:
+    """The names ``tree`` DEFINES at module level, lowercased.
+
+    THREE exclusions, and they answer one question from three sides: does this name have an
+    implementation that the module publishing it actually carries?
+
+    A procedure DECLARED inside an `interface` block is not in ``tree.procedures`` at all
+    (`parse_view` does not descend into an interface span), which is the property this function is
+    built on. A caller that tracked `interface` / `end interface` itself would fail in two
+    directions and only one of them is safe: miss an opener and a prototype passes as a
+    definition, miss a closer and a real definition reads as a prototype. `interface` is a legal
+    variable name, so neither miss is hypothetical — the module docstring's whole subject.
+
+    A CONTAINED procedure is excluded. It carries the name but does not publish it: a consumer's
+    `use` cannot reach it, so accepting one leaves exactly the undefined reference at the
+    consumer's link that the prototype-only shape leaves. Containment is decided by the body spans
+    the parser reports — P is contained when another procedure's body encloses P's start — not by
+    counting `contains` statements. The comparison stays inside ONE tree, so it needs no view
+    translation: both offsets come from the same parse.
+
+    A definition in ANOTHER PROGRAM UNIT is excluded when ``unit_name`` is given, and that
+    exclusion is the whole reason this parameter exists. Without it the answer is "is this name
+    defined anywhere in the parse", which a decoy satisfies: a review round measured a model whose
+    published operation was a prototype in the published module and an empty stub in a second
+    module in the same file — gate 0 violations, compiler rc=0, and the consumer still failed at
+    LINK with `undefined reference`, i.e. the exact fail-open the definedness check exists to
+    close, reopened one unit away. The duplicate-symbol backstop that should have caught the two
+    headers did not, because the decoy's header carried a prefix the stanza reader does not model.
+    Scoping removes the class rather than that spelling.
+
+    A SUBMODULE descended from ``unit_name`` counts as the same publisher: a separate module
+    subprogram is the module's own implementation and a consumer links against it exactly as if it
+    were written inline. The whole chain counts, and the reason is a property of the LANGUAGE
+    rather than a depth limit: `submodule (ancestor : parent) name` names the ANCESTOR MODULE
+    first, and that is what the parser reports as `parent`, so `submodule (m:mid) leaf` carries
+    `parent == "m"` and is reached by scoping to `m`. Measured — an earlier version of this
+    paragraph said the opposite in both halves ("only one level is followed … a submodule of a
+    submodule does not count"), and also implied that naming the INTERMEDIATE submodule would
+    reach the descendant, which it does not: scoping to `mid` returns the empty set.
+
+    ``unit_name`` matching is by the unit's own declared name, lowercased. A source declaring no
+    unit of that name yields the empty set, which fails every published procedure — fail-closed,
+    and the right answer: the module the node is contracted to publish is not there.
+
+    An abbreviated separate module subprogram (`module procedure solve`, in a submodule) IS an
+    implementation and IS returned. `_validate_problem_model_*` refuses that form for a different
+    reason — F2008 forbids it from redeclaring its dummies, so those gates would read an empty
+    out-set — and reading the two rules as one would fail a legal submodule node."""
+    scope: list[tuple[int, int]] = []
+    if unit_name is not None:
+        wanted = unit_name.strip().lower()
+        scope = [
+            (unit.start, unit.end)
+            for unit in tree.units
+            if unit.name == wanted or (unit.parent is not None and unit.parent == wanted)
+        ]
+        if not scope:
+            return frozenset()
+    bodies = [(p.body_start, p.body_end) for p in tree.procedures]
+    names: set[str] = set()
+    for index, procedure in enumerate(tree.procedures):
+        if scope and not any(
+            start <= procedure.body_start < end for start, end in scope
+        ):
+            continue
+        nested = any(
+            start <= procedure.body_start < end
+            for other, (start, end) in enumerate(bodies)
+            if other != index
+        )
+        if not nested:
+            names.add(procedure.name.strip().lower())
+    return frozenset(names)

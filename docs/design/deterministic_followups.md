@@ -3681,6 +3681,10 @@ losing here. The one that WAS worth fixing is the procedure prefix, because its 
 (it blamed argument drift for a source whose arguments were correct) and because the construct
 occurs in the corpus today; the message now names the prefix and the prompt template states the rule.
 
+**RESOLVED 2026-09-05 (was: OPEN, carried deliberately rather than fixed): a published operation declared
+but never defined.** The paragraph below is left as written, per this document's convention. What closed
+it, and why the premise it rested on did not survive execution, is the STATUS NOTE after it.
+
 **OPEN, carried deliberately rather than fixed: a published operation declared but never
 defined.** Round 3 measured it — a `component` model source that declares a §5.1 published
 procedure inside an `interface` block, with the pinned header, and implements nothing, produces
@@ -3701,6 +3705,62 @@ over-refusal that wedges a legal node, which is the worse of the two. The fix th
 own attack record for each shape, and belongs to a round that can review it — not to the tail of
 the round that found it. Severity MEDIUM: bounded by the consumer's build, and by the node's own
 build whenever the operation is exercised.
+
+> **STATUS NOTE (2026-09-05). Fixed, and the reason it could be is that the premise above was never
+> run against THIS gate.** `_validate_generated_signatures` now requires each §5.1 published
+> procedure to be a module-level procedure DEFINITION, asked of the structure front end
+> (`fortran_structure.module_level_procedure_names`), and refuses a header that is only a prototype
+> — in an `interface` block, or a procedure contained within another procedure, which is the same
+> hole in its second spelling and was not named above.
+>
+> The paragraph above blocks the fix on three shapes `checks_module_abi_facts`' docstring says a
+> `n not in defined_procs` refusal would fail. **All three were run against this gate, and all three
+> are refused TODAY, before the fix, for an unrelated reason**: use-association, a generic interface
+> and a submodule implementation each fail the `have is None` arm, because none of them puts the
+> pinned §5.1 header in the source at all. So the over-refusal belongs to the checks-module scanner,
+> whose question ("is this name callable") those shapes answer yes to; this gate's question is
+> narrower and they never reach it. The premise was inherited by reading rather than by execution,
+> and it cost the fix a round it did not need. `PublishedProcedureDefinednessTests` pins it as a row.
+>
+> Each of the three shapes is legal (`gfortran -fsyntax-only` rc=0 — the use-association one
+> only with its `dep_mod` compiled first; standalone, that fixture answers rc=1, and a round-3
+> reviewer was right to report the unqualified claim as unreproducible from the tree).
+>
+> **A fourth measurement was recorded here and was WRONG; it is corrected rather than deleted,
+> because a wrong measurement nobody can tell from an audited one is the worse artifact.** The
+> first version of this note said a plain, non-`module` interface body implemented by a submodule
+> "passes `-fsyntax-only` rc=0 and FAILS `gfortran -c` rc=1 … so that shape reaches Build". A
+> round-1 reviewer could not reproduce the split and re-measured it in a CLEAN directory: both
+> `-fsyntax-only` and `-c` return **rc=1** with "Module file 'hx_model.smod' has not been
+> generated" (re-run independently and confirmed). The rc=0 came from a stale `hx_model.smod` left
+> in the scratch directory by the PRECEDING fixture, which used the same module name. So the
+> load-bearing half — "that shape reaches Build" — is false in the safe direction: `-fsyntax-only`
+> rejects it, so the gate's own syntax stage catches it and Build is never reached. The lesson is
+> the compiler-probe one this repository keeps relearning: **a compiler probe is stateful in its
+> working directory, and a fixture family that reuses one module name across shapes carries the
+> previous shape's artifacts into the next one's answer.**
+>
+> WHAT IS NOT CLOSED. A published operation defined as an EXTERNAL (file-scope) procedure in the
+> node's `<spec_id>_checks.f90`, with the model declaring it in an `interface` block, is legal,
+> compiles, links and runs (executed) — and it IS refused by this check. That is a deliberate
+> over-refusal, not an oversight: it is a shape a leaf gains nothing from (it wrote the
+> implementation either way, in the one place the contract does not put it), the refusal names the
+> repair, so a warm retry converges, and admitting it would mean reading a second file for
+> definitions. Stated here because it is the one legal construct this fix costs.
+>
+> Corpus, measured at the fix: all 51 generated model sources in `workspace/pipelines` parse with no
+> structure error, the 30 certified `component` / `infrastructure` sources each define every §5.1
+> procedure, and 0 of 51 rows change the gate's verdict against `origin/main` (the harness: one row
+> per `(pipeline_dir, source_id)`, `node_key` derived from the pipeline directory name, every other
+> premise read from the tree as production reads it, embedded paths normalized before comparison).
+
+> **STATUS NOTE (2026-09-05).** The paragraph below opens "No billed run has been made". That was true
+> when written and is not now: two complete `--with-deps` closures ran at `61d5712` on 2026-09-04 and
+> 09-05, ten node orchestrations, all `pass`. `TODO.md`'s issue #153 entry carries the evidence and,
+> more importantly, what those runs did and did NOT exercise. Everything else in the paragraph — the
+> standing test, the removed row, the `2dd73cd` measurement — still holds as written, except that the
+> `boundary1d` disagreement it records was against the 07-25 certification and the 09-04
+> re-certification replaced it. History kept as written.
 
 **The non-decision, stated because it is the thing a reader will look for.** No billed run has been
 made. Every certified IR in the workspace is for a pre-bump version, so nothing is certified against
