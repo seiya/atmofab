@@ -51,18 +51,22 @@ from tools import run_workflow  # noqa: E402
 from tools.backends import registry as backend_registry  # noqa: E402
 from tools.backends.language.fortran import structure as fortran_structure  # noqa: E402
 
-#: A requirement line, decomposed. NOT a full PEP 508 parser — these two files are hand-written —
-#: but it has to admit every shape a legitimate edit would use, because refusing one is a check
-#: that makes ordinary work fail. So `extras` and `marker` are separate groups rather than swept
-#: into the version specifier: `ruff>=0.14,<0.17 ; python_version >= "3.10"` and `ruff[x]>=0.14`
-#: are correct requirement lines, and an earlier version of this reader put the whole tail into
-#: `spec` and then reported the character-for-character range comparison as a drift.
-_REQUIREMENT_RE = re.compile(
+#: The name-and-extras head of a requirement. NOT a full PEP 508 parser — these two files are
+#: hand-written — but the decomposition below has to admit every shape a legitimate edit would use,
+#: because refusing one is a check that makes ordinary work fail. Everything after the head is
+#: taken off in STAGES rather than by one regex with optional tails, which is what the first two
+#: versions did and what round 3 killed: `--?[A-Za-z][^\s]*` as an "options" tail matches
+#: `-sitter==0.26.0`, so `tree-sitter==0.26.0 \` (the continuation form
+#: `pip-compile --generate-hashes` emits) parsed as a distribution named `tree` with no specifier.
+#: A misparse that names the wrong package is worse than the refusal it replaced.
+_REQUIREMENT_HEAD_RE = re.compile(
     r"^(?P<name>[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?)"
     r"(?P<extras>\[[^\]]*\])?"
-    r"(?P<spec>[^;\s]*)"
-    r"\s*(?P<marker>;[^-]*)?"
-    r"\s*(?P<options>(?:--?[A-Za-z][^\s]*(?:[ =][^\s]+)?\s*)*)$")
+    r"(?P<spec>.*)$")
+
+#: An option token, at a whitespace boundary: `--word`, `--word=value`, or a single-letter `-X`.
+#: The single-letter bound is what stops a hyphenated distribution name being read as an option.
+_OPTION_RE = re.compile(r"(?:^|\s)(?:--[A-Za-z][A-Za-z0-9-]*|-[A-Za-z])(?=[\s=]|$)")
 
 #: PEP 503 name normalization. `PyYAML`, `pyyaml` and `py_yaml` are one distribution to pip, so
 #: they have to be one distribution to every comparison in this file; comparing the spellings
@@ -84,6 +88,57 @@ _VERSION_RE = re.compile(r"\b\d+\.\d+\.\d+\b")
 _VERSION_CONSTRAINT_RE = re.compile(r"(?:===|==|!=|~=|>=|<=|>|<)\s*\d")
 
 
+def _citation_words(text: str) -> list[str]:
+    """A heading or a `§` citation, as comparable words.
+
+    Each word is cut at its first character that a heading would not carry, and lowercased, so
+    `0-1.` (as `docs/RUNBOOK.md` spells the heading), `0-1's` and `0-1:` (as prose cites it) are
+    one word. Round 3's first version compared with `rstrip(".:")` and turned two CORRECT
+    citations red for the possessive and the colon.
+    """
+    words = []
+    for raw in text.split():
+        word = re.match(r"[A-Za-z0-9_-]*", raw).group(0).lower()
+        if word:
+            words.append(word)
+    return words
+
+
+#: A section NUMBER, as `docs/RUNBOOK.md` opens its headings ("## 0-1. Host prerequisites").
+_SECTION_NUMBER_RE = re.compile(r"^\d+(?:[-.]\d+)*$")
+
+
+def _citable_names(heading: list[str]) -> list[list[str]]:
+    """The word sequences that count as naming `heading`.
+
+    Always the whole heading. And, when it opens with a section NUMBER, that number alone — which
+    is how every citation of `docs/RUNBOOK.md` in this repository spells one ("§0-1"), never
+    "§0-1. Host prerequisites". Without this alias the rule below has to guess where the name ends
+    and the surrounding prose begins, and round 3's first two attempts each turned a set of correct
+    citations red doing so.
+    """
+    names = [heading]
+    if heading and _SECTION_NUMBER_RE.match(heading[0]):
+        names.append(heading[:1])
+    return names
+
+
+def _headings_agree(citation: list[str], heading: list[str]) -> bool:
+    """Does `citation` point at `heading`?
+
+    A citation runs on into prose ("§Design Policy forbids …") and may also be shorter than the
+    heading ("§0-1"). So a name agrees when one word list is a PREFIX of the other — which makes
+    `§0-9` disagree with every heading of a document whose sections run 0-1 to 0-3, while `§0-1`
+    agrees with exactly one.
+    """
+    if not citation or not heading:
+        return False
+    for name in _citable_names(heading):
+        if citation[:len(name)] == name or name[:len(citation)] == citation:
+            return True
+    return False
+
+
 def _canonical(name: str) -> str:
     return _NAME_SEPARATORS.sub("-", name).lower()
 
@@ -100,11 +155,22 @@ def _effective_lines(path: Path) -> list[str]:
     splitting on every `#` truncates a legitimate URL fragment. No line in either file has one
     today, so this is a bound on what a later edit may write rather than a fix to a live defect.
     """
-    lines = []
+    lines: list[str] = []
+    pending = ""
     for raw in path.read_text().splitlines():
         line = re.split(r"(?:^|\s)#", raw, maxsplit=1)[0].strip()
+        # pip joins a line ending in a backslash with the next one. Not joining them is how a
+        # `pip-compile --generate-hashes` block reads as one requirement plus several stray
+        # `--hash=` lines.
+        if line.endswith("\\"):
+            pending += line[:-1].strip() + " "
+            continue
+        line = (pending + line).strip()
+        pending = ""
         if line:
             lines.append(line)
+    if pending.strip():
+        lines.append(pending.strip())
     return lines
 
 
@@ -130,18 +196,41 @@ def _requirement_lines(path: Path) -> list[str]:
     return [line for line in _effective_lines(path) if not line.startswith("-")]
 
 
+def _decompose(line: str) -> tuple[str, str]:
+    """One requirement line -> (distribution name, version specifier).
+
+    Peeled in stages, each of which removes exactly one thing:
+
+      1. options (`--hash=...`, `--no-binary :all:`) — from the first token that IS an option;
+      2. the environment marker, at the first `;`;
+      3. extras, from the name;
+      4. whitespace inside the specifier, so `tree-sitter == 0.26.0` and `tree-sitter==0.26.0`
+         compare equal. Both are legal PEP 508 and the spaced form is what a hand edit produces;
+         the previous reader refused it outright.
+
+    Returns the specifier with its internal whitespace removed, so a comparison against a backend's
+    `SUPPORTED_VERSION_SPEC` answers about the VERSION RANGE and nothing else.
+    """
+    option = _OPTION_RE.search(line)
+    if option is not None:
+        line = line[:option.start()]
+    line = line.split(";", 1)[0].strip()
+    match = _REQUIREMENT_HEAD_RE.match(line)
+    if match is None:
+        raise AssertionError(f"a line this reader cannot parse: {line!r}")
+    return match.group("name"), "".join(match.group("spec").split())
+
+
 def _parsed(path: Path) -> dict[str, str]:
     """canonical distribution name -> version specifier (possibly empty), for one requirements file.
-
-    The specifier excludes extras and the environment marker, so a comparison against a backend's
-    `SUPPORTED_VERSION_SPEC` answers about the VERSION RANGE and nothing else.
     """
     found: dict[str, str] = {}
     for line in _requirement_lines(path):
-        match = _REQUIREMENT_RE.match(line)
-        if match is None:  # pragma: no cover - a malformed line is a defect, not a state
-            raise AssertionError(f"{path.name} carries a line this reader cannot parse: {line!r}")
-        found[_canonical(match.group("name"))] = match.group("spec").strip()
+        try:
+            name, spec = _decompose(line)
+        except AssertionError as exc:
+            raise AssertionError(f"{path.name} carries {exc}") from None
+        found[_canonical(name)] = spec
     return found
 
 
@@ -186,33 +275,114 @@ class CitationTests(unittest.TestCase):
                     "reader following the pointer to decide whether a property is already covered "
                     "finds nothing")
 
+    @staticmethod
+    def _headings(rel: str) -> set[str]:
+        """The markdown headings of a document, EMPTY ONES DROPPED.
+
+        The empty one is not a detail. `docs/RUNBOOK.md` contains a line that is a bare `#`, so
+        the set held `""`, and the word-prefix rule below compares `words[:0] == []` against it —
+        true for every citation ever written. Measured in round 3's follow-up: a deliberately wrong
+        `§0-9` citation was accepted on the strength of that member, i.e. the whole row was
+        vacuous while its other probes passed. A family that can generate a degenerate member
+        answers nothing, and this is that member.
+        """
+        found = {
+            line.lstrip("#").strip()
+            for line in (REPO_ROOT / rel).read_text().splitlines()
+            if line.startswith("#")}
+        return {h for h in found if h}
+
+    #: A `§` pointer into a repository document. The first character class used to be `[A-Za-z]`,
+    #: which silently dropped every `§0-1` citation — and those are the MAJORITY form here, since
+    #: `docs/RUNBOOK.md`'s sections are numbered. Measured in round 3: a planted `§0-9` citation of
+    #: a section that does not exist was green, and `docs/RUNBOOK.md` contributed zero checked
+    #: citations while the row's "observes nothing" guard was satisfied by the DEVELOPMENT ones.
+    _CITATION_RE = re.compile(r"`(docs/[A-Za-z_/.]+\.md)` §([A-Za-z0-9][^`\n,;]*)")
+
+    def test_the_heading_reader_yields_no_empty_heading(self) -> None:
+        """The self-test for the degenerate member, driven on every document this file cites.
+
+        An empty heading makes the word-prefix comparison true for every possible citation, so
+        this row is what stands between the one below and being green by construction. Also
+        asserts the reader finds a heading at all: an empty SET would make every citation fail,
+        which is loud, but a set that is silently one member short is not.
+        """
+        for rel in sorted({rel for text in self._sources().values()
+                           for rel, _ in self._CITATION_RE.findall(text)}):
+            with self.subTest(document=rel):
+                headings = self._headings(rel)
+                self.assertTrue(headings, f"{rel} yielded no headings at all")
+                self.assertNotIn("", headings)
+                self.assertTrue(all(h.strip() for h in headings))
+
+    def test_the_heading_matcher_straddles_the_shapes_it_has_to_tell_apart(self) -> None:
+        """The family for `_headings_agree`, on synthetic headings.
+
+        Both directions in one table, because three successive versions of this rule were each
+        correct on one side and wrong on the other: the first missed numbered citations entirely,
+        the second refused `§0-1's` and `§0-1:`, the third refused `§0-1` followed by any prose
+        that was not the heading's own remainder. A member that could not have come out the other
+        way is not evidence, so every ACCEPT row below has a REFUSE row differing in one property.
+        """
+        runbook = _citation_words("0-1. Host prerequisites")
+        design = _citation_words("Design Policy")
+        setup = _citation_words("Fresh-machine setup")
+        cases = (
+            ("0-1", runbook, True),                       # the number alone
+            ("0-1's table is checked", runbook, True),     # a possessive, then prose
+            ("0-1: the section slice", runbook, True),     # a colon, then prose
+            ("0-1 short by one", runbook, True),           # prose that is not the remainder
+            ("0-1. Host prerequisites", runbook, True),    # the whole heading
+            ("0-9", runbook, False),                       # a section that does not exist
+            ("0-9 (\"Refused at startup", runbook, False),  # the same, with prose after it
+            ("0", runbook, False),                         # a prefix of the number is not it
+            ("Design Policy forbids a second copy", design, True),
+            ("Design", design, True),
+            ("Design Practice forbids", design, False),    # one word differs
+            ("Policy", design, False),                     # the heading's TAIL is not its name
+            ("Fresh-machine setup step 6", setup, True),
+            ("Fresh machine setup", setup, False),         # the hyphen is part of the word
+        )
+        for citation, heading, expected in cases:
+            with self.subTest(citation=citation, heading=" ".join(heading)):
+                self.assertEqual(
+                    _headings_agree(_citation_words(citation), heading), expected)
+        self.assertFalse(_headings_agree([], runbook), "an empty citation matches nothing")
+        self.assertFalse(_headings_agree(runbook, []), "an empty heading matches nothing")
+
     def test_every_document_heading_this_file_names_exists(self) -> None:
-        """Markdown headings are the other pointer kind these files hand a reader."""
-        headings = {
-            "docs/DEVELOPMENT.md": None,
-            "docs/RUNBOOK.md": None,
-            "docs/BACKEND_BOUNDARY.md": None,
-        }
-        for rel in headings:
-            headings[rel] = {
-                line.lstrip("#").strip()
-                for line in (REPO_ROOT / rel).read_text().splitlines()
-                if line.startswith("#")}
-        cited = set()
+        """Markdown headings are the other pointer kind these files hand a reader.
+
+        Two things this row must NOT do, both measured as defects in its first version:
+
+        * refuse a correct citation of a document it happens not to read. The first version kept a
+          three-entry dict and asserted membership, so citing `docs/ORCHESTRATION.md §Purpose` —
+          ordinary prose work — was a hard failure naming the citation as broken. Documents are
+          read on demand now, and one that does not exist is the only failure;
+        * miss a whole citation SHAPE. `§0-1` is the most common pointer in these files and was
+          invisible; a heading is matched on a normalized word prefix, so `§0-1` resolves against
+          `## 0-1. Host prerequisites` and `§0-9` does not resolve against anything.
+        """
+        cited: set[tuple[str, str]] = set()
         for text in self._sources().values():
-            cited.update(re.findall(r"`(docs/[A-Za-z_/.]+\.md)` §([A-Za-z][^`\n,.;]*)", text))
+            cited.update(self._CITATION_RE.findall(text))
         self.assertTrue(cited, "no document heading is cited any more; this row observes nothing")
+        by_document = {rel for rel, _ in cited}
+        self.assertGreaterEqual(
+            len(by_document), 2,
+            f"every checked citation points at one document ({by_document}); a citation SHAPE has "
+            "probably stopped being collected, which is how the numbered-section form went "
+            "unchecked before")
         for rel, citation in sorted(cited):
-            # A citation runs on into ordinary prose ("§Design Policy forbids ...", "§Fresh-machine
-            # setup step 6"), so what has to match is a WORD PREFIX of it, not the whole capture.
-            # Matching the whole capture reported two correct citations as broken.
-            words = citation.split()
             with self.subTest(citation=f"{rel} §{citation}"):
-                self.assertIn(rel, headings, f"this file cites {rel}, which this row does not read")
+                path = REPO_ROOT / rel
+                self.assertTrue(path.is_file(), f"this file cites {rel}, which does not exist")
+                words = _citation_words(citation)
+                headings = self._headings(rel)
                 self.assertTrue(
-                    any(words[:len(h.split())] == h.split() for h in headings[rel]),
+                    any(_headings_agree(words, _citation_words(h)) for h in headings),
                     f"this file cites {rel} §{citation!r}, whose leading words are not a heading "
-                    f"of that document (its headings: {sorted(headings[rel])})")
+                    f"of that document (its headings: {sorted(headings)})")
 
 
 class RequirementReaderTests(unittest.TestCase):
@@ -338,17 +508,46 @@ class _RunbookReaderMixin:
     #: Options that take a value, so the value is not a distribution name.
     _PIP_VALUE_OPTIONS = ("-r", "--requirement", "-c", "--constraint")
 
-    #: Every way this repository's documents could spell "run pip's install command". The first
-    #: version matched `pip install` alone, and a round-2 reviewer put
-    #: `python3 -m pip install PyYAML tree-sitter tree-sitter-fortran` into §0-1 — the unpinned
-    #: form the section exists to refuse — with every row still green, because the reader could
-    #: not see the command at all.
-    _PIP_INSTALL_PREFIXES = (
-        ("pip", "install"),
-        ("pip3", "install"),
-        ("python", "-m", "pip", "install"),
-        ("python3", "-m", "pip", "install"),
-    )
+    #: Words that may sit in front of an installer without changing what the line does. `#` is
+    #: NOT one: it opens a comment, and treating it as a preamble made the trailing comment on
+    #: `pip install -r requirements-dev.txt  # the two linters, plus pytest ...` parse as nine
+    #: distribution names.
+    _COMMAND_PREAMBLE = ("sudo", "$", ">")
+
+    #: An installer name, as a SHAPE rather than a table. Two tables have now failed here: the
+    #: first matched `pip install` alone and missed `python3 -m pip install`; the second listed
+    #: four spellings and round 3 walked past it six ways — `sudo pip install`,
+    #: `$ pip install` (the shell-prompt convention this repository's own blocks use),
+    #: `python3.10 -m pip install` (and `requirements.txt` records 3.10, so spelling the
+    #: interpreter version is the natural edit), `pip3.10 install`, `uv pip install` and
+    #: `pipenv install`. Enumerating spellings is the losing line: the rule is "some pip-shaped
+    #: installer", and that is what these two patterns say.
+    _PIP_EXECUTABLE_RE = re.compile(r"^(?:pip|pip\d+(?:\.\d+)?|uv|pipenv)$")
+    _PYTHON_EXECUTABLE_RE = re.compile(r"^python(?:\d+(?:\.\d+)?)?$")
+
+    #: Distributions a by-name install in §0-1 may name anyway: bootstrapping the installer itself
+    #: is not installing a dependency. `python3 -m pip install --upgrade pip` is the single most
+    #: common preamble to installing from a requirements file, PR-3's CI step is written with it,
+    #: and the refusal below rejected it as a by-name install. An explicit allowlist rather than a
+    #: pattern, so a new exemption is a line someone has to read and add.
+    _BOOTSTRAP_DISTRIBUTIONS = frozenset({"pip", "setuptools", "wheel", "uv"})
+
+    @classmethod
+    def _installer_arguments(cls, words: list[str]) -> list[str] | None:
+        """`words` with any installer prefix removed, or None if it is not an install command."""
+        while words and words[0] in cls._COMMAND_PREAMBLE:
+            words = words[1:]
+        if cls._PYTHON_EXECUTABLE_RE.match(words[0] if words else "") and words[1:2] == ["-m"]:
+            words = words[2:]
+        if len(words) >= 2 and cls._PIP_EXECUTABLE_RE.match(words[0]):
+            rest = words[1:]
+            # `uv pip install` / `uv run pip install`: the installer word may be followed by
+            # another before `install`.
+            while rest and rest[0] != "install" and cls._PIP_EXECUTABLE_RE.match(rest[0]):
+                rest = rest[1:]
+            if rest[:1] == ["install"]:
+                return rest[1:]
+        return None
 
     @classmethod
     def _pip_install_lines(cls, block: str) -> list[tuple[list[str], list[str]]]:
@@ -363,12 +562,10 @@ class _RunbookReaderMixin:
         """
         found = []
         for line in block.splitlines():
-            words = line.strip().split()
-            for prefix in cls._PIP_INSTALL_PREFIXES:
-                if tuple(words[:len(prefix)]) == prefix:
-                    words = words[len(prefix):]
-                    break
-            else:
+            # A shell comment ends the command. Same boundary rule as `_effective_lines`.
+            line = re.split(r"(?:^|\s)#", line, maxsplit=1)[0]
+            words = cls._installer_arguments(line.strip().split())
+            if words is None:
                 continue
             arguments: list[str] = []
             includes: list[str] = []
@@ -459,8 +656,10 @@ class RuntimeRequirementsTests(_RunbookReaderMixin, unittest.TestCase):
             "docs/RUNBOOK.md §0-1 no longer carries any pip install command at all; this check "
             "and the pinned-install one below both stop observing anything")
         for arguments, _ in commands:
+            named = [a for a in arguments
+                     if _canonical(a) not in self._BOOTSTRAP_DISTRIBUTIONS]
             self.assertEqual(
-                [], arguments,
+                [], named,
                 "a pip install command in docs/RUNBOOK.md §0-1 names distributions instead of "
                 f"installing from requirements.txt (arguments: {arguments}). Two of the three "
                 "versions are measured; a by-name install resolves whatever is current.")
@@ -503,12 +702,25 @@ class RuntimeRequirementsTests(_RunbookReaderMixin, unittest.TestCase):
         self.assertEqual(
             self._pip_install_lines("pip install --requirement=requirements.txt\n"),
             [([], ["requirements.txt"])])
-        for spelling in ("pip3 install", "python -m pip install", "python3 -m pip install"):
+        spellings = (
+            "pip3 install", "python -m pip install", "python3 -m pip install",
+            # every one of these walked past the previous version's four-entry table
+            "sudo pip install", "$ pip install", "python3.10 -m pip install",
+            "pip3.10 install", "uv pip install", "pipenv install",
+            "sudo python3 -m pip install", "sudo pip3.10 install",
+        )
+        for spelling in spellings:
             with self.subTest(spelling=spelling):
                 self.assertEqual(
                     self._pip_install_lines(f"{spelling} PyYAML tree-sitter\n"),
                     [(["PyYAML", "tree-sitter"], [])])
-        for not_a_command in ("pipx install ruff\n", "npm install pip\n", "install pip\n"):
+        for not_a_command in (
+                "pipx install ruff\n",        # a different installer, with its own rules
+                "npm install pip\n",
+                "install pip\n",
+                "sudo apt-get install cppcheck\n",
+                "pip download PyYAML\n",      # pip, but not install
+                "grep 'pip install' docs\n"):  # a mention inside another command
             with self.subTest(not_a_command=not_a_command):
                 self.assertEqual(self._pip_install_lines(not_a_command), [])
         for prose in (
@@ -723,6 +935,28 @@ class DevelopmentSetupBlockTests(unittest.TestCase):
             "range written there to the backend that declares it, so it can tell a developer to "
             "install a build the launch probe refuses (measured on PR #125, on the sibling line "
             "in docs/RUNBOOK.md). State it in requirements-dev.txt, which is checked.")
+
+    def test_the_setup_block_installs_no_package_by_name(self) -> None:
+        """The other half of the same rule, in the other document.
+
+        The no-range row above refuses a version CONSTRAINT and says nothing about a by-name
+        install — so `pip install -U tree-sitter tree-sitter-fortran` inside the step 6 fence was
+        green (measured, round 3). `-U` defeats the pin `requirements-dev.txt` pulls in through its
+        include, and the outcome is the one §0-1's identical refusal exists to prevent: a developer
+        on an unmeasured grammar. §0-1 refused it and this block did not, which is the shape a
+        rule stated in one place and enforced in another always takes.
+        """
+        for block in self._setup_blocks(self._document()):
+            for arguments, _ in RuntimeRequirementsTests._pip_install_lines(block):
+                named = [a for a in arguments
+                         if _canonical(a) not in
+                         RuntimeRequirementsTests._BOOTSTRAP_DISTRIBUTIONS]
+                self.assertEqual(
+                    [], named,
+                    "a pip install command in docs/DEVELOPMENT.md §Fresh-machine setup step 6 "
+                    f"names distributions instead of installing from a requirements file "
+                    f"(arguments: {arguments}); that resolves whatever version is current, which "
+                    "is what installing from the file exists to avoid.")
 
     def test_the_block_finder_is_bounded_to_the_block(self) -> None:
         """The over-refusal probe and the self-test, on a synthetic document.
