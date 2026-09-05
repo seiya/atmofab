@@ -41,8 +41,7 @@
     "docs/DEVELOPMENT.md": {
       "fortran": 1,
       "linter-cppcheck": 1,
-      "linter-fortitude": 2,
-      "linter-ruff": 1
+      "linter-fortitude": 1
     },
     "docs/GLOSSARY.md": {
       "fortran": 4,

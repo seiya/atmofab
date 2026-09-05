@@ -1,0 +1,17 @@
+# What running the TEST SUITE needs, on top of `requirements.txt`. `docs/DEVELOPMENT.md` §Setup
+# step 6 is canonical for WHY this is a wider set than a workflow run's: each `static lint`
+# backend's tests drive the real tool and deliberately FAIL rather than skip when it is absent.
+#
+# The linter ranges below are the backends' own `SUPPORTED_VERSION_SPEC` strings, character for
+# character; `tools/tests/test_dependency_declaration.py` compares them to the declarations, so
+# this file cannot drift into telling a developer to install a build the launch probe refuses.
+# `cppcheck` is not here: it is a system package (`apt-get install cppcheck`), not a
+# distribution pip can install. Its range lives in `tools/backends/linter/cppcheck/lint.py`
+# and in `docs/RUNBOOK.md` §0-1.
+
+-r requirements.txt
+
+pytest
+
+fortitude-lint>=0.8,<0.10
+ruff>=0.14,<0.17

@@ -38,6 +38,13 @@ pip install PyYAML tree-sitter tree-sitter-fortran
 | `tree-sitter` | the parser runtime behind `tools/backends/language/fortran/structure.py` |
 | `tree-sitter-fortran` | the Fortran grammar the three `problem` model gates read structure through (written against 0.6.0) |
 
+The versions this repository was measured with are declared in `requirements.txt`, so the
+equivalent of the line above that installs them is:
+
+```
+pip install -r requirements.txt
+```
+
 They are needed by the HOST that runs the conductor, because `Generate.gate`'s static check runs
 `python3 tools/validate_pipeline_semantics.py` there; no leaf needs them. Without them that gate
 cannot read a Fortran source at all and fails closed — correctly, but only after lint and syntax
