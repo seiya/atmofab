@@ -14,8 +14,8 @@ error classes the retired post_generate text heuristics used to mimic.
 import importlib.util
 import io
 import json
-import re
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -1310,6 +1310,7 @@ class RpcFramingTests(unittest.TestCase):
         self.assertIsNone(code)
         self.assertIsInstance(escaped, ValueError)
         self.assertNotIsInstance(escaped, json.JSONDecodeError)
+        self.assertEqual(responses, [], "nothing may be answered before the escape")
 
     def test_record_a_json_value_that_is_not_an_object_is_skipped_silently(self) -> None:
         """RECORD. `main` drops a non-dict message and reads the next one, with no reply and no
@@ -1439,12 +1440,11 @@ class RequestDispatchTests(unittest.TestCase):
         asserts is that the client can tell it from a pass: `isError` is True, the reason is
         carried, and the response is NOT a successful result with data in it.
         """
-        with mock.patch.dict(os.environ, {"ATMOFAB_WORKFLOW_MODE": "1"}, clear=False):
-            with tempfile.TemporaryDirectory() as tmp:
-                response = self.mod._handle_request({
-                    "jsonrpc": "2.0", "id": 7, "method": "tools/call",
-                    "params": {"name": "run_syntax_check",
-                               "arguments": {"project_dir": tmp}}})
+        with mock.patch.dict(os.environ, {"ATMOFAB_WORKFLOW_MODE": "1"}, clear=False), \
+                tempfile.TemporaryDirectory() as tmp:
+            response = self.mod._handle_request({
+                "jsonrpc": "2.0", "id": 7, "method": "tools/call",
+                "params": {"name": "run_syntax_check", "arguments": {"project_dir": tmp}}})
         result = response["result"]
         self.assertIs(result["isError"], True, "a capability-gate refusal must not look like a pass")
         detail = result["structuredContent"]["error"]
@@ -1600,7 +1600,15 @@ class McpCallClientTests(unittest.TestCase):
         return subprocess.run(
             [sys.executable, "mcp_servers/mcp_call.py", "--tool", tool,
              "--args-json", json.dumps(args)],
-            cwd=self.REPO_ROOT, env=env, capture_output=True, text=True, timeout=120)
+            cwd=self.REPO_ROOT, env=env, capture_output=True, text=True,
+            # Bounded well under the time a served call takes (~1s measured), because the client
+            # BLOCKS rather than fails when the server's framing breaks: `_read_message` waits on
+            # `readline()`, and a `_write_message` that stops emitting a newline leaves it waiting
+            # for a line that never ends. Measured — that mutation turned this class into a hang
+            # long enough to time the whole mutation sweep out. A generous timeout here buys
+            # nothing and hides that.
+            timeout=30,
+            check=False)  # the return code IS the subject of these rows
 
     def test_a_capability_gate_refusal_comes_back_as_a_nonzero_exit_and_a_message(self) -> None:
         """The end-to-end the skills actually run, and the property they rely on.
@@ -1659,7 +1667,7 @@ class McpCallClientTests(unittest.TestCase):
                 [sys.executable, str(self.REPO_ROOT / "mcp_servers" / "mcp_call.py"),
                  "--tool", "detect_build_system",
                  "--args-json", json.dumps({"project_dir": tmp})],
-                cwd=tmp, env=env, capture_output=True, text=True, timeout=120)
+                cwd=tmp, env=env, capture_output=True, text=True, timeout=30, check=False)
         self.assertNotEqual(done.returncode, 0)
 
     def test_the_documents_that_teach_this_client_still_name_it(self) -> None:
