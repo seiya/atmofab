@@ -18,20 +18,34 @@
 # Cython 3; not run here, so this is the reason for the floor rather than a measured fact), so the
 # installed value is not a pinnable one.
 #
-# What IS measured, in the primary checkout at this branch: the whole suite under `PyYAML==6.0.3`
-# installed into a scratch `--target` and put ahead on `PYTHONPATH` — 5793 passed, 3039 subtests,
-# 0 skipped, 0 failed. So the floor's range is covered end to end by a run rather than by a
-# survey of release notes. The cap is `<7`, because 7 does not exist and therefore has not been
-# measured, and this file's rule is that installing from it reproduces a measured machine.
+# What IS measured: AT COMMIT 02f0b19, in the primary checkout, the whole suite under
+# `PyYAML==6.0.3` installed into a scratch `--target` and put ahead on `PYTHONPATH` — 5793 passed,
+# 3039 subtests, 0 skipped, 0 failed. The revision is part of the record because the suite grows:
+# a later commit collects more, and without a revision this sentence reads as a claim about the
+# current tree and is wrong by however many tests have been added since. The 5.4.1 end of the
+# range is covered by the ordinary suite on the development host, which carries that build.
+# The cap is `<7`, because 7 does not exist and therefore has not been measured, and this file's
+# rule is that installing from it reproduces a measured machine.
 #
-# One correction to the reason an earlier version of this comment gave. It said "every one of its
-# YAML reads is `yaml.safe_load` (20 call sites, 0 bare `yaml.load`)". Re-measured at 738fca4 by
-# walking every `*.py` with `os.walk`: 19 `yaml.safe_load`, 0 bare `yaml.load`, and one further
-# read that is neither — `tools/llm_config.py:788`, `yaml.load(text, Loader=_NoDuplicateKeyLoader)`
-# over a `yaml.SafeLoader` subclass that installs its own mapping constructor. That reader depends
-# on PyYAML's EXTENSION surface (`SafeLoader` subclassing, `construct_mapping`,
-# `resolver.BaseResolver.DEFAULT_MAPPING_TAG`), which a `yaml.load`-spelling survey does not cover
-# at all — which is why the justification is now the suite run above and not the survey.
+# Two corrections to the reason an earlier version of this comment gave. It said "every one of its
+# YAML reads is `yaml.safe_load` (20 call sites, 0 bare `yaml.load`)".
+#
+# (1) The COUNT is dropped rather than corrected. Three independent re-measurements at 738fca4
+# returned 19, 23 and 14 — and all three are right, because they counted different things: textual
+# `yaml.safe_load` occurrences over every `*.py`, every AST call to an attribute named `safe_load`
+# including indirect receivers (`_require_yaml().safe_load(...)`), and textual `yaml.safe_load(`
+# with the paren. A number whose value depends that much on an unstated method is not a
+# reproducible record, so what is stated here is the PROPERTY instead, with its method: walking
+# every `*.py` with `os.walk` at 738fca4, THE TREE CONTAINS NO BARE `yaml.load` — every call
+# passes a `Loader=`. That is the half the 5.x -> 6.x break is about, and it is the half all three
+# measurements agreed on.
+#
+# (2) The property was not sufficient anyway. There is one read that is not `safe_load` —
+# `tools/llm_config.py:788`, `yaml.load(text, Loader=_NoDuplicateKeyLoader)` over a
+# `yaml.SafeLoader` subclass installing its own mapping constructor — and it depends on PyYAML's
+# EXTENSION surface (`SafeLoader` subclassing, `construct_mapping`,
+# `resolver.BaseResolver.DEFAULT_MAPPING_TAG`), which no survey of `yaml.load` spellings looks at.
+# That is why the justification above is a suite run and not a survey.
 PyYAML>=5.4,<7
 
 # PINS. Both values come from `MEASURED_PACKAGE_VERSIONS` in

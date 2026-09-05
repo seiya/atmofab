@@ -1,4 +1,4 @@
-# What running the TEST SUITE needs, on top of `requirements.txt`. `docs/DEVELOPMENT.md` §Setup
+# What running the TEST SUITE needs, on top of `requirements.txt`. `docs/DEVELOPMENT.md` §Fresh-machine setup
 # step 6 is canonical for WHY this is a wider set than a workflow run's: each `static lint`
 # backend's tests drive the real tool and deliberately FAIL rather than skip when it is absent.
 #
@@ -6,7 +6,7 @@
 # character; `tools/tests/test_dependency_declaration.py` compares them to the declarations, so
 # this file cannot drift into telling a developer to install a build the launch probe refuses.
 # The third linter backend is absent because it is a system package rather than a distribution pip
-# can install; `docs/DEVELOPMENT.md` §Setup step 6 carries its apt line, and its range lives in its
+# can install; `docs/DEVELOPMENT.md` §Fresh-machine setup step 6 carries its apt line, and its range lives in its
 # own backend beside the two below.
 
 -r requirements.txt

@@ -12,9 +12,9 @@ compared against a source that already decides the question —
     already fails legibly at launch, so it carries no reason code);
   * each `linter` backend's `SUPPORTED_VERSION_SPEC` — the range the launch probe accepts, and
     the range `docs/RUNBOOK.md` §0-1's table is checked against by
-    `test_host_prerequisites.LinterVersionRangeTests`.
+    `test_host_prerequisites.RunbookVersionRangeTests`.
 
-The knot the third bullet ties is new: before this file, `docs/DEVELOPMENT.md` §Setup step 6 spelt
+The knot the third bullet ties is new: before this file, `docs/DEVELOPMENT.md` §Fresh-machine setup step 6 spelt
 those two linter ranges in an install line that NO test read, so it could tell a developer to
 install a build the launch probe refuses. That line now points at `requirements-dev.txt`, and this
 file is what holds it.
@@ -145,6 +145,76 @@ def _parsed(path: Path) -> dict[str, str]:
     return found
 
 
+class CitationTests(unittest.TestCase):
+    """The pointers this file's own prose hands a reader, resolved.
+
+    Round 2 measured why this class exists: five docstrings and comments here named a sibling
+    class `LinterVersionRangeTests` — written here without its module, because with one it would
+    read as a citation and this row would refuse its own explanation — as the checker of the
+    runbook's linter version ranges. No such class exists; the real one is
+    `RunbookVersionRangeTests`. The behaviour described was accurate; the name a reader would go
+    and look up was not, in every place it appeared. Four more citations in these files named a
+    `docs/DEVELOPMENT.md` section that does not exist either (`§Setup`; the real heading is
+    `## Fresh-machine setup`).
+
+    A wrong pointer is not a style matter. It is what a maintainer follows to decide whether a
+    property is already covered, and both of these were written by me in the same commits that
+    claimed to be knotting statements to their authorities. `atmofab-enforcement-change` rule 3
+    says to execute a sentence right after writing it; a citation is executable, and this is the
+    execution.
+    """
+
+    def _sources(self) -> dict[str, str]:
+        return {
+            rel: (REPO_ROOT / rel).read_text()
+            for rel in ("tools/tests/test_dependency_declaration.py", "requirements.txt",
+                        "requirements-dev.txt")}
+
+    def test_every_sibling_test_class_this_file_names_exists(self) -> None:
+        import test_host_prerequisites  # noqa: PLC0415 - imported only to resolve the citations
+
+        cited = set()
+        for text in self._sources().values():
+            cited.update(re.findall(
+                r"test_host_prerequisites\.([A-Z][A-Za-z0-9_]*)\b", text))
+        self.assertTrue(cited, "no sibling class is cited any more; this row observes nothing")
+        for name in sorted(cited):
+            with self.subTest(name=name):
+                self.assertTrue(
+                    hasattr(test_host_prerequisites, name),
+                    f"this file cites test_host_prerequisites.{name}, which does not exist; a "
+                    "reader following the pointer to decide whether a property is already covered "
+                    "finds nothing")
+
+    def test_every_document_heading_this_file_names_exists(self) -> None:
+        """Markdown headings are the other pointer kind these files hand a reader."""
+        headings = {
+            "docs/DEVELOPMENT.md": None,
+            "docs/RUNBOOK.md": None,
+            "docs/BACKEND_BOUNDARY.md": None,
+        }
+        for rel in headings:
+            headings[rel] = {
+                line.lstrip("#").strip()
+                for line in (REPO_ROOT / rel).read_text().splitlines()
+                if line.startswith("#")}
+        cited = set()
+        for text in self._sources().values():
+            cited.update(re.findall(r"`(docs/[A-Za-z_/.]+\.md)` §([A-Za-z][^`\n,.;]*)", text))
+        self.assertTrue(cited, "no document heading is cited any more; this row observes nothing")
+        for rel, citation in sorted(cited):
+            # A citation runs on into ordinary prose ("§Design Policy forbids ...", "§Fresh-machine
+            # setup step 6"), so what has to match is a WORD PREFIX of it, not the whole capture.
+            # Matching the whole capture reported two correct citations as broken.
+            words = citation.split()
+            with self.subTest(citation=f"{rel} §{citation}"):
+                self.assertIn(rel, headings, f"this file cites {rel}, which this row does not read")
+                self.assertTrue(
+                    any(words[:len(h.split())] == h.split() for h in headings[rel]),
+                    f"this file cites {rel} §{citation!r}, whose leading words are not a heading "
+                    f"of that document (its headings: {sorted(headings[rel])})")
+
+
 class RequirementReaderTests(unittest.TestCase):
     """The readers themselves, on synthetic input where the answer is not "nothing".
 
@@ -212,13 +282,13 @@ class _RunbookReaderMixin:
     """Reading `docs/RUNBOOK.md` §0-1: the section slice, its tables, its install commands.
 
     One reader shared by the classes below rather than one per class — the sibling
-    `test_host_prerequisites.LinterVersionRangeTests` reads the same document for the linter table,
+    `test_host_prerequisites.RunbookVersionRangeTests` reads the same document for the linter table,
     and a second extractor with different termination semantics is what this file exists to avoid
     inventing.
     """
 
     #: The §0-1 table this check owns, found by its own header rather than by position — the form
-    #: `test_host_prerequisites.LinterVersionRangeTests` uses for the linter table in the same
+    #: `test_host_prerequisites.RunbookVersionRangeTests` uses for the linter table in the same
     #: document, so this file does not invent a second table reader.
     _PACKAGE_TABLE_HEADER = "| package | purpose |"
 
@@ -601,7 +671,7 @@ class MeasuredVersionTests(_RunbookReaderMixin, unittest.TestCase):
 
 
 class DevelopmentSetupBlockTests(unittest.TestCase):
-    """`docs/DEVELOPMENT.md` §Setup step 6's install block states no version range.
+    """`docs/DEVELOPMENT.md` §Fresh-machine setup step 6's install block states no version range.
 
     The property this branch bought and nothing was holding. Before it, that block spelt
     `pipx install \'fortitude-lint>=0.8,<0.10\'` and `pipx install \'ruff>=0.14,<0.17\'` and NO test
@@ -649,7 +719,7 @@ class DevelopmentSetupBlockTests(unittest.TestCase):
                  for c in _VERSION_CONSTRAINT_RE.findall(block)]
         self.assertEqual(
             [], found,
-            "docs/DEVELOPMENT.md §Setup step 6 states a version range again. Nothing compares a "
+            "docs/DEVELOPMENT.md §Fresh-machine setup step 6 states a version range again. Nothing compares a "
             "range written there to the backend that declares it, so it can tell a developer to "
             "install a build the launch probe refuses (measured on PR #125, on the sibling line "
             "in docs/RUNBOOK.md). State it in requirements-dev.txt, which is checked.")
@@ -713,7 +783,7 @@ class DevRequirementsTests(unittest.TestCase):
     def _declared_ranges(self) -> dict[str, str]:
         """backend id -> `SUPPORTED_VERSION_SPEC`, for every implemented linter that lints.
 
-        The sibling `test_host_prerequisites.LinterVersionRangeTests._declared_ranges` asks the
+        The sibling `test_host_prerequisites.RunbookVersionRangeTests._declared_ranges` asks the
         same question with `backend_ids`; this one asks `implemented_backend_ids`, so a linter that
         is DECLARED but whose package has not been extracted is outside this file rather than
         inside it with no module to import. The two answers are identical on this tree
@@ -751,7 +821,7 @@ class DevRequirementsTests(unittest.TestCase):
     def test_every_pip_installable_linter_range_is_the_range_its_backend_declares(self) -> None:
         """Character for character, in both directions.
 
-        This is the coverage `docs/DEVELOPMENT.md` §Setup step 6 did not have: its two `pipx
+        This is the coverage `docs/DEVELOPMENT.md` §Fresh-machine setup step 6 did not have: its two `pipx
         install '<name><range>'` lines spelt these ranges and no test read them, so they could
         drift out of the declared range exactly the way `docs/RUNBOOK.md`'s install line did
         (measured on PR #125). Step 6 now points at this file instead.
