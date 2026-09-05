@@ -4144,8 +4144,10 @@ class RunWorkflowTests(unittest.TestCase):
         MID-RUN. Without this the run does not fail at launch: it fails at the first `Generate`
         node's gate, after lint and syntax have passed, in a billed run, and terminalizes —
         because an absent Fortran structure front end is fail-closed by design. The failure is
-        correct and the timing is not. Nothing in this repository installs these packages, so a
-        machine that satisfies the RUNBOOK today does not have them (Codex review).
+        correct and the timing is not. This check was written when nothing in the repository
+        installed these packages at all (Codex review); `requirements.txt` now declares them, and
+        the check stays because a declaration is not an installation — a host that never ran
+        `pip install -r requirements.txt` reaches exactly the state above.
 
         The message must carry the DISTRIBUTION names, since `tree_sitter_fortran` is not what an
         operator types into pip."""
@@ -4187,7 +4189,19 @@ class RunWorkflowTests(unittest.TestCase):
         self.assertEqual(payload.get("reason"), "missing_required_python_modules")
         self.assertEqual(payload.get("missing"), ["tree-sitter-fortran"])
         self.assertIn("tree-sitter", payload.get("required", []))
-        self.assertIn("pip install tree-sitter-fortran", payload.get("detail", ""))
+        detail = payload.get("detail", "")
+        self.assertIn("tree-sitter-fortran", detail,
+                      "the message no longer names the missing distribution")
+        # The REMEDY, and it is the half that was wrong. This message is the only install
+        # instruction most operators meet, so a by-name remedy here contradicts
+        # `docs/RUNBOOK.md` §0-1 ("Install from the file, not from the names") at exactly the
+        # moment the operator is acting on it — and two of the three versions are measured, so
+        # following it lands them on a grammar nothing in this repository has driven.
+        self.assertIn("pip install -r requirements.txt", detail)
+        self.assertNotIn(
+            "pip install tree-sitter", detail,
+            "the launch refusal tells the operator to install by NAME; that resolves whatever "
+            "version is current and contradicts docs/RUNBOOK.md §0-1")
 
     def test_main_fails_fast_when_a_required_host_tool_is_missing(self) -> None:
         """The third family, and the one issue #109 reproduced: the executables the run's own

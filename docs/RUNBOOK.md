@@ -29,14 +29,23 @@ table is checked later, by `preflight`, still before the first leaf.
 The host interpreter needs these packages, which this repository does not install for you:
 
 ```
-pip install PyYAML tree-sitter tree-sitter-fortran
+pip install -r requirements.txt
 ```
 
 | package | purpose |
 |---|---|
 | `PyYAML` | every host-side reader of `spec.ir.yaml` and of the leaf-`LLM` configuration |
-| `tree-sitter` | the parser runtime behind `tools/backends/language/fortran/structure.py` |
-| `tree-sitter-fortran` | the Fortran grammar the three `problem` model gates read structure through (written against 0.6.0) |
+| `tree-sitter` | the parser runtime behind `tools/backends/language/fortran/structure.py` (measured at 0.26.0) |
+| `tree-sitter-fortran` | the Fortran grammar the three `problem` model gates read structure through (measured at, and written against, 0.6.0) |
+
+**Install from the file, not from the names.** The two versions in the table are a measured
+property of this repository, not a free choice: they are `MEASURED_PACKAGE_VERSIONS` in the module
+the table names above, which is the single definition this table, `requirements.txt` and that
+module's own grammar refusal are all checked against, and a bump is accepted only after re-running
+`tools/backends/language/fortran/structure_differential.py` (both halves). Typing the three names
+instead resolves whatever is newest, and the `Generate.gate` structure read that follows has then
+not been measured on what it is running. `requirements.txt` says, per line, whether the value is a
+pin or a floor and why.
 
 They are needed by the HOST that runs the conductor, because `Generate.gate`'s static check runs
 `python3 tools/validate_pipeline_semantics.py` there; no leaf needs them. Without them that gate

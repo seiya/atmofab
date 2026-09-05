@@ -1,5 +1,8 @@
 {
   "token_counts": {
+    ".gitignore": {
+      "linter-fortitude": 3
+    },
     "AGENTS.md": {
       "compiler-driver": 4,
       "fortran": 3
@@ -41,8 +44,7 @@
     "docs/DEVELOPMENT.md": {
       "fortran": 1,
       "linter-cppcheck": 1,
-      "linter-fortitude": 2,
-      "linter-ruff": 1
+      "linter-fortitude": 1
     },
     "docs/GLOSSARY.md": {
       "fortran": 4,
@@ -212,6 +214,13 @@
       "fortran-standard": 1,
       "make-control-file": 1
     },
+    "requirements-dev.txt": {
+      "linter-fortitude": 1,
+      "linter-ruff": 1
+    },
+    "requirements.txt": {
+      "fortran": 2
+    },
     "skills/spec-input-check/SKILL.md": {
       "fortran": 1
     },
@@ -357,7 +366,7 @@
     "tools/workflow_conductor.py": {
       "compiler-driver": 20,
       "compiler-syntax-only": 2,
-      "fortran": 71,
+      "fortran": 70,
       "fortran-implicit-none": 1,
       "fortran-kind": 1,
       "fortran-module-file": 4,

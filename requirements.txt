@@ -1,0 +1,60 @@
+# Runtime dependencies of the HOST that runs the conductor. Authority for what belongs here is
+# the package table in `docs/RUNBOOK.md` §0-1 ("Refused at startup —
+# missing_required_python_modules"); `tools/tests/test_dependency_declaration.py` checks this
+# file against it in both directions. No leaf needs any of these.
+#
+# Versions: a pin is a value MEASURED on the development host and recorded here, so a second
+# machine installing from this file becomes the machine the measurements were taken on. A floor
+# is used only where a pin is not installable; the comment then says why the floor is enough.
+#
+# Supported Python: 3.10. That is the interpreter every measurement in this repository was taken
+# on. It is recorded here rather than as `python_requires` metadata because this repository is not
+# a distributed artifact (`AGENTS.md` §Development premises), so there is no package to carry the
+# field. NOTHING ENFORCES IT at this revision: it is a record of where the measurements come from,
+# and the CI that would run the suite on that interpreter is a later PR of GitHub issue #161.
+
+# FLOOR WITH A CAP, and the cap is the honest end of the measurement. The development host carries
+# 5.4.1 from apt and pip does not reproduce it on Python 3.10 (the 5.4.1 sdist builds against
+# Cython 3; not run here, so this is the reason for the floor rather than a measured fact), so the
+# installed value is not a pinnable one.
+#
+# What IS measured: AT COMMIT 02f0b19, in the primary checkout, the whole suite under
+# `PyYAML==6.0.3` installed into a scratch `--target` and put ahead on `PYTHONPATH` — 5793 passed,
+# 3039 subtests, 0 skipped, 0 failed, which is every test that commit collects. The revision is
+# part of the record because the suite grows: 02f0b19 collects 5793, and later commits of the same
+# branch collect 5797, 5799, 5801, 5804 and 5807. Without a revision this sentence reads as a
+# claim about the current tree and is wrong by however many tests have been added since — and a
+# reader cannot then tell "tests were added" from "tests regressed", which is the one thing it is
+# here to let them do. The 5.4.1 end of the
+# range is covered by the ordinary suite on the development host, which carries that build.
+# The cap is `<7`, because 7 does not exist and therefore has not been measured, and this file's
+# rule is that installing from it reproduces a measured machine.
+#
+# Two corrections to the reason an earlier version of this comment gave. It said "every one of its
+# YAML reads is `yaml.safe_load` (20 call sites, 0 bare `yaml.load`)".
+#
+# (1) The COUNT is dropped rather than corrected. Three independent re-measurements at 738fca4
+# returned 19, 23 and 14 — and all three are right, because they counted different things: textual
+# `yaml.safe_load` occurrences over every `*.py`, every AST call to an attribute named `safe_load`
+# including indirect receivers (`_require_yaml().safe_load(...)`), and textual `yaml.safe_load(`
+# with the paren. A number whose value depends that much on an unstated method is not a
+# reproducible record, so what is stated here is the PROPERTY instead, with its method: walking
+# every `*.py` with `os.walk` at 738fca4, THE TREE CONTAINS NO BARE `yaml.load` — every call
+# passes a `Loader=`. That is the half the 5.x -> 6.x break is about, and it is the half all three
+# measurements agreed on.
+#
+# (2) The property was not sufficient anyway. There is one read that is not `safe_load` —
+# `tools/llm_config.py:788`, `yaml.load(text, Loader=_NoDuplicateKeyLoader)` over a
+# `yaml.SafeLoader` subclass installing its own mapping constructor — and it depends on PyYAML's
+# EXTENSION surface (`SafeLoader` subclassing, `construct_mapping`,
+# `resolver.BaseResolver.DEFAULT_MAPPING_TAG`), which no survey of `yaml.load` spellings looks at.
+# That is why the justification above is a suite run and not a survey.
+PyYAML>=5.4,<7
+
+# PINS. Both values come from `MEASURED_PACKAGE_VERSIONS` in
+# `tools/backends/language/fortran/structure.py` — the backend that depends on them, and the only
+# place that can answer what was measured — and `tools/tests/test_dependency_declaration.py`
+# compares these two lines against it, so they cannot drift apart. Do not edit either number here:
+# edit the constant, after re-running `structure_differential.py` (both halves).
+tree-sitter==0.26.0
+tree-sitter-fortran==0.6.0

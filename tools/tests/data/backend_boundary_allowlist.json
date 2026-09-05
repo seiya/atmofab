@@ -72,6 +72,30 @@
     [
       "leaf_config",
       "**/*.json"
+    ],
+    [
+      ".",
+      "requirements*.txt"
+    ],
+    [
+      ".",
+      ".gitignore"
+    ],
+    [
+      ".",
+      ".mcp.json"
+    ],
+    [
+      ".",
+      "pytest.ini"
+    ],
+    [
+      ".",
+      "LICENSE"
+    ],
+    [
+      ".github",
+      "**/*"
     ]
   ],
   "skill_backend_shape": "^skills/[^/]+/backends/([^/]+)/([^/]+)\\.md$",

@@ -242,7 +242,7 @@ class FrontEndUnavailableTests(unittest.TestCase):
                 fs.parse_view("subroutine s\\nend subroutine s\\n")
             except fs.FortranStructureUnavailableError as exc:
                 print("RAISED", fs.FORTRAN_STRUCTURE_UNAVAILABLE_MARKER in str(exc))
-                print("INSTALL", "pip install tree-sitter tree-sitter-fortran" in str(exc))
+                print("INSTALL", "pip install -r requirements.txt" in str(exc))
             else:
                 print("NO-RAISE")
         """))
@@ -395,8 +395,9 @@ class GrammarContractTests(unittest.TestCase):
         # procedures AND no errors, so every gate returns at its empty-envelope loop with nothing
         # to say — silent, which is the one outcome this module exists to prevent. `_load_parser`
         # asks the grammar directly and converts that into the unavailable error; this pins that
-        # the list it asks about is the list the code actually reads, which a docstring version
-        # pin cannot do (the repository declares no dependency manifest).
+        # the list it asks about is the list the code actually reads, which no version declaration
+        # can do — `requirements.txt` bounds the release number an install resolves, and the node
+        # type names are not a function of the release number this file could check.
         import tree_sitter_fortran
         from tree_sitter import Language
 

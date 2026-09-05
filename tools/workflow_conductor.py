@@ -279,8 +279,9 @@ GATE_FAILURE_ROUTING: dict[str, tuple[str, str]] = {
 # `static_frontend_unavailable` — the Fortran structure front end (`tools/backends/language/fortran/structure.py`,
 # tree-sitter) is not installed on the machine running the gate, so the three `problem` model gates
 # have nothing to read; no source the leaf can author changes that, and a warm retry would spend
-# the leaf's budget on a machine problem. The fix is `pip install tree-sitter tree-sitter-fortran`
-# on the host, then a resume.
+# the leaf's budget on a machine problem. The fix is `pip install -r requirements.txt` on the host
+# — from the FILE, because the two versions are measured (`MEASURED_PACKAGE_VERSIONS`) — then a
+# resume.
 # A terminal category dominates any co-occurring warm-retry category in classify_gate_failure.
 # `host_rendered_lint_findings` / `host_authored_artifact_violation` — the finding's SUBJECT is a
 # file this repository authors, not the leaf: the runner glue this host renders, or the build

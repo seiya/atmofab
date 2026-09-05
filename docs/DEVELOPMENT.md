@@ -28,16 +28,38 @@ A fresh clone needs the host tools and the operator's own CLI state. Every file 
 | 5 | The sandbox runtime | `docs/BWRAP_ENABLEMENT.md` |
 | 6 | **To run the TEST SUITE** — every `static lint` tool, not only the one this tree's nodes select | this section, below |
 
-**Step 6 is a DEVELOPER requirement and it disagrees with step 1 on purpose.** `docs/RUNBOOK.md` §0-1 is written for someone running a workflow, and it says in as many words that an operator installs `fortitude` and neither of the other two — correct, because the linter a run selects follows from its `toolchain.language` and every node in this tree is `fortran`. The SUITE is a different question: each linter backend's tests drive the real tool and deliberately FAIL rather than skip when it is absent, because a machine without the tool cannot certify anything and a green suite there would report that a gate is fine when nothing ran it (`.claude/skills/atmofab-enforcement-change` judgment rule 2). So a fresh clone that installs only what §0-1 lists gets a red suite whose message points back at §0-1. Install all three:
+**Step 6 is a DEVELOPER requirement and it disagrees with step 1 on purpose.** `docs/RUNBOOK.md` §0-1 is written for someone running a workflow, and it says in as many words that an operator installs `fortitude` and neither of the other two — correct, because the linter a run selects follows from its `toolchain.language` and every node in this tree is `fortran`. The SUITE is a different question: each linter backend's tests drive the real tool and deliberately FAIL rather than skip when it is absent, because a machine without the tool cannot certify anything and a green suite there would report that a gate is fine when nothing ran it (`.claude/skills/atmofab-enforcement-change` judgment rule 2). So a fresh clone that installs only what §0-1 lists gets a red suite whose message points back at §0-1. Install all three — two of them from the dev requirements file:
 
 ```
-pipx install 'fortitude-lint>=0.8,<0.10'   # the one a run selects; see docs/RUNBOOK.md §0-1
-pipx install 'ruff>=0.14,<0.17'            # tools/tests/test_linter_ruff.py
-sudo apt-get install cppcheck              # tools/tests/test_linter_cppcheck.py (>=2.7,<2.18)
+pip install -r requirements-dev.txt        # the two pip-installable linters, plus pytest and the
+                                           # runtime dependencies the suite imports
+sudo apt-get install cppcheck              # tools/tests/test_linter_cppcheck.py
 ```
 
-The ranges are the backends' own `SUPPORTED_VERSION_SPEC`; `docs/RUNBOOK.md` §0-1 carries the
-table and is checked against the declarations by `tools/tests/test_host_prerequisites.py`.
+Nothing above states a version range, and that is the point: the ranges are the backends' own
+`SUPPORTED_VERSION_SPEC`, and the two places that DO spell them are both checked against the
+declarations — `requirements-dev.txt` by `tools/tests/test_dependency_declaration.py`, and
+`docs/RUNBOOK.md` §0-1's table (which also covers the one apt installs above) by
+`tools/tests/test_host_prerequisites.py`. This block used to spell them a third time, unchecked,
+which is the shape that let an install line drift out of the range the launch probe accepts.
+
+**On a PEP 668 host the `pip` line above aborts, and that is a change this repository made.** A
+current LTS — Ubuntu 24.04+, Debian 12+, Fedora — marks the system interpreter
+`externally-managed`, and `pip install` into it refuses with `error:
+externally-managed-environment`. Step 6 used to say `pipx install`, which is immune because it
+builds its own environment per tool; installing from a requirements file is not. Use a virtualenv,
+or `pip install --user`, which is how THIS development host was actually built (both linters and
+`pytest` live in `~/.local/bin`; measured Ubuntu 22.04, Python 3.10.12, no
+`EXTERNALLY-MANAGED` marker, so the plain command works here and this note is for the machine you
+are on, not for this one). `docs/RUNBOOK.md` §0-1's `pip install -r requirements.txt` has the same
+property and always did.
+
+`pipx` installs a COMMAND-LINE TOOL into its own environment, so it is the right instrument for
+the two linters and the wrong one for the rest of the file. A `pipx` user runs
+`pipx install '<line>'` for each of the two linter lines of `requirements-dev.txt`, quoting each
+as written — and then still needs `pip install -r requirements.txt` plus `pytest` in the
+environment the suite runs in, because those are IMPORTED rather than executed. Doing only the
+`pipx` half leaves a machine with the two linters and no test runner.
 
 Steps 1, 2, 3 and 5 all read machine-local state, and each is checked before the first billed leaf — though not all by the same mechanism. Step 1 fail-fasts when `tools/run_workflow.py` starts, before an orchestration exists — with one reason code per family (`missing_required_cli_tools` / `missing_required_python_modules` / `missing_required_host_tools`); steps 2, 3 and 5 are `preflight.json` checks. One requirement is outside both and is called out where it lives: the Codex credential is checked when the first leaf is prepared, not at any gate (`docs/RUNBOOK.md` §0-3).
 
