@@ -233,8 +233,8 @@ class _RunbookReaderMixin:
             if not line.startswith("|"):
                 break
             cell = line.strip().strip("|").split("|")[0].strip()
-            if set(cell) <= set("-:") and cell:
-                continue  # the header separator row, not a package
+            if not cell or set(cell) <= set("-:"):
+                continue  # the header separator row, or an empty first cell — not a package
             found.add(_canonical(cell.strip("`")))
         return found
     #: The heading of the §0-1 subsection this file is about. Every question below is asked of
@@ -716,6 +716,24 @@ class DevRequirementsTests(unittest.TestCase):
             set(), wrong,
             "requirements-dev.txt names a linter by its BACKEND ID; pip installs it under a "
             f"different distribution name (offending: {sorted(wrong)})")
+
+    def test_the_dev_file_installs_the_runner_the_suite_is_started_with(self) -> None:
+        """The one line that makes this file's stated purpose true, and nothing read it.
+
+        Round 1 measured it: deleting `pytest` from `requirements-dev.txt` left every row green.
+        The authority is not a name written here — it is `pytest.ini` at the repository root, which
+        is a pytest configuration file and is what decides that the suite is started with pytest
+        (`testpaths`, `addopts`, the `slow` marker). While that file exists, a dev requirements
+        file that does not install pytest describes a machine that cannot run the suite.
+        """
+        self.assertTrue(
+            (REPO_ROOT / "pytest.ini").is_file(),
+            "there is no pytest.ini at the repository root; this row's authority for requiring "
+            "pytest is gone and the row has to be re-decided rather than left passing")
+        self.assertIn(
+            "pytest", _parsed(REPO_ROOT / "requirements-dev.txt"),
+            "pytest.ini configures this repository's suite, but requirements-dev.txt does not "
+            "install pytest — a machine built from this file cannot run the suite it is for")
 
     def test_the_dev_file_includes_the_runtime_file(self) -> None:
         """`pip install -r requirements-dev.txt` has to be sufficient to run the suite, which
