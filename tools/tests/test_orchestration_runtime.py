@@ -31065,8 +31065,13 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # about a refusal it will get. The bump is 200 for a ~245-byte rule because the same edit
         # removed ~160 bytes of restatement first: the drift list ("name/type/rank/intent/result")
         # repeated "Keep names/order/types/ranks/`intent`s/`result` exactly" two sentences above,
-        # "do NOT invent them" repeated the bullet's own closing sentence, and "you do NOT read
-        # controlled_spec" repeated the rule line 20 states as its own bullet. Measured 39623.
+        # and "you do NOT read controlled_spec" repeated the rule line 20 states as its own
+        # bullet. The third cut, "do NOT invent them", was described in the commit as repeating
+        # the bullet's closing sentence and does NOT: it governs module-parameter VALUES, while
+        # the closing sentence governs a SIGNATURE. The rule survives on the remaining "values
+        # from the IR", so the cut stands; the reason was corrected in TODO.md at the time and
+        # this copy — the one a reader of the ceiling actually reaches — was left stale for two
+        # rounds, which a disclosure reviewer found. Measured 39623.
         "skills/workflow-generate-generate/SKILL.md": 39700,
         # Bumped 21400->21700: the test/check target must invoke the runner with
         # `--cases $(SPEC) $(CASES)` (the runner aborts without it; make test must

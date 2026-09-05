@@ -3722,7 +3722,9 @@ build whenever the operation is exercised.
 > narrower and they never reach it. The premise was inherited by reading rather than by execution,
 > and it cost the fix a round it did not need. `PublishedProcedureDefinednessTests` pins it as a row.
 >
-> Each of the three shapes is legal (`gfortran -fsyntax-only` rc=0).
+> Each of the three shapes is legal (`gfortran -fsyntax-only` rc=0 — the use-association one
+> only with its `dep_mod` compiled first; standalone, that fixture answers rc=1, and a round-3
+> reviewer was right to report the unqualified claim as unreproducible from the tree).
 >
 > **A fourth measurement was recorded here and was WRONG; it is corrected rather than deleted,
 > because a wrong measurement nobody can tell from an audited one is the worse artifact.** The

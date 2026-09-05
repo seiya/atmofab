@@ -17764,10 +17764,20 @@ class PublishedProcedureDefinednessTests(unittest.TestCase):
 
     def _prototype_source(self, header: str = "subroutine") -> str:
         body = self._C._GOOD_SOURCE.replace(self._DEF, "")
+        # `import :: hx__h_named` is LOAD-BEARING, not decoration. Without it the interface body
+        # references a host type it cannot see and `gfortran -fsyntax-only -std=f2008` answers
+        # rc=1 ("Derived type 'hx__h_named' at (1) is being used before it is defined"). A
+        # round-3 blank-slate reviewer measured that the first version of this fixture had no
+        # `import`, so every row built on it pinned the definedness arm on a source the
+        # `Generate.gate` SYNTAX check refuses first — the arm was still pinned (the rows kill
+        # their mutants), but the class docstring's "`-fsyntax-only` rc=0" was false OF THIS
+        # FIXTURE, and re-measuring the flagship route on the source the suite ships would have
+        # said the prototype shape is already caught upstream.
         return body.replace(
             "contains\n",
             "  interface\n"
             f"    {header} hx__write_metrics_basis(entries, n)\n"
+            "      import :: hx__h_named\n"
             "      type(hx__h_named), intent(in) :: entries(:)\n"
             "      integer,           intent(in) :: n\n"
             "    end subroutine hx__write_metrics_basis\n"
@@ -18042,9 +18052,13 @@ class PublishedProcedureDefinednessTests(unittest.TestCase):
         # so a set this gate cannot resolve to one publisher is refused rather than unioned.
         with tempfile.TemporaryDirectory() as t:
             tmp = Path(t)
-            execution = self.inst._seed(tmp, source=self._prototype_source())
+            source = self._prototype_source().replace(
+                "      n)\n", "      count)\n", 1).replace(
+                "      integer,           intent(in) :: n\n",
+                "      integer,           intent(in) :: count\n", 1)
+            execution = self.inst._seed(tmp, source=source)
             model = tmp / "pipe" / "src" / "hx_model.f90"
-            second = model.with_name("hx_helper.f90")
+            second = model.with_name("hx_helper_model.f90")
             second.write_text(
                 "module hx_helper\n"
                 "contains\n"
@@ -18052,21 +18066,42 @@ class PublishedProcedureDefinednessTests(unittest.TestCase):
                 "    integer, intent(in) :: n\n"
                 "  end subroutine hx__write_metrics_basis\n"
                 "end module hx_helper\n", encoding="utf-8")
+            # THE FILE LIST COMES FROM PRODUCTION, and the node_key with it. A first version of
+            # this row handed the gate a two-element list beside a well-formed node_key —
+            # a configuration `_model_files_in_src_dir` cannot produce, since it returns more than
+            # one file ONLY when `_spec_id_from_node_key` finds no `/`. It therefore missed that
+            # the refusal was routed through `_fail_closed_if_pinned`, which appends only when the
+            # node_key's prefix IS a kind: in the one shape that can reach this arm, the gate
+            # appended nothing and returned, dropping every §5.1 comparison. Measured against
+            # `origin/main`, which reports the drift, that was red-then-GREEN.
+            slashless = NodeExecution(
+                node_key="hx@0.2.0", node_dir=execution.node_dir,
+                exec_dir=execution.exec_dir, pipeline_dir=execution.pipeline_dir)
+            resolved, _expected = vps._model_files_in_src_dir(model.parent, slashless)
+            self.assertEqual(len(resolved), 2, resolved)
             violations: list = []
-            vps._validate_generated_signatures(tmp, execution, [model, second], violations)
+            vps._validate_generated_signatures(tmp, slashless, resolved, violations)
             self.assertTrue(
-                any("cannot be identified" in str(v) and "fail-closed" in str(v)
-                    for v in violations), violations)
+                any("cannot be pinned to one publisher" in str(v) for v in violations),
+                ("the refusal must SPEAK; routing it through the pinned-kind helper made it "
+                 "silent in the only shape that reaches it", violations))
             self.assertFalse(
                 any("never DEFINES it" in str(v) for v in violations),
-                ("the fail-closed answer replaces the per-name verdicts, it does not join them",
-                 violations))
+                ("the definedness question has no single publisher to ask", violations))
+            # And the comparison that `origin/main` performs must survive the refusal.
+            self.assertTrue(
+                any("drifts from controlled_spec §5.1" in str(v) for v in violations),
+                ("a node this gate cannot resolve to one publisher still gets its §5.1 header "
+                 "comparison — dropping it removed a check origin/main had", violations))
 
     def test_the_three_carried_shapes_are_refused_by_the_pre_existing_arm(self) -> None:
         # THE PREMISE OF THIS FIX, as a row. `checks_module_abi_facts`' docstring names three
         # shapes a `n not in defined_procs` refusal would fail: use-association, a generic
         # interface, and a submodule implementation. Each is legal Fortran (`gfortran
-        # -fsyntax-only` rc=0, executed). None of them reaches the new check, because none puts
+        # -fsyntax-only` rc=0, executed) — the use-association one only with its `dep_mod`
+        # compiled first, since the fixture below declares no such module; standalone it answers
+        # rc=1, which a round-3 reviewer measured and reported, correctly, as a claim not
+        # reproducible from the tree. None of them reaches the new check, because none puts
         # the pinned §5.1 header in the source — they fail the "does not publish" arm that
         # predates this fix. If a future widening of the header comparison lets one through, this
         # row goes red and whoever widened it owns the over-refusal question.

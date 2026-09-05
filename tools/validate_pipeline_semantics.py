@@ -13491,8 +13491,9 @@ def _validate_generated_signatures(
     #
     # The unit is named by the source's own basename with its extension dropped, which is the
     # convention this repository already relies on when it resolves the model source at all.
-    # Every model file contributes only the names ITS OWN unit defines, so a multi-file set
-    # cannot lend one file's definitions to another file's prototypes.
+    # (An earlier sentence here described the per-file UNION this replaced — "every model file
+    # contributes only the names its own unit defines" — and contradicted the rule two lines
+    # above it once the union was gone. Deleted rather than corrected: one statement of a rule.)
     #
     # ONE FILE, NOT A UNION. An earlier version unioned the per-file answers, and a round-2 census
     # showed what that buys: a second model file whose OWN module carries a same-named stub credits
@@ -13505,12 +13506,24 @@ def _validate_generated_signatures(
     # fail-closed rather than unioned.
     defined_names: frozenset[str] | None = None
     unit_absent: str | None = None
-    if op_stanzas:
-        if len(model_files) != 1:
-            _fail_closed_if_pinned(
-                f"the published unit cannot be identified from {len(model_files)} model source "
-                "files (exactly one is expected)")
-            return
+    if op_stanzas and len(model_files) != 1:
+        # APPENDED DIRECTLY, and NOT via `_fail_closed_if_pinned`, and NOT followed by a
+        # `return`. Both were wrong, and a round-3 disclosure reviewer measured the cost:
+        # `_fail_closed_if_pinned` appends only when the NODE_KEY's prefix is a pinned kind,
+        # while `len(model_files) != 1` can only happen when the node_key has no `/` at all —
+        # so in the one configuration this arm can fire, it appended NOTHING and returned,
+        # dropping every §5.1 header comparison with it. Against `origin/main`, which reports
+        # the drift, that is red-then-GREEN: a check this branch silently removed. Past this
+        # point `ir_kind` has already been confirmed to publish an exact surface, so the
+        # refusal needs no further condition; and the header comparison does not need the
+        # definedness answer, so it continues below with `defined_names` left None.
+        violations.append(
+            f"{target}: this {ir_kind} node's published surface cannot be pinned to one "
+            f"publisher — {len(model_files)} model source files were resolved and exactly one "
+            "is expected, so which program unit publishes the controlled_spec §5.1 surface "
+            "cannot be decided; the definedness check is skipped for this node and the "
+            "signature comparison below still applies")
+    if op_stanzas and len(model_files) == 1:
         model_file = model_files[0]
         try:
             source_text = model_file.read_text(encoding="utf-8", errors="ignore").lower()
