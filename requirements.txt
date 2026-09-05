@@ -20,9 +20,12 @@
 #
 # What IS measured: AT COMMIT 02f0b19, in the primary checkout, the whole suite under
 # `PyYAML==6.0.3` installed into a scratch `--target` and put ahead on `PYTHONPATH` — 5793 passed,
-# 3039 subtests, 0 skipped, 0 failed. The revision is part of the record because the suite grows:
-# a later commit collects more, and without a revision this sentence reads as a claim about the
-# current tree and is wrong by however many tests have been added since. The 5.4.1 end of the
+# 3039 subtests, 0 skipped, 0 failed, which is every test that commit collects. The revision is
+# part of the record because the suite grows: 02f0b19 collects 5793, and later commits of the same
+# branch collect 5797, 5799, 5801, 5804 and 5807. Without a revision this sentence reads as a
+# claim about the current tree and is wrong by however many tests have been added since — and a
+# reader cannot then tell "tests were added" from "tests regressed", which is the one thing it is
+# here to let them do. The 5.4.1 end of the
 # range is covered by the ordinary suite on the development host, which carries that build.
 # The cap is `<7`, because 7 does not exist and therefore has not been measured, and this file's
 # rule is that installing from it reproduces a measured machine.
