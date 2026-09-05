@@ -31058,7 +31058,16 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # findings do NOT return and names the verdict they get instead
         # (`host_rendered_lint_findings`), which `GateRoutingIsStatedToTheLeafTests` couples to
         # the code so the pair cannot drift again. Measured 39403.
-        "skills/workflow-generate-generate/SKILL.md": 39500,
+        # Bumped 39500->39700 (2026-09-05, issue #153 CARRIED (i)): the signature bullet had to
+        # say that a published procedure must be DEFINED and not only declared. That is a refusal
+        # a leaf can now receive, and this file is the only place it is told; leaving it out is
+        # the shape `atmofab-enforcement-change` rule 3-a names — a leaf-read document silent
+        # about a refusal it will get. The bump is 200 for a ~245-byte rule because the same edit
+        # removed ~160 bytes of restatement first: the drift list ("name/type/rank/intent/result")
+        # repeated "Keep names/order/types/ranks/`intent`s/`result` exactly" two sentences above,
+        # "do NOT invent them" repeated the bullet's own closing sentence, and "you do NOT read
+        # controlled_spec" repeated the rule line 20 states as its own bullet. Measured 39623.
+        "skills/workflow-generate-generate/SKILL.md": 39700,
         # Bumped 21400->21700: the test/check target must invoke the runner with
         # `--cases $(SPEC) $(CASES)` (the runner aborts without it; make test must
         # match run_program's argv) after a validate.execute failure where a bare
