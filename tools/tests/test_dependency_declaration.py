@@ -42,6 +42,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from tools import run_workflow  # noqa: E402
 from tools.backends import registry as backend_registry  # noqa: E402
+from tools.backends.language.fortran import structure as fortran_structure  # noqa: E402
 
 #: A requirement line, decomposed. NOT a full PEP 508 parser — these two files are hand-written —
 #: but it has to admit every shape a legitimate edit would use, because refusing one is a check
@@ -59,6 +60,10 @@ _REQUIREMENT_RE = re.compile(
 #: they have to be one distribution to every comparison in this file; comparing the spellings
 #: refused the normalized form an operator or a tool may legitimately write.
 _NAME_SEPARATORS = re.compile(r"[-_.]+")
+
+#: A release number as the documents spell one. Two or three dotted components, so `§0-1` and a
+#: bare `3.10` in prose are both out of reach of it by shape.
+_VERSION_RE = re.compile(r"\b\d+\.\d+\.\d+\b")
 
 
 def _canonical(name: str) -> str:
@@ -185,8 +190,14 @@ class RequirementReaderTests(unittest.TestCase):
             _parsed(self._write("!!!not a requirement\n"))
 
 
-class RuntimeRequirementsTests(unittest.TestCase):
-    """`requirements.txt` against the two authorities that already decide what a host needs."""
+class _RunbookReaderMixin:
+    """Reading `docs/RUNBOOK.md` §0-1: the section slice, its tables, its install commands.
+
+    One reader shared by the classes below rather than one per class — the sibling
+    `test_host_prerequisites.LinterVersionRangeTests` reads the same document for the linter table,
+    and a second extractor with different termination semantics is what this file exists to avoid
+    inventing.
+    """
 
     #: The §0-1 table this check owns, found by its own header rather than by position — the form
     #: `test_host_prerequisites.LinterVersionRangeTests` uses for the linter table in the same
@@ -215,45 +226,6 @@ class RuntimeRequirementsTests(unittest.TestCase):
                 continue  # the header separator row, not a package
             found.add(_canonical(cell.strip("`")))
         return found
-
-    def test_the_runtime_declaration_is_exactly_the_runbook_package_table(self) -> None:
-        """Both directions at once, and the authority is the RUNBOOK table rather than
-        `REQUIRED_PYTHON_MODULES`: the tuple deliberately omits `PyYAML` (`tools/run_workflow.py`
-        says why), so making the tuple the authority would report the correct file as wrong."""
-        self.assertEqual(
-            set(_parsed(REPO_ROOT / "requirements.txt")),
-            self._packages_in_table(self._runbook()),
-            "requirements.txt and the package table in docs/RUNBOOK.md §0-1 disagree about which "
-            "distributions the host needs")
-
-    def test_every_module_the_launch_probe_refuses_a_host_for_is_declared(self) -> None:
-        """The narrower authority, checked separately because it NAMES the missing member.
-
-        `REQUIRED_PYTHON_MODULES` is a subset of the table; a distribution the probe refuses a
-        host for and this file does not install is a machine that passes `pip install -r` and then
-        fails at launch.
-        """
-        declared = set(_parsed(REPO_ROOT / "requirements.txt"))
-        for import_name, distribution in run_workflow.REQUIRED_PYTHON_MODULES:
-            self.assertIn(
-                _canonical(distribution), declared,
-                f"tools/run_workflow.py refuses a host missing {import_name!r} (distribution "
-                f"{distribution!r}), but requirements.txt does not install it")
-
-    def test_the_runbook_table_covers_every_module_the_launch_probe_names(self) -> None:
-        """The knot between the two authorities themselves, which no test tied before this file.
-
-        Without it the pair can agree with `requirements.txt` and with each other's absence: a new
-        entry added to `REQUIRED_PYTHON_MODULES` alone leaves the operator-facing install line in
-        `docs/RUNBOOK.md` §0-1 short by one, and an operator who follows it gets refused at launch.
-        """
-        table = self._packages_in_table(self._runbook())
-        for import_name, distribution in run_workflow.REQUIRED_PYTHON_MODULES:
-            self.assertIn(
-                _canonical(distribution), table,
-                f"tools/run_workflow.py refuses a host missing {import_name!r} (distribution "
-                f"{distribution!r}), but the package table in docs/RUNBOOK.md §0-1 omits it")
-
     #: The heading of the §0-1 subsection this file is about. Every question below is asked of
     #: THAT slice, not of the whole runbook: an earlier version searched the entire 350-line
     #: document for a `pip install` line and required there to be exactly one, so documenting any
@@ -315,6 +287,50 @@ class RuntimeRequirementsTests(unittest.TestCase):
     @classmethod
     def _pip_install_arguments(cls, block: str) -> list[list[str]]:
         return [arguments for arguments, _ in cls._pip_install_lines(block)]
+
+
+
+
+class RuntimeRequirementsTests(_RunbookReaderMixin, unittest.TestCase):
+    """`requirements.txt` against the two authorities that already decide what a host needs."""
+
+    def test_the_runtime_declaration_is_exactly_the_runbook_package_table(self) -> None:
+        """Both directions at once, and the authority is the RUNBOOK table rather than
+        `REQUIRED_PYTHON_MODULES`: the tuple deliberately omits `PyYAML` (`tools/run_workflow.py`
+        says why), so making the tuple the authority would report the correct file as wrong."""
+        self.assertEqual(
+            set(_parsed(REPO_ROOT / "requirements.txt")),
+            self._packages_in_table(self._runbook()),
+            "requirements.txt and the package table in docs/RUNBOOK.md §0-1 disagree about which "
+            "distributions the host needs")
+
+    def test_every_module_the_launch_probe_refuses_a_host_for_is_declared(self) -> None:
+        """The narrower authority, checked separately because it NAMES the missing member.
+
+        `REQUIRED_PYTHON_MODULES` is a subset of the table; a distribution the probe refuses a
+        host for and this file does not install is a machine that passes `pip install -r` and then
+        fails at launch.
+        """
+        declared = set(_parsed(REPO_ROOT / "requirements.txt"))
+        for import_name, distribution in run_workflow.REQUIRED_PYTHON_MODULES:
+            self.assertIn(
+                _canonical(distribution), declared,
+                f"tools/run_workflow.py refuses a host missing {import_name!r} (distribution "
+                f"{distribution!r}), but requirements.txt does not install it")
+
+    def test_the_runbook_table_covers_every_module_the_launch_probe_names(self) -> None:
+        """The knot between the two authorities themselves, which no test tied before this file.
+
+        Without it the pair can agree with `requirements.txt` and with each other's absence: a new
+        entry added to `REQUIRED_PYTHON_MODULES` alone leaves the operator-facing install line in
+        `docs/RUNBOOK.md` §0-1 short by one, and an operator who follows it gets refused at launch.
+        """
+        table = self._packages_in_table(self._runbook())
+        for import_name, distribution in run_workflow.REQUIRED_PYTHON_MODULES:
+            self.assertIn(
+                _canonical(distribution), table,
+                f"tools/run_workflow.py refuses a host missing {import_name!r} (distribution "
+                f"{distribution!r}), but the package table in docs/RUNBOOK.md §0-1 omits it")
 
     def test_a_bare_install_line_in_the_section_names_what_the_table_declares(self) -> None:
         """Any `pip install <packages>` line in §0-1 has to agree with the table beside it.
@@ -414,6 +430,123 @@ class RuntimeRequirementsTests(unittest.TestCase):
         with self.assertRaises(AssertionError) as caught:
             self._packages_in_table("# Runbook\n\nno table here\n")
         self.assertIn("no longer carries the Python package table", str(caught.exception))
+
+
+class MeasuredVersionTests(_RunbookReaderMixin, unittest.TestCase):
+    """The PINS, against the code that measured them.
+
+    `fa1b4d6` declared `tree-sitter==0.26.0` and `tree-sitter-fortran==0.6.0` and checked neither.
+    Round 1 measured the consequence: widening either to `>=`, or moving `tree-sitter-fortran` to
+    `0.5.0` while three other places said 0.6.0, left the whole file green. The version half of
+    `requirements.txt` was the half this branch exists to add, and it was the half nothing held.
+
+    The authority is `tools/backends/language/fortran/structure.MEASURED_PACKAGE_VERSIONS` — the
+    backend that depends on the packages, and the only place that can answer what was measured. The
+    same fact used to be spelt in that module's docstring, in its refusal message, and in
+    `docs/RUNBOOK.md`; the rule below is the coupling rule 3-a of
+    `.claude/skills/atmofab-enforcement-change` prescribes at three statement sites.
+    """
+
+    def _measured(self) -> dict[str, str]:
+        return dict(fortran_structure.MEASURED_PACKAGE_VERSIONS)
+
+    def test_every_measured_version_is_pinned_in_the_runtime_declaration(self) -> None:
+        """`==` and the measured value, for each. A floor or a different value is a machine the
+        `Generate.gate` structure read was never measured on, reached part-way into a billed run.
+        """
+        parsed = _parsed(REPO_ROOT / "requirements.txt")
+        for distribution, version in sorted(self._measured().items()):
+            name = _canonical(distribution)
+            with self.subTest(distribution=distribution):
+                self.assertIn(
+                    name, parsed,
+                    f"{distribution} is measured by "
+                    f"tools/backends/language/fortran/structure.py but requirements.txt does not "
+                    f"install it")
+                self.assertEqual(
+                    parsed[name], f"=={version}",
+                    f"requirements.txt does not pin {distribution} at the measured version "
+                    f"{version}; a host installing from this file runs the Fortran structure "
+                    f"front end on a release nothing in this repository has measured")
+
+    def test_the_runbook_states_the_measured_version_beside_the_package(self) -> None:
+        """The operator-facing half. §0-1 tells a reader what the front end was written against;
+        a value there that is not the measured one sends whoever reads it to the wrong release.
+
+        Bounded to the LINES of §0-1 that name the distribution, so a version number belonging to
+        anything else in the runbook cannot fire this — and self-tested below, because a bound that
+        matches nothing is a green row observing nothing.
+        """
+        section = self._section(self._runbook())
+        checked = 0
+        for distribution, version in sorted(self._measured().items()):
+            for line in section.splitlines():
+                found = set(_VERSION_RE.findall(line))
+                if distribution not in line or not found:
+                    continue
+                # `tree-sitter` is a substring of `tree-sitter-fortran`; a line naming the longer
+                # one states the longer one's version, so it is not this row's business.
+                if distribution == "tree-sitter" and "tree-sitter-fortran" in line:
+                    continue
+                checked += 1
+                self.assertIn(
+                    version, found,
+                    f"docs/RUNBOOK.md §0-1 states a version beside {distribution!r} that is not "
+                    f"the measured {version}:\n  {line.strip()}")
+        self.assertGreaterEqual(
+            checked, 2,
+            "no line of docs/RUNBOOK.md §0-1 states a version beside a measured package; this "
+            "check has stopped observing the operator-facing statement it exists for")
+
+    def test_the_refusal_message_renders_from_the_same_constant(self) -> None:
+        """The third statement site: what a host with the wrong grammar is TOLD to pin.
+
+        A message naming a version the declaration does not pin is a remedy that cannot converge —
+        it sends the reader to a release `requirements.txt` refuses.
+
+        WHAT THIS PINS AND WHAT IT DOES NOT. It pins that the raise site REFERENCES
+        `MEASURED_PACKAGE_VERSIONS`, read out of the module's own source. It is not a behavioural
+        witness: the raise needs an installed grammar missing a node type this front end reads, and
+        this repository's own measurement records that no published `tree-sitter-fortran` from
+        0.2.0 to 0.6.0 is such a grammar — so the branch is unreachable with anything installable
+        today, and it is written to guard the NEXT release. A reader who changes that message must
+        keep the reference; nothing here observes the rendered string.
+        """
+        source = REPO_ROOT / "tools" / "backends" / "language" / "fortran" / "structure.py"
+        rendered = source.read_text()
+        raise_site = rendered.split("FORTRAN_STRUCTURE_UNAVAILABLE_MARKER} the installed", 1)
+        self.assertEqual(
+            len(raise_site), 2,
+            "the fortran structure module no longer carries the grammar refusal this row is "
+            "about; it cannot check what that message tells a host to pin")
+        self.assertIn(
+            "MEASURED_PACKAGE_VERSIONS['tree-sitter-fortran']", raise_site[1][:800],
+            "the grammar refusal in tools/backends/language/fortran/structure.py no longer renders "
+            "its version from MEASURED_PACKAGE_VERSIONS, so the version it tells a host to pin can "
+            "drift away from the one requirements.txt installs")
+
+    def test_the_runbook_bound_does_not_read_a_version_belonging_to_something_else(self) -> None:
+        """The over-refusal probe for the row above, on a synthetic section: an unrelated
+        prerequisite's version, and a line naming the longer package, must not be read as the
+        shorter package's."""
+        checked = []
+        section = (
+            "Install `cmake` 3.20 first.\n"
+            "| `tree-sitter` | the parser runtime, 0.26.0 |\n"
+            "| `tree-sitter-fortran` | the grammar (written against 0.6.0) |\n")
+        for distribution, version in (("tree-sitter", "0.26.0"), ("tree-sitter-fortran", "0.6.0")):
+            for line in section.splitlines():
+                found = set(_VERSION_RE.findall(line))
+                if distribution not in line or not found:
+                    continue
+                if distribution == "tree-sitter" and "tree-sitter-fortran" in line:
+                    continue
+                checked.append((distribution, sorted(found)))
+        self.assertEqual(
+            checked,
+            [("tree-sitter", ["0.26.0"]), ("tree-sitter-fortran", ["0.6.0"])],
+            "the line bound either read the cmake version or attributed the grammar's version to "
+            "the runtime")
 
 
 class DevRequirementsTests(unittest.TestCase):

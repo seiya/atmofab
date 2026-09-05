@@ -47,20 +47,32 @@ FAIL-CLOSED, IN TWO DIRECTIONS:
   They bound the refusals over the names they sweep and nothing beyond; treat them as a regression
   guard, not as the definition of the class.
 
-DEPENDENCIES. Two packages this repository does not otherwise declare:
-
-    pip install tree-sitter tree-sitter-fortran
-
-pinned by measurement at **tree-sitter 0.26.0** and **tree-sitter-fortran 0.6.0**. A version bump
-re-runs `tools/backends/language/fortran/structure_differential.py` (both halves) before it is accepted — the tree
-half proves the corpus still parses the same, the flang half proves it parses it RIGHT. Declaring
-these two in a dependency manifest is owned by the MCP-tests-and-CI item of `TODO.md`, which owns
-the fact that this repository declares no dependencies at all.
+DEPENDENCIES. Two packages, pinned by measurement — the versions are `MEASURED_PACKAGE_VERSIONS`
+below, which is the single definition this module, its refusal message, `requirements.txt` and
+`docs/RUNBOOK.md` §0-1 are all checked against (`tools/tests/test_dependency_declaration.py`). A
+version bump re-runs `tools/backends/language/fortran/structure_differential.py` (both halves)
+before it is accepted — the tree half proves the corpus still parses the same, the flang half
+proves it parses it RIGHT.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+
+#: The versions this front end was MEASURED on, by pip distribution name. Written here, in the
+#: backend that depends on them, because the value is a property of THIS code: the module drives a
+#: `Language(tree_sitter_fortran.language())` / `Parser(language)` spelling that has changed across
+#: py-tree-sitter releases, and the grammar's node-type names are what every gate below matches on.
+#:
+#: It is a CONSTANT rather than six prose spellings because the same fact used to be written out in
+#: this module's docstring, in its refusal message, and in `docs/RUNBOOK.md` — three statements a
+#: sweep has to keep in step by discipline. `tools/tests/test_dependency_declaration.py` now checks
+#: `requirements.txt` and the runbook against this dict, and the refusal message renders from it.
+#: A bump is accepted only after re-running `structure_differential.py` (both halves).
+MEASURED_PACKAGE_VERSIONS: dict[str, str] = {
+    "tree-sitter": "0.26.0",
+    "tree-sitter-fortran": "0.6.0",
+}
 
 FORTRAN_STRUCTURE_UNAVAILABLE_MARKER = "[fortran-structure-unavailable]"
 
@@ -210,7 +222,8 @@ def _load_parser():
             f"{FORTRAN_STRUCTURE_UNAVAILABLE_MARKER} the installed tree-sitter-fortran grammar "
             f"does not define the node types this front end reads ({', '.join(unknown)}), so it "
             f"cannot report procedures at all. This module is written against "
-            f"tree-sitter-fortran 0.6.0; pin that version, and re-run "
+            f"tree-sitter-fortran {MEASURED_PACKAGE_VERSIONS['tree-sitter-fortran']}; pin that "
+            f"version, and re-run "
             f"tools/backends/language/fortran/structure_differential.py (both halves) before accepting a newer one."
         )
     return parser
