@@ -20,6 +20,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import textwrap
+import typing
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -1478,8 +1480,13 @@ class BuildCommandTests(unittest.TestCase):
     """`_recommended_build_system` and `_build_command` — the SUCCESS paths.
 
     The refusal side of this server is covered thickly; these two were referenced once each from
-    the whole test corpus (measured at 9f2e16d) and never on a path that produces an argv. Every
-    `compile` this repository performs is one of these argv.
+    the whole test corpus (measured at 9f2e16d). An earlier version of this sentence added "and
+    never on a path that produces an argv", which round 1 falsified:
+    `test_host_prerequisites.py:102` does take `_build_command(build_system, None, 1, [])[0]`.
+    What is true is narrower and is what these rows are for — each of those two references
+    observes ONE thing (an executable name; one marker detection succeeding), so the argv SHAPES,
+    the marker table as an enumeration, the two defaults and the knot between the two functions
+    were unheld. Every `compile` this repository performs is one of these argv.
     """
 
     @classmethod
@@ -1493,14 +1500,75 @@ class BuildCommandTests(unittest.TestCase):
             (Path(holder.name) / name).write_text("", encoding="utf-8")
         return holder.name
 
-    def test_a_marker_file_selects_its_build_system_and_the_reason_names_it(self) -> None:
-        """One case per marker, from the function's own table — the enumeration is killed element
-        by element rather than as a set, because a missing element shows up in no other test."""
+    @classmethod
+    def _marker_table(cls) -> list[tuple[str, str]]:
+        """The `(marker, build system)` table `_recommended_build_system` walks, read with `ast`.
+
+        A REGEX over the source found the entries only while they were formatted one per line.
+        Measured in round 1: splitting a single entry across two lines — `("CMakeLists.txt",\n
+        "cmake"),`, which any reformatting produces — made `cmake` vanish from both sweeps that
+        read this table, with the whole class green and the subtest count silently dropping. A
+        sweep that shrinks without saying so is worse than no sweep, because the count is what a
+        reader takes as evidence.
+
+        `ast` reads the literal the interpreter reads, so formatting cannot move it. The exact
+        count is asserted by the callers against `_MARKER_COUNT` below rather than by a floor: the
+        first version's floor was `>= 10` for an eleven-entry table, so losing exactly one entry —
+        the failure that actually happened — was invisible.
+        """
+        import ast
         import inspect
-        source = inspect.getsource(self.mod._recommended_build_system)
-        markers = re.findall(r'\("([^"]+)", "([^"]+)"\),', source)
-        self.assertGreaterEqual(len(markers), 10,
-                                "the marker table this row sweeps could not be read")
+        tree = ast.parse(textwrap.dedent(inspect.getsource(cls.mod._recommended_build_system)))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Assign):
+                continue
+            if not any(getattr(target, "id", None) == "checks" for target in node.targets):
+                continue
+            self = node.value
+            assert isinstance(self, ast.List), "the marker table is no longer a list literal"
+            return [(entry.elts[0].value, entry.elts[1].value) for entry in self.elts]
+        raise AssertionError(
+            "`checks` is no longer assigned a list literal in _recommended_build_system; this "
+            "reader cannot find the marker table it sweeps")
+
+    #: How many markers the table must have, so a sweep that reads fewer is a failure rather than
+    #: a quieter run. Derived once here and checked by every row that walks the table.
+    _MARKER_COUNT = 11
+
+    def test_the_marker_table_reader_finds_every_entry(self) -> None:
+        """The self-test for the reader, and the whole reason it is `ast` and not a regex.
+
+        Both directions: the count is exact, and the reader survives a reformatting that the
+        regex did not. The second half is driven on a synthetic function rather than by editing
+        the real one.
+        """
+        import ast
+        self.assertEqual(len(self._marker_table()), self._MARKER_COUNT)
+        reformatted = textwrap.dedent('''
+            def f(project_dir, language):
+                checks = [
+                    ("Makefile", "make"),
+                    ("CMakeLists.txt",
+                     "cmake"),  # split across two lines, with a comment
+                ]
+            ''')
+        tree = ast.parse(reformatted)
+        found = [
+            [(e.elts[0].value, e.elts[1].value) for e in node.value.elts]
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Assign)
+            and any(getattr(x, "id", None) == "checks" for x in node.targets)]
+        self.assertEqual(found, [[("Makefile", "make"), ("CMakeLists.txt", "cmake")]])
+        self.assertEqual(
+            len(re.findall(r'\("([^"]+)", "([^"]+)"\),', reformatted)), 1,
+            "the regex this reader replaced would still find only one of the two entries; if "
+            "that stops being true the reason for using ast has changed")
+
+    def test_a_marker_file_selects_its_build_system_and_the_reason_names_it(self) -> None:
+        """One case per marker — the enumeration is killed element by element rather than as a
+        set, because a missing element shows up in no other test."""
+        markers = self._marker_table()
+        self.assertEqual(len(markers), self._MARKER_COUNT)
         for marker, expected in markers:
             with self.subTest(marker=marker):
                 answer = self.mod._recommended_build_system(self._dir_with(marker), "fortran")
@@ -1526,18 +1594,74 @@ class BuildCommandTests(unittest.TestCase):
         self.assertEqual(other["build_system"], "make")
         self.assertEqual(other["reason"], "fallback default")
 
+    #: Build systems whose EXECUTABLE is not their id. The one piece of knowledge this row holds,
+    #: and it is held here because `_build_command` is the only other place it exists — comparing
+    #: argv[0] against `build_system_executable` instead proves nothing, since that function IS
+    #: `_build_command(bs, None, 1, [])[0]`. Round 1 measured the consequence: renaming `mvn`,
+    #: `cargo`, `poetry` and `go build`'s argv all survived, because the assertion compared the
+    #: implementation with itself.
+    _EXECUTABLE_RENAMES: typing.ClassVar[dict[str, str]] = {"maven": "mvn"}
+
     def test_every_build_system_the_recommender_can_return_builds_an_argv(self) -> None:
         """The knot between the two functions, which nothing tied: a marker table entry naming a
         build system `_build_command` does not implement is a `compile` that raises after the
-        recommendation succeeded."""
-        import inspect
-        markers = re.findall(
-            r'\("([^"]+)", "([^"]+)"\),', inspect.getsource(self.mod._recommended_build_system))
+        recommendation succeeded. The argv[0] check is against the EXPECTED executable, so a
+        renamed program is caught rather than compared with itself."""
+        markers = self._marker_table()
+        self.assertEqual(len(markers), self._MARKER_COUNT,
+                         "this sweep is reading fewer entries than the table has")
         for _marker, build_system in markers:
             with self.subTest(build_system=build_system):
                 argv = self.mod._build_command(build_system, None, 4, [])
                 self.assertTrue(argv, f"{build_system} produced an empty argv")
-                self.assertEqual(argv[0], self.mod.build_system_executable(build_system))
+                self.assertEqual(
+                    argv[0], self._EXECUTABLE_RENAMES.get(build_system, build_system),
+                    "argv[0] is neither the build system's own name nor its recorded rename; if "
+                    "this is a deliberate rename, add it to _EXECUTABLE_RENAMES")
+                self.assertEqual(argv[0], self.mod.build_system_executable(build_system),
+                                 "the host probe would look for a different program than a build "
+                                 "actually runs")
+
+    #: The full argv each build system produces with no target and no extra arguments. argv[0]
+    #: alone is not the contract: round 1 measured `go build` -> `go test` surviving, because the
+    #: program is `go` either way and the SUBCOMMAND is where the meaning is. Adding a build
+    #: system means adding a row here, which is the point — someone has to decide what it runs.
+    _BASE_ARGV: typing.ClassVar[dict[str, list[str]]] = {
+        "make": ["make", "-j4"],
+        "cmake": ["cmake", "--build", ".", "-j", "4"],
+        "meson": ["meson", "compile", "-j", "4"],
+        "ninja": ["ninja", "-j4"],
+        "cargo": ["cargo", "build"],
+        "go": ["go", "build"],
+        "maven": ["mvn", "package"],
+        "gradle": ["gradle", "build"],
+        "npm": ["npm", "run", "build"],
+        "pnpm": ["pnpm", "run", "build"],
+        "poetry": ["poetry", "build"],
+    }
+
+    def test_every_build_system_runs_the_argv_this_repository_expects(self) -> None:
+        """The whole argv, not just its first word.
+
+        Set identity against the dispatch, in both directions: every build system `_build_command`
+        implements has a row here, and every row is a build system it implements. The first
+        version compared `argv[0]` with `build_system_executable`, which IS
+        `_build_command(bs, None, 1, [])[0]` — the implementation compared with itself, and four
+        renames survived it.
+        """
+        implemented = set(self._BASE_ARGV)
+        for build_system, expected in sorted(self._BASE_ARGV.items()):
+            with self.subTest(build_system=build_system):
+                self.assertEqual(self.mod._build_command(build_system, None, 4, []), expected)
+        # The other direction: a build system the dispatch gained and this table did not.
+        import inspect
+        dispatched = set(re.findall(r'if build_system == "([^"]+)":',
+                                    inspect.getsource(self.mod._build_command)))
+        dispatched |= {b for _m, b in self._marker_table()}
+        self.assertEqual(
+            dispatched, implemented,
+            "the build systems _build_command dispatches on and the argv this table records are "
+            "different sets; a new adapter needs a row saying what it runs")
 
     def test_the_make_argv_is_the_documented_shape(self) -> None:
         """`make` is the default this repository actually runs, so its argv is pinned exactly —
@@ -1577,8 +1701,9 @@ class McpCallClientTests(unittest.TestCase):
     """`mcp_servers/mcp_call.py` — the client this repository's own procedures drive.
 
     Referenced by `docs/RUNBOOK.md`, by `.claude/skills/atmofab-enforcement-change`'s verification
-    reference, by the review-loop skill and twice by `TODO.md`, all of which use it as the vehicle
-    for END-TO-END verification of the capability gate — and it had no test at all (measured at
+    reference, by the review-loop skill and three times by `TODO.md` (an earlier version of this
+    sentence said twice), all of which use it as the vehicle for END-TO-END verification of the
+    capability gate — and it had no test at all (measured at
     9f2e16d: zero references in `tools/tests/`). The skills treat it as the instrument that proves
     a refusal is real, so an instrument that silently stopped reporting refusals would take the
     evidence with it.
@@ -1656,31 +1781,88 @@ class McpCallClientTests(unittest.TestCase):
         self.assertNotEqual(done.returncode, 0)
         self.assertIn("no_such_tool", done.stderr)
 
-    def test_the_client_depends_on_the_repository_root_as_the_working_directory(self) -> None:
-        """RECORD, and it is documented nowhere else: the server is spawned by a relative path, so
-        every documented invocation of this client silently requires `cwd` to be the checkout
-        root. Running it from anywhere else fails, and the failure names a missing file rather
-        than the real cause."""
+    def test_the_client_works_from_any_working_directory(self) -> None:
+        """It did not, and the first version of this row PINNED that as the specification.
+
+        `mcp_call.py` spawned the server by the relative path
+        `mcp_servers/build_runtime_server.py`, so every documented use silently required the
+        checkout root as `cwd` — and the failure named the wrong layer: the spawn failed, the
+        server's `stderr` was captured and never read, and the caller saw `unexpected EOF while
+        reading MCP message header`. (My first version of this row asserted only a non-zero exit
+        and its docstring said the failure "names a missing file". Driven for real, no
+        missing-file message appears anywhere. Round 1 found both halves.)
+
+        Why that was worth fixing rather than recording: this client is the instrument
+        `docs/RUNBOOK.md` and `.claude/skills/atmofab-enforcement-change` hand an operator to PROVE
+        a capability-gate refusal. With the old behaviour, "the gate refused the call" and "the
+        client never started" were the same non-zero exit — so a verification could be recorded as
+        passed by someone standing in the wrong directory, which is a false record in the audit
+        trail. The test that pinned it would then have turned the fix into a regression.
+        """
         with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "Makefile").write_text("all:\n\t@true\n", encoding="utf-8")
             env = {k: v for k, v in os.environ.items() if not k.startswith("ATMOFAB_")}
             done = subprocess.run(
                 [sys.executable, str(self.REPO_ROOT / "mcp_servers" / "mcp_call.py"),
                  "--tool", "detect_build_system",
                  "--args-json", json.dumps({"project_dir": tmp})],
                 cwd=tmp, env=env, capture_output=True, text=True, timeout=30, check=False)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            expected = _load_server_module()._recommended_build_system(tmp, "")
+            self.assertEqual(json.loads(done.stdout)["recommended_build_system"],
+                             expected["build_system"])
+
+    def test_a_failure_to_START_the_server_is_not_reported_as_a_framing_error(self) -> None:
+        """The other half, and the one with the route.
+
+        A caller cannot act on `unexpected EOF while reading MCP message header` when the real
+        cause is that the server never ran. Worse, for the operator running a gate verification it
+        is indistinguishable from the refusal they are trying to observe. The client now reads what
+        the server said before it stopped talking and puts it in the error.
+
+        Driven by pointing the client at a server that cannot start, rather than by reading the
+        code: the property is what reaches the caller's stderr.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            broken = Path(tmp) / "mcp_call.py"
+            source = (self.REPO_ROOT / "mcp_servers" / "mcp_call.py").read_text(encoding="utf-8")
+            server = Path(tmp) / "build_runtime_server.py"
+            server.write_text("import sys\nsys.stderr.write('BOOM: cannot start\\n')\n"
+                              "raise SystemExit(3)\n", encoding="utf-8")
+            broken.write_text(source, encoding="utf-8")
+            env = {k: v for k, v in os.environ.items() if not k.startswith("ATMOFAB_")}
+            done = subprocess.run(
+                [sys.executable, str(broken), "--tool", "detect_build_system",
+                 "--args-json", json.dumps({"project_dir": tmp})],
+                cwd=self.REPO_ROOT, env=env, capture_output=True, text=True, timeout=30,
+                check=False)
         self.assertNotEqual(done.returncode, 0)
+        self.assertIn("BOOM: cannot start", done.stderr,
+                      "the server's own diagnostic never reached the caller, so a server that "
+                      "cannot start is still reported as a framing error")
+        self.assertIn("build_runtime_server.py", done.stderr,
+                      "the error does not say which server it failed to talk to")
 
     def test_the_documents_that_teach_this_client_still_name_it(self) -> None:
         """The reason this class is worth its runtime: the client is an INSTRUMENT of the review
         procedure, not a product feature. If the documents stop pointing at it the tests here go
         on passing while nothing uses it — so the coupling is asserted in the direction that
         matters, from the documents to the file."""
-        for rel in ("docs/RUNBOOK.md",
-                    ".claude/skills/atmofab-enforcement-change/references/verification.md"):
+        sources = {
+            "docs/RUNBOOK.md": "mcp_call.py",
+            ".claude/skills/atmofab-enforcement-change/references/verification.md": "mcp_call.py",
+            "TODO.md": "mcp_call.py",
+            # The review-loop skill names the module without its extension, which is why the
+            # needle differs — asserting `mcp_call.py` there would have been a row that could
+            # only fail. Round 1 pointed out that the class docstring names four documents and
+            # this loop checked two of them.
+            ".claude/skills/atmofab-review-loop/SKILL.md": "mcp_call",
+        }
+        for rel, needle in sorted(sources.items()):
             path = self.REPO_ROOT / rel
             with self.subTest(document=rel):
                 self.assertTrue(path.is_file(), f"{rel} is gone; this coupling has no subject")
-                self.assertIn("mcp_call.py", path.read_text(encoding="utf-8"))
+                self.assertIn(needle, path.read_text(encoding="utf-8"))
 
 
 class ToolSchemaDocumentParityTests(unittest.TestCase):
