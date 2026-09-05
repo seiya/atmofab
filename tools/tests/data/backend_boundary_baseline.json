@@ -366,7 +366,7 @@
     "tools/workflow_conductor.py": {
       "compiler-driver": 20,
       "compiler-syntax-only": 2,
-      "fortran": 71,
+      "fortran": 70,
       "fortran-implicit-none": 1,
       "fortran-kind": 1,
       "fortran-module-file": 4,

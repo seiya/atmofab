@@ -27989,7 +27989,7 @@ class PyYAMLScopedRequirementTests(unittest.TestCase):
         def _raise() -> Any:
             raise RuntimeError(
                 "tools.orchestration_runtime: PyYAML is required for parsing "
-                "deps.yaml / spec_catalog.yaml. Install with `pip install PyYAML`."
+                "deps.yaml / spec_catalog.yaml. Install with `pip install -r requirements.txt`."
             )
 
         return _raise

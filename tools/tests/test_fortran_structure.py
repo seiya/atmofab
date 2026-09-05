@@ -242,7 +242,7 @@ class FrontEndUnavailableTests(unittest.TestCase):
                 fs.parse_view("subroutine s\\nend subroutine s\\n")
             except fs.FortranStructureUnavailableError as exc:
                 print("RAISED", fs.FORTRAN_STRUCTURE_UNAVAILABLE_MARKER in str(exc))
-                print("INSTALL", "pip install tree-sitter tree-sitter-fortran" in str(exc))
+                print("INSTALL", "pip install -r requirements.txt" in str(exc))
             else:
                 print("NO-RAISE")
         """))

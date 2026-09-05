@@ -190,7 +190,7 @@ def _load_parser():
         raise FortranStructureUnavailableError(
             f"{FORTRAN_STRUCTURE_UNAVAILABLE_MARKER} the Fortran structure front end is not "
             f"available on this machine ({exc}). Install it with: "
-            f"pip install tree-sitter tree-sitter-fortran"
+            f"pip install -r requirements.txt"
         ) from exc
     try:
         language = Language(tree_sitter_fortran.language())
@@ -198,8 +198,8 @@ def _load_parser():
     except Exception as exc:
         raise FortranStructureUnavailableError(
             f"{FORTRAN_STRUCTURE_UNAVAILABLE_MARKER} the Fortran structure front end failed to "
-            f"initialise ({exc}). Check that tree-sitter and tree-sitter-fortran are ABI "
-            f"compatible: pip install -U tree-sitter tree-sitter-fortran"
+            f"initialise ({exc}). The installed tree-sitter and tree-sitter-fortran are not ABI "
+            f"compatible; install the measured pair with: pip install -r requirements.txt"
         ) from exc
     # THE GRAMMAR MUST STILL SPEAK THE NODE NAMES THIS MODULE MATCHES ON. Everything below keys
     # on node TYPE STRINGS, so a grammar that renames one reports no procedures and no errors —

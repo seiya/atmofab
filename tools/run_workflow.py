@@ -2427,9 +2427,17 @@ def _run_main(
             {
                 "status": "fail",
                 "reason": "missing_required_python_modules",
+                # The remedy installs from the FILE, not from the names. Two of the three
+                # distributions in `requirements.txt` carry a version this repository measured
+                # (`MEASURED_PACKAGE_VERSIONS`, in the `language` backend that reads structure),
+                # and a by-name
+                # install resolves whatever is current — which is the state `docs/RUNBOOK.md`
+                # §0-1 now refuses in as many words. This message is the ONLY install instruction
+                # most operators meet, because the refusal is what sends them to §0-1 in the first
+                # place, so a by-name remedy here silently outranks the document.
                 "detail": (
                     f"missing python packages: {','.join(missing_modules)} — install with: "
-                    f"pip install {' '.join(missing_modules)}"
+                    f"pip install -r requirements.txt"
                 ),
                 "missing": missing_modules,
                 "required": [distribution for _module, distribution in REQUIRED_PYTHON_MODULES],

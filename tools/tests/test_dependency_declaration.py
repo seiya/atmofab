@@ -88,6 +88,37 @@ _VERSION_RE = re.compile(r"\b\d+\.\d+\.\d+\b")
 _VERSION_CONSTRAINT_RE = re.compile(r"(?:===|==|!=|~=|>=|<=|>|<)\s*\d")
 
 
+#: Trailing and leading punctuation a remedy wraps an argument in — backticks, a full stop, a
+#: quote. `Install with \`pip install PyYAML\`.` is a real site of this rule and its argument came
+#: out of a naive split as ``PyYAML`.`` , which canonicalizes to nothing this file declares.
+_ARGUMENT_TRIM = "`'\".,;:)("
+
+
+def _by_name_installs(text: str, declared: list[str]) -> list[str]:
+    """Every `pip install <names>` in `text` that names one of `declared`.
+
+    One predicate for the row that scans the tree and for the probe that witnesses it — the
+    alternative is what round 3 found in the sibling boundary check, where a probe re-implemented
+    the expression and so could not fail for any reason in the code it claimed to observe.
+    """
+    found = []
+    for match in re.finditer(r"pip install ([^\n\"]*)", text):
+        arguments = [a.strip(_ARGUMENT_TRIM) for a in match.group(1).split()]
+        if arguments[:1] in (["-r"], ["--requirement"]):
+            continue
+        quoted = match.group(0).strip().strip(_ARGUMENT_TRIM)
+        if any(_canonical(a) in declared for a in arguments if a and not a.startswith("-")):
+            found.append(quoted)
+        elif "{" in match.group(1):
+            # An INTERPOLATED argument list is by-name by construction — the names are the very
+            # distributions the caller found missing — and no literal scan can see them. That was
+            # one of the five sites, and the one that mattered most: the launch refusal is the
+            # only install instruction most operators meet. `-r <path>` is the legitimate
+            # interpolation and is skipped above.
+            found.append(quoted)
+    return found
+
+
 def _citation_words(text: str) -> list[str]:
     """A heading or a `§` citation, as comparable words.
 
@@ -882,6 +913,94 @@ class MeasuredVersionTests(_RunbookReaderMixin, unittest.TestCase):
             "the runtime")
 
 
+class RemedyTests(unittest.TestCase):
+    """No remedy this repository PRINTS teaches a by-name install of a declared distribution.
+
+    The rule `docs/RUNBOOK.md` §0-1 states — install from the file, because two of the three
+    versions are measured — was stated in a document and enforced in a document, while FIVE places
+    in the code told an operator the opposite. The worst of them is
+    `tools/run_workflow.py`'s `missing_required_python_modules` detail: it is the ONLY install
+    instruction most operators ever meet, because that refusal is what sends them to §0-1 in the
+    first place, and it said `pip install tree-sitter tree-sitter-fortran`. It was pinned, too —
+    `test_run_workflow.py` asserted the by-name string, and this branch edited that test's
+    docstring without touching the assertion.
+
+    Five statement sites of one rule is past the count at which
+    `.claude/skills/atmofab-enforcement-change` rule 3-a says discipline has already lost and the
+    sites must be COUPLED. This is that coupling, and it is written over the code rather than over
+    the documents because the code is where the sites were.
+
+    Bounded to what the runtime SHIPS: `tools/` and `mcp_servers/`, excluding `tools/tests/`. A
+    test may quote a by-name install — several here quote the exact line the branch deleted, in
+    order to describe it — and refusing that would make the rule unstatable.
+    """
+
+    #: Directories whose modules can print a remedy to an operator or a leaf.
+    _REMEDY_ROOTS = ("tools", "mcp_servers")
+
+    #: `tools/tests/` quotes by-name installs deliberately, to describe the rule. Nothing else is
+    #: excluded — an earlier draft of this row also skipped `tools/backends/`, which excluded the
+    #: Fortran front end's own import-failure remedy, i.e. one of the five sites the rule exists
+    #: for. Measured: restoring that remedy survived the check that was written to catch it.
+    _REMEDY_EXCLUDED = ("tools/tests/",)
+
+    def _sources(self) -> list[tuple[str, str]]:
+        found = []
+        for root in self._REMEDY_ROOTS:
+            for path in sorted((REPO_ROOT / root).rglob("*.py")):
+                rel = path.relative_to(REPO_ROOT).as_posix()
+                if rel.startswith(self._REMEDY_EXCLUDED) or "__pycache__" in rel:
+                    continue
+                found.append((rel, path.read_text(encoding="utf-8", errors="replace")))
+        return found
+
+    def _declared(self) -> list[str]:
+        return sorted(_parsed(REPO_ROOT / "requirements.txt"))
+
+    def test_no_runtime_module_prints_a_by_name_install_of_a_declared_package(self) -> None:
+        declared = self._declared()
+        self.assertTrue(declared, "requirements.txt declares nothing; this row observes nothing")
+        offenders = []
+        for rel, text in self._sources():
+            for quoted in _by_name_installs(text, declared):
+                offenders.append(f"{rel}: {quoted}")
+        self.assertEqual(
+            [], offenders,
+            "a module prints a remedy telling the reader to install a declared distribution BY "
+            "NAME. Two of the three carry a version this repository measured, so following it "
+            "lands on a release nothing here has driven — and a printed remedy outranks a "
+            f"document, because it arrives at the moment of the failure: {offenders}")
+
+    def test_the_remedy_scan_reaches_the_module_it_was_written_for(self) -> None:
+        """The self-test. Every needle this row looks for is a common string, and the row's whole
+        value is that it reads `tools/run_workflow.py` — so it asserts that it does, and that the
+        scan is not silently empty."""
+        scanned = {rel for rel, _ in self._sources()}
+        self.assertIn("tools/run_workflow.py", scanned)
+        self.assertIn("tools/orchestration_runtime.py", scanned)
+        self.assertIn("tools/workflow_conductor.py", scanned)
+        self.assertNotIn("tools/tests/test_dependency_declaration.py", scanned)
+        self.assertGreater(len(scanned), 10, "the remedy scan reads almost nothing")
+
+    def test_the_scan_would_notice_a_by_name_remedy(self) -> None:
+        """The other direction, on synthetic text: the rule has to fire on the exact spellings the
+        five real sites used, and not on the `-r` form or on a distribution nobody declares."""
+        declared = self._declared()
+        for line, expected in (
+                ("Install it with: pip install tree-sitter tree-sitter-fortran", True),
+                ("Install with `pip install PyYAML`.", True),
+                ("The fix is `pip install tree-sitter tree-sitter-fortran` on the host", True),
+                ("install with: pip install -r requirements.txt", False),
+                ("pip install --requirement requirements.txt", False),
+                ("pip install pytest", False),      # not a runtime declaration
+                ("pip install some-other-thing", False),
+                # the interpolated form, both directions
+                ("f\"pip install {names}\"", True),
+                ("f\"pip install -r {requirements_path}\"", False)):
+            with self.subTest(line=line):
+                self.assertEqual(bool(_by_name_installs(line, declared)), expected)
+
+
 class DevelopmentSetupBlockTests(unittest.TestCase):
     """`docs/DEVELOPMENT.md` §Fresh-machine setup step 6's install block states no version range.
 
@@ -915,13 +1034,22 @@ class DevelopmentSetupBlockTests(unittest.TestCase):
         the whole file when a second appeared. PR-3 of this issue adds a CI workflow whose own step
         is this command, and a document quoting that step in a second fence is ordinary work. The
         rule applies to each block equally, so there is no reason to insist there is one.
+
+        And every fence of the SECTION, not only the ones carrying the marker. Round 4 measured the
+        gap: `pip install -U tree-sitter` in a SIBLING fence of step 6 was green everywhere, which
+        is the same defect `test_the_setup_block_installs_no_package_by_name` exists for, closed
+        for one fence and open for the next — and the section's own prose invites a second fence by
+        telling a `pipx` user to run individual install commands. The marker still has to appear
+        SOMEWHERE in the section, so a document that has lost the block entirely is refused rather
+        than passing on an empty list.
         """
-        holding = [f for f in document.split("```")[1::2] if self._BLOCK_MARKER in f]
+        section = document.split("| 6 |", 1)[-1].split("\n## ", 1)[0]
+        fences = section.split("```")[1::2]
         self.assertTrue(
-            holding,
-            "docs/DEVELOPMENT.md carries no fenced block containing "
+            any(self._BLOCK_MARKER in f for f in fences),
+            "docs/DEVELOPMENT.md §Fresh-machine setup carries no fenced block containing "
             f"{self._BLOCK_MARKER!r}; this check cannot find the install block it is about")
-        return holding
+        return fences
 
     def _document(self) -> str:
         return (REPO_ROOT / "docs" / "DEVELOPMENT.md").read_text()
@@ -958,31 +1086,47 @@ class DevelopmentSetupBlockTests(unittest.TestCase):
                     f"(arguments: {arguments}); that resolves whatever version is current, which "
                     "is what installing from the file exists to avoid.")
 
-    def test_the_block_finder_is_bounded_to_the_block(self) -> None:
+    def test_the_block_finder_reads_every_fence_of_step_6_and_nothing_else(self) -> None:
         """The over-refusal probe and the self-test, on a synthetic document.
 
-        It has to be synthetic: `docs/DEVELOPMENT.md` at HEAD states no version range anywhere, so
-        driven on the real file the row above cannot tell a bounded reader from one that found
-        nothing. Three things must be out of the reader\'s reach — a range in prose, a range in a
-        DIFFERENT fenced block, and the marker appearing in prose rather than in a fence.
+        It has to be synthetic: `docs/DEVELOPMENT.md` at HEAD states no version constraint
+        anywhere, so driven on the real file the rows above cannot tell a bounded reader from one
+        that found nothing.
+
+        The bound is step 6's subsection — from its row of the setup table to the next `## `
+        heading. Two things stay out of reach: anything BEFORE step 6 (the document may state a
+        version constraint in prose or in another step's block), and anything after the section.
+        A SIBLING fence inside step 6 is deliberately IN reach: round 4 measured
+        `pip install -U tree-sitter` in one of those as green everywhere, which is the same defect
+        the by-name row exists for, closed for one fence and open for the next.
         """
         document = (
             "# Development\n\nInstall `python3` `>=3.10,<3.14` first.\n\n"
-            "```\nsudo apt-get install make\nfortitude>=9.9,<9.10\n```\n\n"
+            "```\npipx install 'ruff>=0.1,<0.2'\n```\n\n"        # before step 6: out of reach
+            "| 6 | run the suite |\n\n"
+            "```\nsudo apt-get install make\nfortitude>=9.9,<9.10\n```\n\n"  # sibling: in reach
             "Do not write `pip install -r requirements-dev.txt` in prose.\n\n"
             f"```\n{self._BLOCK_MARKER}\nsudo apt-get install cppcheck\n```\n\n"
-            "And afterwards `gfortran` `>=11.0,<15.0`.\n")
+            "## Configuration layers\n\n```\npipx install 'ruff>=0.3,<0.4'\n```\n")
         blocks = self._setup_blocks(document)
-        self.assertEqual(1, len(blocks))
-        self.assertIn(self._BLOCK_MARKER, blocks[0])
-        self.assertEqual([], _VERSION_CONSTRAINT_RE.findall(blocks[0]))
+        self.assertEqual(
+            [self._BLOCK_MARKER in b for b in blocks], [False, True],
+            "the reader must return every fence of step 6, in order, and no fence outside it")
+        self.assertTrue(_VERSION_CONSTRAINT_RE.findall(blocks[0]),
+                        "a constraint in a SIBLING fence of step 6 must be in reach")
+        self.assertEqual([], _VERSION_CONSTRAINT_RE.findall(blocks[1]))
+        joined = "".join(blocks)
+        self.assertNotIn(">=0.1,<0.2", joined, "a fence BEFORE step 6 must be out of reach")
+        self.assertNotIn(">=0.3,<0.4", joined, "a fence AFTER the section must be out of reach")
         with self.assertRaises(AssertionError) as caught:
-            self._setup_blocks("# Development\n\nno block here\n")
+            self._setup_blocks("# Development\n\n| 6 | run |\n\nno block here\n")
         self.assertIn("carries no fenced block", str(caught.exception))
         # A SECOND block carrying the same command is ordinary work (PR-3 quotes this step in a
-        # CI workflow); both are read, and a constraint in either is caught.
-        two = document + f"\n```yaml\n  - run: {self._BLOCK_MARKER}\n```\n"
-        self.assertEqual(2, len(self._setup_blocks(two)))
+        # CI workflow); every fence of the section is read, so a constraint in any counts.
+        two = document.replace("## Configuration layers",
+                               f"```yaml\n  - run: {self._BLOCK_MARKER}\n```\n\n"
+                               "## Configuration layers", 1)
+        self.assertEqual(3, len(self._setup_blocks(two)))
 
     def test_the_reader_sees_a_constraint_in_every_spelling_pip_accepts(self) -> None:
         """The other direction, and the one that decides whether the row above can ever fail.

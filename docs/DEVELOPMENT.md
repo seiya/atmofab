@@ -43,6 +43,17 @@ declarations — `requirements-dev.txt` by `tools/tests/test_dependency_declarat
 `tools/tests/test_host_prerequisites.py`. This block used to spell them a third time, unchecked,
 which is the shape that let an install line drift out of the range the launch probe accepts.
 
+**On a PEP 668 host the `pip` line above aborts, and that is a change this repository made.** A
+current LTS — Ubuntu 24.04+, Debian 12+, Fedora — marks the system interpreter
+`externally-managed`, and `pip install` into it refuses with `error:
+externally-managed-environment`. Step 6 used to say `pipx install`, which is immune because it
+builds its own environment per tool; installing from a requirements file is not. Use a virtualenv,
+or `pip install --user`, which is how THIS development host was actually built (both linters and
+`pytest` live in `~/.local/bin`; measured Ubuntu 22.04, Python 3.10.12, no
+`EXTERNALLY-MANAGED` marker, so the plain command works here and this note is for the machine you
+are on, not for this one). `docs/RUNBOOK.md` §0-1's `pip install -r requirements.txt` has the same
+property and always did.
+
 `pipx` installs a COMMAND-LINE TOOL into its own environment, so it is the right instrument for
 the two linters and the wrong one for the rest of the file. A `pipx` user runs
 `pipx install '<line>'` for each of the two linter lines of `requirements-dev.txt`, quoting each

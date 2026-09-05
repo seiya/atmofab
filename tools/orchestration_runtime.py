@@ -56,7 +56,7 @@ def _require_yaml() -> Any:
     except ImportError as exc:  # pragma: no cover — install gap
         raise RuntimeError(
             "tools.orchestration_runtime: PyYAML is required for parsing "
-            "deps.yaml / spec_catalog.yaml. Install with `pip install PyYAML`. "
+            "deps.yaml / spec_catalog.yaml. Install with `pip install -r requirements.txt`. "
             "Recovery commands (set-status, record-timeout, etc.) that do "
             "not parse YAML remain usable without it."
         ) from exc
