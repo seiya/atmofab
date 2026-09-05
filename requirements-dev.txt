@@ -5,9 +5,9 @@
 # The linter ranges below are the backends' own `SUPPORTED_VERSION_SPEC` strings, character for
 # character; `tools/tests/test_dependency_declaration.py` compares them to the declarations, so
 # this file cannot drift into telling a developer to install a build the launch probe refuses.
-# `cppcheck` is not here: it is a system package (`apt-get install cppcheck`), not a
-# distribution pip can install. Its range lives in `tools/backends/linter/cppcheck/lint.py`
-# and in `docs/RUNBOOK.md` §0-1.
+# The third linter backend is absent because it is a system package rather than a distribution pip
+# can install; `docs/DEVELOPMENT.md` §Setup step 6 carries its apt line, and its range lives in its
+# own backend beside the two below.
 
 -r requirements.txt
 

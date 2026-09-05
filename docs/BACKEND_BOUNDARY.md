@@ -18,6 +18,9 @@ rule that keeps it out of everything else.
 - `leaf_config/`, the committed configuration a workflow leaf is launched with. It names
   hook events, tool names and permission tokens of the LLM CLI that runs a leaf — an
   `agent` axis concern, not a target-stack one — and no `axis` value appears in it.
+- `requirements.txt` and `requirements-dev.txt`, the dependency declaration. They name the pip
+  distributions of a `language` backend's parser and of the `linter` backends' tools, which is
+  the same kind of statement as the install line this rule already measures in `docs/RUNBOOK.md`.
 
 Out of scope, each for a stated reason:
 - `spec/`. A `spec` is required to be language-neutral by `docs/CONTROLLED_SPEC.md`, and that

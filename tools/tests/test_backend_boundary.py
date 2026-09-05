@@ -137,6 +137,15 @@ _SCANNED_GLOBS = (
     # maps 1:1 to a glob here, and a token added under `leaf_config/` was unmeasured
     # while the document said it was in scope.
     ("leaf_config", "**/*.json"),
+    # The dependency declaration (issue #161). Same reason as the two root documents above and
+    # as `mcp_servers/`'s declaration files: this is where `linter`- and `language`-axis
+    # distribution names are spelled, and an install line is exactly the kind of statement the
+    # ratchet already measures in `docs/RUNBOOK.md`. Added because the declaration landed
+    # OUTSIDE the scan: the two `pipx install '<linter><range>'` lines deleted from
+    # `docs/DEVELOPMENT.md` reappeared in `requirements-dev.txt`, the recorded debt fell by two,
+    # and nothing had moved out of the neutral core.
+    (".", "requirements.txt"),
+    (".", "requirements-dev.txt"),
 )
 
 #: Out of scope by the rule. The three backend ROOTS are deliberately absent: a path under a

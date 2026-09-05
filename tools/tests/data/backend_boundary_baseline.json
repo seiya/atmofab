@@ -211,6 +211,13 @@
       "fortran-standard": 1,
       "make-control-file": 1
     },
+    "requirements-dev.txt": {
+      "linter-fortitude": 1,
+      "linter-ruff": 1
+    },
+    "requirements.txt": {
+      "fortran": 2
+    },
     "skills/spec-input-check/SKILL.md": {
       "fortran": 1
     },

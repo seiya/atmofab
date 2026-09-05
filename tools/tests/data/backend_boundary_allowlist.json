@@ -72,6 +72,14 @@
     [
       "leaf_config",
       "**/*.json"
+    ],
+    [
+      ".",
+      "requirements.txt"
+    ],
+    [
+      ".",
+      "requirements-dev.txt"
     ]
   ],
   "skill_backend_shape": "^skills/[^/]+/backends/([^/]+)/([^/]+)\\.md$",
