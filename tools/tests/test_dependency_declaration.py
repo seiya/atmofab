@@ -531,7 +531,7 @@ class _RunbookReaderMixin:
         rest = document.split(self._SECTION_HEADING, 1)[1]
         out = []
         for line in rest.splitlines():
-            if line.startswith("## ") or line.startswith("### "):
+            if line.startswith(("## ", "### ")):
                 break
             out.append(line)
         return "\n".join(out)
@@ -755,8 +755,8 @@ class RuntimeRequirementsTests(_RunbookReaderMixin, unittest.TestCase):
             with self.subTest(not_a_command=not_a_command):
                 self.assertEqual(self._pip_install_lines(not_a_command), [])
         for prose in (
-                "Historical note: earlier revisions told you to run `pip install -r "
-                "requirements.txt`; do NOT do that.\n",
+                ("Historical note: earlier revisions told you to run `pip install -r "
+                 "requirements.txt`; do NOT do that.\n"),
                 "Do not `pip install PyYAML` by hand.\n"):
             with self.subTest(prose=prose):
                 self.assertEqual(self._pip_install_lines(prose), [])
