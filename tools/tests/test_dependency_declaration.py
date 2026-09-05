@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import re
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -48,20 +49,42 @@ from tools.backends import registry as backend_registry  # noqa: E402
 _REQUIREMENT_RE = re.compile(r"^(?P<name>[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?)(?P<spec>.*)$")
 
 
-def _requirement_lines(path: Path) -> list[str]:
-    """The lines of a requirements file that state a requirement.
+def _effective_lines(path: Path) -> list[str]:
+    """Every line of a requirements file that pip ACTS on, comments and blanks removed.
 
-    Comments, blank lines and pip's own `-r` include directive are not requirements. The `-r` case
-    is called out because dropping it silently would make `requirements-dev.txt` look as though it
-    declared the runtime set too.
+    One reader for both of the questions below, because the alternative is what the branch's own
+    handwritten sweep killed: an `assertIn("-r requirements.txt", path.read_text())` is satisfied
+    by a line reading `# -r requirements.txt`, so commenting the include out left the check green.
+    A raw-text search cannot tell an instruction from a mention of one.
     """
     lines = []
     for raw in path.read_text().splitlines():
         line = raw.split("#", 1)[0].strip()
-        if not line or line.startswith("-"):
-            continue
-        lines.append(line)
+        if line:
+            lines.append(line)
     return lines
+
+
+def _include_targets(path: Path) -> list[str]:
+    """The files a requirements file pip-includes with `-r` / `--requirement`."""
+    targets = []
+    for line in _effective_lines(path):
+        for flag in ("-r", "--requirement"):
+            if line == flag or line.startswith(flag + " "):
+                targets.append(line[len(flag):].strip())
+            elif flag == "--requirement" and line.startswith("--requirement="):
+                targets.append(line.split("=", 1)[1].strip())
+    return targets
+
+
+def _requirement_lines(path: Path) -> list[str]:
+    """The lines of a requirements file that state a requirement.
+
+    An option line — pip's `-r` include and anything else beginning with `-` — is not one. That
+    case is called out because dropping it silently would make `requirements-dev.txt` look as
+    though it declared the runtime set too.
+    """
+    return [line for line in _effective_lines(path) if not line.startswith("-")]
 
 
 def _parsed(path: Path) -> dict[str, str]:
@@ -264,12 +287,34 @@ class DevRequirementsTests(unittest.TestCase):
 
     def test_the_dev_file_includes_the_runtime_file(self) -> None:
         """`pip install -r requirements-dev.txt` has to be sufficient to run the suite, which
-        imports the runtime dependencies. Without the include it installs a set that cannot."""
+        imports the runtime dependencies. Without the include it installs a set that cannot.
+
+        Asked of the lines pip ACTS on, not of the file's text: the first version of this row
+        searched the raw text, and the branch's handwritten sweep killed it by commenting the
+        include out — `# -r requirements.txt` contains the string the assertion looked for.
+        """
         self.assertIn(
-            "-r requirements.txt",
-            (REPO_ROOT / "requirements-dev.txt").read_text(),
+            "requirements.txt", _include_targets(REPO_ROOT / "requirements-dev.txt"),
             "requirements-dev.txt no longer includes requirements.txt, so installing it alone "
             "leaves the suite without the runtime dependencies it imports")
+
+    def test_the_include_reader_does_not_read_a_commented_out_include(self) -> None:
+        """The self-test for `_include_targets`, which is the only thing standing between the row
+        above and the false green it used to give. Both directions: a live include is found, and
+        the same line commented out is not — so a later change that stops stripping comments turns
+        this red rather than turning the row above vacuous."""
+        holder = tempfile.TemporaryDirectory()
+        self.addCleanup(holder.cleanup)
+        scratch = Path(holder.name)
+        live = scratch / "live.txt"
+        live.write_text("-r requirements.txt\npytest\n")
+        self.assertEqual(_include_targets(live), ["requirements.txt"])
+        dead = scratch / "dead.txt"
+        dead.write_text("# -r requirements.txt\npytest\n")
+        self.assertEqual(_include_targets(dead), [])
+        long_form = scratch / "long.txt"
+        long_form.write_text("--requirement requirements.txt\n")
+        self.assertEqual(_include_targets(long_form), ["requirements.txt"])
 
     def test_the_reader_does_not_mistake_the_include_for_a_requirement(self) -> None:
         """The self-test for `_requirement_lines`: `-r requirements.txt` must not come back as a
