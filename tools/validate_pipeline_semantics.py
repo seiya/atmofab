@@ -1246,8 +1246,8 @@ def _is_literal_like_expr(expr: str) -> bool:
 
 
 # The `problem` model gates below match Fortran's KEYWORD STRUCTURE, so the text they read is
-# reduced by `_joined_masked_fortran_view` — inside `_fortran_procedure_envelopes`, which is
-# where every one of them now gets its bodies from. (Two of the three called the view themselves
+# reduced by `_joined_masked_fortran_view` — inside `_structure_reading`, which
+# `_fortran_procedure_envelopes` calls and where every one of them now gets its bodies from. (Two of the three called the view themselves
 # as well until review pointed out that the walk had made those calls no-ops, while the comments
 # beside them still called them load-bearing. The dependency-dataflow gate's own call stayed: it
 # feeds `_fortran_declared_names` directly.) Without the mask half, body selection stops at the
@@ -1374,7 +1374,9 @@ def _fortran_view_pair(lowered: str) -> tuple[str, str, list[int], list[int]]:
         _FORTRAN_STATEMENT_LABEL.sub("", statement, count=1) for statement in raw_statements
     ]
     # EVERY label is kept in the twin. WHICH reading to parse is not decided here at all — see
-    # `_fortran_procedure_envelopes`, which asks the parser both ways. Three versions of a rule
+    # `_structure_reading`, which asks the parser both ways (it was
+    # `_fortran_procedure_envelopes` until that decision was extracted so a second structural
+    # question could share it; this pointer went one frame stale in the same commit). Three versions of a rule
     # that tried to decide it HERE were each defeated by a legal program, in three consecutive
     # review rounds: keep every label (breaks `10 contains` / `20 subroutine helper(v)`, which
     # tree-sitter cannot parse and gfortran accepts); keep any label a `do` names file-wide (a
@@ -1465,18 +1467,27 @@ def _structure_reading(
     return view, tree, to_view
 
 
-def _module_level_procedure_names(lowered: str) -> frozenset[str]:
-    """The names ``lowered`` DEFINES at module level — the definedness half of the published
-    surface, asked of the language backend.
+def _module_level_procedure_names(
+    lowered: str, unit_name: str | None = None
+) -> frozenset[str]:
+    """The names ``lowered`` DEFINES at the top level of the program unit ``unit_name`` — the
+    definedness half of the published surface, asked of the language backend.
 
-    The rule this serves is neutral: a published operation must be IMPLEMENTED by the unit that
-    publishes it, not merely declared. Which spellings declare without implementing, and why a
-    caller must not decide that itself, belong to the backend —
-    `structure.module_level_procedure_names` is canonical for both.
+    The rule this serves is neutral: a published operation must be IMPLEMENTED BY THE UNIT THAT
+    PUBLISHES IT, not merely declared, and not implemented by some other unit that happens to
+    share the file. Which spellings declare without implementing, which unit counts as the same
+    publisher, and why a caller must not decide either itself, belong to the backend —
+    `structure.module_level_procedure_names` is canonical for all three.
+
+    ``unit_name`` is the published unit's own name, which this repository fixes by convention as
+    the model source's basename with its extension dropped. Measured over the 30 certified
+    `component` / `infrastructure` sources in `workspace/pipelines` (2026-09-05): every one
+    declares exactly one program unit, and its name is exactly that.
+    Passing None asks the unscoped question and is answered by the backend, not here.
 
     Raises the same two errors as `_structure_reading`."""
     _view, tree, _to_view = _structure_reading(lowered)
-    return fortran_structure.module_level_procedure_names(tree)
+    return fortran_structure.module_level_procedure_names(tree, unit_name)
 
 
 def _fortran_procedure_envelopes(lowered: str) -> list[_FortranProcedureEnvelope]:
@@ -1528,20 +1539,9 @@ def _fortran_procedure_envelopes(lowered: str) -> list[_FortranProcedureEnvelope
     function/subroutine distinction, so it could only ever have rescued a subroutine-shaped one,
     of which this tree has none. See `TODO.md`.
     """
-    # TWO READINGS OF ONE PROGRAM, and the PARSER picks. A statement label is inert to every rule
-    # in this module — which is why the view strips labels, so each rule can anchor on the
-    # statement's own keyword — but it is not inert to a parser: it terminates a labelled `DO` and
-    # it is part of a `FORMAT`. Neither reading parses everything: tree-sitter cannot parse
-    # `10 contains` or `20 subroutine helper(v)` (labels kept), and it cannot parse a labelled
-    # `DO` or a `FORMAT` among declarations (labels stripped). Both are legal F2008 and gfortran
-    # accepts all four (executed).
-    #
-    # So the reading is not chosen by a rule about labels — three such rules were written and each
-    # was defeated by a legal program in the next review round. The stripped view is tried first
-    # because it is the common case (365 of the 365 in-tree models carry no label at all, and it
-    # needs no offset translation); the label-preserving twin is tried only when that fails. A
-    # source is refused only when NEITHER reading resolves, which is strictly weaker than either
-    # rule and needs no enumeration to stay true.
+    # The label reading — two readings of one program, chosen by the PARSER — belongs to
+    # `_structure_reading` and is stated in its docstring, once. It was duplicated here verbatim
+    # when that function was extracted, which is two copies of one rationale that can drift.
     view, tree, to_view = _structure_reading(lowered)
 
     spans = tuple((to_view(start), to_view(end)) for start, end in tree.interface_spans)
@@ -13477,10 +13477,32 @@ def _validate_generated_signatures(
     # buys the definedness check — and a parse the front end cannot resolve is refused rather than
     # skipped. Skipping would put the check behind a switch the LEAF holds: one renamed variable
     # would disable it, which is the silent-gate shape this area exists to remove.
+    #
+    # THE QUESTION IS SCOPED TO THE PUBLISHING UNIT, and the first version of this check was not.
+    # Asked over the whole file it becomes "is this name defined ANYWHERE", which a decoy answers:
+    # a round-1 reviewer measured a model whose published operation was a prototype in the
+    # published module and an empty stub in a SECOND module in the same file — gate 0 violations,
+    # the syntax stage clean, the node's own build clean, and the consumer still failing at LINK
+    # with an undefined reference. That is this check's own hole, one unit away, reproduced
+    # independently before it was fixed. The duplicate-symbol backstop that should have caught two headers of one name did
+    # not, because the decoy's header carried a prefix (`impure elemental`) or a statement label
+    # that the stanza reader does not model — so narrowing to that spelling would have closed one
+    # decoy and left the family. Scoping removes the family.
+    #
+    # The unit is named by the source's own basename with its extension dropped, which is the
+    # convention this repository already relies on when it resolves the model source at all.
+    # Every model file contributes only the names ITS OWN unit defines, so a multi-file set
+    # cannot lend one file's definitions to another file's prototypes.
     defined_names: frozenset[str] | None = None
     if op_stanzas:
         try:
-            defined_names = _module_level_procedure_names(combined.lower())
+            defined_names = frozenset().union(*(
+                _module_level_procedure_names(
+                    model_file.read_text(encoding="utf-8", errors="ignore").lower(),
+                    model_file.stem,
+                )
+                for model_file in model_files
+            )) if model_files else frozenset()
         # `FortranStructureUnavailableError` is deliberately NOT caught: it is the OPERATOR's
         # failure (an uninstalled package), no edit to this source can clear it, and `main`
         # answers it with a dedicated exit code. Same rule as `_validate_problem_model_gates`.
@@ -13494,7 +13516,11 @@ def _validate_generated_signatures(
                     "shown to be DEFINED and not merely declared, which needs the procedure "
                     f"structure, so an unresolvable source is a Generate failure — "
                     f"{fortran_structure.STRUCTURE_REFUSAL_HINT}.")
-            return
+            # NO `return`. The header comparison below does not need the parse, and discarding it
+            # would hand a leaf whose source has BOTH an unresolvable identifier and a real
+            # signature drift only the first of the two — two warm retries where one would do.
+            # `defined_names` stays None, so the definedness arm alone is skipped; the violation
+            # above already fails the node, so skipping it opens nothing.
 
     for name in sorted({**op_stanzas, **type_stanzas}):
         spec_lines = op_stanzas.get(name) or type_stanzas.get(name) or []

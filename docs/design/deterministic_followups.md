@@ -3722,11 +3722,21 @@ build whenever the operation is exercised.
 > narrower and they never reach it. The premise was inherited by reading rather than by execution,
 > and it cost the fix a round it did not need. `PublishedProcedureDefinednessTests` pins it as a row.
 >
-> Two measurements went with it. Each of the three shapes is legal (`gfortran -fsyntax-only` rc=0).
-> A fourth — a plain, non-`module` interface body implemented by a submodule — passes
-> `-fsyntax-only` rc=0 and FAILS `gfortran -c` rc=1 ("Module file 'hx_model.smod' has not been
-> generated"), which is worth knowing separately: the gate's own syntax stage runs in syntax-only
-> mode, so that shape reaches Build.
+> Each of the three shapes is legal (`gfortran -fsyntax-only` rc=0).
+>
+> **A fourth measurement was recorded here and was WRONG; it is corrected rather than deleted,
+> because a wrong measurement nobody can tell from an audited one is the worse artifact.** The
+> first version of this note said a plain, non-`module` interface body implemented by a submodule
+> "passes `-fsyntax-only` rc=0 and FAILS `gfortran -c` rc=1 … so that shape reaches Build". A
+> round-1 reviewer could not reproduce the split and re-measured it in a CLEAN directory: both
+> `-fsyntax-only` and `-c` return **rc=1** with "Module file 'hx_model.smod' has not been
+> generated" (re-run independently and confirmed). The rc=0 came from a stale `hx_model.smod` left
+> in the scratch directory by the PRECEDING fixture, which used the same module name. So the
+> load-bearing half — "that shape reaches Build" — is false in the safe direction: `-fsyntax-only`
+> rejects it, so the gate's own syntax stage catches it and Build is never reached. The lesson is
+> the compiler-probe one this repository keeps relearning: **a compiler probe is stateful in its
+> working directory, and a fixture family that reuses one module name across shapes carries the
+> previous shape's artifacts into the next one's answer.**
 >
 > WHAT IS NOT CLOSED. A published operation defined as an EXTERNAL (file-scope) procedure in the
 > node's `<spec_id>_checks.f90`, with the model declaring it in an `interface` block, is legal,
