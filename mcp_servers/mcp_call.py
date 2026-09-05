@@ -7,6 +7,7 @@ import argparse
 import json
 import subprocess
 import sys
+from pathlib import Path
 from typing import Any
 
 
@@ -40,15 +41,41 @@ def _read_message(stream) -> dict[str, Any]:
         return json.loads(first.decode("utf-8"))
 
 
+#: The server this client speaks to, resolved from THIS file rather than from the caller's working
+#: directory. It used to be the relative path `mcp_servers/build_runtime_server.py`, which made
+#: every documented use of this client silently require the checkout root as `cwd` — and the
+#: failure did not say so: the spawn failed, `stderr` was captured and never read, and what the
+#: caller saw was `unexpected EOF while reading MCP message header`, a framing error naming the
+#: wrong layer. That matters more here than in an ordinary script, because this client is the
+#: instrument `docs/RUNBOOK.md` and `.claude/skills/atmofab-enforcement-change` hand an operator
+#: to PROVE a capability-gate refusal: with the old behaviour, "the gate refused the call" and
+#: "the client never started" were the same non-zero exit, so a verification could be recorded as
+#: passed by someone standing in the wrong directory.
+_SERVER = Path(__file__).resolve().parent / "build_runtime_server.py"
+
+
 def _mcp_call(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     proc = subprocess.Popen(
-        [sys.executable, "mcp_servers/build_runtime_server.py"],
+        [sys.executable, str(_SERVER)],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
     assert proc.stdin is not None
     assert proc.stdout is not None
+
+    def _server_stderr() -> str:
+        """Whatever the server said before it stopped talking.
+
+        Read only on the failure path, and only after the process is gone, so it cannot deadlock
+        on a server that is still running. Without it a server that dies at import — a missing
+        dependency, a syntax error, a bad path — is reported as a framing problem.
+        """
+        try:
+            return (proc.stderr.read().decode("utf-8", "replace").strip()
+                    if proc.stderr is not None else "")
+        except Exception:  # noqa: BLE001 - diagnostics must not replace the original failure
+            return ""
 
     try:
         _write_message(
@@ -77,6 +104,26 @@ def _mcp_call(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
             },
         )
         response = _read_message(proc.stdout)
+    except (RuntimeError, OSError, ValueError) as exc:
+        # EVERY failure of the exchange, not only the last read. Two narrowings were measured and
+        # both left a real case uncovered: the first version wrapped the `tools/call` read alone,
+        # and a server that dies at import fails at the INITIALIZE read one line earlier; the
+        # second caught `json.JSONDecodeError` and missed the BARE `ValueError` that
+        # `int(header_value)` raises on a non-numeric `Content-Length` — a framing failure this
+        # repository's own tests record as reachable. `ValueError` covers both, since
+        # `JSONDecodeError` is one. `OSError` is the broken pipe seen from the write side.
+        #
+        # KILL FIRST, THEN READ. `proc.stderr.read()` reads to EOF, so on a failure where the
+        # server is still alive — a non-JSON line on its stdout reaches `json.loads` while the
+        # process keeps running on a stdin pipe this client still holds open — reading before the
+        # kill blocks for ever, and this client has no timeout of its own. The order is the whole
+        # difference between a diagnostic and a hang.
+        proc.kill()
+        proc.wait(timeout=2)
+        detail = _server_stderr()
+        raise RuntimeError(
+            f"{exc}; the server ({_SERVER}) produced: {detail or '(nothing on stderr)'}"
+        ) from exc
     finally:
         proc.kill()
         proc.wait(timeout=2)
