@@ -19,13 +19,20 @@ those two linter ranges in an install line that NO test read, so it could tell a
 install a build the launch probe refuses. That line now points at `requirements-dev.txt`, and this
 file is what holds it.
 
-What is deliberately NOT checked here: the CI workflow's `apt-get` line. Comparing it to a
-document needs a hand-written executable-name -> package-name map (`bwrap` -> `bubblewrap`) and a
+A fourth authority joined the three above once round 1 measured that the version half of
+`requirements.txt` was held by nothing: `MEASURED_PACKAGE_VERSIONS` in
+`tools/backends/language/fortran/structure.py`, which is what `MeasuredVersionTests` compares the
+two pins and the runbook's table rows against.
+
+What is deliberately NOT checked here, and it is a FORWARD statement rather than a description of
+this revision: the `apt-get` line of the CI workflow that PR-3 of GitHub issue #161 will add.
+There is no `.github/` in this tree. When it exists, comparing its apt line to a document would
+need a hand-written executable-name -> package-name map (`bwrap` -> `bubblewrap`) and a
 pip-or-apt column (`fortitude` -> `fortitude-lint`), which is a third copy of a fact two documents
-already carry — the thing `docs/DEVELOPMENT.md` §Design Policy forbids. What witnesses the apt
-line instead is the suite CI runs: `test_host_prerequisites` asserts the derived executables are
-on PATH at a supported version, and each linter backend's tests FAIL rather than skip when their
-tool is absent.
+already carry — the thing `docs/DEVELOPMENT.md` §Design Policy forbids. What is meant to witness
+that line instead is the suite itself, wherever it runs: `test_host_prerequisites` asserts the
+derived executables are on PATH at a supported version, and each linter backend's tests FAIL
+rather than skip when their tool is absent.
 """
 
 from __future__ import annotations
@@ -555,10 +562,15 @@ class DevRequirementsTests(unittest.TestCase):
     def _declared_ranges(self) -> dict[str, str]:
         """backend id -> `SUPPORTED_VERSION_SPEC`, for every implemented linter that lints.
 
-        The same walk `test_host_prerequisites.LinterVersionRangeTests._declared_ranges` does. It
-        is repeated rather than imported because importing a sibling test's helper couples the two
-        files' fixtures; what must not be duplicated is the CONSTANT, and it is not — both ask the
-        registry.
+        The sibling `test_host_prerequisites.LinterVersionRangeTests._declared_ranges` asks the
+        same question with `backend_ids`; this one asks `implemented_backend_ids`, so a linter that
+        is DECLARED but whose package has not been extracted is outside this file rather than
+        inside it with no module to import. The two answers are identical on this tree
+        (`cppcheck`, `fortitude`, `mixed`, `ruff` are all implemented) and are not the same walk —
+        an earlier version of this docstring said they were, which would have sent a later reader
+        past the difference. The walk is repeated rather than imported because importing a sibling
+        test's helper couples the two files' fixtures; what must not be duplicated is the
+        CONSTANT, and it is not — both ask the registry.
         """
         found: dict[str, str] = {}
         for backend_id in backend_registry.implemented_backend_ids("linter"):

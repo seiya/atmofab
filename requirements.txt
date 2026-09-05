@@ -7,25 +7,37 @@
 # machine installing from this file becomes the machine the measurements were taken on. A floor
 # is used only where a pin is not installable; the comment then says why the floor is enough.
 #
-# Supported Python: 3.10. That is the interpreter every measurement in this repository was
-# taken on, and the one CI installs (`.github/workflows/tests.yml`). It is recorded here
-# rather than as `python_requires` metadata because this repository is not a distributed
-# artifact (`AGENTS.md` §Development premises), so there is no package to carry the field;
-# what enforces it is CI running on that version, not a declaration.
+# Supported Python: 3.10. That is the interpreter every measurement in this repository was taken
+# on. It is recorded here rather than as `python_requires` metadata because this repository is not
+# a distributed artifact (`AGENTS.md` §Development premises), so there is no package to carry the
+# field. NOTHING ENFORCES IT at this revision: it is a record of where the measurements come from,
+# and the CI that would run the suite on that interpreter is a later PR of GitHub issue #161.
 
-# FLOOR. The development host carries 5.4.1 from apt, and pip cannot reproduce it on Python 3.10
-# (the 5.4.1 sdist builds against Cython 3 and fails), so the measured value is not a pinnable
-# one. The floor is enough because the only compatibility break in the 5.x -> 6.x line is
-# `yaml.load` without a `Loader=`, and this tree has zero of those: every one of its YAML reads
-# is `yaml.safe_load` (measured at 738fca4: 20 call sites, 0 bare `yaml.load`).
-PyYAML>=5.4
+# FLOOR WITH A CAP, and the cap is the honest end of the measurement. The development host carries
+# 5.4.1 from apt and pip does not reproduce it on Python 3.10 (the 5.4.1 sdist builds against
+# Cython 3; not run here, so this is the reason for the floor rather than a measured fact), so the
+# installed value is not a pinnable one.
+#
+# What IS measured, in the primary checkout at this branch: the whole suite under `PyYAML==6.0.3`
+# installed into a scratch `--target` and put ahead on `PYTHONPATH` — 5793 passed, 3039 subtests,
+# 0 skipped, 0 failed. So the floor's range is covered end to end by a run rather than by a
+# survey of release notes. The cap is `<7`, because 7 does not exist and therefore has not been
+# measured, and this file's rule is that installing from it reproduces a measured machine.
+#
+# One correction to the reason an earlier version of this comment gave. It said "every one of its
+# YAML reads is `yaml.safe_load` (20 call sites, 0 bare `yaml.load`)". Re-measured at 738fca4 by
+# walking every `*.py` with `os.walk`: 19 `yaml.safe_load`, 0 bare `yaml.load`, and one further
+# read that is neither — `tools/llm_config.py:788`, `yaml.load(text, Loader=_NoDuplicateKeyLoader)`
+# over a `yaml.SafeLoader` subclass that installs its own mapping constructor. That reader depends
+# on PyYAML's EXTENSION surface (`SafeLoader` subclassing, `construct_mapping`,
+# `resolver.BaseResolver.DEFAULT_MAPPING_TAG`), which a `yaml.load`-spelling survey does not cover
+# at all — which is why the justification is now the suite run above and not the survey.
+PyYAML>=5.4,<7
 
-# PIN, measured on the development host. `tools/backends/language/fortran/structure.py` uses the
-# `Language(tree_sitter_fortran.language())` / `Parser(language)` spelling, which is the one this
-# API has changed across py-tree-sitter releases, so an unbounded declaration would let a machine
-# install a version the gate cannot drive.
+# PINS. Both values come from `MEASURED_PACKAGE_VERSIONS` in
+# `tools/backends/language/fortran/structure.py` — the backend that depends on them, and the only
+# place that can answer what was measured — and `tools/tests/test_dependency_declaration.py`
+# compares these two lines against it, so they cannot drift apart. Do not edit either number here:
+# edit the constant, after re-running `structure_differential.py` (both halves).
 tree-sitter==0.26.0
-
-# PIN, measured on the development host, and the version `docs/RUNBOOK.md` §0-1 records the
-# Fortran structure front end as "written against".
 tree-sitter-fortran==0.6.0

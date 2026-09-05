@@ -204,10 +204,13 @@ def _load_parser():
     # THE GRAMMAR MUST STILL SPEAK THE NODE NAMES THIS MODULE MATCHES ON. Everything below keys
     # on node TYPE STRINGS, so a grammar that renames one reports no procedures and no errors —
     # and every gate then returns at its empty-envelope loop with nothing to say. Silent, which
-    # is the one outcome this module exists to prevent, and invisible to a version pin in a
-    # docstring that nothing enforces (this repository declares no dependency manifest, so a
-    # fresh install resolves whatever is newest). Asking the grammar directly costs one call and
-    # converts that whole class into the unavailable error.
+    # is the one outcome this module exists to prevent, and invisible to a version DECLARATION,
+    # which bounds what a fresh install resolves and says nothing about what the resolved grammar
+    # names its nodes. `requirements.txt` now pins both packages at `MEASURED_PACKAGE_VERSIONS`,
+    # and that changes the reachability of the class below without closing it: an operator can
+    # install by hand, and a pin is a claim about a release number rather than about node types.
+    # Asking the grammar directly costs one call and converts that whole class into the
+    # unavailable error.
     #
     # Reachability is currently zero and was measured, not assumed: tree-sitter-fortran 0.2.0,
     # 0.3.0, 0.4.0, 0.5.1 and 0.6.0 all use these names and all produce byte-identical violations

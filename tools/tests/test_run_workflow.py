@@ -4144,8 +4144,10 @@ class RunWorkflowTests(unittest.TestCase):
         MID-RUN. Without this the run does not fail at launch: it fails at the first `Generate`
         node's gate, after lint and syntax have passed, in a billed run, and terminalizes —
         because an absent Fortran structure front end is fail-closed by design. The failure is
-        correct and the timing is not. Nothing in this repository installs these packages, so a
-        machine that satisfies the RUNBOOK today does not have them (Codex review).
+        correct and the timing is not. This check was written when nothing in the repository
+        installed these packages at all (Codex review); `requirements.txt` now declares them, and
+        the check stays because a declaration is not an installation — a host that never ran
+        `pip install -r requirements.txt` reaches exactly the state above.
 
         The message must carry the DISTRIBUTION names, since `tree_sitter_fortran` is not what an
         operator types into pip."""
