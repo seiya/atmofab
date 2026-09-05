@@ -70,7 +70,9 @@ from __future__ import annotations
 import ast
 import json
 import re
+import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -154,9 +156,35 @@ _SCANNED_GLOBS = (
     # same issue creates exactly that workflow, and it lands inside the measured set rather than
     # re-creating the shape this entry closed.
     (".", "requirements*.txt"),
-    (".github", "**/*.yml"),
-    (".github", "**/*.yaml"),
+    # The remaining TRACKED files at the repository root. Enumerating them rather than globbing
+    # `*` is deliberate: an operator's checkout carries untracked root files (`llm.yaml`, a
+    # command log) whose tokens would make the recorded debt differ per machine, which is the one
+    # thing a ratchet must not do. What keeps the enumeration honest is
+    # `RootFileCoverageTests` below: every tracked root file must be scanned or be in
+    # `_UNSCANNED_ROOT_FILES` with a reason, so a new one is refused until someone reads it.
+    (".", ".gitignore"),
+    (".", ".mcp.json"),
+    (".", "pytest.ini"),
+    (".", "LICENSE"),
+    # Every file under `.github`, not only `*.yml`. A workflow's `- run:` step is one line away
+    # from `- run: ./.github/workflows/setup.sh`, and round 3 measured that a `.sh` there carrying
+    # `apt-get install cppcheck gfortran` and a `gfortran -std=f2008` argv was unscanned while
+    # `docs/BACKEND_BOUNDARY.md` said `.github/**` was in scope.
+    (".github", "**/*"),
 )
+
+#: Tracked root-level files deliberately NOT token-scanned, each with the reason. An EXPLICIT set
+#: rather than a pattern, so adding a root file is refused until someone decides which side it is
+#: on — which is the failure this branch had (`requirements.txt` and `requirements-dev.txt` landed
+#: at the root, outside the scan, with `docs/BACKEND_BOUNDARY.md` §Scope silent about them).
+_UNSCANNED_ROOT_FILES: dict[str, str] = {
+    "TODO.md": (
+        "a work ledger that RECORDS backend facts as history — measured spellings, past "
+        "diagnoses, the migration ledger itself. It names technology for the same reason "
+        "`docs/design/` does, and §Scope excludes that for the same stated reason. Scanning it "
+        "would put ~630 occurrences of recorded history into the growth bound and make every "
+        "entry about a backend a ratchet event."),
+}
 
 #: Out of scope by the rule. The three backend ROOTS are deliberately absent: a path under a
 #: backend root is excused by `_is_backend_location`, which requires the placement table's shape,
@@ -572,6 +600,74 @@ class TokenRatchetTests(unittest.TestCase):
             "tightening, and update the measured debt in TODO.md.")
 
 
+class RootFileCoverageTests(unittest.TestCase):
+    """Every TRACKED file at the repository root is scanned, or excused by name with a reason.
+
+    The set-identity half of the scan, and the one this branch needed: `requirements.txt` and
+    `requirements-dev.txt` landed at the root OUTSIDE the scan, with `docs/BACKEND_BOUNDARY.md`
+    §Scope neither listing them nor excluding them, and the recorded debt fell by two tokens that
+    had simply moved into an unmeasured file. Widening the glob afterwards closed those two names;
+    round 3 then dropped in a `requirements.in`, a `dev-requirements.txt`, a `constraints.txt`, a
+    `pyproject.toml` and a `setup.cfg`, all carrying backend spelling, all green.
+
+    A pattern cannot close that class — the next filename is always one rename away. This can,
+    because it asks the opposite question: not "is this name scanned" but "is every name
+    accounted for". A new root file is refused until someone puts it on one side or the other,
+    which is a review gate rather than a judgment.
+
+    The corpus is `git ls-files`, not a glob: an operator's checkout carries untracked root files
+    (`llm.yaml`, a command log) and a rule derived from the filesystem would differ per machine.
+    The cost of that choice, stated because it bounds the claim: an UNTRACKED root file is not
+    seen here. That is the right side of the line — an untracked file is not part of the
+    repository and reaches no other machine — but it does mean this rule answers about what is
+    committed, not about what is on disk.
+
+    Measured after it was written, with each file `git add -N`'d one at a time: a
+    `requirements.in`, `dev-requirements.txt`, `constraints.txt`, `pyproject.toml`, `setup.cfg`
+    and `requirements-ci.txt` carrying linter ranges and a grammar pin are all refused, as are a
+    `.github/workflows/tests.sh` and a `.github/workflows/tests.yml` carrying `apt-get install
+    cppcheck gfortran` and a `gfortran -std=f2008` argv — eight of eight, where every one of them
+    was green before this class and the `.github` widening.
+    """
+
+    def _tracked_root_files(self) -> set[str]:
+        listed = subprocess.run(
+            ["git", "-C", str(REPO_ROOT), "ls-files", "-z", "--", ":(top)*"],
+            capture_output=True, text=True, check=True).stdout.split("\0")
+        return {name for name in listed if name and "/" not in name}
+
+    @staticmethod
+    def _scanned_root_files() -> set[str]:
+        """`neutral_core_files()` returns ABSOLUTE paths; a root file is one whose repo-relative
+        form has no separator. Getting this wrong reported every root file as unaccounted, which
+        is at least loud — the quiet direction would have been an empty tracked set."""
+        return {
+            path.relative_to(REPO_ROOT).as_posix() for path in neutral_core_files()
+            if "/" not in path.relative_to(REPO_ROOT).as_posix()}
+
+    def test_every_tracked_root_file_is_scanned_or_excused_by_name(self) -> None:
+        tracked = self._tracked_root_files()
+        self.assertTrue(tracked, "git listed no root-level file; this check observes nothing")
+        scanned = self._scanned_root_files()
+        unaccounted = sorted(tracked - scanned - set(_UNSCANNED_ROOT_FILES))
+        self.assertEqual(
+            [], unaccounted,
+            "a tracked file at the repository root is neither token-scanned nor listed in "
+            "_UNSCANNED_ROOT_FILES with a reason. Backend spelling placed there would lower no "
+            f"counter and trip no check: {unaccounted}")
+
+    def test_the_exclusion_list_has_no_stale_entry(self) -> None:
+        """The other direction: an entry for a file that is gone, or for one now scanned, is a
+        reason nobody will re-read, and it hides that the set has stopped being exact."""
+        tracked = self._tracked_root_files()
+        scanned = self._scanned_root_files()
+        for name, reason in sorted(_UNSCANNED_ROOT_FILES.items()):
+            with self.subTest(name=name):
+                self.assertIn(name, tracked, f"{name} is excused but is not a tracked root file")
+                self.assertNotIn(name, scanned, f"{name} is excused but IS scanned")
+                self.assertGreater(len(reason), 40, f"{name}'s exclusion states no real reason")
+
+
 class ScopePinTests(unittest.TestCase):
     """The instrument's REACH, pinned by hand rather than observed through its own measurements.
 
@@ -600,6 +696,43 @@ class ScopePinTests(unittest.TestCase):
         self.assertEqual(pinned["skill_backend_shape"], _SKILL_BACKEND_SHAPE.pattern,
                          "the skill backend-location shape changed")
 
+    #: The heading that ends §Scope's IN-scope list. Everything after it is the "Out of scope,
+    #: each for a stated reason" list, and reading that as a declaration is how a glob under
+    #: `spec/` — a directory §Scope EXCLUDES — passed this row with no bullet (round 3).
+    _OUT_OF_SCOPE_MARKER = "Out of scope"
+
+    def _in_scope_section(self, document: str) -> str:
+        self.assertIn("## Scope", document,
+                      "docs/BACKEND_BOUNDARY.md no longer has a §Scope section")
+        section = document.split("## Scope", 1)[1].split("\n## ", 1)[0]
+        self.assertIn(
+            self._OUT_OF_SCOPE_MARKER, section,
+            "docs/BACKEND_BOUNDARY.md §Scope no longer carries its out-of-scope list; this row "
+            "cannot tell a declaration of scope from an exclusion")
+        return section.split(self._OUT_OF_SCOPE_MARKER, 1)[0]
+
+    @staticmethod
+    def _glob_is_declared(subdir: str, pattern: str, in_scope: str, root: Path) -> bool:
+        """Does `in_scope` name the glob `(subdir, pattern)`?
+
+        A module-level predicate called by BOTH the row below and its probe. The first version
+        inlined this expression in the row and re-implemented it in the probe, so nothing executed
+        the real predicate against a synthetic case — measured in round 3: replacing the row's
+        condition with `if False:` and emptying its loop both left the file green, i.e. the probe
+        that claims to witness this coupling witnessed nothing. That is the exact sin the sibling
+        `test_dependency_declaration` docstring says it avoided.
+
+        For a root-level glob the document may name the PATTERN (`requirements*.txt`) or the files
+        it actually matches (`requirements.txt` and `requirements-dev.txt`) — naming the real files
+        is what every other bullet does, and requiring the glob string refused that rewording.
+        """
+        if subdir != ".":
+            return subdir in in_scope
+        if pattern in in_scope:
+            return True
+        matched = sorted(p.name for p in (root).glob(pattern) if p.is_file())
+        return bool(matched) and all(name in in_scope for name in matched)
+
     def test_every_scanned_glob_is_named_by_the_document_that_declares_the_scope(self) -> None:
         """`docs/BACKEND_BOUNDARY.md` §Scope and `_SCANNED_GLOBS` say the same thing, checked.
 
@@ -618,16 +751,10 @@ class ScopePinTests(unittest.TestCase):
         matter and is said here rather than left to look covered.
         """
         document = (REPO_ROOT / "docs" / "BACKEND_BOUNDARY.md").read_text()
-        self.assertIn("## Scope", document,
-                      "docs/BACKEND_BOUNDARY.md no longer has a §Scope section")
-        section = document.split("## Scope", 1)[1].split("\n## ", 1)[0]
-        missing = []
-        for subdir, pattern in _SCANNED_GLOBS:
-            # What a bullet has to name is the thing a reader would look for: the directory for a
-            # subtree glob, the filename shape for a root-level one.
-            needle = pattern if subdir == "." else subdir
-            if needle not in section:
-                missing.append(f"{subdir}/{pattern} (looked for {needle!r})")
+        in_scope = self._in_scope_section(document)
+        missing = [
+            f"{subdir}/{pattern}" for subdir, pattern in _SCANNED_GLOBS
+            if not self._glob_is_declared(subdir, pattern, in_scope, REPO_ROOT)]
         self.assertEqual(
             [], missing,
             "docs/BACKEND_BOUNDARY.md §Scope does not name every scanned glob, so the document "
@@ -635,19 +762,60 @@ class ScopePinTests(unittest.TestCase):
             f"the entry is in scope: {missing}")
 
     def test_the_scope_coupling_notices_a_glob_with_no_bullet(self) -> None:
-        """The self-test for the row above. Without it, a §Scope section that happens to contain
-        every needle for another reason would leave that row green forever, and the row is exactly
-        the kind that goes vacuous silently — every needle it looks for is a common word in a
-        document about paths."""
-        section = "- All Python under `tools/`.\n- `README.md`.\n"
+        """The probe for the row above, DRIVING THE REAL PREDICATE.
+
+        The row is exactly the kind that goes vacuous silently — every needle it looks for is a
+        common word in a document about paths — and its first version could not have failed,
+        because this probe re-implemented the expression instead of calling it.
+
+        The `spec/` row is the one round 3 found: §Scope's out-of-scope list names `spec/` as
+        EXCLUDED, and a plain substring search over the whole section accepted a `spec` glob on the
+        strength of that sentence. The predicate is given only the in-scope half.
+
+        WHAT IS STILL NOT PINNED, measured rather than reasoned: replacing the consuming row's
+        condition with `if False` leaves this file green, and so does emptying
+        `RootFileCoverageTests`' computation. This probe pins the PREDICATE, not the row that
+        calls it — an assertion cannot witness its own weakening, which is the standing limit this
+        module's own docstring records for five other decisions here. It is covered by external
+        mutation runs and by review, not by anything inside the suite, and saying so is better
+        than letting a reader count these rows as self-witnessed.
+        """
+        holder = tempfile.TemporaryDirectory()
+        self.addCleanup(holder.cleanup)
+        root = Path(holder.name)
+        (root / "README.md").write_text("")
+        (root / "requirements.txt").write_text("")
+        (root / "requirements-dev.txt").write_text("")
+        in_scope = "- All Python under `tools/`.\n- `README.md`.\n"
         for subdir, pattern, expected in (
-                ("tools", "**/*.py", True),
-                (".", "README.md", True),
-                (".", "requirements*.txt", False),
-                (".github", "**/*.yml", False)):
-            needle = pattern if subdir == "." else subdir
+                ("tools", "**/*.py", True),          # a directory the list names
+                (".", "README.md", True),            # a root file the list names
+                (".", "requirements*.txt", False),   # a root glob it does not
+                (".github", "**/*", False),          # a directory it does not
+                ("spec", "**/*.yaml", False)):       # named only by the EXCLUSION list
             with self.subTest(glob=f"{subdir}/{pattern}"):
-                self.assertEqual(needle in section, expected)
+                self.assertEqual(
+                    self._glob_is_declared(subdir, pattern, in_scope, root), expected)
+        # A root glob may be declared by the FILES it matches rather than by the pattern.
+        by_filename = "- `requirements.txt` and `requirements-dev.txt`, the declaration.\n"
+        self.assertTrue(
+            self._glob_is_declared(".", "requirements*.txt", by_filename, root))
+        self.assertFalse(
+            self._glob_is_declared(".", "requirements*.txt",
+                                   "- `requirements.txt` alone.\n", root),
+            "naming only SOME of the files a glob matches must not count as declaring it")
+
+    def test_the_in_scope_slice_stops_at_the_exclusion_list(self) -> None:
+        """The bound the row above rests on, self-tested. Without it the predicate is handed the
+        exclusion list too, and a bullet saying a directory is OUT of scope reads as a
+        declaration that it is in."""
+        section = self._in_scope_section(
+            "## Scope\n- `tools/`.\n\nOut of scope, each for a stated reason:\n- `spec/`.\n")
+        self.assertIn("tools/", section)
+        self.assertNotIn("spec/", section)
+        with self.assertRaises(AssertionError) as caught:
+            self._in_scope_section("## Scope\n- `tools/`.\n")
+        self.assertIn("no longer carries its out-of-scope list", str(caught.exception))
 
     def test_the_token_classes_match_the_pinned_patterns(self) -> None:
         # Patterns, not names. Pinning names alone left the alternative level open: dropping

@@ -1,5 +1,8 @@
 {
   "token_counts": {
+    ".gitignore": {
+      "linter-fortitude": 3
+    },
     "AGENTS.md": {
       "compiler-driver": 4,
       "fortran": 3

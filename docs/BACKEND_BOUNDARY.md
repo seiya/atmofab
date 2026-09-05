@@ -21,10 +21,17 @@ rule that keeps it out of everything else.
 - `requirements*.txt`, the dependency declaration. These name the pip distributions of a
   `language` backend's parser and of the `linter` backends' tools, which is the same kind of
   statement as the install line this rule already measures in `docs/RUNBOOK.md`.
-- `.github/**`, the CI workflow definitions (`*.yml` / `*.yaml`). A workflow's install step and
+- `.github/**`, the CI workflow definitions and anything they run. A workflow's install step and
   its command lines name a `linter`'s distribution, a `compiler`'s executable and a
-  `build_system`'s package, so they are in scope for the same reason. Nothing matches this today;
-  it is here so the first workflow file lands inside the measured set.
+  `build_system`'s package, so they are in scope for the same reason. Every file under it, not
+  only `*.yml`: a `- run:` step is one line away from calling a shell script beside it. Nothing
+  matches this today; it is here so the first workflow file lands inside the measured set.
+- `.gitignore`, `.mcp.json`, `pytest.ini` and `LICENSE` — the rest of the tracked files at the
+  repository root. They are in scope because the ROOT is: `.gitignore` already names a `linter`'s
+  cache directory, and a root file is where a declaration lands when nobody has decided where it
+  belongs. `TODO.md` is the one tracked root file left out, and
+  `tools/tests/test_backend_boundary.py:_UNSCANNED_ROOT_FILES` carries the reason — it records
+  backend facts as HISTORY, the same ground on which `docs/design/` is excluded below.
 
 Out of scope, each for a stated reason:
 - `spec/`. A `spec` is required to be language-neutral by `docs/CONTROLLED_SPEC.md`, and that

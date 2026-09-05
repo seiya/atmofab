@@ -78,12 +78,24 @@
       "requirements*.txt"
     ],
     [
-      ".github",
-      "**/*.yml"
+      ".",
+      ".gitignore"
+    ],
+    [
+      ".",
+      ".mcp.json"
+    ],
+    [
+      ".",
+      "pytest.ini"
+    ],
+    [
+      ".",
+      "LICENSE"
     ],
     [
       ".github",
-      "**/*.yaml"
+      "**/*"
     ]
   ],
   "skill_backend_shape": "^skills/[^/]+/backends/([^/]+)/([^/]+)\\.md$",
