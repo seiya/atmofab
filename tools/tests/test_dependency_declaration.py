@@ -72,6 +72,10 @@ _NAME_SEPARATORS = re.compile(r"[-_.]+")
 #: bare `3.10` in prose are both out of reach of it by shape.
 _VERSION_RE = re.compile(r"\b\d+\.\d+\.\d+\b")
 
+#: A declared version RANGE, in the spelling the backends and the documents use. The same shape
+#: `test_host_prerequisites.LinterVersionRangeTests` reads out of the runbook's linter table.
+_RANGE_RE = re.compile(r">=\d+\.\d+(?:\.\d+)?,<\d+\.\d+(?:\.\d+)?")
+
 
 def _canonical(name: str) -> str:
     return _NAME_SEPARATORS.sub("-", name).lower()
@@ -554,6 +558,86 @@ class MeasuredVersionTests(_RunbookReaderMixin, unittest.TestCase):
             [("tree-sitter", ["0.26.0"]), ("tree-sitter-fortran", ["0.6.0"])],
             "the line bound either read the cmake version or attributed the grammar's version to "
             "the runtime")
+
+
+class DevelopmentSetupBlockTests(unittest.TestCase):
+    """`docs/DEVELOPMENT.md` §Setup step 6's install block states no version range.
+
+    The property this branch bought and nothing was holding. Before it, that block spelt
+    `pipx install \'fortitude-lint>=0.8,<0.10\'` and `pipx install \'ruff>=0.14,<0.17\'` and NO test
+    read them — measured on `origin/main` (738fca4) by the correctness axis and re-measured here:
+    drifting the fortitude range to `<0.11` there leaves `test_host_prerequisites`,
+    `test_development_doc_sync`, `test_readme_sync` and `test_backend_boundary` all green. That is
+    the exact defect PR #125 measured on `docs/RUNBOOK.md`'s own install line, sitting in a second
+    document.
+
+    Deleting the ranges does not stop them coming back, so the deletion is turned into a rule: the
+    block installs from `requirements-dev.txt`, which IS checked, and states no range of its own.
+    Two documents may state these ranges — `requirements-dev.txt` and `docs/RUNBOOK.md` §0-1's
+    table — and both are compared to the backends\' declarations.
+    """
+
+    _BLOCK_MARKER = "pip install -r requirements-dev.txt"
+
+    def _setup_block(self, document: str) -> str:
+        """The fenced block of §Setup step 6 of `document`, found by the command it contains.
+
+        Bounded to the block rather than to the document: `docs/DEVELOPMENT.md` may legitimately
+        state a version range in prose about something else, and refusing that would be the same
+        over-refusal `test_host_prerequisites` records having made once at document scope. Takes
+        the document as an argument so the probe below drives THIS reader — the sibling file
+        records a version of the same check that re-implemented its extractor inline and so could
+        not fail for any reason in the code it claimed to witness.
+        """
+        holding = [f for f in document.split("```")[1::2] if self._BLOCK_MARKER in f]
+        self.assertEqual(
+            len(holding), 1,
+            "docs/DEVELOPMENT.md no longer carries exactly one fenced block containing "
+            f"{self._BLOCK_MARKER!r}; this check cannot find the install block it is about "
+            f"(found {len(holding)})")
+        return holding[0]
+
+    def _document(self) -> str:
+        return (REPO_ROOT / "docs" / "DEVELOPMENT.md").read_text()
+
+    def test_the_setup_block_states_no_version_range(self) -> None:
+        found = _RANGE_RE.findall(self._setup_block(self._document()))
+        self.assertEqual(
+            [], found,
+            "docs/DEVELOPMENT.md §Setup step 6 states a version range again. Nothing compares a "
+            "range written there to the backend that declares it, so it can tell a developer to "
+            "install a build the launch probe refuses (measured on PR #125, on the sibling line "
+            "in docs/RUNBOOK.md). State it in requirements-dev.txt, which is checked.")
+
+    def test_the_block_finder_is_bounded_to_the_block(self) -> None:
+        """The over-refusal probe and the self-test, on a synthetic document.
+
+        It has to be synthetic: `docs/DEVELOPMENT.md` at HEAD states no version range anywhere, so
+        driven on the real file the row above cannot tell a bounded reader from one that found
+        nothing. Three things must be out of the reader\'s reach — a range in prose, a range in a
+        DIFFERENT fenced block, and the marker appearing in prose rather than in a fence.
+        """
+        document = (
+            "# Development\n\nInstall `python3` `>=3.10,<3.14` first.\n\n"
+            "```\nsudo apt-get install make\nfortitude>=9.9,<9.10\n```\n\n"
+            "Do not write `pip install -r requirements-dev.txt` in prose.\n\n"
+            f"```\n{self._BLOCK_MARKER}\nsudo apt-get install cppcheck\n```\n\n"
+            "And afterwards `gfortran` `>=11.0,<15.0`.\n")
+        block = self._setup_block(document)
+        self.assertIn(self._BLOCK_MARKER, block)
+        self.assertEqual([], _RANGE_RE.findall(block))
+        with self.assertRaises(AssertionError) as caught:
+            self._setup_block("# Development\n\nno block here\n")
+        self.assertIn("no longer carries exactly one fenced block", str(caught.exception))
+
+    def test_the_reader_sees_a_range_when_the_block_carries_one(self) -> None:
+        """The other direction, and the one that decides whether the row above can ever fail: the
+        exact wording `origin/main` carried in this block must be caught."""
+        document = (
+            "# Development\n\n```\n"
+            f"{self._BLOCK_MARKER}\npipx install \'fortitude-lint>=0.8,<0.10\'\n```\n")
+        self.assertEqual(
+            [">=0.8,<0.10"], _RANGE_RE.findall(self._setup_block(document)))
 
 
 class DevRequirementsTests(unittest.TestCase):
