@@ -162,6 +162,24 @@ class RuntimeRequirementsTests(unittest.TestCase):
             "the `pip install` line in docs/RUNBOOK.md §0-1 and the package table under it name "
             "different distributions")
 
+    def test_the_runbook_points_the_operator_at_the_pinned_versions(self) -> None:
+        """The bare install line is not sufficient on its own, and this is what says so.
+
+        `pip install PyYAML tree-sitter tree-sitter-fortran` installs whatever is current, and two
+        of those three are PINNED in `requirements.txt` because the version is a measured property
+        of this repository — `tools/backends/language/fortran/structure.py` drives a py-tree-sitter
+        API that has changed across releases. An operator who follows the bare line alone gets a
+        host the `Generate.gate` structure read may not work on, which is a wrong verdict reached
+        part-way into a billed run. So the document has to carry the `-r` form as well, and
+        deleting it has to be something a test notices: without this row it was not (measured —
+        the hunk adding that block survived the branch's round-0 mutation sweep).
+        """
+        runbook = self._runbook()
+        self.assertIn(
+            "pip install -r requirements.txt", runbook,
+            "docs/RUNBOOK.md §0-1 no longer tells the operator to install from requirements.txt; "
+            "the bare `pip install <packages>` line beside it installs unpinned versions")
+
     def test_a_table_elsewhere_in_the_document_is_not_this_check_s_business(self) -> None:
         """The over-refusal probe, driving the REAL extractor over a synthetic document.
 
