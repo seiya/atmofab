@@ -15,7 +15,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 
 try:
     # The Fortran logical-line scanner is IMPORTED, not copy-pasted: three hand-rolled
@@ -1409,6 +1409,76 @@ def _line_starts(text: str) -> list[int]:
     return starts
 
 
+def _structure_reading(
+    lowered: str,
+) -> tuple[str, fortran_structure.StructureTree, Callable[[int], int]]:
+    """The ONE structural reading of a source: `(view, tree, to_view)`.
+
+    Extracted from `_fortran_procedure_envelopes` when `_validate_generated_signatures` needed a
+    second structural question answered (`_module_level_procedure_names`). It is shared rather
+    than copied because the reading below is not a rule anyone should re-derive: a second reading
+    that chose differently would answer the two questions about DIFFERENT programs, and this
+    module's whole reason for asking a parser is that hand-written agreement about source
+    structure does not hold.
+
+    TWO READINGS OF ONE PROGRAM, and the PARSER picks. A statement label is inert to every rule in
+    this module — which is why the view strips labels, so each rule can anchor on the statement's
+    own keyword — but it is not inert to a parser. Neither reading parses everything, and both
+    shapes that defeat one are accepted by the compiler (executed). So the reading is not chosen
+    by a rule about labels: three such rules were written and each was defeated by a legal program
+    in the next review round. The stripped view is tried first because it is the common case (365
+    of the 365 in-tree models carry no label at all, and it needs no offset translation); the
+    label-preserving twin is tried only when that fails. A source is refused only when NEITHER
+    reading resolves, which is strictly weaker than either rule and needs no enumeration to stay
+    true.
+
+    Raises `_FortranSourceStructureError` when neither reading resolves. A
+    `FortranStructureUnavailableError` from the front end itself propagates untouched — it is the
+    operator's failure, and `main` answers it with a dedicated exit code."""
+    view, labelled_view, view_starts, labelled_starts = _fortran_view_pair(lowered)
+    tree = fortran_structure.parse_view(view)
+    translate = False
+    if tree.errors:
+        labelled_tree = fortran_structure.parse_view(labelled_view)
+        if labelled_tree.errors:
+            # The STRIPPED reading's errors are reported: it is the canonical view, the one whose
+            # line numbers the rest of this module speaks in.
+            raise _FortranSourceStructureError(tree.errors)
+        tree, translate = labelled_tree, True
+
+    def to_view(offset: int) -> int:
+        if not translate:
+            return offset
+        # END OF INPUT IS NOT A LINE START, and it is the one offset that is not: the view never
+        # ends in a newline, so `fortran_structure._next_line_start` answers `len(text)` for a
+        # span reaching EOF. Mapping that by line index would silently shrink it to the start of
+        # the last line. Reachability today is zero — every other offset is a line start, checked
+        # over all 365 in-tree models and the hand-built shapes — so this is a guard on the
+        # premise, not a fix for an observed defect (review).
+        if offset >= len(labelled_view):
+            return len(view)
+        index = bisect.bisect_right(labelled_starts, offset) - 1
+        if index >= len(view_starts):
+            return len(view)
+        return view_starts[index]
+
+    return view, tree, to_view
+
+
+def _module_level_procedure_names(lowered: str) -> frozenset[str]:
+    """The names ``lowered`` DEFINES at module level — the definedness half of the published
+    surface, asked of the language backend.
+
+    The rule this serves is neutral: a published operation must be IMPLEMENTED by the unit that
+    publishes it, not merely declared. Which spellings declare without implementing, and why a
+    caller must not decide that itself, belong to the backend —
+    `structure.module_level_procedure_names` is canonical for both.
+
+    Raises the same two errors as `_structure_reading`."""
+    _view, tree, _to_view = _structure_reading(lowered)
+    return fortran_structure.module_level_procedure_names(tree)
+
+
 def _fortran_procedure_envelopes(lowered: str) -> list[_FortranProcedureEnvelope]:
     """Every procedure DEFINITION in ``lowered``, with the body each gate must read.
 
@@ -1472,32 +1542,7 @@ def _fortran_procedure_envelopes(lowered: str) -> list[_FortranProcedureEnvelope
     # needs no offset translation); the label-preserving twin is tried only when that fails. A
     # source is refused only when NEITHER reading resolves, which is strictly weaker than either
     # rule and needs no enumeration to stay true.
-    view, labelled_view, view_starts, labelled_starts = _fortran_view_pair(lowered)
-    tree = fortran_structure.parse_view(view)
-    translate = False
-    if tree.errors:
-        labelled_tree = fortran_structure.parse_view(labelled_view)
-        if labelled_tree.errors:
-            # The STRIPPED reading's errors are reported: it is the canonical view, the one whose
-            # line numbers the rest of this module speaks in.
-            raise _FortranSourceStructureError(tree.errors)
-        tree, translate = labelled_tree, True
-
-    def to_view(offset: int) -> int:
-        if not translate:
-            return offset
-        # END OF INPUT IS NOT A LINE START, and it is the one offset that is not: the view never
-        # ends in a newline, so `fortran_structure._next_line_start` answers `len(text)` for a
-        # span reaching EOF. Mapping that by line index would silently shrink it to the start of
-        # the last line. Reachability today is zero — every other offset is a line start, checked
-        # over all 365 in-tree models and the hand-built shapes — so this is a guard on the
-        # premise, not a fix for an observed defect (review).
-        if offset >= len(labelled_view):
-            return len(view)
-        index = bisect.bisect_right(labelled_starts, offset) - 1
-        if index >= len(view_starts):
-            return len(view)
-        return view_starts[index]
+    view, tree, to_view = _structure_reading(lowered)
 
     spans = tuple((to_view(start), to_view(end)) for start, end in tree.interface_spans)
     blanked = fortran_structure.blank_interface_spans(view, spans)
@@ -13405,6 +13450,52 @@ def _validate_generated_signatures(
     for name, lines in {**src_ops, **src_types}.items():
         src_lists[name] = fortran_signatures.stanza_line_list(lines)
 
+    # PUBLISHING A HEADER IS NOT IMPLEMENTING IT, and everything above this line only compares
+    # HEADERS. `parse_interface_stanzas` reads a header wherever it stands, so a model that
+    # declares a §5.1 operation as a PROTOTYPE — the pinned header, verbatim, with no
+    # implementation anywhere — satisfies every comparison below. Measured (issue #153's CARRIED
+    # residue, re-run here before it was fixed): ZERO violations, the syntax stage rc=0, the
+    # node's own build rc=0, and the node links as long as nothing calls the operation. The
+    # failure lands at a CONSUMER's link, one node and one billed phase away from the leaf that
+    # caused it. It is a `leaf shortcut` by the decision criterion: a leaf that takes it is closer
+    # to reporting `Generate` done, having skipped the implementation.
+    #
+    # WHY THE CARRIED PREMISE DOES NOT APPLY HERE, which is the whole reason this could be fixed
+    # at last. `checks_module_abi_facts`' docstring names three shapes a bare "is it defined"
+    # refusal would fail — a name association, a generic block, an implementation in a separate
+    # unit — and each was run against THIS gate before the check below was added. All three are
+    # refused TODAY, before it, and for an unrelated reason: none of them puts the pinned §5.1
+    # header in the source, so each already fails the `have is None` arm above. So the
+    # over-refusal belongs to the checks-module scanner, whose question ("is this name callable")
+    # those shapes answer yes to; this gate's question is narrower and they never reach it.
+    # `PublishedProcedureDefinednessTests` pins that as a row, so a later widening of the header
+    # comparison cannot quietly inherit the over-refusal.
+    #
+    # A `component` / `infrastructure` source had no structural reader, by deliberate removal: a
+    # parse refusal "bought nothing and cost a legal form" where no gate read the file (measured,
+    # 0 -> 4 violations). That justification is now spent — this gate reads it, so the refusal
+    # buys the definedness check — and a parse the front end cannot resolve is refused rather than
+    # skipped. Skipping would put the check behind a switch the LEAF holds: one renamed variable
+    # would disable it, which is the silent-gate shape this area exists to remove.
+    defined_names: frozenset[str] | None = None
+    if op_stanzas:
+        try:
+            defined_names = _module_level_procedure_names(combined.lower())
+        # `FortranStructureUnavailableError` is deliberately NOT caught: it is the OPERATOR's
+        # failure (an uninstalled package), no edit to this source can clear it, and `main`
+        # answers it with a dedicated exit code. Same rule as `_validate_problem_model_gates`.
+        except _FortranSourceStructureError as exc:
+            for structure_error in exc.errors:
+                violations.append(
+                    f"{target}: the structure front end could not resolve this source at "
+                    f"statement {structure_error.line} of its joined view "
+                    f"({'missing token' if structure_error.missing else 'parse error'}): "
+                    f"{structure_error.snippet!r}. A {ir_kind} node's published operations must be "
+                    "shown to be DEFINED and not merely declared, which needs the procedure "
+                    f"structure, so an unresolvable source is a Generate failure — "
+                    f"{fortran_structure.STRUCTURE_REFUSAL_HINT}.")
+            return
+
     for name in sorted({**op_stanzas, **type_stanzas}):
         spec_lines = op_stanzas.get(name) or type_stanzas.get(name) or []
         is_type = name in type_stanzas
@@ -13415,6 +13506,15 @@ def _validate_generated_signatures(
                 f"{target}: generated model source does not publish controlled_spec §5.1 {kind} "
                 f"'{name}' (no {kind} of that name/header found — the published surface must match "
                 "the pinned §5.1 signature)")
+            continue
+        if not is_type and defined_names is not None and name.lower() not in defined_names:
+            # Reported INSTEAD OF the stanza comparison for this name, not alongside it: the
+            # header is present by construction (that is what `have` is), so every atom matches
+            # and the comparison has nothing to add. One violation naming the one repair.
+            violations.append(
+                f"{target}: generated model source declares controlled_spec §5.1 procedure "
+                f"'{name}' but never DEFINES it — "
+                f"{fortran_structure.UNDEFINED_PUBLISHED_PROCEDURE_REMEDY} of '{name}'")
             continue
         if is_type:
             # A derived type's WHOLE component layout — names, types, and ORDER, with nothing

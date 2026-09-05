@@ -17723,6 +17723,213 @@ class InfrastructureGeneratedSignatureGateTests(unittest.TestCase):
             self.assertTrue(any("§5.1" in v for v in violations), violations)
 
 
+class PublishedProcedureDefinednessTests(unittest.TestCase):
+    """_validate_generated_signatures: a §5.1 published procedure must be DEFINED, not merely
+    prototyped.
+
+    The gate above this one compares HEADERS, and `parse_interface_stanzas` reads a header
+    wherever it stands, so a model that declares the pinned §5.1 header inside an `interface`
+    block and implements nothing satisfied every comparison — measured at ZERO violations, with
+    `gfortran -fsyntax-only` and `gfortran -c` both rc=0 and the node's own Build linking; the
+    failure landed at a CONSUMER's link as `undefined reference`. Issue #153 carried it rather
+    than fixing it, on the premise that the obvious refusal would fail a legal module.
+
+    What is PINNED here: the interface-only shape is refused, a contained definition does not
+    count as published, an unresolvable structure is a content violation rather than a silent
+    pass, and the three shapes the carried premise named are refused BY THE PRE-EXISTING ARM —
+    that last one is the premise itself, turned into a row, because the reason this fix is safe
+    is that none of those shapes reaches the new check at all.
+
+    What is SAMPLED, not pinned: the source spellings. These are hand-built fixtures, not the set
+    of programs the rule admits."""
+
+    _C = InfrastructureGeneratedSignatureGateTests
+    _DEF = ("  subroutine hx__write_metrics_basis(entries, &\n      n)\n"
+            "    type(hx__h_named), intent(in) :: entries(:)\n"
+            "    integer,           intent(in) :: n\n"
+            "  end subroutine hx__write_metrics_basis\n")
+
+    def setUp(self) -> None:
+        self.inst = self._C("test_faithful_source_passes")
+        self.assertIn(self._DEF, self._C._GOOD_SOURCE)
+
+    def _gate(self, source: str) -> list[str]:
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            return self.inst._run(self.inst._seed(tmp, source=source), tmp)
+
+    def _prototype_source(self, header: str = "subroutine") -> str:
+        body = self._C._GOOD_SOURCE.replace(self._DEF, "")
+        return body.replace(
+            "contains\n",
+            "  interface\n"
+            f"    {header} hx__write_metrics_basis(entries, n)\n"
+            "      type(hx__h_named), intent(in) :: entries(:)\n"
+            "      integer,           intent(in) :: n\n"
+            "    end subroutine hx__write_metrics_basis\n"
+            "  end interface\ncontains\n", 1)
+
+    def test_control_faithful_source_still_passes(self) -> None:
+        # The mutation control for every row below: the same fixture family, with the definition
+        # present, must stay green — otherwise a refusal here proves nothing about WHY.
+        self.assertEqual(self._gate(self._C._GOOD_SOURCE), [])
+
+    def test_interface_only_prototype_is_refused(self) -> None:
+        violations = self._gate(self._prototype_source())
+        self.assertTrue(
+            any("hx__write_metrics_basis" in v and "never DEFINES it" in v for v in violations),
+            violations)
+        # The remedy must name the repair, not merely the fault: a warm retry converges only if
+        # the leaf is told where to put the implementation.
+        self.assertTrue(any("`contains`" in v for v in violations), violations)
+
+    def test_contained_definition_does_not_count_as_published(self) -> None:
+        # The published name defined INSIDE another procedure carries the header but publishes
+        # nothing: a consumer's `use` cannot reach it, so it leaves the same undefined reference.
+        contained = self._C._GOOD_SOURCE.replace(
+            self._DEF,
+            "  subroutine hx__host()\n"
+            "  contains\n"
+            "    subroutine hx__write_metrics_basis(entries, n)\n"
+            "      type(hx__h_named), intent(in) :: entries(:)\n"
+            "      integer,           intent(in) :: n\n"
+            "    end subroutine hx__write_metrics_basis\n"
+            "  end subroutine hx__host\n")
+        violations = self._gate(contained)
+        self.assertTrue(
+            any("hx__write_metrics_basis" in v and "never DEFINES it" in v for v in violations),
+            violations)
+
+    def test_unresolvable_structure_is_a_content_violation_not_a_silent_pass(self) -> None:
+        # The check must not be behind a switch the LEAF holds. A source the front end cannot
+        # resolve is refused; if it were skipped, naming one variable after a keyword would
+        # disable the definedness check for the whole file.
+        # TWO THINGS THIS FIXTURE HAD TO GET RIGHT, both measured after a first version went green
+        # for the wrong reason. The DECLARATION alone parses — it is the ASSIGNMENT that makes the
+        # lexer read the identifier as the END statement it spells; and the statement it spells is
+        # `end subroutine`, so it must sit inside a SUBROUTINE. Placed in this fixture's functions
+        # the source parses cleanly and the row observed nothing.
+        wedged = self._prototype_source().replace(
+            "end module hx_model\n",
+            "  subroutine hx__private_helper()\n"
+            "    real :: endsubroutine\n"
+            "    endsubroutine = 1.0\n"
+            "  end subroutine hx__private_helper\n"
+            "end module hx_model\n", 1)
+        violations = self._gate(wedged)
+        self.assertTrue(violations, "an unresolvable source must not pass silently")
+        self.assertTrue(
+            any("structure front end could not resolve" in v for v in violations), violations)
+
+    def test_the_three_carried_shapes_are_refused_by_the_pre_existing_arm(self) -> None:
+        # THE PREMISE OF THIS FIX, as a row. `checks_module_abi_facts`' docstring names three
+        # shapes a `n not in defined_procs` refusal would fail: use-association, a generic
+        # interface, and a submodule implementation. Each is legal Fortran (`gfortran
+        # -fsyntax-only` rc=0, executed). None of them reaches the new check, because none puts
+        # the pinned §5.1 header in the source — they fail the "does not publish" arm that
+        # predates this fix. If a future widening of the header comparison lets one through, this
+        # row goes red and whoever widened it owns the over-refusal question.
+        good = self._C._GOOD_SOURCE
+        shapes = {
+            "use-association": good.replace(self._DEF, "").replace(
+                "  implicit none\n",
+                "  use dep_mod, only: hx__write_metrics_basis\n  implicit none\n"
+                "  public :: hx__write_metrics_basis\n", 1),
+            "generic interface": good.replace(
+                self._DEF,
+                "  subroutine hx__wmb_impl(entries, n)\n"
+                "    type(hx__h_named), intent(in) :: entries(:)\n"
+                "    integer,           intent(in) :: n\n"
+                "  end subroutine hx__wmb_impl\n").replace(
+                "contains\n",
+                "  interface hx__write_metrics_basis\n"
+                "    module procedure hx__wmb_impl\n  end interface\ncontains\n", 1),
+            "submodule implementation": self._prototype_source(header="module subroutine") + (
+                "submodule (hx_model) hx_model_impl\ncontains\n"
+                "  module procedure hx__write_metrics_basis\n"
+                "  end procedure hx__write_metrics_basis\n"
+                "end submodule hx_model_impl\n"),
+        }
+        for label, source in shapes.items():
+            with self.subTest(shape=label):
+                violations = self._gate(source)
+                self.assertTrue(
+                    any("does not publish" in v for v in violations),
+                    (label, violations))
+                self.assertFalse(
+                    any("never DEFINES it" in v for v in violations),
+                    (label, "refused by the NEW check, so the premise no longer holds",
+                     violations))
+
+
+class ModuleLevelProcedureNamesTests(unittest.TestCase):
+    """_module_level_procedure_names: the definedness question, asked of the parser.
+
+    Pinned as a set on each fixture, because the two ways this can be wrong are opposite: a name
+    that should not be here is a fail-OPEN of the gate above, and a name missing from here is an
+    over-refusal that wedges a legal node."""
+
+    def test_interface_body_is_not_a_definition(self) -> None:
+        self.assertEqual(
+            vps._module_level_procedure_names(
+                "module m\n"
+                "  interface\n"
+                "    subroutine proto(n)\n"
+                "      integer, intent(in) :: n\n"
+                "    end subroutine proto\n"
+                "  end interface\n"
+                "contains\n"
+                "  subroutine real_one(n)\n"
+                "    integer, intent(in) :: n\n"
+                "  end subroutine real_one\n"
+                "end module m\n"),
+            frozenset({"real_one"}))
+
+    def test_contained_procedure_is_not_module_level(self) -> None:
+        self.assertEqual(
+            vps._module_level_procedure_names(
+                "module m\n"
+                "contains\n"
+                "  subroutine host(n)\n"
+                "    integer, intent(in) :: n\n"
+                "  contains\n"
+                "    subroutine inner(k)\n"
+                "      integer, intent(in) :: k\n"
+                "    end subroutine inner\n"
+                "  end subroutine host\n"
+                "end module m\n"),
+            frozenset({"host"}))
+
+    def test_abbreviated_separate_module_subprogram_is_a_definition(self) -> None:
+        # `module procedure solve` in a submodule IS an implementation. The `problem` model gates
+        # refuse that form for a different reason (it cannot redeclare its dummies, so their
+        # out-set is empty); this question is "does the name have a body in this file", and there
+        # the answer is yes. Reading the two as one rule would make a legal submodule node fail
+        # the gate above with "never DEFINES it".
+        self.assertEqual(
+            vps._module_level_procedure_names(
+                "module m\n"
+                "  interface\n"
+                "    module subroutine solve(n)\n"
+                "      integer, intent(in) :: n\n"
+                "    end subroutine solve\n"
+                "  end interface\n"
+                "end module m\n"
+                "submodule (m) m_impl\n"
+                "contains\n"
+                "  module procedure solve\n"
+                "  end procedure solve\n"
+                "end submodule m_impl\n"),
+            frozenset({"solve"}))
+
+    def test_unresolvable_source_raises_rather_than_returning_a_partial_set(self) -> None:
+        with self.assertRaises(vps._FortranSourceStructureError):
+            vps._module_level_procedure_names(
+                "module m\ncontains\n  subroutine s(n)\n    integer :: n\n"
+                "    real :: endsubroutine\n    endsubroutine = 1.0\n"
+                "  end subroutine s\nend module m\n")
+
+
 class DependencyExpectedNodeKeysTests(unittest.TestCase):
     """_dependency_expected_node_keys: the fallback to direct_deps is keyed on all_nodes being
     ABSENT (not on the set being empty), so a missing sidecar cannot collapse a node with real

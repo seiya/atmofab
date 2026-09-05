@@ -379,3 +379,64 @@ def blank_interface_spans(view: str, spans: tuple[tuple[int, int], ...]) -> str:
             if characters[index] != "\n":
                 characters[index] = " "
     return "".join(characters)
+
+
+#: What a leaf is told when a §5.1-published operation is declared but never defined. It lives
+#: here, not at the gate that raises it, because every noun in it is this language's: the block a
+#: prototype sits in, and the section a definition belongs to. The neutral gate interpolates it.
+UNDEFINED_PUBLISHED_PROCEDURE_REMEDY = (
+    "the pinned header appears only as a prototype — inside an `interface` block, or as a "
+    "procedure contained within another procedure — so the module publishes a name with no "
+    "implementation, and a consumer that calls it fails at LINK with `undefined reference`. "
+    "Define it in the module's own `contains` section with the published header, and remove "
+    "the prototype"
+)
+
+#: What a leaf is told when this front end cannot resolve a source. Same reason for living here:
+#: the shapes it names are spellings of THIS language. The class is not closed — see the module
+#: docstring, which is canonical for why an enumeration is the wrong instrument.
+STRUCTURE_REFUSAL_HINT = (
+    "the shape to look for is an identifier or a statement label sitting where the parser "
+    "expects structure — a VARIABLE or construct named after a keyword (`endsubroutine`, "
+    "`interface`, `contains` are legal names and are read as the statements they spell; rename "
+    "it), or a labelled `DO` / `FORMAT` alongside a labelled `contains` or procedure header "
+    "(give the loop an `end do` and drop the label from the specification statement). Neither "
+    "list is closed"
+)
+
+
+def module_level_procedure_names(tree: StructureTree) -> frozenset[str]:
+    """The names ``tree`` DEFINES at module level, lowercased.
+
+    Two exclusions, and they answer the same question — does this name have an implementation
+    the module publishes — from opposite sides.
+
+    A procedure DECLARED inside an `interface` block is not in ``tree.procedures`` at all
+    (`parse_view` does not descend into an interface span), which is the property this function
+    is built on. A caller that tracked `interface` / `end interface` itself would fail in two
+    directions and only one of them is safe: miss an opener and a prototype passes as a
+    definition, miss a closer and a real definition reads as a prototype. `interface` is a legal
+    variable name, so neither miss is hypothetical — the module docstring's whole subject.
+
+    A CONTAINED procedure is excluded here. It carries the name but does not publish it: a
+    consumer's `use` cannot reach it, so accepting one leaves exactly the undefined reference at
+    the consumer's link that the prototype-only shape leaves. Containment is decided by the body
+    spans the parser reports — P is contained when another procedure's body encloses P's start —
+    not by counting `contains` statements. The comparison stays inside ONE tree, so it needs no
+    view translation: both offsets come from the same parse.
+
+    An abbreviated separate module subprogram (`module procedure solve`, in a submodule) IS an
+    implementation and IS returned. `_validate_problem_model_*` refuses that form for a different
+    reason — F2008 forbids it from redeclaring its dummies, so those gates would read an empty
+    out-set — and reading the two rules as one would fail a legal submodule node."""
+    bodies = [(p.body_start, p.body_end) for p in tree.procedures]
+    names: set[str] = set()
+    for index, procedure in enumerate(tree.procedures):
+        nested = any(
+            start <= procedure.body_start < end
+            for other, (start, end) in enumerate(bodies)
+            if other != index
+        )
+        if not nested:
+            names.add(procedure.name.strip().lower())
+    return frozenset(names)
