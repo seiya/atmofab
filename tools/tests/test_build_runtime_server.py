@@ -12,7 +12,9 @@ error classes the retired post_generate text heuristics used to mimic.
 """
 
 import importlib.util
+import io
 import json
+import re
 import os
 import shutil
 import subprocess
@@ -1081,6 +1083,596 @@ class GatedHandlerWiringTests(unittest.TestCase):
                 self.assertIn(
                     f'_validate_orchestrated_paths(command_log_path, args, project_dir, "{tool}")',
                     source)
+
+
+class _ReadBudgetExceeded(RuntimeError):
+    """Raised by `_BoundedReads` when a reader will not stop reading an ended stream."""
+
+
+class _BoundedReads:
+    """A `BytesIO` that refuses to be read indefinitely.
+
+    An exhausted `BytesIO` returns `b""` for ever, so a loop that does not treat that as the end
+    never terminates. This makes the loop's own termination OBSERVABLE: exceeding the budget is a
+    fast exception rather than a hung suite.
+    """
+
+    def __init__(self, data: bytes, budget: int = 200) -> None:
+        self._buf = io.BytesIO(data)
+        self._left = budget
+
+    def _spend(self) -> None:
+        if self._left <= 0:
+            raise _ReadBudgetExceeded(
+                "the reader did not stop at the end of the stream")
+        self._left -= 1
+
+    def readline(self) -> bytes:
+        self._spend()
+        return self._buf.readline()
+
+    def read(self, size: int = -1) -> bytes:
+        self._spend()
+        return self._buf.read(size)
+
+
+class RpcFramingTests(unittest.TestCase):
+    """`_read_message` / `_write_message` / `main` — the stdio transport, driven end to end.
+
+    Nothing read these three before this class (measured at 9f2e16d: `grep -c` over
+    `tools/tests/*.py` finds 0 references to each of `_handle_request`, `_read_message` and
+    `_write_message`), although every `compile` and `run` this repository performs traverses them.
+
+    The tests below split into two kinds and the docstrings say which:
+
+      * CONTRACT — a property the transport is required to have. Both framings are implemented, so
+        both are contract: a client may send `Content-Length` headers (which `mcp_call.py` does) or
+        one JSON object per line (which the MCP stdio transport does).
+      * RECORD — what the code does today at a boundary nobody has decided about. A record test
+        is not an argument that the behaviour is right. Where the current answer looks wrong to me
+        I have said so in the docstring and left the behaviour alone; changing it is a decision for
+        the operator, and the entry it would be recorded under is `TODO.md`.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.mod = _load_server_module()
+
+    def _drive(self, stdin_bytes: bytes) -> tuple[int | None, list[dict], Exception | None]:
+        """Run `main()` against `stdin_bytes`, returning (exit code, responses, escaped error).
+
+        Drives the REAL entry point rather than poking `_read_message`: the framing, the dispatch
+        and the loop's own termination are one behaviour, and two of the three recorded boundaries
+        below are properties of `main`, not of the reader.
+
+        The stdin is BOUNDED, and that is not a convenience. `main` is a `while True` whose only
+        exit is the `return 0` it takes when the reader answers None; a change that made it
+        `continue` there spins forever on a stream that has ended. Measured the hard way — that
+        exact mutant hung this file's own sweep until an outer `timeout` killed it, and the kill
+        skipped the `finally` that restores the mutated source, so the next run would have
+        measured a mutated baseline. An exhausted `BytesIO` returns `b""` for ever, so the bound
+        has to come from the fixture: after `_READ_BUDGET` reads the stream raises, `main` cannot
+        catch it (nothing there catches anything), and the spin becomes a fast, legible failure.
+        """
+        out = io.StringIO()
+        stream = _BoundedReads(stdin_bytes)
+        with mock.patch.object(sys, "stdin", mock.Mock(buffer=stream)), \
+                mock.patch.object(sys, "stdout", out):
+            try:
+                code: int | None = self.mod.main()
+                escaped: Exception | None = None
+            except Exception as exc:  # noqa: BLE001 - the escape is the subject of three rows
+                code, escaped = None, exc
+        responses = [json.loads(line) for line in out.getvalue().splitlines() if line.strip()]
+        return code, responses, escaped
+
+    def test_main_returns_at_end_of_input_rather_than_spinning(self) -> None:
+        """CONTRACT, and the one the bound above exists for.
+
+        `main`'s only exit is the `return 0` it takes when `_read_message` answers None. Nothing
+        else in the loop can end it, so this is the whole of the server's termination behaviour,
+        and it was observed by nothing. The witness is the read budget: a `main` that kept looping
+        on an ended stream would exhaust it and surface as `_ReadBudgetExceeded` instead of
+        hanging the suite.
+        """
+        code, responses, escaped = self._drive(
+            self._line({"jsonrpc": "2.0", "id": 1, "method": "ping"}))
+        self.assertIsNone(escaped)
+        self.assertEqual(code, 0)
+        self.assertEqual(len(responses), 1)
+
+    def test_the_read_budget_itself_fires(self) -> None:
+        """The self-test for the bound. Without it, a budget set too high (or a fixture that
+        silently stopped counting) would turn the row above into a test that can only pass — the
+        spin it is about would come back as a hang, which reads as an unrelated infrastructure
+        problem rather than as this defect."""
+        stream = _BoundedReads(b"", budget=3)
+        for _ in range(3):
+            self.assertEqual(stream.readline(), b"")
+        with self.assertRaises(_ReadBudgetExceeded):
+            stream.readline()
+
+    @staticmethod
+    def _framed(payload: dict) -> bytes:
+        body = json.dumps(payload).encode("utf-8")
+        return f"Content-Length: {len(body)}\r\n\r\n".encode("ascii") + body
+
+    @staticmethod
+    def _line(payload: dict) -> bytes:
+        return json.dumps(payload).encode("utf-8") + b"\n"
+
+    # ---- CONTRACT ----------------------------------------------------------------
+
+    def test_both_framings_are_read(self) -> None:
+        """CONTRACT. Both are implemented, so both are the contract — and they have separate
+        callers: `mcp_servers/mcp_call.py` writes `Content-Length` headers, while the MCP stdio
+        transport is newline-delimited JSON. A change that kept only one would break a real
+        client, and nothing observed either."""
+        for label, encode in (("content-length", self._framed), ("newline", self._line)):
+            with self.subTest(framing=label):
+                code, responses, escaped = self._drive(encode({"jsonrpc": "2.0", "id": 1,
+                                                               "method": "ping"}))
+                self.assertIsNone(escaped)
+                self.assertEqual(code, 0)
+                self.assertEqual([r["id"] for r in responses], [1])
+                self.assertEqual(responses[0]["result"], {})
+
+    def test_a_header_block_may_carry_more_than_content_length(self) -> None:
+        """CONTRACT. The reader skips to the blank line, so a client sending `Content-Type` (which
+        the MCP specification permits) is served rather than mis-framed."""
+        body = json.dumps({"jsonrpc": "2.0", "id": 7, "method": "ping"}).encode("utf-8")
+        stdin = (f"Content-Length: {len(body)}\r\n".encode("ascii")
+                 + b"Content-Type: application/vscode-jsonrpc; charset=utf-8\r\n\r\n" + body)
+        code, responses, escaped = self._drive(stdin)
+        self.assertIsNone(escaped)
+        self.assertEqual(code, 0)
+        self.assertEqual([r["id"] for r in responses], [7])
+
+    def test_blank_lines_between_messages_are_skipped(self) -> None:
+        """CONTRACT. A writer that terminates a framed body with a newline leaves one behind, and
+        the loop must not read it as a message."""
+        code, responses, escaped = self._drive(
+            b"\r\n" + self._framed({"jsonrpc": "2.0", "id": 1, "method": "ping"})
+            + b"\n\n" + self._line({"jsonrpc": "2.0", "id": 2, "method": "ping"}))
+        self.assertIsNone(escaped)
+        self.assertEqual(code, 0)
+        self.assertEqual([r["id"] for r in responses], [1, 2])
+
+    def test_a_notification_produces_no_response_and_does_not_end_the_loop(self) -> None:
+        """CONTRACT. `_handle_request` returns None for a notification and `main` must write
+        nothing for it — a JSON-RPC notification has no reply — while still serving what follows.
+        Writing `null` would be a protocol violation a client sees; stopping would be worse."""
+        code, responses, escaped = self._drive(
+            self._line({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}})
+            + self._line({"jsonrpc": "2.0", "id": 5, "method": "ping"}))
+        self.assertIsNone(escaped)
+        self.assertEqual(code, 0)
+        self.assertEqual([r["id"] for r in responses], [5])
+
+    def test_write_message_emits_one_line_of_json_without_escaping_non_ascii(self) -> None:
+        """CONTRACT. One line per message is the framing; `ensure_ascii=False` is what keeps a
+        diagnostic containing non-ASCII readable instead of `\\uXXXX`-escaped. A compiler on a
+        non-English locale, and any path with a non-ASCII component, reach this."""
+        out = io.StringIO()
+        with mock.patch.object(sys, "stdout", out):
+            self.mod._write_message({"id": 1, "result": {"text": "コンパイル失敗 — naïve"}})
+        raw = out.getvalue()
+        self.assertTrue(raw.endswith("\n"))
+        self.assertEqual(raw.count("\n"), 1, "a message must be exactly one line")
+        self.assertIn("コンパイル失敗 — naïve", raw)
+        self.assertNotIn("\\u", raw)
+        self.assertEqual(json.loads(raw)["result"]["text"], "コンパイル失敗 — naïve")
+
+    # ---- RECORD ------------------------------------------------------------------
+
+    def test_record_eof_while_reading_a_header_ends_the_loop_with_zero(self) -> None:
+        """RECORD, and this one is also the contract: a closed stdin is how a client disconnects,
+        and exiting 0 is what stops the server being reported as crashed."""
+        for label, stdin in (("empty", b""), ("mid-header", b"Content-Length: 41\r\n")):
+            with self.subTest(case=label):
+                code, responses, escaped = self._drive(stdin)
+                self.assertIsNone(escaped)
+                self.assertEqual(code, 0)
+                self.assertEqual(responses, [])
+
+    def test_record_an_empty_body_after_a_header_ends_the_loop_with_zero(self) -> None:
+        """RECORD. `Content-Length: N` followed by nothing reads as EOF, not as a framing error.
+
+        A truncated stream and a clean disconnect become the same event, so a client killed
+        mid-write is indistinguishable from one that closed politely. Recorded, not defended: I
+        have not changed it, and whether a partial frame should be reported is the operator's
+        decision.
+        """
+        body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "ping"}).encode("utf-8")
+        code, responses, escaped = self._drive(
+            f"Content-Length: {len(body)}\r\n\r\n".encode("ascii"))
+        self.assertIsNone(escaped)
+        self.assertEqual(code, 0)
+        self.assertEqual(responses, [])
+
+    def test_record_a_partially_truncated_body_escapes_as_a_json_error(self) -> None:
+        """RECORD. A body that is short but not empty reaches `json.loads` and its
+        `JSONDecodeError` is not caught by `main`, so the process dies with a traceback.
+
+        The contrast with the row above is the point: zero bytes is a clean exit, one byte is an
+        uncaught exception. Recorded rather than fixed.
+        """
+        body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "ping"}).encode("utf-8")
+        code, responses, escaped = self._drive(
+            f"Content-Length: {len(body)}\r\n\r\n".encode("ascii") + body[:5])
+        self.assertIsNone(code)
+        self.assertIsInstance(escaped, json.JSONDecodeError)
+        self.assertEqual(responses, [])
+
+    def test_record_a_non_numeric_content_length_escapes_as_a_value_error(self) -> None:
+        """RECORD. `int(...)` on the header value is unguarded. Same class as the row above."""
+        code, responses, escaped = self._drive(b"Content-Length: abc\r\n\r\n{}")
+        self.assertIsNone(code)
+        self.assertIsInstance(escaped, ValueError)
+        self.assertNotIsInstance(escaped, json.JSONDecodeError)
+
+    def test_record_a_json_value_that_is_not_an_object_is_skipped_silently(self) -> None:
+        """RECORD. `main` drops a non-dict message and reads the next one, with no reply and no
+        diagnostic. A client that sends a JSON-RPC batch (an ARRAY, which the specification
+        allows) therefore gets silence rather than an error — and silence is the answer a caller
+        cannot distinguish from a slow server. Recorded; not changed here.
+        """
+        code, responses, escaped = self._drive(
+            self._line([{"jsonrpc": "2.0", "id": 1, "method": "ping"}])
+            + self._line({"jsonrpc": "2.0", "id": 2, "method": "ping"}))
+        self.assertIsNone(escaped)
+        self.assertEqual(code, 0)
+        self.assertEqual([r["id"] for r in responses], [2])
+
+
+class RequestDispatchTests(unittest.TestCase):
+    """`_handle_request` — and the one thing it does that decides whether a gate MEANS anything.
+
+    `tools/call` catches every exception a handler raises and returns it as a SUCCESSFUL JSON-RPC
+    response carrying `isError: True`. That is the only channel by which a capability-gate refusal
+    reaches a client: the gate raises `ValueError`, and these twenty lines decide whether the
+    client is told "refused" or "fine". A change here that dropped `isError` would make every
+    refusal in this server look like a pass, with no other test in the repository noticing.
+
+    Written under `.claude/skills/atmofab-enforcement-change`: this is the exit of the enforcement
+    machinery, not an ordinary handler.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.mod = _load_server_module()
+
+    def test_initialize_echoes_the_client_protocol_version(self) -> None:
+        response = self.mod._handle_request({
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {"protocolVersion": "2999-01-01", "capabilities": {}}})
+        self.assertEqual(response["result"]["protocolVersion"], "2999-01-01")
+        self.assertEqual(response["result"]["serverInfo"]["name"], self.mod.SERVER_NAME)
+        self.assertEqual(response["result"]["serverInfo"]["version"], self.mod.SERVER_VERSION)
+
+    def test_initialize_without_a_protocol_version_answers_the_default(self) -> None:
+        """The default is a CONSTANT of the module, read here rather than transcribed — a
+        transcribed value would turn a deliberate protocol bump into a test failure that says
+        nothing about what broke."""
+        response = self.mod._handle_request({"jsonrpc": "2.0", "id": 1, "method": "initialize"})
+        self.assertEqual(response["result"]["protocolVersion"],
+                         self.mod.DEFAULT_PROTOCOL_VERSION)
+
+    def test_tools_list_serves_every_registered_tool(self) -> None:
+        """Set identity against `TOOLS`, not a transcribed list: a tool added to the module and
+        not served is a tool no client can call, and a name written here would have to be edited
+        for every legitimate addition."""
+        response = self.mod._handle_request({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
+        served = {tool["name"] for tool in response["result"]["tools"]}
+        self.assertEqual(served, set(self.mod.TOOLS))
+        for tool in response["result"]["tools"]:
+            self.assertIn("inputSchema", tool)
+            self.assertTrue(tool.get("description"))
+
+    def test_a_notification_gets_no_response(self) -> None:
+        self.assertIsNone(self.mod._handle_request(
+            {"jsonrpc": "2.0", "method": "notifications/initialized"}))
+
+    def test_an_unknown_method_with_an_id_is_a_method_not_found_error(self) -> None:
+        response = self.mod._handle_request(
+            {"jsonrpc": "2.0", "id": 3, "method": "no/such/method"})
+        self.assertEqual(response["error"]["code"], -32601)
+        self.assertNotIn("result", response)
+
+    def test_an_unknown_method_without_an_id_gets_no_response(self) -> None:
+        """A message with no id is a notification whatever its method, and answering one is a
+        protocol violation. The branch is separate from the one above and is reached only by an
+        unknown method, so it needs its own probe."""
+        self.assertIsNone(self.mod._handle_request({"jsonrpc": "2.0", "method": "no/such/method"}))
+
+    def test_an_unknown_TOOL_is_a_jsonrpc_error_not_an_isError_result(self) -> None:
+        """The two error channels are different, and a client distinguishes them. An unknown tool
+        is a JSON-RPC `error` (-32602); a handler that RAN and failed is a successful response
+        carrying `isError`. Collapsing them would make "this server cannot do that" and "that
+        call was refused" the same answer."""
+        response = self.mod._handle_request({
+            "jsonrpc": "2.0", "id": 4, "method": "tools/call",
+            "params": {"name": "no_such_tool", "arguments": {}}})
+        self.assertEqual(response["error"]["code"], -32602)
+        self.assertIn("no_such_tool", response["error"]["message"])
+        self.assertNotIn("result", response)
+
+    def test_a_successful_call_carries_isError_false_and_the_handler_return_value(self) -> None:
+        """Driven through a REAL registered tool with a stub handler, so the wrapping is what is
+        observed rather than a reimplementation of it."""
+        marker = {"ok": True, "value": "コンパイル済み"}
+        with mock.patch.dict(self.mod.TOOLS, {}, clear=False):
+            tool = self.mod.TOOLS["detect_build_system"]
+            patched = type(tool)(name=tool.name, description=tool.description,
+                                 input_schema=tool.input_schema, handler=lambda args: marker)
+            self.mod.TOOLS["detect_build_system"] = patched
+            response = self.mod._handle_request({
+                "jsonrpc": "2.0", "id": 5, "method": "tools/call",
+                "params": {"name": "detect_build_system", "arguments": {}}})
+        self.assertIs(response["result"]["isError"], False)
+        self.assertEqual(response["result"]["structuredContent"], marker)
+        self.assertEqual(json.loads(response["result"]["content"][0]["text"]), marker)
+
+    def test_a_handler_exception_becomes_isError_true_with_its_message(self) -> None:
+        """The row this class exists for, in its general form."""
+        def explode(_args):
+            raise ValueError("the gate said no")
+
+        with mock.patch.dict(self.mod.TOOLS, {}, clear=False):
+            tool = self.mod.TOOLS["detect_build_system"]
+            self.mod.TOOLS["detect_build_system"] = type(tool)(
+                name=tool.name, description=tool.description,
+                input_schema=tool.input_schema, handler=explode)
+            response = self.mod._handle_request({
+                "jsonrpc": "2.0", "id": 6, "method": "tools/call",
+                "params": {"name": "detect_build_system", "arguments": {}}})
+        self.assertIs(response["result"]["isError"], True)
+        self.assertEqual(response["result"]["structuredContent"]["error"], "the gate said no")
+        self.assertIn("the gate said no", response["result"]["content"][0]["text"])
+
+    def test_a_REAL_capability_gate_refusal_reaches_the_client_as_isError(self) -> None:
+        """The same row driven by the real gate rather than a stub, because a stub cannot show
+        that the refusal actually TRAVELS this path.
+
+        A workflow-mode server with no `orchestration_id` is the refusal every gated tool makes
+        (`_maybe_enforce_orchestration_mcp_gate`), and it arrives as a ValueError. What this
+        asserts is that the client can tell it from a pass: `isError` is True, the reason is
+        carried, and the response is NOT a successful result with data in it.
+        """
+        with mock.patch.dict(os.environ, {"ATMOFAB_WORKFLOW_MODE": "1"}, clear=False):
+            with tempfile.TemporaryDirectory() as tmp:
+                response = self.mod._handle_request({
+                    "jsonrpc": "2.0", "id": 7, "method": "tools/call",
+                    "params": {"name": "run_syntax_check",
+                               "arguments": {"project_dir": tmp}}})
+        result = response["result"]
+        self.assertIs(result["isError"], True, "a capability-gate refusal must not look like a pass")
+        detail = result["structuredContent"]["error"]
+        self.assertIn("orchestration_id", detail)
+        self.assertIn("ATMOFAB_WORKFLOW_MODE", detail)
+        self.assertNotIn("ok", result["structuredContent"],
+                         "a refusal must not carry a handler's success keys")
+
+    def test_the_refusal_and_the_success_differ_in_the_field_a_client_reads(self) -> None:
+        """The negative control for the row above. Two calls, one refused and one served, compared
+        on `isError` — because an assertion that a refusal has `isError: True` says nothing unless
+        a success has `isError: False` on the same path. Mutating the constant makes both rows
+        red, which is the property; without this one, `isError: True -> True` everywhere would
+        pass."""
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.dict(os.environ, {"ATMOFAB_WORKFLOW_MODE": "1"}, clear=False):
+                refused = self.mod._handle_request({
+                    "jsonrpc": "2.0", "id": 8, "method": "tools/call",
+                    "params": {"name": "run_syntax_check", "arguments": {"project_dir": tmp}}})
+            env = {k: v for k, v in os.environ.items()
+                   if k not in ("ATMOFAB_WORKFLOW_MODE", "ATMOFAB_ORCHESTRATION_ID")}
+            with mock.patch.dict(os.environ, env, clear=True):
+                served = self.mod._handle_request({
+                    "jsonrpc": "2.0", "id": 9, "method": "tools/call",
+                    "params": {"name": "detect_build_system", "arguments": {"project_dir": tmp}}})
+        self.assertIs(refused["result"]["isError"], True)
+        self.assertIs(served["result"]["isError"], False)
+
+
+class BuildCommandTests(unittest.TestCase):
+    """`_recommended_build_system` and `_build_command` — the SUCCESS paths.
+
+    The refusal side of this server is covered thickly; these two were referenced once each from
+    the whole test corpus (measured at 9f2e16d) and never on a path that produces an argv. Every
+    `compile` this repository performs is one of these argv.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.mod = _load_server_module()
+
+    def _dir_with(self, *names: str) -> str:
+        holder = tempfile.TemporaryDirectory()
+        self.addCleanup(holder.cleanup)
+        for name in names:
+            (Path(holder.name) / name).write_text("", encoding="utf-8")
+        return holder.name
+
+    def test_a_marker_file_selects_its_build_system_and_the_reason_names_it(self) -> None:
+        """One case per marker, from the function's own table — the enumeration is killed element
+        by element rather than as a set, because a missing element shows up in no other test."""
+        import inspect
+        source = inspect.getsource(self.mod._recommended_build_system)
+        markers = re.findall(r'\("([^"]+)", "([^"]+)"\),', source)
+        self.assertGreaterEqual(len(markers), 10,
+                                "the marker table this row sweeps could not be read")
+        for marker, expected in markers:
+            with self.subTest(marker=marker):
+                answer = self.mod._recommended_build_system(self._dir_with(marker), "fortran")
+                self.assertEqual(answer["build_system"], expected)
+                self.assertIn(marker, answer["reason"])
+
+    def test_the_first_matching_marker_wins(self) -> None:
+        """A directory carrying two markers has one answer, and which one is a property of the
+        table's ORDER. Recorded because a reorder is silent otherwise."""
+        answer = self.mod._recommended_build_system(
+            self._dir_with("Makefile", "CMakeLists.txt"), "fortran")
+        self.assertEqual(answer["build_system"], "make")
+
+    def test_an_unmarked_directory_defaults_to_make_and_says_which_default(self) -> None:
+        """Two different defaults with two different reasons, and the reason is the only thing
+        that tells them apart — an assertion on `build_system` alone cannot, since both are
+        `make`."""
+        empty = self._dir_with()
+        family = self.mod._recommended_build_system(empty, "fortran")
+        self.assertEqual(family["build_system"], "make")
+        self.assertIn("Fortran/C family", family["reason"])
+        other = self.mod._recommended_build_system(empty, "haskell")
+        self.assertEqual(other["build_system"], "make")
+        self.assertEqual(other["reason"], "fallback default")
+
+    def test_every_build_system_the_recommender_can_return_builds_an_argv(self) -> None:
+        """The knot between the two functions, which nothing tied: a marker table entry naming a
+        build system `_build_command` does not implement is a `compile` that raises after the
+        recommendation succeeded."""
+        import inspect
+        markers = re.findall(
+            r'\("([^"]+)", "([^"]+)"\),', inspect.getsource(self.mod._recommended_build_system))
+        for _marker, build_system in markers:
+            with self.subTest(build_system=build_system):
+                argv = self.mod._build_command(build_system, None, 4, [])
+                self.assertTrue(argv, f"{build_system} produced an empty argv")
+                self.assertEqual(argv[0], self.mod.build_system_executable(build_system))
+
+    def test_the_make_argv_is_the_documented_shape(self) -> None:
+        """`make` is the default this repository actually runs, so its argv is pinned exactly —
+        the jobs flag glued to `-j`, the target after it, extra arguments last."""
+        self.assertEqual(self.mod._build_command("make", None, 4, []), ["make", "-j4"])
+        self.assertEqual(self.mod._build_command("make", "all", 2, []), ["make", "-j2", "all"])
+        self.assertEqual(self.mod._build_command("make", "all", 2, ["V=1"]),
+                         ["make", "-j2", "all", "V=1"])
+
+    def test_extra_arguments_reach_every_build_system_and_stay_last(self) -> None:
+        """A family over the whole dispatch, and the property is one an operator relies on:
+        arguments they passed are handed to the tool, unreordered. `cmake` is the one that puts
+        them behind a `--` separator, so it is asserted separately rather than excluded."""
+        for build_system in ("make", "meson", "ninja", "cargo", "go", "maven", "gradle",
+                             "npm", "pnpm", "poetry"):
+            with self.subTest(build_system=build_system):
+                argv = self.mod._build_command(build_system, None, 1, ["--flag", "x"])
+                self.assertEqual(argv[-2:], ["--flag", "x"])
+        cmake = self.mod._build_command("cmake", "tgt", 3, ["--flag"])
+        self.assertEqual(cmake, ["cmake", "--build", ".", "-j", "3", "--target", "tgt",
+                                 "--", "--flag"])
+
+    def test_a_build_system_with_no_adapter_is_refused_by_name(self) -> None:
+        with self.assertRaises(ValueError) as caught:
+            self.mod._build_command("scons", None, 1, [])
+        self.assertIn("scons", str(caught.exception))
+
+    def test_the_default_target_is_the_tools_own_and_not_a_missing_argument(self) -> None:
+        """`gradle` and `npm` substitute `build` for an absent target rather than omitting it, so
+        the argv is well-formed either way. Recorded because the two shapes are indistinguishable
+        from the caller's side."""
+        self.assertEqual(self.mod._build_command("gradle", None, 1, []), ["gradle", "build"])
+        self.assertEqual(self.mod._build_command("npm", None, 1, []), ["npm", "run", "build"])
+
+
+class McpCallClientTests(unittest.TestCase):
+    """`mcp_servers/mcp_call.py` — the client this repository's own procedures drive.
+
+    Referenced by `docs/RUNBOOK.md`, by `.claude/skills/atmofab-enforcement-change`'s verification
+    reference, by the review-loop skill and twice by `TODO.md`, all of which use it as the vehicle
+    for END-TO-END verification of the capability gate — and it had no test at all (measured at
+    9f2e16d: zero references in `tools/tests/`). The skills treat it as the instrument that proves
+    a refusal is real, so an instrument that silently stopped reporting refusals would take the
+    evidence with it.
+
+    Driven as a real SUBPROCESS, not by importing `_mcp_call`, for two reasons: the exit code is
+    half the contract (the skills read it), and the module spawns the server by the RELATIVE path
+    `mcp_servers/build_runtime_server.py`, so it only works with the repository root as the
+    working directory. That is a real precondition of every documented use and it is asserted
+    below rather than left for someone to discover.
+    """
+
+    REPO_ROOT = _SERVER_PATH.parent.parent
+
+    def _call(self, tool: str, args: dict, *, workflow: bool) -> subprocess.CompletedProcess:
+        env = {k: v for k, v in os.environ.items() if not k.startswith("ATMOFAB_")}
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
+        if workflow:
+            env["ATMOFAB_WORKFLOW_MODE"] = "1"
+        return subprocess.run(
+            [sys.executable, "mcp_servers/mcp_call.py", "--tool", tool,
+             "--args-json", json.dumps(args)],
+            cwd=self.REPO_ROOT, env=env, capture_output=True, text=True, timeout=120)
+
+    def test_a_capability_gate_refusal_comes_back_as_a_nonzero_exit_and_a_message(self) -> None:
+        """The end-to-end the skills actually run, and the property they rely on.
+
+        A gated tool called under the workflow without `orchestration_id` is refused by
+        `_maybe_enforce_orchestration_mcp_gate`. That refusal travels as a ValueError -> an
+        `isError` result -> a `RuntimeError` in the client -> a non-zero exit. Every link is
+        somebody's twenty lines, and until this row nothing drove the chain.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            done = self._call("run_syntax_check", {"project_dir": tmp}, workflow=True)
+        self.assertNotEqual(done.returncode, 0,
+                            "a refused call exited 0; a script reading the exit code would "
+                            "record the gate as satisfied")
+        self.assertIn("orchestration_id", done.stderr)
+        self.assertIn("ATMOFAB_WORKFLOW_MODE", done.stderr)
+        self.assertEqual(done.stdout.strip(), "",
+                         "a refused call printed a result document on stdout")
+
+    def test_a_served_call_comes_back_as_exit_zero_and_json_on_stdout(self) -> None:
+        """The negative control. Without it the row above is satisfied by a client that fails on
+        every call — which is exactly what a broken client looks like, and is indistinguishable
+        from a working gate."""
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "Makefile").write_text("all:\n\t@true\n", encoding="utf-8")
+            done = self._call("detect_build_system",
+                              {"project_dir": tmp, "language": "fortran"}, workflow=False)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            payload = json.loads(done.stdout)
+            # DERIVED, not transcribed. The first version of this row asserted a key
+            # (`build_system`) the tool does not emit — it emits `recommended_build_system`, and
+            # the difference is invisible until you run it. Comparing against
+            # `_recommended_build_system`'s own answer for the same directory ties the client's
+            # output to the function this file also tests directly, so a rename breaks one place.
+            expected = _load_server_module()._recommended_build_system(tmp, "fortran")
+            self.assertEqual(payload["recommended_build_system"], expected["build_system"])
+            self.assertEqual(payload["reason"], expected["reason"])
+            self.assertEqual(payload["project_dir"], tmp)
+
+    def test_an_unknown_tool_is_reported_rather_than_returning_an_empty_result(self) -> None:
+        """The other error channel — a JSON-RPC `error`, not an `isError` result — reaches the
+        caller too. A client that dropped it would return `{}` with exit 0, which reads as a tool
+        that ran and found nothing."""
+        done = self._call("no_such_tool", {}, workflow=False)
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("no_such_tool", done.stderr)
+
+    def test_the_client_depends_on_the_repository_root_as_the_working_directory(self) -> None:
+        """RECORD, and it is documented nowhere else: the server is spawned by a relative path, so
+        every documented invocation of this client silently requires `cwd` to be the checkout
+        root. Running it from anywhere else fails, and the failure names a missing file rather
+        than the real cause."""
+        with tempfile.TemporaryDirectory() as tmp:
+            env = {k: v for k, v in os.environ.items() if not k.startswith("ATMOFAB_")}
+            done = subprocess.run(
+                [sys.executable, str(self.REPO_ROOT / "mcp_servers" / "mcp_call.py"),
+                 "--tool", "detect_build_system",
+                 "--args-json", json.dumps({"project_dir": tmp})],
+                cwd=tmp, env=env, capture_output=True, text=True, timeout=120)
+        self.assertNotEqual(done.returncode, 0)
+
+    def test_the_documents_that_teach_this_client_still_name_it(self) -> None:
+        """The reason this class is worth its runtime: the client is an INSTRUMENT of the review
+        procedure, not a product feature. If the documents stop pointing at it the tests here go
+        on passing while nothing uses it — so the coupling is asserted in the direction that
+        matters, from the documents to the file."""
+        for rel in ("docs/RUNBOOK.md",
+                    ".claude/skills/atmofab-enforcement-change/references/verification.md"):
+            path = self.REPO_ROOT / rel
+            with self.subTest(document=rel):
+                self.assertTrue(path.is_file(), f"{rel} is gone; this coupling has no subject")
+                self.assertIn("mcp_call.py", path.read_text(encoding="utf-8"))
 
 
 class ToolSchemaDocumentParityTests(unittest.TestCase):
