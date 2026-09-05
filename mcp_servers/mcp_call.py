@@ -104,11 +104,20 @@ def _mcp_call(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
             },
         )
         response = _read_message(proc.stdout)
-    except (RuntimeError, OSError, json.JSONDecodeError) as exc:
-        # EVERY failure of the exchange, not only the last read. The first version wrapped the
-        # `tools/call` read alone, and a server that dies at import fails at the INITIALIZE read
-        # one line earlier — so the diagnostic never fired for the case it was written for
-        # (measured). A broken pipe on the write side is the same event seen from the other end.
+    except (RuntimeError, OSError, ValueError) as exc:
+        # EVERY failure of the exchange, not only the last read. Two narrowings were measured and
+        # both left a real case uncovered: the first version wrapped the `tools/call` read alone,
+        # and a server that dies at import fails at the INITIALIZE read one line earlier; the
+        # second caught `json.JSONDecodeError` and missed the BARE `ValueError` that
+        # `int(header_value)` raises on a non-numeric `Content-Length` — a framing failure this
+        # repository's own tests record as reachable. `ValueError` covers both, since
+        # `JSONDecodeError` is one. `OSError` is the broken pipe seen from the write side.
+        #
+        # KILL FIRST, THEN READ. `proc.stderr.read()` reads to EOF, so on a failure where the
+        # server is still alive — a non-JSON line on its stdout reaches `json.loads` while the
+        # process keeps running on a stdin pipe this client still holds open — reading before the
+        # kill blocks for ever, and this client has no timeout of its own. The order is the whole
+        # difference between a diagnostic and a hang.
         proc.kill()
         proc.wait(timeout=2)
         detail = _server_stderr()

@@ -1500,6 +1500,33 @@ class BuildCommandTests(unittest.TestCase):
             (Path(holder.name) / name).write_text("", encoding="utf-8")
         return holder.name
 
+    @staticmethod
+    def _dispatched_build_systems(source: str) -> set[str]:
+        """Every build system `_build_command` dispatches on, read with `ast` out of `source`.
+
+        `ast`, not a regex, for the reason the marker reader already gives — and round 2 measured
+        the consequence here too: `re.findall(r'if build_system == "([^"]+)":')` misses
+        `if build_system in ("bazel",):` and misses `if build_system ==  "bazel":` with a double
+        space, so a new adapter shipped with its whole argv unpinned and the sweep green. It also
+        missed an existing arm reformatted across lines. Comparisons and membership tests are both
+        read, because both are ways someone would write this dispatch.
+        """
+        import ast
+        found: set[str] = set()
+        for node in ast.walk(ast.parse(textwrap.dedent(source))):
+            if not isinstance(node, ast.Compare) or len(node.ops) != 1:
+                continue
+            if getattr(node.left, "id", None) != "build_system":
+                continue
+            operator = node.ops[0]
+            comparator = node.comparators[0]
+            if isinstance(operator, ast.Eq) and isinstance(comparator, ast.Constant):
+                found.add(comparator.value)
+            elif isinstance(operator, ast.In) and isinstance(comparator, (ast.Tuple, ast.List,
+                                                                         ast.Set)):
+                found.update(e.value for e in comparator.elts if isinstance(e, ast.Constant))
+        return found
+
     @classmethod
     def _marker_table(cls) -> list[tuple[str, str]]:
         """The `(marker, build system)` table `_recommended_build_system` walks, read with `ast`.
@@ -1516,17 +1543,25 @@ class BuildCommandTests(unittest.TestCase):
         first version's floor was `>= 10` for an eleven-entry table, so losing exactly one entry —
         the failure that actually happened — was invisible.
         """
-        import ast
         import inspect
-        tree = ast.parse(textwrap.dedent(inspect.getsource(cls.mod._recommended_build_system)))
-        for node in ast.walk(tree):
+        return cls._read_marker_table(inspect.getsource(cls.mod._recommended_build_system))
+
+    @staticmethod
+    def _read_marker_table(source: str) -> list[tuple[str, str]]:
+        """The pure half, so the probe below can drive THIS function on a synthetic input."""
+        import ast
+        for node in ast.walk(ast.parse(textwrap.dedent(source))):
             if not isinstance(node, ast.Assign):
                 continue
             if not any(getattr(target, "id", None) == "checks" for target in node.targets):
                 continue
-            self = node.value
-            assert isinstance(self, ast.List), "the marker table is no longer a list literal"
-            return [(entry.elts[0].value, entry.elts[1].value) for entry in self.elts]
+            table = node.value
+            if not isinstance(table, ast.List):
+                # AssertionError, not TypeError: this is a check on the SHAPE of the code being
+                # read, reported to whoever changed it, not a type contract of this function.
+                raise AssertionError(  # noqa: TRY004
+                    "the marker table is no longer a list literal")
+            return [(entry.elts[0].value, entry.elts[1].value) for entry in table.elts]
         raise AssertionError(
             "`checks` is no longer assigned a list literal in _recommended_build_system; this "
             "reader cannot find the marker table it sweeps")
@@ -1542,7 +1577,6 @@ class BuildCommandTests(unittest.TestCase):
         regex did not. The second half is driven on a synthetic function rather than by editing
         the real one.
         """
-        import ast
         self.assertEqual(len(self._marker_table()), self._MARKER_COUNT)
         reformatted = textwrap.dedent('''
             def f(project_dir, language):
@@ -1552,17 +1586,25 @@ class BuildCommandTests(unittest.TestCase):
                      "cmake"),  # split across two lines, with a comment
                 ]
             ''')
-        tree = ast.parse(reformatted)
-        found = [
-            [(e.elts[0].value, e.elts[1].value) for e in node.value.elts]
-            for node in ast.walk(tree)
-            if isinstance(node, ast.Assign)
-            and any(getattr(x, "id", None) == "checks" for x in node.targets)]
-        self.assertEqual(found, [[("Makefile", "make"), ("CMakeLists.txt", "cmake")]])
+        # DRIVES the real reader. The first version of this row re-implemented the `ast` walk
+        # inline, so replacing `_marker_table`'s body with the old regex left the whole file
+        # green — measured in round 2, and it is the same sin this branch had already fixed in
+        # the sibling boundary check one PR earlier.
+        self.assertEqual(
+            self._read_marker_table(reformatted),
+            [("Makefile", "make"), ("CMakeLists.txt", "cmake")])
         self.assertEqual(
             len(re.findall(r'\("([^"]+)", "([^"]+)"\),', reformatted)), 1,
             "the regex this reader replaced would still find only one of the two entries; if "
             "that stops being true the reason for using ast has changed")
+        self.assertEqual(
+            self._dispatched_build_systems(
+                'def f(b):\n'
+                '    if build_system == "make":\n        pass\n'
+                '    if build_system ==  "spaced":\n        pass\n'
+                '    if build_system in ("bazel", "buck"):\n        pass\n'),
+            {"make", "spaced", "bazel", "buck"},
+            "the dispatch reader misses a spelling a new adapter would legitimately use")
 
     def test_a_marker_file_selects_its_build_system_and_the_reason_names_it(self) -> None:
         """One case per marker — the enumeration is killed element by element rather than as a
@@ -1655,8 +1697,8 @@ class BuildCommandTests(unittest.TestCase):
                 self.assertEqual(self.mod._build_command(build_system, None, 4, []), expected)
         # The other direction: a build system the dispatch gained and this table did not.
         import inspect
-        dispatched = set(re.findall(r'if build_system == "([^"]+)":',
-                                    inspect.getsource(self.mod._build_command)))
+        dispatched = self._dispatched_build_systems(
+            inspect.getsource(self.mod._build_command))
         dispatched |= {b for _m, b in self._marker_table()}
         self.assertEqual(
             dispatched, implemented,
@@ -1701,18 +1743,30 @@ class McpCallClientTests(unittest.TestCase):
     """`mcp_servers/mcp_call.py` — the client this repository's own procedures drive.
 
     Referenced by `docs/RUNBOOK.md`, by `.claude/skills/atmofab-enforcement-change`'s verification
-    reference, by the review-loop skill and three times by `TODO.md` (an earlier version of this
-    sentence said twice), all of which use it as the vehicle for END-TO-END verification of the
+    reference, by the review-loop skill and by `TODO.md` (on three lines at 9f2e16d, four
+    occurrences at HEAD — this branch's own edit added one; two earlier versions of this sentence
+    said "twice" and "three times", and a bare count here is ambiguous between lines and
+    occurrences, which is why it now says which), all of which use it as the vehicle for END-TO-END verification of the
     capability gate — and it had no test at all (measured at
     9f2e16d: zero references in `tools/tests/`). The skills treat it as the instrument that proves
     a refusal is real, so an instrument that silently stopped reporting refusals would take the
     evidence with it.
 
-    Driven as a real SUBPROCESS, not by importing `_mcp_call`, for two reasons: the exit code is
-    half the contract (the skills read it), and the module spawns the server by the RELATIVE path
-    `mcp_servers/build_runtime_server.py`, so it only works with the repository root as the
-    working directory. That is a real precondition of every documented use and it is asserted
-    below rather than left for someone to discover.
+    Driven as a real SUBPROCESS, not by importing `_mcp_call`, because the exit code is half the
+    contract — the skills read it.
+
+    NOT PINNED, measured rather than assumed: deleting `_mcp_call`'s `finally: proc.kill();
+    proc.wait()` survives every row here. What that costs is a leaked server process per call, not
+    a wrong answer — the client still returns the right verdict — and observing it from a
+    subprocess test means listing processes, which is racy. Said here rather than left for a
+    reader to count as covered.
+
+    This paragraph used to say the module spawns the server by a RELATIVE path and "only works
+    with the repository root as the working directory", asserted below. Round 2 caught that: the
+    commit that removed that behaviour left the sentence describing it, in the very change written
+    to stop this instrument from lying, and the row 70 lines down now asserts the OPPOSITE. The
+    client resolves the server from its own `__file__`; `_call` still passes `cwd=REPO_ROOT`
+    because that is what the documented invocations use, not because it is required.
     """
 
     REPO_ROOT = _SERVER_PATH.parent.parent
@@ -1837,11 +1891,88 @@ class McpCallClientTests(unittest.TestCase):
                 cwd=self.REPO_ROOT, env=env, capture_output=True, text=True, timeout=30,
                 check=False)
         self.assertNotEqual(done.returncode, 0)
-        self.assertIn("BOOM: cannot start", done.stderr,
-                      "the server's own diagnostic never reached the caller, so a server that "
-                      "cannot start is still reported as a framing error")
+        # On the DIAGNOSTIC, not on the stream. `done.stderr` also carries anything the CHILD
+        # inherited a terminal for, so `assertIn("BOOM", done.stderr)` is satisfied by a client
+        # that captured nothing and reported "(nothing on stderr)" — measured in round 2:
+        # removing `stderr=subprocess.PIPE` from the spawn left this row green while the client's
+        # own message said, verbatim, that the server produced nothing.
+        self.assertIn("produced: BOOM: cannot start", done.stderr,
+                      "the server's own diagnostic never reached the caller's ERROR, so a server "
+                      "that cannot start is still reported as a framing error")
+        self.assertNotIn("(nothing on stderr)", done.stderr)
         self.assertIn("build_runtime_server.py", done.stderr,
                       "the error does not say which server it failed to talk to")
+
+    def test_a_server_that_stays_alive_and_talks_nonsense_does_not_hang_the_client(self) -> None:
+        """The ordering inside the failure path, which nothing observed.
+
+        `_server_stderr` reads to EOF. On a failure where the server is STILL RUNNING — a
+        non-JSON line on its stdout reaches `json.loads` while the process keeps waiting on a
+        stdin pipe this client still holds open — reading before killing it blocks for ever, and
+        the client has no timeout of its own. Round 2 measured both the reordering and the
+        deletion of the cleanup surviving the whole file.
+
+        The witness is the wall clock: this row is what turns "the RUNBOOK's gate-verification
+        command never returns" into a failed assertion. The 20-second bound is ~20x a served call.
+        """
+        import time
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "build_runtime_server.py").write_text(
+                "import sys\n"
+                "sys.stderr.write('BOOM: alive but wrong\\n')\n"
+                "sys.stderr.flush()\n"
+                "sys.stdout.write('not json at all\\n')\n"
+                "sys.stdout.flush()\n"
+                "sys.stdin.read()\n",  # stays alive on the stdin pipe the client holds open
+                encoding="utf-8")
+            client = Path(tmp) / "mcp_call.py"
+            client.write_text(
+                (self.REPO_ROOT / "mcp_servers" / "mcp_call.py").read_text(encoding="utf-8"),
+                encoding="utf-8")
+            env = {k: v for k, v in os.environ.items() if not k.startswith("ATMOFAB_")}
+            started = time.monotonic()
+            done = subprocess.run(
+                [sys.executable, str(client), "--tool", "detect_build_system",
+                 "--args-json", json.dumps({"project_dir": tmp})],
+                cwd=self.REPO_ROOT, env=env, capture_output=True, text=True, timeout=20,
+                check=False)
+            elapsed = time.monotonic() - started
+        self.assertNotEqual(done.returncode, 0)
+        self.assertLess(elapsed, 15, "the client did not return promptly for a live server")
+        self.assertIn("produced: BOOM: alive but wrong", done.stderr,
+                      "the diagnostic must still be reported when the server is alive")
+
+    def test_a_malformed_frame_from_the_server_still_carries_the_diagnostic(self) -> None:
+        """The framing failure that is NOT a JSON error, and it was uncovered.
+
+        `_read_message` does `int(header_value)`, which raises a BARE `ValueError` on a
+        non-numeric `Content-Length` — `json.JSONDecodeError` is a `ValueError`, but not the other
+        way round, so a clause catching only the JSON one lets this escape without the server's
+        stderr attached. Measured in round 2: narrowing the clause back survived the whole file,
+        i.e. nothing drove this branch through the client. `mcp_servers/build_runtime_server.py`'s
+        own tests record the same header as reachable, so this is not an invented shape.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "build_runtime_server.py").write_text(
+                "import sys\n"
+                "sys.stderr.write('BOOM: bad framing\\n')\n"
+                "sys.stderr.flush()\n"
+                "sys.stdout.write('Content-Length: not-a-number\\r\\n\\r\\n{}')\n"
+                "sys.stdout.flush()\n",
+                encoding="utf-8")
+            client = Path(tmp) / "mcp_call.py"
+            client.write_text(
+                (self.REPO_ROOT / "mcp_servers" / "mcp_call.py").read_text(encoding="utf-8"),
+                encoding="utf-8")
+            env = {k: v for k, v in os.environ.items() if not k.startswith("ATMOFAB_")}
+            done = subprocess.run(
+                [sys.executable, str(client), "--tool", "detect_build_system",
+                 "--args-json", json.dumps({"project_dir": tmp})],
+                cwd=self.REPO_ROOT, env=env, capture_output=True, text=True, timeout=20,
+                check=False)
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("produced: BOOM: bad framing", done.stderr,
+                      "a non-numeric Content-Length escaped without the server's diagnostic")
 
     def test_the_documents_that_teach_this_client_still_name_it(self) -> None:
         """The reason this class is worth its runtime: the client is an INSTRUMENT of the review
