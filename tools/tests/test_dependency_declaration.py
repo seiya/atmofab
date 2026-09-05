@@ -43,10 +43,26 @@ if str(REPO_ROOT) not in sys.path:
 from tools import run_workflow  # noqa: E402
 from tools.backends import registry as backend_registry  # noqa: E402
 
-#: A requirement line, split into the distribution name and everything after it. Deliberately not
-#: a PEP 508 parser: these two files are hand-written and this repository installs them with pip,
-#: so the shapes that exist are `name`, `name>=x`, `name==x`, and `name>=x,<y`.
-_REQUIREMENT_RE = re.compile(r"^(?P<name>[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?)(?P<spec>.*)$")
+#: A requirement line, decomposed. NOT a full PEP 508 parser — these two files are hand-written —
+#: but it has to admit every shape a legitimate edit would use, because refusing one is a check
+#: that makes ordinary work fail. So `extras` and `marker` are separate groups rather than swept
+#: into the version specifier: `ruff>=0.14,<0.17 ; python_version >= "3.10"` and `ruff[x]>=0.14`
+#: are correct requirement lines, and an earlier version of this reader put the whole tail into
+#: `spec` and then reported the character-for-character range comparison as a drift.
+_REQUIREMENT_RE = re.compile(
+    r"^(?P<name>[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?)"
+    r"(?P<extras>\[[^\]]*\])?"
+    r"(?P<spec>[^;]*?)"
+    r"\s*(?P<marker>;.*)?$")
+
+#: PEP 503 name normalization. `PyYAML`, `pyyaml` and `py_yaml` are one distribution to pip, so
+#: they have to be one distribution to every comparison in this file; comparing the spellings
+#: refused the normalized form an operator or a tool may legitimately write.
+_NAME_SEPARATORS = re.compile(r"[-_.]+")
+
+
+def _canonical(name: str) -> str:
+    return _NAME_SEPARATORS.sub("-", name).lower()
 
 
 def _effective_lines(path: Path) -> list[str]:
@@ -56,10 +72,14 @@ def _effective_lines(path: Path) -> list[str]:
     handwritten sweep killed: an `assertIn("-r requirements.txt", path.read_text())` is satisfied
     by a line reading `# -r requirements.txt`, so commenting the include out left the check green.
     A raw-text search cannot tell an instruction from a mention of one.
+
+    A `#` opens a comment only at the start of a line or after whitespace, which is pip's own rule;
+    splitting on every `#` truncates a legitimate URL fragment. No line in either file has one
+    today, so this is a bound on what a later edit may write rather than a fix to a live defect.
     """
     lines = []
     for raw in path.read_text().splitlines():
-        line = raw.split("#", 1)[0].strip()
+        line = re.split(r"(?:^|\s)#", raw, maxsplit=1)[0].strip()
         if line:
             lines.append(line)
     return lines
@@ -88,14 +108,81 @@ def _requirement_lines(path: Path) -> list[str]:
 
 
 def _parsed(path: Path) -> dict[str, str]:
-    """distribution name -> version specifier (possibly empty), for one requirements file."""
+    """canonical distribution name -> version specifier (possibly empty), for one requirements file.
+
+    The specifier excludes extras and the environment marker, so a comparison against a backend's
+    `SUPPORTED_VERSION_SPEC` answers about the VERSION RANGE and nothing else.
+    """
     found: dict[str, str] = {}
     for line in _requirement_lines(path):
         match = _REQUIREMENT_RE.match(line)
         if match is None:  # pragma: no cover - a malformed line is a defect, not a state
             raise AssertionError(f"{path.name} carries a line this reader cannot parse: {line!r}")
-        found[match.group("name")] = match.group("spec").strip()
+        found[_canonical(match.group("name"))] = match.group("spec").strip()
     return found
+
+
+class RequirementReaderTests(unittest.TestCase):
+    """The readers themselves, on synthetic input where the answer is not "nothing".
+
+    Every comparison in the two classes below is only as good as these. They are driven on
+    constructed files rather than on the repository's own two, because a rule whose answer on this
+    tree is the empty set cannot be observed through the assertion that consumes it — and because
+    the shapes that matter here are the ones the repository does NOT contain today: the extras, the
+    environment marker and the normalized spelling that a later legitimate edit may write, and
+    which an earlier version of this reader refused.
+    """
+
+    def _write(self, text: str) -> Path:
+        holder = tempfile.TemporaryDirectory()
+        self.addCleanup(holder.cleanup)
+        path = Path(holder.name) / "requirements.txt"
+        path.write_text(text)
+        return path
+
+    def test_the_specifier_excludes_extras_and_the_environment_marker(self) -> None:
+        """The over-refusal probe for the character-for-character range comparison. All three of
+        these are correct requirement lines for the SAME range, and refusing any of them makes a
+        legitimate edit a test failure."""
+        for line in (
+                'ruff>=0.14,<0.17',
+                'ruff[foo]>=0.14,<0.17',
+                'ruff>=0.14,<0.17 ; python_version >= "3.10"',
+                'ruff[foo]>=0.14,<0.17; sys_platform == "linux"'):
+            with self.subTest(line=line):
+                self.assertEqual(_parsed(self._write(line + "\n")), {"ruff": ">=0.14,<0.17"})
+
+    def test_names_are_compared_the_way_pip_compares_them(self) -> None:
+        """PEP 503 normalization, in both directions.
+
+        Case folds and the three separators collapse to one, so `tree_sitter.fortran` and
+        `Tree-Sitter-Fortran` are the same distribution — comparing spellings refused the
+        normalized form, which is what pip itself and most tooling emit. What must NOT happen is
+        the separator disappearing: `py_yaml` is a different distribution from `PyYAML`, and a
+        normalization that merged them would make this file's set comparisons accept the wrong
+        package.
+        """
+        for spelling in ("PyYAML", "pyyaml", "PYYAML"):
+            with self.subTest(spelling=spelling):
+                self.assertEqual(list(_parsed(self._write(spelling + ">=5.4\n"))), ["pyyaml"])
+        for spelling in ("tree_sitter.fortran", "Tree-Sitter-Fortran", "tree.sitter_fortran"):
+            with self.subTest(spelling=spelling):
+                self.assertEqual(
+                    list(_parsed(self._write(spelling + "==0.6.0\n"))), ["tree-sitter-fortran"])
+        self.assertEqual(list(_parsed(self._write("py_yaml>=5.4\n"))), ["py-yaml"])
+
+    def test_a_comment_needs_a_boundary_before_it(self) -> None:
+        """pip's own rule. Splitting on every `#` truncates a URL fragment, which is a legitimate
+        thing for a requirement line to carry."""
+        self.assertEqual(
+            _effective_lines(self._write("pytest  # the runner\n# whole line\nfoo#bar\n")),
+            ["pytest", "foo#bar"])
+
+    def test_the_reader_refuses_a_line_it_cannot_decompose(self) -> None:
+        """A malformed line must say so rather than being silently dropped, or every set
+        comparison in this file quietly loses a member."""
+        with self.assertRaises(AssertionError):
+            _parsed(self._write("!!!not a requirement\n"))
 
 
 class RuntimeRequirementsTests(unittest.TestCase):
@@ -110,7 +197,7 @@ class RuntimeRequirementsTests(unittest.TestCase):
         return (REPO_ROOT / "docs" / "RUNBOOK.md").read_text()
 
     def _packages_in_table(self, document: str) -> set[str]:
-        """The distribution names the §0-1 package table declares, out of `document`.
+        """The CANONICAL distribution names the §0-1 package table declares, out of `document`.
 
         Takes the document as an argument so the over-refusal probe below drives THIS function
         rather than re-implementing it with different termination semantics.
@@ -126,7 +213,7 @@ class RuntimeRequirementsTests(unittest.TestCase):
             cell = line.strip().strip("|").split("|")[0].strip()
             if set(cell) <= set("-:") and cell:
                 continue  # the header separator row, not a package
-            found.add(cell.strip("`"))
+            found.add(_canonical(cell.strip("`")))
         return found
 
     def test_the_runtime_declaration_is_exactly_the_runbook_package_table(self) -> None:
@@ -149,7 +236,7 @@ class RuntimeRequirementsTests(unittest.TestCase):
         declared = set(_parsed(REPO_ROOT / "requirements.txt"))
         for import_name, distribution in run_workflow.REQUIRED_PYTHON_MODULES:
             self.assertIn(
-                distribution, declared,
+                _canonical(distribution), declared,
                 f"tools/run_workflow.py refuses a host missing {import_name!r} (distribution "
                 f"{distribution!r}), but requirements.txt does not install it")
 
@@ -163,27 +250,73 @@ class RuntimeRequirementsTests(unittest.TestCase):
         table = self._packages_in_table(self._runbook())
         for import_name, distribution in run_workflow.REQUIRED_PYTHON_MODULES:
             self.assertIn(
-                distribution, table,
+                _canonical(distribution), table,
                 f"tools/run_workflow.py refuses a host missing {import_name!r} (distribution "
                 f"{distribution!r}), but the package table in docs/RUNBOOK.md §0-1 omits it")
 
-    def test_the_runbook_install_line_installs_what_the_table_declares(self) -> None:
-        """The `pip install ...` line above the table is what an operator actually types; the
-        table beside it is what this file is checked against. They are two spellings of one fact
-        and nothing compared them."""
-        runbook = self._runbook()
-        install_lines = [
-            line for line in runbook.splitlines()
-            if line.startswith("pip install ") and "-r " not in line]
-        self.assertEqual(
-            len(install_lines), 1,
-            "docs/RUNBOOK.md no longer carries exactly one bare `pip install <packages>` line; "
-            f"this check has lost the line it observes (found: {install_lines})")
-        named = set(install_lines[0].split()[2:])
-        self.assertEqual(
-            named, self._packages_in_table(runbook),
-            "the `pip install` line in docs/RUNBOOK.md §0-1 and the package table under it name "
-            "different distributions")
+    #: The heading of the §0-1 subsection this file is about. Every question below is asked of
+    #: THAT slice, not of the whole runbook: an earlier version searched the entire 350-line
+    #: document for a `pip install` line and required there to be exactly one, so documenting any
+    #: other pip-installable prerequisite anywhere in the operator's runbook turned this file red
+    #: with a message about the dependency declaration.
+    _SECTION_HEADING = "### Refused at startup — `missing_required_python_modules`"
+
+    def _section(self, document: str) -> str:
+        """The §0-1 subsection, up to the next heading of the same or a higher level."""
+        self.assertIn(
+            self._SECTION_HEADING, document,
+            "docs/RUNBOOK.md no longer carries the §0-1 subsection this file is about; the checks "
+            "below cannot find what they are supposed to read")
+        rest = document.split(self._SECTION_HEADING, 1)[1]
+        out = []
+        for line in rest.splitlines():
+            if line.startswith("## ") or line.startswith("### "):
+                break
+            out.append(line)
+        return "\n".join(out)
+
+    @staticmethod
+    def _pip_install_arguments(block: str) -> list[list[str]]:
+        """The non-flag arguments of each `pip install` line in `block`, one list per line.
+
+        Options are dropped rather than read as distribution names: `pip install --upgrade X` is a
+        legitimate spelling, and taking `split()[2:]` verbatim turned `--upgrade` into a phantom
+        distribution the table was then reported as omitting.
+        """
+        found = []
+        for line in block.splitlines():
+            words = line.strip().split()
+            if words[:2] != ["pip", "install"]:
+                continue
+            arguments = []
+            skip_next = False
+            for word in words[2:]:
+                if skip_next:
+                    skip_next = False
+                    continue
+                if word.startswith("-"):
+                    skip_next = word in ("-r", "--requirement", "-c", "--constraint")
+                    continue
+                arguments.append(word)
+            found.append(arguments)
+        return found
+
+    def test_a_bare_install_line_in_the_section_names_what_the_table_declares(self) -> None:
+        """Any `pip install <packages>` line in §0-1 has to agree with the table beside it.
+
+        Asked of every such line rather than of "the one line", and only inside §0-1: both
+        narrowings are over-refusals this check had. A second bare install line is not a defect —
+        two distinct package sets legitimately can be documented — but a line naming a package the
+        table omits is the document telling an operator to install something no authority declares.
+        """
+        section = self._section(self._runbook())
+        table = self._packages_in_table(self._runbook())
+        bare = [args for args in self._pip_install_arguments(section) if args]
+        for arguments in bare:
+            self.assertEqual(
+                {_canonical(a) for a in arguments}, table,
+                "a `pip install` line in docs/RUNBOOK.md §0-1 and the package table under it name "
+                f"different distributions (line arguments: {arguments})")
 
     def test_the_runbook_points_the_operator_at_the_pinned_versions(self) -> None:
         """The bare install line is not sufficient on its own, and this is what says so.
@@ -257,7 +390,8 @@ class DevRequirementsTests(unittest.TestCase):
             set(declared), set(distributions) | apt_only,
             "a linter backend was added or removed; requirements-dev.txt and this map have to say "
             "whether pip installs it")
-        return {distributions[b]: spec for b, spec in declared.items() if b in distributions}
+        return {_canonical(distributions[b]): spec
+                for b, spec in declared.items() if b in distributions}
 
     def test_every_pip_installable_linter_range_is_the_range_its_backend_declares(self) -> None:
         """Character for character, in both directions.
@@ -274,16 +408,26 @@ class DevRequirementsTests(unittest.TestCase):
             "requirements-dev.txt states a linter version range that is not the one its backend "
             "declares; a developer following this file installs a build the launch probe refuses")
 
-    def test_no_line_claims_to_install_a_linter_that_is_not_a_registered_backend(self) -> None:
-        """The other direction over the FILE rather than over the registry: a line naming a tool
-        no `linter` backend implements would be an install instruction for nothing."""
+    def test_no_line_installs_a_linter_backend_under_the_wrong_distribution_name(self) -> None:
+        """The failure this direction exists for: a line spelling a linter's BACKEND ID where its
+        distribution name belongs — `fortitude` rather than `fortitude-lint`.
+
+        Written as an identity against the registry's backend ids, deliberately NOT as a substring
+        search. The first version refused any requirement whose name merely contained `lint` or
+        `ruff`, which makes `pylint`, `yamllint`, `sqlfluff` and every `flake8-*` plugin — all
+        ordinary developer tools with no bearing on a `linter` backend — a test failure. Refusing
+        legitimate work is the error direction this repository's review loop records as its
+        default, and a substring over an open namespace is that error in its cheapest form.
+        """
         installable = set(self._pip_installable_ranges())
-        unknown_linters = {
+        declared_ids = {_canonical(b) for b in self._declared_ranges()}
+        wrong = {
             name for name in _parsed(REPO_ROOT / "requirements-dev.txt")
-            if ("lint" in name or "ruff" in name) and name not in installable}
+            if name in declared_ids and name not in installable}
         self.assertEqual(
-            set(), unknown_linters,
-            "requirements-dev.txt installs a lint tool that no registered linter backend provides")
+            set(), wrong,
+            "requirements-dev.txt names a linter by its BACKEND ID; pip installs it under a "
+            f"different distribution name (offending: {sorted(wrong)})")
 
     def test_the_dev_file_includes_the_runtime_file(self) -> None:
         """`pip install -r requirements-dev.txt` has to be sufficient to run the suite, which
