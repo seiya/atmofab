@@ -60,8 +60,9 @@ from tools.backends.language.fortran import structure as fortran_structure  # no
 _REQUIREMENT_RE = re.compile(
     r"^(?P<name>[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?)"
     r"(?P<extras>\[[^\]]*\])?"
-    r"(?P<spec>[^;]*?)"
-    r"\s*(?P<marker>;.*)?$")
+    r"(?P<spec>[^;\s]*)"
+    r"\s*(?P<marker>;[^-]*)?"
+    r"\s*(?P<options>(?:--?[A-Za-z][^\s]*(?:[ =][^\s]+)?\s*)*)$")
 
 #: PEP 503 name normalization. `PyYAML`, `pyyaml` and `py_yaml` are one distribution to pip, so
 #: they have to be one distribution to every comparison in this file; comparing the spellings
@@ -72,9 +73,15 @@ _NAME_SEPARATORS = re.compile(r"[-_.]+")
 #: bare `3.10` in prose are both out of reach of it by shape.
 _VERSION_RE = re.compile(r"\b\d+\.\d+\.\d+\b")
 
-#: A declared version RANGE, in the spelling the backends and the documents use. The same shape
-#: `test_host_prerequisites.LinterVersionRangeTests` reads out of the runbook's linter table.
-_RANGE_RE = re.compile(r">=\d+\.\d+(?:\.\d+)?,<\d+\.\d+(?:\.\d+)?")
+#: ANY version constraint, in any spelling pip accepts. Deliberately wider than the `>=a.b,<c.d`
+#: shape `test_host_prerequisites.RunbookVersionRangeTests` reads out of the runbook's linter
+#: table, because the two are asking opposite questions. That one EXTRACTS the declared range and
+#: compares it, so it must match the declaration's exact spelling; this one is used to REFUSE a
+#: version constraint written where none belongs, and a refusal bound to one spelling refuses
+#: nothing. Measured on this branch: with the narrow shape, re-adding
+#: `pipx install 'ruff>=0.14, <0.17'` (one space), `'ruff<0.17,>=0.14'` (reversed) or
+#: `'ruff~=0.14.0'` to the block the rule is about all stayed green.
+_VERSION_CONSTRAINT_RE = re.compile(r"(?:===|==|!=|~=|>=|<=|>|<)\s*\d")
 
 
 def _canonical(name: str) -> str:
@@ -261,9 +268,21 @@ class _RunbookReaderMixin:
     #: Options that take a value, so the value is not a distribution name.
     _PIP_VALUE_OPTIONS = ("-r", "--requirement", "-c", "--constraint")
 
+    #: Every way this repository's documents could spell "run pip's install command". The first
+    #: version matched `pip install` alone, and a round-2 reviewer put
+    #: `python3 -m pip install PyYAML tree-sitter tree-sitter-fortran` into §0-1 — the unpinned
+    #: form the section exists to refuse — with every row still green, because the reader could
+    #: not see the command at all.
+    _PIP_INSTALL_PREFIXES = (
+        ("pip", "install"),
+        ("pip3", "install"),
+        ("python", "-m", "pip", "install"),
+        ("python3", "-m", "pip", "install"),
+    )
+
     @classmethod
     def _pip_install_lines(cls, block: str) -> list[tuple[list[str], list[str]]]:
-        """Each `pip install` line in `block`, as (distribution arguments, `-r` targets).
+        """Each pip install command in `block`, as (distribution arguments, `-r` targets).
 
         A COMMAND reader, not a text search. That distinction is the one this file's own history
         turned on twice: `assertIn("-r requirements.txt", document)` is satisfied by a sentence
@@ -275,12 +294,16 @@ class _RunbookReaderMixin:
         found = []
         for line in block.splitlines():
             words = line.strip().split()
-            if words[:2] != ["pip", "install"]:
+            for prefix in cls._PIP_INSTALL_PREFIXES:
+                if tuple(words[:len(prefix)]) == prefix:
+                    words = words[len(prefix):]
+                    break
+            else:
                 continue
             arguments: list[str] = []
             includes: list[str] = []
             pending = None
-            for word in words[2:]:
+            for word in words:
                 if pending is not None:
                     includes.append(word)
                     pending = None
@@ -343,27 +366,34 @@ class RuntimeRequirementsTests(_RunbookReaderMixin, unittest.TestCase):
                 f"tools/run_workflow.py refuses a host missing {import_name!r} (distribution "
                 f"{distribution!r}), but the package table in docs/RUNBOOK.md §0-1 omits it")
 
-    def test_a_bare_install_line_in_the_section_names_what_the_table_declares(self) -> None:
-        """Any `pip install <packages>` line in §0-1 has to agree with the table beside it.
+    def test_no_install_command_in_the_section_installs_by_NAME(self) -> None:
+        """§0-1 installs from the file. A command naming distributions is what it refuses.
 
-        Asked of every such line rather than of "the one line", and only inside §0-1: both
-        narrowings are over-refusals this check had. A second bare install line is not a defect —
-        two distinct package sets legitimately can be documented — but a line naming a package the
-        table omits is the document telling an operator to install something no authority declares.
+        This replaces a check that compared a by-name line's argument set to the table, and the
+        replacement is the point: the table IS those three names, so re-adding the very line this
+        branch deleted — `pip install PyYAML tree-sitter tree-sitter-fortran` — satisfied it. The
+        section's own prose says "Install from the file, not from the names", and the earlier row
+        agreed with the names. Measured by a round-2 reviewer: that line, and
+        `python3 -m pip install numpy matplotlib` naming packages no authority declares at all,
+        were both green.
+
+        The rule is a REFUSAL of by-name installs in this section, not a comparison of them, so
+        there is nothing left for a restored line to agree with. The table keeps naming the three
+        packages: a table is a description and a command is an instruction, and only the second is
+        something an operator runs.
         """
         section = self._section(self._runbook())
-        table = self._packages_in_table(self._runbook())
         commands = self._pip_install_lines(section)
         self.assertTrue(
             commands,
-            "docs/RUNBOOK.md §0-1 no longer carries any `pip install` line at all; this check and "
-            "the pinned-install one below both stop observing anything")
-        bare = [args for args, _ in commands if args]
-        for arguments in bare:
+            "docs/RUNBOOK.md §0-1 no longer carries any pip install command at all; this check "
+            "and the pinned-install one below both stop observing anything")
+        for arguments, _ in commands:
             self.assertEqual(
-                {_canonical(a) for a in arguments}, table,
-                "a `pip install` line in docs/RUNBOOK.md §0-1 and the package table under it name "
-                f"different distributions (line arguments: {arguments})")
+                [], arguments,
+                "a pip install command in docs/RUNBOOK.md §0-1 names distributions instead of "
+                f"installing from requirements.txt (arguments: {arguments}). Two of the three "
+                "versions are measured; a by-name install resolves whatever is current.")
 
     def test_the_runbook_points_the_operator_at_the_pinned_versions(self) -> None:
         """§0-1 has to install from the FILE, because two of the three versions are measured.
@@ -403,6 +433,14 @@ class RuntimeRequirementsTests(_RunbookReaderMixin, unittest.TestCase):
         self.assertEqual(
             self._pip_install_lines("pip install --requirement=requirements.txt\n"),
             [([], ["requirements.txt"])])
+        for spelling in ("pip3 install", "python -m pip install", "python3 -m pip install"):
+            with self.subTest(spelling=spelling):
+                self.assertEqual(
+                    self._pip_install_lines(f"{spelling} PyYAML tree-sitter\n"),
+                    [(["PyYAML", "tree-sitter"], [])])
+        for not_a_command in ("pipx install ruff\n", "npm install pip\n", "install pip\n"):
+            with self.subTest(not_a_command=not_a_command):
+                self.assertEqual(self._pip_install_lines(not_a_command), [])
         for prose in (
                 "Historical note: earlier revisions told you to run `pip install -r "
                 "requirements.txt`; do NOT do that.\n",
@@ -506,8 +544,10 @@ class MeasuredVersionTests(_RunbookReaderMixin, unittest.TestCase):
                     f"the measured {version}:\n  {line.strip()}")
         self.assertGreaterEqual(
             checked, 2,
-            "no line of docs/RUNBOOK.md §0-1 states a version beside a measured package; this "
-            "check has stopped observing the operator-facing statement it exists for")
+            "no line of docs/RUNBOOK.md §0-1 states a version beside a measured package. Either "
+            "the statement this check exists for is gone, or a new `###` subsection was inserted "
+            "inside §0-1 and the package table now falls outside the slice this check reads — "
+            "check which before editing the table")
 
     def test_the_refusal_message_renders_from_the_same_constant(self) -> None:
         """The third statement site: what a host with the wrong grammar is TOLD to pin.
@@ -579,29 +619,34 @@ class DevelopmentSetupBlockTests(unittest.TestCase):
 
     _BLOCK_MARKER = "pip install -r requirements-dev.txt"
 
-    def _setup_block(self, document: str) -> str:
-        """The fenced block of §Setup step 6 of `document`, found by the command it contains.
+    def _setup_blocks(self, document: str) -> list[str]:
+        """EVERY fenced block of `document` that carries the dev install command.
 
-        Bounded to the block rather than to the document: `docs/DEVELOPMENT.md` may legitimately
-        state a version range in prose about something else, and refusing that would be the same
-        over-refusal `test_host_prerequisites` records having made once at document scope. Takes
-        the document as an argument so the probe below drives THIS reader — the sibling file
+        Bounded to the blocks rather than to the document: `docs/DEVELOPMENT.md` may legitimately
+        state a version constraint in prose about something else, and refusing that would be the
+        same over-refusal `test_host_prerequisites` records having made once at document scope.
+        Takes the document as an argument so the probe below drives THIS reader — the sibling file
         records a version of the same check that re-implemented its extractor inline and so could
         not fail for any reason in the code it claimed to witness.
+
+        ALL of them, not "the one": the first version required exactly one such block and failed
+        the whole file when a second appeared. PR-3 of this issue adds a CI workflow whose own step
+        is this command, and a document quoting that step in a second fence is ordinary work. The
+        rule applies to each block equally, so there is no reason to insist there is one.
         """
         holding = [f for f in document.split("```")[1::2] if self._BLOCK_MARKER in f]
-        self.assertEqual(
-            len(holding), 1,
-            "docs/DEVELOPMENT.md no longer carries exactly one fenced block containing "
-            f"{self._BLOCK_MARKER!r}; this check cannot find the install block it is about "
-            f"(found {len(holding)})")
-        return holding[0]
+        self.assertTrue(
+            holding,
+            "docs/DEVELOPMENT.md carries no fenced block containing "
+            f"{self._BLOCK_MARKER!r}; this check cannot find the install block it is about")
+        return holding
 
     def _document(self) -> str:
         return (REPO_ROOT / "docs" / "DEVELOPMENT.md").read_text()
 
     def test_the_setup_block_states_no_version_range(self) -> None:
-        found = _RANGE_RE.findall(self._setup_block(self._document()))
+        found = [c for block in self._setup_blocks(self._document())
+                 for c in _VERSION_CONSTRAINT_RE.findall(block)]
         self.assertEqual(
             [], found,
             "docs/DEVELOPMENT.md §Setup step 6 states a version range again. Nothing compares a "
@@ -623,21 +668,43 @@ class DevelopmentSetupBlockTests(unittest.TestCase):
             "Do not write `pip install -r requirements-dev.txt` in prose.\n\n"
             f"```\n{self._BLOCK_MARKER}\nsudo apt-get install cppcheck\n```\n\n"
             "And afterwards `gfortran` `>=11.0,<15.0`.\n")
-        block = self._setup_block(document)
-        self.assertIn(self._BLOCK_MARKER, block)
-        self.assertEqual([], _RANGE_RE.findall(block))
+        blocks = self._setup_blocks(document)
+        self.assertEqual(1, len(blocks))
+        self.assertIn(self._BLOCK_MARKER, blocks[0])
+        self.assertEqual([], _VERSION_CONSTRAINT_RE.findall(blocks[0]))
         with self.assertRaises(AssertionError) as caught:
-            self._setup_block("# Development\n\nno block here\n")
-        self.assertIn("no longer carries exactly one fenced block", str(caught.exception))
+            self._setup_blocks("# Development\n\nno block here\n")
+        self.assertIn("carries no fenced block", str(caught.exception))
+        # A SECOND block carrying the same command is ordinary work (PR-3 quotes this step in a
+        # CI workflow); both are read, and a constraint in either is caught.
+        two = document + f"\n```yaml\n  - run: {self._BLOCK_MARKER}\n```\n"
+        self.assertEqual(2, len(self._setup_blocks(two)))
 
-    def test_the_reader_sees_a_range_when_the_block_carries_one(self) -> None:
-        """The other direction, and the one that decides whether the row above can ever fail: the
-        exact wording `origin/main` carried in this block must be caught."""
-        document = (
-            "# Development\n\n```\n"
-            f"{self._BLOCK_MARKER}\npipx install \'fortitude-lint>=0.8,<0.10\'\n```\n")
-        self.assertEqual(
-            [">=0.8,<0.10"], _RANGE_RE.findall(self._setup_block(document)))
+    def test_the_reader_sees_a_constraint_in_every_spelling_pip_accepts(self) -> None:
+        """The other direction, and the one that decides whether the row above can ever fail.
+
+        A family that straddles the SPELLING, not one shape repeated. The first version of this
+        rule matched only `>=a.b,<c.d` with no space and in that order, and a round-2 reviewer
+        walked straight past it with a space, with the operands reversed, and with `~=` — three
+        ordinary ways to write the same instruction, all green. More members of one shape would not
+        have closed that; a family whose members differ in the property the rule is about does.
+        """
+        cases = {
+            "pipx install 'fortitude-lint>=0.8,<0.10'": True,   # what origin/main carried
+            "pipx install 'ruff>=0.14, <0.17'": True,           # a space
+            "pipx install 'ruff<0.17,>=0.14'": True,            # reversed
+            "pipx install 'ruff~=0.14.0'": True,                # compatible-release
+            "pipx install 'ruff==0.16.5'": True,                # an exact pin
+            "pipx install 'ruff!=0.15.0'": True,                # an exclusion
+            "pip install -r requirements-dev.txt": False,       # the line that belongs there
+            "sudo apt-get install cppcheck": False,             # and its neighbour
+            "# see docs/RUNBOOK.md 0-1 for the ranges": False,  # a pointer, not a constraint
+        }
+        for line, expected in cases.items():
+            document = f"# Development\n\n```\n{self._BLOCK_MARKER}\n{line}\n```\n"
+            with self.subTest(line=line):
+                found = _VERSION_CONSTRAINT_RE.findall(self._setup_blocks(document)[0])
+                self.assertEqual(bool(found), expected)
 
 
 class DevRequirementsTests(unittest.TestCase):
