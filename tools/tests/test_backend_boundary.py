@@ -137,15 +137,25 @@ _SCANNED_GLOBS = (
     # maps 1:1 to a glob here, and a token added under `leaf_config/` was unmeasured
     # while the document said it was in scope.
     ("leaf_config", "**/*.json"),
-    # The dependency declaration (issue #161). Same reason as the two root documents above and
-    # as `mcp_servers/`'s declaration files: this is where `linter`- and `language`-axis
-    # distribution names are spelled, and an install line is exactly the kind of statement the
-    # ratchet already measures in `docs/RUNBOOK.md`. Added because the declaration landed
-    # OUTSIDE the scan: the two `pipx install '<linter><range>'` lines deleted from
-    # `docs/DEVELOPMENT.md` reappeared in `requirements-dev.txt`, the recorded debt fell by two,
-    # and nothing had moved out of the neutral core.
-    (".", "requirements.txt"),
-    (".", "requirements-dev.txt"),
+    # The dependency declaration and the CI workflow (issue #161). Same reason as the two root
+    # documents above and as `mcp_servers/`'s declaration files: these are where `linter`-,
+    # `compiler`- and `language`-axis names are spelled, and an install line is exactly the kind
+    # of statement the ratchet already measures in `docs/RUNBOOK.md`. Added because the
+    # declaration landed OUTSIDE the scan: the two `pipx install '<linter><range>'` lines deleted
+    # from `docs/DEVELOPMENT.md` reappeared in `requirements-dev.txt`, the recorded debt fell by
+    # two, and nothing had moved out of the neutral core.
+    #
+    # Both are GLOBS rather than the filenames that exist today, and that is the whole repair. The
+    # first version listed `requirements.txt` and `requirements-dev.txt` literally, which closes
+    # two names and not the class: a reviewer dropped a `requirements-ci.txt` carrying two linter
+    # ranges and a grammar pin, plus a `.github/workflows/tests.yml` carrying `apt-get install
+    # cppcheck gfortran`, a `pipx install 'fortitude-lint…'` and a `gfortran -std=f2008` argv, and
+    # the ratchet stayed green at 86 passed. `.github/` has no file in this tree yet — PR-3 of the
+    # same issue creates exactly that workflow, and it lands inside the measured set rather than
+    # re-creating the shape this entry closed.
+    (".", "requirements*.txt"),
+    (".github", "**/*.yml"),
+    (".github", "**/*.yaml"),
 )
 
 #: Out of scope by the rule. The three backend ROOTS are deliberately absent: a path under a
@@ -589,6 +599,55 @@ class ScopePinTests(unittest.TestCase):
                          "a backend root changed")
         self.assertEqual(pinned["skill_backend_shape"], _SKILL_BACKEND_SHAPE.pattern,
                          "the skill backend-location shape changed")
+
+    def test_every_scanned_glob_is_named_by_the_document_that_declares_the_scope(self) -> None:
+        """`docs/BACKEND_BOUNDARY.md` §Scope and `_SCANNED_GLOBS` say the same thing, checked.
+
+        `_SCANNED_GLOBS`'s own comment has claimed a 1:1 mapping onto §Scope's bullets since the
+        `leaf_config/` entry was added, and nothing enforced it — which is how the dependency
+        declaration came to be OUTSIDE the scan while §Scope neither listed it nor excluded it
+        with a stated reason (issue #161). Two round-2 reviewers had to verify the mapping by
+        hand, and deleting the new §Scope bullet left this file green.
+
+        Coupled by POINTER, not by wording: each glob's root path must appear somewhere in the
+        §Scope section. That is `atmofab-enforcement-change` rule 3-a's middle option, chosen
+        because §Scope is prose that explains each entry rather than a list of globs, and pinning
+        the prose would refuse every legitimate rewording. What it catches is the failure that
+        actually happened — a glob added with no bullet, or a bullet deleted while the glob stays.
+        What it does not catch is a bullet whose PROSE misdescribes its glob; that stays a review
+        matter and is said here rather than left to look covered.
+        """
+        document = (REPO_ROOT / "docs" / "BACKEND_BOUNDARY.md").read_text()
+        self.assertIn("## Scope", document,
+                      "docs/BACKEND_BOUNDARY.md no longer has a §Scope section")
+        section = document.split("## Scope", 1)[1].split("\n## ", 1)[0]
+        missing = []
+        for subdir, pattern in _SCANNED_GLOBS:
+            # What a bullet has to name is the thing a reader would look for: the directory for a
+            # subtree glob, the filename shape for a root-level one.
+            needle = pattern if subdir == "." else subdir
+            if needle not in section:
+                missing.append(f"{subdir}/{pattern} (looked for {needle!r})")
+        self.assertEqual(
+            [], missing,
+            "docs/BACKEND_BOUNDARY.md §Scope does not name every scanned glob, so the document "
+            "and the instrument disagree about what is measured. Add the bullet, with the reason "
+            f"the entry is in scope: {missing}")
+
+    def test_the_scope_coupling_notices_a_glob_with_no_bullet(self) -> None:
+        """The self-test for the row above. Without it, a §Scope section that happens to contain
+        every needle for another reason would leave that row green forever, and the row is exactly
+        the kind that goes vacuous silently — every needle it looks for is a common word in a
+        document about paths."""
+        section = "- All Python under `tools/`.\n- `README.md`.\n"
+        for subdir, pattern, expected in (
+                ("tools", "**/*.py", True),
+                (".", "README.md", True),
+                (".", "requirements*.txt", False),
+                (".github", "**/*.yml", False)):
+            needle = pattern if subdir == "." else subdir
+            with self.subTest(glob=f"{subdir}/{pattern}"):
+                self.assertEqual(needle in section, expected)
 
     def test_the_token_classes_match_the_pinned_patterns(self) -> None:
         # Patterns, not names. Pinning names alone left the alternative level open: dropping

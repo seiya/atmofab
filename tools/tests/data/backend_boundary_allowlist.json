@@ -75,11 +75,15 @@
     ],
     [
       ".",
-      "requirements.txt"
+      "requirements*.txt"
     ],
     [
-      ".",
-      "requirements-dev.txt"
+      ".github",
+      "**/*.yml"
+    ],
+    [
+      ".github",
+      "**/*.yaml"
     ]
   ],
   "skill_backend_shape": "^skills/[^/]+/backends/([^/]+)/([^/]+)\\.md$",
