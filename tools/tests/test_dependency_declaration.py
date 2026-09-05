@@ -275,31 +275,46 @@ class RuntimeRequirementsTests(unittest.TestCase):
             out.append(line)
         return "\n".join(out)
 
-    @staticmethod
-    def _pip_install_arguments(block: str) -> list[list[str]]:
-        """The non-flag arguments of each `pip install` line in `block`, one list per line.
+    #: Options that take a value, so the value is not a distribution name.
+    _PIP_VALUE_OPTIONS = ("-r", "--requirement", "-c", "--constraint")
 
-        Options are dropped rather than read as distribution names: `pip install --upgrade X` is a
-        legitimate spelling, and taking `split()[2:]` verbatim turned `--upgrade` into a phantom
-        distribution the table was then reported as omitting.
+    @classmethod
+    def _pip_install_lines(cls, block: str) -> list[tuple[list[str], list[str]]]:
+        """Each `pip install` line in `block`, as (distribution arguments, `-r` targets).
+
+        A COMMAND reader, not a text search. That distinction is the one this file's own history
+        turned on twice: `assertIn("-r requirements.txt", document)` is satisfied by a sentence
+        SAYING that earlier revisions told you to run it — measured, a round-1 reviewer deleted the
+        install block, appended such a sentence to the end of the document, and the suite stayed
+        green. Options are dropped rather than read as distribution names, because
+        `pip install --upgrade X` is a legitimate spelling.
         """
         found = []
         for line in block.splitlines():
             words = line.strip().split()
             if words[:2] != ["pip", "install"]:
                 continue
-            arguments = []
-            skip_next = False
+            arguments: list[str] = []
+            includes: list[str] = []
+            pending = None
             for word in words[2:]:
-                if skip_next:
-                    skip_next = False
+                if pending is not None:
+                    includes.append(word)
+                    pending = None
+                    continue
+                if word.startswith("--requirement="):
+                    includes.append(word.split("=", 1)[1])
                     continue
                 if word.startswith("-"):
-                    skip_next = word in ("-r", "--requirement", "-c", "--constraint")
+                    pending = word if word in cls._PIP_VALUE_OPTIONS else None
                     continue
                 arguments.append(word)
-            found.append(arguments)
+            found.append((arguments, includes))
         return found
+
+    @classmethod
+    def _pip_install_arguments(cls, block: str) -> list[list[str]]:
+        return [arguments for arguments, _ in cls._pip_install_lines(block)]
 
     def test_a_bare_install_line_in_the_section_names_what_the_table_declares(self) -> None:
         """Any `pip install <packages>` line in §0-1 has to agree with the table beside it.
@@ -311,7 +326,12 @@ class RuntimeRequirementsTests(unittest.TestCase):
         """
         section = self._section(self._runbook())
         table = self._packages_in_table(self._runbook())
-        bare = [args for args in self._pip_install_arguments(section) if args]
+        commands = self._pip_install_lines(section)
+        self.assertTrue(
+            commands,
+            "docs/RUNBOOK.md §0-1 no longer carries any `pip install` line at all; this check and "
+            "the pinned-install one below both stop observing anything")
+        bare = [args for args, _ in commands if args]
         for arguments in bare:
             self.assertEqual(
                 {_canonical(a) for a in arguments}, table,
@@ -319,22 +339,61 @@ class RuntimeRequirementsTests(unittest.TestCase):
                 f"different distributions (line arguments: {arguments})")
 
     def test_the_runbook_points_the_operator_at_the_pinned_versions(self) -> None:
-        """The bare install line is not sufficient on its own, and this is what says so.
+        """§0-1 has to install from the FILE, because two of the three versions are measured.
 
-        `pip install PyYAML tree-sitter tree-sitter-fortran` installs whatever is current, and two
-        of those three are PINNED in `requirements.txt` because the version is a measured property
-        of this repository — `tools/backends/language/fortran/structure.py` drives a py-tree-sitter
-        API that has changed across releases. An operator who follows the bare line alone gets a
-        host the `Generate.gate` structure read may not work on, which is a wrong verdict reached
-        part-way into a billed run. So the document has to carry the `-r` form as well, and
-        deleting it has to be something a test notices: without this row it was not (measured —
-        the hunk adding that block survived the branch's round-0 mutation sweep).
+        `tools/backends/language/fortran/structure.py` records the Fortran front end as pinned by
+        measurement at `tree-sitter` 0.26.0 and `tree-sitter-fortran` 0.6.0; an operator who types
+        the three names gets whatever is current, and the `Generate.gate` structure read that
+        follows has not been measured on what it is running — a wrong verdict reached part-way
+        into a billed run.
+
+        Asked of the COMMAND, and only inside §0-1. Two earlier versions of this row were text
+        searches, and a round-1 reviewer killed the second by deleting the install block and
+        appending "earlier revisions told you to run `pip install -r requirements.txt`; do NOT do
+        that" to the end of the document — green, with the instruction negated.
         """
-        runbook = self._runbook()
+        section = self._section(self._runbook())
+        includes = [target for _, targets in self._pip_install_lines(section) for target in targets]
         self.assertIn(
-            "pip install -r requirements.txt", runbook,
-            "docs/RUNBOOK.md §0-1 no longer tells the operator to install from requirements.txt; "
-            "the bare `pip install <packages>` line beside it installs unpinned versions")
+            "requirements.txt", includes,
+            "docs/RUNBOOK.md §0-1 no longer carries a `pip install -r requirements.txt` COMMAND; "
+            "an operator following the section installs whatever version is current")
+
+    def test_the_command_reader_does_not_read_a_sentence_about_a_command(self) -> None:
+        """The self-test for `_pip_install_lines`, driven on synthetic text.
+
+        This is the reader both rows above rest on, and it is what replaced two successive text
+        searches. Both directions: a real command line is decomposed, and prose that quotes the
+        same command — including prose that NEGATES it, which is how a reviewer killed the previous
+        version — yields nothing.
+        """
+        self.assertEqual(
+            self._pip_install_lines("pip install -r requirements.txt\n"),
+            [([], ["requirements.txt"])])
+        self.assertEqual(
+            self._pip_install_lines("pip install --upgrade PyYAML tree-sitter\n"),
+            [(["PyYAML", "tree-sitter"], [])])
+        self.assertEqual(
+            self._pip_install_lines("pip install --requirement=requirements.txt\n"),
+            [([], ["requirements.txt"])])
+        for prose in (
+                "Historical note: earlier revisions told you to run `pip install -r "
+                "requirements.txt`; do NOT do that.\n",
+                "Do not `pip install PyYAML` by hand.\n"):
+            with self.subTest(prose=prose):
+                self.assertEqual(self._pip_install_lines(prose), [])
+
+    def test_the_section_slicer_stops_at_the_next_heading(self) -> None:
+        """The bound on the reader, self-tested. Without it every row above is asked of the whole
+        document again, which is the over-refusal round 1 reported."""
+        document = (
+            f"# Runbook\n\n{self._SECTION_HEADING}\n\npip install -r requirements.txt\n\n"
+            "### Another subsection\n\npip install matplotlib\n")
+        self.assertEqual(
+            self._pip_install_lines(self._section(document)), [([], ["requirements.txt"])])
+        with self.assertRaises(AssertionError) as caught:
+            self._section("# Runbook\n\nno such section\n")
+        self.assertIn("no longer carries the §0-1 subsection", str(caught.exception))
 
     def test_a_table_elsewhere_in_the_document_is_not_this_check_s_business(self) -> None:
         """The over-refusal probe, driving the REAL extractor over a synthetic document.

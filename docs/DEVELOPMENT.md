@@ -41,9 +41,14 @@ Nothing above states a version range, and that is the point: the ranges are the 
 declarations — `requirements-dev.txt` by `tools/tests/test_dependency_declaration.py`, and
 `docs/RUNBOOK.md` §0-1's table (which also covers the one apt installs above) by
 `tools/tests/test_host_prerequisites.py`. This block used to spell them a third time, unchecked,
-which is the shape that let an install line drift out of the range the launch probe accepts. A
-`pipx` user installs the two linter lines of `requirements-dev.txt` one at a time instead, quoting
-each line as written.
+which is the shape that let an install line drift out of the range the launch probe accepts.
+
+`pipx` installs a COMMAND-LINE TOOL into its own environment, so it is the right instrument for
+the two linters and the wrong one for the rest of the file. A `pipx` user runs
+`pipx install '<line>'` for each of the two linter lines of `requirements-dev.txt`, quoting each
+as written — and then still needs `pip install -r requirements.txt` plus `pytest` in the
+environment the suite runs in, because those are IMPORTED rather than executed. Doing only the
+`pipx` half leaves a machine with the two linters and no test runner.
 
 Steps 1, 2, 3 and 5 all read machine-local state, and each is checked before the first billed leaf — though not all by the same mechanism. Step 1 fail-fasts when `tools/run_workflow.py` starts, before an orchestration exists — with one reason code per family (`missing_required_cli_tools` / `missing_required_python_modules` / `missing_required_host_tools`); steps 2, 3 and 5 are `preflight.json` checks. One requirement is outside both and is called out where it lives: the Codex credential is checked when the first leaf is prepared, not at any gate (`docs/RUNBOOK.md` §0-3).
 
