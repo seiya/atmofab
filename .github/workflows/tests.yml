@@ -60,6 +60,21 @@ jobs:
             jq \
             bubblewrap
 
+      - name: Allow unprivileged user namespaces
+        # `ubuntu-latest` is 24.04, whose AppArmor profile restricts unprivileged user namespaces
+        # by default. Measured on the first run of this workflow: the sandbox tests reported ten
+        # declared skips ("bwrap / user namespaces not available") and the execution-platform
+        # probe's own `sandbox_bwrap_*` checks failed, which took the aggregate preflight status
+        # to `fail` and with it two tests whose subject is a DIFFERENT check.
+        #
+        # Lifting the restriction rather than accepting the skips, because a skipped sandbox test
+        # is the one an operator never sees: `docs/BWRAP_ENABLEMENT.md` is the requirement, the
+        # sandbox is what confines a leaf, and a CI that silently does not exercise it certifies
+        # less than the operator's machine does. `|| true` so a runner image that has already
+        # removed the knob does not fail the job before the suite has said anything — the suite
+        # reports the consequence, with the reason.
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+
       - name: Install Python dependencies
         run: pip install -r requirements.txt -r requirements-dev.txt
 
