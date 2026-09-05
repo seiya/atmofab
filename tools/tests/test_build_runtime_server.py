@@ -1500,32 +1500,48 @@ class BuildCommandTests(unittest.TestCase):
             (Path(holder.name) / name).write_text("", encoding="utf-8")
         return holder.name
 
-    @staticmethod
-    def _dispatched_build_systems(source: str) -> set[str]:
-        """Every build system `_build_command` dispatches on, read with `ast` out of `source`.
+    @classmethod
+    def _accepted_build_systems(cls) -> set[str]:
+        """Every build system `_build_command` ACCEPTS, found by calling it.
 
-        `ast`, not a regex, for the reason the marker reader already gives — and round 2 measured
-        the consequence here too: `re.findall(r'if build_system == "([^"]+)":')` misses
-        `if build_system in ("bazel",):` and misses `if build_system ==  "bazel":` with a double
-        space, so a new adapter shipped with its whole argv unpinned and the sweep green. It also
-        missed an existing arm reformatted across lines. Comparisons and membership tests are both
-        read, because both are ways someone would write this dispatch.
+        THE QUESTION CHANGED HERE, and the reason is three rounds of the same failure. Asking
+        "what does the dispatch look like" needs a reader, and every reader was defeated by the
+        next spelling: a regex missed an arm reformatted across lines and one written with a
+        double space; an `ast` walk over `==` and `in <literal>` missed `bs = build_system` bound
+        to an alias, and missed `if build_system in _EXTRA:` against a module-level dict — which
+        is THIS MODULE'S OWN IDIOM (`_LINT_PRESET_COMMANDS` is exactly that). Each fix produced
+        the next spelling, which `.claude/skills/atmofab-review-loop` names as the sign that the
+        pin is in the wrong place rather than the wrong shape.
+
+        So the question is now one a LOOKUP can answer: `_build_command` raises `ValueError` for
+        anything it does not implement, so "is this build system implemented" is a call, not a
+        parse. The candidate set is every string constant in the module (an adapter's name has to
+        be written down somewhere for the dispatch to match it, wherever that is — inside the
+        function, in a module-level table, or as a dict key) plus the marker table's own values.
+        A name that is accepted and has no `_BASE_ARGV` row is the defect this is for.
+
+        What this does NOT reach, said rather than left implied: a build system whose name is
+        never a literal anywhere in the module — computed, imported, or read from a file. There is
+        no such thing today and it would be a different design.
         """
         import ast
-        found: set[str] = set()
-        for node in ast.walk(ast.parse(textwrap.dedent(source))):
-            if not isinstance(node, ast.Compare) or len(node.ops) != 1:
-                continue
-            if getattr(node.left, "id", None) != "build_system":
-                continue
-            operator = node.ops[0]
-            comparator = node.comparators[0]
-            if isinstance(operator, ast.Eq) and isinstance(comparator, ast.Constant):
-                found.add(comparator.value)
-            elif isinstance(operator, ast.In) and isinstance(comparator, (ast.Tuple, ast.List,
-                                                                         ast.Set)):
-                found.update(e.value for e in comparator.elts if isinstance(e, ast.Constant))
-        return found
+        import inspect
+        module_source = Path(inspect.getsourcefile(cls.mod)).read_text(encoding="utf-8")
+        candidates = {
+            node.value for node in ast.walk(ast.parse(module_source))
+            if isinstance(node, ast.Constant) and isinstance(node.value, str) and node.value}
+        candidates.update(b for _m, b in cls._marker_table())
+        def implemented(candidate: str) -> bool:
+            """A refusal (`ValueError`) is the answer this probe asks for; anything else is this
+            reader's problem rather than an acceptance. Either way the candidate is not an
+            implemented build system."""
+            try:
+                cls.mod._build_command(candidate, None, 1, [])
+            except Exception:  # noqa: BLE001
+                return False
+            return True
+
+        return {candidate for candidate in candidates if implemented(candidate)}
 
     @classmethod
     def _marker_table(cls) -> list[tuple[str, str]]:
@@ -1597,19 +1613,54 @@ class BuildCommandTests(unittest.TestCase):
             len(re.findall(r'\("([^"]+)", "([^"]+)"\),', reformatted)), 1,
             "the regex this reader replaced would still find only one of the two entries; if "
             "that stops being true the reason for using ast has changed")
+        accepted = self._accepted_build_systems()
+        self.assertEqual(accepted, set(self._BASE_ARGV))
+        self.assertNotIn(
+            "definitely-not-a-build-system", accepted,
+            "the acceptance probe calls something that is not a build system a build system")
+
+    #: Which marker file means which build system. THE THIRD self-comparison on this branch, and
+    #: the one two rounds of fixes did not reach: every row that walked the marker table took its
+    #: expectation FROM that table, so `("CMakeLists.txt", "cmake")` -> `("CMakeLists.txt",
+    #: "make")` was green everywhere, and a `cmake` project would have been built with `make` with
+    #: nothing red. Measured at HEAD and at the branch's first commit alike, so this is
+    #: pre-existing rather than introduced — the fix belongs here because this is the PR that
+    #: claims to cover `_recommended_build_system`.
+    #:
+    #: Written out, because the association IS the knowledge and there is nowhere else to derive
+    #: it from. Adding a marker means adding a row, which is the point.
+    _MARKER_MEANS: typing.ClassVar[dict[str, str]] = {
+        "Makefile": "make",
+        "makefile": "make",
+        "CMakeLists.txt": "cmake",
+        "meson.build": "meson",
+        "build.ninja": "ninja",
+        "Cargo.toml": "cargo",
+        "go.mod": "go",
+        "pom.xml": "maven",
+        "build.gradle": "gradle",
+        "package.json": "npm",
+        "pyproject.toml": "poetry",
+    }
+
+    def test_each_marker_means_the_build_system_this_repository_expects(self) -> None:
+        """Set identity against an INDEPENDENT statement of the mapping.
+
+        Not against `_marker_table()`, which is the table under test — comparing it with itself is
+        what let the association drift unobserved. Both directions, so a marker added to the
+        function without a decision here is a failure, and a row here for a marker the function
+        dropped is too.
+        """
         self.assertEqual(
-            self._dispatched_build_systems(
-                'def f(b):\n'
-                '    if build_system == "make":\n        pass\n'
-                '    if build_system ==  "spaced":\n        pass\n'
-                '    if build_system in ("bazel", "buck"):\n        pass\n'),
-            {"make", "spaced", "bazel", "buck"},
-            "the dispatch reader misses a spelling a new adapter would legitimately use")
+            dict(self._marker_table()), self._MARKER_MEANS,
+            "the marker table and the mapping this repository expects disagree; a project would "
+            "be built with a different build system than its marker names")
 
     def test_a_marker_file_selects_its_build_system_and_the_reason_names_it(self) -> None:
-        """One case per marker — the enumeration is killed element by element rather than as a
-        set, because a missing element shows up in no other test."""
-        markers = self._marker_table()
+        """One case per marker, driven through the real function — the enumeration is killed
+        element by element rather than as a set, because a missing element shows up in no other
+        test. The expectation comes from `_MARKER_MEANS`, not from the table being swept."""
+        markers = [(marker, self._MARKER_MEANS[marker]) for marker, _ in self._marker_table()]
         self.assertEqual(len(markers), self._MARKER_COUNT)
         for marker, expected in markers:
             with self.subTest(marker=marker):
@@ -1696,13 +1747,9 @@ class BuildCommandTests(unittest.TestCase):
             with self.subTest(build_system=build_system):
                 self.assertEqual(self.mod._build_command(build_system, None, 4, []), expected)
         # The other direction: a build system the dispatch gained and this table did not.
-        import inspect
-        dispatched = self._dispatched_build_systems(
-            inspect.getsource(self.mod._build_command))
-        dispatched |= {b for _m, b in self._marker_table()}
         self.assertEqual(
-            dispatched, implemented,
-            "the build systems _build_command dispatches on and the argv this table records are "
+            self._accepted_build_systems(), implemented,
+            "the build systems _build_command ACCEPTS and the argv this table records are "
             "different sets; a new adapter needs a row saying what it runs")
 
     def test_the_make_argv_is_the_documented_shape(self) -> None:
@@ -1912,10 +1959,18 @@ class McpCallClientTests(unittest.TestCase):
         the client has no timeout of its own. Round 2 measured both the reordering and the
         deletion of the cleanup surviving the whole file.
 
-        The witness is the wall clock: this row is what turns "the RUNBOOK's gate-verification
-        command never returns" into a failed assertion. The 20-second bound is ~20x a served call.
+        WHAT THE WITNESS ACTUALLY IS, corrected after round 3 measured it: the `timeout` on the
+        subprocess call, not the `assertLess` that used to sit below. Under the reordering, the
+        client never returns and the row died as a `subprocess.TimeoutExpired` ERROR — the elapsed
+        assertion was never reached, and replacing it with `pass` left the row green. So the
+        timeout is caught here and turned into a `fail()` that says what happened, which is what
+        the previous docstring claimed and did not have.
+
+        WHAT IT DOES NOT COVER, also measured: a server that reads stdin and writes NOTHING hangs
+        this client for ever — `_read_message` blocks in `readline()`, no exception is raised, and
+        `mcp_call.py` has no timeout of its own. That is unchanged from `origin/main` and is
+        recorded in `TODO.md`; this row is about the failure path, not about every hang.
         """
-        import time
         with tempfile.TemporaryDirectory() as tmp:
             (Path(tmp) / "build_runtime_server.py").write_text(
                 "import sys\n"
@@ -1930,15 +1985,19 @@ class McpCallClientTests(unittest.TestCase):
                 (self.REPO_ROOT / "mcp_servers" / "mcp_call.py").read_text(encoding="utf-8"),
                 encoding="utf-8")
             env = {k: v for k, v in os.environ.items() if not k.startswith("ATMOFAB_")}
-            started = time.monotonic()
-            done = subprocess.run(
-                [sys.executable, str(client), "--tool", "detect_build_system",
-                 "--args-json", json.dumps({"project_dir": tmp})],
-                cwd=self.REPO_ROOT, env=env, capture_output=True, text=True, timeout=20,
-                check=False)
-            elapsed = time.monotonic() - started
+            try:
+                done = subprocess.run(
+                    [sys.executable, str(client), "--tool", "detect_build_system",
+                     "--args-json", json.dumps({"project_dir": tmp})],
+                    cwd=self.REPO_ROOT, env=env, capture_output=True, text=True, timeout=20,
+                    check=False)
+            except subprocess.TimeoutExpired:
+                self.fail(
+                    "the client did not return for a server that is still alive: reading the "
+                    "server's stderr before killing it blocks until EOF, and this client has no "
+                    "timeout of its own, so the documented gate-verification command never "
+                    "returns")
         self.assertNotEqual(done.returncode, 0)
-        self.assertLess(elapsed, 15, "the client did not return promptly for a live server")
         self.assertIn("produced: BOOM: alive but wrong", done.stderr,
                       "the diagnostic must still be reported when the server is alive")
 
