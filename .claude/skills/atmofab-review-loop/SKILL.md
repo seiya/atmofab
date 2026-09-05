@@ -165,7 +165,15 @@ when a rule does not obviously apply:
   and `--test-cmd`, baseline green in both. **The verdict you keep is the one you can reproduce by
   hand**; report an unreproducible kill as such rather than banking it, because "every hunk is
   pinned" is what a reader will quote back. **The tell is a kill on a hunk you cannot name a
-  behaviour for**
+  behaviour for — and the sharpest instance of that tell is a hunk that is half of a code
+  MOTION**, which the prose-annotation bullet above already calls an EXPECTED survivor. When the
+  script reports one of those `killed`, two rules of this file contradict each other, and the
+  hand revert is how you find out which. Issue #153 hit it a second time: the extraction of
+  `_structure_reading` out of `_fortran_procedure_envelopes` was reported killed, and reverting
+  exactly that hunk by hand — restoring the inline block while the extracted function stayed —
+  left the file green, as a behaviour-preserving motion must. Cause unidentified both times, so
+  do not spend the round on it; **spend the two minutes on the revert, and report the kill as
+  unreproducible rather than counting it toward "every hunk is pinned"**
 - **If the change's mechanism lives inside a test file, hunk mutation does not apply** — "nothing
   to check" with a correct base is **not applicable, not a pass**, and `--include-tests` does not
   rescue it (reverting an ADDED test hunk deletes an assertion, so it always survives; a hunk

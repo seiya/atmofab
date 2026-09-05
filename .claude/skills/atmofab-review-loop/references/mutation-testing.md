@@ -169,6 +169,28 @@ In the same PR one decision, `closed = True`, sat inside a hunk of `@@ -36,11 +4
 lines as one block, which any of those 200 lines kills. Past 50 lines, re-target each judgment
 inside the hunk individually.
 
+## A motion half reported KILLED, twice, and neither reproduced (issue #153, 2026-09-05)
+
+The second instance of "hand-revert a kill that surprises you", and the one that gives the rule a
+trigger you can apply without judgment.
+
+`23438e3` extracted `_structure_reading` out of `_fortran_procedure_envelopes` — a pure motion,
+AST-token-identical to the block it replaced apart from the annotation, verified separately. The
+sweep (`--range HEAD~1..HEAD --paths tools`, baseline green in 52s, 6 hunks in 268s) reported the
+motion's DELETION half `killed`. Reverting exactly that hunk by hand — restoring the inline block
+while the extracted function stayed in place — left `tools/tests/test_validate_pipeline_semantics.py`
+at **855 passed**. Green, as a behaviour-preserving motion must be.
+
+Cause unidentified, as in the first instance. What is new is that this file and `SKILL.md` already
+contain the contradiction: the prose-annotation bullet says one half of a code move is EXPECTED to
+survive, and the sweep said `killed`. **Two rules of the skill disagreeing about one hunk is the
+cheapest trigger there is**, and it costs one revert to resolve. The first instance was found by
+noticing the hunk had no behaviour to name — a judgment call; this one is mechanical.
+
+The wrong move is to spend the round diagnosing the script. Report the kill as unreproducible,
+keep the verdict you reproduced by hand, and do not count it toward "every hunk is pinned" — which
+is the sentence a later reader will quote back.
+
 ## Handwritten harnesses: three harms in one PR (PR #53)
 
 - `str.replace` rewrites **every occurrence at once**. The same rule lived in three gates, so

@@ -83,10 +83,48 @@ python3 -m pytest tools/tests/ -q -p no:randomly
 
 ## Verification steps that silently do not run, and records that silently do not hold
 
-All of these were hit on issue #71, and each looks exactly like a passing step or a kept
-record. (An earlier version of this heading said "two ways" over five items — a hand-typed
-count, rotting inside the commit that wrote it, in the file that tells you not to hand-type
-counts.)
+Each of these looks exactly like a passing step or a kept record. All but the first were hit on
+issue #71; the compiler-probe one is issue #153's, added 2026-09-05 — so do not read the list as
+one incident's inventory, which is what "all of these were hit on issue #71" made it while that
+sentence stood alone. (An earlier version of this heading also said "two ways" over five items — a
+hand-typed count, rotting inside the commit that wrote it, in the file that tells you not to
+hand-type counts. The fix then was to stop counting them here; the fix now is to stop attributing
+them to one issue.)
+
+**A COMPILER PROBE IS STATEFUL IN ITS WORKING DIRECTORY, and the artifact the PREVIOUS shape left
+can supply exactly what the next one is missing.** `gfortran` writes `.mod` / `.smod` beside the
+source and reads them back on the next invocation, so probing shape B where shape A just ran is not
+a measurement of B. Issue #153 shipped a wrong record that way, and the mechanism is narrower than
+"reuse of a name" — re-derived here, because a first version of this entry stated it loosely and
+did not reproduce:
+
+```
+B alone, clean directory                      -fsyntax-only rc=1   ("Module file
+                                                                    'hx_model.smod' has not
+                                                                    been generated")
+A compiled first (same module AND same
+procedure name), then B in that directory     -fsyntax-only rc=0    -c rc=0
+```
+
+A stale `.smod` for a DIFFERENT procedure changes nothing (measured): the leftover has to satisfy
+the very thing the next shape lacks. So the tell is not "these fixtures share a name" but **"the
+previous shape could have produced what this one needs"**.
+
+- **One fresh directory per shape.** `tempfile.mkdtemp()` per probe, not one directory for the
+  family. `rm -f *.mod *.smod` between runs is the same rule in the form that is one forgotten
+  line from failing.
+- **The worst version is a cleanup line BETWEEN the two halves of one measurement.** That is what
+  actually happened: `-fsyntax-only` ran in the contaminated directory, an `rm` ran next, and `-c`
+  ran in the now-clean one. The row recorded "rc=0 / rc=1" as one probe of one shape, and the
+  contrast between the two numbers — which looked like a finding about the syntax stage — was
+  entirely the directory changing underneath them. **Two numbers in one row must come from one
+  environment; if a cleanup sits between them, they are two measurements and neither says what the
+  row claims.**
+- **This generalises past compilers.** Any tool that writes an artifact beside its input and reads
+  it back — a build system's object cache, a linter's cache, `ruff` without `--no-cache` — has the
+  shape. On the same issue two ruff figures were wrong for the other reason (taken before the
+  round's last edits), which is the other half of the discipline: **one environment per row, and
+  every figure taken after the last edit**
 
 **`cmd | tail && git commit` does not gate on `cmd`.** A pipeline exits with the status of its
 LAST element, so `python3 -m pytest … | tail -3 && git commit` commits whatever pytest did — the
