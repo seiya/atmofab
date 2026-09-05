@@ -82,8 +82,15 @@ _PROCEDURE_KINDS = {
 _REQUIRED_NODE_TYPES = (
     "interface", "internal_procedures", "contains_statement",
     # The program-unit types `module_level_procedure_names` scopes by. Listed here for the same
-    # reason as the three above: a grammar rename would otherwise make the scope silently
-    # universal again, which is the exact fail-open that scoping was added to close.
+    # reason as the three above, but NOT for the reason a first version of this comment gave: it
+    # said a grammar rename "would otherwise make the scope silently universal again, which is
+    # the exact fail-open that scoping was added to close". Measured — with these entries gone
+    # and the collection predicate pointed at names no grammar defines, `units` is empty, the
+    # scope is empty, and `module_level_procedure_names` returns the empty set, so a faithful
+    # model gets one "never DEFINES it" per published operation. The failure is total
+    # OVER-REFUSAL, fail-CLOSED, which is why the guard is still worth having: it converts an
+    # unrepairable warm-retry loop into an operator-facing unavailable error. Two round-2
+    # reviewers found the direction stated backwards, independently.
     "module", "submodule", "module_statement", "submodule_statement",
 )
 
@@ -466,6 +473,22 @@ STRUCTURE_REFUSAL_HINT = (
 )
 
 
+def publishing_unit_present(tree: StructureTree, unit_name: str) -> bool:
+    """Does ``tree`` declare the program unit ``unit_name``, or a submodule descended from it?
+
+    Separate from `module_level_procedure_names` because the two answer questions a caller must
+    not conflate. That function returns the empty set both for "the unit is here and implements
+    nothing" and for "the unit is not here at all", and a caller that cannot tell them apart tells
+    a leaf to define procedures its source already defines — measured on a correct model whose
+    module name did not match its file's: three violations, every clause of the remedy false for
+    the source, and no violation anywhere in the stage naming the actual fault."""
+    wanted = unit_name.strip().lower()
+    return any(
+        unit.name == wanted or (unit.parent is not None and unit.parent == wanted)
+        for unit in tree.units
+    )
+
+
 def module_level_procedure_names(
     tree: StructureTree, unit_name: str | None = None
 ) -> frozenset[str]:
@@ -498,10 +521,15 @@ def module_level_procedure_names(
     headers did not, because the decoy's header carried a prefix the stanza reader does not model.
     Scoping removes the class rather than that spelling.
 
-    A SUBMODULE of ``unit_name`` counts as the same publisher: a separate module subprogram is the
-    module's own implementation and a consumer links against it exactly as if it were written
-    inline. Only one level of ancestry is followed, because the parser reports a submodule's
-    IMMEDIATE parent; a submodule of a submodule is not resolved and does not count.
+    A SUBMODULE descended from ``unit_name`` counts as the same publisher: a separate module
+    subprogram is the module's own implementation and a consumer links against it exactly as if it
+    were written inline. The whole chain counts, and the reason is a property of the LANGUAGE
+    rather than a depth limit: `submodule (ancestor : parent) name` names the ANCESTOR MODULE
+    first, and that is what the parser reports as `parent`, so `submodule (m:mid) leaf` carries
+    `parent == "m"` and is reached by scoping to `m`. Measured — an earlier version of this
+    paragraph said the opposite in both halves ("only one level is followed … a submodule of a
+    submodule does not count"), and also implied that naming the INTERMEDIATE submodule would
+    reach the descendant, which it does not: scoping to `mid` returns the empty set.
 
     ``unit_name`` matching is by the unit's own declared name, lowercased. A source declaring no
     unit of that name yields the empty set, which fails every published procedure — fail-closed,

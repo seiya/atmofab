@@ -13493,16 +13493,31 @@ def _validate_generated_signatures(
     # convention this repository already relies on when it resolves the model source at all.
     # Every model file contributes only the names ITS OWN unit defines, so a multi-file set
     # cannot lend one file's definitions to another file's prototypes.
+    #
+    # ONE FILE, NOT A UNION. An earlier version unioned the per-file answers, and a round-2 census
+    # showed what that buys: a second model file whose OWN module carries a same-named stub credits
+    # the prototype in the published file, which is the unit-granularity hole reopened at file
+    # granularity. Its ROUTE was NOT established — `_model_files_in_src_dir` returns more than one
+    # file only when `_spec_id_from_node_key` finds no `/`, and `node_key` is read from the
+    # host-authored `lineage.json`, which no leaf write root covers — so this is defense in depth
+    # rather than a closed exploit, and it is recorded that way. The published surface belongs to
+    # ONE module either way, so a set of files this gate cannot resolve to one publisher is
+    # fail-closed rather than unioned.
     defined_names: frozenset[str] | None = None
+    unit_absent: str | None = None
     if op_stanzas:
+        if len(model_files) != 1:
+            _fail_closed_if_pinned(
+                f"the published unit cannot be identified from {len(model_files)} model source "
+                "files (exactly one is expected)")
+            return
+        model_file = model_files[0]
         try:
-            defined_names = frozenset().union(*(
-                _module_level_procedure_names(
-                    model_file.read_text(encoding="utf-8", errors="ignore").lower(),
-                    model_file.stem,
-                )
-                for model_file in model_files
-            )) if model_files else frozenset()
+            source_text = model_file.read_text(encoding="utf-8", errors="ignore").lower()
+            if not fortran_structure.publishing_unit_present(
+                    _structure_reading(source_text)[1], model_file.stem):
+                unit_absent = model_file.stem
+            defined_names = _module_level_procedure_names(source_text, model_file.stem)
         # `FortranStructureUnavailableError` is deliberately NOT caught: it is the OPERATOR's
         # failure (an uninstalled package), no edit to this source can clear it, and `main`
         # answers it with a dedicated exit code. Same rule as `_validate_problem_model_gates`.
@@ -13534,14 +13549,33 @@ def _validate_generated_signatures(
                 "the pinned §5.1 signature)")
             continue
         if not is_type and defined_names is not None and name.lower() not in defined_names:
-            # Reported INSTEAD OF the stanza comparison for this name, not alongside it: the
-            # header is present by construction (that is what `have` is), so every atom matches
-            # and the comparison has nothing to add. One violation naming the one repair.
-            violations.append(
-                f"{target}: generated model source declares controlled_spec §5.1 procedure "
-                f"'{name}' but never DEFINES it — "
-                f"{fortran_structure.UNDEFINED_PUBLISHED_PROCEDURE_REMEDY} of '{name}'")
-            continue
+            # NOT `continue`. A first version reported this INSTEAD OF the stanza comparison, on
+            # the reasoning that "the header is present by construction, so every atom matches" —
+            # which is false, and a round-2 reviewer measured it: `have` is keyed on the NAME, not
+            # on the header matching §5.1, so a prototype that ALSO drifts has a non-None `have`
+            # and its drift atoms were suppressed. A source with both faults was told one per
+            # attempt, which is the second warm retry the sibling comment above refuses to pay.
+            #
+            # `unit_absent` is the other half, and it is why the two messages are not one. Scoping
+            # answers the empty set both when the published unit implements nothing and when the
+            # source declares no such unit at all, and the second is a DIFFERENT fault with a
+            # different repair: telling a leaf to "define it in the module's own `contains`" when
+            # the procedure IS defined — in a module under another name — is a remedy whose every
+            # clause is false for the source, and nothing else in this stage names the real fault.
+            # Measured on a correct model whose module name did not match its file's: three such
+            # violations, none of them actionable.
+            if unit_absent is not None:
+                violations.append(
+                    f"{target}: generated model source declares no program unit named "
+                    f"'{unit_absent}', so the surface controlled_spec §5.1 pins has no publisher "
+                    f"here — procedure '{name}' may well be defined, but not by the module a "
+                    f"consumer will `use`. Name the module '{unit_absent}', matching the source "
+                    "file, and define the published procedures inside it")
+            else:
+                violations.append(
+                    f"{target}: generated model source declares controlled_spec §5.1 procedure "
+                    f"'{name}' but never DEFINES it — "
+                    f"{fortran_structure.UNDEFINED_PUBLISHED_PROCEDURE_REMEDY} of '{name}'")
         if is_type:
             # A derived type's WHOLE component layout — names, types, and ORDER, with nothing
             # inserted — is part of the compatibility contract (§5), so the source type block must

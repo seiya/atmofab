@@ -11,12 +11,14 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 import yaml
 
 import tools.validate_pipeline_semantics as vps
 from tools.backends import registry as backend_registry
+from tools.backends.language.fortran import structure as fortran_structure
 from tools.backends.language.fortran.lines import normalize_fortran_line
 from tools.backends.language.fortran.signatures import parse_signatures_from_fortran
 from tools.validate_pipeline_semantics import (
@@ -16972,7 +16974,8 @@ class InfrastructureGeneratedSignatureGateTests(unittest.TestCase):
     )
 
     def _seed(self, tmp: Path, *, source: str, spec_kind: str = "infrastructure",
-              section_51: str | None = None, language: str | None = None) -> NodeExecution:
+              section_51: str | None = None, language: str | None = None,
+              signatures: object | None = None) -> NodeExecution:
         ir_ref = "workspace/ir/x"
         ir_dir = tmp / ir_ref
         ir_dir.mkdir(parents=True)
@@ -16991,7 +16994,8 @@ class InfrastructureGeneratedSignatureGateTests(unittest.TestCase):
                      "source_refs": {"controlled_spec": "cs.md"}},
             "public_api": {
                 "signatures": copy.deepcopy(
-                    InfrastructurePublicApiGateTests._SIGNATURES),
+                    InfrastructurePublicApiGateTests._SIGNATURES
+                    if signatures is None else signatures),
                 "module_parameters": copy.deepcopy(
                     InfrastructurePublicApiGateTests._MODULE_PARAMETERS)}}
         if language is not None:
@@ -17886,6 +17890,178 @@ class PublishedProcedureDefinednessTests(unittest.TestCase):
         self.assertTrue(
             any("rename" in v and "endsubroutine" in v for v in violations), violations)
 
+    def test_a_source_whose_unit_name_differs_names_that_fault_and_not_a_false_one(self) -> None:
+        # A round-2 reviewer measured the first version of the scoping arm on a CORRECT model
+        # whose module name did not match its file's: three "never DEFINES it" violations telling
+        # the leaf to define procedures the source already defines, in a `contains` it already
+        # has. Every clause of that remedy was false, nothing else in the stage named the real
+        # fault, and the warm retry could not converge. The two faults are different questions and
+        # get different messages.
+        renamed = (self._C._GOOD_SOURCE.replace("module hx_model", "module hx")
+                   .replace("end module hx_model", "end module hx"))
+        violations = self._gate(renamed)
+        self.assertTrue(violations, renamed)
+        self.assertTrue(
+            all("declares no program unit named 'hx_model'" in v for v in violations), violations)
+        self.assertFalse(
+            any("never DEFINES it" in v for v in violations),
+            ("the remedy for an absent publisher must not be the one for a missing body",
+             violations))
+
+    def test_a_prototype_that_also_drifts_reports_both_faults(self) -> None:
+        # The definedness arm used to `continue`, on the reasoning that "the header is present by
+        # construction, so every atom matches". False: `have` is keyed on the NAME, not on the
+        # header matching §5.1. A round-2 reviewer measured a prototype-only source with a renamed
+        # dummy going from 2 drift violations on origin/main to 1 definedness violation here —
+        # a leaf told one of its two faults per attempt, which is the second warm retry the
+        # neighbouring structure-error arm explicitly refuses to pay.
+        drifted = self._C._GOOD_SOURCE.replace(self._DEF, "").replace(
+            "contains\n",
+            "  interface\n"
+            "    subroutine hx__write_metrics_basis(entries, count)\n"
+            "      import :: hx__h_named\n"
+            "      type(hx__h_named), intent(in) :: entries(:)\n"
+            "      integer,           intent(in) :: count\n"
+            "    end subroutine hx__write_metrics_basis\n"
+            "  end interface\ncontains\n", 1)
+        violations = self._gate(drifted)
+        self.assertTrue(any("never DEFINES it" in v for v in violations), violations)
+        self.assertTrue(
+            any("drifts from controlled_spec §5.1" in v for v in violations),
+            ("the drift must survive the definedness finding, not be suppressed by it",
+             violations))
+
+    def test_an_unresolvable_source_is_not_also_reported_as_undefined(self) -> None:
+        # The `defined_names is not None` conjunct, which a round-2 census found unwitnessed:
+        # mutating it to treat None as the empty set broke nothing, while adding two spurious
+        # "never DEFINES it" violations against procedures the fixture DOES define. "Not asked"
+        # and "asked and empty" are different answers and only one of them is a leaf's fault.
+        wedged = self._C._GOOD_SOURCE.replace(
+            "end module hx_model\n",
+            "  subroutine hx__private_helper()\n"
+            "    real :: endsubroutine\n"
+            "    endsubroutine = 1.0\n"
+            "  end subroutine hx__private_helper\n"
+            "end module hx_model\n", 1)
+        violations = self._gate(wedged)
+        self.assertTrue(
+            any("structure front end could not resolve" in v for v in violations), violations)
+        self.assertFalse(
+            any("never DEFINES it" in v for v in violations),
+            ("a source the parser could not read has not been shown to define nothing",
+             violations))
+
+    def test_a_structure_refusal_still_reports_the_header_drift_beside_it(self) -> None:
+        # The `return`-removal, which a round-2 reviewer found UNPINNED — restoring the `return`
+        # left all 860 tests green, and the commit message claiming every MEDIUM got a red row was
+        # false for this one. A source with both an unresolvable identifier and a real §5.1 drift
+        # must be told both, or it spends two warm retries where one would do.
+        both = self._C._GOOD_SOURCE.replace(
+            "    integer,           intent(in) :: n\n",
+            "    integer,           intent(in) :: count\n", 1).replace(
+            "      n)\n", "      count)\n", 1).replace(
+            "end module hx_model\n",
+            "  subroutine hx__private_helper()\n"
+            "    real :: endsubroutine\n"
+            "    endsubroutine = 1.0\n"
+            "  end subroutine hx__private_helper\n"
+            "end module hx_model\n", 1)
+        violations = self._gate(both)
+        self.assertTrue(
+            any("structure front end could not resolve" in v for v in violations), violations)
+        self.assertTrue(
+            any("drifts from controlled_spec §5.1" in v for v in violations),
+            ("the header comparison does not need the parse, so a parse refusal must not "
+             "discard it", violations))
+
+    def test_an_operator_machine_failure_propagates_instead_of_being_caught(self) -> None:
+        # The `except` clause names ONE exception type on purpose, and a census found that
+        # specificity killed only by the token ratchet — broadening it to `except Exception`
+        # passed every functional test. `FortranStructureUnavailableError` is the OPERATOR's
+        # failure (an uninstalled package); no leaf edit clears it, and `main` maps it to a
+        # dedicated exit code. Swallowed, it becomes a content violation the leaf retries forever.
+        unavailable = fortran_structure.FortranStructureUnavailableError
+        with unittest.mock.patch.object(
+                vps, "_module_level_procedure_names",
+                side_effect=unavailable("no grammar")), tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            execution = self.inst._seed(tmp, source=self._C._GOOD_SOURCE)
+            with self.assertRaises(unavailable):
+                self.inst._run(execution, tmp)
+
+    def test_a_node_publishing_no_operations_is_not_parsed_at_all(self) -> None:
+        # The `if op_stanzas:` guard, which the census found unwitnessed: removing it made a
+        # node whose §5.1 publishes only TYPES fail on an unresolvable identifier in an unrelated
+        # private helper — legitimate work refused, and the guard is the only thing preventing it.
+        # The condition is driven at its source (an empty published-operation set from §5.1)
+        # rather than simulated downstream, and the fixture carries the wedge that would
+        # otherwise produce the refusal, so the row observes the guard and not its absence.
+        wedged = self._C._GOOD_SOURCE.replace(
+            "end module hx_model\n",
+            "  subroutine hx__private_helper()\n"
+            "    real :: endsubroutine\n"
+            "    endsubroutine = 1.0\n"
+            "  end subroutine hx__private_helper\n"
+            "end module hx_model\n", 1)
+        # Control: with operations published, the wedge IS refused.
+        self.assertTrue(
+            any("structure front end could not resolve" in v for v in self._gate(wedged)),
+            "the fixture must reach the parse when operations are published")
+        # A REAL type-only node, §5.1 and IR together. A first version of this row mocked the
+        # §5.1 parse alone and passed for an unrelated reason — the IR then disagreed with §5.1
+        # and the stale-IR guard returned before `op_stanzas` was ever consulted. The mutation
+        # `if op_stanzas:` -> `if True:` is what exposed it; without a fixture both halves of the
+        # contract agree on, this row observes the guard it names not at all.
+        type_only_fortran = (
+            "integer, parameter :: dp = real64\n"
+            "type :: hx__h_named\n"
+            "  character(len=:), allocatable :: name\n"
+            "  character(len=:), allocatable :: json\n"
+            "end type hx__h_named\n")
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            execution = self._C._seed(
+                self.inst, tmp, source=wedged,
+                section_51=_structured_section51_from_fortran(type_only_fortran),
+                signatures=_structured_ir_signatures_from_fortran(type_only_fortran))
+            violations = self.inst._run(execution, tmp)
+        self.assertFalse(
+            any("structure front end could not resolve" in str(v) for v in violations),
+            ("a node that publishes no operations has no definedness question, so its source "
+             "must not be parsed for one", violations))
+        self.assertFalse(
+            any("stale-dependency-ir" in str(v) for v in violations),
+            ("the fixture must be a node the contract accepts, or the guard under test is never "
+             "reached", violations))
+
+    def test_a_file_set_with_no_single_publisher_fails_closed(self) -> None:
+        # The definedness answer used to be UNIONED over `model_files`, which credits a prototype
+        # in the published file with a same-named stub in another file's own module — the
+        # unit-granularity hole at file granularity (census, round 2; its route was NOT
+        # established, so this is defense in depth). The published surface belongs to one module,
+        # so a set this gate cannot resolve to one publisher is refused rather than unioned.
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            execution = self.inst._seed(tmp, source=self._prototype_source())
+            model = tmp / "pipe" / "src" / "hx_model.f90"
+            second = model.with_name("hx_helper.f90")
+            second.write_text(
+                "module hx_helper\n"
+                "contains\n"
+                "  impure elemental subroutine hx__write_metrics_basis(n)\n"
+                "    integer, intent(in) :: n\n"
+                "  end subroutine hx__write_metrics_basis\n"
+                "end module hx_helper\n", encoding="utf-8")
+            violations: list = []
+            vps._validate_generated_signatures(tmp, execution, [model, second], violations)
+            self.assertTrue(
+                any("cannot be identified" in str(v) and "fail-closed" in str(v)
+                    for v in violations), violations)
+            self.assertFalse(
+                any("never DEFINES it" in str(v) for v in violations),
+                ("the fail-closed answer replaces the per-name verdicts, it does not join them",
+                 violations))
+
     def test_the_three_carried_shapes_are_refused_by_the_pre_existing_arm(self) -> None:
         # THE PREMISE OF THIS FIX, as a row. `checks_module_abi_facts`' docstring names three
         # shapes a `n not in defined_procs` refusal would fail: use-association, a generic
@@ -18046,6 +18222,54 @@ class ModuleLevelProcedureNamesTests(unittest.TestCase):
             "  end subroutine wmb\n"
             "end module something_else\n")
         self.assertEqual(vps._module_level_procedure_names(source, "hx_model"), frozenset())
+
+    def test_a_submodule_chain_resolves_to_the_ANCESTOR_module(self) -> None:
+        # `submodule (ancestor : parent) name` names the ANCESTOR MODULE first, and that is what
+        # the parser reports as `parent`. So the whole chain scopes to the ancestor, and the
+        # INTERMEDIATE submodule reaches nothing. A round-2 reviewer measured that the docstring
+        # asserted the opposite in both halves; the behaviour was right and the record was not,
+        # and a maintainer "fixing" the code to match the sentence would have refused a legal
+        # descendant-submodule implementation.
+        source = (
+            "module hx_model\n"
+            "  implicit none\n"
+            "  interface\n"
+            "    module subroutine deep_impl(n)\n"
+            "      integer, intent(in) :: n\n"
+            "    end subroutine deep_impl\n"
+            "  end interface\n"
+            "end module hx_model\n"
+            "submodule (hx_model) mid\n"
+            "end submodule mid\n"
+            "submodule (hx_model:mid) leaf\n"
+            "contains\n"
+            "  module procedure deep_impl\n"
+            "  end procedure deep_impl\n"
+            "end submodule leaf\n")
+        self.assertEqual(
+            vps._module_level_procedure_names(source, "hx_model"), frozenset({"deep_impl"}))
+        self.assertEqual(vps._module_level_procedure_names(source, "mid"), frozenset())
+
+    def test_the_grammar_self_check_notices_a_renamed_program_unit_type(self) -> None:
+        # `_REQUIRED_NODE_TYPES` gained four entries and NOTHING observed them: the existing rows
+        # iterate OVER the tuple, so shrinking it satisfies them vacuously (found independently by
+        # a round-2 reviewer and by the census). The guard is real — hide one type from the
+        # grammar and the front end must refuse to load rather than silently answer with no units,
+        # which is a total over-refusal no leaf edit can clear.
+        import tree_sitter
+        fs = fortran_structure
+        real = tree_sitter.Language.id_for_node_kind
+
+        def hidden(self_lang, kind, named):
+            return None if kind == "submodule" else real(self_lang, kind, named)
+
+        # A CONTROL first, or "it raised" cannot be told from a probe that always raises: the
+        # unmocked call must succeed against the installed grammar.
+        fs._load_parser()
+        with unittest.mock.patch.object(
+                tree_sitter.Language, "id_for_node_kind", hidden), self.assertRaises(
+                fs.FortranStructureUnavailableError):
+            fs._load_parser()
 
     def test_unresolvable_source_raises_rather_than_returning_a_partial_set(self) -> None:
         with self.assertRaises(vps._FortranSourceStructureError):
