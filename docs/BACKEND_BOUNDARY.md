@@ -270,7 +270,9 @@ root-file coverage), and the synthetic witnesses of the comparison run by defaul
 unchanged. A pull request that migrates an area of the ledger in `TODO.md` runs
 `--check-baseline`, judges each finding by §Decision Criteria, regenerates the baseline with
 `--write-baseline` in the same pull request, and records the check's output there; no other pull
-request regenerates the baseline. The freeze ends with the first pull request of the second
+request regenerates the baseline. The two flags are refused in one invocation (exit 2): the
+judgement between them is the step, and an invocation asking for both would report a
+regeneration as a check that passed. The freeze ends with the first pull request of the second
 `(language, hardware)` target: that pull request restores the comparison to the suite and
 regenerates the baseline once. `TODO.md` carries the removal procedure beside the migration
 ledger.

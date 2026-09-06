@@ -67,7 +67,8 @@ Running the sampled comparison and regenerating the baseline are both deliberate
 
 Check first, judge each finding by `docs/BACKEND_BOUNDARY.md` §Decision Criteria, then write: the
 diff is reviewable as the migration step it represents only once the findings behind it have been
-read.
+read. Passing both flags at once is refused (exit 2) rather than obeyed, because the judgement
+between them is not something an argv can express.
 """
 
 from __future__ import annotations
@@ -734,6 +735,44 @@ class BaselineComparisonTests(unittest.TestCase):
         self.assertIn("ratchet: 1 files, 1 sampled occurrences", out)
         self.assertNotIn(GROWTH_MESSAGE, out)
         self.assertNotIn(STALE_MESSAGE, out)
+
+    def test_the_two_commands_refuse_to_run_in_one_invocation(self) -> None:
+        # Under `elif` this argv wrote the baseline and exited 0 — a regeneration that reads in a
+        # pull request as "--check-baseline passed". The judgement between the two is the point.
+        with mock.patch(f"{__name__}._write_baseline") as wrote:
+            buffer = io.StringIO()
+            with contextlib.redirect_stderr(buffer):
+                rc = _dispatch(["prog", "--write-baseline", "--check-baseline"])
+        self.assertEqual(2, rc)
+        wrote.assert_not_called()
+        self.assertIn(BOTH_COMMANDS_MESSAGE, buffer.getvalue())
+
+    def test_each_command_alone_still_dispatches_and_no_argument_runs_the_tests(self) -> None:
+        # The over-refusal side of the row above: refusing the pair must not refuse either one.
+        with mock.patch(f"{__name__}._write_baseline") as wrote:
+            self.assertEqual(0, _dispatch(["prog", "--write-baseline"]))
+        wrote.assert_called_once_with()
+        with mock.patch(f"{__name__}._check_baseline", return_value=7) as checked:
+            self.assertEqual(7, _dispatch(["prog", "--check-baseline"]))
+        checked.assert_called_once_with()
+        self.assertIsNone(_dispatch(["prog"]))
+        self.assertIsNone(_dispatch(["prog", "-k", "SomeTest"]))
+
+    def test_the_refused_pair_writes_nothing_through_the_real_command(self) -> None:
+        # Through the real CLI in a real subprocess: the in-process row above mocks the writer, so
+        # only this one observes that the file on disk is untouched.
+        before = BASELINE_PATH.read_bytes()
+        try:
+            proc = subprocess.run(
+                [sys.executable, "-m", "tools.tests.test_backend_boundary",
+                 "--write-baseline", "--check-baseline"],
+                cwd=REPO_ROOT, capture_output=True, text=True, check=False)
+            after = BASELINE_PATH.read_bytes()
+        finally:
+            BASELINE_PATH.write_bytes(before)
+        self.assertEqual(2, proc.returncode, proc.stdout + proc.stderr)
+        self.assertEqual(before, after, "the refused pair wrote the baseline anyway")
+        self.assertIn(BOTH_COMMANDS_MESSAGE, proc.stderr)
 
     def test_check_baseline_is_dispatched_by_the_module_command(self) -> None:
         # The dispatch, not the tree's freshness: while frozen the real baseline is expected to
@@ -2801,10 +2840,40 @@ def _write_baseline() -> None:
           f"{ALLOWLIST_PATH.relative_to(REPO_ROOT)} by hand)")
 
 
-if __name__ == "__main__":
-    if "--write-baseline" in sys.argv:
+#: What the two commands may not be composed into. `--check-baseline` reports; `--write-baseline`
+#: blesses whatever the tree currently says. The documented order (this module's docstring,
+#: `docs/BACKEND_BOUNDARY.md` §Enforcement) puts a HUMAN JUDGEMENT between them, so a single
+#: invocation asking for both is not an order — it is the judgement skipped. Under `elif` the pair
+#: wrote and exited 0, which reads in a pull request as a check that passed.
+BOTH_COMMANDS_MESSAGE = (
+    "--check-baseline and --write-baseline cannot run in one invocation: the first reports what "
+    "the tree has grown or shed, the second blesses it, and the step between them is a judgement "
+    "by docs/BACKEND_BOUNDARY.md §Decision Criteria that no argv can express. Run "
+    "`--check-baseline`, read every entry, then run `--write-baseline` if the judgement says to.")
+
+
+def _dispatch(argv: list[str]) -> int | None:
+    """The module's command line. `None` means "not a command" — the caller runs the tests.
+
+    Separated from `__main__` so the refusal above and the exit codes are witnessable without a
+    subprocess; the subprocess witnesses remain, because a function returning the right number
+    says nothing about what `__main__` does with it.
+    """
+    write = "--write-baseline" in argv
+    check = "--check-baseline" in argv
+    if write and check:
+        print(BOTH_COMMANDS_MESSAGE, file=sys.stderr)
+        return 2
+    if write:
         _write_baseline()
-    elif "--check-baseline" in sys.argv:
-        sys.exit(_check_baseline())
-    else:
+        return 0
+    if check:
+        return _check_baseline()
+    return None
+
+
+if __name__ == "__main__":
+    _rc = _dispatch(sys.argv)
+    if _rc is None:
         unittest.main()
+    sys.exit(_rc)
