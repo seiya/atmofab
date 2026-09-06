@@ -28,6 +28,29 @@ def seed_claude_leaf_config(repo_root: Path) -> Path:
     return destination
 
 
+def seed_codex_auth(directory: Path) -> Path:
+    """Give a test its OWN codex credential, and return the directory to set `CODEX_HOME` to.
+
+    `_prepare_codex_workflow_home` refuses a launch whose `auth.json` it cannot find, resolving
+    `CODEX_HOME` -> `ATMOFAB_HOME` -> `~/.codex`. Every codex-backed launch fixture without this
+    therefore READ THE OPERATOR'S OWN CREDENTIAL and passed because the developer happened to have
+    one — which means the refusal was witnessed by nothing, and the tests were not hermetic.
+
+    Measured on this repository's first CI runs, which is how it was found: three tests failed on
+    a GitHub runner with `Codex auth.json not found for isolated home:
+    /home/runner/.codex/auth.json`. They were green on the operator's machine for a reason that
+    had nothing to do with what they are about.
+
+    The content is not a real credential and does not need to be: the gate checks that the file
+    is present and readable, and `tools/tests/test_orchestration_runtime.py` has a dedicated row
+    for what happens when it is absent.
+    """
+    directory = Path(directory)
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "auth.json").write_text("{}\n", encoding="utf-8")
+    return directory
+
+
 def seed_codex_hooks(repo_root: Path) -> Path:
     """Copy this repository's committed Codex hook source into `repo_root`.
 
