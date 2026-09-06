@@ -20939,7 +20939,17 @@ class LeafUsageRecordingTests(unittest.TestCase):
         c = self._conductor(
             wc.ProcResult(0, "done", "", usage={"input_tokens": 10, "output_tokens": 20}),
             backend="codex")
-        c.run_substep(self._refs(), "compile", "verify")
+        # The subject here is usage NORMALIZATION, and reaching it means getting past the codex
+        # hooks-feature certification, which shells out to `codex features list`. On a machine
+        # with no `codex` on PATH that fails closed — so before this patch the row passed only
+        # because the developer happened to have the CLI installed, which CI measured on its
+        # first runs (`codex features list failed: [Errno 2] No such file or directory: 'codex'`).
+        # Patched to CERTIFIED rather than opted out with
+        # `ATMOFAB_REQUIRE_CODEX_HOOKS_FEATURE=0`, because the opt-out is a different behaviour
+        # (recorded, not fail-closed) and this row should traverse the path a real launch takes.
+        with patch("tools.hooks.codex_feature.codex_hooks_feature_enabled",
+                   return_value=(True, "hooks=true")):
+            c.run_substep(self._refs(), "compile", "verify")
         usage = self._row(c)["usage"]
         self.assertEqual(usage["total_tokens"], 30)
         self.assertEqual(usage["usage_source"], "codex_turn_event")
