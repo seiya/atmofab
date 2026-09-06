@@ -272,7 +272,9 @@ unchanged. A pull request that migrates an area of the ledger in `TODO.md` runs
 `--write-baseline` in the same pull request, and records the check's output there; no other pull
 request regenerates the baseline. The two flags are refused in one invocation (exit 2): the
 judgement between them is the step, and an invocation asking for both would report a
-regeneration as a check that passed. The freeze ends with the first pull request of the second
+regeneration as a check that passed. `--write-baseline` prints the grown and stale entries it is about to bless before
+it writes, so a regeneration that skipped the check still puts the material in front of
+whoever typed it; nothing in the suite or in CI runs either command. The freeze ends with the first pull request of the second
 `(language, hardware)` target: that pull request restores the comparison to the suite and
 regenerates the baseline once. `TODO.md` carries the removal procedure beside the migration
 ledger.

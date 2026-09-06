@@ -1100,7 +1100,8 @@ class DirectImportPinTests(unittest.TestCase):
         sentinel = before + b"\n"
         try:
             ALLOWLIST_PATH.write_bytes(sentinel)
-            _write_baseline()
+            with contextlib.redirect_stdout(io.StringIO()):
+                _write_baseline()
             after = ALLOWLIST_PATH.read_bytes()
         finally:
             ALLOWLIST_PATH.write_bytes(before)
@@ -1123,8 +1124,11 @@ class DirectImportPinTests(unittest.TestCase):
         allowlist_before = ALLOWLIST_PATH.read_bytes()
         try:
             BASELINE_PATH.write_bytes(b'{"token_counts": {"docs/sentinel.md": {"fortran": 1}}}\n')
-            _write_baseline()
+            buffer = io.StringIO()
+            with contextlib.redirect_stdout(buffer):
+                _write_baseline()
             written = json.loads(BASELINE_PATH.read_text(encoding="utf-8"))
+            printed = buffer.getvalue()
         finally:
             BASELINE_PATH.write_bytes(before)
             ALLOWLIST_PATH.write_bytes(allowlist_before)
@@ -1133,6 +1137,11 @@ class DirectImportPinTests(unittest.TestCase):
         # blesses a tree nobody measured.
         self.assertEqual(measure(), written)
         self.assertNotIn("docs/sentinel.md", written["token_counts"])
+        # And the command showed what it was about to bless. Against the sentinel baseline every
+        # real file reads as growth and the sentinel itself as stale, so both halves appear.
+        self.assertIn("about to bless", printed)
+        self.assertIn("docs/sentinel.md: recorded, now absent (left the scanned set)", printed)
+        self.assertIn("docs/BACKEND_BOUNDARY.md: fortran 0 -> ", printed)
 
     def test_the_regenerable_half_cannot_carry_the_allowlist(self) -> None:
         # `--write-baseline` writes `measure()`. While `measure()` also returned the import set,
@@ -2919,7 +2928,36 @@ class CapabilityOwnershipTests(unittest.TestCase):
                 self.assertEqual(expected, str(ctx.exception))
 
 
+def _print_what_is_about_to_be_blessed() -> None:
+    """What `--write-baseline` is about to absorb, printed before it absorbs it.
+
+    The freeze demoted "check first, judge, then write" from a red test to prose, and prose is
+    followable by half: `--write-baseline` alone succeeded with no diff, no entries, and no word
+    about having skipped the check, so an unjudged regeneration and a judged one printed the same
+    thing. This does not move the judgement into the argv — the pair is still refused — it puts
+    the material in front of whoever typed the command.
+    """
+    try:
+        previous = _load_baseline()["token_counts"]
+    except FileNotFoundError:
+        print("no baseline recorded yet: every count below is a starting point, not a change")
+        return
+    measured = token_counts()
+    scanned = {p.relative_to(REPO_ROOT).as_posix() for p in neutral_core_files()}
+    grown = grown_entries(previous, measured)
+    stale = stale_entries(previous, measured, scanned)
+    if not grown and not stale:
+        print("the tree already matches the baseline: this regeneration changes nothing")
+        return
+    print(f"about to bless {len(grown)} grown and {len(stale)} stale entries — this is what "
+          f"--check-baseline reports, and each one is a judgement by "
+          f"docs/BACKEND_BOUNDARY.md §Decision Criteria:")
+    for entry in grown + stale:
+        print(f"  {entry}")
+
+
 def _write_baseline() -> None:
+    _print_what_is_about_to_be_blessed()
     BASELINE_PATH.parent.mkdir(parents=True, exist_ok=True)
     BASELINE_PATH.write_text(json.dumps(measure(), indent=2, sort_keys=True) + "\n",
                              encoding="utf-8")
