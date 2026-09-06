@@ -21,11 +21,12 @@ guessing. `L128` / `L174` name entries of `TODO.md` by the line they sat on when
 happened, and `TODO:269` / `TODO:414` name two more the same way (as does `L118` in the sibling
 skill). **Those entries are no longer in `TODO.md`**: issue #181 moved every finished entry to a
 comment on the issue or pull request it belongs to, so the label is a name for an episode and
-nothing resolves it in the file. Resolve a label at the merge base of the pull request that used it (`git show <pr merge>^:TODO.md | sed -n '<n>p'`),
-which is how these five were checked: `L118` is [the duplicate `_split_top_level_commas`](https://github.com/seiya/atmofab/issues/181#issuecomment-5559628555),
+nothing resolves it in the file. Resolve a label at the merge base of the pull request that used it — `git show <pr merge>^:TODO.md | sed -n '<n>p'`,
+and find that merge with `git log --oneline --merges --ancestry-path <the commit that did the work>..origin/main | tail -2`
+when the label carries no pull request number, which is the case for `L118`, `L128` and `L174`. That is how these were checked: `L118` is [the duplicate `_split_top_level_commas`](https://github.com/seiya/atmofab/issues/181#issuecomment-5559628555),
 `L128` [the `&`-continuation blindness](https://github.com/seiya/atmofab/issues/181#issuecomment-5559628999),
 `L174` [the tree-sitter front-end swap](https://github.com/seiya/atmofab/issues/181#issuecomment-5559629951),
-`TODO:269` [the `STALE_DEPENDENCY_IR_MARKER` exit-code work](https://github.com/seiya/atmofab/pull/67#issuecomment-5559630385)
+`TODO:269` [the `STALE_DEPENDENCY_IR_MARKER` exit-code work](https://github.com/seiya/atmofab/pull/88#issuecomment-5560285483)
 and `TODO:414` [the development-documentation branch](https://github.com/seiya/atmofab/pull/90#issuecomment-5559633234).
 `L200`, which `PR #57`'s title names, is [the `agent_role` work](https://github.com/seiya/atmofab/pull/57#issuecomment-5559631060).
 
