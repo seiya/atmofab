@@ -557,17 +557,29 @@ def _load_allowlist() -> dict[str, list[str]]:
 #: The two findings the sampled comparison can produce, in the wording the suite form used before
 #: the comparison was frozen (issue #182). They are constants so that the explicit command and the
 #: witnesses below say the same thing to the maintainer.
+#: The remedy BOTH findings end with, and the reason it is one constant. Ordered by
+#: reachability, most reachable first: while the ratchet is frozen (issue #182) the common case
+#: by far is an unrelated pull request that ran the command and got a finding, and for that case
+#: the answer is NOT to regenerate — the pre-freeze messages said "regenerate" unconditionally,
+#: which is the gate satisfied by editing what judges it, and `docs/BACKEND_BOUNDARY.md`
+#: §Enforcement now forbids it for every pull request but the ledger's.
+_FROZEN_REMEDY_CLAUSE = (
+    "Do NOT regenerate the baseline unless this is the pull request that migrates an area of the "
+    "ledger in TODO.md: while the ratchet is frozen (issue #182, docs/BACKEND_BOUNDARY.md "
+    "§Enforcement) every other pull request records the finding and leaves the baseline alone. "
+    "In a ledger pull request, judge every entry by §Decision Criteria first, then run "
+    "`python3 -m tools.tests.test_backend_boundary --write-baseline` and record both outputs.")
+
 GROWTH_MESSAGE = (
     "backend knowledge grew in the neutral core (docs/BACKEND_BOUNDARY.md). Move it into "
     "tools/backends/<axis>/<backend_id>/ and reach it through tools/backends/registry.py. "
     "If the growth is a token appearing in a NEUTRAL role (naming an axis value, quoting a "
-    "path), say so in the commit message and regenerate the baseline with "
-    "`python3 -m tools.tests.test_backend_boundary --write-baseline`.")
+    "path), say so in the commit message. " + _FROZEN_REMEDY_CLAUSE)
 
 STALE_MESSAGE = (
-    "the baseline is looser than the tree: regenerate it with "
-    "`python3 -m tools.tests.test_backend_boundary --write-baseline` so the ratchet keeps "
-    "tightening, and update the measured debt in TODO.md.")
+    "the baseline is looser than the tree, which is what a migration looks like. " +
+    _FROZEN_REMEDY_CLAUSE + " When you do regenerate, update the measured debt in TODO.md in the "
+    "same pull request so the ratchet keeps tightening.")
 
 
 def grown_entries(baseline: dict[str, dict[str, int]],

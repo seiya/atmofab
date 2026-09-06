@@ -493,7 +493,10 @@ python3 -m tools.tests.test_backend_boundary --write-baseline      # ONLY after 
 **Three trips, three different right answers — the judgement is the whole content of this
 section:**
 
-- **A neutral-role citation → regenerate, and say so in the commit message.** Naming an existing
+- **A neutral-role citation → regenerate, and say so in the commit message** — but only in a
+  ledger pull request. While the ratchet is frozen (issue #182) every other pull request
+  RECORDS the finding and leaves the baseline alone; the three answers below are the
+  judgement, and regenerating is the ledger's step, not yours. Naming an existing
   symbol the neutral core already exports (`FORTRAN_STRUCTURE_UNAVAILABLE_EXIT_CODE` at a new read
   site) is not new technology knowledge. `AGENTS.md` permits naming an `axis` value as an opaque
   token; the prohibition is on a file extension, keyword, grammar, compiler argument, lint rule
