@@ -28,7 +28,19 @@ concurrency:
 
 jobs:
   suite:
-    runs-on: ubuntu-latest
+    # 22.04, not `ubuntu-latest`, and the reason is measured rather than preferential: its SYSTEM
+    # interpreter is Python 3.10 — the development host's version — so the suite runs on
+    # `/usr/bin/python3` instead of a toolcache interpreter.
+    #
+    # That distinction decides whether the sandbox tests can run at all. `bwrap` binds `/usr`,
+    # `/bin`, `/lib` and `/lib64` read-only and `--clearenv`s the rest, so a `python3` living
+    # under `/opt/hostedtoolcache` is not reachable inside the sandbox. Measured on this
+    # workflow's third run, with `ubuntu-latest` plus `actions/setup-python`: every sandbox test
+    # died with `python3: error while loading shared libraries: libpython3.10.so.1.0`, exit 127.
+    # Binding the toolcache into the profile would have been the other way to fix it, and it is
+    # the wrong one — the profile is what confines a leaf in production, and widening it for a CI
+    # image is exactly the shape this repository calls a leaf shortcut when a leaf does it.
+    runs-on: ubuntu-22.04
     # The suite takes about 225s on the development host. The ceiling is generous against a
     # slower shared runner and still far below the 6-hour default, which is long enough that a
     # hung job would look like an outage rather than a failure.
@@ -36,12 +48,6 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          # The development host's interpreter. `requirements.txt` records it as the version every
-          # measurement in this repository was taken on.
-          python-version: "3.10"
 
       - name: Install host tools
         # Not statically compared to any document, and that is a decision rather than an omission:
@@ -61,11 +67,14 @@ jobs:
             bubblewrap
 
       - name: Allow unprivileged user namespaces
-        # `ubuntu-latest` is 24.04, whose AppArmor profile restricts unprivileged user namespaces
-        # by default. Measured on the first run of this workflow: the sandbox tests reported ten
-        # declared skips ("bwrap / user namespaces not available") and the execution-platform
-        # probe's own `sandbox_bwrap_*` checks failed, which took the aggregate preflight status
-        # to `fail` and with it two tests whose subject is a DIFFERENT check.
+        # Measured on this workflow's first run, which used `ubuntu-latest` (24.04, whose AppArmor
+        # profile restricts unprivileged user namespaces by default): the sandbox tests reported
+        # ten declared skips ("bwrap / user namespaces not available") and the execution-platform
+        # probe's own `sandbox_bwrap_*` checks failed, which took the aggregate preflight status to
+        # `fail` and with it two tests whose subject is a DIFFERENT check. Setting it took, and
+        # both went away together. Kept after the move to 22.04, which may not need it: the step
+        # is one line, `|| true` makes it inert where the knob is absent, and removing it would
+        # make the next image change silently reintroduce ten skips.
         #
         # Lifting the restriction rather than accepting the skips, because a skipped sandbox test
         # is the one an operator never sees: `docs/BWRAP_ENABLEMENT.md` is the requirement, the
@@ -76,7 +85,12 @@ jobs:
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
 
       - name: Install Python dependencies
-        run: pip install -r requirements.txt -r requirements-dev.txt
+        # `--user`, because this is the system interpreter and pip refuses to write into it on a
+        # PEP 668 image; `docs/DEVELOPMENT.md` §Fresh-machine setup records the same choice as how
+        # the development host was actually built. `~/.local/bin` is not on PATH by default here.
+        run: |
+          python3 -m pip install --user -r requirements.txt -r requirements-dev.txt
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Record the versions this run measured
         # "A measured figure is recorded with the commit it was taken at" (`docs/DEVELOPMENT.md`
