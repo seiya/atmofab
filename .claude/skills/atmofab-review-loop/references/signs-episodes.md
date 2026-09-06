@@ -226,3 +226,58 @@ the case history that tells you how it closed.
   line and cannot fire on a prerequisite that names no linter; the general shape is that a
   narrowing usually has a middle, and "whole document" versus "one column" was a false choice.
 
+- **Your change REMOVES something from the default run, and you then write a witness for it** →
+  issue #182 / PR #187, found in round 5 of five by BOTH reviewers of that round, independently,
+  and by nothing else in four rounds before them.
+
+  The branch froze a tree-versus-baseline comparison out of `pytest tools/tests/`: the token
+  ratchet in `tools/tests/test_backend_boundary.py` became the explicit command
+  `--check-baseline`, so that an unrelated pull request could no longer be forced to re-measure
+  the recorded baseline. Round 3 added a disclosure to `--write-baseline` — it prints the entries
+  it is about to bless — and round 4 added witnesses for that printing. One of them,
+  `test_write_baseline_says_so_when_the_regeneration_changes_nothing`, called the real
+  `_write_baseline()` with no injection and asserted `"the tree already matches the baseline"` in
+  its output. That sentence is printed only when the comparison over the REAL tree and the REAL
+  baseline is empty in both directions, so the row was the frozen comparison, running in the
+  default suite and in CI, in both directions, under a class named `DirectImportPinTests`.
+
+  **What it cost, measured at the tip before the fix.** Appending one ordinary prose comment
+  naming a sampled token to a scanned document turned the module file red (`1 failed, 108
+  passed`); so did an inflated ceiling committed in the baseline, a garbage baseline, and a token
+  rename in a neutral module. `.github/workflows/tests.yml` runs `pytest tools/tests/`, so this
+  was every pull request. The failure names a row about `--write-baseline` and its printed body
+  ends with `wrote tools/tests/data/backend_boundary_baseline.json`, so the cheapest green was to
+  regenerate the baseline in a non-ledger pull request — the precise `leaf shortcut` the freeze
+  exists to remove, reintroduced by a witness written to protect it. The prose two earlier rounds had written — "a green suite says nothing at all about growth" in
+  `AGENTS.md`, "nothing in the suite and nothing in CI runs either command" in
+  `docs/BACKEND_BOUNDARY.md`, and the same claim in `TODO.md`, `tools/backends/registry.py`, the
+  module docstring and both dev skills — had been false since that commit. Do not take that list
+  as a count: what makes it long is that a claim about what the default run does gets restated
+  wherever the rule is cited, which is `atmofab-enforcement-change` rule 3-a's trigger.
+
+  **Why every instrument missed it for a round.** The mechanism was in a test file: the round-4
+  sweep mutated the production functions and all of them died, because they are genuinely pinned —
+  the row that re-coupled the suite is not a mutant of anything. Round 5's blank-slate reviewer
+  reported 20 of 20 production mutants killed in the same run in which it found this, which is
+  the cleanest statement of the gap: the sweep was right and answered a different question. The witness census counted the row
+  as a witness, which it is; what it also was is a coupling, and a census asks "does this observe
+  something", never "does this observe something the change promised to stop observing". A
+  blank-slate reviewer reads HEAD and sees a green suite. What found it, twice, was injecting a
+  defect into the tree and running the default suite — the same move the row above prescribes for a
+  narrowed check, pointed forwards instead of backwards.
+
+  **The fix is injection.** `_print_what_is_about_to_be_blessed` and `_write_baseline` took `root`
+  and `baseline_path` exactly as `_check_baseline` already had, and every row observing the printed
+  output moved to a synthetic tree and a synthetic baseline. One row still drives the real command
+  — that it writes `measure()` to the real path — and that one is tree-state-independent by
+  construction, since both sides are measured from the same tree. Deleting the witnesses instead
+  would have been the wrong repair: the disclosure they cover is real, and round 4 had added it for
+  a real reason.
+
+  **The wider reading.** Round 3's fix introduced a functional regression that round 4 found;
+  round 4's fix defeated the branch's purpose and round 5 found that. The class did not descend
+  across the last three rounds, and the loop ended at the cap without meeting a stopping condition.
+  A change whose subject is REMOVING a check should expect its own witnesses to be the highest-risk
+  part of it, and should carry the injection command from the first round rather than discovering
+  it at the cap.
+

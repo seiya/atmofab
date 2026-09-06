@@ -1014,6 +1014,20 @@ that tells you how it closed.
   HEAD green and `origin/main` red, and no round noticed until the disclosure axis read the branch
   as the next maintainer. **Nothing else in this loop looks backwards**: every other instrument
   compares HEAD against itself, so a check the branch deleted is invisible to all of them
+- **Your change REMOVES something from the default run, and you then write a witness for it** →
+  the witness is how it comes back. A row that drives the real thing over the real corpus
+  re-couples the default run to exactly what the change decoupled, and it reads as extra coverage
+  while doing it. This is the previous row's twin from the other side: there a check the branch
+  deleted stayed invisible, here a check the branch deleted comes back and nothing says so.
+  Criterion, one command: **inject the input the change was supposed to stop reacting to, and run
+  the default suite** — green is the property the change claims, red is the finding. **None of
+  this loop's instruments can see it**: the mechanism lives in a test file, so the sweep's mutants
+  of the production code all still die, and the census counts the row as a witness rather than as
+  a coupling. Ask it of every witness written for something the change moved OUT of the default
+  run, and put the injection in the next round's prompt rather than asking a reviewer to notice.
+  **The fix is injection, not deletion** — give the production function the root or path the
+  witness needs and drive a synthetic one; the coverage is real, it just must not be taken from
+  the corpus the change stopped reading (issue #182)
 - **A fix changed the shape of the rule** (denylist → allowlist and the like) → split everything
   after that into another PR. If you continue without splitting, **give the user the options and
   ask**
