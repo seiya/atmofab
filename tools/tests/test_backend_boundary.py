@@ -744,6 +744,41 @@ class BaselineComparisonTests(unittest.TestCase):
         self.assertNotIn(GROWTH_MESSAGE, out)
         self.assertNotIn(STALE_MESSAGE, out)
 
+    def _check_on(self, tree: dict[str, str], baseline: dict[str, dict[str, int]]) -> tuple[int, str]:
+        """Drive `_check_baseline` over a synthetic tree and baseline; return `(rc, stdout)`."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            for rel, body in tree.items():
+                path = tmp / rel
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(body, encoding="utf-8")
+            baseline_path = tmp / "baseline.json"
+            baseline_path.write_text(json.dumps({"token_counts": baseline}), encoding="utf-8")
+            buffer = io.StringIO()
+            with contextlib.redirect_stdout(buffer):
+                rc = _check_baseline(root=tmp, baseline_path=baseline_path)
+        return rc, buffer.getvalue()
+
+    def test_growth_alone_exits_one(self) -> None:
+        # The two directional rows below exist because the both-corner and the neither-corner do
+        # not pin `1 if grown or stale else 0`: with the tree carrying BOTH, `1 if grown else 0`
+        # and `1 if stale else 0` each still answer 1, and both survived a mutation sweep.
+        rc, out = self._check_on({"docs/a.md": "subroutine placeholder\n"}, {})
+        self.assertEqual(1, rc)
+        self.assertIn("docs/a.md: fortran-subroutine 0 -> 1", out)
+        self.assertIn(GROWTH_MESSAGE, out)
+        self.assertNotIn(STALE_MESSAGE, out)
+
+    def test_staleness_alone_exits_one(self) -> None:
+        # This is the shape a migration produces (docs/BACKEND_BOUNDARY.md §Operations Rules), so
+        # it is the corner a ledger pull request actually lands on.
+        rc, out = self._check_on({"docs/a.md": "subroutine placeholder\n"},
+                                 {"docs/a.md": {"fortran-subroutine": 3}})
+        self.assertEqual(1, rc)
+        self.assertIn("docs/a.md: fortran-subroutine 3 -> 1", out)
+        self.assertIn(STALE_MESSAGE, out)
+        self.assertNotIn(GROWTH_MESSAGE, out)
+
     def test_the_two_commands_refuse_to_run_in_one_invocation(self) -> None:
         # Under `elif` this argv wrote the baseline and exited 0 — a regeneration that reads in a
         # pull request as "--check-baseline passed". The judgement between the two is the point.
@@ -791,6 +826,17 @@ class BaselineComparisonTests(unittest.TestCase):
             cwd=REPO_ROOT, capture_output=True, text=True, check=False)
         self.assertIn(proc.returncode, (0, 1), proc.stderr)
         self.assertTrue(proc.stdout.strip(), proc.stderr)
+
+    def test_the_module_with_no_command_still_runs_its_tests(self) -> None:
+        # `_dispatch` answering None must reach `unittest.main`. Replacing that call with a
+        # pass-through leaves every row here green, because nothing else runs the module bare.
+        # One named test, so this stays a dispatch witness and not a second suite run.
+        proc = subprocess.run(
+            [sys.executable, "-m", "tools.tests.test_backend_boundary", "-v",
+             "BaselineComparisonTests.test_a_count_at_or_below_its_ceiling_is_not_growth"],
+            cwd=REPO_ROOT, capture_output=True, text=True, check=False)
+        self.assertEqual(0, proc.returncode, proc.stdout + proc.stderr)
+        self.assertIn("Ran 1 test", proc.stderr, proc.stdout + proc.stderr)
 
 
 class RootFileCoverageTests(unittest.TestCase):
@@ -1049,6 +1095,32 @@ class DirectImportPinTests(unittest.TestCase):
             BASELINE_PATH.write_bytes(baseline_before)
         self.assertEqual(sentinel, after,
                          "--write-baseline wrote to the hand-edited pin")
+
+    def test_write_baseline_actually_writes_the_measurement(self) -> None:
+        """The other direction of the sentinel above: that the command writes what it says.
+
+        Dropping `BASELINE_PATH.write_text(...)` from `_write_baseline`, writing to another path,
+        or writing an EMPTY or an inflated measurement each left the whole file green — measured
+        at `c131639` too, so the gap predates the freeze. What the freeze changed is the recovery:
+        while the comparison ran in the suite, a baseline written wrong turned the next run red,
+        and now nothing reads it back until someone types `--check-baseline`. The summary line is
+        no witness either — `_write_baseline` prints it from a re-read of the file, so on a clean
+        tree it prints the right numbers whether or not the write happened.
+        """
+        before = BASELINE_PATH.read_bytes()
+        allowlist_before = ALLOWLIST_PATH.read_bytes()
+        try:
+            BASELINE_PATH.write_bytes(b'{"token_counts": {"docs/sentinel.md": {"fortran": 1}}}\n')
+            _write_baseline()
+            written = json.loads(BASELINE_PATH.read_text(encoding="utf-8"))
+        finally:
+            BASELINE_PATH.write_bytes(before)
+            ALLOWLIST_PATH.write_bytes(allowlist_before)
+        # Equality against a fresh measurement, not a shape check: an empty write and a write of
+        # `measure()` with every count raised are both well-formed, and both are the shape that
+        # blesses a tree nobody measured.
+        self.assertEqual(measure(), written)
+        self.assertNotIn("docs/sentinel.md", written["token_counts"])
 
     def test_the_regenerable_half_cannot_carry_the_allowlist(self) -> None:
         # `--write-baseline` writes `measure()`. While `measure()` also returned the import set,
