@@ -124,3 +124,70 @@ neither reviewer had done was measure at the commit the sentence would name.
 messages — several to the exact traceback line, assertion text and per-file digit — and found nothing
 else wrong. The rewrite into "historical record naming the commit and the command" held; the one
 failure was the entry written from someone else's measurement.
+
+
+## Issue #161 — the batch-edit rule, broken again on prose, by someone who had just read it
+
+PR-3's commit `9cb5a7f` said it had corrected a `TODO.md` figure and listed the seven entries the
+correction named. **The edit never reached the file.** One `python3 - <<PY` block made two changes
+to `TODO.md`; the second `p.write_text(...)` was built from `t`, the text read BEFORE the first
+change, so it silently reverted it. Neither edit raised, so there was no traceback to misread — the
+PR #116 shape without the exception.
+
+It was caught one command later, by re-reading the file, which is the rule's own remedy. The commit
+had already been made.
+
+**Why the rule did not fire.** It lives in `SKILL.md` §"Before you hand it over" item 2, under the
+heading *"Do not type measured values by hand; generate them from the artifact you measured"*, and
+every episode under it is about NUMBERS. This edit was two paragraphs of prose about what a scanned
+set contains. I had read the section that session — for the measurement rules — and did not connect
+it, because nothing about the task looked like transcribing a measurement. The rule was there; its
+trigger point was somewhere else. `SKILL.md` now states the trigger as **more than one edit in one
+script**, which is the property that actually decides it.
+
+The correction was recorded rather than the sentence quietly replaced, per the issue #153 rule
+above: the bullet says it first read `51 / 2430`, then `2433`, and why each was wrong.
+
+
+## Issue #161 — a failure read off the wrong section of a CI log, twice
+
+The branch that added CI pushed one change at a time and read the runner, which is how three of the
+plan's predictions were falsified. Run 1 reported eight failures. I read the FAILURES block and
+recorded that `RunWorkflowTests::test_orchestration_claim_outlives_the_tmp_cleanup` "dies on `codex
+features list failed: [Errno 2] No such file or directory: 'codex'`".
+
+It does not. Its assertion is `Lists differ: [True, False] != [False] : the claim must still be held
+while tmp is being removed`. The `codex features list` error belongs to a DIFFERENT section of the
+same block — `LeafUsageRecordingTests`, two sections below in run 1 and one below in runs 2 and 3.
+The pytest FAILURES block prints `____ Header ____` then the traceback then `E   ...`, repeatedly,
+and at three screens of scroll the eye carries a header forward past its own error.
+
+The consequences compounded in the way this file's other episodes predict:
+
+- it went into commit `16e752d`'s message as a measured fact;
+- it went into `TODO.md` as a durable record, framed as an intermittent — with "failed on runs 1-2
+  and passed on 3-6 **with nothing touching it**", which is also wrong: it fails on runs 1, 2 AND 3
+  and first passes on run 4, the run that changed the interpreter, so an environment change is a
+  live candidate cause and "not an intermittent at all" is the better hypothesis;
+- a review round found it two commits later;
+- and **my correction of it was itself wrong in one detail** — "belongs to the NEXT section" holds
+  for runs 2 and 3 and not for run 1, the run the misreading came from. Corrected again, and
+  recorded rather than replaced.
+
+**The cure is mechanical and takes one loop**, which is what round 3 used to verify the correction:
+
+```python
+name = None
+for line in log:
+    if re.match(r"^_+ [A-Za-z].*_+$", line):
+        name = line.strip("_ ")
+    elif line.startswith("E ") and name:
+        print(name, "||", line)
+        name = None
+```
+
+**What makes this worth a rule of its own** is that every existing guard here is about someone
+else's number. `atmofab-enforcement-change` rule 3 says do not write a reviewer's measurement as
+your own; issue #153 above says re-measure at the commit you are about to name. Both assume the
+danger is a figure you did not produce. This one I produced myself, from a command I ran, on a log I
+opened — and running the command is not what makes the reading a measurement.
