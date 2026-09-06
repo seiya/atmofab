@@ -203,7 +203,8 @@ EXCLUDED_RULE_CODES: dict[str, str] = {
         "import sorting. Never in the set this repository declares, and the single largest "
         "contributor when this repository's own tree is checked under 0.16.x's default set — no "
         "count is written here, because such a count is right only at the revision it was taken "
-        "at (TODO.md carries that rule and the command to re-take it). A gate that fails a "
+        "at; the rule and the command to re-take it are at "
+        "https://github.com/seiya/atmofab/issues/120#issuecomment-5559639219 . A gate that fails a "
         "generated source on import ORDER burns a regenerate cycle on a property no "
         "certification depends on."
     ),

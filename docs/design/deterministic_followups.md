@@ -1,6 +1,6 @@
 # Deterministic build/execute migration — follow-up issues to address
 
-Status: **frozen** (2026-09-06, issue #181). Closed to new entries. A design that lands after this date is recorded in the pull request that lands it, and open work is in `TODO.md` (`docs/DEVELOPMENT.md` §Record placement). Nothing below is moved or rewritten — the only edit it takes is the repair of a citation that has moved — so every citation into this document stays valid. A heading below that still reads as open is history and was NOT re-verified when this line was written: §D2 was, and is closed (`validate_pipeline_semantics._closure_node_validated_in_own_pipeline`); the others were not, so read an open-sounding heading as a question for whoever needs it, not as a tracked item.
+Status: **frozen** (2026-09-06, issue #181). Closed to NEW entries: a design that lands after this date is recorded in its own note under `docs/design/` with its own `Status`, and open work is in `TODO.md` (`docs/DEVELOPMENT.md` §Record placement is canonical for both). Nothing below is moved or renamed, so every citation into this document stays valid — and the freeze is on GROWTH, not on truth: where a heading below is cited as canonical for CURRENT behaviour (`tools/prompt_templates/substep_agent.txt` §G1-slim, `docs/ORCHESTRATION.md`, `docs/workflow/phases/phase_02_generate.md` and `phase_04_validate.md` all do), correcting it when that behaviour changes is required, not forbidden, and so is repairing a citation that has moved. A heading below that still reads as open is history and was NOT re-verified when this line was written: §D2 was, and is closed (`validate_pipeline_semantics._closure_node_validated_in_own_pipeline`); the others were not, so read an open-sounding heading as a question for whoever needs it, not as a tracked item.
 
 The Build / Validate.execute in-process migration is complete and the Codex review
 findings are fixed. While chasing a fully-green end-to-end run, three classes of
@@ -3758,8 +3758,9 @@ build whenever the operation is exercised.
 
 > **STATUS NOTE (2026-09-05).** The paragraph below opens "No billed run has been made". That was true
 > when written and is not now: two complete `--with-deps` closures ran at `61d5712` on 2026-09-04 and
-> 09-05, ten node orchestrations, all `pass`. The issue #153 entry — in `TODO.md` until issue #181 moved it to
-> https://github.com/seiya/atmofab/issues/153#issuecomment-5559622300 — carries the evidence and,
+> 09-05, ten node orchestrations, all `pass`. The issue #153 entry — whose finished parts issue #181 moved to
+> https://github.com/seiya/atmofab/issues/153#issuecomment-5559622300 , its open residues staying
+> in `TODO.md` — carries the evidence and,
 > more importantly, what those runs did and did NOT exercise. Everything else in the paragraph — the
 > standing test, the removed row, the `2dd73cd` measurement — still holds as written, except that the
 > `boundary1d` disagreement it records was against the 07-25 certification and the 09-04
