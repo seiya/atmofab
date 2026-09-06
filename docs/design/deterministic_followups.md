@@ -1,5 +1,7 @@
 # Deterministic build/execute migration — follow-up issues to address
 
+Status: **frozen** (2026-09-06, issue #181). Closed to new entries. A design that lands after this date is recorded in the pull request that lands it, and open work is in `TODO.md` (`docs/DEVELOPMENT.md` §Record placement). Nothing below moves or is rewritten, so every citation into this document stays valid; a heading below that still reads as open is history, and whatever part of it is still open is an item in `TODO.md`.
+
 The Build / Validate.execute in-process migration is complete and the Codex review
 findings are fixed. While chasing a fully-green end-to-end run, three classes of
 follow-up surfaced — all **orthogonal to the migration mechanics** (the root trigger

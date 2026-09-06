@@ -192,7 +192,7 @@ Codes deliberately excluded, with the ground:
 | --- | --- |
 | `E999` | Impossible to select — the tool answers `Rule 'E999' was removed and cannot be selected.` and exits 2 with nothing checked. A syntax error is reported anyway without being selected, and `E902` (io-error) covers the file-level half. |
 | `SIM117` | The rule that made this drift visible (issue #120). Absent from the default set on 0.14.0 and 0.15.20, present from 0.16.0. It is a style preference about nested `with` statements, not a defect class, and admitting it would mean admitting the other 371 rules 0.16.0 turned on with it — none of which anyone has reviewed for a generated source. |
-| `I001` | Import sorting. Never in the set this repository declares, and the single largest contributor when this repository's own tree is checked under 0.16.x's default set. No count is written here: such a count is right only at the revision it was taken at, and `TODO.md` carries that rule together with the command to re-take it. A gate that fails a generated source on import ORDER burns a regenerate cycle on a property no certification depends on. |
+| `I001` | Import sorting. Never in the set this repository declares, and the single largest contributor when this repository's own tree is checked under 0.16.x's default set. No count is written here: such a count is right only at the revision it was taken at; [a comment on issue #120](https://github.com/seiya/atmofab/issues/120#issuecomment-5559639219) carries that rule together with the command to re-take it. A gate that fails a generated source on import ORDER burns a regenerate cycle on a property no certification depends on. |
 
 ## Supported versions
 `>=0.14,<0.17`, declared as `MIN_VERSION` / `BELOW_VERSION` in `lint.py` and quoted by
@@ -278,6 +278,6 @@ by RESOLVING it rather than by trusting the spelling.
 - **A code the vendor removes or renames** surfaces as either an argument error or a warning with
   a silent redirect. Both are caught by comparing the RESOLVED set against `RULE_CODES` rather
   than by reading the spelling.
-- **This document's `ruff` is the PRESET, not this repository's own Python lint.** `TODO.md`
+- **This document's `ruff` is the PRESET, not this repository's own Python lint.** [A comment on issue #120](https://github.com/seiya/atmofab/issues/120#issuecomment-5559639219)
   records `ruff check tools/ mcp_servers/` figures for the repository's own tree; those are a
   development-verification measurement and have nothing to do with the set declared here.

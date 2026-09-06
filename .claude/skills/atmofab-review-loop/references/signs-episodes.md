@@ -193,7 +193,7 @@ the case history that tells you how it closed.
   a number OF, then read every hit — a `grep` for last round's sentence finds last round's sentence.
   And the fourth correction was not a correction: the comment was DELETED. It restated a measurement
   the assertion beside it already carried, so the two could disagree and only one of them ran.
-  Related and different: the `TODO.md` figures for this repository's own `ruff` count are a
+  Related and different: the figures for this repository's own `ruff` count ([a comment on issue #120](https://github.com/seiya/atmofab/issues/120#issuecomment-5559639219)) are a
   *dated record* and are correct as such; what rots is a claim about the present.
 - **A comment or docstring RESTATES a measurement the assertion beside it already carries** →
   the same PR #125 episode, read from the other end. The question that would have closed it in round

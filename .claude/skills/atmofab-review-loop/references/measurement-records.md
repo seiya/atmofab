@@ -87,8 +87,8 @@ hand-edited prose. Verify the write, not the intent.
 
 Round 1's two axes independently re-measured every number the branch recorded and found five wrong.
 The fix commit rewrote them as historical records naming the commit and the command, and added a
-`TODO.md` sub-bullet titled "Corrections to this branch's OWN records, because a wrong baseline makes
-the next delta wrong". Its three items:
+sub-bullet titled "Corrections to this branch's OWN records, because a wrong baseline makes
+the next delta wrong" (in `TODO.md` then, [a comment on issue #153](https://github.com/seiya/atmofab/issues/153#issuecomment-5559622300) now). Its three items:
 
 1. the three-suite baseline at `59fb060` was recorded as 2314 and is 2336 — 2314 was my own count
    taken mid-implementation with 22 tests failing, written in as if it were the baseline;

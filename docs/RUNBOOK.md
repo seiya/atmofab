@@ -588,7 +588,7 @@ second cannot silently destroy the thing the directory exists for. What is writt
 instead is the rule in this section — keep indefinitely, delete only by hand — plus the
 tool that carries it out.
 
-This is **not** the same answer `TODO.md` reaches for `workspace/`, and the difference is
+This is **not** the same answer the workspace-retention decision reaches for `workspace/` ([issue #181](https://github.com/seiya/atmofab/issues/181#issuecomment-5559631710)), and the difference is
 worth one sentence because two earlier drafts of this paragraph claimed it was. There the
 repository declines to legislate at all: `workspace/` is the gate's execution workspace
 and how an operator uses it is their business. Here the directory is created by this

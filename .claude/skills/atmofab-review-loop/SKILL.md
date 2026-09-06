@@ -18,8 +18,13 @@ that breakdown.
 **This file carries the rules; `references/` carries the episode each rule came from.** A rule
 here that does not obviously apply to your case is answered in its reference file, not by
 guessing. `L128` / `L174` name entries of `TODO.md` by the line they sat on when the work
-happened (as does `L118` in the sibling skill); the lines have moved — search TODO.md for the
-subject, not the number.
+happened, and `TODO:269` / `TODO:414` name two more the same way (as does `L118` in the sibling
+skill). **Those entries are no longer in `TODO.md`**: issue #181 moved every finished entry to a
+comment on the issue or pull request it belongs to, so the label is a name for an episode and
+nothing resolves it in the file. `L118` is [the duplicate `_split_top_level_commas`](https://github.com/seiya/atmofab/issues/181#issuecomment-5559628555),
+`L174` [the tree-sitter front-end swap](https://github.com/seiya/atmofab/issues/181#issuecomment-5559629951), `TODO:269` [the `agent_role` /
+`STALE_DEPENDENCY_IR_MARKER` exit-code work](https://github.com/seiya/atmofab/pull/67#issuecomment-5559630385) and `TODO:414` [the development-documentation
+branch](https://github.com/seiya/atmofab/pull/90#issuecomment-5559633234); `L128` predates the migration and has no entry left to search for.
 
 - `references/mutation-testing.md` — round 0's episodes, and the "spinning in neutral" family
 - `references/measurement-records.md` — why a measured number rots once per round
@@ -341,7 +346,7 @@ when a rule does not obviously apply:
    diff against origin/main, doc size ceilings; its `mcp_call` end-to-end section is for
    enforcement machinery).
 
-4. **Leave the list of surfaces you touched** in the commit message or TODO.md. That is where
+4. **Leave the list of surfaces you touched** in the commit message or the pull request. That is where
    reviewers attack from.
 
 ## Running a round

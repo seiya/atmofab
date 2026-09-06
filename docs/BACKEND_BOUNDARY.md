@@ -287,5 +287,6 @@ the comparison to the suite and regenerates the baseline once, and deletes this 
 nothing else in this section. `TODO.md` carries the removal procedure beside the migration
 ledger.
 
-The current baseline is not zero. The measured debt at the time this rule was written, and the
-per-area migration plan that reduces it, are recorded in `TODO.md`.
+The current baseline is not zero. The per-area migration plan that reduces it is the ledger in
+`TODO.md`; the measured debt at the time this rule was written is recorded in
+[a comment on issue #182](https://github.com/seiya/atmofab/issues/182#issuecomment-5559624872).

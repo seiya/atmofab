@@ -62,5 +62,5 @@ atmofab リポジトリ（<checkout>）で、決定論 Makefile / transport・re
 - compile/run/quality は MCP server 経由（AGENTS.md）。直接 gcc 等は禁止。
 - main 直コミット禁止。コミット/プッシュはユーザが明示した時のみ。
 - 変更後は pytest 全 green を維持し、サブエージェント or /codex:review で指摘が無くなるまで回す。
-- 完了後 docs/design/deterministic_followups.md の該当節を done に更新。
+- 完了後の記録はその PR に残す（`docs/design/deterministic_followups.md` は issue #181 で凍結、追記しない）。
 ```
