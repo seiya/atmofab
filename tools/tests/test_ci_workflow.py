@@ -125,6 +125,11 @@ def _runs_the_suite(command: str) -> bool:
     command = command.strip()
     if "pytest" not in command:
         return False
+    # A COLLECTION is not a run. The workflow's guard takes a reference count with
+    # `--collect-only`, and reading that as a second suite made four rows fail on the correct
+    # workflow. `--co` is the short spelling.
+    if re.search(r"(?:^|\s)--(?:collect-only|co)(?:\s|$)", command):
+        return False
     tokens = [re.escape(path.rstrip("/")) for path in _pytest_ini_testpaths()]
     if tokens and re.search(rf"(?:^|\s)(?:{'|'.join(tokens)})/?(?:\s|$)", command):
         return True
@@ -244,6 +249,57 @@ class WorkflowDecisionTests(unittest.TestCase):
         command = suite[0][1]["run"]
         self.assertIn("-rs", command)
 
+    def test_the_run_time_guard_exists_and_always_runs(self) -> None:
+        """The guard is what answers the question this file kept failing to answer by reading.
+
+        Three review rounds each found the next spelling a YAML reader did not model — a wrapper's
+        `continue-on-error`, `PYTEST_ADDOPTS` through `$GITHUB_ENV`, `-m 'not slow'` in `addopts`,
+        `|| true` copied from two lines above. So the workflow now asks the RUN: a step compares
+        what the suite executed against what a pristine configuration collects, and fails if the
+        report is missing, short, or carries failures. Every one of those bypasses changes one of
+        those three facts.
+
+        `if: always()` is the load-bearing part: the failures it answers are exactly the ones where
+        the suite step reports success, so a guard that inherits the default `if` would be skipped
+        alongside it.
+        """
+        steps = _all_steps()
+        guards = [s for s in steps if "pytest-report.xml" in str(s.get("run", ""))
+                  and "junitxml" not in str(s.get("run", ""))]
+        self.assertEqual(
+            len(guards), 1,
+            "the workflow has no step reading the suite's report; nothing then notices a suite "
+            "that was skipped, deselected or had its failure swallowed")
+        guard = guards[0]
+        self.assertEqual(
+            str(guard.get("if", "")).strip(), "always()",
+            "the guard is not `if: always()`, so it is skipped by exactly the conditions it "
+            f"exists to catch (found {guard.get('if')!r})")
+        body = str(guard["run"])
+        for property_checked in ("!= expected", "if failures", "did not run"):
+            self.assertIn(
+                property_checked, body,
+                f"the guard no longer checks {property_checked!r}; it answers three questions — "
+                "did the suite run, did it run everything, did it pass — and each is load-bearing")
+
+    def test_the_guard_s_reference_is_taken_under_a_pristine_configuration(self) -> None:
+        """The reference must not go through the configuration it is checking.
+
+        If it inherited `PYTEST_ADDOPTS` or `pytest.ini`'s `addopts`, a subset selected there would
+        shrink BOTH numbers and the comparison would hold — the guard would agree with the thing it
+        exists to detect.
+        """
+        references = [str(s["run"]) for s in _all_steps()
+                      if "--collect-only" in str(s.get("run", ""))]
+        self.assertEqual(len(references), 1, "expected exactly one reference collection step")
+        reference = references[0]
+        self.assertIn("-o addopts=", reference,
+                      "the reference inherits pytest.ini's addopts, so a subset selected there "
+                      "shrinks both sides of the comparison")
+        self.assertIn("-u PYTEST_ADDOPTS", reference,
+                      "the reference inherits PYTEST_ADDOPTS, so a subset selected there shrinks "
+                      "both sides of the comparison")
+
     def test_the_suite_step_can_actually_fail_the_job(self) -> None:
         """The row without which every other row here is decoration.
 
@@ -333,9 +389,13 @@ class WorkflowDecisionTests(unittest.TestCase):
                 self.assertNotIn(
                     spelling, command,
                     f"a pytest step contains {spelling!r}, which is how a retry loop is spelled")
-            self.assertEqual(
-                command.count("pytest"), 1,
-                "the suite step invokes pytest more than once, which is a retry however it is "
+            # INVOCATIONS, not occurrences of the word: the guard step names a
+            # `pytest-report.xml`, and counting the substring read that as a second run.
+            invocations = len(re.findall(r"(?:^|[\s;&|])(?:python[\d.]*\s+-m\s+)?pytest(?=\s|$)",
+                                         command))
+            self.assertLessEqual(
+                invocations, 1,
+                "a step invokes pytest more than once, which is a retry however it is "
                 f"spelled:\n{command}")
         # The flags are covered by the selection row above, which reads all three inputs. What is
         # left is the DECLARATION: a retry plugin installed there needs no flag on some versions,
@@ -584,6 +644,13 @@ class DocumentsDescribeThisWorkflowTests(unittest.TestCase):
         suite = _suite_steps()
         self.assertEqual(len(suite), 1, "this row reads THE suite step; there is not exactly one")
         command = suite[0][1]["run"].strip()
+        # `--junitxml` is stripped: it is plumbing for the run-time guard, carries a runner
+        # expression a document cannot sensibly quote, and selects nothing. Everything that
+        # decides WHAT runs stays in the comparison.
+        # The value is a QUOTED runner expression containing spaces, so `\S+` stopped inside it
+        # and left half the path in the command — measured while writing this row.
+        command = re.sub(r'\s*--junitxml=(?:"[^"]*"|\S+)', "", command).strip()
+        command = " ".join(command.split())
         document = self._development()
         # EQUALITY against what the document quotes, not containment. The first version asserted
         # the workflow's command was a SUBSTRING of the document, so the document could describe a

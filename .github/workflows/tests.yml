@@ -105,10 +105,68 @@ jobs:
             "$tool" --version 2>&1 | head -1 || true
           done
 
+      - name: Collect the suite under a pristine configuration
+        # The GUARD'S REFERENCE, taken before the suite runs and deliberately not through the same
+        # configuration: `-o addopts=` discards `pytest.ini`'s, and `PYTEST_ADDOPTS` is unset for
+        # this command only. What it produces is the number of tests pytest would collect with
+        # nothing selecting a subset.
+        id: reference
+        run: |
+          count=$(env -u PYTEST_ADDOPTS python3 -m pytest tools/tests/ \
+            --collect-only -q -o addopts= -p no:cacheprovider | tail -1 | cut -d' ' -f1)
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+          echo "a pristine configuration collects $count tests"
+
       - name: Run the suite
         # `-rs` prints the reason for every skip. On this repository that is not diagnostics but
         # the point: `tools/tests/test_skip_reasons_are_declared.py` requires every skip reason to
         # be declared, and a skip that fires only on a runner is the one an operator never sees.
         # No retry, deliberately: `TODO.md` records an intermittent failure in this suite, and a
         # retry would hide on a second machine exactly what a second machine is here to expose.
-        run: python3 -m pytest tools/tests/ -q -rs
+        # `--junitxml` is what the guard below reads; it selects nothing.
+        run: >
+          python3 -m pytest tools/tests/ -q -rs
+          --junitxml="${{ runner.temp }}/pytest-report.xml"
+
+      - name: Guard — the suite really ran, all of it, and really passed
+        # ALWAYS, because the failures this answers are the ones where the suite step reports
+        # success: `continue-on-error`, a never-matching `if:`, a `|| true`, a `set +e … exit 0`.
+        if: always()
+        # THE QUESTION CHANGED HERE, and the reason is three review rounds. Asking "does this YAML
+        # encode the decisions we made" needs a reader of YAML and shell, and each round found the
+        # next spelling that reader did not model — `continue-on-error` on a composite wrapper,
+        # `PYTEST_ADDOPTS` through `$GITHUB_ENV`, `-m 'not slow'` in `addopts`, `|| true` copied
+        # from two lines above. So the question is now one the RUN can answer: did the suite
+        # execute, did it execute everything, and did it pass. A configuration that deselects
+        # tests changes the count; a shell that swallows the failure does not change the report;
+        # a step that never runs leaves no report at all.
+        #
+        # WHAT THIS STILL CANNOT SEE, said rather than implied: a `conftest.py` edit, because both
+        # the reference and the run go through it; and a retry loop, because the report is the
+        # last invocation's. `tools/tests/test_ci_workflow.py` keeps its own checks for those two.
+        run: |
+          report="${{ runner.temp }}/pytest-report.xml"
+          if [ ! -f "$report" ]; then
+            echo "::error::the suite produced no report — it did not run" >&2
+            exit 1
+          fi
+          python3 - "$report" "${{ steps.reference.outputs.count }}" <<'GUARD'
+          import sys, xml.etree.ElementTree as ET
+          report, expected = sys.argv[1], int(sys.argv[2])
+          suite = ET.parse(report).getroot()
+          if suite.tag != "testsuite":
+              suite = suite.find("testsuite")
+          ran = int(suite.get("tests", "0"))
+          failures = int(suite.get("failures", "0")) + int(suite.get("errors", "0"))
+          skipped = int(suite.get("skipped", "0"))
+          print(f"ran={ran} expected={expected} failures={failures} skipped={skipped}")
+          if ran != expected:
+              raise SystemExit(
+                  f"the suite ran {ran} tests where a pristine configuration collects {expected}. "
+                  "Something selected a subset — PYTEST_ADDOPTS, pytest.ini's addopts, or an "
+                  "argument on the command line.")
+          if failures:
+              raise SystemExit(
+                  f"the suite reported {failures} failures or errors, and the job reached this "
+                  "step anyway — the suite step is not able to fail the run.")
+          GUARD
