@@ -262,8 +262,8 @@ compliance.
     read a falling count as migration — only a count falling because knowledge moved *into a
     backend* is migration.
 
-The two commands, which are permanent and outlive the freeze below. They are refused in one
-invocation (exit 2), because the judgement between them is the step and an invocation asking for
+The two commands. Their behaviour here is permanent and independent of anything recorded
+further down this section. They are refused in one invocation (exit 2), because the judgement between them is the step and an invocation asking for
 both would report a regeneration as a check that passed; an unrecognised argument beside either
 is refused for the same reason, since a mistyped second flag would otherwise run one command
 silently. `--write-baseline` prints the grown and stale entries it is about to bless, under

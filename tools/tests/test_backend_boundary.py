@@ -588,9 +588,10 @@ GROWTH_MESSAGE = (
 
 STALE_MESSAGE = (
     "the baseline is looser than the tree, which is what a migration looks like, and it is the "
-    "opposite finding from growth: growth is withdrawn, staleness is blessed by the ledger. " +
-    _FROZEN_REMEDY_CLAUSE + " When you do regenerate, update the measured debt in TODO.md in the "
-    "same pull request so the ratchet keeps tightening.")
+    "opposite finding from growth: growth is withdrawn, staleness is what the ledger records. " +
+    _FROZEN_REMEDY_CLAUSE + " In that pull request the measured debt in TODO.md is updated "
+    "with it, so the ledger and the baseline cannot disagree and the ratchet keeps "
+    "tightening.")
 
 
 def grown_entries(baseline: dict[str, dict[str, int]],
@@ -802,23 +803,120 @@ class BaselineComparisonTests(unittest.TestCase):
         self.assertIn(STALE_MESSAGE, out)
         self.assertNotIn(GROWTH_MESSAGE, out)
 
+    def _write_on(self, tree: dict[str, str], baseline: object | None) -> tuple[str, Path, Path]:
+        """Run `_write_baseline` over a synthetic tree; return `(stdout, root, baseline_path)`.
+
+        The tree and the baseline are both synthetic ON PURPOSE. A row that drove the real
+        `_write_baseline` and asserted what its preview printed compared this tree against the
+        recorded baseline on every `pytest tools/tests/` — the frozen comparison, back in the
+        suite and in CI, red on any pull request that moved one sampled token.
+        """
+        # `enterContext` is 3.11+; this repository's floor is lower, so the cleanup is
+        # registered by hand.
+        holder = tempfile.TemporaryDirectory()
+        self.addCleanup(holder.cleanup)
+        tmp = Path(holder.name)
+        for rel, body in tree.items():
+            path = tmp / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(body, encoding="utf-8")
+        baseline_path = tmp / "baseline.json"
+        if isinstance(baseline, bytes):
+            baseline_path.write_bytes(baseline)
+        elif baseline is not None:
+            baseline_path.write_text(json.dumps(baseline), encoding="utf-8")
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            _write_baseline(root=tmp, baseline_path=baseline_path)
+        return buffer.getvalue(), tmp, baseline_path
+
+    def test_write_baseline_says_so_when_the_regeneration_changes_nothing(self) -> None:
+        # The branch an operator hits on nearly every real invocation, and the one with no
+        # witness: mutating its text, or dropping its `return`, left the file green.
+        printed, _, path = self._write_on(
+            {"docs/kept.md": "subroutine placeholder\n"},
+            {"token_counts": {"docs/kept.md": {"fortran-subroutine": 1}}})
+        self.assertIn("the tree already matches the baseline", printed)
+        self.assertNotIn("about to bless", printed)
+        self.assertNotIn("could not be read", printed)
+        self.assertEqual(measure(path.parent), json.loads(path.read_text(encoding="utf-8")))
+
+    def test_write_baseline_lists_growth_and_staleness_under_separate_headings(self) -> None:
+        # Growth and staleness take OPPOSITE answers under §Decision Criteria and print in the
+        # same shape, so one flat list said nothing about which answer a row wants.
+        printed, _, _ = self._write_on(
+            {"docs/kept.md": "subroutine placeholder\n", "docs/new.md": "subroutine here\n"},
+            {"token_counts": {"docs/kept.md": {"fortran-subroutine": 2},
+                              "docs/gone.md": {"fortran-subroutine": 1}}})
+        self.assertIn("docs/new.md: fortran-subroutine 0 -> 1", printed)
+        self.assertIn("docs/kept.md: fortran-subroutine 2 -> 1", printed)
+        self.assertIn("docs/gone.md: recorded, now absent (left the scanned set)", printed)
+        # The counts are DERIVED from the rows printed under each heading, not transcribed: a
+        # summary saying "0 grown and 0 stale", or one with the two swapped, printed the entries
+        # and survived.
+        sections: dict[str, int] = {}
+        current = None
+        for line in printed.splitlines():
+            stripped = line.strip()
+            heading = next((h for h in ("GROWN", "STALE") if stripped.startswith(f"{h} (")), None)
+            if heading is not None:
+                current = heading
+                sections[heading] = 0
+            elif current and (" -> " in stripped or "recorded, now absent" in stripped):
+                sections[current] += 1
+        self.assertEqual({"GROWN": 1, "STALE": 2}, sections, printed)
+        self.assertIn("about to bless 1 grown and 2 stale", printed)
+
+    def test_write_baseline_still_writes_when_the_recorded_baseline_cannot_be_read(self) -> None:
+        """The preview discloses; it must not gate the write.
+
+        A conflict-marked, truncated, binary-corrupted or wrong-shaped baseline is the state whose
+        only documented recovery is this command, and for one commit the preview raised out of
+        `__main__` before the write — `origin/main` regenerated the same file. Four spellings,
+        three of which reached the command AFTER a fix that claimed to close the class:
+        unparseable text, a missing key, a non-UTF-8 byte (`UnicodeDecodeError` is a `ValueError`,
+        not a `JSONDecodeError`), and a well-formed JSON whose `token_counts` is not a mapping
+        (which used to raise inside `grown_entries`, outside the handler).
+        """
+        tree = {"docs/kept.md": "subroutine placeholder\n"}
+        for label, corrupt in (
+                ("unparseable", b"<<<<<<< HEAD\n{\n=======\n"),
+                ("no token_counts key", b'{"other": {}}\n'),
+                ("not utf-8", b'{"token_counts": {"docs/a.md": {"fortran-\xff": 1}}}'),
+                ("token_counts is a list", b'{"token_counts": []}\n')):
+            with self.subTest(baseline=label):
+                printed, root, path = self._write_on(tree, corrupt)
+                self.assertIn("the recorded baseline could not be read", printed)
+                self.assertIn("starting point rather than a change", printed)
+                self.assertEqual(measure(root),
+                                 json.loads(path.read_text(encoding="utf-8")))
+
     def test_the_findings_never_tell_a_reader_to_regenerate_before_saying_when(self) -> None:
-        """The PROPERTY of the three prescriptive strings, because their wording has no pin.
+        """A SAMPLE over the prescriptive strings, not a set identity — read the second paragraph.
 
         Every other row here asserts `assertIn(GROWTH_MESSAGE, out)` — the constant compared with
-        itself — so restoring the pre-freeze "regenerate the baseline with --write-baseline" as
-        the head of either message left the whole file green, which is the round-2 fix reverting
-        undetected. What is pinned here is the order and the condition, not the sentence: a
-        rewrite is free as long as no instruction to regenerate precedes the condition on it.
+        itself — so restoring the pre-freeze "regenerate the baseline with --write-baseline"
+        anywhere in either message left the whole file green, which is the round-2 fix reverting
+        undetected. What is checked here is that the only instruction to regenerate in either
+        message is the conditional one: the message OUTSIDE `_FROZEN_REMEDY_CLAUSE` names neither
+        the write command nor any of a few spellings of blessing the tree.
+
+        WHAT IS SAMPLED: the spellings. A first version looked only at the text BEFORE the clause,
+        and appending "In practice: regenerate now with --write-baseline" to the tail — the last
+        sentence a reader sees — passed. Widening to the whole message closes that, and does not
+        close a differently-worded instruction ("rewrite the recorded ceilings and carry on"),
+        which is why the blocklist below carries several spellings and is still a sample. A
+        message that means the opposite of the rule in words nobody listed here passes.
         """
+        forbidden = (WRITE_FLAG, "regenerate", "rewrite", "bless", "raise the ceiling")
         for name, message in (("GROWTH_MESSAGE", GROWTH_MESSAGE), ("STALE_MESSAGE", STALE_MESSAGE)):
             with self.subTest(message=name):
                 self.assertIn(_FROZEN_REMEDY_CLAUSE, message)
-                head = message.split(_FROZEN_REMEDY_CLAUSE)[0]
-                self.assertNotIn(WRITE_FLAG, head,
-                                 f"{name} names {WRITE_FLAG} before the condition on it")
-                self.assertNotIn("regenerate", head.lower(),
-                                 f"{name} says 'regenerate' before the condition on it")
+                outside = "".join(message.split(_FROZEN_REMEDY_CLAUSE)).lower()
+                for spelling in forbidden:
+                    self.assertNotIn(spelling.lower(), outside,
+                                     f"{name} tells the reader to {spelling!r} outside the one "
+                                     f"clause that says when regenerating is allowed")
         # The condition itself: a prohibition, its exception, and the judgement in between.
         self.assertTrue(_FROZEN_REMEDY_CLAUSE.startswith("Do NOT regenerate"))
         self.assertIn("unless this is the pull request that migrates", _FROZEN_REMEDY_CLAUSE)
@@ -899,7 +997,8 @@ class BaselineComparisonTests(unittest.TestCase):
         self.assertIn(BOTH_COMMANDS_MESSAGE, proc.stderr)
 
     def test_check_baseline_is_dispatched_by_the_module_command(self) -> None:
-        # The dispatch, not the tree's freshness: while frozen the real baseline is expected to
+        # The dispatch, not the tree's freshness: while frozen (issue #182) the real baseline
+        # is expected to
         # drift, so either verdict is a pass here. Without the branch the argument reaches
         # `unittest.main`, which exits 2 having printed its own usage to stderr.
         proc = subprocess.run(
@@ -1188,16 +1287,18 @@ class DirectImportPinTests(unittest.TestCase):
         and now nothing reads it back until someone types `--check-baseline`. The summary line is
         no witness either — `_write_baseline` prints it from a re-read of the file, so on a clean
         tree it prints the right numbers whether or not the write happened.
+
+        Both sides are measured from the SAME tree, so this row says nothing about whether the
+        tree matches the recorded baseline: while the comparison is frozen out of the suite
+        (issue #182) it must not, or that comparison is back in the suite. The rows that observe the PREVIEW use a synthetic tree for that reason.
         """
         before = BASELINE_PATH.read_bytes()
         allowlist_before = ALLOWLIST_PATH.read_bytes()
         try:
             BASELINE_PATH.write_bytes(b'{"token_counts": {"docs/sentinel.md": {"fortran": 1}}}\n')
-            buffer = io.StringIO()
-            with contextlib.redirect_stdout(buffer):
+            with contextlib.redirect_stdout(io.StringIO()):
                 _write_baseline()
             written = json.loads(BASELINE_PATH.read_text(encoding="utf-8"))
-            printed = buffer.getvalue()
         finally:
             BASELINE_PATH.write_bytes(before)
             ALLOWLIST_PATH.write_bytes(allowlist_before)
@@ -1206,75 +1307,6 @@ class DirectImportPinTests(unittest.TestCase):
         # blesses a tree nobody measured.
         self.assertEqual(measure(), written)
         self.assertNotIn("docs/sentinel.md", written["token_counts"])
-        # And the command showed what it was about to bless. Against the sentinel baseline every
-        # real file reads as growth and the sentinel itself as stale, so both halves appear, under
-        # their own headings: the two entry lines have the same shape and take opposite answers.
-        self.assertIn("docs/sentinel.md: recorded, now absent (left the scanned set)", printed)
-        self.assertIn("docs/BACKEND_BOUNDARY.md: fortran 0 -> ", printed)
-        self.assertIn("GROWN (", printed)
-        self.assertIn("STALE (", printed)
-        # The counts are DERIVED from the rows printed under each heading, not transcribed: a
-        # summary line saying "0 grown and 0 stale", or one with the two swapped, printed the
-        # entries and survived.
-        sections: dict[str, int] = {}
-        current = None
-        for line in printed.splitlines():
-            stripped = line.strip()
-            heading = next((h for h in ("GROWN", "STALE") if stripped.startswith(f"{h} (")), None)
-            if heading is not None:
-                current = heading
-                sections[heading] = 0
-            elif current and (" -> " in stripped or "recorded, now absent" in stripped):
-                sections[current] += 1
-        self.assertEqual({"GROWN", "STALE"}, set(sections))
-        self.assertEqual(1, sections["STALE"], printed)
-        self.assertGreater(sections["GROWN"], 1, printed)
-        self.assertIn(f"about to bless {sections['GROWN']} grown and {sections['STALE']} stale",
-                      printed)
-
-    def test_write_baseline_says_so_when_the_regeneration_changes_nothing(self) -> None:
-        # The branch an operator hits on nearly every real invocation, and the one with no
-        # witness: mutating its text, or dropping its `return`, left the file green.
-        buffer = io.StringIO()
-        allowlist_before = ALLOWLIST_PATH.read_bytes()
-        baseline_before = BASELINE_PATH.read_bytes()
-        try:
-            with contextlib.redirect_stdout(buffer):
-                _write_baseline()
-        finally:
-            BASELINE_PATH.write_bytes(baseline_before)
-            ALLOWLIST_PATH.write_bytes(allowlist_before)
-        printed = buffer.getvalue()
-        self.assertIn("the tree already matches the baseline", printed)
-        self.assertNotIn("about to bless", printed)
-        self.assertNotIn("could not be read", printed)
-
-    def test_write_baseline_still_writes_when_the_recorded_baseline_cannot_be_read(self) -> None:
-        """The preview discloses; it must not gate the write.
-
-        A conflict-marked or truncated baseline is the state whose only documented recovery is
-        this command, and for one commit the preview raised `JSONDecodeError` out of `__main__`
-        before the write — `origin/main` regenerated the same file. Both spellings are driven:
-        unparseable, and well-formed without the key the preview reads.
-        """
-        allowlist_before = ALLOWLIST_PATH.read_bytes()
-        baseline_before = BASELINE_PATH.read_bytes()
-        for label, corrupt in (("unparseable", b"<<<<<<< HEAD\n{\n=======\n"),
-                               ("no token_counts key", b'{"other": {}}\n')):
-            with self.subTest(baseline=label):
-                buffer = io.StringIO()
-                try:
-                    BASELINE_PATH.write_bytes(corrupt)
-                    with contextlib.redirect_stdout(buffer):
-                        _write_baseline()
-                    written = json.loads(BASELINE_PATH.read_text(encoding="utf-8"))
-                finally:
-                    BASELINE_PATH.write_bytes(baseline_before)
-                    ALLOWLIST_PATH.write_bytes(allowlist_before)
-                self.assertEqual(measure(), written)
-                printed = buffer.getvalue()
-                self.assertIn("the recorded baseline could not be read", printed)
-                self.assertIn("starting point rather than a change", printed)
 
     def test_the_regenerable_half_cannot_carry_the_allowlist(self) -> None:
         # `--write-baseline` writes `measure()`. While `measure()` also returned the import set,
@@ -3061,7 +3093,8 @@ class CapabilityOwnershipTests(unittest.TestCase):
                 self.assertEqual(expected, str(ctx.exception))
 
 
-def _print_what_is_about_to_be_blessed() -> None:
+def _print_what_is_about_to_be_blessed(root: Path | None = None,
+                                       baseline_path: Path | None = None) -> None:
     """What `--write-baseline` is about to absorb, printed before it absorbs it.
 
     PERMANENT, and deliberately carrying no issue marker: everything marked with the freeze's
@@ -3071,10 +3104,23 @@ def _print_what_is_about_to_be_blessed() -> None:
     about having skipped the check, so an unjudged regeneration and a judged one printed the same
     thing. This does not move the judgement into the argv — the pair is still refused — it puts
     the material in front of whoever typed the command.
+
+    `root` and `baseline_path` exist so a witness can drive this on a SYNTHETIC tree, and that is
+    not a convenience: a row that drives it on the REAL tree and asserts what it prints is a
+    tree-versus-baseline comparison running in the default suite — the comparison the freeze
+    removed. One was written here and shipped for one commit, and turned `pytest tools/tests/`
+    red on any pull request that moved a sampled token.
     """
+    root = root or REPO_ROOT
     try:
-        previous = _load_baseline()["token_counts"]
-    except (OSError, json.JSONDecodeError, KeyError, TypeError) as exc:
+        previous = _load_baseline(baseline_path)["token_counts"]
+        if not isinstance(previous, dict) or not all(
+                isinstance(v, dict) for v in previous.values()):
+            # A well-formed JSON of the wrong SHAPE reached `grown_entries` and raised there,
+            # outside this handler: `{"token_counts": []}` took the command down the same way the
+            # narrow `except` did. The shape check brings it inside.
+            raise TypeError(f"token_counts is {type(previous).__name__}, not a mapping of mappings")
+    except (OSError, ValueError, KeyError, TypeError) as exc:
         # NOT a gate. The preview exists to disclose, and a preview that refuses to run must not
         # take the write down with it: an unreadable baseline — a conflict-marked merge of two
         # regenerations, a truncated write — is exactly the state whose only documented recovery
@@ -3084,8 +3130,8 @@ def _print_what_is_about_to_be_blessed() -> None:
         print(f"the recorded baseline could not be read ({type(exc).__name__}: {exc}), so this "
               f"write is a starting point rather than a change, and nothing below is a comparison")
         return
-    measured = token_counts()
-    scanned = {p.relative_to(REPO_ROOT).as_posix() for p in neutral_core_files()}
+    measured = token_counts(root)
+    scanned = {p.relative_to(root).as_posix() for p in neutral_core_files(root)}
     grown = grown_entries(previous, measured)
     stale = stale_entries(previous, measured, scanned)
     if not grown and not stale:
@@ -3109,14 +3155,16 @@ def _print_what_is_about_to_be_blessed() -> None:
             print(f"    {entry}")
 
 
-def _write_baseline() -> None:
-    _print_what_is_about_to_be_blessed()
-    BASELINE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    BASELINE_PATH.write_text(json.dumps(measure(), indent=2, sort_keys=True) + "\n",
+def _write_baseline(root: Path | None = None, baseline_path: Path | None = None) -> None:
+    root = root or REPO_ROOT
+    baseline_path = baseline_path or BASELINE_PATH
+    _print_what_is_about_to_be_blessed(root=root, baseline_path=baseline_path)
+    baseline_path.parent.mkdir(parents=True, exist_ok=True)
+    baseline_path.write_text(json.dumps(measure(root), indent=2, sort_keys=True) + "\n",
                              encoding="utf-8")
-    data = _load_baseline()
+    data = _load_baseline(baseline_path)
     total = sum(sum(v.values()) for v in data["token_counts"].values())
-    print(f"wrote {BASELINE_PATH.relative_to(REPO_ROOT)}: "
+    print(f"wrote {baseline_path}: "
           f"{len(data['token_counts'])} files, {total} sampled occurrences "
           f"(the direct-import allowlist is NOT written by this command; "
           f"{len(_load_allowlist())} modules recorded, edit "

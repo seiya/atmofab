@@ -487,10 +487,11 @@ after a commit message had already asserted "ratchet still green" without runnin
 
 ```bash
 python3 -m tools.tests.test_backend_boundary --check-baseline      # the frozen half, explicit; exit 1 names the entries
-python3 -m tools.tests.test_backend_boundary --write-baseline      # ONLY after the judgement below, ONLY in a ledger PR
+python3 -m tools.tests.test_backend_boundary --write-baseline      # ONLY after the judgement below; ONLY in a ledger PR while frozen (issue #182)
 ```
 
-**Run it on `origin/main` FIRST, then on your branch, and attribute the difference.** While the
+**Run it on `origin/main` FIRST, then on your branch, and attribute the difference** (issue
+#182; this whole paragraph goes when the freeze does). While the
 ratchet is frozen nothing regenerates, so the baseline drifts from the tree on its own and the
 first non-zero exit you see is not necessarily yours. Today the drift is zero (`--check-baseline`
 exits 0 on `main`), which is exactly why this step reads as unnecessary and will not be later.
