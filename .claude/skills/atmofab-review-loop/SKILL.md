@@ -298,13 +298,31 @@ when a rule does not obviously apply:
      rules, both cheap: **one write per edit, verified after the write** (re-read the file and
      assert the new text is in it, not that the old text was in it), and **never let an assertion
      for edit N+1 sit between edit N and its write**. A review round found it; nothing else could
-     have, because every symptom was in a document no test read
+     have, because every symptom was in a document no test read.
+     **The trigger is MORE THAN ONE EDIT IN ONE SCRIPT, not "a script that substitutes numbers"** —
+     and that distinction is why this rule failed a second time, on issue #161, after I had read it
+     the same session. There the two edits were PROSE, in `TODO.md`, and neither raised: the second
+     `write_text` was built from the pre-edit-1 text and silently overwrote the first, so the commit
+     shipped claiming a correction the file did not carry. Nothing about numbers was involved, which
+     is exactly why the rule did not come to mind while writing the script. Verify the write, not the
+     intent, for **every** edit — including the ones that are only words
    - **And then verify the substitution RAN.** The remedy has its own failure mode: PR #98 escalated
      to scripted substitution after four hand-typed numbers came out wrong, and the very next commit
      shipped with **eight unsubstituted `{PLACEHOLDER}` tokens in its message**, directly under the
      sentence saying the numbers were no longer typed (an f-string ate the doubled braces). Assert
      that no placeholder survives before you commit — one `re.search` — because a message cannot be
      fixed after it is pushed, and this failure looks exactly like success
+   - **When the measurement is a FAILURE read out of a sectioned log, map each line to its own
+     section before you quote it.** A CI log, a `pytest` FAILURES block and a mutation sweep's
+     output all print `header` then `detail`, repeatedly, and the eye slides from one section's
+     header to the next section's error. On issue #161 I attributed a test's failure to an error
+     belonging to the section BELOW it, wrote that into a commit message and then into `TODO.md`,
+     and a review round found it two commits later — after which my own correction got the same
+     detail wrong for one of the three runs. The mechanical form is one loop: walk the log, keep
+     the last header seen, and emit `(header, error)` pairs; quote from the pairs, never from the
+     scroll. **Reading it yourself is not the safeguard** — this is the same class as writing
+     someone else's measurement as your own, with the same cure, and the fact that you ran the
+     command does not make what you read off it a measurement
    - **Before you DERIVE a threshold from a measurement, enumerate the comparable runs you already
      have.** Generating a number from the artifact stops transcription errors and does nothing
      about this one: on PR #100 a requirement inferred from one closure was falsified by the NEXT
