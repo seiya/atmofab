@@ -10096,6 +10096,24 @@ class LeafSpawnTest(unittest.TestCase):
                          ("hold_open",), encoding="latin-1").reader,
             self._stream(("write", "leaf: thinking\xff\n"), ("wait", held),
                          ("hold_open",), encoding="latin-1").reader)
+        # The cap must not fire before the conductor's stdout reader has CONSUMED the partial
+        # line. The bytes are in the pipe from the start (the scripted writer runs from
+        # `_ScriptedStream.__init__`), so what the harvest depends on is the freshly started
+        # reader thread being scheduled, reading, and appending — and with the fake `wait()`
+        # below raising at once and the graces patched to 10 ms, the whole window for that was
+        # about 20 ms. A loaded runner does not reliably schedule a new thread in 20 ms: the
+        # copy of `stdout_chunks` came back empty in 6 of the first 20 CI runs (issue #185),
+        # never on an idle host. Observed one step LATER than the read: the wrapper sets the
+        # event when the consumer asks for the block after the first one, which is after
+        # `_drain_capped_stream` appended the first. Deterministic, and it widens no budget.
+        partial_consumed = threading.Event()
+        real_iter_stream_blocks = wc._iter_stream_blocks
+
+        def _iter_then_signal(stream, **kw):  # type: ignore[no-untyped-def]
+            for block in real_iter_stream_blocks(stream, **kw):
+                yield block
+                if stream is held_pipes[0]:
+                    partial_consumed.set()
 
         class _PipeHeldOpenPopen:
             pid = 424242
@@ -10109,6 +10127,10 @@ class LeafSpawnTest(unittest.TestCase):
 
             def wait(self, timeout=None):  # type: ignore[no-untyped-def]
                 assert timeout is not None, "every wait on a capped leaf must be bounded"
+                # Bounded: a reader that never consumes is a defect in this test, not a wedge
+                # to model, and it must fail here rather than hang the suite.
+                assert partial_consumed.wait(timeout=10.0), \
+                    "the conductor's stdout reader never consumed the partial line"
                 raise subprocess.TimeoutExpired("claude", timeout)
 
             def send_signal(self, sig):  # type: ignore[no-untyped-def]
@@ -10117,6 +10139,7 @@ class LeafSpawnTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo = self._profile_repo(tmp)
             with patch.object(wc.subprocess, "Popen", _PipeHeldOpenPopen), \
+                    patch.object(wc, "_iter_stream_blocks", _iter_then_signal), \
                     patch.object(wc, "_leaf_stream_encoding", lambda: "latin-1"), \
                     patch.object(wc.os, "getpgid", lambda pid: 999), \
                     patch.object(wc.os, "killpg", lambda pgid, sig: killed.append(sig)), \
