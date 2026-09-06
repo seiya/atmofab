@@ -10,6 +10,21 @@ What is checked here is the set of DECISIONS the workflow encodes — the ones i
 argued for and a later edit could silently reverse — not the file's shape. Pinning the YAML would
 refuse every legitimate change to it, which is the error direction this repository records as its
 default.
+
+SCOPE, stated because two review rounds spent themselves discovering it. This file is REGRESSION
+PREVENTION against ordinary spellings, not enforcement against someone routing around it. Round 1
+found four ways past its first version and round 2 found six past its second, each one a different
+spelling of the same act — and every one of them requires editing `.github/workflows/tests.yml`,
+`pytest.ini` or `requirements-dev.txt`, which only the operator can do (`_write_roots_for_launch`
+grants a leaf no authority over any of them, and no leaf reads them). So the party this could
+defend against is the author, and the honest form of that is a guard against the edit someone makes
+without thinking, not a fence around a file they own.
+
+The one place that is NOT a matter of discipline is pytest's effective configuration, because there
+the inputs are a CLOSED set the tool documents: the command line, `pytest.ini`'s `addopts`, and the
+`PYTEST_ADDOPTS` environment variable. All three are read below. What stays out of reach is a
+`conftest.py` edit (`collect_ignore_glob` and friends), which is Python and cannot be bounded by
+reading, and a plugin that changes behaviour without a flag.
 """
 
 from __future__ import annotations
@@ -56,7 +71,18 @@ def _steps_of(job: dict) -> list[dict]:
                 action = REPO_ROOT / uses[2:] / "action.yaml"
             if action.is_file():
                 inner = yaml.safe_load(action.read_text(encoding="utf-8"))
-                found.extend(inner.get("runs", {}).get("steps", []))
+                for nested in inner.get("runs", {}).get("steps", []):
+                    # The WRAPPER's gating keys travel with the expansion. GitHub applies a
+                    # step-level `continue-on-error` / `if` to the whole composite action, and the
+                    # first version of this expansion dropped them — so `continue-on-error: true`
+                    # on a `uses: ./…` wrapper made the suite unable to fail the job while every
+                    # row here passed. That defeat was introduced by the SAME commit that added the
+                    # row it defeated (round 2 measured it).
+                    merged = dict(nested)
+                    for key in ("continue-on-error", "if"):
+                        if key in step:
+                            merged[key] = step[key]
+                    found.append(merged)
                 continue
         found.append(step)
     return found
@@ -70,16 +96,28 @@ def _run_steps() -> list[str]:
     return [step["run"] for step in _all_steps() if "run" in step]
 
 
-def _suite_steps() -> list[tuple[dict, dict]]:
-    """(job, step) for every step that runs the suite."""
+def _pytest_steps() -> list[tuple[dict, dict]]:
+    """(job, step) for every step that invokes pytest at all — including a coverage pass."""
     return [(job, step) for job in _jobs().values() for step in _steps_of(job)
             if "pytest" in str(step.get("run", ""))]
+
+
+def _suite_steps() -> list[tuple[dict, dict]]:
+    """(job, step) for the steps that run THE SUITE — pytest over the whole `tools/tests/`.
+
+    ONE definition, because there were two and they disagreed. A `pytest` step running a single
+    file (a coverage pass, a smoke subset) is not the suite, and a row that took "the first step
+    whose command contains pytest" refused adding one — round 2's over-refusal probe found it in
+    the document row after the same distinction had been fixed in another.
+    """
+    return [(job, step) for job, step in _pytest_steps()
+            if re.search(r"(?:^|\s)tools/tests/?(?:\s|$)", str(step["run"]))]
 
 
 def _pytest_ini_addopts() -> list[str]:
     """`addopts` as pytest will apply them.
 
-    Read because the workflow's argv is only half the command. `-m "not slow"` added HERE
+    Read because the workflow's argv is only one of three inputs. `-m "not slow"` added HERE
     deselects the slow rows on CI and locally, and an earlier version of this file — whose own
     docstring asserted CI runs the full set — stayed green while it did. Measured: collection
     dropped by 13 and every row here still passed.
@@ -88,6 +126,46 @@ def _pytest_ini_addopts() -> list[str]:
     parser = configparser.ConfigParser()
     parser.read(REPO_ROOT / "pytest.ini")
     return parser.get("pytest", "addopts", fallback="").split()
+
+
+def _environment_blocks() -> list[tuple[str, dict]]:
+    """Every `env:` mapping in the workflow, with where it was found.
+
+    The THIRD input, and the one two versions of this file did not read. `PYTEST_ADDOPTS` set at
+    workflow, job or step level reverses the two decisions this file exists to hold — round 2
+    measured `-m 'not slow'`, `--ignore=` and `-k` arriving that way, all green.
+    """
+    found: list[tuple[str, dict]] = [("workflow", _workflow().get("env", {}) or {})]
+    for name, job in _jobs().items():
+        found.append((f"job {name}", job.get("env", {}) or {}))
+        for index, step in enumerate(_steps_of(job)):
+            found.append((f"job {name} step {index}", step.get("env", {}) or {}))
+    return found
+
+
+#: Anything that makes pytest run a SUBSET. Not a list of flags someone might use — the set of
+#: selection mechanisms pytest documents, which is what makes this closed rather than a guess.
+_SELECTION_FLAGS = ("-m", "-k", "--ignore", "--ignore-glob", "--deselect", "--last-failed",
+                    "--failed-first", "--stepwise", "--collect-only", "--co")
+
+#: Anything that re-runs a failure. Also closed: these are the plugins that exist.
+_RETRY_FLAGS = ("--reruns", "--retries", "--flake-finder", "--force-flaky", "--only-rerun")
+_RETRY_DISTRIBUTIONS = ("rerunfailures", "pytest-retry", "flaky", "flakefinder")
+
+
+def _selection_or_retry_in(text: str) -> list[str]:
+    """The selection/retry flags in `text`, which must be PYTEST's arguments and not a shell's.
+
+    Everything after the `pytest` token, because `python3 -m pytest` carries the interpreter's own
+    `-m` and a naive scan reports it as a marker filter. Measured while writing this: it did, and
+    the row failed on the correct command.
+    """
+    words = text.split()
+    if "pytest" in words:
+        words = words[words.index("pytest") + 1:]
+    arguments = " ".join(words)
+    return [flag for flag in (*_SELECTION_FLAGS, *_RETRY_FLAGS)
+            if re.search(rf"(?:^|\s){re.escape(flag)}(?:[=\s]|$)", arguments)]
 
 
 class WorkflowDecisionTests(unittest.TestCase):
@@ -101,9 +179,12 @@ class WorkflowDecisionTests(unittest.TestCase):
         operator never sees. It was how the sandbox skips were found on the first run.
         """
         suite = _suite_steps()
-        self.assertEqual(len(suite), 1, f"expected exactly one pytest step, got {len(suite)}")
+        self.assertEqual(
+            len(suite), 1,
+            f"expected exactly one step running the SUITE, got {len(suite)}. A second pytest step "
+            "that runs something else — a coverage pass, a smoke subset over one file — is not "
+            "this row's business, because it does not take the DIRECTORY as its argument.")
         command = suite[0][1]["run"]
-        self.assertIn("tools/tests/", command)
         self.assertIn("-rs", command)
 
     def test_the_suite_step_can_actually_fail_the_job(self) -> None:
@@ -115,7 +196,12 @@ class WorkflowDecisionTests(unittest.TestCase):
         that certifies nothing is a check recorded as run that was not, which is the `leaf
         shortcut` shape performed on CI itself.
         """
-        for job, step in _suite_steps():
+        suite = _suite_steps()
+        self.assertTrue(
+            suite,
+            "no step runs the suite, so this row has nothing to check — its non-vacuity used to "
+            "rest entirely on an assertion in a DIFFERENT test")
+        for job, step in suite:
             for owner, name in ((step, "the suite step"), (job, "the job")):
                 self.assertNotIn(
                     "continue-on-error", owner,
@@ -132,13 +218,23 @@ class WorkflowDecisionTests(unittest.TestCase):
         added `-m "not slow"` to `pytest.ini`'s `addopts` — deselecting thirteen tests on CI and
         locally — and this file, whose own docstring asserts CI runs the full set, stayed green.
         """
-        for command in _run_steps():
-            self.assertNotIn("not slow", command)
-        addopts = _pytest_ini_addopts()
-        self.assertNotIn("-m", addopts,
-                         f"pytest.ini's addopts select a marker subset ({addopts}), so CI does "
-                         "not run the full set its own comment says it does")
-        self.assertNotIn("not slow", " ".join(addopts))
+        for _job, step in _suite_steps():
+            found = _selection_or_retry_in(step["run"])
+            self.assertEqual([], found, f"the suite command selects a subset: {found}")
+        found = _selection_or_retry_in(" ".join(_pytest_ini_addopts()))
+        self.assertEqual(
+            [], found,
+            f"pytest.ini's addopts select a subset ({found}), so CI does not run the full set its "
+            "own comment says it does — and neither does a local run")
+        for where, block in _environment_blocks():
+            for name, value in block.items():
+                if name != "PYTEST_ADDOPTS":
+                    continue
+                found = _selection_or_retry_in(str(value))
+                self.assertEqual(
+                    [], found,
+                    f"PYTEST_ADDOPTS at {where} selects a subset ({found}); it is the third input "
+                    "to pytest's effective command and reverses this decision invisibly")
 
     def test_no_step_retries_the_suite(self) -> None:
         """`TODO.md` records an intermittent failure in this suite, and CI has seen one more. A
@@ -151,29 +247,41 @@ class WorkflowDecisionTests(unittest.TestCase):
         """
         for step in _all_steps():
             self.assertNotIn("retry", str(step.get("uses", "")).lower())
-        for _job, step in _suite_steps():
+        for _job, step in _pytest_steps():
             command = step["run"]
-            for flag in ("--reruns", "--flake-finder", "--force-flaky", "--only-rerun"):
-                self.assertNotIn(flag, command,
-                                 f"the suite step passes {flag}, which retries a failure")
             self.assertEqual(
                 command.count("pytest"), 1,
                 "the suite step invokes pytest more than once, which is a retry however it is "
                 f"spelled:\n{command}")
-        # And the plugin cannot arrive through the declaration either.
-        dev = (REPO_ROOT / "requirements-dev.txt").read_text(encoding="utf-8")
-        self.assertNotIn("rerunfailures", dev)
+        # The flags are covered by the selection row above, which reads all three inputs. What is
+        # left is the DECLARATION: a retry plugin installed there needs no flag on some versions,
+        # and `rerunfailures` alone was the first version's whole check — `pytest-retry` walked
+        # past it.
+        dev = (REPO_ROOT / "requirements-dev.txt").read_text(encoding="utf-8").lower()
+        for distribution in _RETRY_DISTRIBUTIONS:
+            self.assertNotIn(
+                distribution, dev,
+                f"requirements-dev.txt installs {distribution}, which retries a failed test; "
+                "TODO.md records an intermittent this suite exists to expose")
 
     def test_the_job_has_a_timeout_well_under_the_platform_default(self) -> None:
         """The suite takes about 200s on the runner. The default ceiling is six hours, which is
         long enough that a hung job reads as an outage rather than a failure."""
+        suite_jobs = {id(job) for job, _step in _suite_steps()}
         for name, job in _jobs().items():
             with self.subTest(job=name):
+                self.assertIn(
+                    "timeout-minutes", job,
+                    "a job has no timeout, so a hung run reads as an outage rather than a failure")
                 minutes = job["timeout-minutes"]
                 self.assertLessEqual(minutes, 60)
-                self.assertGreaterEqual(
-                    minutes, 10, "below this a slow runner fails for its speed rather than for a "
-                    "defect; the suite alone takes about 200s there")
+                if id(job) in suite_jobs:
+                    # The floor is about THE SUITE, which takes about 200s on the runner. A lint
+                    # job with `timeout-minutes: 5` is ordinary work, and the first version refused
+                    # it with a message about the suite's runtime — round 2's over-refusal probe.
+                    self.assertGreaterEqual(
+                        minutes, 10,
+                        "below this the suite fails for the runner's speed rather than a defect")
 
     def test_it_runs_on_a_pull_request_and_on_a_push_to_main_only(self) -> None:
         """`pull_request` builds the merge with `main`, which is what catches a branch that
@@ -185,6 +293,14 @@ class WorkflowDecisionTests(unittest.TestCase):
         triggers = _workflow().get("on", _workflow().get(True))
         self.assertIn("pull_request", triggers)
         self.assertEqual(triggers["push"]["branches"], ["main"])
+        # And `pull_request` must be UNFILTERED. Round 2 measured both filters: a `branches:` list
+        # naming a branch that does not exist, and a `paths:` glob matching nothing, each leaving
+        # the job never running on a PR while `docs/DEVELOPMENT.md` says it runs on every one — a
+        # PR then shows no check at all and the document says one ran.
+        self.assertIn(
+            triggers["pull_request"], (None, {}),
+            f"`pull_request` carries a filter ({triggers['pull_request']}); the document says CI "
+            "runs on every pull request")
 
     def test_a_run_on_main_is_not_cancelled_by_a_later_one(self) -> None:
         """A `main` run is the record for that commit and nothing later reads it from anywhere
@@ -207,16 +323,18 @@ class RunnerMatchesTheHostTests(unittest.TestCase):
         `/opt/hostedtoolcache`, which the `bwrap` profile does not bind, so every sandbox test
         died with `libpython3.10.so.1.0: cannot open shared object file`. The image is pinned so
         that cannot come back silently."""
-        for name, job in _jobs().items():
-            with self.subTest(job=name):
-                self.assertNotIn("latest", str(job["runs-on"]))
+        for job, _step in _suite_steps():
+            # The SUITE's job. A lint job on `ubuntu-latest` is ordinary work and the reason given
+            # here — the sandbox needs the system interpreter — does not apply to it.
+            self.assertNotIn("latest", str(job.get("runs-on", "")))
 
     def test_no_step_installs_a_second_interpreter(self) -> None:
         """The suite must run on the runner's SYSTEM python, because that is the one under `/usr`
         that the sandbox can reach. Re-adding `actions/setup-python` would reintroduce the failure
         above, and it would look like a tidy-up."""
-        for step in _all_steps():
-            self.assertNotIn("setup-python", str(step.get("uses", "")))
+        for job, _step in _suite_steps():
+            for step in _steps_of(job):
+                self.assertNotIn("setup-python", str(step.get("uses", "")))
 
     def test_the_sandbox_restriction_is_lifted(self) -> None:
         """`docs/DEVELOPMENT.md` §Repository environment states that the sandbox IS covered by CI.
@@ -313,10 +431,33 @@ class DocumentsDescribeThisWorkflowTests(unittest.TestCase):
         where a measurement belongs.
         """
         document = self._development()
-        images = {str(job["runs-on"]) for job in _jobs().values()}
+        images: set[str] = set()
+        # The SUITE's job only. The claim in the document is about the interpreter the suite runs
+        # on; a lint job's image is not its subject, and requiring the document to name every
+        # image refused an ordinary second job (round 2's over-refusal probe).
+        for job in {id(j): j for j, _s in _suite_steps()}.values():
+            runs_on = str(job.get("runs-on", ""))
+            if "${{" not in runs_on:
+                images.add(runs_on)
+                continue
+            # A MATRIX. The first version wrote `continue` here with a comment saying "the
+            # sentence check below applies" — there is no check below, so the loop body never ran
+            # and the row passed having asserted NOTHING. Measured in round 2: a single-image
+            # matrix on `ubuntu-24.04` with the document untouched was green, which is exactly the
+            # configuration commit 74206c8 measured as killing every sandbox test. The images come
+            # out of the matrix instead, and a `runs-on` this reader cannot resolve is a failure
+            # rather than a skip.
+            matrix = job.get("strategy", {}).get("matrix", {})
+            resolved = {str(value) for values in matrix.values()
+                        if isinstance(values, list) for value in values
+                        if isinstance(value, str) and value.startswith("ubuntu")}
+            self.assertTrue(
+                resolved,
+                f"a job's `runs-on` is the expression {runs_on!r} and no matrix entry resolves it; "
+                "this row cannot check the document against an image it cannot name")
+            images |= resolved
+        self.assertTrue(images, "no job names a runner image")
         for image in sorted(images):
-            if "matrix" in image or "${{" in image:
-                continue  # a matrix states its images elsewhere; the sentence check below applies
             with self.subTest(image=image):
                 sentences = [s for s in re.split(r"(?<=[.!?])\s+", document) if image in s]
                 self.assertTrue(
@@ -331,15 +472,22 @@ class DocumentsDescribeThisWorkflowTests(unittest.TestCase):
     def test_the_document_states_the_command_the_workflow_runs(self) -> None:
         """A document that describes a command CI does not run is the drift PR #125 measured on an
         install line, in a different file."""
-        suite = next(r for r in _run_steps() if "pytest" in r).strip()
-        self.assertIn(suite, self._development())
+        suite = _suite_steps()
+        self.assertEqual(len(suite), 1, "this row reads THE suite step; there is not exactly one")
+        self.assertIn(suite[0][1]["run"].strip(), self._development())
 
-    def test_the_uncovered_list_is_present_and_names_the_sandbox_as_covered(self) -> None:
-        """The list is what stops a green check being read as more than it is. Its MEMBERS are
-        prose — no test can decide what a workflow does not do — but its presence, and the one
-        claim in it that this file can check, are not."""
+    def test_the_document_s_sandbox_claim_matches_the_workflow(self) -> None:
+        """The one claim in the "does not cover" list that a machine can decide.
+
+        The list exists so a green check is not read as more than it is, and its MEMBERS are prose
+        — no test can decide what a workflow does NOT do. An earlier version also asserted the
+        list's heading, which made the CASING and the WORDING of a paragraph load-bearing:
+        rewriting "What CI does NOT cover" as "Outside CI's coverage" turned this red, and round 2
+        reported it as an over-refusal. The heading is gone from the check; what stays is the
+        sandbox, which is checkable because the sysctl step either exists or does not — and the
+        row above (`test_the_sandbox_restriction_is_lifted`) is the other half of the same claim.
+        """
         document = self._development().lower()  # the casing of prose is not the claim
-        self.assertIn("does not cover", document)
         self.assertIn("the sandbox is covered", document)
 
 
