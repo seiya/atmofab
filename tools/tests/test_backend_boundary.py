@@ -102,10 +102,12 @@ BASELINE_PATH = REPO_ROOT / "tools" / "tests" / "data" / "backend_boundary_basel
 #: scanned file set, and the token-class list. The allowlist lived in the regenerable file for
 #: four review rounds, and `--write-baseline` rewrote both — so the remedy this module prescribes
 #: for the sample laundered the pin. The file was rewritten in 37 commits over the whole of its
-#: life, 2026-08-14 to 2026-09-06, and 4 of the 105 pull requests merged since 2026-07-08 touched
-#: it on work whose subject was not the boundary (both measured at `c131639`, issue #182) — which
-#: is why the comparison is an explicit command rather than a suite test until the second target
-#: starts. A change here is a hand edit, reviewed as the boundary decision it is.
+#: life, 2026-08-14 to 2026-09-06, and of the 70 pull requests merged in that window, 14 touched
+#: it (20%) and 4 touched it and no other backend-boundary artifact, on work whose subject was
+#: not the boundary (5.7%; all measured at `c131639`, issue #182 — TODO.md's freeze bullet
+#: carries the same figures and why the denominator is 70 rather than every merge since
+#: 2026-07-08). That is why the comparison is an explicit command rather than a suite test until
+#: the second target starts. A change here is a hand edit, reviewed as the boundary decision it is.
 ALLOWLIST_PATH = REPO_ROOT / "tools" / "tests" / "data" / "backend_boundary_allowlist.json"
 
 #: The package prefix every backend lives under, and the one module inside it the neutral core is
@@ -554,22 +556,30 @@ def _load_allowlist() -> dict[str, list[str]]:
     return _load_pinned()["direct_backend_imports"]
 
 
-#: The two findings the sampled comparison can produce, in the wording the suite form used before
-#: the comparison was frozen (issue #182). They are constants so that the explicit command and the
-#: witnesses below say the same thing to the maintainer.
-#: The remedy BOTH findings end with, and the reason it is one constant. Ordered by
+#: The two command spellings, named once. `_dispatch` matches these and the prose below embeds
+#: them, so a rename cannot leave a message naming a flag that no longer exists.
+CHECK_FLAG = "--check-baseline"
+WRITE_FLAG = "--write-baseline"
+
+#: The prohibition every finding ends with, and the reason it is one constant. Ordered by
 #: reachability, most reachable first: while the ratchet is frozen (issue #182) the common case
 #: by far is an unrelated pull request that ran the command and got a finding, and for that case
 #: the answer is NOT to regenerate — the pre-freeze messages said "regenerate" unconditionally,
 #: which is the gate satisfied by editing what judges it, and `docs/BACKEND_BOUNDARY.md`
-#: §Enforcement now forbids it for every pull request but the ledger's.
+#: §Enforcement now forbids it for every pull request but the ledger's. `MessageContentTests`
+#: pins the property rather than the wording: an `assertIn(GROWTH_MESSAGE, out)` compares the
+#: constant with itself, so every edit to these strings — the pre-freeze wording restored
+#: included — survived it.
 _FROZEN_REMEDY_CLAUSE = (
     "Do NOT regenerate the baseline unless this is the pull request that migrates an area of the "
     "ledger in TODO.md: while the ratchet is frozen (issue #182, docs/BACKEND_BOUNDARY.md "
     "§Enforcement) every other pull request records the finding and leaves the baseline alone. "
     "In a ledger pull request, judge every entry by §Decision Criteria first, then run "
-    "`python3 -m tools.tests.test_backend_boundary --write-baseline` and record both outputs.")
+    f"`python3 -m tools.tests.test_backend_boundary {WRITE_FLAG}` and record both outputs.")
 
+#: The two findings the sampled comparison can produce. The head of each says WHAT was measured
+#: and the tail is the prohibition above, in that order, so that no instruction to regenerate can
+#: precede the condition on it.
 GROWTH_MESSAGE = (
     "backend knowledge grew in the neutral core (docs/BACKEND_BOUNDARY.md). Move it into "
     "tools/backends/<axis>/<backend_id>/ and reach it through tools/backends/registry.py. "
@@ -577,7 +587,8 @@ GROWTH_MESSAGE = (
     "path), say so in the commit message. " + _FROZEN_REMEDY_CLAUSE)
 
 STALE_MESSAGE = (
-    "the baseline is looser than the tree, which is what a migration looks like. " +
+    "the baseline is looser than the tree, which is what a migration looks like, and it is the "
+    "opposite finding from growth: growth is withdrawn, staleness is blessed by the ledger. " +
     _FROZEN_REMEDY_CLAUSE + " When you do regenerate, update the measured debt in TODO.md in the "
     "same pull request so the ratchet keeps tightening.")
 
@@ -790,6 +801,64 @@ class BaselineComparisonTests(unittest.TestCase):
         self.assertIn("docs/a.md: fortran-subroutine 3 -> 1", out)
         self.assertIn(STALE_MESSAGE, out)
         self.assertNotIn(GROWTH_MESSAGE, out)
+
+    def test_the_findings_never_tell_a_reader_to_regenerate_before_saying_when(self) -> None:
+        """The PROPERTY of the three prescriptive strings, because their wording has no pin.
+
+        Every other row here asserts `assertIn(GROWTH_MESSAGE, out)` — the constant compared with
+        itself — so restoring the pre-freeze "regenerate the baseline with --write-baseline" as
+        the head of either message left the whole file green, which is the round-2 fix reverting
+        undetected. What is pinned here is the order and the condition, not the sentence: a
+        rewrite is free as long as no instruction to regenerate precedes the condition on it.
+        """
+        for name, message in (("GROWTH_MESSAGE", GROWTH_MESSAGE), ("STALE_MESSAGE", STALE_MESSAGE)):
+            with self.subTest(message=name):
+                self.assertIn(_FROZEN_REMEDY_CLAUSE, message)
+                head = message.split(_FROZEN_REMEDY_CLAUSE)[0]
+                self.assertNotIn(WRITE_FLAG, head,
+                                 f"{name} names {WRITE_FLAG} before the condition on it")
+                self.assertNotIn("regenerate", head.lower(),
+                                 f"{name} says 'regenerate' before the condition on it")
+        # The condition itself: a prohibition, its exception, and the judgement in between.
+        self.assertTrue(_FROZEN_REMEDY_CLAUSE.startswith("Do NOT regenerate"))
+        self.assertIn("unless this is the pull request that migrates", _FROZEN_REMEDY_CLAUSE)
+        self.assertIn("§Decision Criteria", _FROZEN_REMEDY_CLAUSE)
+        self.assertLess(_FROZEN_REMEDY_CLAUSE.index("§Decision Criteria"),
+                        _FROZEN_REMEDY_CLAUSE.index(WRITE_FLAG),
+                        "the clause names the command before the judgement it is conditional on")
+
+    def test_the_refusal_message_names_both_commands_and_what_sits_between_them(self) -> None:
+        # Same class as the row above: the exit code is pinned, the sentence that tells the
+        # operator WHY the pair is the judgement skipped was not.
+        for flag in (CHECK_FLAG, WRITE_FLAG):
+            self.assertIn(flag, BOTH_COMMANDS_MESSAGE)
+        self.assertIn("judgement", BOTH_COMMANDS_MESSAGE)
+        self.assertIn("§Decision Criteria", BOTH_COMMANDS_MESSAGE)
+        # A WORDING pin, deliberately, on the one sentence that IS the rule: with only the pins
+        # above, replacing the head of the message left the flags and the judgement in the tail
+        # and the row green, so nothing said the pair is REFUSED. Rewording this is a deliberate
+        # edit that has to read this line.
+        self.assertIn("cannot run in one invocation", BOTH_COMMANDS_MESSAGE,
+                      "the refusal message no longer says the pair is refused")
+        self.assertLess(BOTH_COMMANDS_MESSAGE.index("cannot run in one invocation"),
+                        BOTH_COMMANDS_MESSAGE.index("Run "),
+                        "the message instructs before it refuses")
+
+    def test_an_unrecognised_argument_beside_a_command_is_refused(self) -> None:
+        # `--write-baseline --check-baselin` was a write with no refusal and no comparison.
+        with mock.patch(f"{__name__}._write_baseline") as wrote:
+            buffer = io.StringIO()
+            with contextlib.redirect_stderr(buffer):
+                rc = _dispatch(["prog", WRITE_FLAG, CHECK_FLAG[:-1]])
+        self.assertEqual(2, rc)
+        wrote.assert_not_called()
+        self.assertIn(CHECK_FLAG[:-1], buffer.getvalue())
+        # Repeating a command is not an unrecognised argument, and no command still means tests:
+        # the refusal must not reach `unittest.main`'s own argv, which this module never parsed.
+        with mock.patch(f"{__name__}._check_baseline", return_value=0) as checked:
+            self.assertEqual(0, _dispatch(["prog", CHECK_FLAG, CHECK_FLAG]))
+        checked.assert_called_once_with()
+        self.assertIsNone(_dispatch(["prog", "-k", "SomeTest", "--tb=short"]))
 
     def test_the_two_commands_refuse_to_run_in_one_invocation(self) -> None:
         # Under `elif` this argv wrote the baseline and exited 0 — a regeneration that reads in a
@@ -1138,10 +1207,74 @@ class DirectImportPinTests(unittest.TestCase):
         self.assertEqual(measure(), written)
         self.assertNotIn("docs/sentinel.md", written["token_counts"])
         # And the command showed what it was about to bless. Against the sentinel baseline every
-        # real file reads as growth and the sentinel itself as stale, so both halves appear.
-        self.assertIn("about to bless", printed)
+        # real file reads as growth and the sentinel itself as stale, so both halves appear, under
+        # their own headings: the two entry lines have the same shape and take opposite answers.
         self.assertIn("docs/sentinel.md: recorded, now absent (left the scanned set)", printed)
         self.assertIn("docs/BACKEND_BOUNDARY.md: fortran 0 -> ", printed)
+        self.assertIn("GROWN (", printed)
+        self.assertIn("STALE (", printed)
+        # The counts are DERIVED from the rows printed under each heading, not transcribed: a
+        # summary line saying "0 grown and 0 stale", or one with the two swapped, printed the
+        # entries and survived.
+        sections: dict[str, int] = {}
+        current = None
+        for line in printed.splitlines():
+            stripped = line.strip()
+            heading = next((h for h in ("GROWN", "STALE") if stripped.startswith(f"{h} (")), None)
+            if heading is not None:
+                current = heading
+                sections[heading] = 0
+            elif current and (" -> " in stripped or "recorded, now absent" in stripped):
+                sections[current] += 1
+        self.assertEqual({"GROWN", "STALE"}, set(sections))
+        self.assertEqual(1, sections["STALE"], printed)
+        self.assertGreater(sections["GROWN"], 1, printed)
+        self.assertIn(f"about to bless {sections['GROWN']} grown and {sections['STALE']} stale",
+                      printed)
+
+    def test_write_baseline_says_so_when_the_regeneration_changes_nothing(self) -> None:
+        # The branch an operator hits on nearly every real invocation, and the one with no
+        # witness: mutating its text, or dropping its `return`, left the file green.
+        buffer = io.StringIO()
+        allowlist_before = ALLOWLIST_PATH.read_bytes()
+        baseline_before = BASELINE_PATH.read_bytes()
+        try:
+            with contextlib.redirect_stdout(buffer):
+                _write_baseline()
+        finally:
+            BASELINE_PATH.write_bytes(baseline_before)
+            ALLOWLIST_PATH.write_bytes(allowlist_before)
+        printed = buffer.getvalue()
+        self.assertIn("the tree already matches the baseline", printed)
+        self.assertNotIn("about to bless", printed)
+        self.assertNotIn("could not be read", printed)
+
+    def test_write_baseline_still_writes_when_the_recorded_baseline_cannot_be_read(self) -> None:
+        """The preview discloses; it must not gate the write.
+
+        A conflict-marked or truncated baseline is the state whose only documented recovery is
+        this command, and for one commit the preview raised `JSONDecodeError` out of `__main__`
+        before the write — `origin/main` regenerated the same file. Both spellings are driven:
+        unparseable, and well-formed without the key the preview reads.
+        """
+        allowlist_before = ALLOWLIST_PATH.read_bytes()
+        baseline_before = BASELINE_PATH.read_bytes()
+        for label, corrupt in (("unparseable", b"<<<<<<< HEAD\n{\n=======\n"),
+                               ("no token_counts key", b'{"other": {}}\n')):
+            with self.subTest(baseline=label):
+                buffer = io.StringIO()
+                try:
+                    BASELINE_PATH.write_bytes(corrupt)
+                    with contextlib.redirect_stdout(buffer):
+                        _write_baseline()
+                    written = json.loads(BASELINE_PATH.read_text(encoding="utf-8"))
+                finally:
+                    BASELINE_PATH.write_bytes(baseline_before)
+                    ALLOWLIST_PATH.write_bytes(allowlist_before)
+                self.assertEqual(measure(), written)
+                printed = buffer.getvalue()
+                self.assertIn("the recorded baseline could not be read", printed)
+                self.assertIn("starting point rather than a change", printed)
 
     def test_the_regenerable_half_cannot_carry_the_allowlist(self) -> None:
         # `--write-baseline` writes `measure()`. While `measure()` also returned the import set,
@@ -2931,16 +3064,25 @@ class CapabilityOwnershipTests(unittest.TestCase):
 def _print_what_is_about_to_be_blessed() -> None:
     """What `--write-baseline` is about to absorb, printed before it absorbs it.
 
-    The freeze demoted "check first, judge, then write" from a red test to prose, and prose is
-    followable by half: `--write-baseline` alone succeeded with no diff, no entries, and no word
+    PERMANENT, and deliberately carrying no issue marker: everything marked with the freeze's
+    issue number is unwritten when the freeze ends, and this is not. It exists because freezing
+    the comparison out of the suite demoted "check first, judge, then write" from a red test to
+    prose — history that stays true afterwards — and prose is followable by half: `--write-baseline` alone succeeded with no diff, no entries, and no word
     about having skipped the check, so an unjudged regeneration and a judged one printed the same
     thing. This does not move the judgement into the argv — the pair is still refused — it puts
     the material in front of whoever typed the command.
     """
     try:
         previous = _load_baseline()["token_counts"]
-    except FileNotFoundError:
-        print("no baseline recorded yet: every count below is a starting point, not a change")
+    except (OSError, json.JSONDecodeError, KeyError, TypeError) as exc:
+        # NOT a gate. The preview exists to disclose, and a preview that refuses to run must not
+        # take the write down with it: an unreadable baseline — a conflict-marked merge of two
+        # regenerations, a truncated write — is exactly the state whose only documented recovery
+        # IS this command, and raising here made the recovery print a traceback while
+        # `origin/main` regenerated the file. The narrow `except FileNotFoundError` that did that
+        # was written on this branch and shipped for one commit.
+        print(f"the recorded baseline could not be read ({type(exc).__name__}: {exc}), so this "
+              f"write is a starting point rather than a change, and nothing below is a comparison")
         return
     measured = token_counts()
     scanned = {p.relative_to(REPO_ROOT).as_posix() for p in neutral_core_files()}
@@ -2949,11 +3091,22 @@ def _print_what_is_about_to_be_blessed() -> None:
     if not grown and not stale:
         print("the tree already matches the baseline: this regeneration changes nothing")
         return
-    print(f"about to bless {len(grown)} grown and {len(stale)} stale entries — this is what "
-          f"--check-baseline reports, and each one is a judgement by "
-          f"docs/BACKEND_BOUNDARY.md §Decision Criteria:")
-    for entry in grown + stale:
-        print(f"  {entry}")
+    # Growth and staleness take OPPOSITE answers under §Decision Criteria — growth is withdrawn,
+    # staleness is what a migration looks like — and the two entry lines are the same shape, so
+    # one flat list said nothing about which answer each row wants. Separate headings, and no claim
+    # that this output IS the check: `--check-baseline` is a separate invocation with its own
+    # exit code, and the ledger procedure records that one.
+    print(f"{WRITE_FLAG} is about to bless {len(grown)} grown and {len(stale)} stale entries. "
+          f"Each is a judgement by docs/BACKEND_BOUNDARY.md §Decision Criteria; this listing is "
+          f"a disclosure, not a substitute for {CHECK_FLAG} and its exit code:")
+    if grown:
+        print(f"  GROWN ({len(grown)}) — backend knowledge the neutral core did not carry before:")
+        for entry in grown:
+            print(f"    {entry}")
+    if stale:
+        print(f"  STALE ({len(stale)}) — counts the tree no longer reaches, the migration shape:")
+        for entry in stale:
+            print(f"    {entry}")
 
 
 def _write_baseline() -> None:
@@ -2976,10 +3129,10 @@ def _write_baseline() -> None:
 #: invocation asking for both is not an order — it is the judgement skipped. Under `elif` the pair
 #: wrote and exited 0, which reads in a pull request as a check that passed.
 BOTH_COMMANDS_MESSAGE = (
-    "--check-baseline and --write-baseline cannot run in one invocation: the first reports what "
+    f"{CHECK_FLAG} and {WRITE_FLAG} cannot run in one invocation: the first reports what "
     "the tree has grown or shed, the second blesses it, and the step between them is a judgement "
     "by docs/BACKEND_BOUNDARY.md §Decision Criteria that no argv can express. Run "
-    "`--check-baseline`, read every entry, then run `--write-baseline` if the judgement says to.")
+    f"`{CHECK_FLAG}`, read every entry, then run `{WRITE_FLAG}` if the judgement says to.")
 
 
 def _dispatch(argv: list[str]) -> int | None:
@@ -2989,17 +3142,26 @@ def _dispatch(argv: list[str]) -> int | None:
     subprocess; the subprocess witnesses remain, because a function returning the right number
     says nothing about what `__main__` does with it.
     """
-    write = "--write-baseline" in argv
-    check = "--check-baseline" in argv
+    write = WRITE_FLAG in argv
+    check = CHECK_FLAG in argv
     if write and check:
         print(BOTH_COMMANDS_MESSAGE, file=sys.stderr)
+        return 2
+    if not write and not check:
+        return None
+    # In command mode every other argument is meaningless, and silence over one is how
+    # `--write-baseline --check-baselin` became a write with no refusal and no comparison. Only
+    # here: with no command this returns None and `unittest.main` reads argv as it always has.
+    extra = [a for a in argv[1:] if a not in (WRITE_FLAG, CHECK_FLAG)]
+    if extra:
+        print(f"unrecognised argument(s) {extra} beside a command; this module's commands take no "
+              f"other argument, and a mistyped one — {WRITE_FLAG} {CHECK_FLAG[:-1]} — would "
+              f"otherwise run one command silently while you asked for two", file=sys.stderr)
         return 2
     if write:
         _write_baseline()
         return 0
-    if check:
-        return _check_baseline()
-    return None
+    return _check_baseline()
 
 
 if __name__ == "__main__":
