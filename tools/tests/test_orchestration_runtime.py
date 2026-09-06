@@ -115,6 +115,7 @@ from tools.orchestration_runtime import (
 from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION
 from tools.tests.leaf_config_fixture import (
     seed_claude_leaf_config,
+    seed_codex_auth,
     seed_codex_hooks,
     isolated_homes_per_test_suite,
     redirect_isolated_homes_root_for_module,
@@ -602,6 +603,82 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "regular file"):
                     _prepare_codex_workflow_home(repo_root, orch)
             self.assertEqual(unsafe_target.read_text(encoding="utf-8"), "preserve me")
+
+    def test_prepare_codex_home_refuses_a_launch_with_no_operator_credential(self) -> None:
+        """The refusal every codex launch depends on, and which nothing observed.
+
+        `_prepare_codex_workflow_home` resolves the operator's credential
+        `CODEX_HOME` -> `ATMOFAB_HOME` -> `~/.codex`, and refuses when it is not a regular file.
+        Until this row, every test that reached that line PASSED BY READING THE DEVELOPER'S OWN
+        `~/.codex/auth.json` — so the fixtures were not hermetic, and the refusal itself had no
+        witness at all. CI is what made that visible: three of those tests failed on a runner with
+        `Codex auth.json not found for isolated home: /home/runner/.codex/auth.json`, and giving
+        them their own credential (`seed_codex_auth`) would have closed the gap silently in the
+        other direction. This row is the half that keeps the refusal observed.
+
+        All three resolution steps are driven, in order, because pointing only `CODEX_HOME` at an
+        empty directory leaves `ATMOFAB_HOME` and the home directory untested — and the last of
+        the three is the one a real operator actually uses.
+        """
+        from tools.orchestration_runtime import _prepare_codex_workflow_home
+
+        # A DISTINCT orchestration id per row. The isolated home root is shared across the suite,
+        # so reusing one id makes the second row fail on "a home already exists" — a refusal about
+        # the fixture, not about the credential, which is a kill from a setup error and worth
+        # exactly as much as green.
+        # Each row also states WHERE that step looks, relative to the directory it is pointed at:
+        # the two environment variables name the codex home itself, while `HOME` is the operator's
+        # home and the code appends `.codex`. Writing that down is what makes the path assertion
+        # below distinguish the three steps instead of restating the message.
+        for index, variables, relative in (
+                (0, {"CODEX_HOME": "<empty>", "ATMOFAB_HOME": ""}, "auth.json"),
+                (1, {"CODEX_HOME": "", "ATMOFAB_HOME": "<empty>"}, "auth.json"),
+                (2, {"CODEX_HOME": "", "ATMOFAB_HOME": "", "HOME": "<empty>"},
+                 ".codex/auth.json")):
+            resolved_by = next((k for k, v in variables.items() if v), "HOME")
+            with self.subTest(resolved_by=resolved_by), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                repo_root = root / "repo"
+                repo_root.mkdir()
+                seed_codex_hooks(repo_root)
+                empty = root / "empty-codex-home"
+                empty.mkdir()
+                env = {k: (str(empty) if v == "<empty>" else v)
+                       for k, v in variables.items()}
+                orch = f"orch_no_credential_{index:03d}"
+                init_orchestration(repo_root=repo_root, orchestration_id=orch)
+                with patch.dict(os.environ, env, clear=False), \
+                        self.assertRaises(ValueError) as caught:
+                    _prepare_codex_workflow_home(repo_root, orch)
+                message = str(caught.exception)
+                self.assertIn("auth.json not found", message)
+                # The message must name the path it LOOKED AT, or an operator cannot tell which
+                # of the three resolution steps decided the answer — and for the `HOME` row that
+                # is the only way to tell this refusal from one about a different directory. An
+                # earlier version asserted `"auth.json" in message` here, which the line above
+                # already implies and which no resolution step could falsify.
+                self.assertIn(str(empty / relative), message)
+
+    def test_prepare_codex_home_accepts_the_credential_this_suite_supplies(self) -> None:
+        """The negative control for the row above.
+
+        Without it, `assertRaises(ValueError)` is satisfied by a function that raises for ANY
+        reason — a missing hook source, an unwritable home, a bad orchestration id — and the row
+        above would keep passing if the credential check were deleted entirely.
+        """
+        from tools.orchestration_runtime import _prepare_codex_workflow_home
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo_root = root / "repo"
+            repo_root.mkdir()
+            seed_codex_hooks(repo_root)
+            codex_home = seed_codex_auth(root / "operator-codex")
+            orch = "orch_with_credential_001"
+            init_orchestration(repo_root=repo_root, orchestration_id=orch)
+            with patch.dict(os.environ, {"CODEX_HOME": str(codex_home)}, clear=False):
+                result = _prepare_codex_workflow_home(repo_root, orch)
+            self.assertTrue(Path(result["home"]).is_dir())
 
     def test_prepare_codex_home_rotates_a_vanished_home_at_the_same_path(self) -> None:
         """A pruned / lost home forces cold resume rather than blocking --resume.
@@ -13607,14 +13684,21 @@ class OrchestrationMetaAndJudgeHookTests(unittest.TestCase):
             self.assertEqual(matched[0].get("status"), "running")
 
     def test_record_launch_and_terminal_record_agent_run_update_session_run_index(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp, patch.dict(
-            os.environ, {"ATMOFAB_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "0"}
-        ):
+        with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             # This launch is CODEX-backed: since the isolation branch keys on the
             # family the profile resolves, a codex-commanded launch prepares its
-            # isolated home and fails closed without the committed hook source.
+            # isolated home and fails closed without the committed hook source —
+            # and without a credential, which this fixture supplies rather than
+            # borrowing the operator's (see `seed_codex_auth`).
             seed_codex_hooks(repo)
+            codex_home = seed_codex_auth(repo / "codex-home")
+            stack = patch.dict(
+                os.environ,
+                {"ATMOFAB_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "0",
+                 "CODEX_HOME": str(codex_home)})
+            stack.start()
+            self.addCleanup(stack.stop)
             orch = "orch_session_index_launch_001"
             parent = "orch_parent_001"
             child = "step_run_session_index_001"
@@ -14230,8 +14314,14 @@ class PreflightLiveProbeTtlTests(unittest.TestCase):
             repo = Path(tmp)
             # This launch is CODEX-backed: since the isolation branch keys on the
             # family the profile resolves, a codex-commanded launch prepares its
-            # isolated home and fails closed without the committed hook source.
+            # isolated home and fails closed without the committed hook source —
+            # and without a credential, which this fixture supplies rather than
+            # borrowing the operator's (see `seed_codex_auth`).
             seed_codex_hooks(repo)
+            _codex_home = seed_codex_auth(repo / "codex-home")
+            _auth = patch.dict(os.environ, {"CODEX_HOME": str(_codex_home)})
+            _auth.start()
+            self.addCleanup(_auth.stop)
             init_orchestration(repo_root=repo, orchestration_id="orch_001")
             _mark_dependencies_ready(repo, "orch_001")
             path = repo / "workspace/orchestrations/orch_001/preflight.json"
@@ -14323,8 +14413,14 @@ class PreflightLiveProbeTtlTests(unittest.TestCase):
             repo = Path(tmp)
             # This launch is CODEX-backed: since the isolation branch keys on the
             # family the profile resolves, a codex-commanded launch prepares its
-            # isolated home and fails closed without the committed hook source.
+            # isolated home and fails closed without the committed hook source —
+            # and without a credential, which this fixture supplies rather than
+            # borrowing the operator's (see `seed_codex_auth`).
             seed_codex_hooks(repo)
+            _codex_home = seed_codex_auth(repo / "codex-home")
+            _auth = patch.dict(os.environ, {"CODEX_HOME": str(_codex_home)})
+            _auth.start()
+            self.addCleanup(_auth.stop)
             init_orchestration(repo_root=repo, orchestration_id="orch_001")
             _mark_dependencies_ready(repo, "orch_001")
             path = repo / "workspace/orchestrations/orch_001/preflight.json"
