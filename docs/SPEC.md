@@ -138,7 +138,7 @@ releases/
 ### Design Policy
 - A `problem spec` defines the integration scenario and guarantees the consistency of multiple `component`.
 - A `component spec` defines the reusable physics-operation contract and guarantees interchangeability and `API` stability.
-- A `profile spec` defines the `component` selection rules and parameter constraints and manages operational differences.
+- A `profile spec` defines the `component` selection rules and parameter constraints and manages operational differences. The selection is resolved at Compile time, by the host, for the `node` that adopts the profile; a runtime selection among schemes belongs to the driver of the assembled model, itself a future `spec`-driven `node`. A `profile` is not a certified code `node` (target state; `docs/design/simplification_program.md` §Premise statements, issue #175).
 - An operation shared across `spec` is managed independently as a `component`.
 
 ### Operations Rules
