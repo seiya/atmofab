@@ -224,7 +224,7 @@ argv / the filesystem / the paths from which the gate reads its evidence**. "Plu
 neighbour was open" is the most frequent recurrence (env allowlisted → argv was open → the
 value was open → the auto-discovery path was open: four in a row).
 
-Leave the enumeration in the commit message or TODO.md. The next round's reviewer will come
+Leave the enumeration in the commit message or the pull request. The next round's reviewer will come
 looking to break it.
 
 **When the gate reads the source text rather than the meaning of an input (validators and
@@ -438,7 +438,7 @@ a probe that measured something else. `references/verification.md` carries the d
 
 Run the procedures in `references/verification.md` (suite baseline, ruff diff against
 origin/main, doc size ceilings, end-to-end through a real server process, the prose grep) and
-write the measured values into the commit or TODO.md. **Do not write an assertion you have not
+write the measured values into the commit message or the pull request. **Do not write an assertion you have not
 measured.**
 
 ### 7. Decide whether this skill itself needs updating

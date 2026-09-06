@@ -191,8 +191,11 @@ _UNSCANNED_ROOT_FILES: dict[str, str] = {
         "a work ledger that RECORDS backend facts as history — measured spellings, past "
         "diagnoses, the migration ledger itself. It names technology for the same reason "
         "`docs/design/` does, and §Scope excludes that for the same stated reason. Scanning it "
-        "would put ~630 occurrences of recorded history into the growth bound and make every "
-        "entry about a backend a ratchet event."),
+        "would put its recorded history into the growth bound and make every entry about a "
+        "backend a ratchet event. The size of that history moves with the file and is not "
+        "part of this reason: 631 token occurrences at `f88ad94`, 205 after issue #181 moved "
+        "the finished entries out; re-take it by summing `len(rx.findall(text))` over "
+        "`_COMPILED` rather than quoting either figure."),
 }
 
 #: Out of scope by the rule. The three backend ROOTS are deliberately absent: a path under a
