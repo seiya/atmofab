@@ -702,9 +702,16 @@ class BaselineComparisonTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             tmp = Path(td)
             _synthetic_tree(tmp, "docs/kept.md", "docs/new.md")
+            # Scanned, and carrying no sampled token: `token_counts` omits it, so it is absent
+            # from the measurement while still IN the scanned set. This is the file that observes
+            # `_check_baseline` handing the real scanned set to `stale_entries` — with `scanned`
+            # degenerate the message names a scope change that did not happen, which is defect
+            # (aa) in TODO.md's ledger, and every other row here passes with it broken.
+            (tmp / "docs" / "quiet.md").write_text("no sampled spelling here\n", encoding="utf-8")
             baseline_path = tmp / "baseline.json"
             baseline_path.write_text(json.dumps({"token_counts": {
                 "docs/kept.md": {"fortran-subroutine": 2},
+                "docs/quiet.md": {"fortran-subroutine": 1},
                 "docs/gone.md": {"fortran-subroutine": 1},
             }}), encoding="utf-8")
             buffer = io.StringIO()
@@ -715,6 +722,7 @@ class BaselineComparisonTests(unittest.TestCase):
         self.assertIn("docs/new.md: fortran-subroutine 0 -> 1", out)
         self.assertIn("docs/kept.md: fortran-subroutine 2 -> 1", out)
         self.assertIn("docs/gone.md: recorded, now absent (left the scanned set)", out)
+        self.assertIn("docs/quiet.md: recorded, now absent (shed every sampled token)", out)
         self.assertIn(GROWTH_MESSAGE, out)
         self.assertIn(STALE_MESSAGE, out)
 
