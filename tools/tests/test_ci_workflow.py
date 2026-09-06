@@ -111,7 +111,64 @@ def _suite_steps() -> list[tuple[dict, dict]]:
     the document row after the same distinction had been fixed in another.
     """
     return [(job, step) for job, step in _pytest_steps()
-            if re.search(r"(?:^|\s)tools/tests/?(?:\s|$)", str(step["run"]))]
+            if _runs_the_suite(str(step["run"]))]
+
+
+def _runs_the_suite(command: str) -> bool:
+    """Does `command` run the whole suite?
+
+    Either it names one of `pytest.ini`'s `testpaths`, or it passes NO path at all — in which case
+    pytest uses `testpaths`, which that file documents must behave like `pytest tools/tests`.
+    Requiring the literal directory refused that second form, an ordinary edit the configuration
+    explicitly supports.
+    """
+    command = command.strip()
+    if "pytest" not in command:
+        return False
+    tokens = [re.escape(path.rstrip("/")) for path in _pytest_ini_testpaths()]
+    if tokens and re.search(rf"(?:^|\s)(?:{'|'.join(tokens)})/?(?:\s|$)", command):
+        return True
+    return bool(re.search(r"pytest(?:\s+-[^\s]+)*\s*$", command))
+
+
+def _pytest_ini_testpaths() -> list[str]:
+    import configparser
+    parser = configparser.ConfigParser()
+    parser.read(REPO_ROOT / "pytest.ini")
+    return parser.get("pytest", "testpaths", fallback="").split()
+
+
+def _suite_job_names() -> set[str]:
+    """The NAMES of the jobs that run the suite.
+
+    Names rather than object identity, for the reason the timeout row records: `_workflow()`
+    re-parses on every call, so two `job` dicts are never the same object.
+    """
+    # Computed in ONE traversal. Comparing `id(step)` across two `_jobs()` calls returns the
+    # empty set — `_workflow()` re-parses every time — which is the same mistake the timeout row
+    # above records, made one level down while fixing it. Found by asserting the result was
+    # non-empty, which the first version was not.
+    names = {name for name, job in _jobs().items()
+             for step in _steps_of(job)
+             if _runs_the_suite(str(step.get("run", "")))}
+    assert names, "no job runs the suite; every row keyed on this would silently check nothing"
+    return names
+
+
+def _exported_environment() -> list[tuple[str, str]]:
+    """(where, line) for every `NAME=value >> $GITHUB_ENV` a step writes.
+
+    The workflow can SET the third pytest input as well as declare it, and reading only static
+    `env:` blocks missed that — the file's own install step already writes `$GITHUB_PATH` two
+    lines away, so this is a spelling a maintainer has in front of them.
+    """
+    found: list[tuple[str, str]] = []
+    for job_name, job in _jobs().items():
+        for index, step in enumerate(_steps_of(job)):
+            for line in str(step.get("run", "")).splitlines():
+                if "GITHUB_ENV" in line:
+                    found.append((f"job {job_name} step {index}", line.strip()))
+    return found
 
 
 def _pytest_ini_addopts() -> list[str]:
@@ -203,12 +260,23 @@ class WorkflowDecisionTests(unittest.TestCase):
             "rest entirely on an assertion in a DIFFERENT test")
         for job, step in suite:
             for owner, name in ((step, "the suite step"), (job, "the job")):
-                self.assertNotIn(
-                    "continue-on-error", owner,
-                    f"{name} carries `continue-on-error`, so the suite cannot fail the run")
+                if owner.get("continue-on-error") not in (None, False):
+                    self.fail(f"{name} carries `continue-on-error: "
+                              f"{owner['continue-on-error']}`, so the suite cannot fail the run")
                 self.assertNotIn(
                     "if", owner,
                     f"{name} is conditional, so the suite can be skipped while the run is green")
+            # And it must not swallow its own failure IN THE SHELL. This is not an adversarial
+            # spelling here: the workflow uses `|| true` twice as a deliberate idiom, each with a
+            # comment recommending it, so a maintainer copying that onto the suite step is one
+            # line away. Round 3 measured `|| true`, `; true`, `|| echo failed` and
+            # `set +e … exit 0` all leaving the job green with the suite failed.
+            command = str(step["run"])
+            for swallow in ("||", ";", "set +e", "set +o errexit", "exit 0"):
+                self.assertNotIn(
+                    swallow, command,
+                    f"the suite command contains {swallow!r}, which can swallow the failure the "
+                    f"whole job exists to report:\n{command}")
 
     def test_the_slow_marker_is_not_deselected_by_the_workflow_or_by_pytest_ini(self) -> None:
         """`pytest.ini` says CI runs the full set including `slow`, and says why: those tests are
@@ -235,6 +303,14 @@ class WorkflowDecisionTests(unittest.TestCase):
                     [], found,
                     f"PYTEST_ADDOPTS at {where} selects a subset ({found}); it is the third input "
                     "to pytest's effective command and reverses this decision invisibly")
+        # A step can SET that input as well as declare it, and reading only static `env:` missed
+        # it — the install step writes `$GITHUB_PATH` two lines away, so the spelling is already
+        # in front of whoever edits this file.
+        for where, line in _exported_environment():
+            self.assertNotIn(
+                "PYTEST_ADDOPTS", line,
+                f"{where} exports PYTEST_ADDOPTS through $GITHUB_ENV ({line!r}); that is the same "
+                "input as an `env:` block and reverses this decision the same way")
 
     def test_no_step_retries_the_suite(self) -> None:
         """`TODO.md` records an intermittent failure in this suite, and CI has seen one more. A
@@ -249,6 +325,14 @@ class WorkflowDecisionTests(unittest.TestCase):
             self.assertNotIn("retry", str(step.get("uses", "")).lower())
         for _job, step in _pytest_steps():
             command = step["run"]
+            # The LOOP spelling, restored. `2b33145` refused `for i in`, `while `, `until ` and
+            # `||` in the suite command; `e725500` replaced that with the count below, which a
+            # loop containing ONE invocation walks past — measured red-then-GREEN by round 3's
+            # disclosure axis, and the retry ban is the branch's stated reason for existing.
+            for spelling in ("for ", "while ", "until ", "&& break", "|| continue"):
+                self.assertNotIn(
+                    spelling, command,
+                    f"a pytest step contains {spelling!r}, which is how a retry loop is spelled")
             self.assertEqual(
                 command.count("pytest"), 1,
                 "the suite step invokes pytest more than once, which is a retry however it is "
@@ -267,7 +351,11 @@ class WorkflowDecisionTests(unittest.TestCase):
     def test_the_job_has_a_timeout_well_under_the_platform_default(self) -> None:
         """The suite takes about 200s on the runner. The default ceiling is six hours, which is
         long enough that a hung job reads as an outage rather than a failure."""
-        suite_jobs = {id(job) for job, _step in _suite_steps()}
+        # By NAME, not by object identity. `_workflow()` re-parses the YAML on every call, so
+        # `id(job)` from one call never matches a job dict from another — the first version
+        # compared exactly that, and the floor below NEVER RAN: `timeout-minutes: 1` was green.
+        # Found by a line-coverage census, not by reading.
+        suite_job_names = _suite_job_names()
         for name, job in _jobs().items():
             with self.subTest(job=name):
                 self.assertIn(
@@ -275,7 +363,7 @@ class WorkflowDecisionTests(unittest.TestCase):
                     "a job has no timeout, so a hung run reads as an outage rather than a failure")
                 minutes = job["timeout-minutes"]
                 self.assertLessEqual(minutes, 60)
-                if id(job) in suite_jobs:
+                if name in suite_job_names:
                     # The floor is about THE SUITE, which takes about 200s on the runner. A lint
                     # job with `timeout-minutes: 5` is ordinary work, and the first version refused
                     # it with a message about the suite's runtime — round 2's over-refusal probe.
@@ -297,17 +385,31 @@ class WorkflowDecisionTests(unittest.TestCase):
         # naming a branch that does not exist, and a `paths:` glob matching nothing, each leaving
         # the job never running on a PR while `docs/DEVELOPMENT.md` says it runs on every one — a
         # PR then shows no check at all and the document says one ran.
-        self.assertIn(
-            triggers["pull_request"], (None, {}),
-            f"`pull_request` carries a filter ({triggers['pull_request']}); the document says CI "
-            "runs on every pull request")
+        filters = set(triggers["pull_request"] or {}) - {"types"}
+        # `types:` is not a filter in the sense that matters — restating the defaults, or adding
+        # `ready_for_review`, still runs on every pull request. `branches:` and `paths:` are what
+        # make the job never run, and those are what round 2 measured.
+        self.assertEqual(
+            set(), filters,
+            f"`pull_request` carries {sorted(filters)}, which can stop the job running on a pull "
+            "request while the document says it runs on every one")
 
     def test_a_run_on_main_is_not_cancelled_by_a_later_one(self) -> None:
         """A `main` run is the record for that commit and nothing later reads it from anywhere
         else; a superseded branch push has a successor that will."""
-        concurrency = _workflow()["concurrency"]
+        concurrency = _workflow().get("concurrency") or next(
+            (job["concurrency"] for job in _jobs().values() if "concurrency" in job), None)
+        self.assertIsNotNone(
+            concurrency, "no concurrency group is declared at workflow or job level")
         self.assertIn("github.ref", concurrency["group"])
-        self.assertIn("refs/heads/main", str(concurrency["cancel-in-progress"]))
+        expression = str(concurrency["cancel-in-progress"])
+        # The DIRECTION, not the presence of the string. Round 3 measured the inverse — cancelling
+        # `main` and sparing branches, the exact reverse of the decision — as green at every
+        # revision, because the row only asked whether `refs/heads/main` appeared.
+        self.assertIn("!=", expression,
+                      f"cancel-in-progress is {expression!r}; as written it cancels `main` runs, "
+                      "which are the record for their commit and have no successor to read them")
+        self.assertIn("refs/heads/main", expression)
 
 
 class RunnerMatchesTheHostTests(unittest.TestCase):
@@ -448,9 +550,16 @@ class DocumentsDescribeThisWorkflowTests(unittest.TestCase):
             # out of the matrix instead, and a `runs-on` this reader cannot resolve is a failure
             # rather than a skip.
             matrix = job.get("strategy", {}).get("matrix", {})
-            resolved = {str(value) for values in matrix.values()
-                        if isinstance(values, list) for value in values
-                        if isinstance(value, str) and value.startswith("ubuntu")}
+            resolved: set[str] = set()
+            for values in matrix.values():
+                if not isinstance(values, list):
+                    continue
+                for value in values:
+                    # `matrix: os: [ubuntu-22.04]` and the `include:` list-of-dicts idiom, which
+                    # is the standard one and which the first version resolved to nothing.
+                    candidates = value.values() if isinstance(value, dict) else [value]
+                    resolved |= {str(c) for c in candidates
+                                 if isinstance(c, str) and c.startswith("ubuntu")}
             self.assertTrue(
                 resolved,
                 f"a job's `runs-on` is the expression {runs_on!r} and no matrix entry resolves it; "
@@ -474,7 +583,17 @@ class DocumentsDescribeThisWorkflowTests(unittest.TestCase):
         install line, in a different file."""
         suite = _suite_steps()
         self.assertEqual(len(suite), 1, "this row reads THE suite step; there is not exactly one")
-        self.assertIn(suite[0][1]["run"].strip(), self._development())
+        command = suite[0][1]["run"].strip()
+        document = self._development()
+        # EQUALITY against what the document quotes, not containment. The first version asserted
+        # the workflow's command was a SUBSTRING of the document, so the document could describe a
+        # longer command — `… -q -rs -m 'not slow'` was green. Drift in that direction is the one
+        # that matters, because the document is the only statement of what a green check means.
+        quoted = re.findall(r"`([^`\n]*pytest[^`\n]*)`", document)
+        self.assertIn(
+            command, quoted,
+            f"docs/DEVELOPMENT.md does not quote the suite command as the workflow runs it. It "
+            f"runs {command!r}; the document quotes {quoted!r}.")
 
     def test_the_document_s_sandbox_claim_matches_the_workflow(self) -> None:
         """The one claim in the "does not cover" list that a machine can decide.
@@ -488,7 +607,29 @@ class DocumentsDescribeThisWorkflowTests(unittest.TestCase):
         row above (`test_the_sandbox_restriction_is_lifted`) is the other half of the same claim.
         """
         document = self._development().lower()  # the casing of prose is not the claim
-        self.assertIn("the sandbox is covered", document)
+        # PRESENCE first. `6f22b38` removed the heading assertion to stop refusing a rewording and
+        # removed the list's existence check with it — measured red-then-GREEN by round 3: deleting
+        # both bullets outright was green, while this row's docstring still said the list exists so
+        # a green check is not read as more than it is. Restored WORDING-TOLERANTLY: what has to be
+        # there is a statement that CI does not cover everything, in whatever words.
+        # Presence, checked by the LIST'S MEMBERS rather than by a phrase. The first version
+        # accepted any of four phrasings, and one of them — "ci does not" — also matches an
+        # unrelated sentence in the same section, so deleting the whole list was green. What has
+        # to be there is the substance: several named things CI does not do.
+        members = ("mutation check", "differential harness", "no open pull request",
+                   "billed", "outside its", "leaf-`llm` cli")
+        present = [m for m in members if m in document]
+        self.assertGreaterEqual(
+            len(present), 3,
+            "docs/DEVELOPMENT.md no longer names what CI does NOT cover (found "
+            f"{present}); a green check is then read as more than it is, and nothing else says "
+            "otherwise")
+        self.assertTrue(
+            any(phrase in document for phrase in
+                ("the sandbox is covered", "sandbox coverage is included",
+                 "the sandbox is exercised")),
+            "docs/DEVELOPMENT.md no longer states that the sandbox is covered; that claim is true "
+            "only while the sysctl step runs, and the row above is its other half")
 
 
 if __name__ == "__main__":  # pragma: no cover
