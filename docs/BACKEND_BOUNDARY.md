@@ -253,7 +253,8 @@ compliance.
   - The **token ratchet** counts, per neutral file and per token class, the occurrences of a fixed
     list of technology-specific tokens, and reports both when a count exceeds the frozen baseline in
     `tools/tests/data/backend_boundary_baseline.json` and when it falls below it (a stale
-    baseline). It bounds growth and it forces the recorded debt down as areas migrate. It is a
+    baseline). Run, it bounds growth and it forces the recorded debt down as areas migrate; it is
+    frozen out of the suite (below), so nothing runs it unless someone does. It is a
     **sample, not a pin**: a token list is an enumeration, backend knowledge with no token in the
     list is invisible to it, and a file that removes one occurrence and adds another of the same
     class keeps its count. Do not read a passing ratchet as an absence of violations, and do not

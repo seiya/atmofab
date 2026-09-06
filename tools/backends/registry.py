@@ -12,7 +12,9 @@ repository implements and which of them have actually been extracted into a back
 It does NOT enforce that the neutral core goes through it — nothing at import time can tell a
 `re.compile(r"subroutine")` inlined in a gate from a neutral one. That enforcement is the
 `tools/tests/test_backend_boundary.py` ratchet, and the two work as a pair: this module says
-where the knowledge belongs, the ratchet says the neutral core is not accumulating more of it.
+where the knowledge belongs, the ratchet says the neutral core is not accumulating more of it —
+when it is run, which since issue #182 is on request (`--check-baseline`) rather than in the
+suite. `docs/BACKEND_BOUNDARY.md` §Enforcement carries the freeze and how it ends.
 
 `extracted=False` is the honest state of an axis whose knowledge is still inlined in the
 neutral core. It is not a stub and not a plan — it is a member whose module is `None`, so
