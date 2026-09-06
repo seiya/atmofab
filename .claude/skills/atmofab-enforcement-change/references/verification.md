@@ -475,16 +475,18 @@ If the expressions disagree, the rule is stated in more than one vocabulary and 
 is the census. **Say which expressions you ran** — "I enumerated every `.md`" describes the file
 walk, not the matching, and the matching is where the miss was.
 
-## The backend-boundary token ratchet (run it on every commit that touches a scanned file)
+## The backend-boundary token ratchet (frozen, issue #182: run `--check-baseline` on a ledger PR, and before merging a change to a scanned file that you want measured)
 
-`tools/tests/test_backend_boundary.py::TokenRatchetTests` counts technology tokens per file and
-fails on growth. **It reads WHOLE FILES, so an ordinary comment trips it** — and a commit whose
+`python3 -m tools.tests.test_backend_boundary --check-baseline` counts technology tokens per file
+and exits 1 on growth or a stale entry (issue #182: the comparison is not in the suite until the
+second target starts, so nothing runs it unless you do).
+**It reads WHOLE FILES, so an ordinary comment trips it** — and a commit whose
 verification runs only the test file for the module it changed will not see that. On TODO:269 it
 tripped three times, all from prose, and one was caught two commits late for exactly that reason,
 after a commit message had already asserted "ratchet still green" without running it.
 
 ```bash
-python3 -m pytest tools/tests/test_backend_boundary.py -q          # every commit touching tools/ or docs/
+python3 -m tools.tests.test_backend_boundary --check-baseline      # the frozen half, explicit; exit 1 names the entries
 python3 -m tools.tests.test_backend_boundary --write-baseline      # ONLY after the judgement below
 ```
 
@@ -512,10 +514,13 @@ section:**
   every legitimate change to the result's shape and teaches "regenerate without reading" faster
   than the ratchet itself does.
 
-**A ratchet failure is also a false KILL in a mutation sweep.** Deleting an identifier to test
-something else moves the count, so the ratchet fails and the mutant reads as killed for a reason
-that has nothing to do with behaviour. On TODO:269 that hid an exit-code mapping with no
-behavioural witness at all. When a mutant dies, read WHICH row died.
+**A ratchet failure used to be a false KILL in a mutation sweep, and while the ratchet is frozen
+it cannot be.** Deleting an identifier to test something else moves the count; when the comparison
+ran in the suite the ratchet failed and the mutant read as killed for a reason that had nothing to
+do with behaviour, and on TODO:269 that hid an exit-code mapping with no behavioural witness at
+all. Out of the suite (issue #182) a sweep is not killed by it, so a mutant lives or dies on
+behaviour alone — and the sentence above applies again the moment the removal procedure in
+`TODO.md` restores the comparison. When a mutant dies, read WHICH row died.
 
 ## A CPU-time budget is still a machine fact
 

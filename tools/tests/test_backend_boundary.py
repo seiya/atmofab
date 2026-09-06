@@ -3,7 +3,9 @@
 
 The rule is `docs/BACKEND_BOUNDARY.md`. This module measures two consequences of it and freezes
 both against a recorded baseline, so that the debt this repository already carries is visible and
-bounded while it is being paid down.
+bounded while it is being paid down. The sampled half of that comparison does not run in the
+suite: it is frozen until the second target starts (issue #182) and runs on request, through
+`--check-baseline`.
 
 WHAT IS PINNED, AND WHAT IS ONLY SAMPLED. Stating this precisely matters more here than usual,
 because a green boundary check reads as "the boundary holds" whether or not it can see the
@@ -48,9 +50,9 @@ than left to read as covered.
   hard-codes a two-space indent because one compiler's diagnostics count columns, a Makefile rule
   spelled without the word `makefile`, an argv assembled from fragments. And the counts are per
   token class, so a file that deletes one occurrence and adds another of the same class holds its
-  count. What the counts DO give is a monotone bound with a direction: no file may grow, and a
-  file that shrinks forces the baseline down (a stale-baseline failure), so the measure cannot
-  drift upward and cannot silently stop tightening.
+  count. What the counts DO give, under `--check-baseline`, is a monotone bound with a direction:
+  no file may grow, and a file that shrinks forces the baseline down (a stale-baseline finding),
+  so the measure cannot drift upward and cannot silently stop tightening.
 
 The direction of every failure is toward the rule. What NO shape of input does is prove
 compliance — and the reverse claim, that no input makes the check pass by reading less, was made
@@ -58,16 +60,21 @@ here and was false three times over: the scope, the class list and the allowlist
 narrowed and then blessed by one regeneration. Those three are hand-pinned now; the sampled
 counts remain a sample.
 
-Regenerating the baseline is deliberate, not automatic: run
+Running the sampled comparison and regenerating the baseline are both deliberate, not automatic:
 
+    python3 -m tools.tests.test_backend_boundary --check-baseline
     python3 -m tools.tests.test_backend_boundary --write-baseline
 
-and the diff is then reviewable as the migration step it represents.
+Check first, judge each finding by `docs/BACKEND_BOUNDARY.md` §Decision Criteria, then write: the
+diff is reviewable as the migration step it represents only once the findings behind it have been
+read.
 """
 
 from __future__ import annotations
 
 import ast
+import contextlib
+import io
 import json
 import re
 import subprocess
@@ -86,19 +93,18 @@ import tools.validate_pipeline_semantics as vps  # noqa: E402
 from tools import host_render  # noqa: E402
 from tools.backends import registry  # noqa: E402
 
-#: The SAMPLED half. Regenerable: `--write-baseline` rewrites it, and the growth check tells the
-#: maintainer to do exactly that when a token appears in a neutral role.
+#: The SAMPLED half. Regenerable: `--write-baseline` rewrites it, and `--check-baseline`'s growth
+#: finding tells the maintainer to do exactly that when a token appears in a neutral role.
 BASELINE_PATH = REPO_ROOT / "tools" / "tests" / "data" / "backend_boundary_baseline.json"
 
 #: The PINNED half, in its own file that no command writes: the direct-import allowlist, the
 #: scanned file set, and the token-class list. The allowlist lived in the regenerable file for
 #: four review rounds, and `--write-baseline` rewrote both — so the remedy this module prescribes
-#: for the sample laundered the pin. Regeneration is not rare: a commit that merely deletes a
-#: sampled token from an in-scope file is asked to regenerate, and roughly one in five recent
-#: commits does. (A figure of "14 of the 60 preceding commits" appeared here and did not
-#: reproduce — an independent count of the same range gave 10 — so it is stated as an order of
-#: magnitude rather than a measurement.) A change here is a hand edit, reviewed as the boundary
-#: decision it is.
+#: for the sample laundered the pin. The file was rewritten in 37 commits over the whole of its
+#: life, 2026-08-14 to 2026-09-06, and 4 of the 105 pull requests merged since 2026-07-08 touched
+#: it on work whose subject was not the boundary (both measured at `c131639`, issue #182) — which
+#: is why the comparison is an explicit command rather than a suite test until the second target
+#: starts. A change here is a hand edit, reviewed as the boundary decision it is.
 ALLOWLIST_PATH = REPO_ROOT / "tools" / "tests" / "data" / "backend_boundary_allowlist.json"
 
 #: The package prefix every backend lives under, and the one module inside it the neutral core is
@@ -524,8 +530,8 @@ def axis_list_restatements(root: Path) -> list[str]:
     return offenders
 
 
-def _load_baseline() -> dict[str, object]:
-    return json.loads(BASELINE_PATH.read_text(encoding="utf-8"))
+def _load_baseline(path: Path | None = None) -> dict[str, object]:
+    return json.loads((path or BASELINE_PATH).read_text(encoding="utf-8"))
 
 
 def _absent_cause(rel: str, scanned: set[str]) -> str:
@@ -547,30 +553,109 @@ def _load_allowlist() -> dict[str, list[str]]:
     return _load_pinned()["direct_backend_imports"]
 
 
-class TokenRatchetTests(unittest.TestCase):
-    """The sampled measure: no neutral-core file may carry MORE backend spelling than recorded."""
+#: The two findings the sampled comparison can produce, in the wording the suite form used before
+#: the comparison was frozen (issue #182). They are constants so that the explicit command and the
+#: witnesses below say the same thing to the maintainer.
+GROWTH_MESSAGE = (
+    "backend knowledge grew in the neutral core (docs/BACKEND_BOUNDARY.md). Move it into "
+    "tools/backends/<axis>/<backend_id>/ and reach it through tools/backends/registry.py. "
+    "If the growth is a token appearing in a NEUTRAL role (naming an axis value, quoting a "
+    "path), say so in the commit message and regenerate the baseline with "
+    "`python3 -m tools.tests.test_backend_boundary --write-baseline`.")
 
-    @classmethod
-    def setUpClass(cls) -> None:
-        cls.baseline = _load_baseline()["token_counts"]
-        cls.measured = token_counts()
-        cls.scanned = {p.relative_to(REPO_ROOT).as_posix() for p in neutral_core_files()}
+STALE_MESSAGE = (
+    "the baseline is looser than the tree: regenerate it with "
+    "`python3 -m tools.tests.test_backend_boundary --write-baseline` so the ratchet keeps "
+    "tightening, and update the measured debt in TODO.md.")
 
-    def test_no_file_exceeds_its_recorded_count(self) -> None:
-        grown: list[str] = []
-        for rel, counts in sorted(self.measured.items()):
-            recorded = self.baseline.get(rel, {})
-            for name, n in sorted(counts.items()):
-                allowed = recorded.get(name, 0)
-                if n > allowed:
-                    grown.append(f"{rel}: {name} {allowed} -> {n}")
-        self.assertEqual(
-            grown, [],
-            "backend knowledge grew in the neutral core (docs/BACKEND_BOUNDARY.md). Move it into "
-            "tools/backends/<axis>/<backend_id>/ and reach it through tools/backends/registry.py. "
-            "If the growth is a token appearing in a NEUTRAL role (naming an axis value, quoting a "
-            "path), say so in the commit message and regenerate the baseline with "
-            "`python3 -m tools.tests.test_backend_boundary --write-baseline`.")
+
+def grown_entries(baseline: dict[str, dict[str, int]],
+                  measured: dict[str, dict[str, int]]) -> list[str]:
+    """`"<rel>: <class> <recorded> -> <measured>"` for every count above its recorded ceiling.
+
+    A file with no recorded entry has a ceiling of zero for every class, so a newly measured file
+    is growth rather than something to skip.
+    """
+    grown: list[str] = []
+    for rel, counts in sorted(measured.items()):
+        recorded = baseline.get(rel, {})
+        for name, n in sorted(counts.items()):
+            allowed = recorded.get(name, 0)
+            if n > allowed:
+                grown.append(f"{rel}: {name} {allowed} -> {n}")
+    return grown
+
+
+def stale_entries(baseline: dict[str, dict[str, int]],
+                  measured: dict[str, dict[str, int]],
+                  scanned: set[str]) -> list[str]:
+    """Every recorded count the tree no longer reaches, and every recorded file with no measurement.
+
+    A ceiling that is never lowered stops being a ratchet: a file that shed backend spelling — or
+    left the scanned set entirely — must lower its recorded count in the same commit, so the debt
+    figure in TODO.md and the baseline cannot disagree. `scanned` decides which of the two causes
+    an absent file gets named (`_absent_cause`).
+    """
+    stale: list[str] = []
+    for rel, counts in sorted(baseline.items()):
+        found = measured.get(rel)
+        if found is None:
+            stale.append(f"{rel}: recorded, now absent ({_absent_cause(rel, scanned)})")
+            continue
+        for name, allowed in sorted(counts.items()):
+            n = found.get(name, 0)
+            if n < allowed:
+                stale.append(f"{rel}: {name} {allowed} -> {n}")
+    return stale
+
+
+def _check_baseline(root: Path | None = None, baseline_path: Path | None = None) -> int:
+    """The frozen sampled half (issue #182), on request.
+
+    Prints every finding under its message and returns 1; with no finding prints one summary line
+    and returns 0. Writes nothing. `root` and `baseline_path` are both injectable because a
+    witness needs to drive the comparison over a synthetic tree AND a synthetic baseline: given
+    only one of the two, the command still reads the real other half.
+    """
+    root = root or REPO_ROOT
+    baseline_path = baseline_path or BASELINE_PATH
+    baseline = _load_baseline(baseline_path)["token_counts"]
+    measured = token_counts(root)
+    scanned = {p.relative_to(root).as_posix() for p in neutral_core_files(root)}
+    grown = grown_entries(baseline, measured)
+    stale = stale_entries(baseline, measured, scanned)
+    for entry in grown:
+        print(entry)
+    if grown:
+        print(GROWTH_MESSAGE)
+    for entry in stale:
+        print(entry)
+    if stale:
+        print(STALE_MESSAGE)
+    if not grown and not stale:
+        total = sum(sum(v.values()) for v in measured.values())
+        print(f"ratchet: {len(measured)} files, {total} sampled occurrences, "
+              f"matches {baseline_path}")
+    return 1 if grown or stale else 0
+
+
+def _synthetic_tree(tmp: Path, *relatives: str) -> None:
+    """Write each relative path under `tmp` with one `fortran-subroutine` occurrence in it."""
+    for rel in relatives:
+        path = tmp / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("subroutine placeholder\n", encoding="utf-8")
+
+
+class BaselineComparisonTests(unittest.TestCase):
+    """The frozen sampled half (issue #182), witnessed on synthetic inputs and never on this tree.
+
+    The comparison used to run as two suite tests over the real baseline. On a green tree those
+    loops ran over empty findings, so `return []` in either of them survived — the assertion
+    observed the tree's compliance, not the comparison. Freezing the comparison out of the suite
+    does not lose that coverage; these witnesses are what it gains, and they are what tells a
+    maintainer the explicit command still reports what it claims to.
+    """
 
     def test_the_absent_file_message_names_the_right_cause(self) -> None:
         # Both branches driven directly: in a green tree neither is reachable, so the message a
@@ -578,26 +663,87 @@ class TokenRatchetTests(unittest.TestCase):
         self.assertEqual("shed every sampled token", _absent_cause("docs/a.md", {"docs/a.md"}))
         self.assertEqual("left the scanned set", _absent_cause("docs/a.md", set()))
 
-    def test_the_baseline_is_not_stale(self) -> None:
-        # A ceiling that is never lowered stops being a ratchet. A file that shed backend spelling
-        # — or left the scanned set entirely — must lower its recorded count in the same commit,
-        # so the debt figure in TODO.md and this baseline cannot disagree.
-        stale: list[str] = []
-        for rel, counts in sorted(self.baseline.items()):
-            measured = self.measured.get(rel)
-            if measured is None:
-                stale.append(f"{rel}: recorded, now absent "
-                             f"({_absent_cause(rel, self.scanned)})")
-                continue
-            for name, allowed in sorted(counts.items()):
-                n = measured.get(name, 0)
-                if n < allowed:
-                    stale.append(f"{rel}: {name} {allowed} -> {n}")
+    def test_a_count_above_its_recorded_ceiling_is_reported_as_growth(self) -> None:
         self.assertEqual(
-            stale, [],
-            "the baseline is looser than the tree: regenerate it with "
-            "`python3 -m tools.tests.test_backend_boundary --write-baseline` so the ratchet keeps "
-            "tightening, and update the measured debt in TODO.md.")
+            ["docs/a.md: fortran 2 -> 3", "docs/b.md: c-include 0 -> 1"],
+            grown_entries({"docs/a.md": {"fortran": 2}},
+                          {"docs/b.md": {"c-include": 1}, "docs/a.md": {"fortran": 3}}))
+
+    def test_a_count_at_or_below_its_ceiling_is_not_growth(self) -> None:
+        self.assertEqual([], grown_entries({"docs/a.md": {"fortran": 2}},
+                                           {"docs/a.md": {"fortran": 2}}))
+        self.assertEqual([], grown_entries({"docs/a.md": {"fortran": 2}},
+                                           {"docs/a.md": {"fortran": 1}}))
+
+    def test_a_count_below_its_recorded_ceiling_is_reported_as_stale(self) -> None:
+        self.assertEqual(
+            ["docs/a.md: fortran 3 -> 1"],
+            stale_entries({"docs/a.md": {"fortran": 3}}, {"docs/a.md": {"fortran": 1}},
+                          {"docs/a.md"}))
+
+    def test_a_class_that_left_a_recorded_file_counts_as_zero(self) -> None:
+        # Not a skip: a class the file no longer carries is the ordinary shape of a migration, and
+        # reading `measured.get(name)` as "no opinion" would let the ceiling stay.
+        self.assertEqual(
+            ["docs/a.md: c-include 2 -> 0"],
+            stale_entries({"docs/a.md": {"fortran": 1, "c-include": 2}},
+                          {"docs/a.md": {"fortran": 1}}, {"docs/a.md"}))
+
+    def test_a_recorded_file_with_no_measurement_is_stale_and_names_its_cause(self) -> None:
+        self.assertEqual(
+            ["docs/a.md: recorded, now absent (shed every sampled token)"],
+            stale_entries({"docs/a.md": {"fortran": 1}}, {}, {"docs/a.md"}))
+        self.assertEqual(
+            ["docs/a.md: recorded, now absent (left the scanned set)"],
+            stale_entries({"docs/a.md": {"fortran": 1}}, {}, set()))
+
+    def test_check_baseline_reports_growth_and_staleness_from_the_root_it_is_given(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            _synthetic_tree(tmp, "docs/kept.md", "docs/new.md")
+            baseline_path = tmp / "baseline.json"
+            baseline_path.write_text(json.dumps({"token_counts": {
+                "docs/kept.md": {"fortran-subroutine": 2},
+                "docs/gone.md": {"fortran-subroutine": 1},
+            }}), encoding="utf-8")
+            buffer = io.StringIO()
+            with contextlib.redirect_stdout(buffer):
+                rc = _check_baseline(root=tmp, baseline_path=baseline_path)
+        out = buffer.getvalue()
+        self.assertEqual(1, rc)
+        self.assertIn("docs/new.md: fortran-subroutine 0 -> 1", out)
+        self.assertIn("docs/kept.md: fortran-subroutine 2 -> 1", out)
+        self.assertIn("docs/gone.md: recorded, now absent (left the scanned set)", out)
+        self.assertIn(GROWTH_MESSAGE, out)
+        self.assertIn(STALE_MESSAGE, out)
+
+    def test_check_baseline_returns_zero_and_says_so_when_the_tree_matches_its_baseline(
+            self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            _synthetic_tree(tmp, "docs/kept.md")
+            baseline_path = tmp / "baseline.json"
+            baseline_path.write_text(
+                json.dumps({"token_counts": {"docs/kept.md": {"fortran-subroutine": 1}}}),
+                encoding="utf-8")
+            buffer = io.StringIO()
+            with contextlib.redirect_stdout(buffer):
+                rc = _check_baseline(root=tmp, baseline_path=baseline_path)
+        out = buffer.getvalue()
+        self.assertEqual(0, rc)
+        self.assertIn("ratchet: 1 files, 1 sampled occurrences", out)
+        self.assertNotIn(GROWTH_MESSAGE, out)
+        self.assertNotIn(STALE_MESSAGE, out)
+
+    def test_check_baseline_is_dispatched_by_the_module_command(self) -> None:
+        # The dispatch, not the tree's freshness: while frozen the real baseline is expected to
+        # drift, so either verdict is a pass here. Without the branch the argument reaches
+        # `unittest.main`, which exits 2 having printed its own usage to stderr.
+        proc = subprocess.run(
+            [sys.executable, "-m", "tools.tests.test_backend_boundary", "--check-baseline"],
+            cwd=REPO_ROOT, capture_output=True, text=True, check=False)
+        self.assertIn(proc.returncode, (0, 1), proc.stderr)
+        self.assertTrue(proc.stdout.strip(), proc.stderr)
 
 
 class RootFileCoverageTests(unittest.TestCase):
@@ -893,11 +1039,8 @@ class ScannedSetTests(unittest.TestCase):
     `root` and these tests build one.
     """
 
-    def _tree(self, tmp: Path, *relatives: str) -> None:
-        for rel in relatives:
-            path = tmp / rel
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text("subroutine placeholder\n", encoding="utf-8")
+    #: Lifted to a module function so `BaselineComparisonTests` builds its tree the same way.
+    _tree = staticmethod(_synthetic_tree)
 
     def test_a_document_in_an_unforeseen_subdirectory_is_scanned(self) -> None:
         import tempfile
@@ -2661,5 +2804,7 @@ def _write_baseline() -> None:
 if __name__ == "__main__":
     if "--write-baseline" in sys.argv:
         _write_baseline()
+    elif "--check-baseline" in sys.argv:
+        sys.exit(_check_baseline())
     else:
         unittest.main()
