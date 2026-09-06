@@ -18,7 +18,7 @@ The phase boundary is cut by **"the hierarchy of observable primary artifacts"**
 
 ## Optional flows
 
-Optimization (`Tune`) and promotion (`Promote`) are removed from the required path of the core workflow and treated as independent optional flows. The core workflow does not mix structural IR and implementation discretion; Tune explores this as variants. Details are handled in a separate plan.
+Optimization (`Tune`) and promotion (`Promote`) are removed from the required path of the core workflow and treated as independent optional flows. The core workflow does not mix structural IR and implementation discretion; Tune explores this as variants. Both are required flows of the product whose design is not yet scheduled; their reserved contract, and the decision to keep it until they are designed, are recorded in `docs/design/simplification_program.md` §Premise statements.
 
 ## Common part (canonical source)
 

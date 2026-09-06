@@ -19,7 +19,7 @@ This document defines the workflow's phase sequence, inter-phase input/output co
 - `ORCHESTRATION.md` defines the workflow's agent hierarchical execution conventions as the canonical source.
 - `SPEC.md` defines the overall policy, `spec` management requirements, and registry requirements as the canonical source.
 - The execution procedure, retry procedure, tool-call order, and on-failure operations of each phase use the corresponding `SKILL.md` as the canonical source.
-- The contracts of the optional flows (`Tune` / `Promote`) are handled in a separate plan. They are not included in the core workflow.
+- The contracts of the optional flows (`Tune` / `Promote`) are reserved and not yet designed; `docs/design/simplification_program.md` §Premise statements records that both are required and that their reserved surface stays. They are not included in the core workflow.
 
 ## term rules
 - `phase` refers to the logical unit that composes the workflow, including `Spec` / `Compile` / `Generate` / `Build` / `Validate`.
@@ -67,7 +67,7 @@ This document defines the workflow's phase sequence, inter-phase input/output co
 16. `trial_meta.json` requires recording `generated_by_stage`, `source_source_id`, `source_binary_id`, `source_command_ref`, and `source_artifact_hash` (`run_id` is canonically encoded by the `runs/<run_id>/` directory path itself where the trial_meta is placed, and a separate `source_run_id` field is not recorded — because it is self-referential / circular). Each entry of `source_command_ref` declares a `tool_name` (`run_program` or `run_quality_checks`), and must match the `tool_name` of the corresponding MCP `command_log` record. The trial_meta of the execute part of `Validate` must have at least 1 entry with `tool_name='run_program'`. The `source_meta.json` that `source_source_id` points to must have `verification_status=pass`. The `<pipeline>/binary/<source_binary_id>/bin/` that `source_binary_id` points to must exist, and the executable of the `run_program` log record must resolve under that bin/.
 17. Across different `pipeline_id`, the artifact body must not be reused by changing only the `id`-family metadata. When detected, treat it as `copy_based_artifact_reuse` and mark it `invalid`.
 18. A violation of these norms is a workflow specification violation, and marks the relevant `pipeline` `invalid`.
-19. All phases of the core workflow must not write outside of `workspace/`. The exception for the optional flow (`Promote`) is defined in a separate plan.
+19. All phases of the core workflow must not write outside of `workspace/`. The exception for the optional flow (`Promote`) is reserved by the `promote` write roots in `tools/orchestration_runtime.py` and is defined with that flow when it is designed (`docs/design/simplification_program.md` §Premise statements).
 20. Before all phases start, capture a `baseline` of the file set under the repository root, and perform a diff comparison before the relevant phase completes.
 21. The diff comparison must detect an `add` / `modify` / `delete` outside of `workspace/` as a violation.
 22. When `python` execution is used in the workflow path, a setting in which `__pycache__` is not generated outside of `workspace/` is required. Use `PYTHONDONTWRITEBYTECODE=1` or `PYTHONPYCACHEPREFIX=workspace/.pycache/<pipeline_id>/`.
