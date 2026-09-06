@@ -92,6 +92,30 @@ _LEAF_SCRIPT = textwrap.dedent(
 )
 
 
+def _bwrap_stdout(cmd: list[str], *, timeout: int = 90) -> str:
+    """Run a rendered bwrap command and return its stdout — with the FAILURE readable.
+
+    Every call site used to take `.stdout` and throw the rest away, so a sandbox that refused to
+    start produced `AssertionError: 'WRITE_NEW:OK' not found in ''` and nothing else. Measured on
+    this repository's first CI runs: eight of these tests failed that way on a GitHub runner and
+    the log could not say why, which is the same defect shape as a client reporting a framing
+    error for a server that never started.
+
+    stdout is still what the caller asserts on — the assertions are about what the confined
+    process printed. What changes is that a non-zero exit or a silent run carries bwrap's own
+    stderr and the exit code into the exception, so the reason travels with the failure.
+    """
+    res = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
+                         check=False)  # the exit code is inspected below
+    if res.returncode != 0 or not res.stdout.strip():
+        raise AssertionError(
+            f"the sandboxed command produced no usable stdout (exit {res.returncode}).\n"
+            f"stderr: {res.stderr.strip() or '(empty)'}\n"
+            f"stdout: {res.stdout.strip() or '(empty)'}\n"
+            f"argv[0:6]: {cmd[:6]}")
+    return res.stdout
+
+
 def _bwrap_usable() -> bool:
     if shutil.which("bwrap") is None:
         return False
@@ -134,8 +158,7 @@ class BwrapSimulationTests(unittest.TestCase):
             repo_root=repo, orchestration_id=orch, agent_run_id=arid,
             backend_command="python3", backend_type="claude")
         cmd = render_bwrap_command(profile=profile, command_argv=["python3", "-c", _LEAF_SCRIPT])
-        res = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
-        return res.stdout
+        return _bwrap_stdout(cmd)
 
     def test_confinement_and_rewrite(self) -> None:
         with tempfile.TemporaryDirectory() as t:
@@ -192,7 +215,7 @@ class BwrapSimulationTests(unittest.TestCase):
                 backend_command="python3", backend_type="claude")
             cmd = render_bwrap_command(
                 profile=profile, command_argv=["python3", "-c", script])
-            out = subprocess.run(cmd, capture_output=True, text=True, timeout=90).stdout
+            out = _bwrap_stdout(cmd)
             self.assertIn("HOOK_AUDIT:OK", out, out)
             self.assertIn("AUTO_READS_SEEN:OK", out, out)
 
@@ -319,7 +342,7 @@ class BwrapJudgePinSimulationTests(unittest.TestCase):
                 repo_root=repo, orchestration_id=orch, agent_run_id=arid,
                 backend_command="python3", backend_type="claude")
             cmd = render_bwrap_command(profile=profile, command_argv=["python3", "-c", script])
-            out = subprocess.run(cmd, capture_output=True, text=True, timeout=90).stdout
+            out = _bwrap_stdout(cmd)
             self.assertIn("PIN_ATOMIC:OK", out, out)
             self.assertIn("VERDICT_READ:OK", out, out)
             self.assertIn("VERDICT_WRITE:BLOCKED", out, out)  # existing sibling stays protected
@@ -421,7 +444,7 @@ class BwrapGenerateVerifyPinSimulationTests(unittest.TestCase):
                 repo_root=repo, orchestration_id=orch, agent_run_id=arid,
                 backend_command="python3", backend_type="claude")
             cmd = render_bwrap_command(profile=profile, command_argv=["python3", "-c", script])
-            out = subprocess.run(cmd, capture_output=True, text=True, timeout=90).stdout
+            out = _bwrap_stdout(cmd)
             self.assertIn("READ_SRC:OK", out, out)
             self.assertIn("META_ATOMIC:OK", out, out)
             self.assertIn("SRC_REWRITE:BLOCKED", out, out)  # certified src stays protected
@@ -518,7 +541,7 @@ class BwrapBuildPathSimulationTests(unittest.TestCase):
             backend_command="python3", backend_type="claude")
         cmd = render_bwrap_command(
             profile=profile, command_argv=["python3", "-c", self._leaf_script(arid)])
-        return subprocess.run(cmd, capture_output=True, text=True, timeout=90).stdout
+        return _bwrap_stdout(cmd)
 
     def test_build_outputs_land_in_write_scope(self) -> None:
         with tempfile.TemporaryDirectory() as t:
@@ -596,7 +619,7 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
             self.assertEqual(profile.get("write_roots"), [])
             cmd = render_bwrap_command(
                 profile=profile, command_argv=["python3", "-c", self._leaf_script(arid)])
-            out = subprocess.run(cmd, capture_output=True, text=True, timeout=90).stdout
+            out = _bwrap_stdout(cmd)
             self.assertIn("READ_REPO:OK", out, out)
             self.assertIn("WRITE_TMP:OK", out, out)
             self.assertIn("WRITE_REPO:BLOCKED", out, out)
