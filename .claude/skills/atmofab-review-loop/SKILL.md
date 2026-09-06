@@ -903,7 +903,8 @@ reviewer:
 > unwitnessed ones, construct a violating input yourself and report whether the suite notices.
 
 Practical notes on reading a census: keep **"killed only by the token ratchet" as a fourth
-class**; **a vacuous finding may be closed by marking rather than deleting**; **aim "does it wrongly refuse
+class** (empty while the ratchet is frozen, issue #182, unless the census ran `--check-baseline`
+explicitly and says so); **a vacuous finding may be closed by marking rather than deleting**; **aim "does it wrongly refuse
 legitimate work" at the instrument too**; **claim vacuity only by construction** — a corpus
 measurement does not prove it; **a census conclusion rots in one round, so re-run it the round
 after you consume it, recording the conclusions that survive re-measurement rather than the
