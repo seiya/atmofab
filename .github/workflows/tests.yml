@@ -156,9 +156,16 @@ jobs:
           suite = ET.parse(report).getroot()
           if suite.tag != "testsuite":
               suite = suite.find("testsuite")
-          ran = int(suite.get("tests", "0"))
-          failures = int(suite.get("failures", "0")) + int(suite.get("errors", "0"))
-          skipped = int(suite.get("skipped", "0"))
+          # COUNT THE ELEMENTS, do not read the `tests` attribute. The attribute counts each
+          # `subTest` as its own case — measured on this workflow's first run with the guard:
+          # 9040 against a collected 5872, which is 5872 + 3168 subtests, and the guard failed a
+          # green suite. `<testcase>` elements are one per collected test, which is what
+          # `--collect-only` counts, so the two sides are the same unit.
+          cases = suite.findall("testcase")
+          ran = len(cases)
+          failures = sum(1 for c in cases if c.find("failure") is not None
+                         or c.find("error") is not None)
+          skipped = sum(1 for c in cases if c.find("skipped") is not None)
           print(f"ran={ran} expected={expected} failures={failures} skipped={skipped}")
           if ran != expected:
               raise SystemExit(

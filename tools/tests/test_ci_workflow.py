@@ -96,10 +96,27 @@ def _run_steps() -> list[str]:
     return [step["run"] for step in _all_steps() if "run" in step]
 
 
+#: An INVOCATION of pytest at the head of a command, not the word appearing anywhere. The guard
+#: step names a `pytest-report.xml` and its body contains `for c in cases`; matching the word made
+#: the retry row report that step as a retry loop, and the reference finder count the guard's own
+#: comment as a second collection. Both were false positives in code added the same hour.
+_PYTEST_INVOCATION = re.compile(r"(?:^|[\s;&|(])(?:python[\d.]*\s+-m\s+)?pytest(?=\s|$)")
+
+
+def _command_lines(run: str) -> str:
+    """`run` with comment lines dropped, so prose about a command is not read as one."""
+    return "\n".join(line for line in str(run).splitlines()
+                      if not line.strip().startswith("#"))
+
+
+def _invokes_pytest(run: str) -> bool:
+    return bool(_PYTEST_INVOCATION.search(_command_lines(run)))
+
+
 def _pytest_steps() -> list[tuple[dict, dict]]:
     """(job, step) for every step that invokes pytest at all — including a coverage pass."""
     return [(job, step) for job in _jobs().values() for step in _steps_of(job)
-            if "pytest" in str(step.get("run", ""))]
+            if _invokes_pytest(str(step.get("run", "")))]
 
 
 def _suite_steps() -> list[tuple[dict, dict]]:
@@ -122,8 +139,8 @@ def _runs_the_suite(command: str) -> bool:
     Requiring the literal directory refused that second form, an ordinary edit the configuration
     explicitly supports.
     """
-    command = command.strip()
-    if "pytest" not in command:
+    command = _command_lines(command).strip()
+    if not _invokes_pytest(command):
         return False
     # A COLLECTION is not a run. The workflow's guard takes a reference count with
     # `--collect-only`, and reading that as a second suite made four rows fail on the correct
@@ -264,8 +281,8 @@ class WorkflowDecisionTests(unittest.TestCase):
         alongside it.
         """
         steps = _all_steps()
-        guards = [s for s in steps if "pytest-report.xml" in str(s.get("run", ""))
-                  and "junitxml" not in str(s.get("run", ""))]
+        guards = [s for s in steps if "pytest-report.xml" in _command_lines(str(s.get("run", "")))
+                  and "junitxml" not in _command_lines(str(s.get("run", "")))]
         self.assertEqual(
             len(guards), 1,
             "the workflow has no step reading the suite's report; nothing then notices a suite "
@@ -289,8 +306,9 @@ class WorkflowDecisionTests(unittest.TestCase):
         shrink BOTH numbers and the comparison would hold — the guard would agree with the thing it
         exists to detect.
         """
-        references = [str(s["run"]) for s in _all_steps()
-                      if "--collect-only" in str(s.get("run", ""))]
+        references = [_command_lines(s["run"]) for s in _all_steps()
+                      if _invokes_pytest(str(s.get("run", "")))
+                      and "--collect-only" in _command_lines(str(s.get("run", "")))]
         self.assertEqual(len(references), 1, "expected exactly one reference collection step")
         reference = references[0]
         self.assertIn("-o addopts=", reference,
@@ -380,7 +398,7 @@ class WorkflowDecisionTests(unittest.TestCase):
         for step in _all_steps():
             self.assertNotIn("retry", str(step.get("uses", "")).lower())
         for _job, step in _pytest_steps():
-            command = step["run"]
+            command = _command_lines(step["run"])
             # The LOOP spelling, restored. `2b33145` refused `for i in`, `while `, `until ` and
             # `||` in the suite command; `e725500` replaced that with the count below, which a
             # loop containing ONE invocation walks past — measured red-then-GREEN by round 3's
