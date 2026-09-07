@@ -802,7 +802,7 @@ def _sum_pure_attempt_usage(
     """Sum `per_attempt[].usage` token counts and collect the per-attempt models.
 
     Each attempt is `{"agent_run_id", "model": str|None, "usage": dict|None}`
-    (conductor `_run_pure_generate_substep` / `_run_pure_verify_substep`). Missing
+    (conductor `_run_pure_producer_substep` / `_run_pure_reviewer_substep`). Missing
     or malformed `usage` / `model` entries are skipped rather than raising —
     diagnostics degrade, never break (see `_nonneg_int`). `models` preserves
     attempt order (a repair loop may resolve a different model per turn; the alias
@@ -825,9 +825,10 @@ def _sum_pure_attempt_usage(
 
 
 def _summarize_one_pure_meta(meta: dict[str, Any] | None) -> dict[str, Any]:
-    """Project one bundle_meta.json / verdict_meta.json into an A/B metrics row.
+    """Project one pure-leaf per-attempt record into an A/B metrics row.
 
-    `bundle_meta.json` (producer) and `verdict_meta.json` (reviewer) share a
+    All four of them — `bundle_meta.json` / `verdict_meta.json` (generate) and
+    `compile_generate_meta.json` / `compile_verify_meta.json` (compile) — share a
     schema: `{result, failure_category, attempts, prompt_contract_version,
     per_attempt[], failure_excerpt?}`. `result` is `pass`/`fail`; `attempts`
     counts every LAUNCH (== len(per_attempt)). Not every launch is a repair turn:
@@ -869,22 +870,35 @@ def _summarize_one_pure_meta(meta: dict[str, Any] | None) -> dict[str, Any]:
     }
 
 
-def summarize_pure_leaf_metas(source_dir: Path) -> dict[str, Any]:
-    """A/B metrics for the pure `generate.generate` / `generate.verify` leaves of
-    one source directory (Z2, milestone M-E).
+#: The per-attempt record each pure phase's producer / reviewer writes, by phase. The two files
+#: of a phase share one schema (`_summarize_one_pure_meta`) and differ only in name and
+#: directory, so the rollup reads them through one function rather than two.
+PURE_LEAF_META_FILES: dict[str, tuple[str, str]] = {
+    "generate": ("bundle_meta.json", "verdict_meta.json"),
+    "compile": ("compile_generate_meta.json", "compile_verify_meta.json"),
+}
 
-    Reads `<source_dir>/bundle_meta.json` (producer) and `verdict_meta.json`
-    (reviewer) — the in-repo, ~/.claude-free per-attempt usage/model provenance —
-    and returns `{generate, verify, found}`. `generate` / `verify` are per-leaf
-    rows (see `_summarize_one_pure_meta`); `found` is true when either file was
-    present. Best-effort: never raises. A legacy (agentic) node has neither file
-    and yields `found=False`, so the caller can tell a pure node from a legacy one
-    by presence alone. The row carries no `source_dir` key: the caller passes the
-    directory in and owns how it labels the result (the audit rollup labels it
-    repo-relative), so there is no second, conflicting notion of the same field.
+
+def summarize_pure_leaf_metas(artifact_dir: Path, phase: str = "generate") -> dict[str, Any]:
+    """A/B metrics for one phase's pure producer / reviewer leaves in one artifact directory.
+
+    Reads the phase's two per-attempt records — the in-repo, ~/.claude-free per-attempt
+    usage/model provenance — and returns `{generate, verify, found}`. For `generate` that is
+    `<source_dir>/bundle_meta.json` + `verdict_meta.json` (Z2, milestone M-E); for `compile` it
+    is `<ir_ref>/compile_generate_meta.json` + `compile_verify_meta.json` (Z1, issue #168). The
+    two rows are keyed `generate` / `verify` for BOTH phases: the key names the SUBSTEP, which is
+    what the A/B table compares, not the phase.
+
+    `generate` / `verify` are per-leaf rows (see `_summarize_one_pure_meta`); `found` is true
+    when either file was present. Best-effort: never raises. An agentic node has neither file and
+    yields `found=False`, so the caller can tell a pure node from an agentic one by presence
+    alone. The row carries no directory key: the caller passes the directory in and owns how it
+    labels the result (the audit rollup labels it repo-relative), so there is no second,
+    conflicting notion of the same field.
     """
-    generate = _summarize_one_pure_meta(_read_json(source_dir / "bundle_meta.json"))
-    verify = _summarize_one_pure_meta(_read_json(source_dir / "verdict_meta.json"))
+    producer_file, reviewer_file = PURE_LEAF_META_FILES[phase]
+    generate = _summarize_one_pure_meta(_read_json(artifact_dir / producer_file))
+    verify = _summarize_one_pure_meta(_read_json(artifact_dir / reviewer_file))
     return {
         "generate": generate,
         "verify": verify,

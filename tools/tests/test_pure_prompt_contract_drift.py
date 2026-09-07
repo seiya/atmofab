@@ -18,7 +18,7 @@ historical pin. The assertions catch three drift directions:
     frozen literals (NOT recomputed from the current tuple, which has since moved) and exist only to
     reject a later version that duplicates one of them.
 
-The pin set is deliberately NARROW (a churn magnet if widened): the three template files, the
+The pin set is deliberately NARROW (a churn magnet if widened): the five template files, the
 fixed `PURE_SYSTEM_PROMPT` (the `--system-prompt` string, a documented version-bump trigger in
 `pure_leaf.py`), the cold-repair static-paragraph prefix list, the checks-ABI constants the
 templates distill verbatim (`CHECKS_PUBLIC_NAMES` and the two character widths), and — since
@@ -32,6 +32,28 @@ editing §5 (the deterministic-gate section) or a G1-G7 checklist item costs no 
 is a STABLE, behavior-defining input (not a churny one); do NOT grow it beyond that bar. A third
 document slice needs the same argument made for it — that the host pastes it into a leaf prompt
 and that the leaf's decision depends on it — not this precedent alone.
+
+DELIBERATELY NOT PINNED, and this is a REFUSAL rather than an omission: the documents the Z1
+compile pair inlines IN FULL (`docs/workflow/phases/phase_01_compile.md`, the two
+`docs/examples/spec_ir_algorithm*` files, `spec/schema/ir/impl_defaults.schema.json`). They meet
+the "host pastes it into the leaf's prompt" half of the bar above and fail the "stable" half:
+`phase_01_compile.md` took 59 commits in the seven weeks to 2026-09-07 (measured over 12 distinct
+days), so hashing it would bump `PURE_PROMPT_CONTRACT_VERSION` on most edits to it — and a bump
+has two side effects that reach work this pin has nothing to do with: `_resolve_exemplar_source`
+stops offering every sibling exemplar certified at an earlier version, and
+`validate_pipeline_semantics._validate_orchestration_hierarchy` refuses to `--resume` an
+orchestration across it. Editing a phase document would then break the generate side's exemplar
+selection and every in-flight run. Those documents are treated as the leaf's INPUT DATA — the same
+category as `controlled_spec.md` and `tests.md`, which are inlined and unpinned for the same
+reason — not as its contract. The known cost is stated rather than argued away: an edit to the
+phase document DOES change what a compile leaf is told, and this pin will not see it.
+
+The narrower alternative was raised and declined at PR time: `#### Severity of a finding` in
+`phase_01_compile.md` sits under the same anchors `_generate_verify_severity_rubric_section`
+matches in `phase_02_generate.md`, so that ONE subsection could be sliced and hashed the way the
+generate rubric is (issue #143's precedent — the reviewer's `issue_severity` decides routing).
+The operator chose the whole-document, unhashed disposition for PR-1 (issue #168). If a review
+round reverses that, the reversal costs exactly one version bump.
 
 Every pinned member is either a production constant IMPORTED from its authority
 (`CHECKS_PUBLIC_NAMES`, the status width, the prefixes, `PURE_SYSTEM_PROMPT`) or the template file
@@ -69,6 +91,8 @@ import tools.backends.language.fortran.runner as rr
 from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION, PURE_SYSTEM_PROMPT
 
 _TEMPLATE_FILES = (
+    "pure_compile_generate.txt",
+    "pure_compile_verify.txt",
     "pure_generate_generate.txt",
     "pure_generate_verify.txt",
     "pure_bundle_repair.txt",
@@ -285,7 +309,16 @@ PINNED: dict[str, str] = {
     # over-refusal with a MISROUTING message — it blamed argument drift for a source whose arguments
     # were all correct — and the construct occurs in the corpus today, so a generator writes it
     # unprompted. The six specs already said so; a leaf does not read specs.
-    "pure-31": "404fed5ddc0077954b8b38e5294a7fd3a56d22064f87430824b2ad4db27dc37f",}
+    "pure-31": "404fed5ddc0077954b8b38e5294a7fd3a56d22064f87430824b2ad4db27dc37f",
+    # pure-32 (issue #168, Z1): the pure transport gained TWO templates — `pure_compile_generate`
+    # (the IR producer: one JSON document `{ir, last_fail_reason}`) and `pure_compile_verify`
+    # (the IR reviewer, returning the same verdict document the generate reviewer returns) — so
+    # `compile.generate` and `compile.verify` now run as pure leaves instead of agentic CLI
+    # sessions. Nothing in the four previously pinned members moved; the digest changes because
+    # `_TEMPLATE_FILES` grew by two. The usual two side effects apply and are not new: exemplars
+    # certified at pure-31 or earlier stop being offered, and an orchestration whose `generate`
+    # ran under pure-31 cannot be `--resume`d across this bump.
+    "pure-32": "a8872df07ad2c2e9fed855f335e17d99e143c01f668b2d515cda40d739c72441",}
 
 
 def _contract_tuple() -> dict[str, object]:
@@ -338,7 +371,8 @@ class PurePromptContractDriftTests(unittest.TestCase):
             "KEEP the existing PINNED entries, and add PINNED['<new-version>'] = '" + computed
             + "' here (its digest must differ from every existing pin — else it is an empty bump).\n"
             "  (2) UNINTENTIONAL drift: revert the edit to the pinned surface "
-            "(the three pure_*.txt templates, PURE_REPAIR_STATIC_PARAGRAPH_PREFIXES, the "
+            f"({len(_TEMPLATE_FILES)} pure_*.txt templates, "
+            "PURE_REPAIR_STATIC_PARAGRAPH_PREFIXES, the "
             "language backend runner's checks-ABI constants, or an inlined document slice — "
             "CHECKS_MODULE_CONTRACT.md §1-4, phase_02_generate.md's severity rubric)."
         )

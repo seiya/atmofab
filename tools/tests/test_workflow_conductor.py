@@ -46,6 +46,11 @@ from tools.tests.leaf_config_fixture import (
 )
 from tools.tests.llm_samples import sample_config as _sample_config
 from tools.tests.llm_samples import sample_config_with as _cfg
+# The same samples with every leaf narrowed to `agentic`. Used by the classes whose
+# SUBJECT is the shared agentic leaf loop: since issue #168 four of the five LLM leaves
+# dispatch to a pure loop on an unrestricted claude/codex entry, so naming `compile.verify`
+# no longer reaches the agentic loop by itself.
+from tools.tests.llm_samples import agentic_only_config as _agentic_cfg
 
 
 def setUpModule() -> None:
@@ -908,7 +913,7 @@ class ConductHappyPathTest(unittest.TestCase):
             repo_root=Path("/tmp/repo"),
             orchestration_id="orch_x",
             orchestration_agent_run_id="ORCH",
-            llm_config=_cfg("claude"),
+            llm_config=_agentic_cfg("claude"),
             env={},
         )
         c.calls = []
@@ -1371,7 +1376,7 @@ class ConductRoutingTest(unittest.TestCase):
     def _conductor(self) -> _FakeConductor:
         c = _FakeConductor(
             repo_root=Path("/tmp/repo"), orchestration_id="orch_x",
-            orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={},
+            orchestration_agent_run_id="ORCH", llm_config=_agentic_cfg("claude"), env={},
         )
         c.calls = []
         return c
@@ -1771,7 +1776,7 @@ class DevPhaseRollbackTest(unittest.TestCase):
     def _conductor(self, mode: str = "dev") -> _FakeConductor:
         c = _FakeConductor(
             repo_root=Path("/tmp/repo"), orchestration_id="orch_x",
-            orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={},
+            orchestration_agent_run_id="ORCH", llm_config=_agentic_cfg("claude"), env={},
             workflow_mode=mode,
         )
         c.calls = []
@@ -1892,7 +1897,7 @@ class TransportFailureTest(unittest.TestCase):
 
     def _conductor(self) -> "_FakeConductor":
         c = self._C(repo_root=Path("/tmp/repo"), orchestration_id="orch_x",
-                    orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
+                    orchestration_agent_run_id="ORCH", llm_config=_agentic_cfg("claude"), env={})
         c.calls = []
         return c
 
@@ -2515,7 +2520,7 @@ class TransportFailureTest(unittest.TestCase):
         # write-step-result (orch_20260702T041436Z_a901797b). No tombstone here: the escalate
         # trigger must stay live for a possible upstream reopen.
         c = self._C(repo_root=Path("/tmp/repo"), orchestration_id="orch_x",
-                    orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={},
+                    orchestration_agent_run_id="ORCH", llm_config=_agentic_cfg("claude"), env={},
                     workflow_mode="prod")
         c.calls = []
         c.status_fn = lambda phase, substep, n: (
@@ -2596,7 +2601,7 @@ class TransportFailureTest(unittest.TestCase):
             def _judge_pre_spawn_dag_block(self, refs):  # type: ignore[override]
                 return "dependency closure not built+validated ... missing ['component/dep']"
         c = _C(repo_root=Path("/tmp/repo"), orchestration_id="orch_x",
-               orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
+               orchestration_agent_run_id="ORCH", llm_config=_agentic_cfg("claude"), env={})
         c.calls = []
         oc = c.run_phase(self._refs(), "validate")
         self.assertEqual(oc.status, "fail")
@@ -2625,7 +2630,7 @@ class TransportFailureTest(unittest.TestCase):
                 def _judge_pre_spawn_dag_block(self, r):  # type: ignore[override]
                     return None
             c = _C(repo_root=repo, orchestration_id="orch_x",
-                   orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
+                   orchestration_agent_run_id="ORCH", llm_config=_agentic_cfg("claude"), env={})
             c.calls = []
             c.pre_judge_meta_fn = lambda n: {
                 "status": "fail", "failure_category": "pre_judge_dag_incomplete",
@@ -2661,7 +2666,7 @@ class TransportFailureTest(unittest.TestCase):
                     return None  # keep run_id stable so the seeded run-node dir is read back
 
             c = _C(repo_root=repo, orchestration_id="orch_x",
-                   orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
+                   orchestration_agent_run_id="ORCH", llm_config=_agentic_cfg("claude"), env={})
             c.calls = []
             rn = repo / refs.run_node_dir()
             rn.mkdir(parents=True, exist_ok=True)
@@ -2701,7 +2706,7 @@ class TransportFailureTest(unittest.TestCase):
                     return None
 
             c = _C(repo_root=repo, orchestration_id="orch_x",
-                   orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
+                   orchestration_agent_run_id="ORCH", llm_config=_agentic_cfg("claude"), env={})
             c.calls = []
             rn = repo / refs.run_node_dir()
             rn.mkdir(parents=True, exist_ok=True)
@@ -2757,7 +2762,7 @@ class TransportFailureTest(unittest.TestCase):
                     return None
 
             c = _C(repo_root=repo, orchestration_id="orch_x",
-                   orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
+                   orchestration_agent_run_id="ORCH", llm_config=_agentic_cfg("claude"), env={})
             c.calls = []
             rn = repo / refs.run_node_dir()
             rn.mkdir(parents=True, exist_ok=True)
@@ -2795,7 +2800,7 @@ class TransportFailureTest(unittest.TestCase):
             def _ensure_fresh_producer_id(self, r, phase):  # type: ignore[override]
                 return None
         c = _C(repo_root=repo, orchestration_id="orch_x",
-               orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
+               orchestration_agent_run_id="ORCH", llm_config=_agentic_cfg("claude"), env={})
         c.workflow_mode = mode
         c.calls = []
         rn = repo / self._refs().run_node_dir()
@@ -2886,7 +2891,7 @@ class TransportFailureTest(unittest.TestCase):
                 def _ensure_fresh_producer_id(self, r, phase):  # type: ignore[override]
                     return None
             c = _C(repo_root=repo, orchestration_id="orch_x",
-                   orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
+                   orchestration_agent_run_id="ORCH", llm_config=_agentic_cfg("claude"), env={})
             c.workflow_mode = "prod"
             c.calls = []
             rn = repo / refs.run_node_dir()
@@ -2941,7 +2946,7 @@ class TransportFailureTest(unittest.TestCase):
                     def _ensure_fresh_producer_id(self, r, phase):  # type: ignore[override]
                         return None
                 c = _C(repo_root=repo, orchestration_id="orch_x",
-                       orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
+                       orchestration_agent_run_id="ORCH", llm_config=_agentic_cfg("claude"), env={})
                 c.workflow_mode = "prod"
                 c.calls = []
                 c.judge_semantic_decision_value = "pass"
@@ -2970,7 +2975,7 @@ class TransportFailureTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             repo, refs = Path(td), self._refs()
             c = wc.Conductor(repo_root=repo, orchestration_id="orch_x",
-                             orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
+                             orchestration_agent_run_id="ORCH", llm_config=_agentic_cfg("claude"), env={})
             rn = repo / refs.run_node_dir()
             rn.mkdir(parents=True, exist_ok=True)
             self.assertEqual(c._judge_semantic_decision(refs), "")  # missing file
@@ -2993,7 +2998,7 @@ class TransportFailureTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             repo, refs = Path(td), self._refs()
             c = wc.Conductor(repo_root=repo, orchestration_id="orch_x",
-                             orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
+                             orchestration_agent_run_id="ORCH", llm_config=_agentic_cfg("claude"), env={})
             ir_dir = repo / refs.ir_ref
             ir_dir.mkdir(parents=True, exist_ok=True)
             (ir_dir / "spec.ir.yaml").write_text(json.dumps({"case": {"test_case_set": [
@@ -3009,7 +3014,7 @@ class TransportFailureTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             repo, refs = Path(td), self._refs()
             c = _FakeConductor(repo_root=repo, orchestration_id="orch_x",
-                               orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
+                               orchestration_agent_run_id="ORCH", llm_config=_agentic_cfg("claude"), env={})
             rn = repo / refs.run_node_dir()
             rn.mkdir(parents=True, exist_ok=True)
             (rn / "post_judge_meta.json").write_text(
@@ -3041,7 +3046,7 @@ class TransportFailureTest(unittest.TestCase):
                     return None
 
             c = _C(repo_root=repo, orchestration_id="orch_x",
-                   orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
+                   orchestration_agent_run_id="ORCH", llm_config=_agentic_cfg("claude"), env={})
             c.calls = []
             rn = repo / refs.run_node_dir()
             rn.mkdir(parents=True, exist_ok=True)
@@ -5188,7 +5193,7 @@ class LeafTransientRetryTest(unittest.TestCase):
 
     def _conductor(self, procs: list, repo: Path | None = None, **kw) -> "_C":
         c = self._C(repo_root=repo or Path("/tmp/repo"), orchestration_id="orch_x",
-                    orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={}, **kw)
+                    orchestration_agent_run_id="ORCH", llm_config=_agentic_cfg("claude"), env={}, **kw)
         c.calls, c.procs, c.slept, c.spawns = [], procs, [], []
         return c
 
@@ -6534,7 +6539,7 @@ class TransportSubstepResumeTest(unittest.TestCase):
 
     def _conductor(self, procs: list, repo: Path, **kw) -> "_C":
         c = self._C(repo_root=repo, orchestration_id="orch_x",
-                    orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={}, **kw)
+                    orchestration_agent_run_id="ORCH", llm_config=_agentic_cfg("claude"), env={}, **kw)
         c.calls, c.procs, c.spawns = [], procs, []
         return c
 
@@ -7044,7 +7049,7 @@ class DiagnosticianTest(unittest.TestCase):
         oid = f"o{type(self)._conductor_seq}"
         c = _FakeConductor(
             repo_root=self._repo_root(oid), orchestration_id=oid,
-            orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={},
+            orchestration_agent_run_id="ORCH", llm_config=_agentic_cfg("claude"), env={},
         )
         c.calls = []
         return c
@@ -7932,7 +7937,15 @@ class LeafSpawnTest(unittest.TestCase):
         model = kw.pop("agent_model", "opus")
         command = kw.pop("llm_command", "")
         provider = "claude_cli" if backend == "claude" else "codex_cli"
-        body = f"defaults:\n  provider: {provider}\n"
+        # `capabilities:` drops `pure` and keeps the rest, because these tests drive the shared
+        # AGENTIC leaf loop through `compile.verify`, which since issue #168 runs the pure loop on
+        # an unrestricted entry. Only `pure` goes: narrowing to `[agentic]` would also drop
+        # `warm_resume`, a different capability the agentic loop's own slim repair is gated on.
+        # The narrowing is the config file's own key (see
+        # `tools/tests/llm_samples.agentic_only_config`), not a test-only back door.
+        keep = sorted(lc.PROVIDER_CAPABILITIES[provider] - {lc.CAP_PURE})
+        body = (f"defaults:\n  provider: {provider}\n"
+                f"  capabilities: [{', '.join(keep)}]\n")
         cfg = lc.apply_defaults_overrides(
             _config_from_text(body), model=model, command=command)
         base = dict(repo_root=Path("/tmp/repo"), orchestration_id="o",
@@ -8850,7 +8863,7 @@ class LeafSpawnTest(unittest.TestCase):
     def test_nonzero_leaf_exit_fails_substep(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             c = _FakeConductor(repo_root=Path(tmp), orchestration_id="o",
-                               orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
+                               orchestration_agent_run_id="ORCH", llm_config=_agentic_cfg("claude"), env={})
             c.calls = []
             c.status_fn = lambda phase, substep, n: "pass"  # artifacts claim pass
             # leaf crashed (e.g. token limit), emitting a diagnostic to stderr
@@ -8881,7 +8894,7 @@ class LeafSpawnTest(unittest.TestCase):
     def test_set_status_reason_code_names_leaf_transport(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             c = _FakeConductor(repo_root=Path(tmp), orchestration_id="o",
-                               orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
+                               orchestration_agent_run_id="ORCH", llm_config=_agentic_cfg("claude"), env={})
             c.calls = []
             c.spawn_leaf = lambda prompt, env, entry=None, **kw: wc.ProcResult(1, "", "boom")
             refs = wc.NodeRefs(node_key="component/spec_x@0.1.0",
@@ -8896,7 +8909,7 @@ class LeafSpawnTest(unittest.TestCase):
     def test_leaf_stdout_persisted_on_success(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             c = _FakeConductor(repo_root=Path(tmp), orchestration_id="o",
-                               orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
+                               orchestration_agent_run_id="ORCH", llm_config=_agentic_cfg("claude"), env={})
             c.calls = []
             c.spawn_leaf = lambda prompt, env, entry=None, **kw: wc.ProcResult(0, "all good", "")
             refs = wc.NodeRefs(node_key="component/spec_x@0.1.0",
@@ -8921,7 +8934,7 @@ class LeafSpawnTest(unittest.TestCase):
             with tempfile.TemporaryDirectory() as tmp:
                 c = _FakeConductor(repo_root=Path(tmp), orchestration_id="o",
                                    orchestration_agent_run_id="ORCH",
-                                   llm_config=_cfg("claude"), env=env)
+                                   llm_config=_agentic_cfg("claude"), env=env)
                 c.calls = []
 
                 def spawn(prompt, env_, entry=None, **kw):
@@ -8954,7 +8967,7 @@ class LeafSpawnTest(unittest.TestCase):
         cap: dict = {}
         with tempfile.TemporaryDirectory() as tmp:
             c = _FakeConductor(repo_root=Path(tmp), orchestration_id="o",
-                               orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
+                               orchestration_agent_run_id="ORCH", llm_config=_agentic_cfg("claude"), env={})
             c.calls = []
 
             def spawn(prompt, env_, entry=None, **kw):
@@ -12468,7 +12481,7 @@ class FailSummaryContractTest(unittest.TestCase):
         import tools.orchestration_runtime as rt
         with tempfile.TemporaryDirectory() as tmp:
             c = _FakeConductor(repo_root=Path(tmp), orchestration_id="o",
-                               orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
+                               orchestration_agent_run_id="ORCH", llm_config=_agentic_cfg("claude"), env={})
             c.calls = []
             c.status_fn = status_fn
             c.spawn_leaf = lambda prompt, env, entry=None, **kw: proc
@@ -14417,8 +14430,9 @@ class PureLeafSubstepPredicateTests(unittest.TestCase):
                               orchestration_agent_run_id="ORCH", llm_config=_cfg(backend), env={})
 
     def test_claude_m3c_generate_substeps_are_pure(self) -> None:
-        # (a) claude + M3c: both generate LLM substeps are pure; other (phase, substep) pairs are
-        # not (deterministic generate substeps + compile.verify stay agentic).
+        # (a) claude + M3c: both generate LLM substeps are pure, and so are both compile LLM
+        # substeps (Z1, issue #168 — no shape condition there). A DETERMINISTIC substep is never
+        # pure whatever the provider holds: it runs in-process and launches no leaf at all.
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = self._refs()
@@ -14426,8 +14440,26 @@ class PureLeafSubstepPredicateTests(unittest.TestCase):
             c = self._conductor(repo, "claude")
             self.assertTrue(c._pure_leaf_substep(refs, "generate", "generate"))
             self.assertTrue(c._pure_leaf_substep(refs, "generate", "verify"))
+            self.assertTrue(c._pure_leaf_substep(refs, "compile", "generate"))
+            self.assertTrue(c._pure_leaf_substep(refs, "compile", "verify"))
             self.assertFalse(c._pure_leaf_substep(refs, "generate", "static"))
-            self.assertFalse(c._pure_leaf_substep(refs, "compile", "verify"))
+            self.assertFalse(c._pure_leaf_substep(refs, "compile", "static"))
+            self.assertFalse(c._pure_leaf_substep(refs, "validate", "judge"))
+
+    def test_a_capability_restricted_entry_keeps_its_leaf_agentic(self) -> None:
+        """The operator-facing escape, and the mechanism the issue #168 A/B baseline arm uses:
+        an entry whose `capabilities:` drops `pure` runs the agentic loop even on a pair that has
+        been migrated. Without this the predicate could be read as keyed on the pair alone."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = self._refs()
+            WriteRunnerTest._write_consumer_ir(self, repo, refs, infra=1)
+            c = _FakeConductor(repo_root=repo, orchestration_id="o",
+                               orchestration_agent_run_id="ORCH",
+                               llm_config=_agentic_cfg("claude"), env={})
+            for phase, substep in sorted(lc.PURE_CAPABLE_SUBSTEPS):
+                self.assertFalse(c._pure_leaf_substep(refs, phase, substep),
+                                 msg=f"{phase}.{substep}")
 
     def test_codex_m3c_uses_sandboxed_structured_pure_leaf(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -18834,7 +18866,7 @@ class TransportTombstoneRealCliTest(unittest.TestCase):
             oid = "orch_t1"
             (repo / "workspace" / "orchestrations" / oid).mkdir(parents=True)
             c = wc.Conductor(repo_root=repo, orchestration_id=oid,
-                             orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"),
+                             orchestration_agent_run_id="ORCH", llm_config=_agentic_cfg("claude"),
                              env=os.environ.copy())
             # the conductor shells out to the REAL add-superseded-runs CLI
             c._add_superseded_run_ids(
@@ -18890,7 +18922,7 @@ class TransportTombstoneRealCliTest(unittest.TestCase):
                     pass
 
             c = _C(repo_root=repo, orchestration_id=oid, orchestration_agent_run_id="ORCH",
-                   llm_config=_cfg("claude"), env=os.environ.copy())
+                   llm_config=_agentic_cfg("claude"), env=os.environ.copy())
             refs = wc.NodeRefs(
                 node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
                 ir_id="x_1_001", pipeline_id="x_1_001", source_id="src_1_001",
@@ -19131,7 +19163,7 @@ class VerifyMetaSchemaWarmResumeTests(unittest.TestCase):
                 return ("pass" if ok else "fail"), ["out.json"]
 
         c = _C(repo_root=repo, orchestration_id="orch_x",
-               orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
+               orchestration_agent_run_id="ORCH", llm_config=_agentic_cfg("claude"), env={})
         c.calls = []
         c._current_substep = None
         c.verify_runs = state
@@ -20909,7 +20941,7 @@ class LeafUsageRecordingTests(unittest.TestCase):
 
     def _conductor(self, proc: wc.ProcResult, backend: str = "claude") -> "_C":
         c = self._C(repo_root=Path("/tmp/repo"), orchestration_id="orch_x",
-                    orchestration_agent_run_id="ORCH", llm_config=_cfg(backend), env={})
+                    orchestration_agent_run_id="ORCH", llm_config=_agentic_cfg(backend), env={})
         c.calls, c.proc = [], proc
         return c
 

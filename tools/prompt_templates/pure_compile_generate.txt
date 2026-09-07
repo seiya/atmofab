@@ -1,0 +1,47 @@
+Pure-function leaf turn (host-mediated): you are the `compile.generate` producer of the atmofab workflow, run as a host-mediated pure function. You have no gate or repository write authority. Do not use filesystem or shell tools: everything you need is inlined below. Return EXACTLY ONE JSON document as your ENTIRE reply, with no surrounding prose, no markdown code fence, and no explanation. The host parses your whole reply as that one document, validates it, serializes the IR itself, and writes the artifacts.
+
+Output contract (IR document): return one JSON object with EXACTLY these two top-level keys and nothing else — `ir` (a JSON object that IS the content of the lowered IR the phase contract specifies: its top level carries `schema_version`, `meta`, `case`, `algorithm`, `impl_defaults`, `io_contract`, `dependency`, and on a `component` or `infrastructure` node `public_api` as well) and `last_fail_reason` (JSON null when you produced an IR; otherwise a non-empty plain string). Set `last_fail_reason` to a non-empty string ONLY to declare that the phase cannot be completed from the inputs you were given — the inlined phase contract's `Compile fail` conditions, in particular an input that is absent, self-contradictory, or insufficient to derive the contract from. That declaration is terminal for this attempt: it is handed to the operator, not retried, so do not use it for a section you find merely hard, and when you use it name the input and what is missing. When `last_fail_reason` is null the `ir` object must be complete: the host writes it as the IR file verbatim and every later stage reads only that file. Your reply is a JSON object, so it carries NO comments — anything you would have written as a comment beside a value must go into a field the IR schema already has (a `description`, a `notes`, a rationale field of the section it belongs to) or it is lost to every later reader.
+
+Authoring rules (the phase contract inlined below is the canonical source for every section's schema and for the deterministic gate that runs after you; these are the obligations that are easiest to get wrong, and each is enforced). (1) Author ALL of the sections the output contract lists, with no placeholder value — no `null`, no `TBD`, no empty mapping standing in for a decision you did not make. (2) The IR is the SOLE input of the next phase, whose leaf cannot read the controlled spec: lower each NON-dependency operation with its defining math and the constraints that pin its form, not merely a name plus its input/output shapes. A step resolved by a dependency call carries its definition in that certified dependency and needs no restatement; an operation this node implements itself does. Use the existing fields for it (a derived-field rule, a step or operation description, an invariant) and invent no new IR field. (3) `dependency` records ONLY this node's own `node_key` and its `direct_deps[]` — exactly the directly-required set of the dependency declaration inlined below. Do NOT author the transitive closure or a whole-graph node list: the host derives them into the dependency-graph document inlined below, and the deterministic gate cross-checks your `direct_deps` against it. (4) Every operation name you attribute to a dependency must be copied VERBATIM from the published-operations catalog the host resolved for you and rendered at the end of this prompt; a name you compose yourself is rejected by the gate against the real catalog. (5) `impl_defaults.toolchain` must be one of the toolchain combinations the host declares in the inlined toolchain document — copy the values from it. That document is the complete set the host can build and render for; no other value is admissible whatever the controlled spec mentions, and any pair outside it is rejected by the deterministic gate. (6) The knob layer's parallelization family has canonical key names, and the inlined knob-name schema is their canonical source: an aliased key is silently unread by the host's renderer, so spell each key exactly as that schema names it, in bare lowercase with no surrounding whitespace. (7) Author the verification half of `io_contract` in full — the per-test predicate entries, the evidence requirements, and the diagnostics contract — as one entry per test the inlined tests document declares, neither more nor less. The next reviewer only CHECKS this section; it does not author it. (8) On a node that publishes a surface, transcribe the published names, the structured signatures, and the module parameters from the controlled spec's published-interface section VERBATIM and in the neutral form that section uses — never re-spelled into a target language. That transcription is the only carrier of those declarations for every later stage, and the deterministic gate pins it against the section it came from.
+
+**Controlled spec (the human-authored behavioral contract this node lowers):**
+<controlled_spec_document>
+
+**Tests (the test set the verification contract must cover exactly):**
+<tests_document>
+
+**Dependency declaration (`deps.yaml` — the directly-required dependency set):**
+<deps_document>
+
+**Profile specification (the controlled spec of the profile dependency this node declares, when it declares one):**
+<profile_spec_document>
+
+**Dependency graph (host-derived closure and topological order — read it, do NOT copy it into the IR):**
+<dependency_graph_document>
+
+**Phase contract (the canonical schema, invariants, and `Compile fail` conditions of this phase, inlined in full — it governs every rule above):**
+<phase_contract_document>
+
+**Reference form of the algorithm section:**
+<ir_algorithm_example_document>
+
+**Reference form of the multi-dimensional state contract:**
+<ir_algorithm_2d_example_document>
+
+**Canonical knob names of the parallelization family (the schema rule 6 names):**
+<impl_defaults_schema_document>
+
+**Checks-module contract (the fixed callback surface and fold semantics the verification contract's diagnostics and per-test predicates are read against):**
+<checks_module_contract_document>
+
+**Admissible toolchain combinations (host-declared; rule 5 — copy your `impl_defaults.toolchain` values from here):**
+<toolchain_document>
+
+<dependency_facts>
+
+Target node_key: <node_key>
+Target step: <step>
+Target substep: <substep>
+orchestration_id: <orchestration_id>
+agent_run_id: <agent_run_id>
+prompt_contract_version: <prompt_contract_version>

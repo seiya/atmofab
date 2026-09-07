@@ -11772,6 +11772,8 @@ _PROMPT_TEMPLATE_FILES = {
     # tool-free; Codex uses a read-only structured-output approximation. One per migrated
     # (step, substep); the repair template is substep-agnostic. Their line 0 is
     # PURE_PROMPT_SENTINEL (parity-tested against the module constant).
+    "pure compile.generate": "pure_compile_generate.txt",
+    "pure compile.verify": "pure_compile_verify.txt",
     "pure generate.generate": "pure_generate_generate.txt",
     "pure generate.verify": "pure_generate_verify.txt",
     "pure bundle repair": "pure_bundle_repair.txt",
@@ -12561,6 +12563,16 @@ def _render_slim_repair_launch_prompt(request_payload: dict[str, Any]) -> str:
 # host inlines for each. A pure request outside this map is rejected at validation
 # (`_validate_launch_request_payload`); a missing context key on a cold launch is rejected too.
 PURE_CONTEXT_REQUIRED_KEYS: dict[tuple[str, str], tuple[str, ...]] = {
+    ("compile", "generate"): ("controlled_spec_document", "tests_document", "deps_document",
+                              "profile_spec_document", "dependency_graph_document",
+                              "phase_contract_document", "ir_algorithm_example_document",
+                              "ir_algorithm_2d_example_document",
+                              "impl_defaults_schema_document",
+                              "checks_module_contract_document", "toolchain_document"),
+    ("compile", "verify"): ("controlled_spec_document", "tests_document", "deps_document",
+                            "ir_document", "dependency_surface_document",
+                            "phase_contract_document", "ir_algorithm_example_document",
+                            "ir_algorithm_2d_example_document"),
     ("generate", "generate"): ("harness_capabilities", "target_profile",
                                "ir_document",
                                "tests_document", "runner_document"),
@@ -15555,8 +15567,11 @@ def _validate_pure_launch_request_payload(request_payload: dict[str, Any]) -> No
     substep = str(request_payload.get("substep", "")).strip().lower()
     key = (step, substep)
     if key not in PURE_CONTEXT_REQUIRED_KEYS:
+        # The admissible pairs are SPELLED FROM THE TABLE, never restated: a pair added to
+        # `PURE_CONTEXT_REQUIRED_KEYS` must not leave this message naming the old set.
+        admissible = ", ".join(f"({s}, {ss})" for s, ss in sorted(PURE_CONTEXT_REQUIRED_KEYS))
         raise ValueError(
-            "leaf_mode=pure is only valid for (generate, generate) and (generate, verify); "
+            f"leaf_mode=pure is only valid for {admissible}; "
             f"got (step={step!r}, substep={substep!r})"
         )
     version = request_payload.get("prompt_contract_version")

@@ -17,7 +17,7 @@ table row instead of a new branch.
 **Capabilities are declared, never inferred.** `PROVIDER_CAPABILITIES` below is the single
 source of truth; a config's own `capabilities:` list may only RESTRICT a provider's set (to
 model an endpoint that, say, cannot be warm-resumed), never extend it. The user-approved scope
-rule — HTTP providers are admissible only on the two Z2 *pure* leaves — is therefore not a
+rule — HTTP providers are admissible only on the *pure* leaves — is therefore not a
 `provider == "openai_compatible"` branch anywhere: it falls out of the HTTP providers holding
 `pure` and not `agentic`, checked against what each substep requires
 (`llm_config_capability_insufficient_for_substep`).
@@ -174,12 +174,16 @@ LLM_LEAF_SUBSTEPS: frozenset[tuple[str, str]] = frozenset({
     ("validate", "judge"),
 })
 
-# The subset that CAN run as a Z2 pure leaf. Mirror of the `(phase, substep)` pair test in
+# The subset that CAN run as a pure leaf. Mirror of the `(phase, substep)` pair test in
 # `Conductor._pure_leaf_substep`; guarded by `test_pure_capable_substeps_matches_conductor`.
-# NOTE the dispatch there is additionally gated on the node's M3c shape, so a pure-only
-# provider on a non-M3c node has no pure path — the conductor fails that closed at run time
-# (`pure_only_provider_on_agentic_path`), which config validation cannot see.
+# NOTE the dispatch there additionally gates the two GENERATE pairs on the node's M3c shape, so
+# a pure-only provider on a non-M3c node has no pure path for them — the conductor fails that
+# closed at run time (`pure_only_provider_on_agentic_path`), which config validation cannot see.
+# The two COMPILE pairs (Z1, issue #168) carry no shape condition: the Compile contract does not
+# depend on the node kind, and at `compile.generate` time no IR exists to read a shape from.
 PURE_CAPABLE_SUBSTEPS: frozenset[tuple[str, str]] = frozenset({
+    ("compile", "generate"),
+    ("compile", "verify"),
     ("generate", "generate"),
     ("generate", "verify"),
 })

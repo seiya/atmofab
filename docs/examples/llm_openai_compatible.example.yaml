@@ -1,22 +1,24 @@
-# Sample leaf-LLM configuration: the two `generate` leaves on a local OpenAI-compatible server,
-# everything else on the Claude Code CLI.
+# Sample leaf-LLM configuration: the four pure leaves (both `compile`, both `generate`) on a
+# local OpenAI-compatible server, everything else on the Claude Code CLI.
 #
 # Copy it to `./llm.yaml` — the operator-owned file `run_workflow.py` loads when nobody passes
 # `--llm-config`:
 #
 #     cp docs/examples/llm_openai_compatible.example.yaml llm.yaml
 #
-# WHY ONLY THOSE TWO. `openai_compatible` is one request and one response: no session to reopen,
-# no tools to grant, and no agentic loop. `generate.generate` and `generate.verify` are the only
-# LLM leaves that can run as host-mediated PURE functions (one typed document in, one JSON
-# document out), so they are the only ones an HTTP provider is admissible on. Assigning one to
-# `compile.generate`, `compile.verify` or `validate.judge` is rejected at load with
-# `llm_config_capability_insufficient_for_substep`, and so is putting one in `defaults` (which
-# also runs the `escalate` diagnostician) — that one is `llm_config_defaults_not_agentic`.
+# WHY ONLY THESE FOUR. `openai_compatible` is one request and one response: no session to reopen,
+# no tools to grant, and no agentic loop. The two `compile` leaves and the two `generate`
+# leaves are the LLM leaves that run as host-mediated PURE functions (one closed context
+# in, one JSON document out), so they are the ones an HTTP provider is admissible on.
+# `validate.judge` is the one that is not: assigning an HTTP provider to it is rejected at
+# load with `llm_config_capability_insufficient_for_substep`, and so is putting one in
+# `defaults` (which also runs the `escalate` diagnostician) — that one is
+# `llm_config_defaults_not_agentic`.
 #
-# The pure path is additionally gated on the node's M3c shape at run time, so a pure-only
-# provider reaching a non-M3c node fails that node closed rather than silently launching an
-# agentic session on it.
+# The two GENERATE pure leaves are additionally gated on the node's M3c shape at run time,
+# so a pure-only provider reaching a non-M3c node fails that node closed rather than
+# silently launching an agentic session on it. The two COMPILE pure leaves carry no such
+# condition — the Compile contract does not depend on the node kind.
 #
 # EVERY phase, substep and provider is written out, even though the resolution rules would let
 # the unmentioned leaves inherit `defaults`. The file is the answer to "what runs where" — a
@@ -90,16 +92,41 @@ defaults:
 phases:
   compile:
     substeps:
-      # Agentic: authors spec.ir.yaml from the controlled spec, holding a workspace and tools.
+      # PURE: the IR producer. The host inlines the controlled spec, the tests, the dependency
+      # declaration and the phase contract; the leaf returns one JSON document holding the IR.
+      # THE CONTEXT IS LARGE. Measured on `problem/shallow_water2d@0.4.0` at the commit that
+      # added this comment: 126,981 bytes for this leaf and 160,401 for the reviewer below
+      # (`Conductor._build_pure_compile_context` / `_build_pure_compile_verify_context`,
+      # summed over the inlined documents). An endpoint with a 32k-token context window
+      # cannot run either. Check the window before pointing this entry at a server.
       generate:
-        provider: claude_cli
-        model: opus
+        provider: openai_compatible
+        base_url: http://localhost:8000/v1
+        api_key_env: LOCAL_LLM_API_KEY
+        model: qwen2.5-coder-32b-instruct
         effort: medium
-      # Agentic: semantic cross-reference (V1/V3/V5) over a deterministically-clean IR.
+        # Sizes the ARTIFACT. Measured: the largest IR this repository has produced for
+        # `shallow_water2d` is 52,502 bytes of YAML, and the JSON document carrying it is
+        # larger again. A truncated IR is a wasted turn, not a repairable one. Re-size against
+        # the node and the model you run — and read the writer's budget note under
+        # `generate.generate` below, which explains why a reasoning model needs more than the
+        # artifact's own size.
+        max_output_tokens: 32768
+        # Declared rather than defaulted, on the same ground as `generate.generate` below: the
+        # pair moves together, this endpoint has not been measured, and the value is generous
+        # rather than derived.
+        timeout_s: 2400
+      # PURE: the IR reviewer. Returns the same verdict document the generate reviewer does.
       verify:
-        provider: claude_cli
-        model: sonnet
+        provider: openai_compatible
+        base_url: http://localhost:8000/v1
+        api_key_env: LOCAL_LLM_API_KEY
+        model: qwen2.5-coder-32b-instruct
         effort: medium
+        # A verdict is not an IR — the same halving the generate reviewer's budget applies, and
+        # the same caveat with it: on a reasoning model this sits below the reasoning floor.
+        max_output_tokens: 16384
+        timeout_s: 1800
 
   generate:
     substeps:

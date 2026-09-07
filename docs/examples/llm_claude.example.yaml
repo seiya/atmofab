@@ -75,8 +75,9 @@
 # table — reasoning from it is the mistake this comment exists to prevent.
 #
 # To move one leaf elsewhere, replace its block. HTTP providers (`openai_compatible`,
-# `anthropic_api`) are admissible ONLY on the two `generate` leaves, which run as host-mediated
-# pure functions; assigning one to an agentic leaf is rejected at load with
+# `anthropic_api`) are admissible ONLY on the four pure leaves — both `compile` substeps and both
+# `generate` substeps — which run as host-mediated pure functions; assigning one to an agentic
+# leaf (`validate.judge`) is rejected at load with
 # `llm_config_capability_insufficient_for_substep`. `llm_openai_compatible.example.yaml` and
 # `llm_anthropic_api.example.yaml` in this directory are worked examples of each.
 defaults:
@@ -87,14 +88,18 @@ defaults:
 phases:
   compile:
     substeps:
-      # Authors spec.ir.yaml from the controlled spec: the hardest structured task in the run,
-      # 26.7% of all tokens, and every later leaf reads what it wrote.
+      # PURE (issue #168): the IR producer. The host inlines the controlled spec, the tests,
+      # the dependency declaration and the phase contract, and the leaf returns one JSON
+      # document holding the IR — it holds no tools and writes nothing. The hardest structured
+      # task in the run, 26.7% of all tokens on the agentic measurement below, and every later
+      # leaf reads what it wrote.
       generate:
         provider: claude_cli
         model: opus
         effort: medium
-      # Semantic cross-reference (V1/V3/V5) over a deterministically-clean IR. The cheapest leaf
-      # to be wrong in: 3 of 93 nodes re-ran it, and both `generate` and `validate.judge` read the
+      # PURE (issue #168): the IR reviewer. Semantic cross-reference (V1/V3/V5) over a
+      # deterministically-clean IR, returning one verdict document. The cheapest leaf to be
+      # wrong in: 3 of 93 nodes re-ran it, and both `generate` and `validate.judge` read the
       # same IR afterwards. The only leaf this file economises, and it does so by model tier —
       # effort stays at the generation default here as everywhere else.
       verify:

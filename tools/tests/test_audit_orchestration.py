@@ -1420,7 +1420,7 @@ class PureLeafABSummaryTest(unittest.TestCase):
             self.assertIn("pure_leaf_ab_summary", result)
             self.assertTrue(result["pure_leaf_ab_summary"]["available"])
             md = _render_markdown(result)
-        self.assertIn("Pure-leaf A/B metrics (Z2)", md)
+        self.assertIn("Pure-leaf A/B metrics", md)
         self.assertIn("generate-executor: `pure`", md)
         self.assertIn("claude --version", md)
         self.assertIn(self.SRC, md)
@@ -1807,9 +1807,14 @@ class PureLeafProvenanceUnderAMixedConfigTests(unittest.TestCase):
         self.assertEqual(
             ao._PURE_LEAF_MAP_KEYS,
             frozenset(f"{p}.{s}" for p, s in lc.PURE_CAPABLE_SUBSTEPS))
-        # A leaf outside that set must not steer the attribution.
+        # A leaf INSIDE that set steers the attribution — `compile.verify` is one since Z1
+        # (issue #168), and this row asserted the opposite while it was outside.
         summary = self._summary({"compile.verify": {"backend": "codex", "model": "x"}})
-        self.assertEqual(summary["backend"], "claude")
+        self.assertEqual(summary["backend"], "codex")
+        # A leaf OUTSIDE it does not. `validate.judge` is the one agentic LLM leaf left, so it
+        # is what keeps this half of the assertion alive.
+        outside = self._summary({"validate.judge": {"backend": "codex", "model": "x"}})
+        self.assertEqual(outside["backend"], "claude")
 
 
 class ScriptPathDanglingLaunchWitnessTests(unittest.TestCase):

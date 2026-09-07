@@ -5,6 +5,14 @@ description: Use this when running the generate of the Compile stage and determi
 
 # Workflow Compile Generate
 
+> **This `SKILL` is read only by a residual AGENTIC compile leaf** — one whose configured
+> entry narrows its `capabilities:` to drop `pure`. Since [issue #168](https://github.com/seiya/atmofab/issues/168)
+> the default `Compile.generate` is a `pure-function leaf` that holds no tools and no write
+> authority: it reads no `SKILL`, the host inlines its closed context, and the host writes
+> `spec.ir.yaml` / `ir_meta.json`. The `Operations Rules` below — the tool, manifest and
+> `run-gate` procedure — describe the agentic path only. Canonical:
+> `docs/workflow/phases/phase_01_compile.md` §substep structure.
+
 ## Purpose
 Fix the generation responsibility of the Compile stage, and create a deterministic structured IR (`spec.ir.yaml`) from the input spec.
 

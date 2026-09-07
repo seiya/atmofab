@@ -9,6 +9,7 @@ the real documents do not have, which is the failure mode this repository has pa
 
 from __future__ import annotations
 
+import dataclasses
 import functools
 from pathlib import Path
 
@@ -38,3 +39,35 @@ def sample_config_with(backend: str = "claude", agent_model: str = "",
     at all."""
     return lc.apply_defaults_overrides(
         sample_config(backend or "claude"), model=agent_model, command=llm_command)
+
+
+@functools.lru_cache(maxsize=None)
+def agentic_only_config(backend: str = "claude") -> lc.LlmConfig:
+    """The sample configuration with `pure` REMOVED from every leaf, so every LLM leaf runs the
+    agentic loop.
+
+    A test whose subject is the shared agentic leaf loop needs a leaf that runs it. Four of the
+    five LLM leaves now dispatch to a pure loop instead whenever their provider holds `pure`
+    (`Conductor._pure_leaf_substep`), so a test that reaches the agentic loop by naming
+    `compile.verify` reached it by accident of what had been migrated — and stopped reaching it
+    when Z1 migrated the two compile leaves (issue #168).
+
+    The restriction is the config file's own `capabilities:` key, which may only narrow a
+    provider's declared set (`llm_config.PROVIDER_CAPABILITIES` is the single source), so this
+    is the SAME mechanism an operator uses to keep a leaf on the agentic path — and the one the
+    A/B baseline arm of issue #168 uses. It is not a test-only back door.
+    """
+    def narrowed(entry: lc.ResolvedLeafEntry) -> lc.ResolvedLeafEntry:
+        # Only `pure` is dropped. Narrowing all the way to `{agentic}` would also drop
+        # `warm_resume`, which is a DIFFERENT capability and is what the agentic loop's own
+        # slim-repair turn is gated on — so a fixture written to reach the agentic loop would
+        # silently stop exercising its warm resume.
+        return dataclasses.replace(
+            entry, capabilities=frozenset(entry.capabilities) - {lc.CAP_PURE})
+
+    base = sample_config(backend or "claude")
+    return dataclasses.replace(
+        base,
+        defaults=narrowed(base.defaults),
+        entries={key: narrowed(entry) for key, entry in base.entries.items()},
+    )

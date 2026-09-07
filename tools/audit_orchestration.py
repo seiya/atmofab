@@ -690,6 +690,46 @@ def _pure_source_dirs_of(
     return dirs, pipeline_refs
 
 
+def _pure_ir_dirs_of(
+    repo_root: Path, orchestration_id: str
+) -> list[str]:
+    """Every repo-relative IR directory this orchestration launched a PURE `compile` leaf into,
+    in sorted order.
+
+    Discovery reads this orchestration's own persisted launch requests
+    (`launches/<arid>.request.json`) and keeps the `ir_ref` of every row whose `step` is
+    `compile` and whose `leaf_mode` is `pure`. That is deliberately NOT the reservation the
+    source-dir discovery above uses: `reservations/<node>/compile.json#reserved_ir_id` is
+    OVERWRITTEN by `_ensure_fresh_producer_id` on every rotation, so it names only the LIVE ir
+    directory and would drop every repaired or restarted attempt — the same undercount
+    `_pure_source_dirs_of` warns about, in the one place the A/B numbers are the point.
+
+    A launch request is written before the leaf runs and is never rewritten, so one row exists
+    per attempt and the set of `ir_ref`s is exactly the directories this orchestration wrote an
+    IR into. `ir_ref` is JSON-sourced, so it is required to be a repo-relative `workspace/ir/...`
+    path with no traversal segment.
+    """
+    dirs: list[str] = []
+    launches = _orch_root(repo_root, orchestration_id) / "launches"
+    if not launches.is_dir():
+        return dirs
+    for path in sorted(launches.glob("*.request.json")):
+        row = _load_json_if_dict(path) or {}
+        if _clean_str(row.get("step")) != "compile":
+            continue
+        if _clean_str(row.get("leaf_mode")) != "pure":
+            continue
+        ref = _clean_str(row.get("ir_ref"))
+        if not ref:
+            continue
+        parts = PurePosixPath(ref).parts
+        if not parts or parts[0] != "workspace" or any(p in {".", ".."} for p in parts):
+            continue
+        if ref not in dirs:
+            dirs.append(ref)
+    return sorted(dirs)
+
+
 def collect_pure_leaf_ab_summary(
     repo_root: Path,
     orchestration_id: str,
@@ -767,15 +807,23 @@ def collect_pure_leaf_ab_summary(
     source_dirs, pipeline_refs = _pure_source_dirs_of(repo_root, orchestration_id)
     nodes: list[dict[str, Any]] = []
     for source_dir in source_dirs:
-        summary = summarize_pure_leaf_metas(repo_root / source_dir)
+        summary = summarize_pure_leaf_metas(repo_root / source_dir, "generate")
         if summary.get("found"):
             # Label repo-relative here (the callee sets no `source_dir`). Build a new
             # dict rather than mutating the returned one, so the ownership is a
             # visible fact of this expression, not an implicit callee obligation.
             nodes.append({**summary, "source_dir": source_dir})
+    # The Z1 compile pair (issue #168), discovered from the launch requests rather than from a
+    # reservation, and labelled by its own directory key so the two phases never share one.
+    compile_nodes: list[dict[str, Any]] = []
+    ir_dirs = _pure_ir_dirs_of(repo_root, orchestration_id)
+    for ir_dir in ir_dirs:
+        summary = summarize_pure_leaf_metas(repo_root / ir_dir, "compile")
+        if summary.get("found"):
+            compile_nodes.append({**summary, "ir_ref": ir_dir})
 
     result: dict[str, Any] = {
-        "available": bool(nodes),
+        "available": bool(nodes or compile_nodes),
         "generate_executor": generate_executor,
         "backend": backend,
         "agent_cli_version": agent_cli_version,
@@ -784,8 +832,9 @@ def collect_pure_leaf_ab_summary(
         # default backend's CLI version.
         "pure_leaf_provider_differs": pure_leaf_provider_differs,
         "pure_nodes": nodes,
+        "pure_compile_nodes": compile_nodes,
     }
-    if not nodes:
+    if not nodes and not compile_nodes:
         if not pipeline_refs:
             # No pipeline reservation at all: `prepare_node` never ran for any node of
             # this orchestration (or the reservations were removed). Name it — this is
@@ -1237,7 +1286,7 @@ def _render_pure_leaf_ab(summary: dict[str, Any] | None, lines: list[str]) -> No
     """Render the Z2 pure-leaf A/B rollup: executor + claude --version + per-node
     generate/verify attempt and token metrics (the P-arm provenance of a billed
     A/B comparison)."""
-    lines.append("## Pure-leaf A/B metrics (Z2)")
+    lines.append("## Pure-leaf A/B metrics")
     lines.append("")
     summary = summary if isinstance(summary, dict) else {}
     recorded_executor = summary.get("generate_executor")
@@ -1274,7 +1323,8 @@ def _render_pure_leaf_ab(summary: dict[str, Any] | None, lines: list[str]) -> No
                      f"(from `orchestration_meta.json#invocation.llm_leaf_map`; no CLI version "
                      f"is recorded for it)")
     nodes = summary.get("pure_nodes") or []
-    if not summary.get("available") or not nodes:
+    compile_nodes = summary.get("pure_compile_nodes") or []
+    if not summary.get("available") or not (nodes or compile_nodes):
         # Say which case this is. Under executor=pure, "legacy/agentic run" would
         # contradict the executor line rendered directly above; under an unknown or
         # unrecognized executor we cannot claim either arm.
@@ -1290,8 +1340,15 @@ def _render_pure_leaf_ab(summary: dict[str, Any] | None, lines: list[str]) -> No
         lines.append("")
         return
     lines.append("")
+    for node in compile_nodes:
+        # The row keys name the SUBSTEP, so a compile node's rows read `generate` / `verify`
+        # exactly as a generate node's do; the heading names the phase and the directory.
+        lines.append(f"### compile `{node.get('ir_ref')}`")
+        _render_pure_leaf_row("generate", node.get("generate") or {}, lines)
+        _render_pure_leaf_row("verify", node.get("verify") or {}, lines)
+        lines.append("")
     for node in nodes:
-        lines.append(f"### `{node.get('source_dir')}`")
+        lines.append(f"### generate `{node.get('source_dir')}`")
         _render_pure_leaf_row("generate", node.get("generate") or {}, lines)
         _render_pure_leaf_row("verify", node.get("verify") or {}, lines)
         lines.append("")

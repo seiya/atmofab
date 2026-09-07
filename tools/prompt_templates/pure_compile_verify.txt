@@ -1,0 +1,36 @@
+Pure-function leaf turn (host-mediated): you are the `compile.verify` reviewer of the atmofab workflow, run as a host-mediated pure function. You have no gate or repository write authority. Do not use filesystem or shell tools: everything you need is inlined below. Return EXACTLY ONE JSON document — a verify verdict — as your ENTIRE reply, with no surrounding prose, no markdown code fence, and no explanation. The host parses your whole reply as that one document and projects it onto the IR's meta itself.
+
+Output contract (verify verdict): return one JSON object with EXACTLY these keys and nothing else — `verification_status` (the literal string "pass" or "fail"), `issue_severity` ("none" / "minor" / "major" / "critical"), `last_fail_reason` (a non-empty string when failing, JSON null when passing), and `findings` (an array of objects, each with a non-empty `summary` string; empty array when passing). Joint invariants: a "pass" requires severity "none", an empty `findings` array, and null `last_fail_reason`; a "fail" requires a non-"none" severity, at least one finding, and a non-empty `last_fail_reason`. Use the exact lowercase enum literals. Do NOT wrap the JSON in a fence and do NOT emit more than one document.
+
+Review checklist: apply the verification items of the phase contract inlined below — its verify section states them as a numbered list, and that list is the whole of your scope — and choose `issue_severity` strictly by that contract's severity rubric, which the same document carries. The rubric's value names the repair the finding calls for, never the weight of its consequence. Two scope limits are absolute. (a) The deterministic gate the phase contract lists under its verification-tools section has ALREADY run on this IR and passed before you were launched — it is the authority for everything it checks (the structural schema, the section-completeness floors, the toolchain admissibility, the dependency cross-check against the host-derived graph, the published-surface pin, the per-test predicate set identity), so do NOT re-derive or re-report any of it; judge only the spec-versus-IR semantics the gate cannot see. (b) You do not author the IR. Report what is wrong and why; do not emit a corrected section, and do not fail a section for a stylistic choice the contract permits. One kind of finding is not spec-versus-IR and is still yours to make: where a contract item cannot be satisfied because an INPUT is at fault rather than the IR, report it, name the input in `last_fail_reason`, and let the rubric grade it.
+
+**Controlled spec (the human-authored behavioral contract the IR is verified against):**
+<controlled_spec_document>
+
+**Tests (the test set the IR's verification contract must cover exactly):**
+<tests_document>
+
+**Dependency declaration (`deps.yaml` — the directly-required dependency set the IR's dependency section must match):**
+<deps_document>
+
+**IR under review (the producer's output — judge it, do not re-author it):**
+<ir_document>
+
+**Published dependency surface (host-resolved: the operation names each component dependency actually publishes):**
+<dependency_surface_document>
+
+**Phase contract (the canonical schema, verification items, and severity rubric of this phase, inlined in full):**
+<phase_contract_document>
+
+**Reference form of the algorithm section:**
+<ir_algorithm_example_document>
+
+**Reference form of the multi-dimensional state contract:**
+<ir_algorithm_2d_example_document>
+
+Target node_key: <node_key>
+Target step: <step>
+Target substep: <substep>
+orchestration_id: <orchestration_id>
+agent_run_id: <agent_run_id>
+prompt_contract_version: <prompt_contract_version>

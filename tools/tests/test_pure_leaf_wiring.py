@@ -65,6 +65,51 @@ def _pure_generate_context() -> dict[str, str]:
     }
 
 
+def _pure_compile_context() -> dict[str, str]:
+    """One non-empty value per `PURE_CONTEXT_REQUIRED_KEYS[("compile", "generate")]` key. The
+    launch validator requires every declared key to be a non-empty string, so a fixture that
+    omits one does not reach the renderer at all."""
+    return {
+        "controlled_spec_document": "the model conserves mass",
+        "tests_document": "- test: conserves mass",
+        "deps_document": "dependencies:\n  components: []\n",
+        "profile_spec_document": "No profile dependency is declared in deps.yaml.",
+        "dependency_graph_document": '{"direct_deps": []}',
+        "phase_contract_document": "## Compile\nauthor every section.\n",
+        "ir_algorithm_example_document": "algorithm:\n  steps: []\n",
+        "ir_algorithm_2d_example_document": "algorithm:\n  state_variables: []\n",
+        "impl_defaults_schema_document": '{"title": "impl_defaults knob names"}',
+        "checks_module_contract_document": (
+            "## 1. The fixed ABI\ncase_setup ok=.false. still proceeds\n"),
+        "toolchain_document": '{"admissible_toolchains": []}',
+    }
+
+
+def _pure_compile_verify_context() -> dict[str, str]:
+    return {
+        "controlled_spec_document": "the model conserves mass",
+        "tests_document": "- test: conserves mass",
+        "deps_document": "dependencies:\n  components: []\n",
+        "ir_document": "algorithm:\n  state_variables: [h]\n",
+        "dependency_surface_document": "[]",
+        "phase_contract_document": "## Compile\nauthor every section.\n",
+        "ir_algorithm_example_document": "algorithm:\n  steps: []\n",
+        "ir_algorithm_2d_example_document": "algorithm:\n  state_variables: []\n",
+    }
+
+
+def _pure_context_for(step: str, substep: str) -> dict[str, str]:
+    """The fixture context for one migrated pure pair, keyed by BOTH halves of the pair. Keying
+    on `substep` alone silently handed the compile pairs the generate contexts, whose keys the
+    launch validator then rejects."""
+    return {
+        ("compile", "generate"): _pure_compile_context,
+        ("compile", "verify"): _pure_compile_verify_context,
+        ("generate", "generate"): _pure_generate_context,
+        ("generate", "verify"): _pure_verify_context,
+    }[(step, substep)]()
+
+
 def _pure_verify_context() -> dict[str, str]:
     return {
         "controlled_spec_document": "the model conserves mass",
@@ -160,13 +205,36 @@ class PurePayloadValidationTests(unittest.TestCase):
     def test_validate_payload_accepts_pure_generate_verify(self) -> None:
         ort._validate_launch_request_payload(ort.prepare_launch_request_payload(_pure_request("verify")))
 
-    def test_validate_payload_rejects_pure_outside_generate(self) -> None:
-        for step, substep in (("compile", "generate"), ("validate", "judge")):
-            bad = _pure_request()
-            bad["step"] = step
-            bad["substep"] = substep
-            with self.assertRaises(ValueError):
-                ort._validate_pure_launch_request_payload(bad)
+    def test_validate_payload_accepts_every_migrated_pure_pair(self) -> None:
+        """Set identity against `PURE_CONTEXT_REQUIRED_KEYS`, so a pair added to the table
+        without a fixture context is red here rather than accepted on an empty one."""
+        for step, substep in sorted(ort.PURE_CONTEXT_REQUIRED_KEYS):
+            with self.subTest(pair=f"{step}.{substep}"):
+                # `dependency_ref` is step-shaped and record-launch enforces it: a Compile
+                # request names the spec's `deps.yaml`, a Generate request the lowered IR.
+                dep_ref = ("spec/problem/dynamics/shallow_water/shallow_water2d/deps.yaml"
+                           if step == "compile" else _DEP_REF)
+                req = _pure_request(substep, step=step, dependency_ref=dep_ref,
+                                    pure_context=_pure_context_for(step, substep))
+                ort._validate_launch_request_payload(
+                    ort.prepare_launch_request_payload(req))
+
+    def test_validate_payload_rejects_pure_outside_the_migrated_pairs(self) -> None:
+        """The pair gate itself. Each subject carries a context that is VALID for its own pair,
+        so the rejection is the pair test and not a missing-key failure — which is how this row
+        was passing for the wrong reason once `compile.generate` became admissible."""
+        for step, substep, ctx in (
+            # The one agentic LLM leaf left.
+            ("validate", "judge", _pure_generate_context()),
+            # A deterministic substep, which launches no leaf at all.
+            ("compile", "static", _pure_compile_context()),
+            ("generate", "gate", _pure_generate_context()),
+        ):
+            with self.subTest(pair=f"{step}.{substep}"):
+                bad = _pure_request(substep, step=step, pure_context=ctx)
+                with self.assertRaises(ValueError) as caught:
+                    ort._validate_pure_launch_request_payload(bad)
+                self.assertIn("leaf_mode=pure is only valid for", str(caught.exception))
 
     def test_validate_payload_rejects_pure_with_deterministic(self) -> None:
         bad = _pure_request(deterministic=True)
@@ -702,7 +770,15 @@ class PureRenderTests(unittest.TestCase):
     # reviewers reworded around them) but they named the axis in the failure. Both facts belong
     # in the PR body.
     _RUBRIC_DIGEST_BY_STEP = {
-        "compile": "6eb19676f23f4addd6b5f6ba1bdf7027965f9e4b19ad951d13668ccb78291d4d",
+        # Re-taken for issue #168 (Z1). The ONLY edit inside the span is the lead sentence's
+        # first clause, which used to say "the leaf records it in `ir_meta.json` next to
+        # `last_fail_reason`" and now says that an agentic leaf does and a `pure-function leaf`
+        # returns the value in its verdict for the host to project. Checked against all nine
+        # properties in the failure message before re-taking: the AXIS sentence, the three
+        # bullets, both tie-breaks and the §2-2 pointer are byte-identical, so 1-9 are answered
+        # by the previous reading, and the added clause states who WRITES the value rather than
+        # how it is chosen — it is not a fourth grading rule.
+        "compile": "a471b2a37fac855587209c9270953be749ce65d2cbddbf0c49292f26b2a40ead",
         "generate": "83bed963f6bf9233e4167ce3c1a1f47953102c147431b7234d67fc560c3a04bc",
     }
 
@@ -1062,12 +1138,20 @@ class PureRenderTests(unittest.TestCase):
         ("skills/workflow-generate-generate/SKILL.md", None, None),
         ("skills/workflow-compile-generate/SKILL.md", None, None),
         ("tools/prompt_templates/pure_generate_verify.txt", None, None),
+        # Z1 (issue #168) put `compile.verify` on a pure template of its own, so the sentence
+        # below about `Compile.verify` being agentic-only now describes the RESIDUAL agentic
+        # path rather than the only one. Both compile templates are scanned for the same reason
+        # every other one is.
+        ("tools/prompt_templates/pure_compile_verify.txt", None, None),
+        ("tools/prompt_templates/pure_compile_generate.txt", None, None),
         # Round 2: the AGENTIC transport, and the only one `Compile.verify` has. The pure
         # template was here from issue #143 and its agentic counterpart was not, which was
         # survivable while the rubric governed `Generate.verify` only — `Generate.verify` also
         # has a `SKILL` and a phase doc on this list. `Compile.verify` is agentic-only, so this
         # template is where a hand-assigned value would reach it with nothing else to catch it.
-        # It already carries `issue_severity: <issue_severity>` as its output contract.
+        # It already carries `issue_severity: <issue_severity>` as its output contract. (Since
+        # issue #168 `Compile.verify` also has a pure template, listed above; this one is still
+        # its transport on the residual agentic path and on `validate.judge`.)
         ("tools/prompt_templates/substep_agent.txt", None, None),
         ("tools/prompt_templates/step_agent.txt", None, None),
         ("tools/prompt_templates/common_boilerplate.txt", None, None),
@@ -1445,16 +1529,21 @@ class PureRenderTests(unittest.TestCase):
         pure_pairs = sorted(PURE_CAPABLE_SUBSTEPS)
         self.assertTrue(pure_pairs, "no pure-capable substeps; this renders nothing")
         for step, substep in pure_pairs:
-            ctx = (_pure_generate_context() if substep == "generate"
-                   else _pure_verify_context())
-            reason = "pure_bundle_repair" if substep == "generate" else "pure_verdict_repair"
+            ctx = _pure_context_for(step, substep)
+            reason = ("pure_bundle_repair" if (step, substep) == ("generate", "generate")
+                      else "pure_ir_document_repair" if (step, substep) == ("compile", "generate")
+                      else "pure_ir_verdict_repair" if step == "compile"
+                      else "pure_verdict_repair")
             for shape in ("pure-cold", "pure-repair-warm", "pure-repair-cold"):
                 kw = dict(self._RENDER_COMMON, pure_leaf=True, makefile_host_authored=True,
                           runner_host_authored=True)
                 extra: dict = {}
                 if shape == "pure-cold":
                     kw["pure_context"] = ctx
+                    # Every optional input for every pair, as in the agentic loop above: the
+                    # BUILDER decides what to scope (`dependency_surface` to compile.generate).
                     extra = {"resolved_dependencies": (self._RENDER_DEP,),
+                             "dependency_surface": self._RENDER_SURFACE,
                              "exemplar": self._RENDER_EXEMPLAR}
                 else:
                     kw["repair"] = dict(self._RENDER_REPAIR,
@@ -1466,7 +1555,8 @@ class PureRenderTests(unittest.TestCase):
                     else:
                         kw["warm_resume"] = False
                         kw["pure_context"] = ctx
-                        extra = {"resolved_dependencies": (self._RENDER_DEP,)}
+                        extra = {"resolved_dependencies": (self._RENDER_DEP,),
+                                 "dependency_surface": self._RENDER_SURFACE}
                 req = wc.build_launch_request(refs, step=step, substep=substep, **kw, **extra)
                 if shape == "pure-repair-cold":
                     # `prior_document` is threaded onto the request by the producer repair loop
@@ -1998,19 +2088,31 @@ class PureRenderTests(unittest.TestCase):
         a legitimate rewording of the block does not turn this red.
         SAMPLED: the cold shapes only. A warm repair deliberately omits them (the resumed
         session holds them) and the slim agentic turn does too.
+
+        The fixture passes every optional input for every pair, so an EMPTY block means the
+        BUILDER declined to attach facts to this pair. That is a real disposition — `compile.verify`
+        reviews a frozen IR and is shown the resolved surface as a `pure_context` document instead
+        — so it is asserted as a disposition rather than skipped: the pair must carry neither
+        carrier, and its rendered prompt must leave no unsubstituted placeholder behind.
         """
+        injected: list[str] = []
         for label, req in self._host_built_launch_requests():
             if not label.endswith("/pure-cold"):
                 continue
             with self.subTest(label=label):
                 block = ort._build_dependency_facts(req)
-                self.assertTrue(block,
-                                f"{label}: the fixture injects no dependency facts, so this "
-                                f"observes nothing")
                 rendered = ort.prepare_launch_request_payload(req)["launch_prompt_full"]
+                self.assertNotIn("<dependency_facts>", rendered, label)
+                if not block:
+                    self.assertNotIn("resolved_dependencies", req, label)
+                    self.assertNotIn("dependency_surface", req, label)
+                    continue
+                injected.append(label)
                 for line in block.splitlines():
                     if line.strip():
                         self.assertIn(line, rendered, label)
+        self.assertTrue(injected,
+                        "no pure-cold pair received dependency facts, so this observes nothing")
 
     def test_severity_literal_pattern_sees_each_spelling_it_claims(self) -> None:
         """`_SEVERITY_LITERAL_RE`'s branches, driven on synthetic input in both directions.

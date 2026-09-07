@@ -41,6 +41,7 @@ import time
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any, NamedTuple
 from zoneinfo import ZoneInfo
 
@@ -555,6 +556,57 @@ GENERATE_VERDICT_FAILURE_CATEGORIES: tuple[str, ...] = (
 )
 GENERATE_VERDICT_FAILURE_ROUTING: dict[str, tuple[str, str]] = {
     category: ("generate", "restart") for category in GENERATE_VERDICT_FAILURE_CATEGORIES
+}
+
+# --- Z1 pure-leaf IR-document routing (issue #168) -----------------------------
+# The pure `compile.generate` producer returns exactly one IR document
+# (`{"ir": <object>, "last_fail_reason": null | string}`); the host validates its SHAPE
+# (transport parse, `_pure_ir_document_violations`) and repairs a violation in a bounded
+# in-conversation warm-resume loop (MAX_BUNDLE_REPAIR_TURNS). The document's MEANING is not
+# judged in that loop — `Compile.static` is the single semantic gate and already routes its own
+# `compile_static_violation` back to (compile, reuse). Only when the shape budget is exhausted
+# does the substep fail with the terminal category recorded in
+# `compile_generate_meta.json#failure_category`; run_phase then routes it here. Every category is
+# a defect in the model's returned document, so the route is a fresh (compile, generate) attempt
+# with a warm reuse repair. The route reason is `<prefix><category>`, so `_read_repair_findings`
+# threads `compile_generate_meta.json#failure_excerpt` through the repair.
+COMPILE_DOCUMENT_REASON_PREFIX = "compile_document_"
+COMPILE_IR_DOCUMENT_VIOLATION = "ir_document_violation"
+COMPILE_DOCUMENT_FAILURE_CATEGORIES: tuple[str, ...] = (
+    "pure_response_unparseable",
+    "pure_response_truncated",
+    COMPILE_IR_DOCUMENT_VIOLATION,
+)
+COMPILE_DOCUMENT_FAILURE_ROUTING: dict[str, tuple[str, str]] = {
+    category: ("compile", "reuse") for category in COMPILE_DOCUMENT_FAILURE_CATEGORIES
+}
+
+# The producer's THIRD exit, deliberately absent from the routing table above: a schema-valid
+# document whose `last_fail_reason` is non-null is the leaf DECLARING that the Compile phase
+# cannot be completed from the inputs it was given (`phase_01_compile.md` §Compile fail —
+# schema insufficiency / missing input). It is neither a pass nor a repairable document defect,
+# so it must not be routed to a retry: `classify_failure` recognizes the token, declines the
+# table, and falls through to the verify-severity gate, which reads the `issue_severity: "major"`
+# the host wrote into `ir_meta.json` (dev -> fail_closed, prod -> escalate). Exactly where the
+# agentic leaf's own `Compile fail` declaration lands.
+COMPILE_DECLARED_FAIL = "compile_declared_fail"
+
+# The pure `compile.verify` reviewer returns the same verify-verdict document the pure
+# `generate.verify` reviewer does; the host validates it and repairs a SCHEMA violation in the
+# same bounded warm-resume loop. A schema-VALID verdict (pass OR fail) is the reviewer's answer
+# and is never repaired — a `fail` verdict projects onto `ir_meta.json` and routes through the
+# normal verify-severity gate. Only a persistently MALFORMED verdict reaches this table, and for
+# the reason `GENERATE_VERDICT_FAILURE_ROUTING` states at length (the reviewer cannot repair the
+# producer, and a phase reopen hands its repair to substep index 0), the route is a COLD compile
+# restart rather than a reuse.
+COMPILE_VERDICT_REASON_PREFIX = "compile_verdict_"
+COMPILE_VERDICT_FAILURE_CATEGORIES: tuple[str, ...] = (
+    "pure_response_unparseable",
+    "pure_response_truncated",
+    GENERATE_VERDICT_SCHEMA_VIOLATION,
+)
+COMPILE_VERDICT_FAILURE_ROUTING: dict[str, tuple[str, str]] = {
+    category: ("compile", "restart") for category in COMPILE_VERDICT_FAILURE_CATEGORIES
 }
 
 # Validate.judge (failure_class, attribution) -> routing action.
@@ -6060,31 +6112,40 @@ class Conductor:
         return len(self._infra_direct_deps(ir)) == 1
 
     def _pure_leaf_substep(self, refs: NodeRefs, phase: str, substep: str | None) -> bool:
-        """True when this substep runs as a Z2 host-mediated pure-function leaf.
+        """True when this substep runs as a host-mediated pure-function leaf.
 
         Since M-F the generate-executor is no longer selectable (legacy execution removed; `pure`
-        is the only executor), so this dispatch is decided purely by the node shape and the
-        supported backend (Claude's closed tool-free transport or Codex's sandboxed structured
-        approximation), the two generate LLM
-        substeps, and the node's M3c shape (`_conductor_authors_makefile` ∧
-        `_conductor_authors_runner`) — the shape the CodegenBundle v1 producer can express (the leaf
-        authors model+checks; the host renders the runner glue + the Makefile).
+        is the only executor), so this dispatch is decided by the provider's `pure` capability
+        (Claude's closed tool-free transport or Codex's sandboxed structured approximation), the
+        migrated `(phase, substep)` pair, and — for the two GENERATE pairs only — the node's M3c
+        shape (`_conductor_authors_makefile` ∧ `_conductor_authors_runner`), the shape the
+        CodegenBundle v1 producer can express (the leaf authors model+checks; the host renders the
+        runner glue + the build control file).
 
-        A non-M3c node has no bundle representation for its runner, so it falls through to the
-        shared AGENTIC leaf loop in `run_substep`. Live case: the `infrastructure` harness
-        self-test. The former non-M3c physics shapes (c/cpp/mixed, or no infra dep) no longer
-        reach a run — spec-input rejects the dep count and the compile.static toolchain gate
+        A non-M3c node has no bundle representation for its runner, so its GENERATE substeps fall
+        through to the shared AGENTIC leaf loop in `run_substep`. Live case: the `infrastructure`
+        harness self-test. The former non-M3c physics shapes (c/cpp/mixed, or no infra dep) no
+        longer reach a run — spec-input rejects the dep count and the compile.static toolchain gate
         rejects the backend — so for a hand-crafted non-M3c IR this dispatch is a FAIL-SAFE to
         the agentic loop, not a selectable executor: their invocation record still stamps
         `generate_executor=pure` (a provenance stamp), and they are not rejected on resume.
 
-        Both generate LLM substeps go pure on an M3c Claude or Codex node: `(generate, generate)` (the
-        CodegenBundle producer, M-C) and `(generate, verify)` (the verdict reviewer, M-D). The two
-        are dispatched to their own loops in `run_substep`. Deterministic generate substeps
-        (lint/syntax/static) are never pure — they run in-process regardless — and compile.verify
-        stays agentic (Z2 migrates the generate phase only)."""
+        The two COMPILE pairs (Z1, issue #168) carry NO shape condition, deliberately: the Compile
+        contract does not depend on the node kind, and at `compile.generate` time no IR exists, so
+        `_conductor_authors_makefile` / `_conductor_authors_runner` (both of which READ the IR)
+        cannot be evaluated. An `infrastructure` node's Compile therefore goes pure too — the
+        Generate-side carve-out (#169) is a separate question.
+
+        Four LLM substeps go pure: `(compile, generate)` (the IR producer, Z1) and
+        `(compile, verify)` (the IR reviewer, Z1); `(generate, generate)` (the CodegenBundle
+        producer, M-C) and `(generate, verify)` (the verdict reviewer, M-D) on an M3c node. Each
+        pair is dispatched to its own loop in `run_substep`. Deterministic substeps
+        (compile.static, generate lint/syntax/static) are never pure — they run in-process
+        regardless — and `validate.judge` stays agentic (Z3)."""
         if not self.entry_for(phase, substep).supports(CAP_PURE):
             return False
+        if (phase, substep) in (("compile", "generate"), ("compile", "verify")):
+            return True
         if (phase, substep) not in (("generate", "generate"), ("generate", "verify")):
             return False
         return self._conductor_authors_makefile(refs) and self._conductor_authors_runner(refs)
@@ -6780,11 +6841,518 @@ clean:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(meta, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
+    # --- Z1 pure-function IR producer / reviewer (issue #168) -----------------
+    # The pure `compile.generate` producer returns one IR document and the pure `compile.verify`
+    # reviewer returns one verify verdict; the host inlines the closed context, validates the
+    # document's SHAPE, and writes `spec.ir.yaml` / `ir_meta.json` itself after the child window
+    # closes. The MEANING of the IR is judged by the existing deterministic `Compile.static` gate
+    # (which already routes its own violations back to `(compile, reuse)`), so nothing here
+    # re-runs `--stage compile`.
+
+    _PURE_PROFILE_ABSENT_DOCUMENT = (
+        "No profile dependency is declared in deps.yaml.")
+
+    def _pure_repo_document(self, rel: str, name: str) -> str:
+        """A repository document inlined VERBATIM into a pure compile context, or RAISE.
+
+        Unlike a node artifact (which keeps the `""` degradation the generate producer's ir/tests
+        reads have), a repository document the leaf cannot repair fails the substep CLOSED before
+        any leaf is spawned: an empty string would satisfy the launch validator's presence check
+        and ship a prompt whose contract, example, or schema section is blank. `UnicodeError` is
+        caught alongside `OSError` because a decode error is a `ValueError`, not an `OSError`."""
+        path = self.repo_root / rel
+        try:
+            return path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            raise RuntimeError(f"pure_{name}_document_missing: {path}: {exc}") from exc
+
+    def _pure_profile_spec_document(self, refs: NodeRefs) -> str:
+        """The controlled spec of each `profile` dependency this node declares, resolved through
+        the catalog, or the host's fixed sentence when it declares none.
+
+        The profile carries the component-set selection a node's algorithm is written against, and
+        the agentic leaf reads it today. Resolution is best-effort per entry (an entry the catalog
+        does not carry contributes a named line rather than failing the substep): the deterministic
+        gates already own dependency resolvability, and a profile that cannot be resolved is their
+        finding, not a reason to refuse to launch. The sentinel keeps the value a NON-EMPTY string,
+        which the launch validator requires of every declared key."""
+        deps = _read_yaml(self.repo_root / refs.spec_path / "deps.yaml") or {}
+        dependencies = deps.get("dependencies") if isinstance(deps, dict) else None
+        entries = (dependencies or {}).get("profiles") if isinstance(dependencies, dict) else None
+        profile_ids: list[str] = []
+        for entry in entries or []:
+            pid = entry.get("profile_id") if isinstance(entry, dict) else entry
+            if isinstance(pid, str) and pid.strip():
+                profile_ids.append(pid.strip())
+        if not profile_ids:
+            return self._PURE_PROFILE_ABSENT_DOCUMENT
+        catalog = _read_yaml(self.repo_root / "spec" / "registry" / "spec_catalog.yaml") or {}
+        by_id = {e.get("spec_id"): e for e in (catalog.get("specs") or [])
+                 if isinstance(e, dict)}
+        sections: list[str] = []
+        for pid in profile_ids:
+            entry = by_id.get(pid) or {}
+            rel = entry.get("controlled_spec_path")
+            text = ""
+            if isinstance(rel, str) and rel.strip():
+                try:
+                    text = (self.repo_root / rel).read_text(encoding="utf-8")
+                except (OSError, UnicodeError):
+                    text = ""
+            sections.append(f"# profile: {pid}\n\n"
+                            + (text if text.strip()
+                               else "(this profile is declared in deps.yaml but the registry "
+                                    "does not resolve it to a controlled spec)"))
+        return "\n\n".join(sections)
+
+    def _pure_toolchain_document(self, refs: NodeRefs) -> str:
+        """The toolchain combinations the HOST can build and render for, as JSON.
+
+        The single reason this key exists: the pure prompt must tell the producer which toolchain
+        to author WITHOUT naming a target-stack technology in a `neutral core` file
+        (`docs/BACKEND_BOUNDARY.md`). So the pairs are derived from the backend registry at render
+        time and travel as data, and the template says only "copy the values from this document".
+
+        The capabilities asked are exactly the ones the deterministic gate
+        (`validate_pipeline_semantics._toolchain_capability_clauses`) asks of a node of this kind,
+        so a pair offered here is by construction a pair that gate accepts — an `infrastructure`
+        node needs only its build system to be executable, every other kind additionally needs the
+        host to author the control file and render the runner. An empty result RAISES: shipping a
+        prompt whose admissible set is `[]` would ask the producer to invent a value, which is the
+        blindness this document removes."""
+        from tools.backends import registry as backend_registry
+        kind = refs.node_key.partition("@")[0].partition("/")[0].strip()
+        is_infrastructure = kind == "infrastructure"
+        build_systems = [
+            b for b in backend_registry.implemented_backend_ids("build_system")
+            if backend_registry.provides("build_system", b, "build_execute")
+            and (is_infrastructure
+                 or backend_registry.provides("build_system", b, "control_file"))
+        ]
+        languages = [
+            l for l in backend_registry.implemented_backend_ids("language")
+            if is_infrastructure
+            or (backend_registry.provides("language", l, "control_file")
+                and backend_registry.provides("language", l, "runner_render"))
+        ]
+        pairs = [{"language": l, "build_system": b} for l in languages for b in build_systems]
+        if not pairs:
+            raise RuntimeError(
+                "pure_toolchain_document_unresolvable: the backend registry declares no "
+                f"(language, build_system) pair the host can serve for a {kind!r} node")
+        return json.dumps({"admissible_toolchains": pairs}, indent=2, ensure_ascii=False)
+
+    def _build_pure_compile_context(self, refs: NodeRefs) -> dict[str, str]:
+        """Assemble the closed context a pure `compile.generate` producer sees, each value a plain
+        string the renderer data-fences.
+
+        The three NODE artifacts (`controlled_spec.md`, `tests.md`, `deps.yaml`) keep the same
+        `""` degradation the generate producer's ir/tests reads have. Everything else RAISES
+        through `_pure_repo_document` / the two derivations below, and the caller converts that
+        into a `pure_context_assembly_failed` fail_closed transport outcome with no leaf spawned:
+        a repository document, a host-derived sidecar, or an empty admissible-toolchain set is not
+        something a producer retry can repair.
+
+        The registry catalog itself is NOT inlined: the two facts a producer takes from it — the
+        dependency closure and the published operation names — reach it already host-resolved, as
+        `dependency_graph_document` and (through the unfenced `<dependency_facts>` block) the
+        published-operations catalog. `docs/workflow/CHECKS_MODULE_CONTRACT.md` is sliced to its
+        ABI sections by the same `_checks_contract_abi_sections` the reviewer uses, so this caller
+        adds no new reader of that document beyond the one `TODO.md` already records."""
+        from tools.orchestration_runtime import (CHECKS_MODULE_CONTRACT_REF,
+                                                 WORKFLOW_PHASE_DOC_BY_STEP)
+        def _node(rel: str) -> str:
+            try:
+                return (self.repo_root / rel).read_text(encoding="utf-8")
+            except OSError:
+                return ""
+        contract_text = self._pure_repo_document(
+            CHECKS_MODULE_CONTRACT_REF, "checks_contract")
+        try:
+            contract_abi = _checks_contract_abi_sections(contract_text)
+        except ValueError as exc:
+            raise RuntimeError(
+                "pure_checks_contract_document_unsliceable: "
+                f"{self.repo_root / CHECKS_MODULE_CONTRACT_REF}: {exc}") from exc
+        return {
+            "controlled_spec_document": _node(f"{refs.spec_path}/controlled_spec.md"),
+            "tests_document": _node(f"{refs.spec_path}/tests.md"),
+            "deps_document": _node(f"{refs.spec_path}/deps.yaml"),
+            "profile_spec_document": self._pure_profile_spec_document(refs),
+            "dependency_graph_document": self._pure_repo_document(
+                f"{refs.ir_ref}/dependency_graph.json", "dependency_graph"),
+            "phase_contract_document": self._pure_repo_document(
+                WORKFLOW_PHASE_DOC_BY_STEP["compile"], "phase_contract"),
+            "ir_algorithm_example_document": self._pure_repo_document(
+                "docs/examples/spec_ir_algorithm_section.example.yaml", "ir_algorithm_example"),
+            "ir_algorithm_2d_example_document": self._pure_repo_document(
+                "docs/examples/spec_ir_algorithm_2d_problem_contract.example.yaml",
+                "ir_algorithm_2d_example"),
+            "impl_defaults_schema_document": self._pure_repo_document(
+                "spec/schema/ir/impl_defaults.schema.json", "impl_defaults_schema"),
+            "checks_module_contract_document": contract_abi,
+            "toolchain_document": self._pure_toolchain_document(refs),
+        }
+
+    def _build_pure_compile_verify_context(self, refs: NodeRefs) -> dict[str, str]:
+        """Assemble the closed context a pure `compile.verify` reviewer sees.
+
+        It reads the IR under review and the host-resolved published-operation surface (which the
+        producer receives through `<dependency_facts>` instead; the reviewer gets the raw sidecar
+        because `build_launch_request` attaches the surface to the authoring substep only). The
+        severity rubric is NOT a separate slice here: it is a subsection of the phase contract
+        this context already inlines in full, and inlining it twice would state one rule in two
+        places inside one prompt."""
+        from tools.orchestration_runtime import WORKFLOW_PHASE_DOC_BY_STEP
+        def _node(rel: str) -> str:
+            try:
+                return (self.repo_root / rel).read_text(encoding="utf-8")
+            except OSError:
+                return ""
+        return {
+            "controlled_spec_document": _node(f"{refs.spec_path}/controlled_spec.md"),
+            "tests_document": _node(f"{refs.spec_path}/tests.md"),
+            "deps_document": _node(f"{refs.spec_path}/deps.yaml"),
+            "ir_document": _node(f"{refs.ir_ref}/spec.ir.yaml"),
+            "dependency_surface_document": _node(f"{refs.ir_ref}/dependency_surface.json"),
+            "phase_contract_document": self._pure_repo_document(
+                WORKFLOW_PHASE_DOC_BY_STEP["compile"], "phase_contract"),
+            "ir_algorithm_example_document": self._pure_repo_document(
+                "docs/examples/spec_ir_algorithm_section.example.yaml", "ir_algorithm_example"),
+            "ir_algorithm_2d_example_document": self._pure_repo_document(
+                "docs/examples/spec_ir_algorithm_2d_problem_contract.example.yaml",
+                "ir_algorithm_2d_example"),
+        }
+
+    #: The IR sections every node's document must carry, and the one more a node that publishes
+    #: a surface must carry. This is a SHAPE floor for the bounded document repair, NOT the
+    #: schema: `Compile.static` is the single semantic gate and owns every field inside them.
+    _PURE_IR_REQUIRED_SECTIONS: tuple[str, ...] = (
+        "schema_version", "meta", "case", "algorithm", "impl_defaults",
+        "io_contract", "dependency")
+    _PURE_IR_PUBLIC_API_KINDS: frozenset[str] = frozenset({"component", "infrastructure"})
+
+    def _pure_ir_document_violations(self, refs: NodeRefs,
+                                     doc: Any) -> tuple[str, str] | None:
+        """Validate the SHAPE of a producer's IR document. Returns None when clean, else
+        `(failure_category, findings_text)` for the bounded repair / the per-attempt record.
+
+        Deliberately shallow. The document's meaning — every section's schema, the dependency
+        cross-check, the published-surface pin, the per-test predicate set — is judged by the
+        deterministic `Compile.static` gate that runs immediately after this substep, and its
+        `compile_static_violation` already reopens `(compile, reuse)` with the gate's own excerpt.
+        Repeating any of it here would be a second gate with a second opinion.
+
+        What IS checked is what the host cannot recover from: the two-key envelope, the
+        declaration's type, the presence of the top-level sections (so a document missing half the
+        IR is one cheap warm repair turn rather than a phase reopen), and that the object survives
+        the host's own serialize/parse round trip. The node's kind is taken from `refs`, never from
+        the document's own `meta.spec_kind`: a leaf that chose its own key requirement would be
+        choosing which floor it is held to."""
+        if not isinstance(doc, dict):
+            return (COMPILE_IR_DOCUMENT_VIOLATION, "the reply is not a JSON object")
+        extra = sorted(set(doc) - {"ir", "last_fail_reason"})
+        missing = sorted({"ir", "last_fail_reason"} - set(doc))
+        if extra or missing:
+            clauses = []
+            if missing:
+                clauses.append(f"missing top-level key(s): {', '.join(missing)}")
+            if extra:
+                clauses.append(f"unexpected top-level key(s): {', '.join(extra)}")
+            return (COMPILE_IR_DOCUMENT_VIOLATION,
+                    ("the document must carry EXACTLY the keys `ir` and `last_fail_reason`; "
+                     + "; ".join(clauses)))
+        reason = doc.get("last_fail_reason")
+        if reason is not None and not (isinstance(reason, str) and reason.strip()):
+            return (COMPILE_IR_DOCUMENT_VIOLATION,
+                    ("`last_fail_reason` must be JSON null or a non-empty string; got "
+                     f"{type(reason).__name__}"))
+        if reason is not None:
+            # A declaration that the phase cannot be completed. There is no `ir` to shape-check.
+            return None
+        ir = doc.get("ir")
+        if not isinstance(ir, dict):
+            return (COMPILE_IR_DOCUMENT_VIOLATION,
+                    ("`ir` must be a JSON object holding the IR's top-level sections; got "
+                     f"{type(ir).__name__}"))
+        kind = refs.node_key.partition("@")[0].partition("/")[0].strip()
+        required = list(self._PURE_IR_REQUIRED_SECTIONS)
+        if kind in self._PURE_IR_PUBLIC_API_KINDS:
+            required.append("public_api")
+        absent = [k for k in required if k not in ir]
+        if absent:
+            return (COMPILE_IR_DOCUMENT_VIOLATION,
+                    (f"`ir` is missing the required top-level section(s): {', '.join(absent)} "
+                     f"(this node's kind is {kind!r})"))
+        # The host serializes `ir` itself, so a value the serializer cannot express — or one that
+        # does not survive the round trip — must fail here as a repairable document defect rather
+        # than at the host write, where it would be mis-routed as a transport fail_closed.
+        try:
+            round_tripped = yaml.safe_load(self._pure_ir_yaml(ir))
+        except Exception as exc:  # noqa: BLE001 — any serializer/parser refusal is the finding
+            return (COMPILE_IR_DOCUMENT_VIOLATION,
+                    ("`ir` cannot be serialized as the IR document the host writes "
+                     f"({type(exc).__name__}: {exc}); re-emit it using plain JSON values only"))
+        if round_tripped != ir:
+            return (COMPILE_IR_DOCUMENT_VIOLATION,
+                    ("`ir` does not survive the host's serialize/parse round trip unchanged; "
+                     "re-emit it using plain JSON values only (no value whose text form re-reads "
+                     "as a different type)"))
+        return None
+
+    @staticmethod
+    def _pure_ir_declared_fail(doc: dict[str, Any]) -> str | None:
+        """The producer's own `Compile fail` declaration, or None. Read only from an already
+        shape-validated document, so the type is settled."""
+        reason = doc.get("last_fail_reason")
+        return reason.strip() if isinstance(reason, str) and reason.strip() else None
+
+    @staticmethod
+    def _pure_ir_yaml(ir: dict[str, Any]) -> str:
+        """The IR object as the document text the host writes. One spelling, shared by the
+        round-trip probe in `_pure_ir_document_violations` and by the write itself, so the thing
+        that was checked is the thing that lands."""
+        return yaml.safe_dump(ir, sort_keys=False, allow_unicode=True, width=120)
+
+    def _write_pure_ir_artifacts(self, refs: NodeRefs, doc: dict[str, Any], *,
+                                 attempts: int) -> None:
+        """Write an accepted IR document's artifacts host-side, AFTER the producer's child window
+        closes: `<ir_ref>/spec.ir.yaml` (the serialized `ir` object) and `<ir_ref>/ir_meta.json`
+        (the stage meta the contract fixes). The host holds every path and runs unconfined, so
+        these writes are not leaf-attributed.
+
+        `verification_status` is `"pending"`: the meta contract requires a non-empty string, and
+        the readers that decide whether a dependency is certified compare it against `"pass"`
+        exactly — so the producer's own meta must not read as certified before the reviewer has
+        looked. The reviewer re-authors this file with its verdict (`_write_verify_ir_meta`)."""
+        ir_dir = self.repo_root / refs.ir_ref
+        ir_dir.mkdir(parents=True, exist_ok=True)
+        ir_root = ir_dir.resolve()
+        target = ir_dir / "spec.ir.yaml"
+        # Defense-in-depth containment, mirroring `_write_pure_bundle_artifacts`: every path here
+        # is host-composed from `refs`, so an escape means a caller handed this method refs it did
+        # not derive — fail closed loudly rather than writing outside the IR directory.
+        if not target.resolve().is_relative_to(ir_root):
+            raise RuntimeError(
+                f"pure IR artifact {target.resolve()} resolves outside {ir_root} — "
+                "refusing to write")
+        target.write_text(self._pure_ir_yaml(doc["ir"]), encoding="utf-8")
+        self._write_ir_meta(refs, verification_status="pending", last_fail_reason=None,
+                            issue_severity=None, attempts=attempts)
+
+    def _write_declared_compile_fail(self, refs: NodeRefs, reason: str, *,
+                                     attempts: int) -> None:
+        """Project a producer's `Compile fail` declaration onto `ir_meta.json`, and write NO
+        `spec.ir.yaml`: the leaf said the phase cannot be completed, so there is no IR, and a
+        stale one from an earlier attempt must not be left to look fresh (the `ir_id` is rotated
+        per attempt, so this directory holds none).
+
+        The severity is `major` because the phase's rubric assigns that to a finding whose subject
+        is the INPUT rather than the artifact — which is exactly what this declaration is."""
+        self._write_ir_meta(refs, verification_status="fail", last_fail_reason=reason,
+                            issue_severity="major", attempts=attempts)
+
+    def _write_ir_meta(self, refs: NodeRefs, *, verification_status: str,
+                       last_fail_reason: str | None, issue_severity: str | None,
+                       attempts: int) -> None:
+        """Author `<ir_ref>/ir_meta.json` host-side. The ONE writer of that file on the pure path
+        (the producer's pending meta, its declared-fail meta, and the reviewer's verdict
+        projection all come through here), so the five contract keys cannot be spelled three ways.
+
+        Only the keys a reader actually reads are written: the five the stage-meta contract fixes
+        plus the legacy `issue_severity` the verify-severity gate keys on. The agentic leaf's
+        improvised extra keys have no reader and are not reproduced."""
+        meta: dict[str, Any] = {
+            "ir_id": refs.ir_id,
+            "node_key": refs.node_key,
+            "attempt_count": attempts,
+            "verification_status": verification_status,
+            "last_fail_reason": last_fail_reason,
+            "debug_mode": self.workflow_mode == "dev",
+            "context_isolated": True,
+        }
+        if issue_severity is not None:
+            meta["issue_severity"] = issue_severity
+        ir_dir = self.repo_root / refs.ir_ref
+        ir_dir.mkdir(parents=True, exist_ok=True)
+        (ir_dir / "ir_meta.json").write_text(
+            json.dumps(meta, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+    def _write_verify_ir_meta(self, refs: NodeRefs, verdict: dict[str, Any], *,
+                              attempts: int) -> None:
+        """Project a schema-valid `compile.verify` verdict onto `ir_meta.json` host-side, AFTER
+        the reviewer's child window closes. The twin of `_write_verify_source_meta`; `attempt_count`
+        is the REVIEWER's attempt count, exactly as it is there. Never called on a schema-exhausted
+        attempt (proof-of-work: no valid verdict => no meta)."""
+        self._write_ir_meta(
+            refs, verification_status=verdict["verification_status"],
+            last_fail_reason=verdict["last_fail_reason"],
+            issue_severity=verdict["issue_severity"], attempts=attempts)
+
+    def _write_pure_attempt_meta(self, refs: NodeRefs, basename: str, *, result: str,
+                                 failure_category: str | None, failure_excerpt: str | None,
+                                 attempts: int, per_attempt: list[dict[str, Any]]) -> None:
+        """Author `<ir_ref>/<basename>` — the per-attempt record of a pure compile substep. Byte
+        for byte the key set `_write_bundle_meta` / `_write_verdict_meta` author, so
+        `orchestration_diagnostics._summarize_one_pure_meta` reads it unchanged. It lives beside
+        `compile_static_meta.json`, and is named after its substep the same way."""
+        from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION
+        meta: dict[str, Any] = {
+            "result": result,
+            "failure_category": failure_category,
+            "attempts": attempts,
+            "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
+            "per_attempt": per_attempt,
+        }
+        if failure_excerpt:
+            meta["failure_excerpt"] = failure_excerpt
+        path = self.repo_root / refs.ir_ref / basename
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(meta, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+    def _write_compile_generate_meta(self, refs: NodeRefs, **kwargs: Any) -> None:
+        """The pure `compile.generate` producer's per-attempt record (`bundle_meta.json`'s twin)."""
+        self._write_pure_attempt_meta(refs, "compile_generate_meta.json", **kwargs)
+
+    def _write_compile_verify_meta(self, refs: NodeRefs, **kwargs: Any) -> None:
+        """The pure `compile.verify` reviewer's per-attempt record (`verdict_meta.json`'s twin)."""
+        self._write_pure_attempt_meta(refs, "compile_verify_meta.json", **kwargs)
+
+    # --- the two pure loops, parametrised ------------------------------------
+    # `_run_pure_producer_substep` / `_run_pure_reviewer_substep` are PHASE-INDEPENDENT: the
+    # spawn / validate / bounded-warm-repair / finalize / host-write shape is identical for the
+    # `generate` CodegenBundle pair (M-C / M-D) and the `compile` IR pair (Z1, issue #168). What
+    # differs is the context builder, the document validator, the host writers, the failure
+    # category vocabulary and the emit / summary names — so those are the fields of these two
+    # records, and each loop exists exactly once. A COPY of the 850 lines would be the second
+    # defended class of `AGENTS.md` §Development premises (a defect introduced by a change made
+    # here) written down deliberately; the two thin wrappers below keep the existing test seams
+    # (`_run_pure_generate_substep` / `_run_pure_verify_substep`) unchanged.
+
+    class _PureProducerSpec(NamedTuple):
+        """The phase-specific half of the pure PRODUCER loop."""
+
+        #: refs -> the closed context (`pure_context`). RAISES on a missing host document.
+        build_context: Callable[[NodeRefs], dict[str, str]]
+        #: (refs, parsed document) -> None when clean, else (failure_category, findings).
+        violations: Callable[[NodeRefs, dict[str, Any]], tuple[str, str] | None]
+        #: (refs, accepted document) -> write the phase's artifacts, AFTER the window closes.
+        write_artifacts: Callable[..., None]
+        #: The per-attempt terminal record (`bundle_meta.json` / `compile_generate_meta.json`).
+        write_meta: Callable[..., None]
+        #: The category a document that parses but cannot be UTF-8-encoded is reported under.
+        schema_category: str
+        unencodable_findings: str
+        non_object_findings: str
+        #: The `repair_reason` of an in-loop repair turn.
+        repair_reason: str
+        attempt_failed_event: str
+        #: The `result_summary` / superseded-tombstone prefix (`pure_generate` / `pure_compile`).
+        summary_prefix: str
+        #: The noun the pass summary names ("bundle" / "IR").
+        accept_noun: str
+        #: The transport fail_closed reason a host write after the window raises under.
+        host_write_failed_reason: str
+        #: A certified sibling exemplar is resolved and attached only where a template renders it.
+        wants_exemplar: bool
+        #: (accepted document) -> the leaf's own "this phase cannot be completed" declaration, or
+        #: None. A schema-VALID document can carry one; it is neither a pass nor a repairable
+        #: defect, so it is the loop's THIRD exit. None for a phase with no such declaration.
+        declared_fail: Callable[[dict[str, Any]], str | None] | None = None
+        #: (refs, reason) -> write the declared-fail projection (no producer artifact).
+        write_declared_fail: Callable[..., None] | None = None
+        #: The category recorded for that exit. Deliberately absent from the routing table.
+        declared_fail_category: str = ""
+        declared_fail_event: str = ""
+
+    class _PureReviewerSpec(NamedTuple):
+        """The phase-specific half of the pure REVIEWER loop."""
+
+        build_context: Callable[[NodeRefs], dict[str, str]]
+        #: (refs, verdict) -> project the verdict onto the phase's stage meta.
+        write_project_meta: Callable[..., None]
+        #: The per-attempt terminal record (`verdict_meta.json` / `compile_verify_meta.json`).
+        write_meta: Callable[..., None]
+        non_object_findings: str
+        repair_reason: str
+        attempt_failed_event: str
+        summary_prefix: str
+        host_write_failed_reason: str
+        superseded_prefix: str
+
     def _run_pure_generate_substep(self, refs: NodeRefs, phase: str, substep: str | None,
                                    repair: dict[str, str] | None,
                                    resolved_dependencies: tuple[dict[str, str], ...]
                                    ) -> "SubstepOutcome":
-        """Run `generate.generate` as a Z2 pure-function producer: launch a backend-specific
+        """Run `generate.generate` as a Z2 pure-function CodegenBundle producer.
+
+        The loop itself is `_run_pure_producer_substep`; this wrapper binds the generate half
+        (context, bundle validation, host writers, names) and is kept as the seam the existing
+        producer tests drive."""
+        return self._run_pure_producer_substep(
+            refs, phase, substep, repair, resolved_dependencies,
+            self._pure_producer_spec("generate"))
+
+    def _pure_producer_spec(self, phase: str) -> "Conductor._PureProducerSpec":
+        """The phase-specific half of the pure producer loop."""
+        if phase == "compile":
+            return self._PureProducerSpec(
+                build_context=self._build_pure_compile_context,
+                violations=self._pure_ir_document_violations,
+                write_artifacts=self._write_pure_ir_artifacts,
+                write_meta=self._write_compile_generate_meta,
+                schema_category=COMPILE_IR_DOCUMENT_VIOLATION,
+                unencodable_findings=(
+                    "the document contains characters that cannot be encoded as UTF-8 (e.g. an "
+                    "unpaired surrogate); re-emit it with valid text"),
+                non_object_findings=(
+                    "the reply parsed to a non-object JSON value (expected the IR document)"),
+                repair_reason="pure_ir_document_repair",
+                attempt_failed_event="pure_ir_document_attempt_failed",
+                summary_prefix="pure_compile",
+                accept_noun="IR",
+                host_write_failed_reason="pure_compile_host_write_failed",
+                wants_exemplar=False,
+                declared_fail=self._pure_ir_declared_fail,
+                write_declared_fail=self._write_declared_compile_fail,
+                declared_fail_category=COMPILE_DECLARED_FAIL,
+                declared_fail_event="pure_compile_fail_declared",
+            )
+        return self._PureProducerSpec(
+            build_context=self._build_pure_context,
+            violations=self._pure_bundle_violations,
+            write_artifacts=self._write_pure_bundle_artifacts_from_doc,
+            write_meta=self._write_bundle_meta,
+            schema_category="bundle_schema_violation",
+            unencodable_findings=(
+                "the bundle contains characters that cannot be encoded as UTF-8 (e.g. an "
+                "unpaired surrogate); re-emit the bundle with valid text"),
+            non_object_findings=(
+                "the reply parsed to a non-object JSON value (expected a bundle)"),
+            repair_reason="pure_bundle_repair",
+            attempt_failed_event="pure_bundle_attempt_failed",
+            summary_prefix="pure_generate",
+            accept_noun="bundle",
+            host_write_failed_reason="pure_host_write_failed",
+            wants_exemplar=True,
+        )
+
+    def _write_pure_bundle_artifacts_from_doc(self, refs: NodeRefs, doc: dict[str, Any], *,
+                                              attempts: int) -> None:
+        """The producer-spec shape of `_write_pure_bundle_artifacts`: derive the build graph the
+        bundle-derived control file needs and write the bundle's artifacts. `attempts` is unused for
+        the bundle (its per-attempt record is `bundle_meta.json`), and is in the signature because
+        the IR producer's writer needs it for `ir_meta.json#attempt_count`."""
+        self._write_pure_bundle_artifacts(
+            refs, doc, self._build_pure_bundle_graph(refs, doc))
+
+    def _run_pure_producer_substep(self, refs: NodeRefs, phase: str, substep: str | None,
+                                   repair: dict[str, str] | None,
+                                   resolved_dependencies: tuple[dict[str, str], ...],
+                                   spec: "Conductor._PureProducerSpec",
+                                   dependency_surface: tuple[dict[str, Any], ...] = ()
+                                   ) -> "SubstepOutcome":
+        """Run a pure-function PRODUCER substep: launch a backend-specific
         closed-context leaf (Claude tool-free transport or Codex's sandboxed structured-output
         approximation) that returns one CodegenBundle, validate + assembly-preflight it, repair a violation
         in a bounded warm-resume loop, finalize the accepted attempt with an EMPTY output_refs
@@ -6814,7 +7382,7 @@ clean:
         # fail_closed (operator --resume) is the correct terminus, not a reopen. No leaf has been
         # spawned yet, so the arid here names no child window; it only labels the outcome row.
         try:
-            pure_context = self._build_pure_context(refs)
+            pure_context = spec.build_context(refs)
         except Exception as exc:  # noqa: BLE001 — any context-assembly failure must recover
             self.emit("pure_context_assembly_failed", node_key=refs.node_key,
                       detail=str(exc)[:200])
@@ -6851,7 +7419,7 @@ clean:
         # agentic path. It is attached per-attempt only when that attempt renders the LAUNCH
         # template: the repair template (`pure_bundle_repair.txt`) has no `<exemplar>` slot, so
         # attaching it to a repair turn would ship the payload with nothing rendering it.
-        exemplar = self._resolve_exemplar(refs)
+        exemplar = self._resolve_exemplar(refs) if spec.wants_exemplar else None
         attempt = 0
         usage_waits = 0
         transient_retries = 0
@@ -6874,7 +7442,7 @@ clean:
                     "issue_severity": "major",
                     "repair_strategy": "reuse",
                     "repair_target_agent_run_id": repair_target,
-                    "repair_reason": "pure_bundle_repair",
+                    "repair_reason": spec.repair_reason,
                 }
                 if last_excerpt:
                     repair_payload["repair_findings"] = last_excerpt
@@ -6895,6 +7463,7 @@ clean:
                 makefile_host_authored=True, runner_host_authored=True,
                 repair=repair_payload,
                 resolved_dependencies=resolved_dependencies,
+                dependency_surface=dependency_surface,
                 exemplar=(exemplar if renders_launch_prompt else None),
                 warm_resume=warm,
                 pure_leaf=True,
@@ -6993,10 +7562,10 @@ clean:
                                 f"({extract_category})")
                 elif not isinstance(extracted, dict):
                     category = RESPONSE_UNPARSEABLE
-                    findings = "the reply parsed to a non-object JSON value (expected a bundle)"
+                    findings = spec.non_object_findings
                 else:
                     parsed_bundle = extracted
-                    result = self._pure_bundle_violations(refs, extracted)
+                    result = spec.violations(refs, extracted)
                     if result is not None:
                         category, findings = result
                     else:
@@ -7012,15 +7581,25 @@ clean:
                         try:
                             json.dumps(extracted, ensure_ascii=False).encode("utf-8")
                         except UnicodeEncodeError:
-                            category = "bundle_schema_violation"
-                            findings = ("the bundle contains characters that cannot be encoded as "
-                                        "UTF-8 (e.g. an unpaired surrogate); re-emit the bundle "
-                                        "with valid text")
+                            category = spec.schema_category
+                            findings = spec.unencodable_findings
                         else:
                             accepted_doc = extracted
 
-            status = "pass" if category is None else "fail"
-            if status != "pass":
+            # The THIRD exit: a schema-VALID document can still carry the leaf's own
+            # declaration that this phase cannot be completed from the inputs it was given
+            # (`compile.generate`'s `last_fail_reason`). It is neither a pass nor a repairable
+            # document defect, so `category` stays None (nothing to repair, nothing to route)
+            # while the substep's status is `fail`.
+            declared_fail = (
+                spec.declared_fail(accepted_doc)
+                if (accepted_doc is not None and spec.declared_fail is not None) else None)
+            status = "pass" if (category is None and declared_fail is None) else "fail"
+            # Guarded on `category`, not on `status`: the declared-fail exit has no failure
+            # category, no repair carriers and no attempt-failure row — it is the leaf ANSWERING,
+            # not failing. (For every phase without a declaration the two guards are the same
+            # predicate.)
+            if category is not None:
                 # A transport death ("pure_transport") has NO fixable document, so it must not
                 # overwrite the repair carriers (`prior_document` / `last_excerpt`). Today transport
                 # is terminal so this never mattered; --wait-usage-reset makes a repair turn
@@ -7060,7 +7639,7 @@ clean:
                 attempt_record["failure_category"] = category
                 attempt_record["failure_excerpt"] = (
                     this_excerpt[:_PURE_ATTEMPT_EXCERPT_MAX_CHARS] if this_excerpt else None)
-                self.emit("pure_bundle_attempt_failed", node_key=refs.node_key,
+                self.emit(spec.attempt_failed_event, node_key=refs.node_key,
                           substep=substep, attempt=len(per_attempt), failure_category=category,
                           detail=(this_excerpt or "")[:200])
 
@@ -7072,8 +7651,11 @@ clean:
             # equally output-less and must satisfy it). Leaving this None on pass makes
             # finalize-child reject every passing pure leaf — the executor cannot complete.
             result_summary = (
-                f"pure_generate_fail: {category}" if status != "pass"
-                else f"pure_generate_pass: bundle accepted (attempts={len(per_attempt)})"
+                (f"{spec.summary_prefix}_fail: {spec.declared_fail_category}: "
+                 f"{declared_fail[:300]}") if declared_fail is not None
+                else f"{spec.summary_prefix}_fail: {category}" if status != "pass"
+                else (f"{spec.summary_prefix}_pass: {spec.accept_noun} accepted "
+                      f"(attempts={len(per_attempt)})")
             )
             # Finalize the attempt FIRST (close the child FS-diff window) — the pure terminal row
             # carries an EMPTY output_refs (the host has written nothing yet). ONLY AFTER this may
@@ -7085,12 +7667,45 @@ clean:
                                      agent_model_override=model,
                                      usage=usage, resume_mode=proc.resume_mode))
 
+            if declared_fail is not None:
+                # The leaf declared the phase uncompletable. The host writes the phase's
+                # declared-fail projection (its stage meta, carrying the reason and the severity
+                # the phase rubric assigns an input-side defect) and the per-attempt record with
+                # the OFF-TABLE category, so `classify_failure` recognizes the token, declines the
+                # document routing table, and falls through to the verify-severity gate — the same
+                # landing the agentic leaf's own declaration gets. rc stays 0: nothing crashed.
+                assert spec.write_declared_fail is not None
+                self.emit(spec.declared_fail_event, node_key=refs.node_key,
+                          substep=substep, detail=declared_fail[:200])
+                try:
+                    spec.write_declared_fail(refs, declared_fail, attempts=len(per_attempt))
+                    spec.write_meta(
+                        refs, result="fail", failure_category=spec.declared_fail_category,
+                        failure_excerpt=declared_fail[:_PURE_ATTEMPT_EXCERPT_MAX_CHARS],
+                        attempts=len(per_attempt), per_attempt=per_attempt)
+                except Exception as exc:  # noqa: BLE001 — any host-write failure must recover
+                    if attempt > 0:
+                        self._add_superseded_run_ids(
+                            [a["agent_run_id"] for a in per_attempt[:-1]],
+                            reason=f"{spec.host_write_failed_reason}_superseded: "
+                                   f"{type(exc).__name__}")
+                    return SubstepOutcome(
+                        child_arid, "fail", [], 1,
+                        (spec.host_write_failed_reason, f"{type(exc).__name__}: {exc}"),
+                        launched_at, len(per_attempt))
+                if attempt > 0:
+                    self._add_superseded_run_ids(
+                        [a["agent_run_id"] for a in per_attempt[:-1]],
+                        reason=f"{spec.summary_prefix}_declared_fail_superseded: "
+                               f"attempts={len(per_attempt)}")
+                return SubstepOutcome(child_arid, "fail", [], proc.returncode,
+                                      None, launched_at, len(per_attempt))
+
             if status == "pass":
                 assert accepted_doc is not None
                 try:
-                    graph = self._build_pure_bundle_graph(refs, accepted_doc)
-                    self._write_pure_bundle_artifacts(refs, accepted_doc, graph)
-                    self._write_bundle_meta(
+                    spec.write_artifacts(refs, accepted_doc, attempts=len(per_attempt))
+                    spec.write_meta(
                         refs, result="pass", failure_category=None, failure_excerpt=None,
                         attempts=len(per_attempt), per_attempt=per_attempt)
                 except Exception as exc:  # noqa: BLE001 — any host-write failure must recover
@@ -7107,10 +7722,12 @@ clean:
                     if attempt > 0:
                         self._add_superseded_run_ids(
                             [a["agent_run_id"] for a in per_attempt[:-1]],
-                            reason=f"pure_host_write_failed_superseded: {type(exc).__name__}")
-                    return SubstepOutcome(child_arid, "fail", [], 1,
-                                          ("pure_host_write_failed", f"{type(exc).__name__}: {exc}"),
-                                          launched_at, len(per_attempt))
+                            reason=f"{spec.host_write_failed_reason}_superseded: "
+                                   f"{type(exc).__name__}")
+                    return SubstepOutcome(
+                        child_arid, "fail", [], 1,
+                        (spec.host_write_failed_reason, f"{type(exc).__name__}: {exc}"),
+                        launched_at, len(per_attempt))
                 # Tombstone the superseded producer attempts of a repaired pass: each earlier
                 # attempt was finalized as a terminal `substep` row, but only THIS (passing)
                 # arid goes into the step_result's substep_agent_run_ids, so the earlier arids
@@ -7119,7 +7736,8 @@ clean:
                 if attempt > 0:
                     self._add_superseded_run_ids(
                         [a["agent_run_id"] for a in per_attempt[:-1]],
-                        reason=f"pure_bundle_repair_superseded_pass: attempts={len(per_attempt)}")
+                        reason=f"{spec.repair_reason}_superseded_pass: "
+                               f"attempts={len(per_attempt)}")
                 return SubstepOutcome(child_arid, "pass", [], proc.returncode,
                                       None, launched_at, len(per_attempt))
 
@@ -7199,7 +7817,7 @@ clean:
                 # host-write failure must recover as a fail_closed transport outcome, never escape
                 # run_substep uncaught and crash the conductor. Mirrors the verify reviewer.
                 try:
-                    self._write_bundle_meta(
+                    spec.write_meta(
                         refs, result="fail", failure_category=category,
                         failure_excerpt=this_excerpt, attempts=len(per_attempt),
                         per_attempt=per_attempt)
@@ -7207,15 +7825,16 @@ clean:
                     if attempt > 0:
                         self._add_superseded_run_ids(
                             [a["agent_run_id"] for a in per_attempt[:-1]],
-                            reason=f"pure_host_write_failed_superseded: {type(exc).__name__}")
+                            reason=f"{spec.host_write_failed_reason}_superseded: "
+                                   f"{type(exc).__name__}")
                     return SubstepOutcome(
                         child_arid, "fail", [], 1,
-                        ("pure_host_write_failed", f"{type(exc).__name__}: {exc}"),
+                        (spec.host_write_failed_reason, f"{type(exc).__name__}: {exc}"),
                         launched_at, len(per_attempt))
                 if attempt > 0:
                     self._add_superseded_run_ids(
                         [a["agent_run_id"] for a in per_attempt[:-1]],
-                        reason=f"pure_bundle_repair_superseded: {category}")
+                        reason=f"{spec.repair_reason}_superseded: {category}")
                 return SubstepOutcome(child_arid, "fail", [], proc.returncode,
                                       infra_error, launched_at, len(per_attempt))
             # Set up the next (repair) turn: resume this attempt's session.
@@ -7355,7 +7974,47 @@ clean:
     def _run_pure_verify_substep(self, refs: NodeRefs, phase: str, substep: str | None,
                                  resolved_dependencies: tuple[dict[str, str], ...]
                                  ) -> "SubstepOutcome":
-        """Run `generate.verify` as a Z2 pure-function reviewer: launch a backend-specific
+        """Run `generate.verify` as a Z2 pure-function verdict reviewer.
+
+        The loop itself is `_run_pure_reviewer_substep`; this wrapper binds the generate half
+        and is kept as the seam the existing reviewer tests drive."""
+        return self._run_pure_reviewer_substep(
+            refs, phase, substep, resolved_dependencies,
+            self._pure_reviewer_spec("generate"))
+
+    def _pure_reviewer_spec(self, phase: str) -> "Conductor._PureReviewerSpec":
+        """The phase-specific half of the pure reviewer loop."""
+        if phase == "compile":
+            return self._PureReviewerSpec(
+                build_context=self._build_pure_compile_verify_context,
+                write_project_meta=self._write_verify_ir_meta,
+                write_meta=self._write_compile_verify_meta,
+                non_object_findings=(
+                    "the reply parsed to a non-object JSON value (expected a verdict)"),
+                repair_reason="pure_ir_verdict_repair",
+                attempt_failed_event="pure_ir_verdict_attempt_failed",
+                summary_prefix="pure_compile_verify",
+                host_write_failed_reason="pure_compile_verify_host_write_failed",
+                superseded_prefix="pure_ir_verdict_repair",
+            )
+        return self._PureReviewerSpec(
+            build_context=self._build_pure_verify_context,
+            write_project_meta=self._write_verify_source_meta,
+            write_meta=self._write_verdict_meta,
+            non_object_findings=(
+                "the reply parsed to a non-object JSON value (expected a verdict)"),
+            repair_reason="pure_verdict_repair",
+            attempt_failed_event="pure_verdict_attempt_failed",
+            summary_prefix="pure_verify",
+            host_write_failed_reason="pure_verify_host_write_failed",
+            superseded_prefix="pure_verdict_repair",
+        )
+
+    def _run_pure_reviewer_substep(self, refs: NodeRefs, phase: str, substep: str | None,
+                                   resolved_dependencies: tuple[dict[str, str], ...],
+                                   spec: "Conductor._PureReviewerSpec"
+                                   ) -> "SubstepOutcome":
+        """Run a pure-function REVIEWER substep: launch a backend-specific
         closed-context reviewer (Claude tool-free transport or Codex's sandboxed structured-output
         approximation) that returns one verify verdict, validate it, repair a schema violation in a
         bounded warm-resume loop, finalize the accepted attempt with an EMPTY output_refs row, and
@@ -7388,7 +8047,7 @@ clean:
         # repair makes fail_closed (operator --resume) the correct terminus, not a reopen. No leaf
         # has been spawned yet, so the arid here names no child window; it only labels the row.
         try:
-            pure_context = self._build_pure_verify_context(refs)
+            pure_context = spec.build_context(refs)
         except Exception as exc:  # noqa: BLE001 — any context-assembly failure must recover
             self.emit("pure_context_assembly_failed", node_key=refs.node_key,
                       detail=str(exc)[:200])
@@ -7419,7 +8078,7 @@ clean:
                     "issue_severity": "major",
                     "repair_strategy": "reuse",
                     "repair_target_agent_run_id": repair_target,
-                    "repair_reason": "pure_verdict_repair",
+                    "repair_reason": spec.repair_reason,
                 }
                 if last_excerpt:
                     repair_payload["repair_findings"] = last_excerpt
@@ -7522,7 +8181,7 @@ clean:
                                 f"({extract_category})")
                 elif not isinstance(extracted, dict):
                     category = RESPONSE_UNPARSEABLE
-                    findings = "the reply parsed to a non-object JSON value (expected a verdict)"
+                    findings = spec.non_object_findings
                 else:
                     parsed_verdict = extracted
                     violations = verify_verdict_violations(extracted)
@@ -7559,11 +8218,12 @@ clean:
                 # only field that can satisfy `_validate_agent_summary_text`'s "a terminal row with
                 # no output_refs must explain itself" rule. See the producer's mirror above.
                 result_summary = (
-                    f"pure_verify_pass: verdict {verify_status} "
+                    f"{spec.summary_prefix}_pass: verdict {verify_status} "
                     f"(severity={accepted_verdict['issue_severity']}, "
                     f"attempts={len(per_attempt)})"[:400]
                     if verify_status == "pass"
-                    else f"pure_verify_fail: {accepted_verdict['last_fail_reason']}"[:400]
+                    else (f"{spec.summary_prefix}_fail: "
+                          f"{accepted_verdict['last_fail_reason']}")[:400]
                 )
                 # Finalize FIRST (close the child FS-diff window); the pure row carries EMPTY
                 # output_refs. ONLY AFTER this may the host author source_meta.json / verdict_meta.
@@ -7574,9 +8234,9 @@ clean:
                                          agent_model_override=model,
                                          usage=usage, resume_mode=proc.resume_mode))
                 try:
-                    self._write_verify_source_meta(
+                    spec.write_project_meta(
                         refs, accepted_verdict, attempts=len(per_attempt))
-                    self._write_verdict_meta(
+                    spec.write_meta(
                         refs, result="pass", failure_category=None, failure_excerpt=None,
                         attempts=len(per_attempt), per_attempt=per_attempt)
                 except Exception as exc:  # noqa: BLE001 — any host-write failure must recover
@@ -7589,16 +8249,19 @@ clean:
                     if attempt > 0:
                         self._add_superseded_run_ids(
                             [a["agent_run_id"] for a in per_attempt[:-1]],
-                            reason=f"pure_verify_host_write_failed_superseded: {type(exc).__name__}")
-                    return SubstepOutcome(child_arid, "fail", [], 1,
-                                          ("pure_verify_host_write_failed", f"{type(exc).__name__}: {exc}"),
-                                          launched_at, len(per_attempt))
+                            reason=f"{spec.host_write_failed_reason}_superseded: "
+                                   f"{type(exc).__name__}")
+                    return SubstepOutcome(
+                        child_arid, "fail", [], 1,
+                        (spec.host_write_failed_reason, f"{type(exc).__name__}: {exc}"),
+                        launched_at, len(per_attempt))
                 # Tombstone superseded reviewer attempts of a repaired verdict (each earlier attempt
                 # was finalized as a terminal `substep` row, but only THIS arid is vouched).
                 if attempt > 0:
                     self._add_superseded_run_ids(
                         [a["agent_run_id"] for a in per_attempt[:-1]],
-                        reason=f"pure_verdict_repair_superseded: verify_status={verify_status}")
+                        reason=f"{spec.superseded_prefix}_superseded: "
+                               f"verify_status={verify_status}")
                 return SubstepOutcome(child_arid, verify_status, [], proc.returncode,
                                       None, launched_at, len(per_attempt))
 
@@ -7636,12 +8299,12 @@ clean:
             attempt_record["failure_category"] = category
             attempt_record["failure_excerpt"] = (
                 this_excerpt[:_PURE_ATTEMPT_EXCERPT_MAX_CHARS] if this_excerpt else None)
-            self.emit("pure_verdict_attempt_failed", node_key=refs.node_key,
+            self.emit(spec.attempt_failed_event, node_key=refs.node_key,
                       substep=substep, attempt=len(per_attempt), failure_category=category,
                       detail=(this_excerpt or "")[:200])
             reply = (f"verify verdict: none\nleaf rc={proc.returncode}\n"
                      f"category: {category or 'none'}")
-            result_summary = f"pure_verify_fail: {category}"
+            result_summary = f"{spec.summary_prefix}_fail: {category}"
             self.finalize_child(
                 child_arid, token, reply,
                 self._agent_run_json(refs, phase, substep, child_arid, "fail",
@@ -7721,7 +8384,7 @@ clean:
                 # writes — a host-write failure must recover as a fail_closed transport outcome, never
                 # escape run_substep uncaught.
                 try:
-                    self._write_verdict_meta(
+                    spec.write_meta(
                         refs, result="fail", failure_category=category,
                         failure_excerpt=this_excerpt, attempts=len(per_attempt),
                         per_attempt=per_attempt)
@@ -7729,15 +8392,16 @@ clean:
                     if attempt > 0:
                         self._add_superseded_run_ids(
                             [a["agent_run_id"] for a in per_attempt[:-1]],
-                            reason=f"pure_verify_host_write_failed_superseded: {type(exc).__name__}")
+                            reason=f"{spec.host_write_failed_reason}_superseded: "
+                                   f"{type(exc).__name__}")
                     return SubstepOutcome(
                         child_arid, "fail", [], 1,
-                        ("pure_verify_host_write_failed", f"{type(exc).__name__}: {exc}"),
+                        (spec.host_write_failed_reason, f"{type(exc).__name__}: {exc}"),
                         launched_at, len(per_attempt))
                 if attempt > 0:
                     self._add_superseded_run_ids(
                         [a["agent_run_id"] for a in per_attempt[:-1]],
-                        reason=f"pure_verdict_repair_superseded: {category}")
+                        reason=f"{spec.superseded_prefix}_superseded: {category}")
                 return SubstepOutcome(child_arid, "fail", [], proc.returncode,
                                       infra_error, launched_at, len(per_attempt))
             # Set up the next (repair) turn: resume this attempt's OWN reviewer session (persona
@@ -8225,6 +8889,22 @@ clean:
             bundle = self.repo_root / refs.source_dir() / "codegen_bundle.json"
             fresh = bundle.exists() and bundle.stat().st_mtime >= min_mtime
             status = "pass" if (bmeta.get("result") == "pass" and fresh) else "fail"
+            return status, output_refs
+        if (phase == "compile" and substep == "generate"
+                and self._pure_leaf_substep(refs, phase, substep)):
+            # Z1 pure IR producer freshness. Like the pure generate producer above, this substep
+            # has NO leaf-authored deliverables (allowed_output_paths == []); its freshness-gated
+            # outputs are the HOST-written compile_generate_meta.json (result==pass) and
+            # spec.ir.yaml, both authored AFTER the child window closes. The branch is defensive —
+            # the pure substep computes its own status and returns early in `run_substep` — but it
+            # must not be left to the generic tail, where `_fresh_deliverables_written([])` is
+            # vacuously True and would pass a substep that declared the phase uncompletable while
+            # a stale spec.ir.yaml happened to sit in the directory.
+            gmeta = _read_json(
+                self.repo_root / refs.ir_ref / "compile_generate_meta.json") or {}
+            ir_doc = self.repo_root / refs.ir_ref / "spec.ir.yaml"
+            fresh = ir_doc.exists() and ir_doc.stat().st_mtime >= min_mtime
+            status = "pass" if (gmeta.get("result") == "pass" and fresh) else "fail"
             return status, output_refs
         if phase == "compile" and substep == "static":
             # Deterministic compile gate: the conductor-authored compile_static_meta records the
@@ -10299,12 +10979,17 @@ clean:
         # below (no allowed_output_paths, no determine_substep_status-before-finalize).
         if self._pure_leaf_substep(refs, phase, substep):
             if substep == "verify":
-                # Z2 pure reviewer (M-D): its own spawn/validate/repair/finalize loop, host-authors
-                # source_meta.json from the returned verdict after the child window closes.
-                return self._run_pure_verify_substep(
-                    refs, phase, substep, resolved_dependencies)
-            return self._run_pure_generate_substep(
-                refs, phase, substep, repair, resolved_dependencies)
+                # The pure reviewer: its own spawn/validate/repair/finalize loop, host-authors the
+                # phase's stage meta from the returned verdict after the child window closes.
+                return self._run_pure_reviewer_substep(
+                    refs, phase, substep, resolved_dependencies,
+                    self._pure_reviewer_spec(phase))
+            # The pure producer. `dependency_surface` is threaded through for the compile
+            # producer, whose `<dependency_facts>` block is the published-operation catalog it
+            # must transcribe verbatim; `build_launch_request` attaches it to that substep only.
+            return self._run_pure_producer_substep(
+                refs, phase, substep, repair, resolved_dependencies,
+                self._pure_producer_spec(phase), dependency_surface)
         # Resolve the warm-resume decision BEFORE building the request so the slim-vs-full
         # prompt choice (build_launch_request) matches what record_launch persists and what
         # spawn_leaf sends below. None => cold launch (full prompt). Deterministic substeps
@@ -11059,6 +11744,11 @@ clean:
         elif r.startswith(GENERATE_BUNDLE_REASON_PREFIX):
             # Z2 pure producer: the exhausted bundle repair's terminal category/excerpt.
             meta_path = self.repo_root / refs.source_dir() / "bundle_meta.json"
+        elif r.startswith(COMPILE_DOCUMENT_REASON_PREFIX):
+            # Z1 pure IR producer: the exhausted document repair's terminal category/excerpt.
+            # Read at the conduct reopen point, where `refs.ir_ref` still names the FAILED
+            # directory (the rotation to a fresh ir_id happens later, inside run_phase).
+            meta_path = self.repo_root / refs.ir_ref / "compile_generate_meta.json"
         elif r.startswith("verify_"):
             # The verify substep records its finding in the phase's meta `last_fail_reason`.
             field = "last_fail_reason"
@@ -12176,6 +12866,43 @@ clean:
             # compile.generate); compile.generate / compile.verify fall through to the
             # verify-severity gate below.
             failed_substep = SUBSTEPS["compile"][len(outcomes) - 1]
+            if failed_substep == "generate" and self._pure_leaf_substep(refs, "compile", "generate"):
+                # Z1 pure IR producer. Two failure shapes reach here:
+                #   (a) an exhausted DOCUMENT repair budget: compile_generate_meta.json carries a
+                #       routed category, and a fresh (compile, generate) attempt with a warm reuse
+                #       repair (its excerpt threaded via _read_repair_findings) can fix it.
+                #   (b) the producer's own `Compile fail` DECLARATION: the category is
+                #       COMPILE_DECLARED_FAIL, deliberately absent from the routing table, and
+                #       ir_meta.json already carries the reason + `issue_severity: major`. Fall
+                #       through to the verify-severity gate below, which is where the agentic
+                #       leaf's identical declaration lands (dev fail_closed / prod escalate).
+                # A transport/unknown category has no route -> cold restart.
+                meta = _read_json(
+                    self.repo_root / refs.ir_ref / "compile_generate_meta.json") or {}
+                category = str(meta.get("failure_category") or "")
+                route = COMPILE_DOCUMENT_FAILURE_ROUTING.get(category)
+                if route:
+                    target, strategy = route
+                    return RouteDecision("retry", target_phase=target, repair_strategy=strategy,
+                                         reason=f"{COMPILE_DOCUMENT_REASON_PREFIX}{category}")
+                if category != COMPILE_DECLARED_FAIL:
+                    return RouteDecision("retry", target_phase="compile",
+                                         repair_strategy="restart",
+                                         reason="compile_document_fail")
+            if failed_substep == "verify" and self._pure_leaf_substep(refs, "compile", "verify"):
+                # Z1 pure IR reviewer. Same two shapes as the generate reviewer (M-D): a
+                # schema-EXHAUSTED verdict routes on its category (a cold compile restart —
+                # the reviewer cannot repair the producer), while a schema-VALID `fail` verdict
+                # has no routed category and falls through to the verify-severity gate, which
+                # reads the `issue_severity` the host projected onto ir_meta.json.
+                vmeta = _read_json(
+                    self.repo_root / refs.ir_ref / "compile_verify_meta.json") or {}
+                category = str(vmeta.get("failure_category") or "")
+                route = COMPILE_VERDICT_FAILURE_ROUTING.get(category)
+                if route:
+                    target, strategy = route
+                    return RouteDecision("retry", target_phase=target, repair_strategy=strategy,
+                                         reason=f"{COMPILE_VERDICT_REASON_PREFIX}{category}")
             if failed_substep == "static":
                 meta = _read_json(self.repo_root / refs.ir_ref / "compile_static_meta.json") or {}
                 return classify_compile_static_failure(meta.get("failure_category"))
