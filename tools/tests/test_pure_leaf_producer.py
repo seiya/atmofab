@@ -842,6 +842,44 @@ class PureProducerSubstepTests(unittest.TestCase):
         if hasattr(self, "_tmp"):
             self._tmp.cleanup()
 
+    def test_the_requests_host_authorship_stamp_comes_from_the_spec(self) -> None:
+        """`makefile_host_authored` / `runner_host_authored` are read BACK off the request
+        (`orchestration_runtime._payload_is_m3c_physics` derives the physics-narrowed
+        contract-doc set from them), so what stamps them decides whether that derivation is
+        the node's truth or a leftover constant.
+
+        Both loops used to write the literal `True, True`. That is correct for the two pairs
+        that reach them today — Generate runs pure only on the M3c shape — and it is a seam
+        rather than a fact, so it is now the spec's `host_authored_flags`, and the generate /
+        compile specs bind `_host_authored_m3c`, which returns that same constant WITH its
+        reason attached. This row drives the seam: a spec whose flags answer False produces a
+        request that does not stamp, which is what a later pure path serving another shape
+        (issue #169's PR-2 / PR-3) depends on. No in-tree node can produce it today, so
+        nothing else can distinguish the seam from the literal it replaced.
+        """
+        self._tmp = tempfile.TemporaryDirectory()
+        repo = Path(self._tmp.name)
+        refs = _write_node(repo)
+
+        # As shipped: the M3c stamp, and the module helper really does answer for this node.
+        c = _conductor(repo)
+        c.envelopes = [_envelope(_valid_bundle())]
+        c._run_pure_generate_substep(refs, "generate", "generate", None, ())
+        request = [cap["--request-json"] for sub, cap in c.calls if sub == "record-launch"][-1]
+        self.assertEqual(wc._host_authored_m3c(refs), (True, True))
+        self.assertTrue(request.get("runner_host_authored"))
+
+        # Through the seam: a spec that answers False stamps nothing. `build_launch_request`
+        # omits the key when the value is False (it is a marker, not a boolean field), so
+        # `assertNotIn` is what "the stamp says False" looks like on the wire.
+        c2 = _conductor(repo)
+        c2.envelopes = [_envelope(_valid_bundle())]
+        spec = c2._pure_producer_spec("generate")._replace(
+            host_authored_flags=lambda _refs: (False, False))
+        c2._run_pure_producer_substep(refs, "generate", "generate", None, (), spec)
+        request2 = [cap["--request-json"] for sub, cap in c2.calls if sub == "record-launch"][-1]
+        self.assertNotIn("runner_host_authored", request2)
+
     def test_happy_path_writes_bundle_artifacts_and_empty_output_refs(self) -> None:
         c, refs, oc = self._run([_envelope(_valid_bundle())])
         self.assertEqual(oc.status, "pass")

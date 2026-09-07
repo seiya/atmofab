@@ -5035,13 +5035,20 @@ class LeafChildEnvTest(unittest.TestCase):
 
 
 class LeafEnvThreadingSiteTest(unittest.TestCase):
-    """The two seams where the AUTHORED dict has to reach the DELIVERER.
+    """The seam where the AUTHORED dict has to reach the DELIVERER.
 
-    Both were surviving mutations: reverting `record_launch`'s stdin threading, and
-    reverting `_readonly_sandbox_profile`'s `child_env=`, each left the whole suite
-    green. Neither is visible in a `_child_env` test (the dict is right, it just does
-    not get there) or in a render test (the profile is right, it was built from the
-    wrong source), which is exactly the shape a per-layer test set misses.
+    It was a surviving mutation: reverting `record_launch`'s stdin threading left the whole
+    suite green. It is not visible in a `_child_env` test (the dict is right, it just does not
+    get there) or in a render test (the profile is right, it was built from the wrong source),
+    which is exactly the shape a per-layer test set misses.
+
+    There were TWO seams until issue #169. The second was `_readonly_sandbox_profile`'s
+    `child_env=` — the diagnostician was the one leaf whose profile was built in-process, and
+    so the one place the builder's `os.environ` fallback and `self.env` could differ. That
+    builder is GONE: the diagnostician's profile is written by `record_launch` like every
+    other leaf's, from the env this class's remaining row pins onto its stdin. The row that
+    guarded the second seam went with the code it guarded, and nothing replaced it because
+    there is nothing left to differ.
     """
 
     _HOST = {"PATH": "/host/bin", "HOME": "/host/home",
@@ -5081,41 +5088,10 @@ class LeafEnvThreadingSiteTest(unittest.TestCase):
         # ...and not on the argv, in any element
         self.assertNotIn("/host/home", "\x00".join(seen["argv"]))
 
-    def test_the_readonly_diagnostician_profile_is_built_from_the_conductors_env(self) -> None:
-        """The diagnostician is the ONE leaf whose profile is built in-process, so it is
-        the one place where the builder's `os.environ` fallback and `self.env` can differ.
-        Poison only the PROCESS environment: `self.env` is clean, so anything of the
-        process environment appearing in the profile came from the fallback."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            (repo / "h").mkdir()
-            # OUTSIDE repo_root: a backend home inside the repo is refused outright.
-            home_parent = Path(tempfile.mkdtemp())
-            self.addCleanup(shutil.rmtree, home_parent, True)
-            home = home_parent / "private-home"
-            home.mkdir()
-            (home / "settings.json").write_text("{}", encoding="utf-8")
-            c = wc.Conductor(repo_root=repo, orchestration_id="orch_x",
-                             orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"),
-                             env={"PATH": "/conductor/bin", "HOME": str(repo / "h")})
-            # The home PREPARATION is not what is under test — the `child_env=` wiring is
-            # — and preparing a real one needs a whole initialised orchestration.
-            with mock.patch.object(wc_runtime, "_prepare_claude_workflow_home",
-                                   return_value={"home": str(home),
-                                                 "settings": str(home / "settings.json"),
-                                                 "generation": 1, "settings_sha256": "x"}):
-                with mock.patch.dict(os.environ,
-                                     {"ANTHROPIC_MODEL": "claude-haiku-4-5-20251001",
-                                      "PATH": "/process/bin"}):
-                    profile = c._readonly_sandbox_profile()
-        self.assertEqual(profile["env"]["PATH"], "/conductor/bin")
-        self.assertNotIn("ANTHROPIC_MODEL", profile["env"])
-        self.assertEqual(profile["env"]["CLAUDE_CONFIG_DIR"], str(home))
-
 
 class LeafEnvSpawnSiteGuardTest(unittest.TestCase):
     """`_child_env` is the single AUTHOR of a leaf's environment. That is only true while
-    every production launch goes through it — a fifth `spawn_leaf(` site that handed
+    every production launch goes through it — a further `spawn_leaf(` site that handed
     `self.env`, or a hand-built dict, would reopen the whole face and no behaviour test
     would notice, because it would be a code path the suite does not drive.
 
@@ -5141,8 +5117,11 @@ class LeafEnvSpawnSiteGuardTest(unittest.TestCase):
         sites = self._sites()
         # A count assertion so the guard cannot pass by finding nothing: if the call
         # spelling changes (a helper, a different receiver), this fails and is re-read
-        # rather than going quietly vacuous.
-        self.assertEqual(len(sites), 4, "spawn_leaf call sites changed; re-read the guard")
+        # rather than going quietly vacuous. TWO: the agentic launch in `run_substep`, and
+        # `_spawn_pure_turn` — the one site every PURE launch goes through, shared by the two
+        # pure loops and, since issue #169, by the escalate diagnostician. It was four before
+        # those three inlined their own launch block.
+        self.assertEqual(len(sites), 2, "spawn_leaf call sites changed; re-read the guard")
         import ast
         for node in sites:
             with self.subTest(line=node.lineno):
@@ -7097,6 +7076,32 @@ class DiagnosticianTest(unittest.TestCase):
             binary_id="bin_1_001", run_id="run_1_001", source_binary_id="bin_1_001",
         )
 
+    def _canonical_refs(self) -> wc.NodeRefs:
+        """`_refs` with ids in the canonical `<slug>_<YYYYMMDD>_<seq3>` shape.
+
+        The class's own ids are shorthand the stubbed runtime never inspects; the REAL launch
+        validator does, so a row that pushes a payload through it needs ids a production
+        reservation would mint."""
+        return wc.NodeRefs(
+            node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
+            ir_id="specx_20260907_001", pipeline_id="specx_20260907_001",
+            source_id="src_20260907_001", binary_id="bin_20260907_001",
+            run_id="run_20260907_001", source_binary_id="bin_20260907_001",
+        )
+
+    @staticmethod
+    def _directive_stdout(text: str, **envelope_fields: Any) -> str:
+        """A claude CLI result envelope carrying `text` — what a pure launch reads back.
+
+        The diagnostician's reply is now unwrapped by `parse_result_envelope` like every other
+        pure leaf's, so a bare directive on stdout is an UNPARSEABLE reply, not a directive —
+        and its usage is read off the ENVELOPE, not off `ProcResult.usage`, so a row that
+        pins the cost has to put the numbers here."""
+        doc = {"type": "result", "subtype": "success", "is_error": False,
+               "num_turns": 1, "result": text, "session_id": "s"}
+        doc.update(envelope_fields)
+        return json.dumps(doc)
+
     def test_last_json_object(self) -> None:
         self.assertEqual(wc._last_json_object('x {"a":1} y {"b":2} z')["b"], 2)
         self.assertIsNone(wc._last_json_object("no json here"))
@@ -7172,27 +7177,53 @@ class DiagnosticianTest(unittest.TestCase):
         # restart (discard) by resolve_severity_directive.
         c = self._conductor()
         c.spawn_leaf = lambda prompt, env, entry=None, **kw: wc.ProcResult(  # type: ignore[assignment]
-            0, '{"action":"reopen","target_phase":"compile","severity":"critical",'
-               '"repair_strategy":"reuse","reason":"ir_rot"}', "")
+            0, self._directive_stdout(
+                '{"action":"reopen","target_phase":"compile","severity":"critical",'
+                '"repair_strategy":"reuse","reason":"ir_rot"}'), "")
         d = c.escalate(self._refs(), "validate", wc.PhaseOutcome("validate", "fail"))
         self.assertEqual((d.action, d.target_phase, d.repair_strategy, d.severity),
                          ("reopen", "compile", "restart", "critical"))
 
-    def test_diagnosis_prompt_renders_escalate_skill(self) -> None:
-        # G5: the persona is the workflow-escalate SKILL body (host-rendered), with a
-        # missing-file fallback to the inline default.
-        repo = Path(__file__).resolve().parents[2]
-        persona = wc._load_escalate_persona(repo)
-        self.assertIn("Failure Diagnostician", persona)
-        self.assertFalse(persona.startswith("---"))  # frontmatter stripped
-        prompt = wc._diagnosis_prompt("n", "validate", [], {}, "prod", persona=persona)
-        self.assertIn("Failure Diagnostician", prompt)
-        self.assertIn("severity", prompt)  # directive schema appended
-        # Missing SKILL -> inline fallback (never crashes escalate).
-        self.assertEqual(
-            wc._load_escalate_persona(Path("/no/such/repo")), wc._ESCALATE_PERSONA_FALLBACK)
+    def _rendered_diagnose_prompt(self, phase: str, context: dict[str, Any],
+                                  *, node_key: str = "n",
+                                  workflow_mode: str = "prod") -> str:
+        """The prompt a diagnostician is ACTUALLY handed, through the production renderer.
 
-    def test_diagnosis_prompt_keeps_every_artifact_under_a_large_context(self) -> None:
+        Not `_diagnosis_document` alone: the persona, the directive schema and the decision
+        criteria moved into `pure_escalate_diagnose.txt` (issue #169), so a test that read the
+        document would observe none of them — and they are the half a leaf acts on.
+        """
+        refs = self._refs()
+        req = wc.build_launch_request(
+            refs, step=phase, substep="diagnose",
+            orchestration_id="o", orchestration_agent_run_id="ORCH",
+            child_agent_run_id="child-1", agent_model="m", workflow_mode=workflow_mode,
+            pure_leaf=True,
+            pure_context={"diagnosis_document": wc._diagnosis_document(
+                node_key, phase, [], context, workflow_mode)},
+        )
+        import tools.orchestration_runtime as _ort
+        return _ort.render_launch_prompt_text(_ort.prepare_launch_request_payload(req))
+
+    def test_the_rendered_diagnose_prompt_carries_the_persona_and_the_criteria(self) -> None:
+        """The diagnostician's persona, its directive schema and its rollback / severity
+        criteria are the pure template's STATIC body — they used to be a conductor constant
+        plus the workflow-escalate `SKILL`, read host-side and hashed by nothing. Rendered
+        here through the production entry point, as the leaf receives them."""
+        prompt = self._rendered_diagnose_prompt("validate", {"verdict.json": {"overall": "f"}})
+        self.assertIn("workflow failure diagnostician", prompt)
+        # The directive vocabulary, in full: an enum the template drops is one the leaf can
+        # only guess at, and `_parse_directive` rejects a guess.
+        for token in ("retry", "reopen", "fail_closed", "minor", "major", "critical",
+                      "reuse", "restart", "severity", "target_phase"):
+            self.assertIn(token, prompt, f"the directive vocabulary lost {token!r}")
+        # The two rollback rules a wrong answer costs a phase attempt on.
+        self.assertIn("shallowest", prompt.lower())
+        self.assertIn("never name `build` or `validate`", prompt)
+        # ...and the document is fenced as data, like every other inlined pure document.
+        self.assertIn("verdict.json", prompt)
+
+    def test_the_diagnose_prompt_keeps_every_artifact_under_a_large_context(self) -> None:
         """Regression (E2E #4 run 1): the prompt truncated the whole context dump at 6000 chars,
         which silently dropped whichever artifacts sorted last — including source_meta.json, the
         primary evidence of the failed generate phase. The diagnostician then reported
@@ -7205,7 +7236,7 @@ class DiagnosticianTest(unittest.TestCase):
             "ir_meta.json": {"filler": ["x" * 200 for _ in range(60)]},
             "verdict.json": {"overall": "fail"},
         }
-        prompt = wc._diagnosis_prompt("n", "generate", [], context, "dev")
+        prompt = self._rendered_diagnose_prompt("generate", context, workflow_mode="dev")
         for name in context:
             self.assertIn(name, prompt, f"{name} must appear in the diagnosis prompt")
         self.assertIn("lake_at_rest cannot be satisfied", prompt)
@@ -7298,76 +7329,219 @@ class DiagnosticianTest(unittest.TestCase):
     def test_escalate_routes_from_diagnostician(self) -> None:
         c = self._conductor()
         c.spawn_leaf = lambda prompt, env, entry=None, **kw: wc.ProcResult(  # type: ignore[assignment]
-            0, 'analysis\n{"action":"reopen","target_phase":"compile","reason":"diag_ir"}', "")
+            0, self._directive_stdout(
+                'analysis\n{"action":"reopen","target_phase":"compile","reason":"diag_ir"}'), "")
         d = c.escalate(self._refs(), "validate",
                        wc.PhaseOutcome("validate", "fail", failed_substeps=["child-9"]))
         self.assertEqual((d.action, d.target_phase, d.reason), ("reopen", "compile", "diag_ir"))
 
-    def test_the_diagnosticians_cost_is_emitted_because_it_has_no_agent_run_row(self) -> None:
-        """The diagnostician is a real billed leaf that finalizes no child, so the per-leaf
-        `usage` record has nowhere to land — and `_persist_leaf_output` reuses one fixed
-        `(arid, prefix)`, so a second escalate of the same phase overwrites the only other
-        copy. The event is therefore the durable record of what it cost (issue #47)."""
-        events: list = []
-        c = self._conductor()
-        c.emit = lambda event, **f: events.append((event, f))  # type: ignore[assignment]
-        c.spawn_leaf = lambda prompt, env, entry=None, **kw: wc.ProcResult(  # type: ignore[assignment]
-            0, 'analysis\n{"action":"reopen","target_phase":"compile","reason":"x"}', "",
-            usage={"input_tokens": 8, "output_tokens": 484, "total_tokens": 33619,
-                   "usage_source": "cli_result_envelope", "cost_usd": 0.065739},
-            model="claude-opus-5[1m]")
-        c.escalate(self._refs(), "validate", wc.PhaseOutcome("validate", "fail"))
-        emitted = [f for e, f in events if e == "diagnose_leaf_usage"]
-        self.assertEqual(len(emitted), 1)
-        self.assertEqual(emitted[0]["phase"], "validate")
-        self.assertEqual(emitted[0]["total_tokens"], 33619)
-        self.assertEqual(emitted[0]["cost_usd"], 0.065739)
-        self.assertEqual(emitted[0]["model"], "claude-opus-5[1m]")
+    def _finalized_row(self, c: _FakeConductor) -> dict[str, Any]:
+        """The `agent_runs.jsonl` payload the diagnostician's `finalize-child` carried."""
+        rows = [cap["--agent-run-json"] for sub, cap in c.calls if sub == "finalize-child"]
+        self.assertEqual(len(rows), 1, "the diagnostician finalizes exactly one child")
+        return rows[0]
 
-    def test_the_diagnosticians_cost_is_normalized_before_it_is_emitted(self) -> None:
-        """A codex `defaults` is a legal configuration (the diagnostician only requires an
-        agentic provider), and the codex pump puts the RAW `turn.completed` object on
-        `proc.usage` — no `total_tokens`, no `cost_usd`. Reading those keys straight off it
-        would emit two empty strings: this issue's own blindness, on the one launch with no
-        `agent_runs.jsonl` row to fall back to."""
-        events: list = []
+    def test_the_diagnosticians_cost_lands_on_its_own_agent_run_row(self) -> None:
+        """The diagnostician is a real billed leaf, and since issue #169 it has a child arid
+        and an `agent_runs.jsonl` row of its own — so its `usage` lands where every other
+        leaf's does, rather than on a `diagnose_leaf_usage` event that existed only because
+        there was no row."""
+        c = self._conductor()
+        c.spawn_leaf = lambda prompt, env, entry=None, **kw: wc.ProcResult(  # type: ignore[assignment]
+            0, self._directive_stdout(
+                'analysis\n{"action":"reopen","target_phase":"compile","reason":"x"}',
+                modelUsage={"claude-opus-5[1m]": {"inputTokens": 8, "outputTokens": 484,
+                                                  "cacheReadInputTokens": 33127,
+                                                  "cacheCreationInputTokens": 0}},
+                total_cost_usd=0.065739,
+                model="claude-opus-5[1m]"), "")
+        c.escalate(self._refs(), "validate", wc.PhaseOutcome("validate", "fail"))
+        row = self._finalized_row(c)
+        self.assertEqual(row["step"], "validate")
+        self.assertEqual(row["substep"], "diagnose")
+        self.assertEqual(row["status"], "pass")
+        self.assertEqual(row["usage"]["total_tokens"], 33619)
+        self.assertEqual(row["usage"]["cost_usd"], 0.065739)
+        self.assertEqual(row["agent_model"], "claude-opus-5[1m]")
+        # A pure row carries no deliverable, so its summary is the only thing that speaks for
+        # it (`_validate_agent_summary_text` requires one).
+        # The whole summary, not just its prefix: an output-less row's summary is the ONLY
+        # thing that speaks for it, and what an operator reads off a tombstoned row is which
+        # way the diagnostician routed the phase.
+        self.assertEqual(
+            row["result_summary"],
+            "diagnose_pass: action=reopen target=compile severity=major")
+        self.assertEqual(row["output_refs"], [])
+
+    def test_the_diagnosticians_cost_is_normalized_before_it_is_recorded(self) -> None:
+        """A codex `defaults` is a legal configuration, and the codex pump puts the RAW
+        `turn.completed` object on `proc.usage` — no `total_tokens`, no `cost_usd`. The row is
+        written through `_leaf_usage_row`, which totals them, rather than off `proc.usage`."""
         c = _FakeConductor(repo_root=self._repo_root(), orchestration_id="o",
                            orchestration_agent_run_id="ORCH",
                            llm_config=_cfg("codex", agent_model="gpt-5.6-sol"), env={})
         c.calls = []
-        # The diagnostician builds a read-only sandbox profile only under bwrap; this test is
-        # about what it EMITS, and a codex profile needs `leaf_config/codex/hooks.json` this fake repo
-        # has no reason to carry.
-        c._bwrap_enabled = lambda: False  # type: ignore[assignment]
-        c.emit = lambda event, **f: events.append((event, f))  # type: ignore[assignment]
         c.spawn_leaf = lambda prompt, env, entry=None, **kw: wc.ProcResult(  # type: ignore[assignment]
             0, '{"action":"reopen","target_phase":"compile","reason":"x"}', "",
             usage={"input_tokens": 10, "output_tokens": 20})
         c.escalate(self._refs(), "validate", wc.PhaseOutcome("validate", "fail"))
-        emitted = [f for e, f in events if e == "diagnose_leaf_usage"]
-        self.assertEqual(emitted[0]["total_tokens"], 30)
+        self.assertEqual(self._finalized_row(c)["usage"]["total_tokens"], 30)
 
-    def test_a_diagnostician_with_no_usage_says_so_on_the_event(self) -> None:
-        """`usage_status` is the field that says WHY the numbers are empty — without it an
-        operator reading `total_tokens: ""` cannot tell a leaf that reported nothing from a
-        conductor that forgot to look. It is the only signal, since this launch writes no
-        `agent_runs.jsonl` row."""
-        events: list = []
+    def test_a_diagnostician_with_no_usage_says_so_on_its_row(self) -> None:
+        """`usage_status` is the field that says WHY the numbers are empty — without it a
+        reader of `total_tokens: ""` cannot tell a leaf that reported nothing from a conductor
+        that forgot to look."""
         c = self._conductor()
-        c.emit = lambda event, **f: events.append((event, f))  # type: ignore[assignment]
         c.spawn_leaf = lambda prompt, env, entry=None, **kw: wc.ProcResult(  # type: ignore[assignment]
             -9, "", "killed", timed_out=True)
         c.escalate(self._refs(), "validate", wc.PhaseOutcome("validate", "fail"))
-        emitted = [f for e, f in events if e == "diagnose_leaf_usage"]
-        self.assertEqual(emitted[0]["usage_status"], "unavailable")
-        self.assertEqual(emitted[0]["total_tokens"], "")
+        row = self._finalized_row(c)
+        self.assertEqual(row["usage"]["status"], "unavailable")
+        self.assertEqual(row["status"], "fail")
+        self.assertEqual(row["result_summary"],
+                         "diagnose_fail: validate_diagnose_unparsable")
+
+    def test_the_diagnostician_is_tombstoned_before_it_is_spawned(self) -> None:
+        """It holds no deliverable and appears in no `step_result.json`, so the pass
+        completion vouch would demand a step_result it can never have; `superseded_run_ids` is
+        the exemption. The ORDER is the property: a crash between a TERMINAL row and the
+        tombstone would block a later pass — and on `build`, whose child role is `step`, would
+        also block the re-launch guard — so the tombstone is written straight after
+        `record-launch`, before anything can fail."""
+        c = self._conductor()
+
+        def spawn(prompt, env, entry=None, **kw):  # type: ignore[no-untyped-def]
+            raise wc.SandboxEnforcementError("profile went missing between record and spawn")
+
+        c.spawn_leaf = spawn  # type: ignore[assignment]
+        d = c.escalate(self._refs(), "validate", wc.PhaseOutcome("validate", "fail"))
+        subs = [cap for sub, cap in c.calls if sub == "add-superseded-runs"]
+        self.assertEqual(len(subs), 1, "the tombstone must be written before the spawn")
+        self.assertEqual(subs[0]["--run-ids"], ["child-1"])
+        self.assertIn("escalate_diagnostician_consumed", subs[0]["--reason"])
+        # ...and it really did precede the spawn: no finalize happened at all.
+        self.assertEqual([sub for sub, _ in c.calls if sub == "finalize-child"], [])
+        # WHERE the refusal lands, not just that it happened. `escalate` is called from
+        # `conduct` OUTSIDE its only `try` (which wraps `run_phase` alone), so an exception
+        # escaping here is NOT terminalized as `sandbox_enforcement_violation` — it unwinds to
+        # `run_workflow`'s generic handler and the run reads as an unexplained
+        # `conductor_error`. `origin/main` folded a `spawn_leaf` refusal into the named
+        # terminal for that reason, and the pure migration keeps it.
+        self.assertEqual(d.action, "fail_closed")
+        self.assertEqual(d.reason, "validate_diagnose_sandbox_unavailable")
+
+    def test_minting_the_child_id_cannot_crash_out_of_escalate(self) -> None:
+        """`new_agent_run_id` runs `python3 tools/new_agent_run_id.py` in a SUBPROCESS: it
+        raises `RuntimeError` on a non-zero exit and `OSError` when the interpreter is missing
+        or a fork fails. It is a call THIS issue added — `origin/main`'s diagnostician reused
+        the orchestration agent's id and minted nothing — and it sat outside the fold, so it
+        was the one remaining way to fail a diagnosis that escaped as an unexplained
+        `conductor_error`: `escalate` is called from `conduct` OUTSIDE its only `try`, so
+        nothing downstream names it. The comment above the fold claimed EVERY way lands on a
+        conservative terminal, and `docs/RUNBOOK.md` lists three; this was a fourth with no
+        name, no `diagnose_*` event and no tombstone, so an operator could not tell from the
+        record whether the diagnostician had run.
+        """
+        for exc in (RuntimeError("new_agent_run_id failed: fork: EAGAIN"),
+                    OSError(2, "No such file or directory: 'python3'")):
+            with self.subTest(exc=type(exc).__name__):
+                c = self._conductor()
+
+                def boom(_exc=exc):  # type: ignore[no-untyped-def]
+                    raise _exc
+
+                c.new_agent_run_id = boom  # type: ignore[assignment]
+                d = c.escalate(self._refs(), "validate",
+                               wc.PhaseOutcome("validate", "fail"))
+                self.assertEqual(d.action, "fail_closed")
+                self.assertEqual(d.reason, "validate_diagnose_unrecordable")
+                # Nothing was minted, so nothing was recorded, tombstoned or finalized.
+                self.assertEqual(
+                    [sub for sub, _ in c.calls
+                     if sub in ("record-launch", "add-superseded-runs", "finalize-child")], [])
+
+    def test_a_bookkeeping_failure_does_not_crash_out_of_escalate(self) -> None:
+        """The tombstone and the finalize are new calls the old `escalate` did not make, and
+        both go through `self.runtime(...)`, which raises `RuntimeError` on a non-zero exit.
+        Outside the fold, a finalize failure would lose a SUCCESSFUL diagnosis and take the
+        conductor down with it; folded, it is the same conservative terminal."""
+        for failing in ("add-superseded-runs", "finalize-child"):
+            with self.subTest(subcommand=failing):
+                c = self._conductor()
+                c.spawn_leaf = lambda prompt, env, entry=None, **kw: wc.ProcResult(  # type: ignore[assignment]
+                    0, self._directive_stdout(
+                        '{"action":"retry","target_phase":"generate","reason":"x"}'), "")
+                real_runtime = c.runtime
+
+                def runtime(args, *, input=None, _failing=failing,  # type: ignore[no-untyped-def]
+                            _real=real_runtime):
+                    if args[0] == _failing:
+                        raise RuntimeError(f"{_failing} exited 1")
+                    return _real(args, input=input)
+
+                c.runtime = runtime  # type: ignore[assignment]
+                d = c.escalate(self._refs(), "validate", wc.PhaseOutcome("validate", "fail"))
+                self.assertEqual(d.action, "fail_closed")
+                # Two different terminals, because the repairs differ: a tombstone that could
+                # not be written means the launch never got off the ground, while a finalize
+                # that failed means the leaf RAN and its row is missing — and in that second
+                # case the directive is deliberately dropped rather than obeyed, because
+                # routing on the word of an unrecorded turn is a false record.
+                # BOTH are `_unrecordable`. Neither the tombstone nor the finalize touches a
+                # sandbox, and `conduct` maps any reason containing "sandbox" to
+                # `reason_code=sandbox_enforcement_violation` — which
+                # `_write_sandbox_enforcement_violation` never backs with a `violations/`
+                # record, so reporting a bookkeeping refusal that way is a violation code with
+                # nothing behind it and a RUNBOOK remedy pointing at the wrong place.
+                self.assertEqual(d.reason, "validate_diagnose_unrecordable")
+
+    def test_the_build_phases_diagnostician_is_a_step_role_row(self) -> None:
+        """`STEP_REQUIRED_CHILD_AGENT` gives `build` a `step` child, and record-launch REFUSES
+        a role that disagrees with it — so the diagnostician of a failed Build is a `step`
+        agent, and its tombstone is what keeps `_build_step_agents_missing_step_result` from
+        blocking the re-launch."""
+        c = self._conductor()
+        c.spawn_leaf = lambda prompt, env, entry=None, **kw: wc.ProcResult(  # type: ignore[assignment]
+            0, self._directive_stdout(
+                '{"action":"retry","target_phase":"generate","reason":"x"}'), "")
+        c.escalate(self._refs(), "build", wc.PhaseOutcome("build", "fail"))
+        row = self._finalized_row(c)
+        self.assertEqual(row["agent_role"], "step")
+        self.assertEqual((row["step"], row["substep"]), ("build", "diagnose"))
+        subs = [cap for sub, cap in c.calls if sub == "add-superseded-runs"]
+        self.assertEqual(subs[0]["--run-ids"], ["child-1"])
+
+    def test_the_diagnose_request_is_a_pure_launch_the_validator_accepts(self) -> None:
+        """The payload is built by the production builder and pushed through the REAL
+        validator — the layer a conductor unit test with a stubbed runtime never traverses.
+        Every escalatable phase, because each one carries different ids (`dependency_ref`,
+        `source_id`, `binary_id`, `run_id`) and the validator requires the step's own."""
+        import tools.orchestration_runtime as _ort
+        c = self._conductor()
+        for phase in sorted(_ort.STEP_REQUIRED_CHILD_AGENT):
+            with self.subTest(phase=phase):
+                req = wc.build_launch_request(
+                    self._canonical_refs(), step=phase, substep="diagnose",
+                    orchestration_id="o", orchestration_agent_run_id="ORCH",
+                    child_agent_run_id="child-1", agent_model="m", workflow_mode="prod",
+                    pure_leaf=True,
+                    pure_context={"diagnosis_document": wc._diagnosis_document(
+                        "n", phase, [], {}, "prod")},
+                )
+                prepared = _ort.prepare_launch_request_payload(dict(req))
+                _ort._validate_launch_request_payload(prepared)
+                self.assertEqual(prepared["leaf_mode"], "pure")
+                self.assertEqual(prepared["allowed_output_paths"], [])
+                self.assertEqual(prepared["skill_must_read_refs"], "")
+        del c
 
     def test_escalate_names_its_own_substep_in_the_timeout_context(self) -> None:
-        """The diagnostician is the fourth spawn site and the only one without a child
-        `agent_run_id`. Its `leaf_timeout` event must still say WHICH leaf wedged — and it is
-        the one site whose timeout does not terminalize as `leaf_transport_error` (no
-        `finalize-child`; the empty stdout routes to `<phase>_diagnose_unparsable`), so the
-        event is the operator's only pointer to it."""
+        """Its `leaf_timeout` event must say WHICH leaf wedged — and it is the one leaf whose
+        timeout does not terminalize as `leaf_transport_error` (the empty reply routes to
+        `<phase>_diagnose_unparsable`), so the event is the operator's pointer to it. Since
+        issue #169 the `agent_run_id` is the diagnostician's OWN child arid rather than the
+        orchestration agent's, which is what makes the event join the `agent_runs.jsonl` row
+        and the persisted dialogs."""
         captured: dict[str, Any] = {}
 
         def spawn(prompt, env, entry=None, **kw):  # type: ignore[no-untyped-def]
@@ -7379,7 +7553,7 @@ class DiagnosticianTest(unittest.TestCase):
         d = c.escalate(self._refs(), "validate", wc.PhaseOutcome("validate", "fail"))
         self.assertEqual(captured["timeout_context"],
                          {"node_key": "component/spec_x@0.1.0", "step": "validate",
-                          "substep": "diagnose", "agent_run_id": "ORCH"})
+                          "substep": "diagnose", "agent_run_id": "child-1"})
         # ...and a diagnostician that produced no directive stays conservatively terminal.
         self.assertEqual(d.action, "fail_closed")
         self.assertEqual(d.reason, "validate_diagnose_unparsable")
@@ -7390,7 +7564,8 @@ class DiagnosticianTest(unittest.TestCase):
         directive and then wedged would otherwise spend a phase attempt on the word of a turn
         that never finished — while the operator is told the leaf was killed and the phase
         fails closed. (The codex path is safe by construction: its timeout returns `""`.)"""
-        directive = 'thinking...\n{"action":"retry","target_phase":"generate","reason":"x"}'
+        directive = self._directive_stdout(
+            'thinking...\n{"action":"retry","target_phase":"generate","reason":"x"}')
         c = self._conductor()
         c.spawn_leaf = lambda prompt, env, entry=None, **kw: wc.ProcResult(  # type: ignore[assignment]
             -9, directive, wc._leaf_timeout_marker(7200, 7203.0), timed_out=True)
@@ -7404,138 +7579,397 @@ class DiagnosticianTest(unittest.TestCase):
             c2.escalate(self._refs(), "validate", wc.PhaseOutcome("validate", "fail")).action,
             "retry")
 
+    def test_escalate_records_exactly_one_launch_for_its_child(self) -> None:
+        """One child, one `record-launch`, and the ORDER of the four runtime calls.
+
+        `_spawn_pure_turn` records the launch itself — that is what makes it the one place
+        every pure launch goes through — and `escalate` recorded a second time for the same
+        `child_arid` before this row existed. On the claude backend the first call writes
+        `active_child_agent_run_id.txt` and the second hits the sequential-child gate
+        (`orchestration_runtime` "Claude backend sequential violation"), which raises, sets the
+        orchestration `fail_closed` with `parallel_nodes_not_explicitly_allowed` as a side
+        effect, and — once round 1 folded launch failures — came back as
+        `<phase>_diagnose_sandbox_unavailable`, naming a sandbox that was never the problem. So
+        on the DEFAULT backend the diagnostician could not run at all, and said something else
+        had gone wrong. Nothing noticed, because every conductor fixture stubs the runtime and
+        the runtime's own rule is tested where the runtime is real.
+
+        Counting is what makes this cheap to keep: a future caller that records "just to be
+        sure" is red here rather than in a billed run.
+        """
+        c = self._conductor()
+        c.spawn_leaf = lambda prompt, env, entry=None, **kw: wc.ProcResult(  # type: ignore[assignment]
+            0, self._directive_stdout(
+                '{"action":"reopen","target_phase":"compile","reason":"x"}'), "")
+        c.escalate(self._refs(), "validate", wc.PhaseOutcome("validate", "fail"))
+        self.assertEqual([sub for sub, _ in c.calls],
+                         ["add-superseded-runs", "record-launch", "finalize-child"])
+        # ...and the one record is for the child, not for the orchestration agent.
+        rec = [cap for sub, cap in c.calls if sub == "record-launch"][0]
+        self.assertEqual(rec["--request-json"]["agent_run_id"], "child-1")
+
+    def test_the_prompt_carries_the_untrusted_data_rule_over_mixed_provenance(self) -> None:
+        """The `diagnosis_document` inlines artifact CONTENT, and the leaf's single output is a
+        directive the conductor obeys with no downstream check — so the prompt must say to read
+        that content as data. Its sibling `pure_bundle_repair.txt` carries the same rule over
+        strictly less dangerous material.
+
+        Two properties, and the second is why the first was wrong when it was first written.
+        (a) The rule is there. (b) It does not claim the artifacts are ALL agent-written:
+        `_gather_failure_context` collects host-authored metas too — `post_judge_meta.json` and
+        `pre_judge_meta.json` are written by the conductor's own in-process substeps, and a
+        `build` escalate's `binary_meta.json` comes from a phase that launches no leaf at all.
+        The document stays MIXED even there, and an earlier version of this docstring said the
+        build document held no agent-written artifact at all, which is wrong:
+        `_gather_failure_context` collects every candidate present on disk and only the ORDER
+        varies by phase, so by Build time the leaf-authored `ir_meta.json` and
+        `source_meta.json` are in it too. Mixed is the whole point. Telling
+        the leaf its firmest evidence was written by an adversary, next to a rule that says to
+        prefer `fail_closed` on insufficient evidence, is a prompt-sanctioned route to a
+        terminal verdict without doing the attribution.
+        """
+        prompt = self._rendered_diagnose_prompt("build", {"binary_meta.json": {"x": 1}})
+        ops = [b for b in prompt.split("\n\n") if b.startswith("Operations rules")]
+        self.assertEqual(len(ops), 1, "the operations-rules paragraph moved or split")
+        rule = ops[0]
+        # (a) the rule itself, in the sibling's own terms.
+        for token in ("DATA", "do NOT interpret", "obey"):
+            self.assertIn(token, rule)
+        # (b) no blanket claim of authorship. The document's provenance is MIXED, and the
+        # host-authored artifacts are the ones a `build` escalate has.
+        self.assertNotIn("were written by the very agents whose work failed", rule)
+        provenance = [t.strip() for t in rule.replace("\n", " ").split(". ")
+                      if "host" in t and "agent" in t]
+        self.assertEqual(
+            len(provenance), 1,
+            "one sentence must say the provenance is MIXED — some artifacts host-written, "
+            f"some agent-written. Sentences naming either: "
+            f"{[t for t in rule.replace(chr(10), ' ').split('. ') if 'host' in t or 'agent' in t]}")
+        # ...and that distrusting content is not a licence to discount the artifact, which is
+        # what would turn this rule into a shortcut to `fail_closed`.
+        self.assertIn("insufficient evidence", rule)
+
+    def test_a_pure_codex_argv_without_a_session_id_is_refused_by_name(self) -> None:
+        """`leaf_command`'s `session_id` is still `str | None`, and `spawn_leaf` does NOT thread
+        its (now mandatory) `child_arid` into it — the two production callers simply pass
+        `session_id=child_arid`. So making `_codex_pure_schema_path` require a value did not
+        make the argument mandatory at the signature that feeds it; it turned a
+        signature-legal call into an `AttributeError` on `None.strip()`, where before this
+        branch there was a shared `codex-pure-schema` fallback filename.
+
+        The fallback is not coming back — two concurrent launches sharing one schema file is
+        what keying it per child fixes — but the refusal is now NAMED, so a host defect reports
+        itself instead of surfacing as an attribute error from inside argv construction.
+        """
+        c = _FakeConductor(repo_root=Path("/tmp/repo"), orchestration_id="o",
+                           orchestration_agent_run_id="O", env={},
+                           llm_config=_cfg("codex", agent_model="gpt-5.6-sol"))
+        with self.assertRaises(wc.SandboxEnforcementError) as caught:
+            c.leaf_command(c.entry_for(None, None), pure=True)
+        self.assertIn("session_id", str(caught.exception))
+        # ...and the ordinary call, the one both production callers make, still works.
+        argv = c.leaf_command(c.entry_for(None, None), session_id="child-1", pure=True)
+        self.assertIn("child-1", "\x00".join(argv))
+
+    def test_each_escalation_of_a_phase_is_a_fresh_conversation(self) -> None:
+        """On the HTTP transport the conversation lives in memory, keyed by `(step, substep)`
+        — `(<phase>, diagnose)` for every escalation of one phase — and `_run_http_leaf`
+        appends every turn to it. Both pure loops reset it at their own start; `escalate` did
+        not, so the second escalation of a phase carried the FIRST diagnosis document and the
+        first directive as prior turns, and the third carried both rounds.
+
+        Two things come out wrong, and the first is a `leaf shortcut`: the diagnostician reads
+        a superseded attempt's artifact content as input, which the closed-context contract
+        forbids and which this very template tells it it is not doing ("reason ONLY over the
+        diagnosis document below, and do not assume artifacts it does not show"). The second is
+        that attempts 2 and 3 are anchored on the model's own earlier answer, so a defect that
+        has since become `critical` keeps being graded the way it was graded first — and a
+        `minor` grade forces `reuse`, which keeps the artifacts a restart would have discarded.
+
+        A phase gets up to `MAX_ATTEMPTS_PER_PHASE` escalations, so the replay is bounded but
+        real. Unreachable until `defaults` was allowed to be an HTTP provider — this issue's
+        own change — which is why it is pinned here rather than assumed.
+        """
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        path = Path(d) / "llm.yaml"
+        path.write_text(
+            "defaults:\n  provider: anthropic_api\n"
+            "  api_key_env: ANTHROPIC_API_KEY\n  model: claude-opus-5\n"
+            "phases:\n  validate:\n    substeps:\n      judge:\n"
+            "        provider: claude_cli\n", encoding="utf-8")
+        oid = "o_http_history"
+        c = _FakeConductor(repo_root=self._repo_root(oid), orchestration_id=oid,
+                           orchestration_agent_run_id="ORCH",
+                           llm_config=lc.load_llm_config(path), env={})
+        c.calls = []
+        # Drive the REAL `_run_http_leaf` history bookkeeping by stubbing only the transport
+        # call it wraps, so what is observed is the message list the provider would receive.
+        sent: list[int] = []
+        directive = ('{"action":"retry","target_phase":"generate","severity":"minor",'
+                     '"repair_strategy":"reuse","reason":"x"}')
+
+        class _Resp:
+            text = directive
+            transport_error = None
+            usage: dict = {}
+            model = "m"
+            truncated = False
+            raw_response = directive
+
+        import tools.llm_http_leaf as hl
+        real = hl.run_pure_http_leaf
+
+        def fake(entry, messages, env=None):  # type: ignore[no-untyped-def]
+            sent.append(len(messages))
+            return _Resp()
+
+        hl.run_pure_http_leaf = fake  # type: ignore[assignment]
+        self.addCleanup(lambda: setattr(hl, "run_pure_http_leaf", real))
+        # The fixture's `spawn_leaf` is stubbed away; put the real one back so the HTTP branch
+        # of `spawn_leaf` — and with it `_run_http_leaf`'s history — is what runs.
+        c.spawn_leaf = wc.Conductor.spawn_leaf.__get__(c)  # type: ignore[assignment]
+        for _ in range(3):
+            c.escalate(self._refs(), "generate", wc.PhaseOutcome("generate", "fail"))
+        self.assertEqual(
+            sent, [1, 1, 1],
+            "each escalation must send ONE message — its own prompt. A growing count is the "
+            "previous diagnosis and the previous directive being replayed as prior turns.")
+
+    def test_a_truncated_http_reply_does_not_get_to_route_the_phase(self) -> None:
+        """The fifth disjunct, and the one only an HTTP `defaults` can reach.
+
+        `response_truncated` is set by the HTTP transport alone (`_run_http_leaf` carries the
+        provider's own "cut off at the output-token ceiling" flag). It could not reach this
+        leaf while `defaults` had to be a CLI provider; issue #169 made `defaults` admissible
+        as an HTTP provider — deliberately, on the vendor-neutrality premise — and that is what
+        made the omission live. It cannot ride on a neighbouring half either: for a non-claude
+        entry `_spawn_pure_turn` SYNTHESISES the envelope with `parsed=True, is_error=False`,
+        so `not parsed` and `is_error` are constants there and only this disjunct is left
+        between a cut-off reply and a phase attempt.
+
+        A leaf whose provider stopped it mid-sentence would otherwise have the directive it had
+        already written obeyed, and its row laundered `diagnose_pass` — the same laundering the
+        `is_error` half exists to stop, on the other transport.
+        """
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        path = Path(d) / "llm.yaml"
+        # An HTTP `defaults` beside a CLI `validate.judge`: the shape the shipped examples now
+        # describe, and the one `cli_launch_identity` exists to keep runnable.
+        path.write_text(
+            "defaults:\n  provider: anthropic_api\n"
+            "  api_key_env: ANTHROPIC_API_KEY\n  model: claude-opus-5\n"
+            "phases:\n  validate:\n    substeps:\n      judge:\n"
+            "        provider: claude_cli\n", encoding="utf-8")
+        oid = "o_truncated_http"
+        c = _FakeConductor(repo_root=self._repo_root(oid), orchestration_id=oid,
+                           orchestration_agent_run_id="ORCH",
+                           llm_config=lc.load_llm_config(path), env={})
+        c.calls = []
+        self.assertTrue(c.entry_for(None, None).is_http, "the fixture must reach the HTTP path")
+        directive = '{"action":"retry","target_phase":"generate","reason":"x"}'
+        c.spawn_leaf = lambda prompt, env, entry=None, **kw: wc.ProcResult(  # type: ignore[assignment]
+            0, f"reasoning...\n{directive}\nBut wait, I should also cons", "",
+            response_truncated=True)
+        decision = c.escalate(self._refs(), "validate", wc.PhaseOutcome("validate", "fail"))
+        self.assertEqual(decision.action, "fail_closed")
+        self.assertEqual(decision.reason, "validate_diagnose_unparsable")
+        self.assertEqual(self._finalized_row(c)["status"], "fail")
+        # The control: the SAME reply on the SAME transport, not truncated, is honoured — so
+        # the refusal above is this half's and not the transport's.
+        c2 = _FakeConductor(repo_root=self._repo_root(oid + "_ok"), orchestration_id=oid + "_ok",
+                            orchestration_agent_run_id="ORCH",
+                            llm_config=lc.load_llm_config(path), env={})
+        c2.calls = []
+        c2.spawn_leaf = lambda prompt, env, entry=None, **kw: wc.ProcResult(  # type: ignore[assignment]
+            0, f"reasoning...\n{directive}", "")
+        self.assertEqual(
+            c2.escalate(self._refs(), "validate",
+                        wc.PhaseOutcome("validate", "fail")).action, "retry")
+
+    def test_the_template_tells_the_leaf_what_a_null_target_actually_does(self) -> None:
+        """A directive is prose the leaf ACTS on, so a sentence that is wrong there costs a
+        phase attempt.
+
+        `_parse_directive` treats a null `target_phase` three different ways, and the
+        difference is not obvious: `retry` accepts it (the current phase), `fail_closed`
+        ignores it, and `reopen` REJECTS THE WHOLE DIRECTIVE — the leaf's reasoning is
+        discarded and the phase fail_closes as `<phase>_diagnose_unparsable`. The template
+        said only "`null` targets the current phase", which is a trap for exactly one of the
+        three. Both halves are pinned here: the parser's behaviour, and that the template
+        states it — so correcting one without the other is red."""
+        # The severity policy is enforced only where a repair can happen, and a null target is
+        # not such a place: `conduct` defaults it to the current phase, so a strategy surviving
+        # there would fire the same-phase producer reopen on a directive that named no target.
+        # It used to survive whenever the LEAF spelled one — measured then: `critical` with
+        # `repair_strategy="reuse"` and a null target came back `reuse`, where naming the phase
+        # forces `restart`, so the grade that means "discard these artifacts" kept them. Every
+        # null-target directive now clears the strategy and terminalizes, which is what the
+        # no-strategy one always did.
+        for severity, spelled in (("minor", "restart"), ("critical", "reuse"),
+                                  ("major", "restart"), ("major", None)):
+            with self.subTest(severity=severity, spelled=spelled):
+                named = wc.resolve_severity_directive(wc.RouteDecision(
+                    "retry", target_phase="generate", repair_strategy=spelled,
+                    reason="r", severity=severity))
+                self.assertIn(named.repair_strategy, ("reuse", "restart"))
+                nulled = wc.resolve_severity_directive(wc.RouteDecision(
+                    "retry", target_phase=None, repair_strategy=spelled,
+                    reason="r", severity=severity))
+                self.assertIsNone(nulled.repair_strategy)
+        # ...and the prompt says so rather than telling the leaf null is the same as naming.
+        criteria_text = self._rendered_diagnose_prompt("generate", {})
+        self.assertIn("TERMINALIZES", criteria_text)
+        # The behaviour.
+        for action, expected in (("retry", "retry"), ("fail_closed", "fail_closed"),
+                                 ("reopen", None)):
+            with self.subTest(action=action):
+                decision = wc._parse_directive(
+                    json.dumps({"action": action, "target_phase": None, "reason": "r"}))
+                if expected is None:
+                    self.assertIsNone(decision)
+                else:
+                    self.assertEqual(decision.action, expected)
+                    self.assertIsNone(decision.target_phase)
+        # ...and the prompt says so, in the leaf's own vocabulary. The literals come from the
+        # parser's own contract set, so a renamed action breaks both together.
+        prompt = self._rendered_diagnose_prompt("validate", {})
+        self.assertIn("reopen", prompt)
+        self.assertIn("null", prompt)
+        criteria = [b for b in prompt.split("\n\n") if b.startswith("Decision criteria")]
+        self.assertEqual(len(criteria), 1, "the decision-criteria paragraph moved or split")
+        # ONE SENTENCE has to carry the whole rule. A paragraph-wide `assertIn` is satisfied by
+        # the severity prose a few sentences later, which says artifacts are "discarded" —
+        # measured: with the null-target rule reversed to "null means the current phase,
+        # whatever the action", a paragraph-wide check still passed.
+        sentences = [t.strip() for t in criteria[0].replace("\n", " ").split(". ")]
+        refusal = [t for t in sentences
+                   if "reopen" in t and "null" in t
+                   and any(w in t for w in ("refused", "discarded", "invalid", "rejected"))]
+        self.assertEqual(
+            len(refusal), 1,
+            "exactly one sentence of the decision criteria must say that a null `target_phase` "
+            "with `action=\"reopen\"` is REFUSED — `_parse_directive` discards the whole "
+            f"directive there. Sentences mentioning both: "
+            f"{[t for t in sentences if 'reopen' in t and 'null' in t]}")
+        for phase in sorted(wc._DIAGNOSTICIAN_TARGET_PHASES):
+            self.assertIn(phase, criteria[0])
+
+    def test_each_half_of_the_directive_guard_refuses_on_its_own(self) -> None:
+        """`None if (timed_out or rc != 0 or truncated or not parsed or is_error)`.
+
+        FIVE disjuncts — the four the two pure loops refuse a document on, plus `timed_out`
+        (neither loop tests it: `_timed_out_result` forces a nonzero `returncode` and is the
+        only producer of the flag, so `returncode` already answers for it there) — and every
+        fixture in this class that reaches them used to be a COMPLETE one: the two killed-leaf
+        rows set `timed_out` AND a non-zero return code, and `_directive_stdout` always builds
+        a well-formed, non-error envelope — so no row was ever decided BY any single half, and
+        deleting three of the four this guard then had left the whole suite green (measured,
+        round 1). Each row below carries a syntactically perfect directive and trips exactly
+        ONE half, so each half is what refuses it.
+
+        The gain each half denies is the same: a leaf whose turn did not finish would
+        otherwise have its directive obeyed and its row written `diagnose_pass`.
+
+        MEASURED, and the three outcomes are different, so they are stated apart:
+
+        - deleting `returncode != 0` or `is_error` turns exactly one subtest BELOW red. Both
+          are reachable in production and pinned by a fixture production can emit.
+        - deleting `response_truncated` turns a DIFFERENT test method red
+          (`test_a_truncated_http_reply_does_not_get_to_route_the_phase`), because the row that
+          straddles it needs an HTTP `defaults` — on that transport `_spawn_pure_turn`
+          synthesises the envelope, so `not parsed` and `is_error` are constants and only this
+          half is left. A row here would have been killed by the neighbouring `not parsed`
+          instead; it was written that way first, and measured green.
+        - deleting `timed_out` or `not envelope.parsed` turns a subtest red on a fixture
+          PRODUCTION CANNOT EMIT, so neither is evidence of reachability. `_timed_out_result`
+          forces a nonzero `returncode` and is the only producer of the flag, so
+          `timed_out=True` with `returncode == 0` does not occur; and an unparsed envelope
+          carries `result is _MISSING`, which the `isinstance(..., str)` guard beside the call
+          reduces to `""`, so `_parse_directive("")` is None anyway. Both disjuncts are
+          REDUNDANT rather than unpinned. They are kept because they state the intent at the
+          point of decision and do not depend on another function's normalisation or on a
+          sentinel's type staying what it is — and the two rows are what would notice if
+          either ever changed.
+        """
+        directive = '{"action":"retry","target_phase":"generate","reason":"x"}'
+        cases = {
+            # Killed at the cap, but the process still reported a zero exit.
+            "timed_out": wc.ProcResult(0, self._directive_stdout(directive), "",
+                                       timed_out=True),
+            # Died on its own (an HTTP 502, a codex leaf exiting after its final message)
+            # WITHOUT being killed, so `timed_out` is False and only the code refuses it.
+            "returncode": wc.ProcResult(1, self._directive_stdout(directive), ""),
+            # A live turn whose stdout is not a result envelope at all.
+            "unparsed": wc.ProcResult(0, "not an envelope at all", ""),
+            # The CLI's OWN error envelope. Its `result` text is still model-written, so it
+            # can carry a directive-shaped final line; `returncode` does not catch this one
+            # because an is_error envelope arrives on a zero-exit launch.
+            "is_error": wc.ProcResult(
+                0, json.dumps({"type": "result", "subtype": "error_during_execution",
+                               "is_error": True, "result": directive, "session_id": "s"}), ""),
+        }
+        for half, proc in cases.items():
+            with self.subTest(half=half):
+                c = self._conductor()
+                c.spawn_leaf = lambda prompt, env, entry=None, _p=proc, **kw: _p  # type: ignore[assignment]
+                d = c.escalate(self._refs(), "validate",
+                               wc.PhaseOutcome("validate", "fail"))
+                self.assertEqual(d.action, "fail_closed", half)
+                self.assertEqual(d.reason, "validate_diagnose_unparsable", half)
+                # ...and the row says the turn failed, so the cost is recorded against a
+                # `fail` rather than laundered into a `diagnose_pass`.
+                self.assertEqual(self._finalized_row(c)["status"], "fail", half)
+        # The control: the SAME directive from a turn that finished cleanly is honoured, so
+        # the four rows above refuse for their own reason and not because the payload is bad.
+        c = self._conductor()
+        c.spawn_leaf = lambda prompt, env, entry=None, **kw: wc.ProcResult(  # type: ignore[assignment]
+            0, self._directive_stdout(directive), "")
+        self.assertEqual(
+            c.escalate(self._refs(), "validate",
+                       wc.PhaseOutcome("validate", "fail")).action, "retry")
+
     def test_escalate_unparsable_is_fail_closed(self) -> None:
         c = self._conductor()
-        c.spawn_leaf = lambda prompt, env, entry=None, **kw: wc.ProcResult(0, "I am unsure; no directive", "")  # type: ignore[assignment]
+        c.spawn_leaf = lambda prompt, env, entry=None, **kw: wc.ProcResult(  # type: ignore[assignment]
+            0, self._directive_stdout("I am unsure; no directive"), "")
         d = c.escalate(self._refs(), "build", wc.PhaseOutcome("build", "fail"))
         self.assertEqual(d.action, "fail_closed")
 
-    def test_escalate_fail_closed_when_diagnostician_unsandboxable(self) -> None:
-        # Under bwrap-enforced mode, if the host cannot build the read-only diagnostician
-        # profile, escalate must convert that to a conservative fail_closed, not crash.
-        c = self._conductor()
+    def test_escalate_fail_closed_when_the_launch_cannot_be_recorded(self) -> None:
+        """`record_launch` is where the diagnostician's read-only profile is BUILT (issue #169
+        retired the in-process one), so a host that cannot sandbox it fails there. Nothing has
+        been spawned and no row exists, so escalate converts it to a conservative fail_closed
+        rather than crashing the conductor. The tombstone precedes the record, so it is the
+        one bookkeeping call that did land; it is inert without a row, because the pass
+        vouch derives its "must regain a fresh run" obligation from the tombstoned run's own
+        record and skips an id it cannot find."""
+        for exc in (wc.SandboxEnforcementError("no bwrap on this host"),
+                    OSError("bwrap binary missing"),
+                    RuntimeError("record-launch refused the request")):
+            with self.subTest(exc=type(exc).__name__):
+                c = self._conductor()
 
-        def boom():  # type: ignore[no-untyped-def]
-            raise wc.SandboxEnforcementError("no bwrap on this host")
+                def boom(child_arid, request, entry, _exc=exc, **kw):  # type: ignore[no-untyped-def]
+                    raise _exc
 
-        c._readonly_sandbox_profile = boom  # type: ignore[assignment]
-        d = c.escalate(self._refs(), "validate", wc.PhaseOutcome("validate", "fail"))
-        self.assertEqual(d.action, "fail_closed")
-        self.assertIn("sandbox_unavailable", d.reason or "")
+                c.record_launch = boom  # type: ignore[assignment]
+                d = c.escalate(self._refs(), "validate", wc.PhaseOutcome("validate", "fail"))
+                self.assertEqual(d.action, "fail_closed")
+                self.assertEqual(d.reason, "validate_diagnose_sandbox_unavailable")
+                # The tombstone is written BEFORE the record now, so it is the one
+                # bookkeeping call that did happen; nothing was finalized.
+                self.assertEqual([sub for sub, _ in c.calls
+                                  if sub == "finalize-child"], [])
 
-    def test_the_diagnosticians_profile_actually_carries_the_claude_isolation(self) -> None:
-        """The diagnostician re-derives its own isolation; nothing observed that.
-
-        It never reaches `record_launch`, so it is the one claude launch whose
-        isolation is wired in a second place — the commit message's own surface
-        inventory calls it out. Measured: turning its `elif entry.provider ==
-        "claude_cli":` into `elif False:` left the whole suite green, and under that
-        the diagnostician comes up on the OPERATOR's `~/.claude`.
-
-        Asserted on the profile the REAL method returns, not on the kwargs helper.
-        """
-        # Its OWN id, like `_conductor()` mints: the isolated home is
-        # `<homes-root>/<oid>/<backend>` and its creation is exclusive, so two tests
-        # sharing the literal `"o"` under one homes root collide. Under pytest each test
-        # gets its own root and the collision is invisible; run as plain `unittest` — the
-        # command this branch's commit messages prescribe — it fails, and it does NOT
-        # fail on `origin/main`.
-        oid = "o_readonly_profile"
-        repo = self._repo_root(oid)
-        c = _FakeConductor(
-            repo_root=repo, orchestration_id=oid, orchestration_agent_run_id="ORCH",
-            llm_config=_cfg("claude"), env={})
-        profile = c._readonly_sandbox_profile()
-        meta = json.loads(
-            (repo / "workspace" / "orchestrations" / oid / "orchestration_meta.json")
-            .read_text(encoding="utf-8"))
-        home = meta["claude_workflow_home"]
-        self.addCleanup(shutil.rmtree, Path(home), True)
-
-        from tools.orchestration_runtime import CLAUDE_HOME_WRITABLE_RELPATHS
-        self.assertEqual((profile.get("env") or {}).get("CLAUDE_CONFIG_DIR"), home)
-        self.assertIn(home, profile.get("runtime_ro_bind_paths") or [])
-        self.assertEqual(
-            {b for b in (profile.get("runtime_rw_bind_paths") or []) if b.startswith(home)},
-            {str(Path(home) / rel) for rel in CLAUDE_HOME_WRITABLE_RELPATHS},
-        )
-        operator_home = Path(os.environ.get("HOME") or Path.home())
-        self.assertNotIn(str(operator_home / ".claude"),
-                         profile.get("runtime_rw_bind_paths") or [])
-        settings = str(Path(home) / "settings.json")
-        self.assertIn([settings, settings], profile.get("runtime_ro_bind_mappings") or [])
-
-    def test_escalate_spawns_diagnostician_with_readonly_profile(self) -> None:
-        # P2-4b: under bwrap-enforced mode the diagnostician runs sandboxed with a
-        # dedicated read-only profile (no write_roots) instead of fail-closing.
-        # Uses a TemporaryDirectory repo_root because this exercises the REAL
-        # _readonly_sandbox_profile() (which mkdir's sandbox/tmp/hooks/audit dirs,
-        # and since issue #63 also prepares the claude private home from the
-        # committed leaf configuration).
-        with tempfile.TemporaryDirectory() as tmp:
-            seed_claude_leaf_config(Path(tmp))
-            # Its own id, for the reason given at the other direct construction above.
-            _oid = "o_bwrap_argv"
-            _meta_dir = Path(tmp) / "workspace" / "orchestrations" / _oid
-            _meta_dir.mkdir(parents=True, exist_ok=True)
-            (_meta_dir / "orchestration_meta.json").write_text("{}", encoding="utf-8")
-            c = _FakeConductor(
-                repo_root=Path(tmp), orchestration_id=_oid,
-                orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={},
-            )
-            c.calls = []
-            self.assertTrue(c._bwrap_enabled())  # the test conductor enforces bwrap
-            captured: dict[str, object] = {}
-
-            def spawn(prompt, env, entry=None, **kw):  # type: ignore[no-untyped-def]
-                captured["profile"] = kw.get("profile")
-                return wc.ProcResult(
-                    0, '{"action":"reopen","target_phase":"compile","reason":"diag"}', "")
-
-            c.spawn_leaf = spawn  # type: ignore[assignment]
-            d = c.escalate(self._refs(), "validate", wc.PhaseOutcome("validate", "fail"))
-        self.assertEqual(d.action, "reopen")
-        profile = captured["profile"]
-        self.assertIsInstance(profile, dict)
-        assert isinstance(profile, dict)
-        self.assertTrue(profile.get("readonly"))
-        self.assertEqual(profile.get("write_roots"), [])
-        self.assertEqual(profile.get("read_roots"), [])
-
-    def test_codex_diagnostician_uses_isolated_codex_home(self) -> None:
-        """The trust-bypassed diagnostician must not inherit ambient CODEX_HOME."""
-        from unittest.mock import patch
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp) / "repo"
-            from tools.tests.leaf_config_fixture import seed_codex_hooks
-            repo_root.mkdir(parents=True, exist_ok=True)
-            seed_codex_hooks(repo_root)
-            orch = "orch_codex_diagnostician"
-            meta_path = repo_root / "workspace" / "orchestrations" / orch / "orchestration_meta.json"
-            meta_path.parent.mkdir(parents=True)
-            meta_path.write_text(json.dumps({"orchestration_id": orch}), encoding="utf-8")
-            ambient_home = Path(tmp) / "ambient-codex"
-            ambient_home.mkdir()
-            (ambient_home / "auth.json").write_text("{}\n", encoding="utf-8")
-            in_repo_tmpdir = repo_root / "workspace" / "tmp" / "ORCH"
-            in_repo_tmpdir.mkdir(parents=True)
-            c = _FakeConductor(
-                repo_root=repo_root, orchestration_id=orch,
-                orchestration_agent_run_id="ORCH", llm_config=_cfg("codex"), env={},
-            )
-            with patch.dict(
-                os.environ,
-                {"CODEX_HOME": str(ambient_home), "TMPDIR": str(in_repo_tmpdir)},
-                clear=False,
-            ):
-                profile = c._readonly_sandbox_profile()
-            isolated_home = Path(profile["env"]["CODEX_HOME"])
-            self.assertNotEqual(isolated_home, ambient_home)
-            self.assertEqual(profile["runtime_rw_bind_paths"], [str(isolated_home)])
-            mappings = profile["runtime_ro_bind_mappings"]
-            self.assertIn([str(isolated_home / "hooks.json"), str(isolated_home / "hooks.json")], mappings)
-            self.assertIn([str(isolated_home / "config.toml"), str(isolated_home / "config.toml")], mappings)
+    # The diagnostician's sandbox profile is no longer built here. Until issue #169 it was
+    # assembled in-process by `_readonly_sandbox_profile` and three rows in this class pinned
+    # what that produced — the claude private home, the codex isolated home, and the
+    # `readonly` / empty-`write_roots` shape `escalate` handed to `spawn_leaf`. It is now
+    # written by `record_launch` from the pure branch, into `sandbox_profiles/<arid>.json`,
+    # which no fake conductor reaches: the properties moved to
+    # `test_pure_leaf_wiring.PureRecordLaunchTests`, where a REAL record-launch runs.
 
     def test_conduct_escalates_then_reopens(self) -> None:
         c = self._conductor()
@@ -7552,9 +7986,13 @@ class DiagnosticianTest(unittest.TestCase):
         c.decision_fn = lambda phase, outcomes: wc.RouteDecision("escalate", reason="novel")
 
         def spawn(prompt, env, entry=None, **kw):
-            if "diagnostician" in prompt:
+            # The diagnostician is identified by its SUBSTEP, not by sniffing the prompt: the
+            # fake runtime returns a fixed `"PROMPT"` for every record-launch, so the persona
+            # this used to look for is not in what the fake hands back.
+            if (kw.get("timeout_context") or {}).get("substep") == "diagnose":
                 return wc.ProcResult(
-                    0, '{"action":"reopen","target_phase":"compile","reason":"diag"}', "")
+                    0, self._directive_stdout(
+                        '{"action":"reopen","target_phase":"compile","reason":"diag"}'), "")
             return wc.ProcResult(0, "", "")
 
         c.spawn_leaf = spawn  # type: ignore[assignment]
@@ -7980,8 +8418,18 @@ class LeafSpawnTest(unittest.TestCase):
         # The narrowing is the config file's own key (see
         # `tools/tests/llm_samples.agentic_only_config`), not a test-only back door.
         keep = sorted(lc.PROVIDER_CAPABILITIES[provider] - {lc.CAP_PURE})
-        body = (f"defaults:\n  provider: {provider}\n"
-                f"  capabilities: [{', '.join(keep)}]\n")
+        # The narrowing goes on the LEAVES, not on `defaults`: `defaults` also runs the escalate
+        # diagnostician, which is a pure leaf since issue #169, so a document whose `defaults`
+        # drops `pure` is refused at load (`llm_config_defaults_not_pure`).
+        phases: dict[str, list[str]] = {}
+        for step, substep in sorted(lc.LLM_LEAF_SUBSTEPS):
+            phases.setdefault(step, []).append(substep)
+        body = f"defaults:\n  provider: {provider}\nphases:\n"
+        for step, substeps in phases.items():
+            body += f"  {step}:\n    substeps:\n"
+            for substep in substeps:
+                body += (f"      {substep}:\n        provider: {provider}\n"
+                         f"        capabilities: [{', '.join(keep)}]\n")
         cfg = lc.apply_defaults_overrides(
             _config_from_text(body), model=model, command=command)
         base = dict(repo_root=Path("/tmp/repo"), orchestration_id="o",
@@ -9108,10 +9556,11 @@ class LeafSpawnTest(unittest.TestCase):
                 captured.clear()
                 from unittest.mock import patch
                 # One pair per launch: a pipe is read to EOF once, and this block spawns
-                # two leaves (the recorded one and the diagnostician).
+                # one leaf. (It used to spawn two — the second was the diagnostician, the one
+                # caller that passed an explicit `profile` and no `child_arid`. Issue #169
+                # made `child_arid` mandatory and removed the `profile` kwarg with it.)
                 codex_pipes = [
-                    (self._pipe('{"type":"thread.started","thread_id":"t"}\n'), self._pipe())
-                    for _ in range(2)]
+                    (self._pipe('{"type":"thread.started","thread_id":"t"}\n'), self._pipe())]
 
                 class _FakePopen:
                     pid = 424242
@@ -9133,11 +9582,6 @@ class LeafSpawnTest(unittest.TestCase):
                     c_codex._register_codex_thread = lambda *args: None  # type: ignore[method-assign]
                     c_codex.spawn_leaf(
                         "P", {"HOME": "/h"}, child_arid="A")
-                    # The read-only diagnostician has no child ARID / launch
-                    # record. It still needs the Codex JSONL transport, but must
-                    # not write a session-index row for the diagnostic thread.
-                    profile = json.loads((prof_dir / "A.json").read_text(encoding="utf-8"))
-                    c_codex.spawn_leaf("P", {"HOME": "/h"}, profile=profile)
                 self.assertEqual(captured["argv"][0], "bwrap")
                 self.assertIn("codex", captured["argv"])
                 # Same on the codex path: stdin pipe requested, prompt off argv (argv ends
@@ -9152,8 +9596,10 @@ class LeafSpawnTest(unittest.TestCase):
                     self._c(repo_root=repo, env={}).spawn_leaf(
                         "P", {"HOME": "/h"}, session_id="Z", child_arid="Z")
                 self.assertNotIn("argv", captured)
-                # no child_arid (e.g. diagnostician) → also fail closed
-                with self.assertRaises(RuntimeError):
+                # `child_arid` is REQUIRED (issue #169): the caller that used to omit it, the
+                # diagnostician, now has one, and a call without it is a TypeError at the
+                # signature rather than a fail-closed at the profile lookup.
+                with self.assertRaises(TypeError):
                     self._c(repo_root=repo, env={}).spawn_leaf("P", {"HOME": "/h"})
                 self.assertNotIn("argv", captured)
                 # structurally invalid profile (missing repo_root/tmp_dir) →
@@ -19691,9 +20137,12 @@ class LeafEntryThreadingTests(unittest.TestCase):
                 "defaults:\n  provider: codex_cli\n  model: gpt-5.6-sol\n"
                 "  effort: xhigh\n"))
         entry = c.entry_for("generate", "generate")
+        # The pure codex branch writes its output schema under the leaf's own agent_run_id, so
+        # a `pure=True` argv needs one (issue #169 removed the shared fallback filename two
+        # concurrent launches could have collided on).
         for argv in (c.leaf_command(entry),
                      c.leaf_command(entry, resume_session_id="t1"),
-                     c.leaf_command(entry, resume_session_id="t1", pure=True)):
+                     c.leaf_command(entry, session_id="t2", resume_session_id="t1", pure=True)):
             self.assertIn('model_reasoning_effort="xhigh"', argv)
 
     def test_an_absent_effort_says_nothing(self) -> None:
@@ -19757,10 +20206,15 @@ class LeafEntryThreadingTests(unittest.TestCase):
         self.assertFalse(c._verify_session_resumable("prior-arid"))
 
     def test_pure_dispatch_follows_the_pure_capability(self) -> None:
+        # The narrowing is on the LEAF, not on `defaults`: `defaults` also runs the escalate
+        # diagnostician, a pure leaf since issue #169, so a document whose `defaults` drops
+        # `pure` is refused at load.
         c = wc.Conductor(
             repo_root=Path("/tmp/repo"), orchestration_id="o", orchestration_agent_run_id="O",
             env={}, llm_config=self._config_text(
-                "defaults:\n  provider: claude_cli\n  capabilities: [agentic]\n"))
+                "defaults:\n  provider: claude_cli\n"
+                "phases:\n  generate:\n    substeps:\n      generate:\n"
+                "        provider: claude_cli\n        capabilities: [agentic]\n"))
         c._conductor_authors_makefile = lambda refs: True   # type: ignore[assignment]
         c._conductor_authors_runner = lambda refs: True     # type: ignore[assignment]
         self.assertFalse(c._pure_leaf_substep(None, "generate", "generate"))
@@ -20286,9 +20740,9 @@ class LeafEntryThreadingTests(unittest.TestCase):
         The methods below default to `defaults` so tests and the entry-less diagnostician can
         call them plainly. That default is exactly the failure mode of this refactor — a launch
         silently reverting to the run-wide model under a mixed config — so the conductor's own
-        source is parsed and every call checked for an entry argument. `escalate` and
-        `_readonly_sandbox_profile` genuinely have no phase/substep, and both resolve
-        `entry_for(None, None)` explicitly, so they pass this too."""
+        source is parsed and every call checked for an entry argument. `escalate` genuinely has
+        no phase/substep and resolves `entry_for(None, None)` explicitly, so it passes this
+        too. (`_readonly_sandbox_profile` did the same until issue #169 deleted it.)"""
         import ast
         import inspect
         # DERIVED, not hand-listed: the set of guarded methods and the position of `entry` in

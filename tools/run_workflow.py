@@ -2884,8 +2884,13 @@ def _run_main(
         llm_config.validate_runnable()
         # Downstream (preflight, the recorded invocation, the closure driver) still speaks the
         # single-backend vocabulary; derive it FROM the config, which is now its only source.
-        llm = llm_config.defaults.backend_token
-        llm_command = llm_config.defaults.command or llm
+        # NOT off `defaults` directly: since issue #169 `defaults` may be an HTTP provider (the
+        # one launch it serves, the escalate diagnostician, is a pure leaf), and an HTTP
+        # provider launches no process — `--agent-backend` / `--backend` take
+        # `choices={claude, codex}` and would die on an argparse usage dump. `cli_launch_identity`
+        # answers with what the configuration can actually launch and names its own refusal
+        # when that is nothing.
+        llm, llm_command = llm_config.cli_launch_identity()
         if not spec_ref_in:
             raise ValueError("spec_ref is required unless --resume is set")
         spec_ref = _canonicalize_spec_ref(repo_root, spec_ref_in)

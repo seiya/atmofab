@@ -102,12 +102,26 @@ def _pure_context_for(step: str, substep: str) -> dict[str, str]:
     """The fixture context for one migrated pure pair, keyed by BOTH halves of the pair. Keying
     on `substep` alone silently handed the compile pairs the generate contexts, whose keys the
     launch validator then rejects."""
+    if (step, substep) in ort.DIAGNOSE_LAUNCH_PAIRS:
+        # One context for every diagnose pair: the escalate diagnostician's prompt does not
+        # vary with the failed phase (the phase is a field of the document it is handed).
+        return _pure_diagnose_context()
     return {
         ("compile", "generate"): _pure_compile_context,
         ("compile", "verify"): _pure_compile_verify_context,
         ("generate", "generate"): _pure_generate_context,
         ("generate", "verify"): _pure_verify_context,
     }[(step, substep)]()
+
+
+def _pure_diagnose_context() -> dict[str, str]:
+    return {
+        "diagnosis_document": json.dumps(
+            {"node_key": _NODE, "failed_phase": "validate", "workflow_mode": "prod",
+             "failed_substep_agent_run_ids": ["ar_1"],
+             "artifacts": {"verdict.json": {"overall": "fail"}}},
+            indent=2),
+    }
 
 
 def _pure_verify_context() -> dict[str, str]:
@@ -130,7 +144,11 @@ def _pure_request(substep: str = "generate", **overrides) -> dict[str, object]:
     req: dict[str, object] = {
         "leaf_mode": "pure",
         "agent_model": "opus",
-        "agent_role": "substep",
+        # DERIVED from the step, not fixed: `build`'s child is a `step` agent, and
+        # record-launch refuses a role that disagrees with `STEP_REQUIRED_CHILD_AGENT`. The
+        # step below is a default a caller overrides, so a fixed "substep" was correct only
+        # while no caller passed `step="build"` — the diagnose pairs do.
+        "agent_role": wc.child_agent_role(str(overrides.get("step", "generate"))),
         "node_key": _NODE,
         "step": "generate",
         "substep": substep,
@@ -354,10 +372,39 @@ class PurePayloadValidationTests(unittest.TestCase):
         self.assertEqual(prepared["skill_name"], "")
         ort._validate_launch_request_payload(prepared)
 
+    def test_the_diagnose_pairs_are_in_the_gate_allowlist_table(self) -> None:
+        """`_lint_launch_prompt_gate_allowlist` FAILS OPEN on a pair it does not know: an
+        unknown `(step, substep)` returns `[]`, so the recurrence lint would not scan the
+        diagnostician's prompt at all. The four diagnose pairs are therefore in
+        `ALLOWED_VALIDATE_PIPELINE_STAGES` with the EMPTY set — the diagnostician invokes no
+        validator gate — and this row drives the lint rather than only reading the table, so
+        deleting the entries turns a scanned prompt into an unscanned one and is red.
+        """
+        forbidden = ("python3 tools/validate_pipeline_semantics.py "
+                     "--pipeline-ref workspace/pipelines/x/y --stage post_execute")
+        for step, substep in sorted(ort.DIAGNOSE_LAUNCH_PAIRS):
+            with self.subTest(pair=f"{step}.{substep}"):
+                self.assertEqual(
+                    ort.ALLOWED_VALIDATE_PIPELINE_STAGES[(step, substep)], frozenset())
+                violations = ort._lint_launch_prompt_gate_allowlist(
+                    f"do this:\n{forbidden}\n", step=step, substep=substep)
+                self.assertTrue(
+                    violations,
+                    "the lint must SCAN a diagnose prompt; an empty result here is the "
+                    "unknown-pair fail-open, not a clean prompt")
+        # The negative control: an unknown pair really does fall through silently, which is
+        # what makes the entries above load-bearing rather than decorative.
+        self.assertNotIn(("validate", "no_such_substep"), ort.ALLOWED_VALIDATE_PIPELINE_STAGES)
+        self.assertEqual(
+            ort._lint_launch_prompt_gate_allowlist(
+                f"do this:\n{forbidden}\n", step="validate", substep="no_such_substep"),
+            [])
+
 
 # ======================================================================================
 # B3 / B4 / B5 / B6 / B8: renderers, markers, fence carve-out
 # ======================================================================================
+
 class PureRenderTests(unittest.TestCase):
     def test_render_pure_prompt_full_skeleton(self) -> None:
         prepared = ort.prepare_launch_request_payload(_pure_request("generate"))
@@ -1189,6 +1236,13 @@ class PureRenderTests(unittest.TestCase):
         # this is a growth bound; the docstring had stated it as a closed one.
         ("docs/workflow/RUNNER_OUTPUT_CONTRACT.md", None, None),
         ("docs/RUNBOOK.md", None, None),
+        # Issue #169 put the escalate diagnostician on a pure template. Its `severity` is a
+        # DIFFERENT field from the verify rubric's `issue_severity` — it grades how compromised
+        # the existing artifacts are and the conductor maps it to reuse-vs-discard — so it
+        # states its own three grades unbacked by the rubric, in prose the pattern below does
+        # not match. Scanned anyway, for the same reason every other template is: it reaches a
+        # leaf, and a verify severity spelled here would outrank the rubric on that transport.
+        ("tools/prompt_templates/pure_escalate_diagnose.txt", None, None),
     )
     # A backticked or bolded severity value, one assigned to the field by name (with `=` or
     # `:`), or one in bare parentheses. The second spelling is round 4's:
@@ -1221,6 +1275,19 @@ class PureRenderTests(unittest.TestCase):
     # subject is a generated source file is `minor`." to the SKILL's routing sentence and every
     # file stayed green, which is a new mention, the thing this check advertises as always red.
     _SEVERITY_ROUTING_ALLOWLIST = (
+        # Issue #169: the escalate diagnostician's output contract. It ROUTES — it states what
+        # the CONDUCTOR does with a value it was not given (`_parse_directive` coerces an
+        # absent or out-of-vocabulary `severity` to `major`, and `resolve_severity_directive`
+        # then forces `reuse` from it) — and it assigns nothing to a finding. It is here
+        # because the round-3 disclosure axis measured the template telling the leaf that an
+        # out-of-vocabulary value is refused, which is true for `action` and `target_phase` and
+        # false for the two fields that decide reuse-vs-discard: a leaf that omits `severity`
+        # was silently given the grade that keeps its artifacts. Note this severity is a
+        # DIFFERENT field from the verify rubric's `issue_severity` — it grades how compromised
+        # the existing artifacts are — which is why it can state its own three values without
+        # standing in for the rubric.
+        "tools/prompt_templates/pure_escalate_diagnose.txt: Output contract (routing directive)"
+        ": one JSON object with th #7a7143f90f63",
         # Both digests changed in issue #148: each line gained the `Compile.verify` pointer.
         "docs/AGENT_CONTRACT.md: - A verify-family finding always sets `verification_status=f"
         " #12a92add46ae",
@@ -1765,10 +1832,18 @@ class PureRenderTests(unittest.TestCase):
           sites write the value in Python — is still invisible: the key's closing quote sits
           where the pattern wants `\\s*`. That is deliberate; those are values, not prose. It also
           means this sweep does not guard those six sites: it reads `_RENDER_REPAIR`.
-        - `workflow_conductor._DIRECTIVE_SCHEMA` / `_diagnosis_prompt` are out of scope. They
-          are not a verify leaf's surface: `severity` there is the diagnostician's own field on
-          a consequence axis, and its rubric is inside that same string. `TODO.md`'s
-          rubric-twin entry owns them.
+        - The escalate diagnostician's prompt is out of scope, and where it LIVES changed:
+          `workflow_conductor._DIRECTIVE_SCHEMA` / `_diagnosis_prompt` held it until issue
+          #169 deleted both and made `tools/prompt_templates/pure_escalate_diagnose.txt` the
+          single source. The exclusion still holds and is now STRUCTURAL rather than stated:
+          `_host_built_launch_requests` iterates `LLM_LEAF_SUBSTEPS ∪ PURE_CAPABLE_SUBSTEPS`,
+          neither of which carries a `diagnose` pair, so that template never reaches this
+          sweep. The reason is unchanged — `severity` there is the diagnostician's own field,
+          grading how compromised the existing artifacts are and mapping to reuse-vs-discard,
+          not the `Generate.verify` rubric's repair-route value — and the template is covered
+          instead by `PureRenderTests`' template-file sweep and by the prompt-contract drift
+          guard, which hashes it. `TODO.md`'s rubric-twin entry records that the pair it used
+          to own is gone.
         """
         found = self._host_built_severity_mentions()
         detail = "; ".join(f"{k!r} in {sorted(v)}" for k, v in sorted(found.items()))
@@ -2211,7 +2286,8 @@ class PureRenderTests(unittest.TestCase):
         """The two rubrics are one rule stated twice, and issue #148's premise is that they share
         an AXIS — `issue_severity` names the repair, not the weight of the consequence. Without
         this, the phase_01 rubric could be re-grounded on the consequence axis (the axis
-        `skills/workflow-escalate/SKILL.md` uses, per `TODO.md`) with every other check green.
+        `tools/prompt_templates/pure_escalate_diagnose.txt` uses, per `TODO.md`) with every
+        other check green.
 
         PINNED: (a) both slices carry the axis sentence; (b) EACH VALUE BULLET grounds itself on
         the repair route at its own statement position, with the producer name filled from the
@@ -2573,11 +2649,12 @@ class PureRecordLaunchTests(unittest.TestCase):
             else:
                 os.environ[k] = v
 
-    def _launch(self, repo_root: Path, substep: str = "generate") -> dict[str, object]:
+    def _launch(self, repo_root: Path, substep: str = "generate",
+                **request_overrides: object) -> dict[str, object]:
         init_orchestration(repo_root=repo_root, orchestration_id="orch_001")
         _mark_dependencies_ready(repo_root)
         _preflight(repo_root)
-        req = _pure_request(substep)
+        req = _pure_request(substep, **request_overrides)
         prompt = ort.render_launch_prompt_text(ort.prepare_launch_request_payload(dict(req)))
         req["launch_prompt_full"] = prompt
         return record_launch(
@@ -2608,6 +2685,60 @@ class PureRecordLaunchTests(unittest.TestCase):
             self.assertEqual(profile.get("write_roots"), [])
             # SKIPS: output manifest is never written.
             self.assertFalse((base / "output_manifests" / f"{arid}.json").exists())
+
+    def test_record_launch_writes_the_diagnosticians_read_only_profile(self) -> None:
+        """The escalate diagnostician's sandbox profile.
+
+        It used to be assembled in-process (`workflow_conductor._readonly_sandbox_profile`)
+        and never reached `record-launch`, the sole writer of `sandbox_profiles/`, so its
+        environment was DELIVERED under the `--clearenv` discipline and RECORDED nowhere.
+        Issue #169 gave it a child arid and a recorded launch, so the same pure branch that
+        writes every other leaf's profile writes this one. Driven for every escalatable phase,
+        because each carries a different step (and `build`'s child is a `step` agent, whose
+        role record-launch enforces against `STEP_REQUIRED_CHILD_AGENT`).
+        """
+        for step, substep in sorted(ort.DIAGNOSE_LAUNCH_PAIRS):
+            with self.subTest(pair=f"{step}.{substep}"), tempfile.TemporaryDirectory() as tmp:
+                repo_root = Path(tmp)
+                dep_ref = ("spec/problem/dynamics/shallow_water/shallow_water2d/"
+                           "deps.yaml" if step == "compile"
+                           else _DEP_REF if step == "generate" else _PIPE_REF)
+                # A Build request names the source generation it builds, and record-launch
+                # refuses one whose `source_meta.json` is not on disk — a Build diagnostician
+                # runs only after Generate passed, so the artifact exists in production.
+                src_meta = (repo_root / _PIPE_REF / "source" / "src_20260415_001"
+                            / "source_meta.json")
+                src_meta.parent.mkdir(parents=True, exist_ok=True)
+                src_meta.write_text(
+                    json.dumps({"source_id": "src_20260415_001",
+                                # The Build launch gate reads this: a Build diagnostician
+                                # exists only because Build ran, which requires Generate to
+                                # have passed.
+                                "verification_status": "pass"}),
+                    encoding="utf-8")
+                self._launch(repo_root, substep, step=step, dependency_ref=dep_ref,
+                             pure_context=_pure_context_for(step, substep),
+                             run_id="run_20260415_001", binary_id="bin_20260415_001")
+                base = repo_root / "workspace/orchestrations/orch_001"
+                arid = "ar_pure_child_001"
+                profile = json.loads(
+                    (base / "sandbox_profiles" / f"{arid}.json").read_text())
+                self.assertTrue(profile.get("readonly"))
+                self.assertEqual(profile.get("write_roots"), [])
+                cap = json.loads((base / "capabilities" / f"{arid}.json").read_text())
+                self.assertEqual(cap["mode"], "pure_readonly")
+                self.assertEqual(cap["write_roots"], [])
+                rman = json.loads((base / "read_manifests" / f"{arid}.json").read_text())
+                self.assertEqual(rman["allowed_read_roots"], [])
+                # NO claude private home, and that is the pure branch's own rule rather than
+                # an omission: a pure claude leaf takes no settings layer at all
+                # (`--safe-mode`, no tools, no hooks), so preparing one would record a
+                # configuration surface it never reads. This is a real posture CHANGE for
+                # this leaf — it was the one claude leaf that re-derived a private home for
+                # itself — and what it changes to is what every other pure leaf already has.
+                meta = json.loads((base / "orchestration_meta.json").read_text())
+                self.assertNotIn("claude_workflow_home", meta)
+                self.assertNotIn("CLAUDE_CONFIG_DIR", profile.get("env") or {})
 
     def test_record_launch_pure_still_writes_baseline_and_index(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

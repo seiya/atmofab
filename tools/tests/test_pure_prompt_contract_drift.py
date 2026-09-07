@@ -103,6 +103,7 @@ _TEMPLATE_FILES = (
     "pure_generate_generate.txt",
     "pure_generate_verify.txt",
     "pure_bundle_repair.txt",
+    "pure_escalate_diagnose.txt",
 )
 
 # sha256 of the canonical serialization of the coupled tuple, keyed by contract version. When an
@@ -343,7 +344,25 @@ PINNED: dict[str, str] = {
     # still PASSES `--stage compile`, so V2 at `compile.verify` is the only thing between a
     # de-mathed IR and a `Generate` leaf that cannot read `controlled_spec.md`. The template now
     # refuses every narrower reading BY NAME, including its own sentence.
-    "pure-34": "6625f0468c2ac988c31d3cfab38d1a1565933f213d9d7427bb4024cb29a9dd79",}
+    "pure-34": "6625f0468c2ac988c31d3cfab38d1a1565933f213d9d7427bb4024cb29a9dd79",
+    # pure-35 (issue #169, PR-1): the escalate diagnostician moved onto the pure transport, so
+    # `pure_escalate_diagnose.txt` joins the coupled tuple. Its persona, its directive schema
+    # and its decision criteria used to live half in `workflow_conductor` constants and half in
+    # `skills/workflow-escalate/SKILL.md` (read host-side, hashed by nothing); the template is
+    # now the single source and this guard is what makes an edit to it an observable event.
+    # The digest below is what three review rounds settled on, after corrections to text a leaf
+    # ACTS on: the null-`target_phase` rule (`_parse_directive` REFUSES a null target under
+    # `action="reopen"` and discards the whole directive, where the template had said only
+    # that null means the current phase), and the untrusted-data instruction its sibling
+    # `pure_bundle_repair.txt` carries — the inlined `diagnosis_document` quotes artifact
+    # content VERBATIM, some of it written by the agents whose work failed, one of which has an
+    # interest in the rollback the diagnostician picks. The provenance is MIXED, not
+    # agent-only: `_gather_failure_context` also inlines host-written gate metas, and an
+    # earlier version of this comment (and of the template) said the artifacts were all
+    # agent-written, which would tell the leaf its firmest evidence is adversarial. pure-35 was
+    # introduced by this branch and has never been recorded by a run, so re-pinning it is not
+    # editing a historical entry.
+    "pure-35": "fa5612cce3f15740f8c5f37a182e2fecd435863ec727e58a6111825dd0fb8a49",}
 
 
 def _contract_tuple() -> dict[str, object]:

@@ -20,6 +20,7 @@ wrong:
 
 from __future__ import annotations
 
+import dataclasses
 import re
 import shlex
 import tempfile
@@ -912,17 +913,81 @@ class RuleTests(_Tmp):
                          "phases:\n  validate:\n    substeps:\n      judge:\n"
                          "        capabilities: [pure]\n")
 
-    def test_defaults_not_agentic(self) -> None:
-        err = self.assert_rule("llm_config_defaults_not_agentic",
-                               "defaults:\n"
-                               "  provider: anthropic_api\n"
-                               "  api_key_env: ANTHROPIC_API_KEY\n"
-                               "  model: claude-opus-5\n")
+    def test_defaults_not_pure(self) -> None:
+        """`defaults` serves the escalate diagnostician, which is a PURE launch (issue #169),
+        so an entry RESTRICTED to `agentic` is inadmissible there. The restriction is the only
+        way to reach this today — every declared provider supports `pure` — which is why the
+        subject is `capabilities:` rather than a provider name."""
+        err = self.assert_rule("llm_config_defaults_not_pure",
+                               "defaults:\n  provider: claude_cli\n"
+                               "  capabilities: [agentic]\n")
         self.assertIn("escalate", str(err))
 
-    def test_defaults_not_agentic_by_restriction(self) -> None:
-        self.assert_rule("llm_config_defaults_not_agentic",
-                         "defaults:\n  provider: claude_cli\n  capabilities: [pure]\n")
+    def test_an_http_defaults_loads_and_runs_beside_a_cli_leaf(self) -> None:
+        """`defaults` no longer has to be agentic — the launch it serves (the `escalate`
+        diagnostician) is a pure leaf — so an HTTP provider gets past `load_llm_config`, which
+        it could not before, AND reaches a run.
+
+        The second half is not automatic. `init` and the preflight still take one backend
+        token whose parser is `choices={claude, codex}`; measured before `cli_launch_identity`
+        existed, this file reached `init` and died on `argument --agent-backend: invalid
+        choice: 'anthropic_api'`. Refusing the file instead — which is what round 1 of this
+        branch did — would have left the diagnostician's migration undelivered on two DECLARED
+        providers, and `AGENTS.md` §Development premises does not allow that. So the token is
+        resolved from what the configuration can LAUNCH, and this row is the shape the shipped
+        examples describe: an HTTP `defaults` beside the CLI `validate.judge` that is still
+        agentic until Z3."""
+        cfg = lc.load_llm_config(self.write(
+            "defaults:\n"
+            "  provider: anthropic_api\n"
+            "  api_key_env: ANTHROPIC_API_KEY\n"
+            "  model: claude-opus-5\n"
+            "phases:\n  validate:\n    substeps:\n      judge:\n"
+            "        provider: claude_cli\n", "http_defaults.yaml"))
+        self.assertEqual(cfg.defaults.provider, "anthropic_api")
+        self.assertTrue(cfg.defaults.is_http)
+        cfg.validate_runnable()
+        # ...and the single CLI token `init` and the preflight speak comes from what the file
+        # can actually LAUNCH, not from `defaults`. Refusing the file instead would leave the
+        # diagnostician's migration undelivered on two declared providers, which
+        # `AGENTS.md` §Development premises does not allow.
+        self.assertEqual(cfg.cli_launch_identity(), ("claude", "claude"))
+        # A CLI `defaults` still answers for itself, command included.
+        cli = lc.load_llm_config(self.write(
+            "defaults:\n  provider: claude_cli\n  command: /opt/claude --flag\n",
+            "cli_defaults.yaml"))
+        cli.validate_runnable()
+        self.assertEqual(cli.cli_launch_identity(), ("claude", "/opt/claude --flag"))
+
+    def test_a_configuration_that_launches_nothing_is_refused_by_name(self) -> None:
+        """The floor under `cli_launch_identity`. Unreachable today — `validate.judge` is still
+        agentic, so every valid file names a CLI provider — so it is built as a synthetic
+        config rather than left as an unwitnessed branch, and it is the thing to LIFT rather
+        than work around when Z3 makes an all-HTTP file valid."""
+        # Built by hand, because the file cannot LOAD: `validate.judge` requires `agentic`,
+        # which no HTTP provider has, so an all-HTTP document is refused two rules earlier by
+        # `llm_config_capability_insufficient_for_substep`. That is the state Z3 removes, and
+        # this row is what the floor under it looks like when it does.
+        cfg = lc.load_llm_config(self.write(
+            "defaults:\n"
+            "  provider: anthropic_api\n  api_key_env: ANTHROPIC_API_KEY\n"
+            "  model: claude-opus-5\n"
+            "phases:\n  validate:\n    substeps:\n      judge:\n"
+            "        provider: claude_cli\n", "all_http_seed.yaml"))
+        stripped = dataclasses.replace(
+            cfg, entries={k: cfg.defaults for k in cfg.entries})
+        with self.assertRaises(lc.LlmConfigError) as ctx:
+            stripped.cli_launch_identity()
+        self.assertEqual(ctx.exception.rule, "llm_config_no_cli_backend")
+        # ...and RUN START is where it arrives. Calling the resolver directly leaves the hook
+        # in `validate_runnable` unpinned: deleting that one line left this file green, so the
+        # rule would have been correct and unreachable at the moment Z3 makes it reachable.
+        with self.assertRaises(lc.LlmConfigError) as run_start:
+            stripped.validate_runnable()
+        self.assertEqual(run_start.exception.rule, "llm_config_no_cli_backend")
+        # The remedy names both halves, so it cannot be followed by half.
+        self.assertIn("validate.judge", str(ctx.exception).replace("`", ""))
+        self.assertIn("defaults", str(ctx.exception))
 
     def test_codex_requires_model_only_at_run_start(self) -> None:
         cfg = lc.load_llm_config(self.write("defaults:\n  provider: codex_cli\n"))

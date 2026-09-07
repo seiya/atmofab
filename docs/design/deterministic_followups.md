@@ -1186,8 +1186,15 @@ including the post_judge `unknown`:
   path (a `validate` same-phase target terminalizes — the LLM cannot certify a validate pass).
 - **`_gather_failure_context`** now embeds `post_judge_meta.json` + `pre_judge_meta.json` (so the
   read-only leaf reasons over the violation list / disposition without reading the FS).
-- **SKILL.** New `skills/workflow-escalate/SKILL.md` is the canonical persona + directive + severity
-  policy. It is **conductor-consumed, host-rendered** (Option A): `_diagnosis_prompt` reads the SKILL
+- **SKILL.** (SUPERSEDED 2026-09-07 by issue #169's PR-1, noted here because the freeze is on
+  GROWTH, not on truth, and this bullet otherwise reads in the present tense about a file and four
+  symbols that no longer exist: `skills/workflow-escalate/SKILL.md`, `_diagnosis_prompt`,
+  `_load_escalate_persona`, `_DIRECTIVE_SCHEMA` and `_ESCALATE_PERSONA_FALLBACK` are all deleted.
+  The diagnostician is a PURE leaf now and the canonical persona + directive + severity policy is
+  the static body of `tools/prompt_templates/pure_escalate_diagnose.txt`, which the prompt-contract
+  drift guard hashes — which the SKILL never was. Nothing below is moved or renamed; the rest of
+  this bullet is what was true when it was written.) New `skills/workflow-escalate/SKILL.md` is the
+  canonical persona + directive + severity policy. It is **conductor-consumed, host-rendered** (Option A): `_diagnosis_prompt` reads the SKILL
   body host-side (memoized, frontmatter stripped) and embeds it, keeping the read-only leaf pure (reads
   nothing). Falls back to a minimal inline persona if the file is missing. `_DIRECTIVE_SCHEMA` stays the
   machine-checkable final-line contract; SKILL prose and `_DIRECTIVE_SCHEMA` are kept in lockstep.
