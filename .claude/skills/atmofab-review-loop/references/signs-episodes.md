@@ -281,3 +281,43 @@ the case history that tells you how it closed.
   part of it, and should carry the injection command from the first round rather than discovering
   it at the cap.
 
+## The selection's DEFAULT, not the individual choices (issue #181, PR #191)
+
+`TODO.md` held 54 open items and the change compressed them. The first attempt rewrote each item by
+hand; round 1 enumerated all 54 and measured open content gone from about 35 of them, plus eleven
+claims the source did not support. The second attempt could not rewrite: each item was split into
+units — one whole sub-bullet, or one sentence of a long single-line item — and the compression
+SELECTED units, with a script asserting every retained unit is a substring of its pre-compression
+item. Three reviewers re-derived that property independently and it held. **Nothing was invented
+from that commit onward, and the loop still ran three more rounds.**
+
+Round 2 found the selection had dropped open work in twelve places. Round 3 found the same three
+classes again — a dropped fix direction, a pointer whose antecedent went, a claim outliving its
+qualifier — in the items round 2 had not opened. Both rounds' fixes were correct and neither
+changed anything: the next round found the same classes in the items IT had not opened.
+
+**What closed it was inverting the default.** Before: a unit is dropped unless it is selected.
+After: a unit is kept unless the item is one of five whose bulk is review history. The two are the
+same set of judgments; what differs is what happens to a unit nobody thought about. Under the
+first, it disappears and takes a fix direction or a pointer's antecedent with it, invisibly, in a
+file no test reads. Under the second it stays and costs bytes. Rounds 4 and 5 found five instances
+and then fewer, all of them inside the five items where selection still operated.
+
+**The generalisation, and why it is a sign rather than a note about one file.** Any change that
+chooses a subset has this shape — an allowlist narrowed, a test set pruned, a document trimmed, a
+denylist replaced by an explicit roster. The individual choices are what review can see; the
+default is what decides whether a MISS is loud or silent, and it is a single decision made once.
+Ask it before the second round of one class rather than the third: *if I never think about element
+X, what happens to it, and would I notice?*
+
+**Two corollaries this episode also paid for.** A byte-ratio instrument cannot see the loss — the
+same branch ran a check for "an item that lost more than a third of its bytes must link to a
+record", and it twice passed an item whose loss was a fix direction under that threshold. And an
+item's ACCEPTANCE BAR is open work by definition: eight completion criteria were selected out one
+at a time, and hand-checking is what missed them; adding them back mechanically is what held.
+
+**One more, from the round after.** Round 4 found three docstrings in a source file citing an item
+this branch had removed, two of them made false by the removal, and they were repaired. The class
+was not then swept for elsewhere in the tree, so round 5 found a fourth in a test file, citing a
+sentence the compression had dropped. **A fix that does not sweep its own class schedules the next
+round.**

@@ -191,3 +191,30 @@ else's number. `atmofab-enforcement-change` rule 3 says do not write a reviewer'
 your own; issue #153 above says re-measure at the commit you are about to name. Both assume the
 danger is a figure you did not produce. This one I produced myself, from a command I ran, on a log I
 opened — and running the command is not what makes the reading a measurement.
+
+## The published instrument and the published number drifted apart (issue #181, PR #191)
+
+A pull request body carried a verification script in a `<details>` block and, a few paragraphs
+above it, the output that script produced: `0 non-verbatim units`. The next commit changed the
+script — a different join rule and a different link rule — and republished neither the listing nor
+the number's derivation. A round-3 reviewer did the obvious thing, ran what was published against
+the tree it certifies, and got six failures. They were the commit's own deliberate edits, which
+the newer script accounts for and the published one does not, but from outside there is no way to
+tell those from work the compression lost.
+
+**What makes this its own rule rather than an instance of the ones above it.** Every guard in this
+file so far is about a NUMBER: do not type it, generate it from the artifact, name the commit it
+was taken at, state the population. All of them hold here — the number was generated, and it was
+correct for the commit it was taken at. What went wrong is that the record published the
+INSTRUMENT as well, which is strictly better practice, and thereby created a second thing that can
+go stale. The instrument and the number are one record: republish both, or publish neither and
+state the property instead.
+
+The same body carried the mirror case a round later. A reviewer had measured "423 of the 425
+sentences the compression drops are present in a linked record" at one commit; the body quoted it
+in the present tense, about a later commit whose dropped set was different. The figure was true
+where it was taken and the property it stands for held at both, but the sentence claimed the
+figure for a file nobody had measured. `atmofab-enforcement-change` rule 3 — do not write someone
+else's measurement as your own — does not fire here, because the attribution was correct and the
+reviewer was right. **The rule that does: a measurement names the commit it was taken at even when
+you are quoting it approvingly, and especially when the thing measured has changed since.**

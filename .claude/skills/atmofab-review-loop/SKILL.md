@@ -342,6 +342,17 @@ when a rule does not obviously apply:
      N runs that have one"), and the sweep that finds the population is one loop over the corpus,
      not a judgment call. Where the population is one, say so and call the number a bound rather
      than a requirement
+   - **When you PUBLISH the instrument beside the number, republish it whenever either changes.**
+     Generating a figure from the artifact is not enough once the record carries the script that
+     generated it: on issue #181 a pull request body published a verification script next to that
+     script's output, then changed the script in the next commit and left the old listing. A
+     reviewer ran what was published and got a RED result on the tree it certified, and could not
+     tell those failures from lost work. The same body later cited a figure another axis had
+     measured at an earlier commit, in the present tense, about a file whose measured set had
+     changed. Two rules: **a published instrument and a published number are one record, and both
+     are republished together**; and **a measurement someone else took names the commit it was
+     taken at even when you are quoting it approvingly** — the second is `atmofab-enforcement-change`
+     rule 3 applied to a figure you agree with, which is where it does not fire on its own
 
    Episodes: `references/measurement-records.md`.
 
@@ -1037,6 +1048,18 @@ that tells you how it closed.
   **The fix is injection, not deletion** — give the production function the root or path the
   witness needs and drive a synthetic one; the coverage is real, it just must not be taken from
   the corpus the change stopped reading (issue #182)
+- **Your change SELECTS a subset — of text, of behaviour, of an allowlist — and you are choosing
+  what goes IN** → the DEFAULT for an element nobody considered decides the failure mode, and it is
+  the design decision, not the individual choices. Selecting means an unconsidered element is
+  DROPPED, and what leaves with it is silent: an open task, a pointer's antecedent, the qualifier a
+  surviving claim needs. Keeping unless explicitly dropped costs size and nothing else. Criterion,
+  one question: **if I never think about element X, what happens to it, and would I notice?** On
+  issue #181 three consecutive rounds found the same three classes — a dropped fix direction, a
+  pointer whose antecedent went, a claim outliving its qualifier — each time in the items the
+  previous round had not opened, and each time they were fixed one at a time. Inverting the default
+  is what ended it; the two rounds after found five, then fewer. **Reach for this at the SECOND
+  round of one class, not the third**: the recurrence is not evidence that you are careless, it is
+  evidence that the misses are invisible by construction
 - **A fix changed the shape of the rule** (denylist → allowlist and the like) → split everything
   after that into another PR. If you continue without splitting, **give the user the options and
   ask**
