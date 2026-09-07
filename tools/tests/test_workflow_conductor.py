@@ -7546,6 +7546,35 @@ class DiagnosticianTest(unittest.TestCase):
             c2.escalate(self._refs(), "validate", wc.PhaseOutcome("validate", "fail")).action,
             "retry")
 
+    def test_escalate_records_exactly_one_launch_for_its_child(self) -> None:
+        """One child, one `record-launch`, and the ORDER of the four runtime calls.
+
+        `_spawn_pure_turn` records the launch itself — that is what makes it the one place
+        every pure launch goes through — and `escalate` recorded a second time for the same
+        `child_arid` before this row existed. On the claude backend the first call writes
+        `active_child_agent_run_id.txt` and the second hits the sequential-child gate
+        (`orchestration_runtime` "Claude backend sequential violation"), which raises, sets the
+        orchestration `fail_closed` with `parallel_nodes_not_explicitly_allowed` as a side
+        effect, and — once round 1 folded launch failures — came back as
+        `<phase>_diagnose_sandbox_unavailable`, naming a sandbox that was never the problem. So
+        on the DEFAULT backend the diagnostician could not run at all, and said something else
+        had gone wrong. Nothing noticed, because every conductor fixture stubs the runtime and
+        the runtime's own rule is tested where the runtime is real.
+
+        Counting is what makes this cheap to keep: a future caller that records "just to be
+        sure" is red here rather than in a billed run.
+        """
+        c = self._conductor()
+        c.spawn_leaf = lambda prompt, env, entry=None, **kw: wc.ProcResult(  # type: ignore[assignment]
+            0, self._directive_stdout(
+                '{"action":"reopen","target_phase":"compile","reason":"x"}'), "")
+        c.escalate(self._refs(), "validate", wc.PhaseOutcome("validate", "fail"))
+        self.assertEqual([sub for sub, _ in c.calls],
+                         ["add-superseded-runs", "record-launch", "finalize-child"])
+        # ...and the one record is for the child, not for the orchestration agent.
+        rec = [cap for sub, cap in c.calls if sub == "record-launch"][0]
+        self.assertEqual(rec["--request-json"]["agent_run_id"], "child-1")
+
     def test_the_template_tells_the_leaf_what_a_null_target_actually_does(self) -> None:
         """A directive is prose the leaf ACTS on, so a sentence that is wrong there costs a
         phase attempt.
@@ -7662,8 +7691,10 @@ class DiagnosticianTest(unittest.TestCase):
         """`record_launch` is where the diagnostician's read-only profile is BUILT (issue #169
         retired the in-process one), so a host that cannot sandbox it fails there. Nothing has
         been spawned and no row exists, so escalate converts it to a conservative fail_closed
-        rather than crashing the conductor — and it does NOT tombstone, because there is no
-        arid to tombstone."""
+        rather than crashing the conductor. The tombstone precedes the record, so it is the
+        one bookkeeping call that did land; it is inert without a row, because the pass
+        vouch derives its "must regain a fresh run" obligation from the tombstoned run's own
+        record and skips an id it cannot find."""
         for exc in (wc.SandboxEnforcementError("no bwrap on this host"),
                     OSError("bwrap binary missing"),
                     RuntimeError("record-launch refused the request")):
@@ -7677,8 +7708,10 @@ class DiagnosticianTest(unittest.TestCase):
                 d = c.escalate(self._refs(), "validate", wc.PhaseOutcome("validate", "fail"))
                 self.assertEqual(d.action, "fail_closed")
                 self.assertEqual(d.reason, "validate_diagnose_sandbox_unavailable")
+                # The tombstone is written BEFORE the record now, so it is the one
+                # bookkeeping call that did happen; nothing was finalized.
                 self.assertEqual([sub for sub, _ in c.calls
-                                  if sub in ("add-superseded-runs", "finalize-child")], [])
+                                  if sub == "finalize-child"], [])
 
     # The diagnostician's sandbox profile is no longer built here. Until issue #169 it was
     # assembled in-process by `_readonly_sandbox_profile` and three rows in this class pinned

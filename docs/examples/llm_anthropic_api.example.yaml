@@ -13,13 +13,13 @@
 # `validate.judge` is the one that is not: assigning an HTTP provider to it is rejected at
 # load with `llm_config_capability_insufficient_for_substep`.
 #
-# `defaults` must stay a CLI provider, for TWO separate reasons. It serves the `escalate`
-# diagnostician, which issue #169 put on the pure transport, so the load-time rule is now
-# `llm_config_defaults_not_pure` rather than a requirement to be agentic. But the run's
-# preflight and `init` still speak ONE backend token derived from `defaults`, and it must be
-# `claude` or `codex`, so an HTTP `defaults` is refused at run start by
-# `llm_config_defaults_not_spawnable`. Two things therefore stand between this file and an
-# all-HTTP run: that single-backend vocabulary, and `validate.judge`, which is still agentic.
+# `defaults` MAY be an HTTP provider since issue #169: the one launch it serves, the
+# `escalate` diagnostician, is a pure leaf now, so the rule on it is
+# `llm_config_defaults_not_pure` rather than a requirement to be agentic. `init` and the
+# preflight still take one CLI backend token, and it is resolved from whatever the file can
+# launch (`LlmConfig.cli_launch_identity`) rather than from `defaults`, so an HTTP `defaults`
+# beside a CLI leaf runs. One thing still stands between this file and an all-HTTP run:
+# `validate.judge`, which is agentic until Z3.
 #
 # The two GENERATE pure leaves are additionally gated on the node's M3c shape at run time,
 # so a pure-only provider reaching a non-M3c node fails that node closed rather than

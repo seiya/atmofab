@@ -20,6 +20,7 @@ wrong:
 
 from __future__ import annotations
 
+import dataclasses
 import re
 import shlex
 import tempfile
@@ -944,18 +945,42 @@ class RuleTests(_Tmp):
             "        provider: claude_cli\n", "http_defaults.yaml"))
         self.assertEqual(cfg.defaults.provider, "anthropic_api")
         self.assertTrue(cfg.defaults.is_http)
+        cfg.validate_runnable()
+        # ...and the single CLI token `init` and the preflight speak comes from what the file
+        # can actually LAUNCH, not from `defaults`. Refusing the file instead would leave the
+        # diagnostician's migration undelivered on two declared providers, which
+        # `AGENTS.md` §Development premises does not allow.
+        self.assertEqual(cfg.cli_launch_identity(), ("claude", "claude"))
+        # A CLI `defaults` still answers for itself, command included.
+        cli = lc.load_llm_config(self.write(
+            "defaults:\n  provider: claude_cli\n  command: /opt/claude --flag\n",
+            "cli_defaults.yaml"))
+        cli.validate_runnable()
+        self.assertEqual(cli.cli_launch_identity(), ("claude", "/opt/claude --flag"))
+
+    def test_a_configuration_that_launches_nothing_is_refused_by_name(self) -> None:
+        """The floor under `cli_launch_identity`. Unreachable today — `validate.judge` is still
+        agentic, so every valid file names a CLI provider — so it is built as a synthetic
+        config rather than left as an unwitnessed branch, and it is the thing to LIFT rather
+        than work around when Z3 makes an all-HTTP file valid."""
+        # Built by hand, because the file cannot LOAD: `validate.judge` requires `agentic`,
+        # which no HTTP provider has, so an all-HTTP document is refused two rules earlier by
+        # `llm_config_capability_insufficient_for_substep`. That is the state Z3 removes, and
+        # this row is what the floor under it looks like when it does.
+        cfg = lc.load_llm_config(self.write(
+            "defaults:\n"
+            "  provider: anthropic_api\n  api_key_env: ANTHROPIC_API_KEY\n"
+            "  model: claude-opus-5\n"
+            "phases:\n  validate:\n    substeps:\n      judge:\n"
+            "        provider: claude_cli\n", "all_http_seed.yaml"))
+        stripped = dataclasses.replace(
+            cfg, entries={k: cfg.defaults for k in cfg.entries})
         with self.assertRaises(lc.LlmConfigError) as ctx:
-            cfg.validate_runnable()
-        self.assertEqual(ctx.exception.rule, "llm_config_defaults_not_spawnable")
-        self.assertEqual(ctx.exception.where, "defaults")
-        # ...and the CLI `defaults` an operator actually copies still passes, so this refuses
-        # nothing that runs today.
-        lc.load_llm_config(self.write(
-            "defaults:\n  provider: claude_cli\n"
-            "phases:\n  compile:\n    substeps:\n      generate:\n"
-            "        provider: anthropic_api\n        api_key_env: ANTHROPIC_API_KEY\n"
-            "        model: claude-opus-5\n        base_url: http://127.0.0.1:8000/v1\n",
-            "cli_defaults_http_leaf.yaml")).validate_runnable()
+            stripped.cli_launch_identity()
+        self.assertEqual(ctx.exception.rule, "llm_config_no_cli_backend")
+        # The remedy names both halves, so it cannot be followed by half.
+        self.assertIn("validate.judge", str(ctx.exception).replace("`", ""))
+        self.assertIn("defaults", str(ctx.exception))
 
     def test_codex_requires_model_only_at_run_start(self) -> None:
         cfg = lc.load_llm_config(self.write("defaults:\n  provider: codex_cli\n"))

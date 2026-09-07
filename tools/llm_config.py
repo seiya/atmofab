@@ -693,32 +693,54 @@ class LlmConfig:
             out[f"{phase}.{substep}"] = entry.provenance()
         return out
 
+    def cli_launch_identity(self) -> tuple[str, str]:
+        """The `(backend_token, command)` the run's `init` and preflight speak.
+
+        Those two still take ONE backend token, and its parser is
+        `choices=sorted(SUPPORTED_BACKENDS)` = {claude, codex}. It used to be read straight
+        off `defaults`, which was safe only because `defaults` had to be AGENTIC — a
+        requirement no HTTP provider meets, so an HTTP `defaults` was refused at load and the
+        single-token vocabulary never met one. Issue #169 made the launch `defaults` serves
+        (the `escalate` diagnostician) a PURE leaf, so that requirement is now
+        `llm_config_defaults_not_pure` and the accident is gone.
+
+        Refusing an HTTP `defaults` instead would leave the diagnostician's migration
+        undelivered on two DECLARED providers, which `AGENTS.md` §Development premises does
+        not allow ("a change to the leaf model is complete only when it lands on every
+        declared provider"). So the token is resolved from what the configuration can actually
+        launch: `defaults` when it is a CLI provider, else the CLI entry the file does name —
+        the preflight already probes every provider through `--llm-config`, and this token is
+        only its top-level description. Deterministic in the `(phase, substep)` order the
+        entries sort in, so two runs of one file describe themselves identically.
+
+        Raises when nothing in the file launches a process. That is unreachable today —
+        `validate.judge` is still agentic, so every valid configuration names a CLI provider —
+        and it is the floor that has to be lifted, not worked around, when it stops being.
+        """
+        if not self.defaults.is_http:
+            return self.defaults.backend_token, (self.defaults.command
+                                                 or self.defaults.backend_token)
+        for (phase, substep), entry in sorted(self.entries.items()):
+            if not entry.is_http:
+                return entry.backend_token, (entry.command or entry.backend_token)
+        raise LlmConfigError(
+            "llm_config_no_cli_backend",
+            "no entry in this configuration launches a process: `defaults` is "
+            f"{self.defaults.provider!r} and every leaf is an HTTP provider too. The run's "
+            "`init` and preflight still speak one CLI backend token, so at least one entry "
+            "must name `claude_cli` or `codex_cli` — assign one to the leaf that needs an "
+            "agentic session (`validate.judge` today), or put one in `defaults`",
+            where="defaults")
+
     def validate_runnable(self) -> None:
         """Run-start checks that are deliberately NOT applied at load.
 
         A codex entry whose slug the operator has blanked must LOAD — that is a document one
         can still read, diff and test — while still failing before a run that would launch
         `codex exec --model ''`."""
-        # The single-backend downstream vocabulary. `run_workflow` derives `--agent-backend`
-        # and the preflight's `--backend` from `defaults.backend_token`, and both parsers take
-        # `choices=sorted(SUPPORTED_BACKENDS)` = {claude, codex} — so an HTTP `defaults` dies
-        # at `init` with an argparse usage dump instead of a named refusal.
-        #
-        # Until issue #169 that could not happen: `defaults` had to be AGENTIC, which no HTTP
-        # provider is, so the load-time rule closed this by accident. The diagnostician is a
-        # pure leaf now, so the load-time rule is `llm_config_defaults_not_pure` and the
-        # accident is gone — this is the same refusal, moved to the layer whose constraint it
-        # actually is, and named. It refuses nothing that ran before: an HTTP `defaults` has
-        # never reached a launch.
-        if self.defaults.is_http:
-            raise LlmConfigError(
-                "llm_config_defaults_not_spawnable",
-                f"`defaults` provider {self.defaults.provider!r} launches no process, and the "
-                f"run's preflight and `init` still speak ONE backend token derived from it "
-                f"(claude or codex). Put a CLI provider in `defaults` and assign the HTTP "
-                f"provider to the leaves that should run on it; `defaults` itself only has to "
-                f"serve the `escalate` diagnostician",
-                where="defaults")
+        # Resolve the single CLI identity `init` and the preflight speak, which raises a
+        # NAMED rule when the configuration can launch no process at all.
+        self.cli_launch_identity()
         for label, entry in self._labelled_entries():
             if entry.provider != "codex_cli":
                 continue

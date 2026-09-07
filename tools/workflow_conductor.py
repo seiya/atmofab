@@ -12889,23 +12889,29 @@ clean:
         # exit, which is how the tombstone and the finalize fail. `OSError` covers a missing
         # bwrap/backend binary from `Popen`.
         try:
-            self.record_launch(child_arid, request, entry)
-            # Tombstone BEFORE the spawn, not after the finalize. The diagnostician holds no
+            # Tombstone FIRST, before the launch is recorded at all. The diagnostician holds no
             # deliverable and appears in no `step_result.json#substep_agent_run_ids`, so the
             # pass completion vouch (`_validate_orchestration_completion_for_pass`) would
             # demand a step_result it can never have; `superseded_run_ids` is the exemption.
-            # Ordering: a crash between the record and the tombstone leaves an unfinalized
-            # row, which the vouch already tolerates, whereas a crash between a TERMINAL row
-            # and the tombstone would block a later pass — and on the `build` phase (child
-            # role `step`) would also block the re-launch guard
-            # `_build_step_agents_missing_step_result`.
+            # A tombstone for an arid that never gets a row is inert: the vouch derives its
+            # "must regain a fresh run" obligation from the tombstoned run's OWN record and
+            # skips an id it cannot find. A crash the other way round — a TERMINAL row with no
+            # tombstone — would block a later pass, and on the `build` phase (child role
+            # `step`) the re-launch guard `_build_step_agents_missing_step_result` too.
             self._add_superseded_run_ids(
                 [child_arid], reason=f"escalate_diagnostician_consumed: {phase}")
+            # `_spawn_pure_turn` does the `record_launch` ITSELF. Recording here as well made
+            # two launches for one child, which the runtime refuses on the claude backend:
+            # the first call writes `active_child_agent_run_id.txt`, and the second hits the
+            # sequential-child gate, raises, sets the orchestration `fail_closed` with
+            # `parallel_nodes_not_explicitly_allowed`, and lands here as a
+            # `<phase>_diagnose_sandbox_unavailable` naming a sandbox that was never the
+            # problem — so on the default backend the diagnostician could not run at all.
             turn = self._spawn_pure_turn(
                 request, entry, child_arid=child_arid, phase=phase, substep=DIAGNOSE_SUBSTEP,
                 node_key=refs.node_key)
         except (SandboxEnforcementError, OSError, RuntimeError) as exc:
-            # The host could not record, tombstone or launch the sandboxed diagnostician —
+            # The host could not tombstone, record or launch the sandboxed diagnostician —
             # an unbuildable profile (SandboxEnforcementError), a missing binary (OSError), a
             # runtime subcommand that refused (RuntimeError). The diagnostician is a
             # best-effort recovery leaf, so an un-launchable diagnosis is conservatively
