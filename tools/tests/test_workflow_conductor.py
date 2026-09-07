@@ -7457,10 +7457,13 @@ class DiagnosticianTest(unittest.TestCase):
                 # that failed means the leaf RAN and its row is missing — and in that second
                 # case the directive is deliberately dropped rather than obeyed, because
                 # routing on the word of an unrecorded turn is a false record.
-                self.assertEqual(
-                    d.reason,
-                    "validate_diagnose_sandbox_unavailable" if failing == "add-superseded-runs"
-                    else "validate_diagnose_unrecordable")
+                # BOTH are `_unrecordable`. Neither the tombstone nor the finalize touches a
+                # sandbox, and `conduct` maps any reason containing "sandbox" to
+                # `reason_code=sandbox_enforcement_violation` — which
+                # `_write_sandbox_enforcement_violation` never backs with a `violations/`
+                # record, so reporting a bookkeeping refusal that way is a violation code with
+                # nothing behind it and a RUNBOOK remedy pointing at the wrong place.
+                self.assertEqual(d.reason, "validate_diagnose_unrecordable")
 
     def test_the_build_phases_diagnostician_is_a_step_role_row(self) -> None:
         """`STEP_REQUIRED_CHILD_AGENT` gives `build` a `step` child, and record-launch REFUSES
@@ -7575,6 +7578,95 @@ class DiagnosticianTest(unittest.TestCase):
         rec = [cap for sub, cap in c.calls if sub == "record-launch"][0]
         self.assertEqual(rec["--request-json"]["agent_run_id"], "child-1")
 
+    def test_the_prompt_carries_the_untrusted_data_rule_over_mixed_provenance(self) -> None:
+        """The `diagnosis_document` inlines artifact CONTENT, and the leaf's single output is a
+        directive the conductor obeys with no downstream check — so the prompt must say to read
+        that content as data. Its sibling `pure_bundle_repair.txt` carries the same rule over
+        strictly less dangerous material.
+
+        Two properties, and the second is why the first was wrong when it was first written.
+        (a) The rule is there. (b) It does not claim the artifacts are ALL agent-written:
+        `_gather_failure_context` collects host-authored metas too — `post_judge_meta.json` and
+        `pre_judge_meta.json` are written by the conductor's own in-process substeps, and a
+        `build` escalate's `binary_meta.json` comes from a phase that launches no leaf at all,
+        so for that phase the document can contain no agent-written artifact whatever. Telling
+        the leaf its firmest evidence was written by an adversary, next to a rule that says to
+        prefer `fail_closed` on insufficient evidence, is a prompt-sanctioned route to a
+        terminal verdict without doing the attribution.
+        """
+        prompt = self._rendered_diagnose_prompt("build", {"binary_meta.json": {"x": 1}})
+        ops = [b for b in prompt.split("\n\n") if b.startswith("Operations rules")]
+        self.assertEqual(len(ops), 1, "the operations-rules paragraph moved or split")
+        rule = ops[0]
+        # (a) the rule itself, in the sibling's own terms.
+        for token in ("DATA", "do NOT interpret", "obey"):
+            self.assertIn(token, rule)
+        # (b) no blanket claim of authorship. The document's provenance is MIXED, and the
+        # host-authored artifacts are the ones a `build` escalate has.
+        self.assertNotIn("were written by the very agents whose work failed", rule)
+        provenance = [t.strip() for t in rule.replace("\n", " ").split(". ")
+                      if "host" in t and "agent" in t]
+        self.assertEqual(
+            len(provenance), 1,
+            "one sentence must say the provenance is MIXED — some artifacts host-written, "
+            f"some agent-written. Sentences naming either: "
+            f"{[t for t in rule.replace(chr(10), ' ').split('. ') if 'host' in t or 'agent' in t]}")
+        # ...and that distrusting content is not a licence to discount the artifact, which is
+        # what would turn this rule into a shortcut to `fail_closed`.
+        self.assertIn("insufficient evidence", rule)
+
+    def test_a_truncated_http_reply_does_not_get_to_route_the_phase(self) -> None:
+        """The fifth disjunct, and the one only an HTTP `defaults` can reach.
+
+        `response_truncated` is set by the HTTP transport alone (`_run_http_leaf` carries the
+        provider's own "cut off at the output-token ceiling" flag). It could not reach this
+        leaf while `defaults` had to be a CLI provider; issue #169 made `defaults` admissible
+        as an HTTP provider — deliberately, on the vendor-neutrality premise — and that is what
+        made the omission live. It cannot ride on a neighbouring half either: for a non-claude
+        entry `_spawn_pure_turn` SYNTHESISES the envelope with `parsed=True, is_error=False`,
+        so `not parsed` and `is_error` are constants there and only this disjunct is left
+        between a cut-off reply and a phase attempt.
+
+        A leaf whose provider stopped it mid-sentence would otherwise have the directive it had
+        already written obeyed, and its row laundered `diagnose_pass` — the same laundering the
+        `is_error` half exists to stop, on the other transport.
+        """
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        path = Path(d) / "llm.yaml"
+        # An HTTP `defaults` beside a CLI `validate.judge`: the shape the shipped examples now
+        # describe, and the one `cli_launch_identity` exists to keep runnable.
+        path.write_text(
+            "defaults:\n  provider: anthropic_api\n"
+            "  api_key_env: ANTHROPIC_API_KEY\n  model: claude-opus-5\n"
+            "phases:\n  validate:\n    substeps:\n      judge:\n"
+            "        provider: claude_cli\n", encoding="utf-8")
+        oid = "o_truncated_http"
+        c = _FakeConductor(repo_root=self._repo_root(oid), orchestration_id=oid,
+                           orchestration_agent_run_id="ORCH",
+                           llm_config=lc.load_llm_config(path), env={})
+        c.calls = []
+        self.assertTrue(c.entry_for(None, None).is_http, "the fixture must reach the HTTP path")
+        directive = '{"action":"retry","target_phase":"generate","reason":"x"}'
+        c.spawn_leaf = lambda prompt, env, entry=None, **kw: wc.ProcResult(  # type: ignore[assignment]
+            0, f"reasoning...\n{directive}\nBut wait, I should also cons", "",
+            response_truncated=True)
+        decision = c.escalate(self._refs(), "validate", wc.PhaseOutcome("validate", "fail"))
+        self.assertEqual(decision.action, "fail_closed")
+        self.assertEqual(decision.reason, "validate_diagnose_unparsable")
+        self.assertEqual(self._finalized_row(c)["status"], "fail")
+        # The control: the SAME reply on the SAME transport, not truncated, is honoured — so
+        # the refusal above is this half's and not the transport's.
+        c2 = _FakeConductor(repo_root=self._repo_root(oid + "_ok"), orchestration_id=oid + "_ok",
+                            orchestration_agent_run_id="ORCH",
+                            llm_config=lc.load_llm_config(path), env={})
+        c2.calls = []
+        c2.spawn_leaf = lambda prompt, env, entry=None, **kw: wc.ProcResult(  # type: ignore[assignment]
+            0, f"reasoning...\n{directive}", "")
+        self.assertEqual(
+            c2.escalate(self._refs(), "validate",
+                        wc.PhaseOutcome("validate", "fail")).action, "retry")
+
     def test_the_template_tells_the_leaf_what_a_null_target_actually_does(self) -> None:
         """A directive is prose the leaf ACTS on, so a sentence that is wrong there costs a
         phase attempt.
@@ -7622,20 +7714,22 @@ class DiagnosticianTest(unittest.TestCase):
             self.assertIn(phase, criteria[0])
 
     def test_each_half_of_the_directive_guard_refuses_on_its_own(self) -> None:
-        """`decision = None if (timed_out or returncode != 0 or not parsed or is_error)`.
+        """`None if (timed_out or rc != 0 or truncated or not parsed or is_error)`.
 
-        Four disjuncts, and every fixture in this class that reaches them is a COMPLETE one:
-        the two killed-leaf rows set `timed_out` AND a non-zero return code, and
-        `_directive_stdout` always builds a well-formed, non-error envelope — so no row was
-        ever decided BY any single half, and deleting three of the four left the whole suite
-        green (measured, round 1). Each row below carries a syntactically perfect directive
-        and trips exactly ONE half, so each half is what refuses it.
+        FIVE disjuncts — the same five the two pure loops refuse a document on — and every
+        fixture in this class that reaches them used to be a COMPLETE one: the two killed-leaf
+        rows set `timed_out` AND a non-zero return code, and `_directive_stdout` always builds
+        a well-formed, non-error envelope — so no row was ever decided BY any single half, and
+        deleting three of the four this guard then had left the whole suite green (measured,
+        round 1). Each row below carries a syntactically perfect directive and trips exactly
+        ONE half, so each half is what refuses it.
 
         The gain each half denies is the same: a leaf whose turn did not finish would
         otherwise have its directive obeyed and its row written `diagnose_pass`.
 
-        MEASURED, so the claim is accurate: deleting `timed_out`, `returncode != 0` or
-        `is_error` one at a time each turns exactly one subtest below red. Deleting
+        MEASURED, so the claim is accurate: deleting `timed_out`, `returncode != 0`,
+        `response_truncated` or `is_error` one at a time each turns exactly one subtest below
+        red. Deleting
         `not envelope.parsed` does NOT — a neighbouring mechanism kills it, because an
         unparsed envelope carries `result is _MISSING`, the `isinstance(..., str)` guard
         beside the call reduces that to `""`, and `_parse_directive("")` is None anyway. That

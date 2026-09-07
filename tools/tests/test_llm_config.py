@@ -923,19 +923,20 @@ class RuleTests(_Tmp):
                                "  capabilities: [agentic]\n")
         self.assertIn("escalate", str(err))
 
-    def test_an_http_defaults_loads_but_is_refused_at_run_start(self) -> None:
-        """The two halves of the same change, and they land on DIFFERENT layers.
-
-        LOAD: `defaults` no longer has to be agentic — the launch it serves (the `escalate`
+    def test_an_http_defaults_loads_and_runs_beside_a_cli_leaf(self) -> None:
+        """`defaults` no longer has to be agentic — the launch it serves (the `escalate`
         diagnostician) is a pure leaf — so an HTTP provider gets past `load_llm_config`, which
-        it could not before. A document one can read, diff and test.
+        it could not before, AND reaches a run.
 
-        RUN START: it is still refused, because `run_workflow` derives `--agent-backend` and
-        the preflight's `--backend` from `defaults.backend_token` and both parsers take
-        `choices={claude, codex}`. Measured before this rule existed: the run reached `init`
-        and died on `argument --agent-backend: invalid choice: 'anthropic_api'`. That is the
-        constraint of the single-backend downstream vocabulary, not of the capability rule, so
-        it is named HERE rather than left to argparse."""
+        The second half is not automatic. `init` and the preflight still take one backend
+        token whose parser is `choices={claude, codex}`; measured before `cli_launch_identity`
+        existed, this file reached `init` and died on `argument --agent-backend: invalid
+        choice: 'anthropic_api'`. Refusing the file instead — which is what round 1 of this
+        branch did — would have left the diagnostician's migration undelivered on two DECLARED
+        providers, and `AGENTS.md` §Development premises does not allow that. So the token is
+        resolved from what the configuration can LAUNCH, and this row is the shape the shipped
+        examples describe: an HTTP `defaults` beside the CLI `validate.judge` that is still
+        agentic until Z3."""
         cfg = lc.load_llm_config(self.write(
             "defaults:\n"
             "  provider: anthropic_api\n"
@@ -978,6 +979,12 @@ class RuleTests(_Tmp):
         with self.assertRaises(lc.LlmConfigError) as ctx:
             stripped.cli_launch_identity()
         self.assertEqual(ctx.exception.rule, "llm_config_no_cli_backend")
+        # ...and RUN START is where it arrives. Calling the resolver directly leaves the hook
+        # in `validate_runnable` unpinned: deleting that one line left this file green, so the
+        # rule would have been correct and unreachable at the moment Z3 makes it reachable.
+        with self.assertRaises(lc.LlmConfigError) as run_start:
+            stripped.validate_runnable()
+        self.assertEqual(run_start.exception.rule, "llm_config_no_cli_backend")
         # The remedy names both halves, so it cannot be followed by half.
         self.assertIn("validate.judge", str(ctx.exception).replace("`", ""))
         self.assertIn("defaults", str(ctx.exception))

@@ -70,12 +70,15 @@ def _provider_command_base(entry: ResolvedLeafEntry) -> list[str]:
     """The argv prefix a CLI leaf is launched through: the entry's configured wrapper command
     (with any flags) if it has one, else the bare backend binary name.
 
-    ONE definition, because three places have to agree about it or they certify/probe a
+    ONE definition, because FOUR places have to agree about it or they certify/probe/confine a
     different executable than the leaf runs: `leaf_command`, `_ensure_codex_feature_cache`
-    (which certifies the codex hooks feature of that binary), and the host-side `/usage`
-    probe. There was a fourth — the read-only diagnostician's in-process bwrap profile — until
-    issue #169 gave that leaf a recorded launch like every other one; its profile is now the
-    runtime's, built from the backend command `record-launch` is handed."""
+    (which certifies the codex hooks feature of that binary), `record_launch`'s
+    `backend_command` (which decides the CLI binary the sandbox profile binds, so it is the
+    one that CONFINES rather than probes), and the host-side `/usage` probe. The count was
+    written as three and listed four for a while, one of them the read-only diagnostician's
+    in-process bwrap profile, which issue #169 deleted — that leaf's profile is the runtime's
+    now, built from this same `backend_command`, which is why the third entry matters more
+    since #169 rather than less."""
     base = shlex.split(entry.command) if entry.command.strip() else []
     return base or [entry.backend_token]
 
@@ -12888,6 +12891,13 @@ clean:
         # `RuntimeError` is in the set because `self.runtime(...)` raises it on a non-zero
         # exit, which is how the tombstone and the finalize fail. `OSError` covers a missing
         # bwrap/backend binary from `Popen`.
+        # The tombstone is a pure bookkeeping subcommand with no sandbox anywhere in it, so it
+        # gets the terminal the FINALIZE gets rather than the launch's: `conduct` maps a reason
+        # containing "sandbox" to `reason_code=sandbox_enforcement_violation`, and
+        # `_write_sandbox_enforcement_violation` fires only on record-launch's own sandbox
+        # path — so a bookkeeping refusal reported that way is a violation code with no
+        # `violations/<arid>.sandbox_enforcement_violation.json` behind it, pointing the
+        # RUNBOOK's remedy ("check `sandbox_profiles/`, the bwrap binary") at the wrong place.
         try:
             # Tombstone FIRST, before the launch is recorded at all. The diagnostician holds no
             # deliverable and appears in no `step_result.json#substep_agent_run_ids`, so the
@@ -12898,8 +12908,14 @@ clean:
             # skips an id it cannot find. A crash the other way round — a TERMINAL row with no
             # tombstone — would block a later pass, and on the `build` phase (child role
             # `step`) the re-launch guard `_build_step_agents_missing_step_result` too.
-            self._add_superseded_run_ids(
-                [child_arid], reason=f"escalate_diagnostician_consumed: {phase}")
+            try:
+                self._add_superseded_run_ids(
+                    [child_arid], reason=f"escalate_diagnostician_consumed: {phase}")
+            except (OSError, RuntimeError) as exc:
+                self.emit("diagnose_tombstone_failed", phase=phase, agent_run_id=child_arid,
+                          error=str(exc)[:200])
+                return RouteDecision("fail_closed",
+                                     reason=f"{phase}_diagnose_unrecordable")
             # `_spawn_pure_turn` does the `record_launch` ITSELF. Recording here as well made
             # two launches for one child, which the runtime refuses on the claude backend:
             # the first call writes `active_child_agent_run_id.txt`, and the second hits the
@@ -12911,11 +12927,16 @@ clean:
                 request, entry, child_arid=child_arid, phase=phase, substep=DIAGNOSE_SUBSTEP,
                 node_key=refs.node_key)
         except (SandboxEnforcementError, OSError, RuntimeError) as exc:
-            # The host could not tombstone, record or launch the sandboxed diagnostician —
-            # an unbuildable profile (SandboxEnforcementError), a missing binary (OSError), a
-            # runtime subcommand that refused (RuntimeError). The diagnostician is a
-            # best-effort recovery leaf, so an un-launchable diagnosis is conservatively
-            # terminal — the same posture as an unparsable directive — rather than a crash.
+            # The host could not record or launch the sandboxed diagnostician — an unbuildable
+            # profile (SandboxEnforcementError), a missing binary (OSError), a record-launch
+            # that refused (RuntimeError). The diagnostician is a best-effort recovery leaf,
+            # so an un-launchable diagnosis is conservatively terminal — the same posture as
+            # an unparsable directive — rather than a crash. NOT every exception: `runtime()`
+            # ends in `json.loads`, so a subcommand exiting 0 with non-JSON stdout raises a
+            # `ValueError` that escapes here. No production path produces one (every `print`
+            # in the runtime goes to stderr), and a conductor whose own subcommand printed
+            # garbage is a conductor defect rather than a diagnosis that did not arrive, so it
+            # is left to crash rather than folded into a routing decision.
             # A launch recorded but never finalized is left behind here; that is the residual
             # the two pure loops already carry, and it is what `--resume` reconciles.
             self.emit("diagnose_launch_failed", phase=phase, error=str(exc)[:200])
@@ -12936,13 +12957,23 @@ clean:
         # never finished — while the operator is being told the leaf was killed and the phase
         # fails closed. Same conservative posture as an unparsable directive; the partial output
         # is already persisted as evidence.
-        # `envelope.is_error is True` is the disjunct the two pure loops carry
-        # (`not envelope.parsed or envelope.is_error is True`) and this one was missing: the
-        # CLI writes an is_error envelope whose `result` TEXT is still model-written, so a
-        # directive-shaped final line inside one would otherwise be obeyed AND recorded
-        # `diagnose_pass` for a turn the CLI itself marked errored. `returncode` is not a
-        # substitute — an is_error envelope arrives on a rc=0 launch.
+        # The five conditions the two pure loops refuse a document on, all five. Two were
+        # missing and each was added after it was measured reachable, so they are listed with
+        # the transport that reaches them rather than as a formula:
+        #  - `is_error` — the CLI writes an error envelope whose `result` TEXT is still
+        #    model-written, so a directive-shaped final line inside one would be obeyed AND
+        #    recorded `diagnose_pass` for a turn the CLI itself marked errored. `returncode` is
+        #    no substitute: an is_error envelope arrives on a rc=0 launch.
+        #  - `response_truncated` — the PROVIDER said the answer was cut off at the
+        #    output-token ceiling. Authoritative, and the pure loops' own comment says why: a
+        #    partial document that happens to parse must not be accepted. It is set on the
+        #    HTTP transport alone, which this leaf could not reach until `defaults` was allowed
+        #    to be an HTTP provider — so re-admitting that provider is what made the omission
+        #    live, and on that transport `_spawn_pure_turn` synthesises the envelope with
+        #    `parsed=True, is_error=False`, leaving only `timed_out` and `returncode` between a
+        #    cut-off reply and a routing decision.
         decision = (None if (proc.timed_out or proc.returncode != 0
+                             or proc.response_truncated
                              or not envelope.parsed or envelope.is_error is True)
                     else _parse_directive(envelope.result if isinstance(envelope.result, str)
                                           else ""))

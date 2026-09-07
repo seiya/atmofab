@@ -358,7 +358,7 @@ PINNED: dict[str, str] = {
     # failed agents wrote, one of which has an interest in the rollback the diagnostician
     # picks. pure-35 was introduced by this branch and has never been recorded by a run, so
     # re-pinning it is not editing a historical entry.
-    "pure-35": "22529e4f23739be3763e167250805c3f019c707d81751ee812d8a44f2473ef91",}
+    "pure-35": "c044b4148648f8a7cfdd708eaa6785e2ce56beea5874166f77b2fc58276adb93",}
 
 
 def _contract_tuple() -> dict[str, object]:
