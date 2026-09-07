@@ -21,6 +21,7 @@ import os
 import shutil
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 os.environ.setdefault("ATMOFAB_DEP_READINESS_ALLOW_PERSISTED_FALLBACK", "1")
@@ -237,19 +238,96 @@ class PureCompileContextTests(_Fixture):
                 self.assertIn(marker, outcome.infra_error[1])
                 self.assertEqual([s for s, _ in c.calls].count("record-launch"), 0)
 
-    def test_no_declared_context_key_can_be_empty(self) -> None:
-        """The property the row above protects, stated over the WHOLE key set rather than over
-        the three artifacts a test author happened to think of: the launch validator refuses an
-        empty declared key, so any builder read that can return `""` is a conductor abort waiting
-        for a corrupted checkout. Both builders, every key."""
+    #: Every declared context key that comes from a FILE, and the file it comes from. The two
+    #: that do not are `profile_spec_document` (a host sentence when no profile is declared) and
+    #: `toolchain_document` (derived from the backend registry, and non-empty by its own raise) —
+    #: both are covered by rows of their own in this class.
+    _KEY_SOURCE = {
+        "generate": {
+            "controlled_spec_document": "{spec}/controlled_spec.md",
+            "tests_document": "{spec}/tests.md",
+            "deps_document": "{spec}/deps.yaml",
+            "dependency_graph_document": "{ir}/dependency_graph.json",
+            "phase_contract_document": "docs/workflow/phases/phase_01_compile.md",
+            "ir_algorithm_example_document":
+                "docs/examples/spec_ir_algorithm_section.example.yaml",
+            "ir_algorithm_2d_example_document":
+                "docs/examples/spec_ir_algorithm_2d_problem_contract.example.yaml",
+            "impl_defaults_schema_document": "spec/schema/ir/impl_defaults.schema.json",
+            "checks_module_contract_document": "docs/workflow/CHECKS_MODULE_CONTRACT.md",
+        },
+        "verify": {
+            "controlled_spec_document": "{spec}/controlled_spec.md",
+            "tests_document": "{spec}/tests.md",
+            "deps_document": "{spec}/deps.yaml",
+            "ir_document": "{ir}/spec.ir.yaml",
+            "dependency_surface_document": "{ir}/dependency_surface.json",
+            "phase_contract_document": "docs/workflow/phases/phase_01_compile.md",
+            "ir_algorithm_example_document":
+                "docs/examples/spec_ir_algorithm_section.example.yaml",
+            "ir_algorithm_2d_example_document":
+                "docs/examples/spec_ir_algorithm_2d_problem_contract.example.yaml",
+        },
+    }
+
+    def test_every_file_backed_key_raises_when_its_file_is_gone(self) -> None:
+        """The property, stated as the property. An earlier version of this row asserted that
+        every declared key is non-empty ON A COMPLETE FIXTURE — which cannot see whether a read
+        DEGRADES or RAISES, and that is the whole question: the launch validator refuses an empty
+        declared key inside `record_launch`, whose `runtime` helper raises out of the unguarded
+        call, so a `""` here aborts the conductor instead of producing the recoverable
+        `pure_context_assembly_failed` outcome. Measured: with that row in place, restoring the
+        `""` degradation on the REVIEWER's two node reads left the whole suite green.
+
+        So each key's own file is removed and the builder must raise. The table is checked
+        against `PURE_CONTEXT_REQUIRED_KEYS` for set identity below, so a key added to the
+        contract without a row here is red rather than unobserved.
+        """
+        for substep, sources in self._KEY_SOURCE.items():
+            builder = (self._build(substep))
+            for key, template in sources.items():
+                with self.subTest(builder=substep, key=key):
+                    _write_compile_node(self.repo, kind=self.KIND, stage_ir=True)
+                    rel = template.format(spec=self.refs.spec_path, ir=self.refs.ir_ref)
+                    (self.repo / rel).unlink()
+                    with self.assertRaises(RuntimeError) as caught:
+                        builder(self.refs)
+                    self.assertIn("_missing", str(caught.exception))
+                    self.assertIn(rel, str(caught.exception))
+
+    def test_the_key_source_table_covers_every_declared_key(self) -> None:
+        """Set identity between the table above and the contract, with the two derived keys
+        named explicitly — so a new key is either given a file row or a deliberate exemption,
+        and never silently neither."""
+        derived = {"generate": {"profile_spec_document", "toolchain_document"}, "verify": set()}
+        for substep, sources in self._KEY_SOURCE.items():
+            with self.subTest(builder=substep):
+                self.assertEqual(
+                    set(sources) | derived[substep],
+                    set(ort.PURE_CONTEXT_REQUIRED_KEYS[("compile", substep)]))
+
+    def test_the_derived_keys_are_non_empty_by_construction(self) -> None:
+        """The two keys with no file. `toolchain_document` raises rather than returning an empty
+        admissible set; `profile_spec_document` returns the host's fixed sentence when the node
+        declares no profile, and a named line when the catalog cannot resolve one — so neither
+        has a path that yields `""`."""
         c = self.conductor()
-        for name, ctx in (("generate", c._build_pure_compile_context(self.refs)),
-                          ("verify", c._build_pure_compile_verify_context(self.refs))):
-            required = ort.PURE_CONTEXT_REQUIRED_KEYS[("compile", name)]
-            self.assertEqual(set(ctx), set(required), name)
-            for key in required:
-                with self.subTest(builder=name, key=key):
-                    self.assertTrue(str(ctx[key]).strip(), key)
+        ctx = c._build_pure_compile_context(self.refs)
+        self.assertTrue(ctx["toolchain_document"].strip())
+        self.assertEqual(ctx["profile_spec_document"],
+                         wc.Conductor._PURE_PROFILE_ABSENT_DOCUMENT)
+        # The registry-empty branch of `_pure_toolchain_document` raises rather than shipping
+        # `[]`, which is the same disposition every file-backed key has.
+        with mock.patch.object(backend_registry, "implemented_backend_ids",
+                               return_value=()):
+            with self.assertRaises(RuntimeError) as caught:
+                c._pure_toolchain_document(self.refs)
+        self.assertIn("pure_toolchain_document_unresolvable", str(caught.exception))
+
+    def _build(self, substep: str):
+        c = self.conductor()
+        return (c._build_pure_compile_context if substep == "generate"
+                else c._build_pure_compile_verify_context)
 
     def test_a_missing_repository_document_raises_and_spawns_nothing(self) -> None:
         """A document the leaf cannot repair is a fail_closed BEFORE any launch. Driven through

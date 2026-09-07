@@ -71,11 +71,12 @@ phases:
         provider: anthropic_api
         api_key_env: ANTHROPIC_API_KEY
         model: claude-opus-5
-        # Sizes the ARTIFACT, over a stated POPULATION rather than one sample: across the
-        # 7 `shallow_water2d` IRs this repository has on disk the largest is 63,009 bytes
-        # of YAML and the smallest 42,721; the JSON document carrying one is larger again.
-        # 32768 is a BOUND taken from that population, not a requirement — re-measure
-        # against the node you run.
+        # Sizes the ARTIFACT, over a NAMED population: the 7 `shallow_water2d` IRs under the
+        # live `workspace/` run 42,721 to 63,009 bytes of YAML (widen the scope to the
+        # archived `workspace_2026*/` snapshots and it is 25 from 20,850; the MAXIMUM is
+        # 63,009 either way). The JSON document carrying one is larger again. 32768 is a
+        # BOUND taken from that population, not a requirement — re-measure against the node
+        # you run.
         max_output_tokens: 32768
         timeout_s: 2400
       # PURE: the IR reviewer. Returns the same verdict document the generate reviewer does.

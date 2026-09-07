@@ -1492,23 +1492,31 @@ class PureLeafABSummaryTest(unittest.TestCase):
         the escaping path held no metas and `found=False` produced the same empty list. A
         rejection row that would pass with the rejection removed asserts nothing.
         """
-        escaping = "../outside/ir"
+        # The escaping ref traverses back INTO the fixture's own tempdir rather than out of it.
+        # `../outside/ir` resolves to a sibling of the `TemporaryDirectory`, i.e. a fixed path in
+        # the system temp dir: it is never cleaned up, another user's copy of it turns this row
+        # into a `PermissionError` instead of a rejection, and the fixture self-test below is
+        # then satisfiable by a LEFTOVER from a previous run rather than by this run's write.
+        escaping = f"workspace/ir/{self.SAFE}/../../../workspace/ir/{self.SAFE}/traversed"
+        landing = f"workspace/ir/{self.SAFE}/traversed"
         for label, kwargs, meta_at in (
             ("another step", {"step": "generate", "ir_ref": self.IR_A}, self.IR_A),
             ("agentic compile",
              {"step": "compile", "ir_ref": self.IR_A, "leaf_mode": None}, self.IR_A),
-            ("escaping ir_ref", {"step": "compile", "ir_ref": escaping}, escaping),
+            ("escaping ir_ref", {"step": "compile", "ir_ref": escaping}, landing),
         ):
             with self.subTest(rejected=label), tempfile.TemporaryDirectory() as tmp:
                 repo = Path(tmp)
                 self._lay_out(repo, with_metas=False)
                 self._launch(repo, "a1", **kwargs)
                 self._compile_metas(repo, meta_at)
-                # Self-test of the fixture: the metas the row must NOT pick up are readable
-                # where the discovery would look, so the empty result below is the rejection
-                # and not an absence.
-                self.assertTrue(
-                    (repo / meta_at / "compile_generate_meta.json").is_file(), label)
+                # Self-test of the fixture, twice over: the metas the row must NOT pick up are
+                # readable where the discovery would land, so the empty result below is the
+                # rejection and not an absence — and the write stayed INSIDE the tempdir, so it
+                # is this run's own and not a leftover.
+                landed = repo / meta_at / "compile_generate_meta.json"
+                self.assertTrue(landed.is_file(), label)
+                self.assertTrue(landed.resolve().is_relative_to(repo.resolve()), label)
                 out = collect_pure_leaf_ab_summary(
                     repo, self.ORCH, {"invocation": {"generate_executor": "pure"}})
                 self.assertEqual(out["pure_compile_nodes"], [], label)

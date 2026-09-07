@@ -7388,9 +7388,16 @@ clean:
                                    ) -> "SubstepOutcome":
         """Run a pure-function PRODUCER substep: launch a backend-specific
         closed-context leaf (Claude tool-free transport or Codex's sandboxed structured-output
-        approximation) that returns one CodegenBundle, validate + assembly-preflight it, repair a violation
-        in a bounded warm-resume loop, finalize the accepted attempt with an EMPTY output_refs
-        row, and ONLY THEN write the bundle's artifacts host-side.
+        approximation) that returns ONE JSON document, validate it, repair a violation in a
+        bounded warm-resume loop, finalize the accepted attempt with an EMPTY output_refs row,
+        and ONLY THEN write that document's artifacts host-side.
+
+        WHICH document and WHICH artifacts are the `spec`'s, not this loop's: `generate` returns
+        a CodegenBundle (validated and assembly-preflighted by `_pure_bundle_violations`, written
+        as `files[]` + `codegen_bundle.json` + the control file + `bundle_meta.json`), `compile`
+        returns `{ir, last_fail_reason}` (shape-validated by `_pure_ir_document_violations`,
+        written as `spec.ir.yaml` + `ir_meta.json` + `compile_generate_meta.json`). Nothing below
+        names either.
 
         The finalize-before-write ordering is load-bearing: the pure capability's empty
         write_roots make ANY write inside the child window an unauthorized write
@@ -7409,8 +7416,12 @@ clean:
         # must not inherit the previous run's turns, which is what a fresh session gives the
         # CLI path.
         self.reset_http_history(phase, substep)
-        # Assembling the context reads host-owned artifacts and RAISES on a missing one
-        # (`pure_runner_document_missing`). run_substep's callers must never see an exception —
+        # Assembling the context reads host-owned artifacts and RAISES on a missing one — which
+        # ones, and under which reason names, is the `spec`'s builder's own docstring
+        # (`_build_pure_context` raises `pure_runner_document_missing`;
+        # `_build_pure_compile_context` raises one `pure_<name>_document_missing` per spec
+        # artifact, repository document and host-derived sidecar it reads).
+        # run_substep's callers must never see an exception —
         # recover it as the same fail_closed transport outcome a failed `_write_runner` produces.
         # A host artifact the conductor itself renders cannot be repaired by a generate retry, so
         # fail_closed (operator --resume) is the correct terminus, not a reopen. No leaf has been
@@ -8052,7 +8063,8 @@ clean:
         closed-context reviewer (Claude tool-free transport or Codex's sandboxed structured-output
         approximation) that returns one verify verdict, validate it, repair a schema violation in a
         bounded warm-resume loop, finalize the accepted attempt with an EMPTY output_refs row, and
-        ONLY THEN author source_meta.json host-side.
+        ONLY THEN author the phase's stage meta host-side — `source_meta.json` for `generate`,
+        `ir_meta.json` for `compile`; the `spec` decides, and nothing below names either.
 
         PERSONA SEPARATION (operator hard rule): the reviewer always spawns a FRESH `--session-id`
         and the only session ever warm-resumed is the reviewer's OWN prior attempt (assigned
@@ -8064,18 +8076,21 @@ clean:
 
         The finalize-before-write ordering is load-bearing for the same reason as the producer:
         the pure capability's empty write_roots make any write inside the child window an
-        unauthorized write, so the host closes the window (finalize_child) before it authors
-        source_meta.json / verdict_meta.json."""
+        unauthorized write, so the host closes the window (finalize_child) before it authors the
+        verdict projection and the per-attempt record."""
         from tools.pure_leaf import (
             parse_result_envelope, extract_json_document, verify_verdict_violations,
             MAX_BUNDLE_REPAIR_TURNS, RESPONSE_TRUNCATED, RESPONSE_UNPARSEABLE, ResultEnvelope,
             _MISSING)
         entry = self.entry_for(phase, substep)
         self.reset_http_history(phase, substep)
-        # Assembling the reviewer's context reads TWO host-owned repository documents and RAISES
-        # on a missing/unsliceable one (`pure_checks_contract_document_*` for
-        # CHECKS_MODULE_CONTRACT.md, `pure_severity_rubric_document_*` for phase_02_generate.md;
-        # the list is exhaustive and grows with `_build_pure_verify_context`). run_substep's callers must
+        # Assembling the reviewer's context RAISES on any document it cannot read, and WHICH
+        # documents those are belongs to the `spec`'s builder, not to this loop: the generate
+        # reviewer reads two host-owned repository documents (`pure_checks_contract_document_*`
+        # for CHECKS_MODULE_CONTRACT.md, `pure_severity_rubric_document_*` for
+        # phase_02_generate.md), the compile reviewer reads five node artifacts and three
+        # repository documents. Each builder's own docstring is the list; a list here went stale
+        # the moment a second builder existed. run_substep's callers must
         # never see an exception — recover it as the same fail_closed transport outcome the
         # producer's `_build_pure_context` failure produces. A repository document the leaf cannot
         # repair makes fail_closed (operator --resume) the correct terminus, not a reopen. No leaf
