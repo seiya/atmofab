@@ -24,7 +24,7 @@ here that does not obviously apply to your case is answered in its reference fil
 guessing.
 
 - `references/judgment-episodes.md` — what each judgment rule below cost, in full
-- `references/input-surfaces.md` — surfaces 5-10, the marker-narrowing version table, the recipes
+- `references/input-surfaces.md` — surfaces 5-11, the marker-narrowing version table, the recipes
 - `references/source-text-surface.md` — the spelling variation a source-text-reading gate must survive
 - `references/dual-read-pairs.md` — the table of facts two layers read
 - `references/failure-routing.md` — attribution criteria, the known branches, and remedy wording
@@ -239,7 +239,7 @@ When a rule derives its safety from an enumeration, **write a test that kills ea
 enumeration by mutation** (round 0 in `atmofab-review-loop`). A missing element shows up in no
 other test.
 
-The six surfaces that are none of exec / env / argv / FS / evidence paths and none of the
+The seven surfaces that are none of exec / env / argv / FS / evidence paths and none of the
 spelling variation. Each is one question; the episodes, the version tables and the measurement
 recipes are in `references/input-surfaces.md`:
 
@@ -320,6 +320,27 @@ recipes are in `references/input-surfaces.md`:
   one: a linter's walk exclusions and read errors, a compiler's error cap, a test runner's
   collection error, a build system's `-k`. Related but different from surface 5 — nothing here is
   caller-controlled; the tool is simply answering a narrower question than the gate asked.
+- **Surface 11 — does a field the LEAF authors decide which gate applies to its own artifact?**
+  Not what a gate reads to judge — what a gate reads to decide whether to judge at all. A gate that
+  resolves the artifact's kind, its language, its declared model, or the presence of a contract
+  section FROM THE ARTIFACT, and returns early when the value is one it does not cover, hands the
+  leaf the off switch. Issue #168: `_validate_published_surface` takes `spec_kind` from the IR's
+  own `meta`, and a `component` IR self-declaring `problem` passes the whole deterministic compile
+  gate with rc 0 — measured on a real certified IR — dropping every published-surface pin. **The
+  same field, twice more**: `_validate_toolchain_backend_supported` reads it to decide whether a
+  node is exempt from half its own check, and the phase contract warns that whichever of three
+  places a multi-dimensional state contract appears in FIRST is the one the gate validates — so an
+  empty mapping in the highest-priority place makes it validate nothing. This tree has also
+  CLOSED one instance already, and it is the shape to copy:
+  `docs/workflow/phases/phase_01_compile.md` records that the `spec_kind` deciding the
+  `infrastructure` dependency-count exemption "is read from `spec_catalog.yaml`, not from the
+  self-declared `deps.yaml` field". **Rule: resolve the fact from the HOST'S OWN identity for
+  the node — the `node_key`, the launch request, the reservation — never from the document under
+  review, and where a gate legitimately must read it from the document, pin the document's value
+  against the host's before the gate runs.** **The tell**: an early `return` in a gate whose
+  condition is a field of the thing being gated. Enumerate those first; each one is a switch, and
+  the leaf holds it. Distinct from surface 5, where caller data pollutes a classification the host
+  computes — here the host asks the leaf a question and believes the answer.
 
 ### 2. Confirm the path production actually takes
 
@@ -357,6 +378,21 @@ one.**
   handed probe modules written into a `tempfile` directory, so it missed on every self-test and
   fell back silently. **The fix in both cases was to move the process, or to make the root an
   argument** — not to make the fixture more elaborate
+- **A DISPOSITION TOWARD BAD INPUT travels when you copy or parametrise a path, and the receiving
+  side's validator may not accept it.** Copying "a missing file degrades to `""`" from a sibling
+  path is the recorded shape: on issue #168 the new path's every value was a DECLARED key, and the
+  declared-key validator refuses an empty one — inside `record_launch`, from a call the loop did
+  not guard — so the loop's own named fail-closed branch was bypassed and the exception aborted
+  the conductor instead. **A refusal that happens one frame too late converts a recoverable named
+  outcome into a crash**, which is strictly worse than either the degradation or the refusal.
+  Whenever you lift a behaviour into a shared loop or copy it to a second caller, ask what the
+  RECEIVING side does with the degraded value, not what the donor did.
+  - **And the test for it has to cross the same frame.** The row that "pinned" that degradation
+    drove the builder and then called the validator BY HAND, so it saw a clean `ValueError` where
+    production saw a `RuntimeError` escaping the substep. Same class as the synthetic-input bullet
+    above, one level up: a fixture can be right about every value and still stop short of the
+    frame where the failure happens. Drive the production entry point far enough that the recovery
+    branch is what you observe.
 
 ### 3. Decide the failure's attribution
 

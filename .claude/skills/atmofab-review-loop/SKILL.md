@@ -205,6 +205,15 @@ when a rule does not obviously apply:
   rewrites within one second reuse a stale `.pyc`, and the mutant that reports `killed` is the
   PREVIOUS one. Two reviewers hit it independently on PR #100, one of them reporting three live
   mutants as killed; the skill's own script is unaffected because each hunk gets its own worktree
+- **A fixture that writes OUTSIDE its own `TemporaryDirectory` makes its own self-test
+  satisfiable by a leftover.** Issue #168: a traversal-rejection row used `"../outside/ir"`, which
+  resolves to a SIBLING of the tempdir — a fixed path in the shared temp root. The litter is the
+  small half; the sharp half is that the row's own "the file is where discovery would look" check
+  passed on a residue from a previous run rather than on this run's write, and on a shared machine
+  another user's copy turns the row into a `PermissionError` instead of a rejection. It also
+  collides with the parallel worktrees `scripts/mutation_check.py` runs under `TMPDIR`. Keep the
+  escaping path INSIDE the tempdir (traverse back into it) and assert the landing path resolves
+  under it.
 - **Never revert a mutation with `git checkout -- <file>`. TWO reasons, and the second is worse:
   it deletes uncommitted work, and on an UNTRACKED file it is a SILENT NO-OP** — PR #104 shipped a
   mutant for two commits that way. Use a worktree (the script's default; `--keep` leaves it
@@ -264,6 +273,27 @@ when a rule does not obviously apply:
     is what a later member added on one side only turns red. **Trigger**: any `isinstance` /
     `hasattr` in a guard whose purpose is to not raise — name the operation that would raise
     (`for … in`, `sort`, `len`, `[k]`) and ask which member reaches it
+  - **a test that asserts a property ON A COMPLETE FIXTURE cannot see the property** — the
+    general case, of which the type and threshold rows are two instances. Issue #168: a row
+    claiming to hold "no declared context key may be empty" asserted non-emptiness on a fixture
+    where every file was present, so it could not tell a read that DEGRADES from one that RAISES
+    — which was the whole property — and its real coverage was the three filenames the previous
+    commit happened to delete. Measured: the fail-open it was written to pin was reinstated on
+    the other five keys with the suite green. **The recipe that closed it**: one row per
+    contributing input, each REMOVING that input and requiring the failure to name it, plus a
+    set-identity row against the contract table with the derived inputs listed as NAMED
+    exemptions — so an input added later is either given a row or an exemption, and never
+    silently neither. **Trigger**: any assertion of the form "all of X are well-formed" whose
+    fixture supplies all of X
+  - **when the code applies a THRESHOLD, the fixture must straddle it too, and the straddle is
+    usually a LENGTH** — the same shape, and the one that hides best because the fixture looks
+    realistic. Issue #168 again: a class whose subject is how a failure reason is composed
+    carried an 80-character flake constant while the code clipped the evidence at 110, so every
+    row in it passed while observing nothing about the composition — and a later change to that
+    clip shipped a regression through all of them. **Trigger**: any cap, clip, budget, `[:n]`,
+    `max_`/`MAX_` or size comparison on the path under test. Name the threshold, then assert IN
+    THE TEST BODY that the probe is on the far side of it (`assertGreater(len(probe), 110)`), so
+    a later shortening of the fixture is red rather than silent
   - **a hand-built fixture can test a shape that does not exist** — check the construct against
     the real corpus before writing the witness
   - **for stateful code, match the fixture to the lifetime of the state**, and always include a
@@ -905,12 +935,25 @@ would mislead you, can the deletion's measurement be re-taken from what is writt
 went with what was deleted**, what does a LEAF see, what does an OPERATOR see, would you merge". If
 it returns first-category items, the record has not converged even though the enforcement code has.
 
-**The added clause is not a flourish.** On PR #125 it is what surfaced the branch's only blocker —
+**The "what CHECK went with what was deleted" clause is not a flourish.** On PR #125 it is what
+surfaced the branch's only blocker —
 a check `origin/main` had that a round-2 fix narrowed away — and no other instrument in this loop
 could have: the sweep mutates what exists, the census enumerates what exists, and a blank-slate
 reviewer reads HEAD. **Everything else compares HEAD against itself.** The disclosure round is the
 one place a reviewer is pointed at the previous revision, so it is the only place a deleted
 guarantee is visible.
+
+**And "what does a LEAF see" means RENDER THE PROMPT, once per leaf that receives it — WHEN the
+branch changed text a leaf is handed.** That condition is the whole scope: a branch that touches
+no leaf-read document owes this nothing, and asking for it there buys a standing-up of an
+orchestration and a six-figure byte count per render for no reason. When it does apply, ask for
+the production entry point (`build_launch_request` -> `prepare_launch_request_payload` ->
+`render_launch_prompt_text`) and for the result to be read end to end, as that leaf, against what
+the host will actually refuse. Reading the template is not the same thing: a host-inlined document
+arrives whole, and the sentence that matters is usually one nobody wrote for this leaf. It is how
+issue #168 found the defects of its rounds 3, 4 and 5, and nothing else on that branch found any
+of them. (Its worst defect overall was round 1's, and that one came from a security axis measuring
+gates against real corpus artifacts — this instrument is not a substitute for that one.)
 
 **For a change that adds checking machinery, run a witness census once.** Instruct a dedicated
 reviewer:
@@ -987,6 +1030,25 @@ that tells you how it closed.
   attribution is visible rather than inferred. **Do not delete a wrong correction — record that it
   was wrong**, or nobody can tell an audited corrections bullet from an unaudited one
   (`references/measurement-records.md`)
+- **You corrected prose a LEAF reads, and you corrected it for ONE reader** → every other leaf
+  handed the same text got your correction too, and a sentence that is true for one can be a
+  `leaf shortcut` in another. This is the RECORD row's twin on the delivery side: there the
+  correction was unverified, here it is verified for the reader you had in mind and shipped to
+  readers you did not. **Criterion, and it is not a reading**: list every leaf the document
+  reaches, RENDER each one's prompt through the production entry point, and read the new sentence
+  in place as that leaf — then ask the gain question of it, "a leaf following this sentence is
+  closer to ___". A host-inlined contract makes this the default rather than the exception: one
+  document, several personas, opposite obligations. Issue #168 hit it three rounds running, twice
+  in the SAME section: a per-path paragraph written for the producer told the reviewer that
+  authoring the IR and returning a null failure reason — the reviewer's own PASS invariant — was
+  "the ordinary thing", and a bounding sentence in the reviewer's template ("that list is the
+  whole of your scope") made a four-way disagreement in the inlined document load-bearing, whose
+  narrowest reading dropped one of the two invariant families with no deterministic backstop. **Both were
+  written while fixing this same class.** Two consequences worth carrying: a summary of a
+  substep's scope stated anywhere but where the scope is defined is a second definition, so delete
+  it rather than correct it; and **nothing in this loop catches these except the rendered prompt**
+  — the sweep mutates code, the census enumerates code, a blank-slate reviewer reads code, and the
+  suite stays green with the sentence inverted (measured, all three rounds)
 - **You have rewritten the same string three times** → the problem is not the rule but the prose
   citing it. Switch to the grep sweep
   (`.claude/skills/atmofab-enforcement-change/references/verification.md`). **Rewriting one
