@@ -5290,7 +5290,7 @@ class LeafTransientRetryTest(unittest.TestCase):
         self.assertNotIn("write-step-result", [s for s, _ in c.calls])
 
     #: A terminal transport line long enough to fill the whole `reason_detail` budget on its own.
-    #: The class's own `_FLAKE` is 79 characters, which is why every earlier row here passed
+    #: The class's own `_FLAKE` is 80 characters, which is why every earlier row here passed
     #: while the composition silently dropped its tail: the evidence has to be longer than the
     #: clip for the clip to be observable at all. This shape is the real one — the CLI's
     #: connection error with the upstream JSON body attached.

@@ -382,7 +382,8 @@ that list is the whole of your scope". That document states the scope FOUR times
 section, a §substep-structure summary naming three of six invariant families, a §fixed/knob
 sentence assigning two more from outside the verify section, and now the template. A sentence
 meant to BOUND the reviewer made the document's own disagreement load-bearing, and the narrowest
-reading is the summary, which drops the one family with no deterministic backstop. Measured:
+reading is the summary, which drops one of the two families the verify section itself names as
+having no deterministic backstop. Measured:
 stripping every `algorithm.steps[].description` from a real certified IR still PASSES the
 deterministic compile gate, so that family at `verify` is the only thing between a de-mathed IR
 and a `Generate` leaf walled off from the spec.
@@ -406,7 +407,7 @@ per-path: "the pure path" is not one reader.
 **The same branch's numeric-threshold episode, for the round-0 list.** Round 5 also found a
 regression in round 4's own fix: a `reason_detail` clip widened to fit a filename evicted the
 `[attempts=N]` marker, which is what tells an operator an outage outlasted every backoff. Every
-existing test in the class passed, because the class's flake constant is 79 characters and the
+existing test in the class passed, because the class's flake constant is 80 characters and the
 clip it was supposed to exercise is 110 — the fixture had never been on the far side of the
 threshold it was measuring. The fix reserves the marker in the budget; the test asserts, in its
 own body, that its probe is longer than any clip.
