@@ -1216,6 +1216,14 @@ def resolve_severity_directive(decision: RouteDecision) -> RouteDecision:
     measured, `severity=critical` with `repair_strategy=reuse` and a null target came back
     `reuse`, where naming the phase forces `restart`. So the strategy is CLEARED instead, which
     makes every null-target directive terminalize the way the no-strategy one already did."""
+    # ORDER IS LOAD-BEARING: the null-target clear below runs only when a severity is set, and
+    # the one other producer of a null target WITH a strategy — `classify_verify_severity`'s
+    # `verify_minor` warm repair — is protected from it solely by carrying `severity=None`. That
+    # decision does not reach here today (it goes to `conduct` through `classify_failure`, not
+    # through `escalate`, which is this function's only caller), so the protection is not
+    # load-bearing yet. It becomes load-bearing the moment anyone threads a graded severity into
+    # that decision — whose whole job is severity classification — and the failure would be
+    # silent: the warm producer re-run a `minor` earns would become a terminal `<phase>_fail`.
     if decision.action == "fail_closed" or not decision.severity:
         return decision
     if decision.repair_strategy == "re_execute":
@@ -12880,6 +12888,26 @@ clean:
                 ctx[name] = data
         return ctx
 
+    def _diagnose_launch_request(self, refs: NodeRefs, phase: str, outcome: PhaseOutcome,
+                                 entry: ResolvedLeafEntry, child_arid: str) -> dict[str, Any]:
+        """The diagnostician's pure launch request. Split out so `escalate` can build it INSIDE
+        the fold that turns a host failure into a named terminal: `_gather_failure_context`
+        reads files and `_diagnosis_document` serializes them, and neither is guaranteed not to
+        raise on a tree the conductor did not author."""
+        from tools.orchestration_runtime import DIAGNOSE_SUBSTEP
+
+        context = self._gather_failure_context(refs, phase)
+        return build_launch_request(
+            refs, step=phase, substep=DIAGNOSE_SUBSTEP,
+            orchestration_id=self.orchestration_id,
+            orchestration_agent_run_id=self.orchestration_agent_run_id,
+            child_agent_run_id=child_arid,
+            agent_model=entry.model, workflow_mode=self.workflow_mode,
+            pure_leaf=True,
+            pure_context={"diagnosis_document": _diagnosis_document(
+                refs.node_key, phase, outcome.failed_substeps, context, self.workflow_mode)},
+        )
+
     def escalate(self, refs: NodeRefs, phase: str, outcome: PhaseOutcome) -> RouteDecision:
         """One-shot LLM diagnostician for a failure the decision tables cannot
         classify. Inlines the failure-artifact content in a pure launch prompt, spawns a
@@ -12901,18 +12929,20 @@ clean:
         # become critical keeps being graded the way it was graded first. Unreachable until
         # `defaults` was allowed to be an HTTP provider, which is this issue's own change.
         self.reset_http_history(phase, DIAGNOSE_SUBSTEP)
-        child_arid = self.new_agent_run_id()
-        context = self._gather_failure_context(refs, phase)
-        request = build_launch_request(
-            refs, step=phase, substep=DIAGNOSE_SUBSTEP,
-            orchestration_id=self.orchestration_id,
-            orchestration_agent_run_id=self.orchestration_agent_run_id,
-            child_agent_run_id=child_arid,
-            agent_model=entry.model, workflow_mode=self.workflow_mode,
-            pure_leaf=True,
-            pure_context={"diagnosis_document": _diagnosis_document(
-                refs.node_key, phase, outcome.failed_substeps, context, self.workflow_mode)},
-        )
+        # Minting the child id runs `python3 tools/new_agent_run_id.py` in a SUBPROCESS, so it
+        # raises `RuntimeError` on a non-zero exit and `OSError` when the interpreter is not on
+        # the PATH or a fork fails — and it is a call this issue ADDED, because `origin/main`'s
+        # diagnostician reused the orchestration agent's id and minted nothing. Outside the fold
+        # it was the one way to fail a diagnosis that still escaped as an unexplained
+        # `conductor_error`, which is exactly what the fold below says cannot happen.
+        child_arid = ""
+        try:
+            child_arid = self.new_agent_run_id()
+            request = self._diagnose_launch_request(refs, phase, outcome, entry, child_arid)
+        except (SandboxEnforcementError, OSError, RuntimeError) as exc:
+            self.emit("diagnose_tombstone_failed", phase=phase, agent_run_id=child_arid,
+                      error=str(exc)[:200])
+            return RouteDecision("fail_closed", reason=f"{phase}_diagnose_unrecordable")
         # EVERY way the host can fail to produce a diagnosis lands on one conservative
         # terminal, because `escalate` is called from `conduct` OUTSIDE its only `try` (which
         # wraps `run_phase` alone — measured by AST: one `Try` at `conduct`, body

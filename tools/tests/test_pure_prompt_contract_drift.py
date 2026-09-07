@@ -362,7 +362,7 @@ PINNED: dict[str, str] = {
     # agent-written, which would tell the leaf its firmest evidence is adversarial. pure-35 was
     # introduced by this branch and has never been recorded by a run, so re-pinning it is not
     # editing a historical entry.
-    "pure-35": "0af69da890a78da34919fdd2a85aad96ce80623883aafd383fbd3f04c6388fbe",}
+    "pure-35": "fa5612cce3f15740f8c5f37a182e2fecd435863ec727e58a6111825dd0fb8a49",}
 
 
 def _contract_tuple() -> dict[str, object]:

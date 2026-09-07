@@ -7430,6 +7430,36 @@ class DiagnosticianTest(unittest.TestCase):
         self.assertEqual(d.action, "fail_closed")
         self.assertEqual(d.reason, "validate_diagnose_sandbox_unavailable")
 
+    def test_minting_the_child_id_cannot_crash_out_of_escalate(self) -> None:
+        """`new_agent_run_id` runs `python3 tools/new_agent_run_id.py` in a SUBPROCESS: it
+        raises `RuntimeError` on a non-zero exit and `OSError` when the interpreter is missing
+        or a fork fails. It is a call THIS issue added — `origin/main`'s diagnostician reused
+        the orchestration agent's id and minted nothing — and it sat outside the fold, so it
+        was the one remaining way to fail a diagnosis that escaped as an unexplained
+        `conductor_error`: `escalate` is called from `conduct` OUTSIDE its only `try`, so
+        nothing downstream names it. The comment above the fold claimed EVERY way lands on a
+        conservative terminal, and `docs/RUNBOOK.md` lists three; this was a fourth with no
+        name, no `diagnose_*` event and no tombstone, so an operator could not tell from the
+        record whether the diagnostician had run.
+        """
+        for exc in (RuntimeError("new_agent_run_id failed: fork: EAGAIN"),
+                    OSError(2, "No such file or directory: 'python3'")):
+            with self.subTest(exc=type(exc).__name__):
+                c = self._conductor()
+
+                def boom(_exc=exc):  # type: ignore[no-untyped-def]
+                    raise _exc
+
+                c.new_agent_run_id = boom  # type: ignore[assignment]
+                d = c.escalate(self._refs(), "validate",
+                               wc.PhaseOutcome("validate", "fail"))
+                self.assertEqual(d.action, "fail_closed")
+                self.assertEqual(d.reason, "validate_diagnose_unrecordable")
+                # Nothing was minted, so nothing was recorded, tombstoned or finalized.
+                self.assertEqual(
+                    [sub for sub, _ in c.calls
+                     if sub in ("record-launch", "add-superseded-runs", "finalize-child")], [])
+
     def test_a_bookkeeping_failure_does_not_crash_out_of_escalate(self) -> None:
         """The tombstone and the finalize are new calls the old `escalate` did not make, and
         both go through `self.runtime(...)`, which raises `RuntimeError` on a non-zero exit.
