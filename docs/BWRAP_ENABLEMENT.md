@@ -74,7 +74,7 @@ terminal `agent_run.json` record that thread ID as `agent_session_id`. A missing
 thread ID is a launch failure. `codex exec resume <thread_id>` continues the recorded thread in
 place; it is not a Claude-style fork.
 
-For an M3c node, Codex pure Generate uses `codex exec --json --output-schema` with the
+For an M3c node, Codex pure Generate uses `codex exec --json --output-schema` (as do both Codex pure `Compile` leaves, on EVERY node — they carry no M3c condition, so certifying a Codex run against this checklist must exercise them too) with the
 CLI read-only sandbox and the outer read-only bwrap profile. The host validates and writes the
 returned bundle/verdict, so the leaf has no repository write authority. Its recorded isolation
 level is `sandboxed_structured_approximation`; it is not equivalent to Claude

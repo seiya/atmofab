@@ -325,7 +325,14 @@ PINNED: dict[str, str] = {
     # `_TEMPLATE_FILES` grew by two. The usual two side effects apply and are not new: exemplars
     # certified at pure-31 or earlier stop being offered, and an orchestration whose `generate`
     # ran under pure-31 cannot be `--resume`d across this bump.
-    "pure-32": "a8872df07ad2c2e9fed855f335e17d99e143c01f668b2d515cda40d739c72441",}
+    "pure-32": "a8872df07ad2c2e9fed855f335e17d99e143c01f668b2d515cda40d739c72441",
+    # pure-33 (issue #168, round 3): the IR producer's output contract now STATES two host
+    # refusals it did not. Round 3's disclosure axis rendered the real prompt and compared it
+    # against `_pure_ir_document_violations`: the `ir.meta.spec_kind`-equals-the-node's-kind
+    # clause and the serialize/parse round trip were both enforced and undisclosed, so a leaf
+    # met them as a repair turn out of a budget of two, and the round-trip finding named no
+    # path to act on. A refusal the leaf is never told about is a turn it cannot converge on.
+    "pure-33": "1bc1346d5919215eb7abfc28aa25534645ed876101716da15f8e1c15396915ab",}
 
 
 def _contract_tuple() -> dict[str, object]:

@@ -765,14 +765,17 @@ def collect_pure_leaf_ab_summary(
     orchestration_id: str,
     meta: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    """A/B-measurement rollup for the Z2 pure `generate` leaves (milestone M-E).
+    """A/B-measurement rollup for the pure leaves — the `generate` pair (Z2, milestone M-E)
+    and, since issue #168, the `compile` pair, discovered and reported separately.
 
     Surfaces the executor selection (`orchestration_meta.json#invocation.
     generate_executor`) and the probed backend's CLI version
     (`preflight.json#agent_version` — already persisted, so no new file is written;
     it is `claude --version` on a claude run and `codex --version` on a codex run,
     so `backend` is carried with it) alongside per-node pure-leaf metrics read from
-    `bundle_meta.json` / `verdict_meta.json`. `available` is true only when a pure node was located,
+    `bundle_meta.json` / `verdict_meta.json` (generate) and `compile_generate_meta.json` /
+    `compile_verify_meta.json` (compile). `available` is true when a pure node of EITHER phase was
+    located,
     so a legacy (agentic) run reports `available=False` with the executor still
     surfaced; `reason` then says why, distinguishing "this run wrote no pure meta"
     from "Generate has not produced a source dir yet" and from "the node was never
@@ -795,7 +798,7 @@ def collect_pure_leaf_ab_summary(
     # `codex --version` on a codex run. Carry the recorded `backend` so the renderer
     # can label it truthfully; naming it "claude" unconditionally would report false
     # provenance for every codex orchestration (which this section still renders,
-    # since a codex node runs the agentic residual leaf, not the pure producer).
+    # whose leaves are pure too — `codex_cli` holds the `pure` capability).
     backend = _clean_str(preflight.get("backend"))
     agent_cli_version = _clean_str(preflight.get("agent_version"))
     # Since issue #28 the leaf LLM is per-`(phase, substep)`, so `preflight.json#backend` and

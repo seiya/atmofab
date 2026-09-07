@@ -105,6 +105,12 @@ leaf to read what it does not use. Token/context pressure drops correspondingly.
 `_DOC_CORE = (WORKFLOW_CORE.md, AGENT_CONTRACT.md)` + `skills/<skill>/SKILL.md`
 + `_PHASE_DOC[step]` are forced on every LLM leaf, plus per-substep additions.
 
+This table is the AGENTIC leaf's force-read set. A `pure-function leaf` force-reads nothing at
+all — it reads no `SKILL` and carries no `skill_must_read_refs`; the host inlines a closed context
+into its one prompt instead. Since [issue #168](https://github.com/seiya/atmofab/issues/168) that
+is the default for both `compile` rows as well as the two `generate` ones, so the rows below
+describe the residual agentic path (an entry whose `capabilities:` drops `pure`).
+
 | substep | canonical docs forced (excl. node spec/ir/tests) |
 |---|---|
 | compile.generate | WORKFLOW_CORE, AGENT_CONTRACT, SKILL, phase_01 |

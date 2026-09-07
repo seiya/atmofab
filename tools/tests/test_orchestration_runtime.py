@@ -8749,10 +8749,12 @@ shell_tool                       stable             true
         )
 
     def test_write_roots_for_launch_compile_verify_pins_ir_meta(self) -> None:
-        """Compile.verify's write_root is narrowed to the single ir_meta.json file
-        pin (not the whole <ir_ref>/ dir): the certified spec.ir.yaml must stay
-        non-writable to the verifier so a post-gate mutation cannot bypass --stage
-        compile."""
+        """On an AGENTIC launch, Compile.verify's write_root is narrowed to the single
+        ir_meta.json file pin (not the whole <ir_ref>/ dir): the certified spec.ir.yaml
+        must stay non-writable to the verifier so a post-gate mutation cannot bypass
+        --stage compile. `_write_roots_for_launch` is the agentic derivation and this
+        drives it directly; a `pure-function leaf` — the default for this substep since
+        issue #168 — never reaches it and gets `write_roots: []`."""
         self.assertEqual(
             _write_roots_for_launch(
                 role="substep",
@@ -8767,8 +8769,9 @@ shell_tool                       stable             true
         )
 
     def test_write_roots_for_launch_compile_generate_keeps_ir_dir(self) -> None:
-        """Compile.generate (authors the IR) keeps the whole <ir_ref>/ directory
-        root; only the verifier is pinned."""
+        """On an AGENTIC launch, Compile.generate (which authors the IR) keeps the whole
+        <ir_ref>/ directory root; only the verifier is pinned. Same scope note as the row
+        above: a pure `compile.generate` writes nothing and is not derived from here."""
         self.assertEqual(
             _write_roots_for_launch(
                 role="substep",
@@ -30887,7 +30890,7 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # slacks ran 152 / 71 / 35 / 153 / 174 / 156 / 105 / 137 / 22 B down the table, so three
         # of the nine sit in the band this block's own header calls a tripwire. Nothing is red
         # today; re-measure the entry you are bumping rather than trusting a table-wide rule.
-        # Bumped 59990->63380 (issue #168, Z1) — measured 63222 with `wc -c` in
+        # Bumped 59990->64780 (issue #168, Z1) — measured 64624 with `wc -c` in
         # /home/seiya/atmofab at the commit that takes this bump, plus this entry's ~150 B slack
         # rule. §substep structure states that both LLM substeps of this phase now run as
         # `pure-function leaf`s and what the host inlines for each; §`ir_meta.json` required keys
@@ -30902,8 +30905,15 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # §substep structure listing 5 of the reviewer's 8 inlined documents and corrected it,
         # which is the shape this table's own comments warn about: a ceiling is a record of a
         # measurement and goes stale on the commit AFTER the one that took it. Re-measured at
-        # the round-1 HEAD.)
-        "docs/workflow/phases/phase_01_compile.md": 63380,
+        # the round-1 HEAD. Round 3's disclosure axis then rendered the real prompt and read it
+        # as the leaf: §"Acceptance of retry from Validate" is inlined VERBATIM and tells a pure
+        # producer to read a launch request it cannot open and to write `validate_feedback:<id>`
+        # into `last_fail_reason` — which on that path is the TERMINAL declaration channel, so
+        # following it ends the run. That section, and the §I/O contract line naming
+        # `spec_catalog.yaml`, gained the per-path treatment their neighbours already had.
+        # Re-measured at the round-3 HEAD; a third re-take, for the third time because an edit
+        # landed after the previous one was taken.)
+        "docs/workflow/phases/phase_01_compile.md": 64780,
         # Per-substep SKILLs — each force-read by its own LLM leaf.
         # Bumped 10800->11500: Compile.generate now authors the io_contract section (G2 /
         # docs/design/deterministic_followups.md) — it was moved here from Compile.verify so the
@@ -31002,13 +31012,16 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # verifier's severity ("a `Compile.verify` **major**" -> "a `Compile.verify` `fail`
         # remanded to you") — a producer does not choose the value. Measured 27926; the old
         # ceiling left 24 B, which is the tripwire this table's comments warn about.
-        # Bumped 28100->28850 (issue #168, Z1) — measured 28694 with `wc -c` in
+        # Bumped 28100->29050 (issue #168, Z1) — measured 28892 with `wc -c` in
         # /home/seiya/atmofab at the commit that takes this bump, plus this table's ~150 B slack.
         # The addition is a leading note that the file is read only by a RESIDUAL agentic compile
         # leaf, since the default `Compile.generate` is now a `pure-function leaf` that reads no
         # `SKILL`. The body is unchanged: deleting it is issue #171, and a deletion lands with
         # the migration that makes it dead, never ahead of it.
-        "skills/workflow-compile-generate/SKILL.md": 28850,
+        # (28850 first, from 28694 at the branch's first commit; re-measured at the round-3 HEAD
+        # after Operations Rule 10 gained the note that `repair_target_sections[]` has no reader
+        # in `tools/`, which the phase document had said and this file had not.)
+        "skills/workflow-compile-generate/SKILL.md": 29050,
         # Bumped 11800->12100: G7 — compile.verify checks V4c only (operations ⊆ published); the
         # closure/topo consistency is conductor-authored + gate-checked, no longer LLM-verified (G7).
         # Bumped 12100->13100: R2 (G8) — compile.verify owns the SEMANTIC test_predicates fidelity

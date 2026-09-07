@@ -766,8 +766,10 @@ _PURE_ATTEMPT_USAGE_KEYS: tuple[str, ...] = LEAF_TOKEN_CLASS_KEYS
 
 
 # The structural discriminator of a pure-leaf meta envelope. `per_attempt` is the
-# measurement payload the conductor always writes (`_write_bundle_meta` /
-# `_write_verdict_meta`) and is what an unrelated or stale JSON document at the
+# measurement payload the conductor always writes — by `_write_bundle_meta` /
+# `_write_verdict_meta` for the generate pair and `_write_compile_generate_meta` /
+# `_write_compile_verify_meta` for the compile pair, all four through one writer —
+# and is what an unrelated or stale JSON document at the
 # same path will not carry. Keying on it (rather than on common keys like `result`
 # / `attempts`) keeps a foreign `{"result": "ok"}` from being reported as a
 # pure-leaf row of all-zero metrics.
@@ -901,7 +903,13 @@ def summarize_pure_leaf_metas(artifact_dir: Path, phase: str) -> dict[str, Any]:
     it would silently read the wrong pair and report `found=False`, which is indistinguishable
     from an agentic node. A caller that has not decided must be refused, not defaulted.
     """
-    producer_file, reviewer_file = PURE_LEAF_META_FILES[phase]
+    try:
+        producer_file, reviewer_file = PURE_LEAF_META_FILES[phase]
+    except KeyError:
+        # "Best-effort: never raises" above is the contract every caller relies on, and a
+        # `KeyError` out of a DIAGNOSTICS helper would break an audit rather than report a gap.
+        # An unknown phase has no pure records by definition, which is what `found=False` says.
+        return {"generate": {"found": False}, "verify": {"found": False}, "found": False}
     generate = _summarize_one_pure_meta(_read_json(artifact_dir / producer_file))
     verify = _summarize_one_pure_meta(_read_json(artifact_dir / reviewer_file))
     return {

@@ -12896,7 +12896,9 @@ def _validate_published_surface(
     if cs_resolved == ir_resolved or ir_resolved in cs_resolved.parents:
         violations.append(
             f"{derived_path}:meta.source_refs.controlled_spec ({cs_ref}) resolves INSIDE the IR "
-            f"directory, which is the `compile.generate` leaf's write root — the {kind} public_api "
+            f"directory, which is the `compile.generate` leaf's write root on the AGENTIC path "
+            f"(a `pure-function leaf` writes nothing, and this gate wants the same answer for it) "
+            f"— the {kind} public_api "
             "would be pinned against a document the leaf itself can author, which is not a pin. "
             "Point it at the operator-authored controlled_spec under the spec tree")
         return

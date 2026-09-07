@@ -116,8 +116,10 @@ def _seed_shape_expr_schema_into(repo_root: Path) -> None:
 
 #: A real checkout keeps the operator-authored spec tree and the IR tree in DIFFERENT subtrees,
 #: and since issue #153 round 5 the surface gate refuses a `source_refs.controlled_spec` that
-#: resolves inside the IR directory — that directory is `compile.generate`'s write root, so a
-#: document there is one the leaf itself can author, and pinning against it is a self-comparison.
+#: resolves inside the IR directory — that directory is `compile.generate`'s write root on the
+#: AGENTIC path, so a document there is one the leaf itself can author, and pinning against it is
+#: a self-comparison. (A pure `compile.generate` writes nothing, and the gate wants the same
+#: answer for it: the layout, not the leaf's authority, is what it refuses.)
 #: These fixtures used to collapse the two (`ir_dir = tmp`, `cs.md` beside the IR), which models a
 #: layout the conductor cannot produce; that is why a decoy controlled_spec stayed invisible to
 #: five review rounds. Lay the tree out the way the conductor does.

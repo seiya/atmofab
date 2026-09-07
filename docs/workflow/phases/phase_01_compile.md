@@ -6,6 +6,7 @@ The phase that integrates the natural-language specification (`controlled_spec.m
 ## I/O contract
 - execution input: `controlled_spec.md`, `tests.md`, `deps.yaml`, `spec/registry/spec_catalog.yaml`
 - verification input: `controlled_spec.md`, `tests.md`, `deps.yaml`, `spec/registry/spec_catalog.yaml`, the generated `spec.ir.yaml`
+- On the PURE path the registry is not handed to the leaf as a document, because the two facts a leaf takes from it arrive already resolved by the host: the dependency closure as `<ir_ref>/dependency_graph.json`, and each component dependency's published operation names in the prompt's dependency-facts block (`<ir_ref>/dependency_surface.json` for the reviewer). Where this document says "read `spec_catalog.yaml`", a pure leaf reads those instead and must not conclude that an input is missing.
 - output: `workspace/ir/<node_key_safe>/<ir_id>/spec.ir.yaml`, `ir_meta.json`
 
 ## substep structure
@@ -374,6 +375,8 @@ These deterministic gates run in the conductor's `Compile.static` substep (`_com
 
 ## Acceptance of retry from Validate
 When the `judge` of `Validate` produces a finding with `attribution=ir` and `confidence>=medium`, the `orchestration agent` re-submits a retry to `Compile` (the canonical source for the routing rules is the decision table of `docs/workflow/phases/phase_04_validate.md`). The acceptance contract on the `Compile` side:
+
+**This whole section is the AGENTIC path's contract, and a `pure-function leaf` must not act on it.** A pure leaf has no filesystem, so it cannot read `launches/<agent_run_id>.request.json`; the host hands it whatever finding text exists, inside its prompt, and nothing else. More importantly its `last_fail_reason` is a DIFFERENT channel: on the pure path that field is the terminal "this phase cannot be completed from these inputs" declaration (§1-1), which is handed to the operator and never retried — so writing `validate_feedback:<finding_id>` into it, as the bullet below directs an agentic leaf to, would END the run rather than record a repair. A pure leaf re-submitted after a Validate finding does the ordinary thing: it authors the IR from the context it was given, using any finding text the prompt carries, and returns `last_fail_reason: null`. `attempt_count` is written by the host.
 
 - A re-submitted `Compile` presumes that the Validate finding information (`description`, `evidence_refs[]`, `finding_id`) is quoted in `launches/<agent_run_id>.request.json#repair_reason`. When there is no quote, it stops with a `Compile fail`.
 - Record `validate_feedback:<finding_id>` in `ir_meta.json.last_fail_reason`, and increment `ir_meta.json.attempt_count`.

@@ -1114,7 +1114,7 @@ class PureRenderTests(unittest.TestCase):
         Both rubrics are the LAST subsection of their verify substep section, so one slicer cuts
         either. The slicer is named and messaged for phase_02
         (`wc._generate_verify_severity_rubric_section`) because only that slice is a pure-leaf
-        INPUT — `Compile.verify` is AGENTIC and force-reads phase_01 whole, so nothing is sliced
+        INPUT — `Compile.verify` force-reads phase_01 whole on the residual AGENTIC path, and the host inlines it in full on the pure one, so nothing is sliced
         for it in production, and renaming the slicer would reach the phase_02 §2-2 editing note
         and its own pin. Reusing it here couples both rubrics to ONE definition of where a rubric
         ends; the `ValueError` is re-raised naming the document actually being cut, so a phase_01

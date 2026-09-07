@@ -6559,9 +6559,12 @@ clean:
         The SINGLE resolution shared by the context assembly (`_build_pure_context`, which shows
         the leaf that harness's manifest) and the acceptance layer (`_pure_bundle_violations`,
         which negotiates `capability_requirements` against it). One source, so the capabilities
-        the leaf is shown are by construction the capabilities it is judged against. A pure node
-        is M3c by `_pure_leaf_substep`, so it has exactly one infra dep; None is the fail-closed
-        answer for anything else (nothing provided, every requirement unsatisfied)."""
+        the leaf is shown are by construction the capabilities it is judged against. Every caller is
+        on the GENERATE side, where `_pure_leaf_substep` requires the node's M3c shape and
+        therefore exactly one infra dep — it is no longer "a pure node is M3c", since the compile
+        pairs are pure on every node, so this holds by where it is called from rather than by what
+        `pure` means. None is the fail-closed answer for anything else (nothing provided, every
+        requirement unsatisfied)."""
         infra = self._infra_direct_deps(ir)
         return infra[0] if len(infra) == 1 else None
 
@@ -11027,11 +11030,11 @@ clean:
                 self.new_agent_run_id(), "fail", [], 1,
                 ("pure_only_provider_on_agentic_path", detail), time.time(), 1)
         self._ensure_codex_feature_cache(entry)
-        # Z2 pure-function producer (M-C): `generate.generate` on an M3c node under
-        # executor=pure runs as a host-mediated pure function with its OWN spawn/validate/
-        # repair/finalize/write loop (empty write authority; the host writes the bundle
-        # artifacts after the child window closes). It does not share the generic leaf loop
-        # below (no allowed_output_paths, no determine_substep_status-before-finalize).
+        # A pure-function leaf: its OWN spawn/validate/repair/finalize/write loop (empty write
+        # authority; the host writes the artifacts after the child window closes), not the generic
+        # leaf loop below (no allowed_output_paths, no determine_substep_status-before-finalize).
+        # WHICH substeps take it is `_pure_leaf_substep`'s docstring and nothing here: today the
+        # two `compile` pairs on every node, and the two `generate` pairs on an M3c node.
         if self._pure_leaf_substep(refs, phase, substep):
             if substep == "verify":
                 # The pure reviewer: its own spawn/validate/repair/finalize loop, host-authors the
