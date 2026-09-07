@@ -163,6 +163,16 @@ def _verdict(status: str = "pass", severity: str = "none", reason=None) -> dict:
             "findings": [] if status == "pass" else [{"summary": "an item is unmet"}]}
 
 
+def _finalized(conductor) -> list[dict]:
+    """The `--agent-run-json` payload of every `finalize-child`, in order."""
+    return [cap["--agent-run-json"] for s, cap in conductor.calls if s == "finalize-child"]
+
+
+def _superseded_reasons(conductor) -> list[str]:
+    """The `--reason` of every superseded-run tombstone, in order."""
+    return [cap["--reason"] for s, cap in conductor.calls if s == "add-superseded-runs"]
+
+
 class _Fixture(unittest.TestCase):
     KIND = "component"
     PROFILE = False
@@ -645,6 +655,140 @@ class PureCompileReviewerTests(_Fixture):
 
 
 # ======================================================================================
+# The values the SPEC record decides
+# ======================================================================================
+class PureCompileSpecValueTests(_Fixture):
+    """One row per field of `_PureProducerSpec` / `_PureReviewerSpec` whose value reaches an
+    artifact, an event or a record.
+
+    These exist because the round-0 mutation sweep found them unpinned as a CLASS: reverting a
+    hunk that replaced a generate literal with `spec.<field>` restores the GENERATE value, which
+    the generate tests still accept and nothing on the compile side was looking at. Fourteen
+    hunks survived that way. A wrong value here is not cosmetic — the summary is the only thing a
+    pure terminal row can say for itself (`_validate_agent_summary_text` requires it), the emit
+    is what an operator greps for, and the tombstone reason is the audit trail of a superseded
+    attempt.
+    """
+
+    def test_the_producer_pass_summary_names_the_compile_artifact(self) -> None:
+        c = self.conductor(_envelope(_doc()))
+        c.run_substep(self.refs, "compile", "generate")
+        row = _finalized(c)[-1]
+        self.assertEqual(row["status"], "pass")
+        self.assertEqual(row["result_summary"],
+                         "pure_compile_pass: IR accepted (attempts=1)")
+
+    def test_the_producer_failure_summary_and_event_name_the_compile_pair(self) -> None:
+        c = self.conductor(_envelope({"ir": _valid_ir()}))
+        events: list = []
+        c.emit = (  # type: ignore[assignment]
+            lambda ev, _sink=events, **f: _sink.append((ev, f)))
+        c.run_substep(self.refs, "compile", "generate")
+        self.assertEqual(_finalized(c)[-1]["result_summary"],
+                         f"pure_compile_fail: {wc.COMPILE_IR_DOCUMENT_VIOLATION}")
+        self.assertIn("pure_ir_document_attempt_failed", [e for e, _ in events])
+        self.assertNotIn("pure_bundle_attempt_failed", [e for e, _ in events])
+
+    def test_the_producer_declared_fail_summary_carries_the_token_and_the_reason(self) -> None:
+        reason = "tests.md declares no test_id"
+        c = self.conductor(_envelope({"ir": None, "last_fail_reason": reason}))
+        c.run_substep(self.refs, "compile", "generate")
+        self.assertEqual(
+            _finalized(c)[-1]["result_summary"],
+            f"pure_compile_fail: {wc.COMPILE_DECLARED_FAIL}: {reason}")
+
+    def test_the_producer_tombstone_reasons_name_the_compile_repair(self) -> None:
+        """Both directions: a repaired PASS and an exhausted FAIL tombstone their superseded
+        attempts, and the two reasons are different strings."""
+        c = self.conductor(_envelope({"ir": _valid_ir()}), _envelope(_doc()))
+        c.run_substep(self.refs, "compile", "generate")
+        self.assertEqual(_superseded_reasons(c),
+                         ["pure_ir_document_repair_superseded_pass: attempts=2"])
+
+        c2 = self.conductor(_envelope({"ir": _valid_ir()}))
+        c2.run_substep(self.refs, "compile", "generate")
+        self.assertEqual(
+            _superseded_reasons(c2),
+            [f"pure_ir_document_repair_superseded: {wc.COMPILE_IR_DOCUMENT_VIOLATION}"])
+
+    def test_the_producer_host_write_failure_reason_names_the_compile_pair(self) -> None:
+        """The tombstone half of the host-write recovery, which the outcome-level row above does
+        not reach: it fires only when an EARLIER attempt was superseded."""
+        c = self.conductor(_envelope({"ir": _valid_ir()}), _envelope(_doc()))
+
+        def boom(*a, **k):
+            raise OSError("no space left on device")
+
+        c._write_pure_ir_artifacts = boom  # type: ignore[assignment]
+        outcome = c.run_substep(self.refs, "compile", "generate")
+        self.assertEqual(outcome.infra_error[0], "pure_compile_host_write_failed")
+        self.assertEqual(_superseded_reasons(c),
+                         ["pure_compile_host_write_failed_superseded: OSError"])
+
+    def test_the_producer_carries_no_exemplar(self) -> None:
+        """`wants_exemplar=False`. `_resolve_exemplar` reads an IR that does not exist yet at
+        `compile.generate` time, and `build_launch_request` attaches an exemplar only to
+        `(generate, generate)` — so the request is where the property is observable."""
+        c = self.conductor(_envelope(_doc()))
+        c.run_substep(self.refs, "compile", "generate")
+        req = [cap["--request-json"] for s, cap in c.calls if s == "record-launch"][0]
+        self.assertNotIn("exemplar", req)
+
+
+class PureCompileReviewerSpecValueTests(_Fixture):
+    STAGE_IR = True
+
+    def test_the_reviewer_pass_summary_names_the_compile_reviewer(self) -> None:
+        c = self.conductor(_envelope(_verdict()))
+        c.run_substep(self.refs, "compile", "verify")
+        self.assertEqual(
+            _finalized(c)[-1]["result_summary"],
+            "pure_compile_verify_pass: verdict pass (severity=none, attempts=1)")
+
+    def test_the_reviewer_fail_summary_carries_the_verdicts_reason(self) -> None:
+        c = self.conductor(_envelope(_verdict("fail", "minor", "step_03 has no update target")))
+        c.run_substep(self.refs, "compile", "verify")
+        self.assertEqual(_finalized(c)[-1]["result_summary"],
+                         "pure_compile_verify_fail: step_03 has no update target")
+
+    def test_the_reviewer_malformed_reply_names_the_compile_pair_everywhere(self) -> None:
+        c = self.conductor(_envelope({"verification_status": "maybe"}))
+        events: list = []
+        c.emit = (  # type: ignore[assignment]
+            lambda ev, _sink=events, **f: _sink.append((ev, f)))
+        c.run_substep(self.refs, "compile", "verify")
+        self.assertEqual(
+            _finalized(c)[-1]["result_summary"],
+            f"pure_compile_verify_fail: {wc.GENERATE_VERDICT_SCHEMA_VIOLATION}")
+        self.assertIn("pure_ir_verdict_attempt_failed", [e for e, _ in events])
+        self.assertNotIn("pure_verdict_attempt_failed", [e for e, _ in events])
+        self.assertEqual(
+            _superseded_reasons(c),
+            [f"pure_ir_verdict_repair_superseded: {wc.GENERATE_VERDICT_SCHEMA_VIOLATION}"])
+
+    def test_a_non_object_reply_says_a_verdict_was_expected(self) -> None:
+        """`non_object_findings` reaches the repair turn's `repair_findings`, which is the only
+        place the reviewer is told what shape it got wrong."""
+        c = self.conductor(_envelope("[1, 2, 3]"), _envelope(_verdict()))
+        outcome = c.run_substep(self.refs, "compile", "verify")
+        self.assertEqual(outcome.status, "pass")
+        repair = [cap["--request-json"] for s, cap in c.calls if s == "record-launch"][1]
+        self.assertEqual(repair["repair_reason"], "pure_ir_verdict_repair")
+        self.assertIn("expected a verdict", repair["repair_findings"])
+
+    def test_the_reviewer_host_write_failure_reason_names_the_compile_pair(self) -> None:
+        c = self.conductor(_envelope({"verification_status": "maybe"}), _envelope(_verdict()))
+
+        def boom(*a, **k):
+            raise OSError("no space left on device")
+
+        c._write_compile_verify_meta = boom  # type: ignore[assignment]
+        outcome = c.run_substep(self.refs, "compile", "verify")
+        self.assertEqual(outcome.infra_error[0], "pure_compile_verify_host_write_failed")
+        self.assertEqual(_superseded_reasons(c),
+                         ["pure_compile_verify_host_write_failed_superseded: OSError"])
+
+  # ======================================================================================
 # The defensive freshness branch
 # ======================================================================================
 class PureCompileSubstepStatusTests(_Fixture):
