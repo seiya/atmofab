@@ -7362,6 +7362,21 @@ clean:
         superseded_prefix: str
         #: refs -> `(makefile_host_authored, runner_host_authored)`; see the producer spec.
         host_authored_flags: Callable[[NodeRefs], tuple[bool, bool]]
+        #: (parsed document) -> the schema violations, empty when clean. The loop knows only
+        #: that a document is one JSON object; WHAT a well-formed one is belongs to the phase.
+        violations: Callable[[dict[str, Any]], list[str]]
+        #: The category a document that parses but violates its schema is reported under.
+        schema_category: str
+        #: (accepted document) -> the SUBSTEP status it carries. A `fail` here is a legitimate
+        #: review rejection, not a transport or schema error, and terminates the loop either way.
+        status_of: Callable[[dict[str, Any]], str]
+        #: (accepted document, leaf returncode) -> the reply text handed to `finalize-child`.
+        reply_of: Callable[[dict[str, Any], int], str]
+        #: (accepted document, attempt count) -> the `result_summary`. A pure row's output_refs
+        #: is empty, so this is the only field that can satisfy `_validate_agent_summary_text`.
+        summary_of: Callable[[dict[str, Any], int], str]
+        #: (accepted document) -> the tombstone reason's trailing clause on a repaired document.
+        superseded_detail: Callable[[dict[str, Any]], str]
 
     class _PureTurn(NamedTuple):
         """One recorded pure launch and everything read back off it."""
@@ -8123,6 +8138,31 @@ clean:
             refs, phase, substep, resolved_dependencies,
             self._pure_reviewer_spec("generate"))
 
+    # The verify-verdict half of a reviewer spec, shared by the two phases that review one.
+    # Bound as functions so the loop asks the SPEC what a document means instead of reading
+    # `verification_status` / `issue_severity` / `last_fail_reason` off it directly — keys only a
+    # verify verdict has. The values are exactly what the loop used to inline.
+    @staticmethod
+    def _verify_verdict_violations(doc: dict[str, Any]) -> list[str]:
+        from tools.pure_leaf import verify_verdict_violations
+
+        return verify_verdict_violations(doc)
+
+    @staticmethod
+    def _verify_verdict_reply(doc: dict[str, Any], returncode: int) -> str:
+        return (f"verify verdict: {doc['verification_status']}\nleaf rc={returncode}\n"
+                f"severity: {doc['issue_severity']}")
+
+    def _verify_verdict_summary(self, prefix: str) -> Callable[[dict[str, Any], int], str]:
+        def summary(doc: dict[str, Any], attempts: int) -> str:
+            status = doc["verification_status"]
+            if status == "pass":
+                return (f"{prefix}_pass: verdict {status} "
+                        f"(severity={doc['issue_severity']}, attempts={attempts})")[:400]
+            return (f"{prefix}_fail: {doc['last_fail_reason']}")[:400]
+
+        return summary
+
     def _pure_reviewer_spec(self, phase: str) -> "Conductor._PureReviewerSpec":
         """The phase-specific half of the pure reviewer loop."""
         if phase == "compile":
@@ -8138,6 +8178,12 @@ clean:
                 host_write_failed_reason="pure_compile_verify_host_write_failed",
                 superseded_prefix="pure_ir_verdict_repair",
                 host_authored_flags=_host_authored_m3c,
+                violations=self._verify_verdict_violations,
+                schema_category=GENERATE_VERDICT_SCHEMA_VIOLATION,
+                status_of=lambda doc: doc["verification_status"],
+                reply_of=self._verify_verdict_reply,
+                summary_of=self._verify_verdict_summary("pure_compile_verify"),
+                superseded_detail=lambda doc: f"verify_status={doc['verification_status']}",
             )
         return self._PureReviewerSpec(
             build_context=self._build_pure_verify_context,
@@ -8151,6 +8197,12 @@ clean:
             host_write_failed_reason="pure_verify_host_write_failed",
             superseded_prefix="pure_verdict_repair",
             host_authored_flags=_host_authored_m3c,
+            violations=self._verify_verdict_violations,
+            schema_category=GENERATE_VERDICT_SCHEMA_VIOLATION,
+            status_of=lambda doc: doc["verification_status"],
+            reply_of=self._verify_verdict_reply,
+            summary_of=self._verify_verdict_summary("pure_verify"),
+            superseded_detail=lambda doc: f"verify_status={doc['verification_status']}",
         )
 
     def _run_pure_reviewer_substep(self, refs: NodeRefs, phase: str, substep: str | None,
@@ -8177,7 +8229,7 @@ clean:
         unauthorized write, so the host closes the window (finalize_child) before it authors the
         verdict projection and the per-attempt record."""
         from tools.pure_leaf import (
-            extract_json_document, verify_verdict_violations,
+            extract_json_document,
             MAX_BUNDLE_REPAIR_TURNS, RESPONSE_TRUNCATED, RESPONSE_UNPARSEABLE)
         entry = self.entry_for(phase, substep)
         self.reset_http_history(phase, substep)
@@ -8300,7 +8352,7 @@ clean:
                     findings = spec.non_object_findings
                 else:
                     parsed_verdict = extracted
-                    violations = verify_verdict_violations(extracted)
+                    violations = spec.violations(extracted)
                     if not violations:
                         # A verdict can be schema-sound yet not persistable: `json.loads` accepts a
                         # lone surrogate (e.g. `"\ud800"` in last_fail_reason), but UTF-8-encoding it
@@ -8317,7 +8369,7 @@ clean:
                                 "verdict contains characters that cannot be encoded as UTF-8 "
                                 "(e.g. an unpaired surrogate); re-emit the verdict with valid text"]
                     if violations:
-                        category = GENERATE_VERDICT_SCHEMA_VIOLATION
+                        category = spec.schema_category
                         findings = "; ".join(violations)[:1000]
                     else:
                         accepted_verdict = extracted
@@ -8327,20 +8379,12 @@ clean:
             # rejection, not a transport/schema error). A malformed verdict has category set and is
             # repaired below within budget.
             if accepted_verdict is not None:
-                verify_status = accepted_verdict["verification_status"]
-                reply = (f"verify verdict: {verify_status}\nleaf rc={proc.returncode}\n"
-                         f"severity: {accepted_verdict['issue_severity']}")
+                verify_status = spec.status_of(accepted_verdict)
+                reply = spec.reply_of(accepted_verdict, proc.returncode)
                 # Non-None on BOTH outcomes: the pure row's output_refs is empty, so this is the
                 # only field that can satisfy `_validate_agent_summary_text`'s "a terminal row with
                 # no output_refs must explain itself" rule. See the producer's mirror above.
-                result_summary = (
-                    f"{spec.summary_prefix}_pass: verdict {verify_status} "
-                    f"(severity={accepted_verdict['issue_severity']}, "
-                    f"attempts={len(per_attempt)})"[:400]
-                    if verify_status == "pass"
-                    else (f"{spec.summary_prefix}_fail: "
-                          f"{accepted_verdict['last_fail_reason']}")[:400]
-                )
+                result_summary = spec.summary_of(accepted_verdict, len(per_attempt))
                 # Finalize FIRST (close the child FS-diff window); the pure row carries EMPTY
                 # output_refs. ONLY AFTER this may the host author source_meta.json / verdict_meta.
                 self.finalize_child(
@@ -8377,7 +8421,7 @@ clean:
                     self._add_superseded_run_ids(
                         [a["agent_run_id"] for a in per_attempt[:-1]],
                         reason=f"{spec.superseded_prefix}_superseded: "
-                               f"verify_status={verify_status}")
+                               f"{spec.superseded_detail(accepted_verdict)}")
                 return SubstepOutcome(child_arid, verify_status, [], proc.returncode,
                                       None, launched_at, len(per_attempt))
 
