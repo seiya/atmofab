@@ -4706,6 +4706,15 @@ STEP_REQUIRED_CHILD_AGENT: dict[str, str] = {
     "validate": "substep",
 }
 
+# The escalate diagnostician's substep token. It is not a phase substep — no phase runs it,
+# `SUBSTEPS` does not list it — but a pure launch is keyed by `(step, substep)` in the launch tables
+# that key one, so the diagnostician of each escalatable phase gets its own pair rather than a branch
+# in the code path. The phases are exactly the ones that launch a child agent.
+DIAGNOSE_SUBSTEP = "diagnose"
+DIAGNOSE_LAUNCH_PAIRS: frozenset[tuple[str, str]] = frozenset(
+    (step, DIAGNOSE_SUBSTEP) for step in STEP_REQUIRED_CHILD_AGENT)
+
+
 # The COMPLETE `agent_role` vocabulary of `agent_runs.jsonl`. Canonical prose:
 # docs/ORCHESTRATION.md (the capability table and §43), docs/CLI_REFERENCE.md
 # (record-agent-run), docs/GLOSSARY.md (`skipped_by_checkpoint`).
@@ -11777,6 +11786,11 @@ _PROMPT_TEMPLATE_FILES = {
     "pure generate.generate": "pure_generate_generate.txt",
     "pure generate.verify": "pure_generate_verify.txt",
     "pure bundle repair": "pure_bundle_repair.txt",
+    # The escalate diagnostician: one template, four (step, substep) keys, because the pair is
+    # what the renderer looks up and the prompt does not vary with the failed phase (the phase
+    # is a field of the diagnosis document).
+    **{f"pure {step}.{substep}": "pure_escalate_diagnose.txt"
+       for step, substep in sorted(DIAGNOSE_LAUNCH_PAIRS)},
 }
 
 
@@ -12579,6 +12593,10 @@ PURE_CONTEXT_REQUIRED_KEYS: dict[tuple[str, str], tuple[str, ...]] = {
     ("generate", "verify"): ("controlled_spec_document", "tests_document", "ir_document",
                              "checks_module_contract_document", "severity_rubric_document",
                              "bundle_document"),
+    # The escalate diagnostician, one pair per escalatable phase. Its whole closed context is
+    # the failure-artifact document the host composes (`_diagnosis_document`); the persona, the
+    # directive schema and the decision criteria are static template body.
+    **{pair: ("diagnosis_document",) for pair in sorted(DIAGNOSE_LAUNCH_PAIRS)},
 }
 
 
@@ -13489,6 +13507,10 @@ ALLOWED_VALIDATE_PIPELINE_STAGES: dict[tuple[str, str], frozenset[str]] = {
     ("validate", "pre_judge"): frozenset(),
     ("validate", "judge"): frozenset(),
     ("validate", "post_judge"): frozenset(),
+    # The escalate diagnostician invokes no validator gate either. The pairs are listed so the
+    # gate-allowlist lint (`_lint_launch_prompt_gate_allowlist`) has a set to compare against:
+    # an unknown pair is skipped there, which would leave the diagnostician's prompt unscanned.
+    **{pair: frozenset() for pair in sorted(DIAGNOSE_LAUNCH_PAIRS)},
 }
 
 

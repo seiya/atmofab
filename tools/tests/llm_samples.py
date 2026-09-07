@@ -43,8 +43,8 @@ def sample_config_with(backend: str = "claude", agent_model: str = "",
 
 @functools.lru_cache(maxsize=None)
 def agentic_only_config(backend: str = "claude") -> lc.LlmConfig:
-    """The sample configuration with `pure` REMOVED from every leaf, so every LLM leaf runs the
-    agentic loop.
+    """The sample configuration with `pure` REMOVED from every LLM leaf, so every one of them
+    runs the agentic loop. `defaults` keeps it — see the note at the return.
 
     A test whose subject is the shared agentic leaf loop needs a leaf that runs it. Four of the
     five LLM leaves now dispatch to a pure loop instead whenever their provider holds `pure`
@@ -66,8 +66,12 @@ def agentic_only_config(backend: str = "claude") -> lc.LlmConfig:
             entry, capabilities=frozenset(entry.capabilities) - {lc.CAP_PURE})
 
     base = sample_config(backend or "claude")
+    # `defaults` is NOT narrowed. It serves the escalate diagnostician, which is a pure leaf
+    # since issue #169, and a configuration whose `defaults` cannot run one is refused at load
+    # (`llm_config_defaults_not_pure`) — so narrowing it here would describe a document an
+    # operator cannot write, which is the one thing this helper's docstring promises it is not.
+    # The LEAF entries are what decides which loop a substep runs, and they are narrowed.
     return dataclasses.replace(
         base,
-        defaults=narrowed(base.defaults),
         entries={key: narrowed(entry) for key, entry in base.entries.items()},
     )

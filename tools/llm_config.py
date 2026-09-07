@@ -649,8 +649,8 @@ class LlmConfig:
 
     `entries` holds an entry for EVERY LLM leaf (all five pairs), always — resolution is total,
     so no caller has to re-implement the fallback to `defaults`. `defaults` additionally serves
-    launches that carry no phase/substep at all (the `escalate` diagnostician), which is why it
-    must be agentic."""
+    the one launch that carries no phase/substep at all (the `escalate` diagnostician), which
+    is why it must support the PURE capability."""
 
     path: str
     sha256: str
@@ -810,12 +810,13 @@ def _build_llm_config(p: Path, raw: bytes) -> LlmConfig:
     defaults_raw = _require_mapping(doc.get("defaults"), "defaults")
     default_fields = _layer_fields(defaults_raw, "defaults")
     defaults = _finalize_entry(default_fields, "defaults", frozenset(default_fields))
-    if not defaults.supports(CAP_AGENTIC):
+    if not defaults.supports(CAP_PURE):
         raise LlmConfigError(
-            "llm_config_defaults_not_agentic",
-            f"`defaults` runs launches that carry no phase/substep (the `escalate` "
-            f"diagnostician), which is an agentic session; provider {defaults.provider!r} has "
-            f"capabilities {', '.join(sorted(defaults.capabilities)) or '(none)'}",
+            "llm_config_defaults_not_pure",
+            f"`defaults` runs the one launch that carries no phase/substep of its own (the "
+            f"`escalate` diagnostician), and that launch is a PURE leaf; provider "
+            f"{defaults.provider!r} has capabilities "
+            f"{', '.join(sorted(defaults.capabilities)) or '(none)'}",
             where="defaults")
 
     phases_raw = _require_mapping(doc.get("phases"), "phases")
@@ -1018,10 +1019,12 @@ def apply_defaults_overrides(
             # model unpinned; without this the same value behaved two ways depending on whether
             # the file happened to declare one of its own.
             changes["model_declared"] = False
-        if command and entry.command == inherited.command and _inherited("command"):
-            # Reachable only for a CLI provider: the override is applied to entries sharing
-            # `defaults`' provider, and `defaults` must be agentic (`llm_config_defaults_not_agentic`),
-            # which no HTTP provider is.
+        if (command and not entry.is_http
+                and entry.command == inherited.command and _inherited("command")):
+            # `command` is not applicable to an HTTP provider (it launches no process), and
+            # `defaults` may now BE an HTTP provider (`llm_config_defaults_not_pure` replaced
+            # the agentic requirement, issue #169) — so the CLI-only guard is explicit here
+            # rather than inherited from what `defaults` was allowed to be.
             changes["command"] = command
         return ResolvedLeafEntry(**{**entry.__dict__, **changes}) if changes else entry
 

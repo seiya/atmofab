@@ -897,38 +897,6 @@ def classify_verify_severity(issue_severity: str | None, workflow_mode: str) -> 
 
 # --- LLM diagnostician (escalation for unclassifiable failures) -----------------
 
-_DIRECTIVE_SCHEMA = (
-    'Output EXACTLY ONE JSON object as the FINAL line, with keys:\n'
-    '- "action": "retry" | "reopen" | "fail_closed"\n'
-    '- "target_phase": "compile" | "generate" | null\n'
-    '- "severity": "minor" | "major" | "critical"\n'
-    '- "repair_strategy": "reuse" | "restart" | null\n'
-    '- "reason": short string\n'
-    'severity grades how disruptive the defect is and GOVERNS whether existing artifacts are '
-    'reused (warm-repaired in place) or discarded (regenerated from scratch): minor -> reuse; '
-    'major -> reuse by default (set repair_strategy="restart" only if the existing artifacts '
-    'are too compromised to repair); critical -> discard (restart). Routing guidance: code '
-    'defect OR wrong/insufficient primary evidence (the runner emits bad evidence — a bare '
-    're-run reproduces it) -> action=retry target_phase=generate; IR defect -> action=reopen '
-    'target_phase=compile; spec defect or genuinely unrecoverable -> action=fail_closed. '
-    '(target_phase=build/validate and repair_strategy=re_execute are NOT actionable here — '
-    'the conductor cannot re-run a downstream phase in place; regenerate upstream instead.)'
-)
-
-
-# G5: the escalate persona is the workflow-escalate SKILL body, read host-side and rendered
-# into the diagnostician prompt (Option A — the read-only leaf reads nothing; everything is
-# embedded). Falls back to a minimal inline persona if the SKILL is missing (partial checkout)
-# so escalate never crashes. Keep this fallback and the SKILL's persona in lockstep.
-_ESCALATE_SKILL_REL = "skills/workflow-escalate/SKILL.md"
-_ESCALATE_PERSONA_FALLBACK = (
-    "You are a workflow failure diagnostician. Read-only, one shot: reason over "
-    "the artifacts below and emit a single routing directive. Do NOT write files "
-    "or call tools."
-)
-_escalate_persona_cache: dict[str, str] = {}
-
-
 # The floor an artifact keeps in the diagnosis prompt even when many artifacts compete for the
 # total budget: enough to identify it and read its leading fields.
 _MIN_ARTIFACT_BUDGET = 400
@@ -945,29 +913,6 @@ _PHASE_PRIMARY_ARTIFACTS: dict[str, tuple[str, ...]] = {
     "validate": ("verdict.json", "semantic_review.json", "aggregate_verdict.json",
                  "post_judge_meta.json", "pre_judge_meta.json"),
 }
-
-
-def _load_escalate_persona(repo_root: Path) -> str:
-    """Return the workflow-escalate SKILL body (frontmatter stripped), memoized per repo_root,
-    falling back to _ESCALATE_PERSONA_FALLBACK if the file is absent/unreadable."""
-    key = str(repo_root)
-    cached = _escalate_persona_cache.get(key)
-    if cached is not None:
-        return cached
-    persona = _ESCALATE_PERSONA_FALLBACK
-    try:
-        text = (repo_root / _ESCALATE_SKILL_REL).read_text(encoding="utf-8")
-        # Strip the leading YAML frontmatter (--- ... ---); the body is the persona.
-        if text.startswith("---"):
-            parts = text.split("---", 2)
-            text = parts[2] if len(parts) == 3 else text
-        body = text.strip()
-        if body:
-            persona = body
-    except OSError:
-        pass
-    _escalate_persona_cache[key] = persona
-    return persona
 
 
 # The checks-module contract's ABI half — §1 through §4 — as it reaches the pure
@@ -1155,19 +1100,25 @@ def _bounded_context_json(context: dict[str, Any], per_artifact: int = 6000,
     return json.dumps(bounded, indent=1, ensure_ascii=False)
 
 
-def _diagnosis_prompt(node_key: str, phase: str, failed_arids: list[str],
-                      context: dict[str, Any], workflow_mode: str,
-                      persona: str = _ESCALATE_PERSONA_FALLBACK) -> str:
-    ctx_json = _bounded_context_json(context)
-    return (
-        f"{persona}\n\n"
-        f"node_key: {node_key}\n"
-        f"failed phase: {phase}\n"
-        f"workflow_mode: {workflow_mode}\n"
-        f"failed substep agent_run_ids: {failed_arids}\n\n"
-        f"failure artifacts (JSON):\n{ctx_json}\n\n"
-        f"{_DIRECTIVE_SCHEMA}\n"
-    )
+def _diagnosis_document(node_key: str, phase: str, failed_arids: list[str],
+                        context: dict[str, Any], workflow_mode: str) -> str:
+    """The diagnostician's whole closed context, as one JSON document.
+
+    The persona, the directive schema and the decision criteria are the pure launch
+    template's static body (`pure_escalate_diagnose.txt`, hashed by the prompt-contract drift
+    guard); everything that varies with the failure is here. The artifacts keep
+    `_bounded_context_json`'s per-artifact budget and the caller's ordering, so the failed
+    phase's own evidence still gets the large slices.
+    """
+    return json.dumps(
+        {
+            "node_key": node_key,
+            "failed_phase": phase,
+            "workflow_mode": workflow_mode,
+            "failed_substep_agent_run_ids": list(failed_arids),
+            "artifacts": json.loads(_bounded_context_json(context)),
+        },
+        indent=2, ensure_ascii=False)
 
 
 def _last_json_object(text: str) -> Any:
@@ -1194,7 +1145,7 @@ def _last_json_object(text: str) -> Any:
 # The only rollback targets the diagnostician may name (the LLM-authored producers the
 # conductor can regenerate). `build` / `validate` are deterministic phases the conductor cannot
 # re-run in place to fix a defect, so an out-of-contract target -> None -> fail_closed rather
-# than a wasted reopen. Matches the _DIRECTIVE_SCHEMA / workflow-escalate SKILL enum.
+# than a wasted reopen. Matches the enum the `pure_escalate_diagnose.txt` template states.
 _DIAGNOSTICIAN_TARGET_PHASES: frozenset[str] = frozenset({"compile", "generate"})
 
 
@@ -1387,10 +1338,23 @@ def build_launch_request(
     role = child_agent_role(step)
     # Build, Validate.execute and Generate.gate run in-process (no leaf), so they carry no
     # skill / leaf prompt — only the bookkeeping the capability/phase_state need.
-    deterministic = (step == "build"
-                     or (step == "validate" and substep in ("pre_judge", "execute", "post_judge"))
-                     or (step == "generate" and substep == "gate")
-                     or (step == "compile" and substep == "static"))
+    from tools.orchestration_runtime import DIAGNOSE_SUBSTEP
+    # The escalate diagnostician. It belongs to a phase (`step` names the phase that failed,
+    # and the payload keeps that phase's ids so `_validate_launch_request_payload` is
+    # satisfied) but it produces nothing and reads nothing from disk, so every phase-specific
+    # must-read and output set below is skipped for it. The pure override at the end empties
+    # the skill fields and `allowed_output_paths` in any case; skipping here keeps the payload
+    # from claiming a read it will not make.
+    diagnose = substep == DIAGNOSE_SUBSTEP
+    # `deterministic` means "this substep runs in-process, with no leaf". The diagnostician IS
+    # a leaf, so it is never deterministic — including on `build`, whose PHASE is in-process
+    # while its diagnostician is not. (A request that is both is refused by the pure
+    # validator, which is where the omission showed up.)
+    deterministic = not diagnose and (
+        step == "build"
+        or (step == "validate" and substep in ("pre_judge", "execute", "post_judge"))
+        or (step == "generate" and substep == "gate")
+        or (step == "compile" and substep == "static"))
     rep = {
         "issue_severity": "none",
         "repair_strategy": "none",
@@ -1438,7 +1402,9 @@ def build_launch_request(
 
     if step == "compile":
         req["dependency_ref"] = f"{spec}/deps.yaml"
-        if substep == "static":
+        if diagnose:
+            pass
+        elif substep == "static":
             # Deterministic in-process compile gate: the conductor authors
             # compile_static_meta.json (the only freshness-gated deliverable) from
             # validate_workspace_root + check_artifact_syntax + validate_pipeline_semantics
@@ -1491,7 +1457,9 @@ def build_launch_request(
         # keep the leaf-authored <spec_id>_runner.f90.
         runner_or_checks = (f"{src}/src/{refs.spec_id}_checks.f90" if runner_host_authored
                             else f"{src}/src/{refs.spec_id}_runner.f90")
-        if substep == "generate":
+        if diagnose:
+            pass
+        elif substep == "generate":
             # Contract docs come from leaf_contract_doc_refs above (node-aware: an M3c
             # physics leaf gets the checks ABI and no runner-output contract; a non-M3c
             # runner-authoring leaf keeps it). Here only node-specific spec artifacts.
@@ -1551,23 +1519,26 @@ def build_launch_request(
         req["source_id"] = refs.source_id
         req["binary_id"] = refs.binary_id
         req["dependency_ref"] = refs.pipeline_ref
-        must_read += [
-            f"{refs.ir_ref}/spec.ir.yaml",
-            f"{refs.source_dir()}/source_meta.json",
-        ]
-        bdir = refs.binary_dir()
-        # The binary basename is the Makefile's BIN (resolved by the conductor and passed
-        # in); fall back to the <spec_id>_runner name when unknown (e.g. unit fixtures).
-        req["allowed_output_paths"] = [
-            f"{bdir}/bin/{exe_name or (refs.spec_id + '_runner')}",
-            f"{bdir}/binary_meta.json",
-            f"{bdir}/command_log.jsonl",
-        ]
+        if not diagnose:
+            must_read += [
+                f"{refs.ir_ref}/spec.ir.yaml",
+                f"{refs.source_dir()}/source_meta.json",
+            ]
+            bdir = refs.binary_dir()
+            # The binary basename is the Makefile's BIN (resolved by the conductor and passed
+            # in); fall back to the <spec_id>_runner name when unknown (e.g. unit fixtures).
+            req["allowed_output_paths"] = [
+                f"{bdir}/bin/{exe_name or (refs.spec_id + '_runner')}",
+                f"{bdir}/binary_meta.json",
+                f"{bdir}/command_log.jsonl",
+            ]
     elif step == "validate":
         req["run_id"] = refs.run_id
         req["dependency_ref"] = refs.pipeline_ref
         rundir = refs.run_node_dir()
-        if substep == "pre_judge":
+        if diagnose:
+            pass
+        elif substep == "pre_judge":
             # Deterministic pre-spawn dependency-DAG readiness gate. The conductor authors
             # pre_judge_meta.json (the only freshness-gated deliverable) in-process; no leaf,
             # no must-read, no run evidence yet.
@@ -1617,7 +1588,7 @@ def build_launch_request(
                 f"{refs.source_dir()}/src/command_log.jsonl",
             ]
             req["allowed_output_paths"] = outs
-        else:  # judge
+        elif substep == "judge":
             must_read += [
                 f"{refs.ir_ref}/spec.ir.yaml",
                 f"{refs.source_dir()}/source_meta.json",
@@ -3954,6 +3925,18 @@ def _ir_language(ir: Any) -> str:
     return str(value or "fortran").lower()
 
 
+def _host_authored_m3c(refs: NodeRefs) -> tuple[bool, bool]:
+    """`(makefile_host_authored, runner_host_authored)` for a pure path bound to the M3c shape.
+
+    Compile and Generate reach the pure loops only on that shape (`_pure_leaf_substep`), where
+    the host authors both the control file and the runner, so their stamp is constant. It is a
+    SPEC field rather than a literal at the request builder because the stamp is read back
+    (`orchestration_runtime._payload_is_m3c_physics`): a pure path that also serves a node the
+    host authors nothing for has to supply the node's real values instead.
+    """
+    return (True, True)
+
+
 @dataclass
 class Conductor:
     """Holds invariant context and the primitive operations of the loop."""
@@ -4445,13 +4428,17 @@ class Conductor:
             f"provider {entry.provider!r} launches no CLI leaf (it is not a spawnable "
             f"backend); this substep must not have reached spawn_leaf")
 
-    def _codex_pure_schema_path(self, child_arid: str | None) -> Path:
+    def _codex_pure_schema_path(self, child_arid: str) -> Path:
         """Host-author the JSON-object schema for a Codex pure response.
 
         Semantic CodegenBundle/verdict checks remain host-side.  This CLI schema
         guarantees the transport response is one object before those checks run.
+
+        The path is keyed by the child's own agent_run_id — every leaf has one (issue #169
+        made `child_arid` mandatory on `spawn_leaf`), so there is no shared fallback name two
+        concurrent launches could collide on.
         """
-        child = (child_arid or "").strip() or "codex-pure-schema"
+        child = child_arid.strip()
         path = self.repo_root / "workspace" / "tmp" / child / "codex_pure_output.schema.json"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps({"type": "object"}) + "\n", encoding="utf-8")
@@ -4570,7 +4557,7 @@ class Conductor:
         entry: ResolvedLeafEntry,
         *,
         child_env: dict[str, str] | None = None,
-        child_arid: str | None,
+        child_arid: str,
         timeout_context: dict[str, str] | None,
     ) -> ProcResult:
         """One HTTP pure-leaf turn, returned in the `ProcResult` shape the loops already read.
@@ -4608,24 +4595,23 @@ class Conductor:
         # would take a credential this run did not choose, or miss one it did.
         response = run_pure_http_leaf(entry, messages, env=child_env)
 
-        if child_arid:
-            # `.txt`, NOT `.json`: this is the provider's body verbatim, and the case it most
-            # needs to preserve is the one where that body is NOT JSON (an HTML 502 page, a
-            # proxy error). `validate_workspace_root` parses every `workspace/**/*.json`, so a
-            # `.json` name would turn the evidence for a transport failure into an `invalid
-            # json` workspace violation that outlives it and can block a later resume.
-            path = (self.repo_root / "workspace" / "orchestrations" / self.orchestration_id
-                    / "launches" / f"{child_arid}.http_response.txt")
-            try:
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text(response.raw_response or "", encoding="utf-8")
-            except OSError as exc:
-                # Evidence, not control flow: losing the copy must not lose the answer.
-                self.emit("http_leaf_response_unpersisted", agent_run_id=child_arid,
-                          error=str(exc)[:200])
+        # `.txt`, NOT `.json`: this is the provider's body verbatim, and the case it most
+        # needs to preserve is the one where that body is NOT JSON (an HTML 502 page, a
+        # proxy error). `validate_workspace_root` parses every `workspace/**/*.json`, so a
+        # `.json` name would turn the evidence for a transport failure into an `invalid
+        # json` workspace violation that outlives it and can block a later resume.
+        path = (self.repo_root / "workspace" / "orchestrations" / self.orchestration_id
+                / "launches" / f"{child_arid}.http_response.txt")
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(response.raw_response or "", encoding="utf-8")
+        except OSError as exc:
+            # Evidence, not control flow: losing the copy must not lose the answer.
+            self.emit("http_leaf_response_unpersisted", agent_run_id=child_arid,
+                      error=str(exc)[:200])
 
         if response.transport_error is not None:
-            self.emit("http_leaf_transport_error", agent_run_id=child_arid or "",
+            self.emit("http_leaf_transport_error", agent_run_id=child_arid,
                       provider=entry.provider, error=response.transport_error[:400])
             return ProcResult(1, "", response.transport_error[:4000], model=entry.model or None)
 
@@ -4653,59 +4639,6 @@ class Conductor:
             return None
         return doc if isinstance(doc, dict) else None
 
-    def _readonly_sandbox_profile(self) -> dict[str, Any]:
-        """A read-only bwrap profile for a leaf with no record-launch (the failure
-        diagnostician): repo read-only, no write_roots, tmp-only scratch + backend
-        auth/session home + the hooks/audit bookkeeping dirs. Raises
-        SandboxEnforcementError if the host cannot build the profile (so the caller can
-        fail closed instead of crashing or launching unconfined)."""
-        from tools.orchestration_runtime import (
-            _prepare_claude_workflow_home,
-            _prepare_codex_workflow_home,
-            build_readonly_bwrap_profile,
-            claude_isolation_profile_kwargs,
-            codex_isolation_profile_kwargs,
-        )
-        # The diagnostician carries no phase/substep, so it runs on `defaults` — the same
-        # entry `escalate` launches through.
-        entry = self.entry_for(None, None)
-        backend_command = _provider_command_base(entry)[0]
-        try:
-            profile_kwargs: dict[str, Any] = {}
-            if entry.provider == "codex_cli":
-                # Diagnostician launches do not pass through record_launch(), so
-                # construct the same isolated, SHA-pinned Codex home here before
-                # using the trust bypass.  Reusing the orchestration metadata home
-                # preserves Codex state without admitting ambient user hooks.
-                codex_isolation = _prepare_codex_workflow_home(
-                    self.repo_root, self.orchestration_id)
-                profile_kwargs = codex_isolation_profile_kwargs(codex_isolation)
-            elif entry.provider == "claude_cli":
-                # Same reasoning for the Claude leaf's private home (issue #63): this
-                # launch re-derives its own isolation because it never reaches
-                # record_launch, and without it the diagnostician would be the ONE
-                # claude leaf still coming up on the operator's `~/.claude`.
-                claude_isolation = _prepare_claude_workflow_home(
-                    self.repo_root, self.orchestration_id)
-                profile_kwargs = claude_isolation_profile_kwargs(claude_isolation)
-            return build_readonly_bwrap_profile(
-                repo_root=self.repo_root,
-                orchestration_id=self.orchestration_id,
-                agent_run_id=self.orchestration_agent_run_id,
-                backend_command=backend_command,
-                backend_type=entry.backend_token,
-                # The diagnostician is the ONE leaf built in-process, so without this the
-                # builder would fall back to filtering the DRIVER's raw `os.environ`
-                # rather than the conductor's `self.env`. Those differ whenever the two
-                # were seeded differently, and under `--clearenv` the difference is no
-                # longer invisible — it decides what the leaf gets.
-                child_env=self._child_env(self.orchestration_agent_run_id, entry),
-                **profile_kwargs,
-            )
-        except (ValueError, OSError) as exc:
-            raise SandboxEnforcementError(
-                f"read-only diagnostician sandbox profile unavailable: {exc}") from exc
-
     def spawn_leaf(
         self,
         prompt_text: str,
@@ -4714,8 +4647,7 @@ class Conductor:
         *,
         session_id: str | None = None,
         resume_session_id: str | None = None,
-        child_arid: str | None = None,
-        profile: dict[str, Any] | None = None,
+        child_arid: str,
         pure: bool = False,
         timeout_context: dict[str, str] | None = None,
     ) -> ProcResult:
@@ -4749,17 +4681,15 @@ class Conductor:
         # read-only; writes confined to the child's write_roots + workspace/tmp).
         # record-launch records sandbox_enforced=True for every backend, so applying it
         # here makes that record true (the conductor leaf is otherwise unconfined).
-        # Applies to both claude and codex — both get a profile at launch. A caller may
-        # pass an explicit `profile` for a leaf that has no record-launch profile keyed
-        # by child_arid (the read-only diagnostician; see escalate()).
+        # Applies to both claude and codex — both get a profile at launch. EVERY leaf now has
+        # a record-launch profile keyed by its own child_arid, the diagnostician included
+        # (issue #169); there is no in-process profile and no caller-supplied one.
         if self._bwrap_enabled():
             # Fail closed: enforcement is mandatory and record-launch records
-            # sandbox_enforced=true, so ANY leaf without a usable profile — a missing/
-            # invalid one (older orchestration resumed, corrupted/deleted file) or a
-            # caller that supplies neither an explicit profile nor a child_arid — must
+            # sandbox_enforced=true, so ANY leaf without a usable profile — a missing or
+            # invalid one (older orchestration resumed, corrupted/deleted file) — must
             # NOT silently fall back to an unconfined launch.
-            if profile is None:
-                profile = self._sandbox_profile_for(child_arid) if child_arid else None
+            profile = self._sandbox_profile_for(child_arid)
             if profile is None:
                 raise SandboxEnforcementError(
                     "bwrap enforcement is mandatory but no usable sandbox profile is "
@@ -5071,7 +5001,7 @@ class Conductor:
             status="running",
         )
 
-    def _bind_codex_thread(self, child_arid: str | None, thread_id: str) -> str | None:
+    def _bind_codex_thread(self, child_arid: str, thread_id: str) -> str | None:
         """Record the emitted codex thread against this child; the error text, or None.
 
         Binding the emitted thread to a child is a HOST write (launch response + session index)
@@ -5087,8 +5017,6 @@ class Conductor:
         One method, two callers: the streaming read, and the post-break drain when it turns out
         the whole turn was queued and the conductor is about to RETURN that leaf's answer.
         """
-        if not child_arid:
-            return None                 # the read-only diagnostician has no child to bind
         try:
             self._register_codex_thread(child_arid, thread_id)
         except Exception as exc:  # noqa: BLE001 — see the docstring
@@ -5104,7 +5032,7 @@ class Conductor:
         return None
 
     def _spawn_codex_json_leaf(
-        self, argv: list[str], child_env: dict[str, str], child_arid: str | None,
+        self, argv: list[str], child_env: dict[str, str], child_arid: str,
         # No default: an omitted prompt would launch a codex leaf blocked on the `-`
         # sentinel with an empty instruction set — silently, which is the failure the
         # `codex_prompt_stdin` preflight check exists to prevent.
@@ -5113,10 +5041,9 @@ class Conductor:
         timeout_context: dict[str, str] | None = None,
     ) -> ProcResult:
         entry = entry if entry is not None else self.entry_for(None, None)
-        # A recorded step/substep leaf must supply its child ARID so the emitted
-        # thread can be registered before file tools run.  The read-only failure
-        # diagnostician has no child run by design; it still uses JSONL for its
-        # final response, but its thread is intentionally not indexed.
+        # Every leaf supplies its child ARID so the emitted thread can be registered before
+        # file tools run — the diagnostician included since issue #169 put it on the pure
+        # transport with a recorded launch of its own.
         process = subprocess.Popen(
             argv, cwd=self.repo_root, env=child_env,
             # The prompt rides stdin, not argv (see `leaf_command`): argv ends with the `-`
@@ -7350,6 +7277,10 @@ clean:
         host_write_failed_reason: str
         #: A certified sibling exemplar is resolved and attached only where a template renders it.
         wants_exemplar: bool
+        #: refs -> `(makefile_host_authored, runner_host_authored)` for the launch request.
+        #: The request's stamp is read back by `_payload_is_m3c_physics`, so it must carry the
+        #: node's real values, not the shape the phase happened to have when it went pure.
+        host_authored_flags: Callable[[NodeRefs], tuple[bool, bool]]
         #: (accepted document) -> the leaf's own "this phase cannot be completed" declaration, or
         #: None. A schema-VALID document can carry one; it is neither a pass nor a repairable
         #: defect, so it is the loop's THIRD exit. None for a phase with no such declaration.
@@ -7374,6 +7305,83 @@ clean:
         summary_prefix: str
         host_write_failed_reason: str
         superseded_prefix: str
+        #: refs -> `(makefile_host_authored, runner_host_authored)`; see the producer spec.
+        host_authored_flags: Callable[[NodeRefs], tuple[bool, bool]]
+
+    class _PureTurn(NamedTuple):
+        """One recorded pure launch and everything read back off it."""
+
+        proc: Any
+        token: str | None
+        #: `pure_leaf.ResultEnvelope`, named `Any` because that module is imported lazily.
+        envelope: Any
+        model: str | None
+        usage: dict[str, Any] | None
+        #: The FILESYSTEM wall clock at launch (`determine_substep_status` compares it
+        #: against file mtimes), and a monotonic reading used only for durations.
+        launched_at: float
+        launched_monotonic: float
+
+    def _spawn_pure_turn(self, request: dict[str, Any], entry: Any, *, child_arid: str,
+                         phase: str, substep: str | None, node_key: str,
+                         resume_session_id: str | None = None,
+                         warm: bool = False) -> "Conductor._PureTurn | None":
+        """`record_launch` -> `spawn_leaf(pure=True)` -> persist -> envelope -> usage.
+
+        The connected steps every pure launch makes, in one place: the two loops
+        (`_run_pure_producer_substep` / `_run_pure_reviewer_substep`) and the escalate
+        diagnostician call it.
+
+        Returns None when a warm resume's codex home generation has rotated: the launch
+        was recorded against a session the transport can no longer resume, and the caller
+        retries the turn cold.
+        """
+        from tools.pure_leaf import _MISSING, ResultEnvelope, parse_result_envelope
+        expected_generation = (
+            self._codex_session_home_generation(resume_session_id, entry) if warm else None)
+        rec = (self.record_launch(
+            child_arid, request, entry,
+            expected_codex_home_generation=expected_generation)
+               if expected_generation is not None
+               else self.record_launch(child_arid, request, entry))
+        if rec.get("codex_home_generation_mismatch"):
+            self.emit("resume_session_unavailable", phase=phase, substep=substep or "",
+                      target=resume_session_id or "", reason="codex_home_generation_rotated")
+            return None
+        launched_at = self._launch_instant(child_arid)
+        # A SECOND reading, monotonic, purely for measuring how long this attempt
+        # ran: `launched_at` must stay the FILESYSTEM's wall clock because
+        # `determine_substep_status` compares it against file mtimes, and a wall clock is
+        # not a duration.
+        launched_monotonic = time.monotonic()
+        proc = self.spawn_leaf(
+            rec["launch_prompt_text"], self._child_env(child_arid, entry), entry,
+            session_id=child_arid,
+            resume_session_id=(resume_session_id if warm else None),
+            child_arid=child_arid, pure=True,
+            timeout_context={"node_key": node_key, "step": phase,
+                             "substep": substep or "", "agent_run_id": child_arid})
+        self._persist_leaf_output(child_arid, proc)
+        token = self.read_parent_return_token(child_arid)
+
+        envelope = (parse_result_envelope(proc.stdout)
+                    if entry.provider == "claude_cli" else
+                    ResultEnvelope(True, proc.stdout, False,
+                                   proc.model if proc.model else _MISSING,
+                                   proc.usage if proc.usage is not None else _MISSING,
+                                   self._session_id_for_child(child_arid, entry) or _MISSING,
+                                   None, None))
+        model = None if envelope.model is _MISSING else envelope.model
+        # Every backend's usage converges on the one recorded shape here, and a launch that
+        # produced no numbers records WHY instead of leaving the field absent (issue #47).
+        # The claude envelope is the one parsed just above — this loop owns it, unlike the
+        # agentic path where the capture boundary already consumed it; the other providers'
+        # numbers arrive normalized on `proc` itself.
+        usage = _leaf_usage_row(
+            proc, entry,
+            envelope=envelope if entry.provider == "claude_cli" else None)
+        return self._PureTurn(proc, token, envelope, model, usage,
+                              launched_at, launched_monotonic)
 
     def _run_pure_generate_substep(self, refs: NodeRefs, phase: str, substep: str | None,
                                    repair: dict[str, str] | None,
@@ -7408,6 +7416,7 @@ clean:
                 accept_noun="IR",
                 host_write_failed_reason="pure_compile_host_write_failed",
                 wants_exemplar=False,
+                host_authored_flags=_host_authored_m3c,
                 declared_fail=self._pure_ir_declared_fail,
                 write_declared_fail=self._write_declared_compile_fail,
                 declared_fail_category=COMPILE_DECLARED_FAIL,
@@ -7430,6 +7439,7 @@ clean:
             accept_noun="bundle",
             host_write_failed_reason="pure_host_write_failed",
             wants_exemplar=True,
+            host_authored_flags=_host_authored_m3c,
         )
 
     def _write_pure_bundle_artifacts_from_doc(self, refs: NodeRefs, doc: dict[str, Any], *,
@@ -7467,8 +7477,8 @@ clean:
         the order attributes the host writes to the dying leaf and fails closed — pinned by a
         conformance test."""
         from tools.pure_leaf import (
-            parse_result_envelope, extract_json_document, MAX_BUNDLE_REPAIR_TURNS,
-            RESPONSE_TRUNCATED, RESPONSE_UNPARSEABLE, ResultEnvelope, _MISSING)
+            extract_json_document, MAX_BUNDLE_REPAIR_TURNS,
+            RESPONSE_TRUNCATED, RESPONSE_UNPARSEABLE)
         # THE model this substep runs on, resolved once at the top of the loop and threaded
         # through every launch/record/provenance call below, so a mixed config cannot record one
         # provider and launch another.
@@ -7496,6 +7506,10 @@ clean:
                 self.new_agent_run_id(), "fail", [], 1,
                 ("pure_context_assembly_failed", _pure_assembly_detail(exc)),
                 time.time(), 1)
+        # The launch request's host-authorship stamp is the NODE's, resolved once here. It is
+        # read back by `_payload_is_m3c_physics`, so a phase whose pure path also serves a node
+        # the host authors nothing for must not stamp a constant.
+        makefile_host_authored, runner_host_authored = spec.host_authored_flags(refs)
         per_attempt: list[dict[str, Any]] = []
         resume_session_id: str | None = None
         cold_repair_target: str | None = None
@@ -7566,7 +7580,8 @@ clean:
                 orchestration_agent_run_id=self.orchestration_agent_run_id,
                 child_agent_run_id=child_arid,
                 agent_model=entry.model, workflow_mode=self.workflow_mode,
-                makefile_host_authored=True, runner_host_authored=True,
+                makefile_host_authored=makefile_host_authored,
+                runner_host_authored=runner_host_authored,
                 repair=repair_payload,
                 resolved_dependencies=resolved_dependencies,
                 dependency_surface=dependency_surface,
@@ -7583,54 +7598,19 @@ clean:
             )
             if repair_payload is not None and not warm and prior_document:
                 request["prior_document"] = prior_document
-            expected_generation = (
-                self._codex_session_home_generation(resume_session_id, entry) if warm else None)
-            rec = (self.record_launch(
-                child_arid, request, entry,
-                expected_codex_home_generation=expected_generation)
-                   if expected_generation is not None
-                   else self.record_launch(child_arid, request, entry))
-            if rec.get("codex_home_generation_mismatch"):
-                self.emit("resume_session_unavailable", phase=phase, substep=substep or "",
-                          target=resume_session_id or "", reason="codex_home_generation_rotated")
+            turn = self._spawn_pure_turn(
+                request, entry, child_arid=child_arid, phase=phase, substep=substep,
+                node_key=refs.node_key, resume_session_id=resume_session_id, warm=warm)
+            if turn is None:
                 # Keep the semantic repair carrier while dropping only the
                 # unusable transport session.  The next request is a full cold
                 # reuse repair, including findings and prior_document.
                 cold_repair_target = resume_session_id
                 resume_session_id = None
                 continue
-            launched_at = self._launch_instant(child_arid)
-            # A SECOND reading, monotonic, purely for measuring how long this attempt
-            # ran: `launched_at` must stay the FILESYSTEM's wall clock because
-            # `determine_substep_status` compares it against file mtimes, and a wall clock is
-            # not a duration.
-            launched_monotonic = time.monotonic()
-            proc = self.spawn_leaf(
-                rec["launch_prompt_text"], self._child_env(child_arid, entry), entry,
-                session_id=child_arid,
-                resume_session_id=(resume_session_id if warm else None),
-                child_arid=child_arid, pure=True,
-                timeout_context={"node_key": refs.node_key, "step": phase,
-                                 "substep": substep or "", "agent_run_id": child_arid})
-            self._persist_leaf_output(child_arid, proc)
-            token = self.read_parent_return_token(child_arid)
-
-            envelope = (parse_result_envelope(proc.stdout)
-                        if entry.provider == "claude_cli" else
-                        ResultEnvelope(True, proc.stdout, False,
-                                       proc.model if proc.model else _MISSING,
-                                       proc.usage if proc.usage is not None else _MISSING,
-                                       self._session_id_for_child(child_arid, entry) or _MISSING,
-                                       None, None))
-            model = None if envelope.model is _MISSING else envelope.model
-            # Every backend's usage converges on the one recorded shape here, and a launch that
-            # produced no numbers records WHY instead of leaving the field absent (issue #47).
-            # The claude envelope is the one parsed just above — this loop owns it, unlike the
-            # agentic path where the capture boundary already consumed it; the other providers'
-            # numbers arrive normalized on `proc` itself.
-            usage = _leaf_usage_row(
-                proc, entry,
-                envelope=envelope if entry.provider == "claude_cli" else None)
+            proc, token, envelope = turn.proc, turn.token, turn.envelope
+            model, usage = turn.model, turn.usage
+            launched_at, launched_monotonic = turn.launched_at, turn.launched_monotonic
             attempt_record: dict[str, Any] = {
                 "agent_run_id": child_arid, "model": model, "usage": usage}
             per_attempt.append(attempt_record)
@@ -8102,6 +8082,7 @@ clean:
                 summary_prefix="pure_compile_verify",
                 host_write_failed_reason="pure_compile_verify_host_write_failed",
                 superseded_prefix="pure_ir_verdict_repair",
+                host_authored_flags=_host_authored_m3c,
             )
         return self._PureReviewerSpec(
             build_context=self._build_pure_verify_context,
@@ -8114,6 +8095,7 @@ clean:
             summary_prefix="pure_verify",
             host_write_failed_reason="pure_verify_host_write_failed",
             superseded_prefix="pure_verdict_repair",
+            host_authored_flags=_host_authored_m3c,
         )
 
     def _run_pure_reviewer_substep(self, refs: NodeRefs, phase: str, substep: str | None,
@@ -8140,9 +8122,8 @@ clean:
         unauthorized write, so the host closes the window (finalize_child) before it authors the
         verdict projection and the per-attempt record."""
         from tools.pure_leaf import (
-            parse_result_envelope, extract_json_document, verify_verdict_violations,
-            MAX_BUNDLE_REPAIR_TURNS, RESPONSE_TRUNCATED, RESPONSE_UNPARSEABLE, ResultEnvelope,
-            _MISSING)
+            extract_json_document, verify_verdict_violations,
+            MAX_BUNDLE_REPAIR_TURNS, RESPONSE_TRUNCATED, RESPONSE_UNPARSEABLE)
         entry = self.entry_for(phase, substep)
         self.reset_http_history(phase, substep)
         # Assembling the reviewer's context RAISES on any document it cannot read, and WHICH
@@ -8165,6 +8146,10 @@ clean:
                 self.new_agent_run_id(), "fail", [], 1,
                 ("pure_context_assembly_failed", _pure_assembly_detail(exc)),
                 time.time(), 1)
+        # The launch request's host-authorship stamp is the NODE's, resolved once here. It is
+        # read back by `_payload_is_m3c_physics`, so a phase whose pure path also serves a node
+        # the host authors nothing for must not stamp a constant.
+        makefile_host_authored, runner_host_authored = spec.host_authored_flags(refs)
         per_attempt: list[dict[str, Any]] = []
         resume_session_id: str | None = None
         cold_repair_target: str | None = None
@@ -8198,7 +8183,8 @@ clean:
                 orchestration_agent_run_id=self.orchestration_agent_run_id,
                 child_agent_run_id=child_arid,
                 agent_model=entry.model, workflow_mode=self.workflow_mode,
-                makefile_host_authored=True, runner_host_authored=True,
+                makefile_host_authored=makefile_host_authored,
+                runner_host_authored=runner_host_authored,
                 repair=repair_payload,
                 resolved_dependencies=resolved_dependencies,
                 warm_resume=warm,
@@ -8212,51 +8198,16 @@ clean:
             )
             if repair_payload is not None and not warm and prior_document:
                 request["prior_document"] = prior_document
-            expected_generation = (
-                self._codex_session_home_generation(resume_session_id, entry) if warm else None)
-            rec = (self.record_launch(
-                child_arid, request, entry,
-                expected_codex_home_generation=expected_generation)
-                   if expected_generation is not None
-                   else self.record_launch(child_arid, request, entry))
-            if rec.get("codex_home_generation_mismatch"):
-                self.emit("resume_session_unavailable", phase=phase, substep=substep or "",
-                          target=resume_session_id or "", reason="codex_home_generation_rotated")
+            turn = self._spawn_pure_turn(
+                request, entry, child_arid=child_arid, phase=phase, substep=substep,
+                node_key=refs.node_key, resume_session_id=resume_session_id, warm=warm)
+            if turn is None:
                 cold_repair_target = resume_session_id
                 resume_session_id = None
                 continue
-            launched_at = self._launch_instant(child_arid)
-            # A SECOND reading, monotonic, purely for measuring how long this attempt
-            # ran: `launched_at` must stay the FILESYSTEM's wall clock because
-            # `determine_substep_status` compares it against file mtimes, and a wall clock is
-            # not a duration.
-            launched_monotonic = time.monotonic()
-            proc = self.spawn_leaf(
-                rec["launch_prompt_text"], self._child_env(child_arid, entry), entry,
-                session_id=child_arid,
-                resume_session_id=(resume_session_id if warm else None),
-                child_arid=child_arid, pure=True,
-                timeout_context={"node_key": refs.node_key, "step": phase,
-                                 "substep": substep or "", "agent_run_id": child_arid})
-            self._persist_leaf_output(child_arid, proc)
-            token = self.read_parent_return_token(child_arid)
-
-            envelope = (parse_result_envelope(proc.stdout)
-                        if entry.provider == "claude_cli" else
-                        ResultEnvelope(True, proc.stdout, False,
-                                       proc.model if proc.model else _MISSING,
-                                       proc.usage if proc.usage is not None else _MISSING,
-                                       self._session_id_for_child(child_arid, entry) or _MISSING,
-                                       None, None))
-            model = None if envelope.model is _MISSING else envelope.model
-            # Every backend's usage converges on the one recorded shape here, and a launch that
-            # produced no numbers records WHY instead of leaving the field absent (issue #47).
-            # The claude envelope is the one parsed just above — this loop owns it, unlike the
-            # agentic path where the capture boundary already consumed it; the other providers'
-            # numbers arrive normalized on `proc` itself.
-            usage = _leaf_usage_row(
-                proc, entry,
-                envelope=envelope if entry.provider == "claude_cli" else None)
+            proc, token, envelope = turn.proc, turn.token, turn.envelope
+            model, usage = turn.model, turn.usage
+            launched_at, launched_monotonic = turn.launched_at, turn.launched_monotonic
             attempt_record: dict[str, Any] = {
                 "agent_run_id": child_arid, "model": model, "usage": usage}
             per_attempt.append(attempt_record)
@@ -11738,10 +11689,14 @@ clean:
             proc.stderr or "", encoding="utf-8", errors="backslashreplace")
         # Codex: `stdout` above is only the extracted final message, so the event stream
         # is not recoverable from any other artifact — persist it alongside rather than
-        # dropping the one record of what the leaf actually did. Removed when absent
-        # rather than skipped: `escalate`'s diagnostician reuses one fixed
-        # (arid, prefix), so a leftover would sit next to freshly overwritten .log files
-        # and read as this run's event stream.
+        # dropping the one record of what the leaf actually did. Removed when absent rather
+        # than skipped, so a leftover cannot sit next to freshly overwritten .log files and
+        # read as this run's event stream. The caller that made that reachable is gone —
+        # `escalate`'s diagnostician reused one fixed (arid, prefix) until issue #169 gave it
+        # a child arid of its own, and every caller now writes each (arid, prefix) once — so
+        # the unlink is KEPT but NOT PINNED: it is one line standing between a stale artifact
+        # and a reader, and "no caller reaches it today" is not a reason to delete a
+        # fail-safe.
         jsonl_path = dialogs / f"{prefix}.stdout.jsonl"
         if proc.raw_stdout:
             jsonl_path.write_text(proc.raw_stdout, encoding="utf-8",
@@ -12880,62 +12835,85 @@ clean:
 
     def escalate(self, refs: NodeRefs, phase: str, outcome: PhaseOutcome) -> RouteDecision:
         """One-shot LLM diagnostician for a failure the decision tables cannot
-        classify. Embeds the failure-artifact content in the prompt, spawns a
-        read-only reasoning leaf, and parses its final JSON routing directive.
-        An unparsable/invalid directive is conservatively terminal (fail_closed)."""
+        classify. Inlines the failure-artifact content in a pure launch prompt, spawns a
+        tool-free read-only leaf, and parses its final JSON routing directive.
+        An unparsable/invalid/killed directive is conservatively terminal (fail_closed)."""
+        from tools.orchestration_runtime import DIAGNOSE_SUBSTEP
+
         # The diagnostician carries no phase/substep of its own, so it runs on `defaults` —
-        # which config validation requires to be an agentic provider for exactly this reason.
+        # which config validation requires to support the PURE capability for exactly this
+        # reason (`llm_config_defaults_not_pure`).
         entry = self.entry_for(None, None)
+        child_arid = self.new_agent_run_id()
         context = self._gather_failure_context(refs, phase)
-        prompt = _diagnosis_prompt(refs.node_key, phase, outcome.failed_substeps,
-                                   context, self.workflow_mode,
-                                   persona=_load_escalate_persona(self.repo_root))
+        request = build_launch_request(
+            refs, step=phase, substep=DIAGNOSE_SUBSTEP,
+            orchestration_id=self.orchestration_id,
+            orchestration_agent_run_id=self.orchestration_agent_run_id,
+            child_agent_run_id=child_arid,
+            agent_model=entry.model, workflow_mode=self.workflow_mode,
+            pure_leaf=True,
+            pure_context={"diagnosis_document": _diagnosis_document(
+                refs.node_key, phase, outcome.failed_substeps, context, self.workflow_mode)},
+        )
         try:
-            # The diagnostician has no record-launch profile (no child_arid); under
-            # bwrap-enforced mode build a dedicated read-only profile (repo ro, no
-            # write_roots) so it runs sandboxed instead of fail-closing. A read-only
-            # leaf has nothing to attribute, so the FS-diff is trivially empty.
-            profile = self._readonly_sandbox_profile() if self._bwrap_enabled() else None
-            proc = self.spawn_leaf(
-                prompt, self._child_env(self.orchestration_agent_run_id, entry), entry,
-                profile=profile,
-                timeout_context={"node_key": refs.node_key, "step": phase,
-                                 "substep": "diagnose",
-                                 "agent_run_id": self.orchestration_agent_run_id})
-        except (SandboxEnforcementError, OSError) as exc:
-            # The host cannot launch the sandboxed read-only diagnostician — either the
-            # profile is unbuildable (SandboxEnforcementError) or the bwrap/backend
-            # binary is missing (OSError/FileNotFoundError from `subprocess.Popen`, e.g. if
-            # the startup preflight was bypassed). The diagnostician is a best-effort
-            # recovery leaf, so treat an un-launchable diagnosis as conservatively
-            # terminal — same posture as an unparsable directive — rather than crashing
-            # the conductor or launching unconfined.
+            self.record_launch(child_arid, request, entry)
+        except (SandboxEnforcementError, OSError, RuntimeError) as exc:
+            # The host cannot RECORD the launch — the read-only sandbox profile is unbuildable,
+            # or the runtime refused the request. Nothing was spawned and nothing was recorded,
+            # so there is no row to finalize. The diagnostician is a best-effort recovery leaf,
+            # so treat an un-launchable diagnosis as conservatively terminal — the same posture
+            # as an unparsable directive — rather than crashing the conductor.
             self.emit("diagnose_launch_failed", phase=phase, error=str(exc)[:200])
             return RouteDecision("fail_closed", reason=f"{phase}_diagnose_sandbox_unavailable")
-        self._persist_leaf_output(self.orchestration_agent_run_id, proc,
-                                  prefix=f"diagnose.{phase}")
-        # The diagnostician is a real billed leaf that produces NO `agent_runs.jsonl` row —
-        # it reuses the orchestration agent's id and never finalizes a child — so the
-        # per-leaf `usage` record has nowhere to land, and `_persist_leaf_output` reuses one
-        # fixed `(arid, prefix)`, so a second escalate of the same phase overwrites the only
-        # other copy. Emitting it puts the cost in the run log (`run_logs/run_*.jsonl`, via
-        # the driver's stdout tee), which is durable and append-only (issue #47).
-        # Through `_leaf_usage_row`, not off `proc.usage`: on a codex `defaults` the raw
-        # `turn.completed` object arrives there with neither a `total_tokens` nor a
-        # `cost_usd`, so reading those keys directly would emit two empty strings — this
-        # issue's own blindness, reproduced on the one launch with no row to fall back to.
-        usage = _leaf_usage_row(proc, entry)
-        self.emit("diagnose_leaf_usage", phase=phase,
-                  total_tokens=usage.get("total_tokens", ""),
-                  cost_usd=usage.get("cost_usd", ""), model=proc.model or "",
-                  usage_status=usage.get("status", ""))
-        # A diagnostician the conductor KILLED does not get to route the phase. Its partial
-        # stdout can contain a complete-looking directive it wrote before it wedged (the claude
-        # path returns that partial text verbatim), and acting on it would spend a phase attempt
-        # on the word of a leaf whose turn never finished — while the operator is being told the
-        # leaf was killed and the phase fails closed. Same conservative posture as an unparsable
-        # directive; the partial output is already persisted above as evidence.
-        decision = None if proc.timed_out else _parse_directive(proc.stdout)
+        # Tombstone BEFORE the spawn, not after the finalize. The diagnostician holds no
+        # deliverable and appears in no `step_result.json#substep_agent_run_ids`, so the pass
+        # completion vouch (`_validate_orchestration_completion_for_pass`) would demand a
+        # step_result it can never have; `superseded_run_ids` is the exemption. Ordering: a
+        # crash between the record and the tombstone leaves an unfinalized row, which the vouch
+        # already tolerates, whereas a crash between a TERMINAL row and the tombstone would
+        # block a later pass — and on the `build` phase (child role `step`) would also block the
+        # re-launch guard `_build_step_agents_missing_step_result`.
+        self._add_superseded_run_ids(
+            [child_arid], reason=f"escalate_diagnostician_consumed: {phase}")
+        # A `spawn_leaf` refusal AFTER the record is NOT folded here: it is the same residual the
+        # two pure loops carry (a recorded, unfinalized child) and it propagates to `conduct`,
+        # which terminalizes it as `sandbox_enforcement_violation`.
+        turn = self._spawn_pure_turn(
+            request, entry, child_arid=child_arid, phase=phase, substep=DIAGNOSE_SUBSTEP,
+            node_key=refs.node_key)
+        if turn is None:
+            # `_spawn_pure_turn` returns None only for a rotated codex home under a warm
+            # resume, and this launch passes no `resume_session_id`, so it is unreachable
+            # today. Handled rather than asserted: an `assert` disappears under `-O` and would
+            # then be an AttributeError inside the recovery path, and a diagnosis that did not
+            # happen is conservatively terminal like every other one here.
+            self.emit("diagnose_launch_failed", phase=phase, error="pure turn not spawned")
+            return RouteDecision("fail_closed", reason=f"{phase}_diagnose_unparsable")
+        proc, envelope = turn.proc, turn.envelope
+        # A diagnostician the conductor KILLED does not get to route the phase, and neither does
+        # one whose transport failed or whose reply the envelope reader could not parse. A
+        # partial stdout can contain a complete-looking directive the leaf wrote before it
+        # wedged, and acting on it would spend a phase attempt on the word of a leaf whose turn
+        # never finished — while the operator is being told the leaf was killed and the phase
+        # fails closed. Same conservative posture as an unparsable directive; the partial output
+        # is already persisted as evidence.
+        decision = (None if (proc.timed_out or proc.returncode != 0 or not envelope.parsed)
+                    else _parse_directive(envelope.result if isinstance(envelope.result, str)
+                                          else ""))
+        status = "pass" if decision is not None else "fail"
+        result_summary = (
+            f"diagnose_pass: action={decision.action} target={decision.target_phase or 'none'} "
+            f"severity={decision.severity or 'none'}" if decision is not None
+            else f"diagnose_fail: {phase}_diagnose_unparsable")
+        # A pure row carries EMPTY output_refs, so `result_summary` is the only thing that can
+        # speak for it (`_validate_agent_summary_text`).
+        self.finalize_child(
+            child_arid, turn.token,
+            f"status: {status}\nleaf rc={proc.returncode}",
+            self._agent_run_json(refs, phase, DIAGNOSE_SUBSTEP, child_arid, status,
+                                 [], result_summary, entry=entry,
+                                 agent_model_override=turn.model, usage=turn.usage))
         if decision is None:
             return RouteDecision("fail_closed", reason=f"{phase}_diagnose_unparsable")
         # G5: normalize reuse-vs-discard from the graded severity so every escalate site

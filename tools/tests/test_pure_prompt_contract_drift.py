@@ -103,6 +103,7 @@ _TEMPLATE_FILES = (
     "pure_generate_generate.txt",
     "pure_generate_verify.txt",
     "pure_bundle_repair.txt",
+    "pure_escalate_diagnose.txt",
 )
 
 # sha256 of the canonical serialization of the coupled tuple, keyed by contract version. When an
@@ -343,7 +344,13 @@ PINNED: dict[str, str] = {
     # still PASSES `--stage compile`, so V2 at `compile.verify` is the only thing between a
     # de-mathed IR and a `Generate` leaf that cannot read `controlled_spec.md`. The template now
     # refuses every narrower reading BY NAME, including its own sentence.
-    "pure-34": "6625f0468c2ac988c31d3cfab38d1a1565933f213d9d7427bb4024cb29a9dd79",}
+    "pure-34": "6625f0468c2ac988c31d3cfab38d1a1565933f213d9d7427bb4024cb29a9dd79",
+    # pure-35 (issue #169, PR-1): the escalate diagnostician moved onto the pure transport, so
+    # `pure_escalate_diagnose.txt` joins the coupled tuple. Its persona, its directive schema
+    # and its decision criteria used to live half in `workflow_conductor` constants and half in
+    # `skills/workflow-escalate/SKILL.md` (read host-side, hashed by nothing); the template is
+    # now the single source and this guard is what makes an edit to it an observable event.
+    "pure-35": "df3926d17c783aadef405f129a95ee3cf84bf2a0adeec57999b11052f5c34c71",}
 
 
 def _contract_tuple() -> dict[str, object]:

@@ -80,9 +80,10 @@ install dir bound read-only and its config/credential home — `~/.claude{,.json
 writable for auth + session transcript) and records `sandbox_enforced: true`. `spawn_leaf`
 **always** wraps every leaf (claude and codex) in that profile via `render_bwrap_command`;
 there is no opt-out. The conductor **fails closed** — a leaf with no usable profile (a
-missing/invalid file, or a caller with no `child_arid` such as the read-only diagnostician)
-raises rather than launching unconfined; the diagnostician's failure is caught and routed
-to `fail_closed`. The backend type (not the launch command string, which may be a
+missing or invalid file) raises rather than launching unconfined. Every leaf has a
+`child_arid` and a `record-launch`-written profile keyed by it, the diagnostician included
+since issue #169; before that it was the one caller with none and built its own in-process.
+A diagnostician whose LAUNCH cannot be recorded is caught and routed to `fail_closed`. The backend type (not the launch command string, which may be a
 configured `command:` wrapper) keys the config-home bind, and a creatable-but-absent home (e.g.
 `~/.codex` in a fresh env) is created before binding. `sandbox_enforced: true` is a
 runtime-**required invariant** — preflight and `record-launch` reject anything else

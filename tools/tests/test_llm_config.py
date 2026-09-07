@@ -912,17 +912,30 @@ class RuleTests(_Tmp):
                          "phases:\n  validate:\n    substeps:\n      judge:\n"
                          "        capabilities: [pure]\n")
 
-    def test_defaults_not_agentic(self) -> None:
-        err = self.assert_rule("llm_config_defaults_not_agentic",
-                               "defaults:\n"
-                               "  provider: anthropic_api\n"
-                               "  api_key_env: ANTHROPIC_API_KEY\n"
-                               "  model: claude-opus-5\n")
+    def test_defaults_not_pure(self) -> None:
+        """`defaults` serves the escalate diagnostician, which is a PURE launch (issue #169),
+        so an entry RESTRICTED to `agentic` is inadmissible there. The restriction is the only
+        way to reach this today — every declared provider supports `pure` — which is why the
+        subject is `capabilities:` rather than a provider name."""
+        err = self.assert_rule("llm_config_defaults_not_pure",
+                               "defaults:\n  provider: claude_cli\n"
+                               "  capabilities: [agentic]\n")
         self.assertIn("escalate", str(err))
 
-    def test_defaults_not_agentic_by_restriction(self) -> None:
-        self.assert_rule("llm_config_defaults_not_agentic",
-                         "defaults:\n  provider: claude_cli\n  capabilities: [pure]\n")
+    def test_an_http_provider_is_admissible_as_defaults(self) -> None:
+        """The other side of the same change: before it, `defaults` had to be agentic, so no
+        HTTP provider could serve it and an all-HTTP configuration was impossible. It loads
+        now. `validate.judge` still needs an agentic entry of its own (it is the last agentic
+        leaf until Z3), so the config names one."""
+        cfg = lc.load_llm_config(self.write(
+            "defaults:\n"
+            "  provider: anthropic_api\n"
+            "  api_key_env: ANTHROPIC_API_KEY\n"
+            "  model: claude-opus-5\n"
+            "phases:\n  validate:\n    substeps:\n      judge:\n"
+            "        provider: claude_cli\n", "http_defaults.yaml"))
+        self.assertEqual(cfg.defaults.provider, "anthropic_api")
+        self.assertTrue(cfg.defaults.is_http)
 
     def test_codex_requires_model_only_at_run_start(self) -> None:
         cfg = lc.load_llm_config(self.write("defaults:\n  provider: codex_cli\n"))
