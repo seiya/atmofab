@@ -44,6 +44,18 @@ try:
         required_meta_keys_for_step,
         stage_meta_type_violations,
     )
+    # The expected (test_id, case_id) evidence MATRIX and the artifact-spelling aliases have
+    # one definition, in `raw_evidence_excerpt`, because two readers now derive it: this gate,
+    # and the excerpt the pure `validate.judge` leaf is given in place of `raw/` (issue #169).
+    # The module is stdlib-only and imports nothing back, so this introduces no cycle.
+    from tools.raw_evidence_excerpt import (
+        METRICS_BASIS_BOOKKEEPING_KEYS as _METRICS_BASIS_BOOKKEEPING_KEYS,
+        METRICS_BASIS_NESTED_VARIABLE_FIELDS as _METRICS_BASIS_NESTED_VARIABLE_FIELDS,
+        contract_test_evidence_requirements as _contract_test_evidence_requirements,
+        expected_metrics_basis_keys,
+        metrics_basis_variable_keys as _metrics_basis_variable_keys,
+        normalize_raw_evidence_artifact as _normalize_raw_evidence_artifact,
+    )
     # PURE_PROMPT_SENTINEL is IMPORTED (not copy-pasted like SLIM_REPAIR_PROMPT_SENTINEL): the
     # Z2 pure sentinel has a single source in tools/pure_leaf so orchestration_runtime, the
     # prompt templates, and this validator cannot drift (a parity test still pins template
@@ -72,6 +84,18 @@ except ModuleNotFoundError:  # pragma: no cover - import bootstrap for direct CL
         STAGE_META_FILENAME_BY_STEP,
         required_meta_keys_for_step,
         stage_meta_type_violations,
+    )
+    # The expected (test_id, case_id) evidence MATRIX and the artifact-spelling aliases have
+    # one definition, in `raw_evidence_excerpt`, because two readers now derive it: this gate,
+    # and the excerpt the pure `validate.judge` leaf is given in place of `raw/` (issue #169).
+    # The module is stdlib-only and imports nothing back, so this introduces no cycle.
+    from tools.raw_evidence_excerpt import (
+        METRICS_BASIS_BOOKKEEPING_KEYS as _METRICS_BASIS_BOOKKEEPING_KEYS,
+        METRICS_BASIS_NESTED_VARIABLE_FIELDS as _METRICS_BASIS_NESTED_VARIABLE_FIELDS,
+        contract_test_evidence_requirements as _contract_test_evidence_requirements,
+        expected_metrics_basis_keys,
+        metrics_basis_variable_keys as _metrics_basis_variable_keys,
+        normalize_raw_evidence_artifact as _normalize_raw_evidence_artifact,
     )
     from tools.pure_leaf import (
         PURE_CAPABILITY_MODE,
@@ -147,15 +171,6 @@ ALGORITHM_STEP_KINDS = {
     "filter",
     "reduction",
     "diagnostic",
-}
-RAW_EVIDENCE_ALIASES = {
-    "metrics_basis.json": "metrics_basis.json",
-    "raw/metrics_basis.json": "metrics_basis.json",
-    "execution_trace.json": "execution_trace.json",
-    "raw/execution_trace.json": "execution_trace.json",
-    "state_snapshots": "state_snapshots",
-    "raw/state_snapshots": "state_snapshots",
-    "raw/state_snapshots/": "state_snapshots",
 }
 FORTRAN_KEYWORDS = {
     "if",
@@ -6586,35 +6601,6 @@ def _parse_canonical_interface_from_controlled_spec(
     return (op_stanzas, type_stanzas, None)
 
 
-def _contract_test_evidence_requirements(
-    contract: dict[str, Any],
-) -> dict[str, set[str]]:
-    raw_reqs = contract.get("test_evidence_requirements")
-    if not isinstance(raw_reqs, list):
-        return {}
-
-    result: dict[str, set[str]] = {}
-    for item in raw_reqs:
-        if not isinstance(item, dict):
-            continue
-        raw_test_id = item.get("test_id")
-        raw_variables = item.get("required_raw_variables")
-        if (
-            not isinstance(raw_test_id, str)
-            or not raw_test_id.strip()
-            or not isinstance(raw_variables, list)
-        ):
-            continue
-        variables = {
-            token.strip()
-            for token in raw_variables
-            if isinstance(token, str) and token.strip()
-        }
-        if variables:
-            result[raw_test_id.strip()] = variables
-    return result
-
-
 def _case_id_to_test_id(
     repo_root: Path, execution: NodeExecution
 ) -> dict[str, str]:
@@ -6683,39 +6669,6 @@ def _case_id_to_test_ids(contract: dict[str, Any]) -> dict[str, list[str]]:
                 bucket = mapping.setdefault(case_id.strip(), [])
                 if test_id.strip() not in bucket:
                     bucket.append(test_id.strip())
-    return mapping
-
-
-def _test_id_to_case_ids(contract: dict[str, Any]) -> dict[str, list[str]]:
-    """Map each test_id to every case_id its predicate ranges over, from
-    ``io_contract.test_predicates[].target_cases`` — the reverse of ``_case_id_to_test_ids``,
-    reading the very same field.
-
-    This is the row set of a test's metrics-basis evidence: the host-rendered runner emits one
-    ``h_mb_entry`` per ``(test_id, case_id)`` pair over exactly this product
-    (``host_render.render_runner``), so the post_execute completeness matrix
-    (``_validate_metrics_basis_per_test``) mirrors the renderer rather than guessing. Empty dict
-    when the IR declares no predicates.
-    """
-    predicates = contract.get("test_predicates")
-    if not isinstance(predicates, list):
-        # `_io_contract_for_execution` hoists the key out of the nested `io_contract`
-        # section; an un-flattened doc still nests it.
-        nested = contract.get("io_contract")
-        predicates = nested.get("test_predicates") if isinstance(nested, dict) else None
-    if not isinstance(predicates, list):
-        return {}
-    mapping: dict[str, list[str]] = {}
-    for item in predicates:
-        if not isinstance(item, dict):
-            continue
-        test_id = item.get("test_id")
-        if not (isinstance(test_id, str) and test_id.strip()):
-            continue
-        bucket = mapping.setdefault(test_id.strip(), [])
-        for case_id in item.get("target_cases") or []:
-            if isinstance(case_id, str) and case_id.strip() and case_id.strip() not in bucket:
-                bucket.append(case_id.strip())
     return mapping
 
 
@@ -6829,42 +6782,6 @@ def _metrics_basis_entries(
 
     problems.append("must contain per_test list or tests object")
     return entries, problems, None
-
-
-_METRICS_BASIS_NESTED_VARIABLE_FIELDS = ("raw_variables", "variables", "evidence")
-
-_METRICS_BASIS_BOOKKEEPING_KEYS = frozenset(
-    {
-        "test_id",
-        "case_id",
-        "case_ids",
-        "cases",
-        "status",
-        "summary",
-        "notes",
-        "meta",
-        "artifacts",
-    }
-)
-
-
-def _metrics_basis_variable_keys(entry: dict[str, Any]) -> set[str]:
-    for field_name in _METRICS_BASIS_NESTED_VARIABLE_FIELDS:
-        raw_value = entry.get(field_name)
-        if isinstance(raw_value, dict):
-            return {
-                key.strip()
-                for key in raw_value
-                if isinstance(key, str) and key.strip()
-            }
-
-    return {
-        key.strip()
-        for key in entry
-        if isinstance(key, str)
-        and key.strip()
-        and key not in _METRICS_BASIS_BOOKKEEPING_KEYS
-    }
 
 
 def _metrics_basis_unrecognized_wrapper(
@@ -7593,11 +7510,6 @@ def _state_snapshot_requirement_details(
         return required_variables, required_time_variable, required_time_shape_expr, min_samples
 
     return required_variables, required_time_variable, required_time_shape_expr, min_samples
-
-
-def _normalize_raw_evidence_artifact(token: str) -> str | None:
-    normalized = token.strip().lower().replace("\\", "/")
-    return RAW_EVIDENCE_ALIASES.get(normalized)
 
 
 def _raw_requirements_for_execution(
@@ -8841,7 +8753,11 @@ def _validate_metrics_basis_per_test(
     if not metrics_basis_required:
         return
 
-    test_requirements = _contract_test_evidence_requirements(contract)
+    # The expected evidence MATRIX is derived by `raw_evidence_excerpt`, which the pure
+    # `validate.judge` leaf's excerpt reads from as well, so this gate and the judge's window
+    # onto `raw/` cannot disagree about which rows a run owes.
+    keys = expected_metrics_basis_keys(contract)
+    test_requirements = keys.test_requirements
     if not test_requirements:
         return
 
@@ -8852,42 +8768,20 @@ def _validate_metrics_basis_per_test(
     if problems:
         return
 
-    # The expected evidence is the test x target_case MATRIX: one entry per case each test's
-    # predicate ranges over. `test_predicates[].target_cases` is the anchor the host-rendered
-    # runner emits from (the language backend runner's `_target_cases`), so both sides read one field.
-    #
-    # The row SET is `test_requirements`, whose source (`_contract_test_evidence_requirements`)
-    # drops a test declaring an EMPTY `required_raw_variables` while the renderer's
-    # `_test_evidence` keeps it — so such a test would render a row this matrix calls "unknown".
-    # That IR never reaches here: `_validate_test_evidence_requirements` rejects an empty
-    # `required_raw_variables` outright. Should that ever be relaxed, the two filters must be
-    # reconciled rather than left to disagree.
-    test_to_cases = _test_id_to_case_ids(contract)
-    expected_keys: set[tuple[str, str]] = set()
-    untargeted_tests: list[str] = []
-    multi_target_tests: list[str] = []
-    for test_id in test_requirements:
-        target_cases = test_to_cases.get(test_id) or []
-        if not target_cases:
-            untargeted_tests.append(test_id)
-            continue
-        if len(target_cases) > 1:
-            multi_target_tests.append(test_id)
-        for case_id in target_cases:
-            expected_keys.add((test_id, case_id))
-    if untargeted_tests:
+    expected_keys = keys.expected
+    if keys.untargeted_tests:
         violations.append(
-            f"{metrics_basis_path}: test_id {sorted(untargeted_tests)} declare "
+            f"{metrics_basis_path}: test_id {keys.untargeted_tests} declare "
             "required_raw_variables but no io_contract.test_predicates[].target_cases — the "
             "expected (test_id, case_id) evidence rows cannot be derived"
         )
         return
-    if form == "tests" and multi_target_tests:
+    if form == "tests" and keys.multi_target_tests:
         # A `tests` object is keyed by test_id, so it physically cannot hold the several rows a
         # multi-target test owes. Say so instead of reporting the rows as merely "missing".
         violations.append(
             f"{metrics_basis_path}: the deprecated `tests` object form is keyed by test_id and "
-            f"cannot express the multiple (test_id, case_id) rows owed by {sorted(multi_target_tests)}; "
+            f"cannot express the multiple (test_id, case_id) rows owed by {keys.multi_target_tests}; "
             "emit a `per_test` LIST with one entry per (test_id, case_id)"
         )
         return
