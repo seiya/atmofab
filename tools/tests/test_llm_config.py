@@ -173,7 +173,7 @@ class SampleConfigTests(unittest.TestCase):
                     continue
                 self.assertEqual(entry.model, top.model, msg=where)
 
-    def test_the_http_samples_put_the_http_provider_on_exactly_the_two_pure_leaves(self) -> None:
+    def test_the_http_samples_put_the_http_provider_on_exactly_the_pure_leaves(self) -> None:
         """The scope rule the HTTP samples exist to demonstrate. An HTTP provider anywhere else
         does not load at all (`llm_config_capability_insufficient_for_substep`, covered by
         `CapabilityTests`); what is checked here is that the samples USE the whole admissible
@@ -480,8 +480,12 @@ class CapabilityTests(_Tmp):
             self.assertEqual(cfg.entry_for("generate", substep).provider, "openai_compatible")
 
     def test_http_provider_on_each_agentic_leaf_is_rejected(self) -> None:
+        """The subject of this test is a DERIVED set, and it has shrunk twice. Spelling what it
+        currently holds keeps the shrink a decision: when Z1 moved the two `compile` leaves onto
+        the pure path (issue #168) the loop silently went from three subjects to one, and a
+        subject set that reaches zero would leave the whole body vacuously green."""
         agentic = sorted(lc.LLM_LEAF_SUBSTEPS - lc.PURE_CAPABLE_SUBSTEPS)
-        self.assertTrue(agentic)
+        self.assertEqual(agentic, [("validate", "judge")])
         for phase, substep in agentic:
             err = self.assert_rule(
                 "llm_config_capability_insufficient_for_substep",
@@ -491,6 +495,31 @@ class CapabilityTests(_Tmp):
                 "        api_key_env: ANTHROPIC_API_KEY\n"
                 "        model: claude-opus-5\n")
             self.assertIn(f"{phase}.{substep}", str(err))
+
+    def test_every_declared_provider_validates_for_the_compile_leaves(self) -> None:
+        """Issue #168's completion criterion: whichever provider this repository declares can be
+        put on either compile leaf and the configuration loads. `no vendor lock-in` is the
+        premise (`AGENTS.md` §Development premises), so the subject is every member of
+        `PROVIDER_CAPABILITIES`, not the two the operator's machine happens to run."""
+        blocks = {
+            "claude_cli": "        provider: claude_cli\n        model: opus\n",
+            "codex_cli": "        provider: codex_cli\n        model: gpt-5.6-sol\n",
+            "openai_compatible": (
+                "        provider: openai_compatible\n"
+                "        base_url: http://localhost:8000/v1\n"
+                "        api_key_env: LOCAL_KEY\n        model: local-model\n"),
+            "anthropic_api": (
+                "        provider: anthropic_api\n"
+                "        api_key_env: ANTHROPIC_API_KEY\n        model: claude-opus-5\n"),
+        }
+        self.assertEqual(set(blocks), set(lc.PROVIDER_CAPABILITIES))
+        for provider, block in sorted(blocks.items()):
+            for substep in ("generate", "verify"):
+                cfg = lc.load_llm_config(self.write(
+                    "defaults:\n  provider: claude_cli\n  model: opus\n"
+                    f"phases:\n  compile:\n    substeps:\n      {substep}:\n" + block))
+                cfg.validate_runnable()
+                self.assertEqual(cfg.entry_for("compile", substep).provider, provider)
 
 
 class RuleTests(_Tmp):
@@ -873,10 +902,14 @@ class RuleTests(_Tmp):
 
     def test_capability_insufficient_after_a_restriction(self) -> None:
         """The rule is about the RESOLVED capability set, not the provider name: a claude
-        entry restricted to `pure` is as inadmissible on an agentic leaf as an HTTP one."""
+        entry restricted to `pure` is as inadmissible on an agentic leaf as an HTTP one.
+
+        The subject is `validate.judge` because it is the only agentic LLM leaf left (issue
+        #168 moved the two `compile` leaves onto the pure path, and this row was written on
+        `compile.verify`)."""
         self.assert_rule("llm_config_capability_insufficient_for_substep",
                          "defaults:\n  provider: claude_cli\n"
-                         "phases:\n  compile:\n    substeps:\n      verify:\n"
+                         "phases:\n  validate:\n    substeps:\n      judge:\n"
                          "        capabilities: [pure]\n")
 
     def test_defaults_not_agentic(self) -> None:
@@ -1103,7 +1136,11 @@ class MirrorTableDriftTests(unittest.TestCase):
     def test_pure_capable_substeps_matches_conductor(self) -> None:
         """Runs `Conductor._pure_leaf_substep` itself (on a stub whose node-shape predicates
         are both True and whose entry is pure-capable), so the pair test in that body is what
-        is being compared — not a copy of it."""
+        is being compared — not a copy of it.
+
+        The M3c-shape half is exercised by `..._on_a_non_m3c_node` below: with both predicates
+        True this row cannot tell a pair that is admitted BECAUSE it is a compile pair from one
+        admitted because the node's shape happened to allow it."""
 
         class _Stub:
             # Both spellings of "this launch's model is pure-capable" are supplied, so the
@@ -1130,6 +1167,48 @@ class MirrorTableDriftTests(unittest.TestCase):
         }
         self.assertEqual(derived, set(lc.PURE_CAPABLE_SUBSTEPS))
         self.assertLessEqual(lc.PURE_CAPABLE_SUBSTEPS, lc.LLM_LEAF_SUBSTEPS)
+
+    def test_pure_capable_substeps_matches_conductor_on_a_non_m3c_node(self) -> None:
+        """The same predicate with the node-shape half FALSE. Only the two COMPILE pairs stay
+        admissible there — the Compile contract does not depend on the node kind, and no IR
+        exists at `compile.generate` time to read a shape from — so this row is what separates
+        the pair test from the shape test in `_pure_leaf_substep`'s body. Without it, replacing
+        the compile arm with the generate arm's shape condition stays green."""
+
+        class _Stub:
+            backend = "claude"
+            _pure_leaf_substep = wc.Conductor._pure_leaf_substep
+
+            def _conductor_authors_makefile(self, refs):  # noqa: D401 - stub
+                return False
+
+            def _conductor_authors_runner(self, refs):  # noqa: D401 - stub
+                return False
+
+            def entry_for(self, phase, substep):
+                return lc.ResolvedLeafEntry(
+                    provider="claude_cli",
+                    capabilities=lc.PROVIDER_CAPABILITIES["claude_cli"])
+
+        stub = _Stub()
+        derived = {
+            (phase, substep) for (phase, substep) in lc.LLM_LEAF_SUBSTEPS
+            if stub._pure_leaf_substep(None, phase, substep)
+        }
+        self.assertEqual(derived, {("compile", "generate"), ("compile", "verify")})
+
+    def test_the_pure_capable_set_is_the_size_this_tree_decided(self) -> None:
+        """One place where the SIZE of the set is a decision rather than a consequence.
+
+        Every other guard here runs the table (the wiring matrix, the template slots, the audit
+        map keys), so growing or shrinking it moves them all together and nothing says a member
+        was added or removed. This row does — and it is where a reviewer is told which members
+        those are."""
+        self.assertEqual(len(lc.PURE_CAPABLE_SUBSTEPS), 4)
+        self.assertEqual(
+            sorted(lc.PURE_CAPABLE_SUBSTEPS),
+            [("compile", "generate"), ("compile", "verify"),
+             ("generate", "generate"), ("generate", "verify")])
 
     def test_mcp_required_llm_substeps_matches_runtime(self) -> None:
         granted = {key for key, tools in ort._MCP_TOOL_GRANTS_BY_SUBSTEP.items() if tools}

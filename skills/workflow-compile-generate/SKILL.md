@@ -5,6 +5,14 @@ description: Use this when running the generate of the Compile stage and determi
 
 # Workflow Compile Generate
 
+> **This `SKILL` is read only by a residual AGENTIC compile leaf** — one whose configured
+> entry narrows its `capabilities:` to drop `pure`. Since [issue #168](https://github.com/seiya/atmofab/issues/168)
+> the default `Compile.generate` is a `pure-function leaf` that holds no tools and no write
+> authority: it reads no `SKILL`, the host inlines its closed context, and the host writes
+> `spec.ir.yaml` / `ir_meta.json`. The `Operations Rules` below — the tool, manifest and
+> `run-gate` procedure — describe the agentic path only. Canonical:
+> `docs/workflow/phases/phase_01_compile.md` §substep structure.
+
 ## Purpose
 Fix the generation responsibility of the Compile stage, and create a deterministic structured IR (`spec.ir.yaml`) from the input spec.
 
@@ -64,7 +72,7 @@ Fix the generation responsibility of the Compile stage, and create a determinist
 7. When `context_isolated=false`, record `ir_meta.json.constraint_reason` as required.
 8. With `debug_mode=false`, do not save failed-attempt artifacts.
 9. Before completion, `python3 tools/check_artifact_syntax.py --expect-top object` may be run on `spec.ir.yaml`. In an execution environment where the equivalent check via `run-gate` is available, prefer `run-gate`, and on `fail` it is a `Compile fail`.
-10. When re-submitted in response to a retry from `Validate` (when `launches/<agent_run_id>.request.json#repair_reason` includes `validate_feedback`), follow the "Acceptance of retry from Validate" section of `docs/workflow/phases/phase_01_compile.md`, and record the fixed `spec.ir.yaml` sections in `ir_meta.json.repair_target_sections[]`.
+10. When re-submitted in response to a retry from `Validate` (when `launches/<agent_run_id>.request.json#repair_reason` includes `validate_feedback`), follow the "Acceptance of retry from Validate" section of `docs/workflow/phases/phase_01_compile.md`, and record the fixed `spec.ir.yaml` sections in `ir_meta.json.repair_target_sections[]`. (Nothing in `tools/` reads that key — `docs/workflow/phases/phase_01_compile.md` §Acceptance of retry from Validate says so — so it is provenance for a human reader, not an input to any gate.)
 
 ## Decision Criteria
 - When regenerated from the same input, all sections of `spec.ir.yaml` match. For `public_api` on a `component` / `infrastructure` node this is machine-enforced (§5 + §5.1 are the only accepted values); every other section is an aspiration no gate checks.

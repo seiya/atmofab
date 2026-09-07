@@ -1420,10 +1420,202 @@ class PureLeafABSummaryTest(unittest.TestCase):
             self.assertIn("pure_leaf_ab_summary", result)
             self.assertTrue(result["pure_leaf_ab_summary"]["available"])
             md = _render_markdown(result)
-        self.assertIn("Pure-leaf A/B metrics (Z2)", md)
+        self.assertIn("Pure-leaf A/B metrics", md)
         self.assertIn("generate-executor: `pure`", md)
         self.assertIn("claude --version", md)
         self.assertIn(self.SRC, md)
+
+    # -- the Z1 compile half (issue #168) ------------------------------------------
+    IR_A = f"workspace/ir/{SAFE}/demo_20260907_001"
+    IR_B = f"workspace/ir/{SAFE}/demo_20260907_002"
+
+    def _launch(self, repo: Path, arid: str, *, step: str, ir_ref: str,
+                leaf_mode: str | None = "pure") -> None:
+        """One persisted launch request — the discovery key for the compile half.
+
+        Deliberately NOT the reservation the generate half uses: `reserved_ir_id` is overwritten
+        on every rotation, so it names only the LIVE directory. A launch request is written once
+        per attempt and never rewritten, which is why a rotated attempt is discoverable at all.
+        """
+        d = repo / "workspace" / "orchestrations" / self.ORCH / "launches"
+        d.mkdir(parents=True, exist_ok=True)
+        row = {"agent_run_id": arid, "step": step, "substep": "generate", "ir_ref": ir_ref}
+        if leaf_mode is not None:
+            row["leaf_mode"] = leaf_mode
+        (d / f"{arid}.request.json").write_text(json.dumps(row), encoding="utf-8")
+
+    def _compile_metas(self, repo: Path, ir_ref: str, *, result: str = "pass") -> None:
+        d = repo / ir_ref
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "compile_generate_meta.json").write_text(json.dumps({
+            "result": result, "failure_category": None, "attempts": 1,
+            "prompt_contract_version": "pure-32",
+            "per_attempt": [{"agent_run_id": "c1", "model": "claude-opus-5",
+                             "usage": {"input_tokens": 700, "output_tokens": 300}}],
+        }), encoding="utf-8")
+        (d / "compile_verify_meta.json").write_text(json.dumps({
+            "result": "pass", "failure_category": None, "attempts": 1,
+            "prompt_contract_version": "pure-32",
+            "per_attempt": [{"agent_run_id": "c2", "model": "claude-sonnet-5",
+                             "usage": {"input_tokens": 200, "output_tokens": 20}}],
+        }), encoding="utf-8")
+
+    def test_the_compile_half_is_discovered_from_the_launch_requests(self) -> None:
+        """Every ir_ref a PURE compile leaf was launched into, including a rotated attempt the
+        live reservation no longer names — which is the undercount this discovery exists to
+        avoid, in the one place the A/B numbers are the point."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._lay_out(repo, with_metas=False)
+            self._launch(repo, "a1", step="compile", ir_ref=self.IR_A)
+            self._launch(repo, "a2", step="compile", ir_ref=self.IR_B)
+            self._compile_metas(repo, self.IR_A, result="fail")
+            self._compile_metas(repo, self.IR_B)
+            meta = {"invocation": {"generate_executor": "pure"}}
+            out = collect_pure_leaf_ab_summary(repo, self.ORCH, meta)
+        self.assertTrue(out["available"])
+        self.assertEqual([n["ir_ref"] for n in out["pure_compile_nodes"]],
+                         [self.IR_A, self.IR_B])
+        self.assertEqual(out["pure_compile_nodes"][0]["generate"]["result"], "fail")
+        self.assertEqual(
+            out["pure_compile_nodes"][1]["generate"]["usage_total"]["total_tokens"], 1000)
+        self.assertEqual(out["pure_compile_nodes"][1]["verify"]["result"], "pass")
+
+    def test_discovery_ignores_a_launch_that_is_not_a_pure_compile_leaf(self) -> None:
+        """Three rejections, one row each, because a single combined fixture would let two of
+        them stop working unnoticed: another step, an agentic compile launch (no `leaf_mode`),
+        and an `ir_ref` that is not a repo-relative workspace path.
+
+        EACH FIXTURE PUTS THE METAS WHERE THE ROW WOULD FIND THEM if the rejection did not fire
+        — at `IR_A` for the first two, and at the traversed path for the third. Round 1's first
+        version wrote them only at `IR_A`, so the traversal row was green with the guard deleted:
+        the escaping path held no metas and `found=False` produced the same empty list. A
+        rejection row that would pass with the rejection removed asserts nothing.
+        """
+        # The escaping ref traverses back INTO the fixture's own tempdir rather than out of it.
+        # `../outside/ir` resolves to a sibling of the `TemporaryDirectory`, i.e. a fixed path in
+        # the system temp dir: it is never cleaned up, another user's copy of it turns this row
+        # into a `PermissionError` instead of a rejection, and the fixture self-test below is
+        # then satisfiable by a LEFTOVER from a previous run rather than by this run's write.
+        escaping = f"workspace/ir/{self.SAFE}/../../../workspace/ir/{self.SAFE}/traversed"
+        landing = f"workspace/ir/{self.SAFE}/traversed"
+        for label, kwargs, meta_at in (
+            ("another step", {"step": "generate", "ir_ref": self.IR_A}, self.IR_A),
+            ("agentic compile",
+             {"step": "compile", "ir_ref": self.IR_A, "leaf_mode": None}, self.IR_A),
+            ("escaping ir_ref", {"step": "compile", "ir_ref": escaping}, landing),
+        ):
+            with self.subTest(rejected=label), tempfile.TemporaryDirectory() as tmp:
+                repo = Path(tmp)
+                self._lay_out(repo, with_metas=False)
+                self._launch(repo, "a1", **kwargs)
+                self._compile_metas(repo, meta_at)
+                # Self-test of the fixture, twice over: the metas the row must NOT pick up are
+                # readable where the discovery would land, so the empty result below is the
+                # rejection and not an absence — and the write stayed INSIDE the tempdir, so it
+                # is this run's own and not a leftover.
+                landed = repo / meta_at / "compile_generate_meta.json"
+                self.assertTrue(landed.is_file(), label)
+                self.assertTrue(landed.resolve().is_relative_to(repo.resolve()), label)
+                out = collect_pure_leaf_ab_summary(
+                    repo, self.ORCH, {"invocation": {"generate_executor": "pure"}})
+                self.assertEqual(out["pure_compile_nodes"], [], label)
+
+    def test_attribution_follows_the_leaves_that_ran_not_the_ones_configured(self) -> None:
+        """A run stopped at `Compile` launches no `generate` leaf, so a configured generate
+        provider must not reach the attribution: naming it labels a compile-only measurement
+        with a provider that never executed, and — because it differs from the probed one —
+        suppresses the CLI version of the provider that DID run. Both are false provenance in
+        the one instrument a billed A/B is read from.
+
+        Both directions in one fixture, because only the pair distinguishes the rule from
+        "attribute nothing": the compile leaves ran on the probed backend (so the version is
+        reported), and the configured generate leaves are on another (so a rule reading the
+        configured map would report `claude/codex` and blank the version).
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._lay_out(repo, with_metas=False)
+            root = repo / "workspace" / "orchestrations" / self.ORCH
+            meta = {"invocation": {"generate_executor": "pure", "llm_leaf_map": {
+                "compile.generate": {"backend": "claude", "model": "opus"},
+                "compile.verify": {"backend": "claude", "model": "sonnet"},
+                "generate.generate": {"backend": "codex", "model": "gpt-5.6-sol"},
+                "generate.verify": {"backend": "codex", "model": "gpt-5.6-terra"},
+            }}}
+            (root / "orchestration_meta.json").write_text(json.dumps(meta), encoding="utf-8")
+            self._launch(repo, "a1", step="compile", ir_ref=self.IR_A)
+            self._compile_metas(repo, self.IR_A)
+            out = collect_pure_leaf_ab_summary(repo, self.ORCH, meta)
+        self.assertFalse(out["pure_leaf_provider_differs"])
+        self.assertEqual(out["backend"], "claude")
+        self.assertEqual(out["agent_cli_version"], "1.2.3 (Claude Code)")
+
+    def test_attribution_still_names_a_provider_the_leaves_that_ran_are_on(self) -> None:
+        """The other polarity, so the row above cannot pass by attributing nothing: when the
+        leaves that RAN are on a provider the preflight did not probe, the report names it and
+        drops the version rather than borrowing one."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._lay_out(repo, with_metas=False)
+            root = repo / "workspace" / "orchestrations" / self.ORCH
+            meta = {"invocation": {"generate_executor": "pure", "llm_leaf_map": {
+                "compile.generate": {"backend": "codex", "model": "gpt-5.6-sol"},
+                "compile.verify": {"backend": "codex", "model": "gpt-5.6-terra"},
+                "generate.generate": {"backend": "claude", "model": "opus"},
+            }}}
+            (root / "orchestration_meta.json").write_text(json.dumps(meta), encoding="utf-8")
+            self._launch(repo, "a1", step="compile", ir_ref=self.IR_A)
+            self._compile_metas(repo, self.IR_A)
+            out = collect_pure_leaf_ab_summary(repo, self.ORCH, meta)
+        self.assertTrue(out["pure_leaf_provider_differs"])
+        self.assertEqual(out["backend"], "codex")
+        self.assertEqual(out["agent_cli_version"], "")
+
+    def test_an_orchestration_with_no_pure_launch_keeps_the_configured_attribution(self) -> None:
+        """The fallback, asserted rather than left implicit: with no launch record there is
+        nothing to derive from, and reporting the configured set is the older behaviour rather
+        than a new claim. This is also what keeps the generate-only fixtures above unchanged."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._lay_out(repo)
+            meta = {"invocation": {"generate_executor": "pure", "llm_leaf_map": {
+                "generate.generate": {"backend": "codex", "model": "gpt-5.6-sol"},
+            }}}
+            (repo / "workspace" / "orchestrations" / self.ORCH
+             / "orchestration_meta.json").write_text(json.dumps(meta), encoding="utf-8")
+            out = collect_pure_leaf_ab_summary(repo, self.ORCH, meta)
+        self.assertTrue(out["pure_leaf_provider_differs"])
+        self.assertEqual(out["backend"], "codex")
+
+    def test_a_compile_only_run_is_available_and_rendered(self) -> None:
+        """`available` must not be decided by the GENERATE half alone: a run stopped at Compile
+        writes no source dir at all, and reporting it as "no pure-leaf node located" would hide
+        the very arm the A/B compares."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._lay_out(repo, with_metas=False)
+            self._launch(repo, "a1", step="compile", ir_ref=self.IR_A)
+            self._compile_metas(repo, self.IR_A)
+            result = audit(repo, self.ORCH)
+            self.assertTrue(result["pure_leaf_ab_summary"]["available"])
+            self.assertEqual(result["pure_leaf_ab_summary"]["pure_nodes"], [])
+            md = _render_markdown(result)
+        self.assertIn(f"### compile `{self.IR_A}`", md)
+        self.assertNotIn("no pure-leaf node located", md)
+
+    def test_the_two_phases_are_labelled_apart_in_the_render(self) -> None:
+        """Both halves present. The rows of a compile node are keyed `generate` / `verify` too —
+        the key names the SUBSTEP — so the heading is the only thing that says which phase a
+        block belongs to."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._lay_out(repo)
+            self._launch(repo, "a1", step="compile", ir_ref=self.IR_A)
+            self._compile_metas(repo, self.IR_A)
+            md = _render_markdown(audit(repo, self.ORCH))
+        self.assertIn(f"### compile `{self.IR_A}`", md)
+        self.assertIn(f"### generate `{self.SRC}`", md)
 
     def test_discovers_failed_and_rotated_source_dirs_with_no_checkpoint_at_all(self) -> None:
         # A terminally-failed generate is never checkpointed, and a cold restart
@@ -1807,9 +1999,14 @@ class PureLeafProvenanceUnderAMixedConfigTests(unittest.TestCase):
         self.assertEqual(
             ao._PURE_LEAF_MAP_KEYS,
             frozenset(f"{p}.{s}" for p, s in lc.PURE_CAPABLE_SUBSTEPS))
-        # A leaf outside that set must not steer the attribution.
+        # A leaf INSIDE that set steers the attribution — `compile.verify` is one since Z1
+        # (issue #168), and this row asserted the opposite while it was outside.
         summary = self._summary({"compile.verify": {"backend": "codex", "model": "x"}})
-        self.assertEqual(summary["backend"], "claude")
+        self.assertEqual(summary["backend"], "codex")
+        # A leaf OUTSIDE it does not. `validate.judge` is the one agentic LLM leaf left, so it
+        # is what keeps this half of the assertion alive.
+        outside = self._summary({"validate.judge": {"backend": "codex", "model": "x"}})
+        self.assertEqual(outside["backend"], "claude")
 
 
 class ScriptPathDanglingLaunchWitnessTests(unittest.TestCase):

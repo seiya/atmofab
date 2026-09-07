@@ -60,7 +60,7 @@ Every LLM substep produces its phase's `<stage>_meta.json` (`ir_meta.json` for C
 - `source_meta.json`: does not record lint or the syntax gate — `static lint` and the compiler syntax gate are both conductor-run `Generate.gate` checks, certified by `post_generate` against the host-authored `lint_evidence/<source_id>.json` / `syntax_evidence/<source_id>.json`.
 - `validate_meta.json`: additionally requires the LLM semantic-check evidence in `judge_command_ref` **only when** `verification_status=pass`.
 - With `debug_mode=false`, do not save failed-attempt artifacts. `verification_status` presumes `fail_closed`: unperformed/unjudgeable verification must never be recorded `pass`.
-- **verify-family substeps (`compile.verify` / `generate.verify`):** a `pass` must (re-)author the verified meta with `Write`/`Edit` even when nothing changed (refresh e.g. `verify_attempts`); an inspect-only verify cannot `pass`. That meta is your **only** output — its `write_root` is pinned to it, so you cannot rewrite sources/IR.
+- **verify-family substeps (`compile.verify` / `generate.verify`):** a `pass` must (re-)author the verified meta with `Write`/`Edit` even when nothing changed (refresh e.g. `verify_attempts`); an inspect-only verify cannot `pass`. That meta is your **only** output — its `write_root` is pinned to it, so you cannot rewrite sources/IR. (A `pure-function leaf` writes nothing and reads no contract document — reading this one means you are the agentic leaf.)
 
 ## MCP `command_log.jsonl` placement
 

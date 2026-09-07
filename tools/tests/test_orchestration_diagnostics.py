@@ -703,7 +703,7 @@ class SummarizePureLeafMetasTest(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            out = diag.summarize_pure_leaf_metas(src)
+            out = diag.summarize_pure_leaf_metas(src, "generate")
         self.assertTrue(out["found"])
         gen = out["generate"]
         self.assertTrue(gen["found"])
@@ -724,7 +724,7 @@ class SummarizePureLeafMetasTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             src = Path(tmp) / "src_legacy"
             src.mkdir(parents=True)
-            out = diag.summarize_pure_leaf_metas(src)
+            out = diag.summarize_pure_leaf_metas(src, "generate")
         self.assertFalse(out["found"])
         self.assertFalse(out["generate"]["found"])
         self.assertFalse(out["verify"]["found"])
@@ -746,7 +746,7 @@ class SummarizePureLeafMetasTest(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            out = diag.summarize_pure_leaf_metas(src)
+            out = diag.summarize_pure_leaf_metas(src, "generate")
         gen = out["generate"]
         self.assertTrue(gen["found"])
         # attempts falls back to the count of structurally-valid (dict) attempts
@@ -768,7 +768,7 @@ class SummarizePureLeafMetasTest(unittest.TestCase):
                 '{"result": "pass", "per_attempt": [{"usage": {"input_tokens": Infinity, "output_tokens": -5}}]}',
                 encoding="utf-8",
             )
-            out = diag.summarize_pure_leaf_metas(src)
+            out = diag.summarize_pure_leaf_metas(src, "generate")
         self.assertFalse(out["generate"]["found"])  # empty dict → not a pure meta
         ver = out["verify"]
         self.assertTrue(ver["found"])
@@ -779,7 +779,7 @@ class SummarizePureLeafMetasTest(unittest.TestCase):
             src = Path(tmp) / "src_broken"
             src.mkdir(parents=True)
             (src / "bundle_meta.json").write_text("{not json", encoding="utf-8")
-            out = diag.summarize_pure_leaf_metas(src)
+            out = diag.summarize_pure_leaf_metas(src, "generate")
         self.assertFalse(out["generate"]["found"])
 
     def test_non_utf8_meta_degrades_and_does_not_raise(self) -> None:
@@ -792,7 +792,7 @@ class SummarizePureLeafMetasTest(unittest.TestCase):
             (src / "bundle_meta.json").write_bytes(
                 b'{"per_attempt": [], "result": "\xff\xfe pass"}'
             )
-            out = diag.summarize_pure_leaf_metas(src)  # must not raise
+            out = diag.summarize_pure_leaf_metas(src, "generate")  # must not raise
         self.assertFalse(out["generate"]["found"])
         self.assertFalse(out["found"])
 
@@ -874,7 +874,7 @@ class SummarizePureLeafMetasTest(unittest.TestCase):
             (src / "bundle_meta.json").write_text(
                 json.dumps({"result": "ok", "attempts": 7}), encoding="utf-8"
             )
-            out = diag.summarize_pure_leaf_metas(src)
+            out = diag.summarize_pure_leaf_metas(src, "generate")
         self.assertFalse(out["generate"]["found"])
         self.assertFalse(out["found"])
 
@@ -902,7 +902,7 @@ class SummarizePureLeafMetasTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             src = Path(tmp) / "src_x"
             src.mkdir(parents=True)
-            out = diag.summarize_pure_leaf_metas(src)
+            out = diag.summarize_pure_leaf_metas(src, "generate")
         self.assertNotIn("source_dir", out)
 
 
@@ -934,7 +934,7 @@ class PureLeafMetaWriterReaderContractTest(unittest.TestCase):
                 refs, result="pass", failure_category=None, failure_excerpt=None,
                 attempts=1, per_attempt=per_attempt,
             )
-            out = diag.summarize_pure_leaf_metas(src_dir)
+            out = diag.summarize_pure_leaf_metas(src_dir, "generate")
 
         self.assertTrue(out["found"])
         gen = out["generate"]
@@ -1180,6 +1180,63 @@ class CollectorsDoNotSwallowTests(unittest.TestCase):
         source = (Path(__file__).resolve().parent.parent
                   / "orchestration_diagnostics.py").read_text(encoding="utf-8")
         self.assertEqual(_blanket_swallows(source, _DETECTION_PATH_FUNCS), [])
+
+
+class PureLeafMetaPhaseTests(unittest.TestCase):
+    """`summarize_pure_leaf_metas`' phase selector, both directions.
+
+    The `phase` argument is REQUIRED (no default), because the two phases' records live in
+    different directories under different names and a caller that forgot it would silently read
+    the wrong pair and report `found=False` — indistinguishable from an agentic node. The
+    unknown-phase guard exists for the same reason in reverse: this module promises
+    "best-effort: never raises", and a `KeyError` out of a diagnostics helper breaks an audit
+    instead of reporting a gap.
+    """
+
+    def _write(self, d, names):
+        d.mkdir(parents=True, exist_ok=True)
+        for name in names:
+            (d / name).write_text(json.dumps({
+                "result": "pass", "failure_category": None, "attempts": 1,
+                "per_attempt": [{"agent_run_id": "x", "model": "m",
+                                 "usage": {"input_tokens": 1, "output_tokens": 2}}],
+            }), encoding="utf-8")
+
+    def test_each_phase_reads_its_own_two_files(self) -> None:
+        for phase, mine, theirs in (
+            ("generate", ("bundle_meta.json", "verdict_meta.json"),
+             ("compile_generate_meta.json", "compile_verify_meta.json")),
+            ("compile", ("compile_generate_meta.json", "compile_verify_meta.json"),
+             ("bundle_meta.json", "verdict_meta.json")),
+        ):
+            with self.subTest(phase=phase), tempfile.TemporaryDirectory() as tmp:
+                d = Path(tmp) / "artifacts"
+                self._write(d, mine)
+                out = diag.summarize_pure_leaf_metas(d, phase)
+                self.assertTrue(out["found"], phase)
+                self.assertEqual(out["generate"]["result"], "pass")
+                self.assertEqual(out["verify"]["result"], "pass")
+            # ...and the OTHER phase's files are not picked up, which is the half that would
+            # silently pass if the table's two rows were swapped or shared.
+            with self.subTest(phase=phase, direction="other"), tempfile.TemporaryDirectory() as tmp:
+                d = Path(tmp) / "artifacts"
+                self._write(d, theirs)
+                self.assertFalse(diag.summarize_pure_leaf_metas(d, phase)["found"], phase)
+
+    def test_an_unknown_phase_reports_a_gap_rather_than_raising(self) -> None:
+        """The shape must match what a normal all-absent result returns, because both callers
+        label the row by `found` and read the two per-leaf dicts unconditionally."""
+        with tempfile.TemporaryDirectory() as tmp:
+            out = diag.summarize_pure_leaf_metas(Path(tmp), "validate")
+            absent = diag.summarize_pure_leaf_metas(Path(tmp), "compile")
+        self.assertEqual(out, absent)
+        self.assertEqual(out, {"generate": {"found": False}, "verify": {"found": False},
+                               "found": False})
+
+    def test_the_file_table_names_exactly_the_phases_that_have_a_pure_pair(self) -> None:
+        import tools.llm_config as lc
+        self.assertEqual(set(diag.PURE_LEAF_META_FILES),
+                         {phase for phase, _ in lc.PURE_CAPABLE_SUBSTEPS})
 
 
 if __name__ == "__main__":

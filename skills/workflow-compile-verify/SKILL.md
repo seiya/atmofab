@@ -5,6 +5,15 @@ description: Use this when running the verify of the Compile stage and performin
 
 # Workflow Compile Verify
 
+> **This `SKILL` is read only by a residual AGENTIC compile leaf** — one whose configured
+> entry narrows its `capabilities:` to drop `pure`. Since [issue #168](https://github.com/seiya/atmofab/issues/168)
+> the default `Compile.verify` is a `pure-function leaf` that holds no tools and no write
+> authority: it reads no `SKILL`, the host inlines its closed context, it returns one verify
+> verdict, and the host projects that onto `ir_meta.json` (`spec.ir.yaml` is the producer's and
+> is not rewritten here). The `Operations Rules` below — the tool, manifest and
+> `run-gate` procedure — describe the agentic path only. Canonical:
+> `docs/workflow/phases/phase_01_compile.md` §substep structure.
+
 ## Purpose
 Detect structural-invariant violations of the Compile stage output, and judge the conditions for proceeding to `Generate`. Following the "hybrid verification" principle that delegates semantic correctness to the `Validate` execution result (`docs/workflow/phases/phase_01_compile.md`), limit the scope of the self-check to structural invariants.
 

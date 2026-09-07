@@ -12,8 +12,9 @@ This module is the STAGE-AGNOSTIC substrate of that channel: the launch flag set
 result-envelope parser, the single-document extractor with its truncation classifier, and
 the verify verdict contract. It is deliberately free of any `generate`-specific knowledge
 (the `CodegenBundle` producer lives in `tools/workflow_conductor.py`; the bundle contract
-in `tools/codegen_bundle.py`) so the later Z1 (`compile.generate`) and Z3 (`validate.judge`)
-pure stages can reuse the same transport unchanged.
+in `tools/codegen_bundle.py`). Z1 (`compile.generate` / `compile.verify`, issue #168) reuses
+this transport unchanged, which is what it was written stage-agnostic for; Z3
+(`validate.judge`) is still to come.
 
 **Inert at introduction (M-A).** No caller passes `pure=True` yet; `Conductor.leaf_command`
 grows the branch, the producer/verify inversions arrive in M-C/M-D. The functions here are
@@ -35,7 +36,7 @@ from typing import Any, NamedTuple
 # contract change is an observable event (A7). Bumped when the pure prompt templates, the
 # fixed `PURE_SYSTEM_PROMPT`, or the transport's request shape change in a way that affects
 # producer behavior.
-PURE_PROMPT_CONTRACT_VERSION = "pure-31"
+PURE_PROMPT_CONTRACT_VERSION = "pure-34"
 
 # Claude's pure leaf system prompt is REPLACED with this fixed string via `--system-prompt`. The
 # default Claude Code system prompt injects per-machine DYNAMIC sections (cwd, environment,
