@@ -6873,11 +6873,17 @@ clean:
     def _pure_repo_document(self, rel: str, name: str) -> str:
         """A repository document inlined VERBATIM into a pure compile context, or RAISE.
 
-        Unlike a node artifact (which keeps the `""` degradation the generate producer's ir/tests
-        reads have), a repository document the leaf cannot repair fails the substep CLOSED before
-        any leaf is spawned: an empty string would satisfy the launch validator's presence check
-        and ship a prompt whose contract, example, or schema section is blank. `UnicodeError` is
-        caught alongside `OSError` because a decode error is a `ValueError`, not an `OSError`."""
+        Every read of the compile context comes through here or through `_pure_node_document`,
+        which delegates to it — so this is the ONE disposition, and the sentence that used to
+        contrast it with a node artifact's `""` degradation is gone rather than corrected: that
+        contrast stopped being true the moment the node artifacts started raising too, and it is
+        the generate producer (`_build_pure_context`) that still degrades, not anything here.
+
+        Raising is what makes the failure recoverable: an empty string would satisfy the launch
+        validator's presence check on a REPOSITORY document — shipping a prompt whose contract,
+        example or schema section is blank — and would be REFUSED for a declared key, inside
+        `record_launch`, from a call the pure loop does not guard. `UnicodeError` is caught
+        alongside `OSError` because a decode error is a `ValueError`, not an `OSError`."""
         path = self.repo_root / rel
         try:
             return path.read_text(encoding="utf-8")

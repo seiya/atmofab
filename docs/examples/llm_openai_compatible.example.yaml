@@ -94,16 +94,16 @@ phases:
     substeps:
       # PURE: the IR producer. The host inlines the controlled spec, the tests, the dependency
       # declaration and the phase contract; the leaf returns one JSON document holding the IR.
-      # THE CONTEXT IS LARGE, and it is ORDER-OF-MAGNITUDE guidance rather than a constant:
-      # most of it is `docs/workflow/phases/phase_01_compile.md` inlined in full, so it moves
-      # whenever that document is edited. Around 127 KB for this leaf and 161 KB for the
-      # reviewer below — measured on `problem/shallow_water2d@0.4.0` as 127,273 and 160,693
-      # bytes with `phase_01_compile.md` at 63,222 B — that file's size is the honest date
-      # stamp here, since it is most of the total — by summing the values of
-      # `Conductor._build_pure_compile_context` / `_build_pure_compile_verify_context`.
-      # (The exact figures were already 292 B stale one commit after they were first written.
-      # Re-measure with that one-liner rather than trusting these.) An endpoint with a
-      # 32k-token context window cannot run either leaf; check the window first.
+      # THE CONTEXT IS LARGE, and these are BOUNDS rather than constants: most of the total is
+      # `docs/workflow/phases/phase_01_compile.md` inlined in full, so it moves whenever that
+      # document is edited, and the reviewer's additionally carries the IR under review, so it
+      # moves per node AND per attempt. Measured on `problem/shallow_water2d@0.4.0` with
+      # `phase_01_compile.md` at 63,222 B: the producer is 127,273 bytes for every one of the
+      # 7 IR directories on disk (it does not read the IR), and the reviewer ranges 150,912 to
+      # 171,200 across them. Re-measure rather than trusting these — build a `Conductor` and
+      # sum `len(v.encode()) for v in c._build_pure_compile_context(refs).values()`, and the
+      # same for `_build_pure_compile_verify_context`. An endpoint with a 32k-token context
+      # window cannot run either leaf; check the window first.
       generate:
         provider: openai_compatible
         base_url: http://localhost:8000/v1

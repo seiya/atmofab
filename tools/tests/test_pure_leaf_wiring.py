@@ -1162,14 +1162,15 @@ class PureRenderTests(unittest.TestCase):
         # every other one is.
         ("tools/prompt_templates/pure_compile_verify.txt", None, None),
         ("tools/prompt_templates/pure_compile_generate.txt", None, None),
-        # Round 2: the AGENTIC transport, and the only one `Compile.verify` has. The pure
-        # template was here from issue #143 and its agentic counterpart was not, which was
-        # survivable while the rubric governed `Generate.verify` only — `Generate.verify` also
-        # has a `SKILL` and a phase doc on this list. `Compile.verify` is agentic-only, so this
-        # template is where a hand-assigned value would reach it with nothing else to catch it.
-        # It already carries `issue_severity: <issue_severity>` as its output contract. (Since
-        # issue #168 `Compile.verify` also has a pure template, listed above; this one is still
-        # its transport on the residual agentic path and on `validate.judge`.)
+        # Round 2 of issue #143 added this: the AGENTIC transport, which was then the ONLY one
+        # `Compile.verify` had. The pure template was here from issue #143 and its agentic
+        # counterpart was not, which was survivable while the rubric governed `Generate.verify`
+        # only — `Generate.verify` also has a `SKILL` and a phase doc on this list — and stopped
+        # being survivable when that branch put a substep under the rubric whose only transport
+        # this was. Since issue #168 `Compile.verify` has a PURE template too (listed above), so
+        # this file is now its residual-agentic transport rather than its only one; it is scanned
+        # for the unchanged reason that it carries `issue_severity: <issue_severity>` as its
+        # output contract and reaches `validate.judge` as well.
         ("tools/prompt_templates/substep_agent.txt", None, None),
         ("tools/prompt_templates/step_agent.txt", None, None),
         ("tools/prompt_templates/common_boilerplate.txt", None, None),
