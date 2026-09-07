@@ -332,7 +332,18 @@ PINNED: dict[str, str] = {
     # clause and the serialize/parse round trip were both enforced and undisclosed, so a leaf
     # met them as a repair turn out of a budget of two, and the round-trip finding named no
     # path to act on. A refusal the leaf is never told about is a turn it cannot converge on.
-    "pure-33": "1bc1346d5919215eb7abfc28aa25534645ed876101716da15f8e1c15396915ab",}
+    "pure-33": "1bc1346d5919215eb7abfc28aa25534645ed876101716da15f8e1c15396915ab",
+    # pure-34 (issue #168, round 5): the reviewer template said the phase contract's verify
+    # section "states them as a numbered list, and that list is the whole of your scope". The
+    # inlined document states that scope FOUR ways — the verify section (V1-V5, V8), a
+    # §substep-structure summary naming three of them, a §fixed/knob sentence assigning V6/V7,
+    # and this template — so a sentence meant to bound the reviewer instead made the document's
+    # own disagreement load-bearing, and the NARROWEST reading drops V2. Measured by the round-5
+    # security axis: stripping every `algorithm.steps[].description` from a real certified IR
+    # still PASSES `--stage compile`, so V2 at `compile.verify` is the only thing between a
+    # de-mathed IR and a `Generate` leaf that cannot read `controlled_spec.md`. The template now
+    # refuses every narrower reading BY NAME, including its own sentence.
+    "pure-34": "6625f0468c2ac988c31d3cfab38d1a1565933f213d9d7427bb4024cb29a9dd79",}
 
 
 def _contract_tuple() -> dict[str, object]:

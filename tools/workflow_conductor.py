@@ -3803,6 +3803,23 @@ class UsageResetWaitPlan(NamedTuple):
     window: str | None
 
 
+#: The `pure_context_assembly_failed` EVENT's detail cap. Wider than the persisted
+#: `reason_detail` on purpose: the event goes to the run's stdout JSONL, which no writer clips,
+#: and it is the one place the operator can read the WHOLE raise — reason, filename and
+#: directory — after `reason_detail` has spent its 200 characters. `docs/RUNBOOK.md` sends them
+#: here for exactly that, so the cap has to be wide enough to keep the promise: the longest
+#: raise this tree can produce is the generate producer's runner path, measured at 619
+#: characters.
+_PURE_ASSEMBLY_EVENT_DETAIL_MAX_CHARS = 2000
+
+
+#: `set_status` persists `reason_detail` clipped to this many characters
+#: (`orchestration_runtime`'s writer). The conductor composes the reason to fit rather than
+#: letting the writer decide what to drop: the writer cuts the TAIL, and the tail is where the
+#: `[attempts=N]` marker lives.
+_PHASE_REASON_DETAIL_MAX_CHARS = 200
+
+
 def _pure_assembly_detail(exc: BaseException) -> str:
     """The evidence string a `pure_context_assembly_failed` outcome carries.
 
@@ -6913,8 +6930,11 @@ clean:
             # characters — and measured on this tree's longest spec path, an absolute path put
             # the FILENAME past the cap, leaving a directory prefix and a remedy nobody can
             # follow. Ordering it this way makes the truncation eat the least actionable end:
-            # what survives is which file, then as much of where as fits. The full string is on
-            # the `pure_context_assembly_failed` event either way.
+            # what survives is which file, then as much of where as fits. The whole string is on
+            # the `pure_context_assembly_failed` event, whose own cap
+            # (`_PURE_ASSEMBLY_EVENT_DETAIL_MAX_CHARS`) is set wide enough to keep it — the
+            # GENERATE pair's raises still put an absolute path last and are longer, which is
+            # what that cap is sized for and what `docs/RUNBOOK.md` warns about.
             raise RuntimeError(
                 f"pure_{name}_document_missing: {Path(rel).name} "
                 f"(under {Path(rel).parent}/): {type(exc).__name__}") from exc
@@ -7471,7 +7491,7 @@ clean:
             pure_context = spec.build_context(refs)
         except Exception as exc:  # noqa: BLE001 — any context-assembly failure must recover
             self.emit("pure_context_assembly_failed", node_key=refs.node_key,
-                      detail=str(exc)[:200])
+                      detail=str(exc)[:_PURE_ASSEMBLY_EVENT_DETAIL_MAX_CHARS])
             return SubstepOutcome(
                 self.new_agent_run_id(), "fail", [], 1,
                 ("pure_context_assembly_failed", _pure_assembly_detail(exc)),
@@ -8140,7 +8160,7 @@ clean:
             pure_context = spec.build_context(refs)
         except Exception as exc:  # noqa: BLE001 — any context-assembly failure must recover
             self.emit("pure_context_assembly_failed", node_key=refs.node_key,
-                      detail=str(exc)[:200])
+                      detail=str(exc)[:_PURE_ASSEMBLY_EVENT_DETAIL_MAX_CHARS])
             return SubstepOutcome(
                 self.new_agent_run_id(), "fail", [], 1,
                 ("pure_context_assembly_failed", _pure_assembly_detail(exc)),
@@ -12701,12 +12721,24 @@ clean:
             # unused. A `pure_context_assembly_failed` names the repository file the operator
             # has to restore, and a fixed clip cut the FILENAME off every compile node in this
             # tree (the spec path alone is longer than the remainder), leaving a directory
-            # prefix and a remedy nobody can follow. Deriving it spends the whole budget on the
-            # evidence, which is the only part that varies.
+            # prefix and a remedy nobody can follow.
+            #
+            # The budget the clip is derived from RESERVES the `[attempts=N]` marker, because
+            # the first version of this derivation did not and evicted it: the marker is
+            # appended AFTER the evidence, `set_status` cuts at 200, and any evidence line long
+            # enough to fill the widened budget pushed the marker off the end — for EVERY
+            # transport tag, not just the new one. That marker is what tells an operator the
+            # outage outlasted every backoff, so losing it to make room for a file path traded
+            # one operator-facing fact for another. Reserving it costs the evidence a dozen
+            # characters and keeps both.
             infra = transport.infra_error
+            attempts_marker = (f" [attempts={transport.attempts}]"
+                               if transport.attempts > 1 else "")
             if infra:
                 head = f"leaf_transport_error: leaf_exit={transport.leaf_returncode} (tag: {infra[0]}; )"
-                suffix = f" (tag: {infra[0]}; {infra[1][:max(0, 200 - len(head))]})"
+                room = max(0, _PHASE_REASON_DETAIL_MAX_CHARS
+                           - len(head) - len(attempts_marker))
+                suffix = f" (tag: {infra[0]}; {infra[1][:room]})"
             else:
                 suffix = ""
             # The LAUNCH COUNT, and only that. It is worth printing — a bare transport error
@@ -12718,8 +12750,7 @@ clean:
             # routes the operator on that event rather than on this number, because the two
             # cases want opposite remedies (wait for the provider, vs. fix the intermediary's
             # read timeout — waiting never fixes a request that is simply too slow).
-            if transport.attempts > 1:
-                suffix += f" [attempts={transport.attempts}]"
+            suffix += attempts_marker
             orphan_arids = [oc.agent_run_id for oc in outcomes]
             if orphan_arids:
                 self._add_superseded_run_ids(
@@ -13409,7 +13440,7 @@ clean:
                 else:
                     reason_code = "conductor_phase_fail_closed"
                 self.set_status("fail_closed", reason_code=reason_code,
-                                reason_detail=reason[:200])
+                                reason_detail=reason[:_PHASE_REASON_DETAIL_MAX_CHARS])
                 return "fail_closed"
 
             target = decision.target_phase or phase

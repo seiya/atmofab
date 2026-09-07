@@ -5289,6 +5289,42 @@ class LeafTransientRetryTest(unittest.TestCase):
         self.assertEqual(len(launched), wc.MAX_LEAF_TRANSIENT_RETRIES + 1)
         self.assertNotIn("write-step-result", [s for s, _ in c.calls])
 
+    #: A terminal transport line long enough to fill the whole `reason_detail` budget on its own.
+    #: The class's own `_FLAKE` is 79 characters, which is why every earlier row here passed
+    #: while the composition silently dropped its tail: the evidence has to be longer than the
+    #: clip for the clip to be observable at all. This shape is the real one — the CLI's
+    #: connection error with the upstream JSON body attached.
+    _LONG_FLAKE = (
+        'API Error: Connection error. {"type":"error","error":{"type":"api_error",'
+        '"message":"upstream connect error or disconnect/reset before headers. '
+        'reset reason: connection termination"}} Please check your network connection')
+
+    def test_a_long_evidence_line_does_not_evict_the_attempt_count(self) -> None:
+        """`reason_detail` carries TWO operator-facing facts and the budget must hold both.
+
+        The evidence clip is derived from the composed prefix so a `pure_context_assembly_failed`
+        can name the file the operator has to restore. Deriving it without RESERVING the
+        `[attempts=N]` marker — which is appended after the evidence, where `set_status`'s cut
+        lands — evicted the marker for every transport tag whose captured line is long enough to
+        fill the widened budget. That marker is what says the outage outlasted every backoff, so
+        losing it to make room for a path trades one operator-facing fact for another.
+
+        Measured: with the reservation removed, the composed reason is 213 characters and the
+        marker is past the cut; the invariant on the next line is what catches it.
+        """
+        c = self._conductor([wc.ProcResult(1, self._LONG_FLAKE, "")])
+        with redirect_stdout(io.StringIO()):
+            oc = c.run_phase(self._refs(), "compile")
+        reason = oc.decision.reason
+        self.assertGreater(len(self._LONG_FLAKE), 110,
+                           "the probe must be longer than any clip, or it observes nothing")
+        self.assertLessEqual(len(reason), wc._PHASE_REASON_DETAIL_MAX_CHARS)
+        self.assertIn("[attempts=3]", reason)
+        self.assertIn("llm_transport_flake", reason)
+        # ...and the evidence still gets whatever the marker leaves, rather than being dropped
+        # wholesale to make the arithmetic easy.
+        self.assertIn("API Error: Connection error.", reason)
+
     def test_a_retried_leaf_that_then_hits_a_usage_limit_reports_the_usage_limit(self) -> None:
         """Attempts can MIX tags, and the tag — not the `[attempts=N]` suffix — is what the
         operator routes on. A transport flake retried into a quota stop must terminalize as

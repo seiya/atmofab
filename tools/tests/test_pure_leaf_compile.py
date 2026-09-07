@@ -339,6 +339,56 @@ class PureCompileContextTests(_Fixture):
         return (c._build_pure_compile_context if substep == "generate"
                 else c._build_pure_compile_verify_context)
 
+    def test_the_operator_sees_the_filename_the_raise_names(self) -> None:
+        """The whole chain, driven end to end: a missing repository document -> the raise ->
+        the infra_error the loop recovers it as -> the composed `reason_detail`.
+
+        Each link was changed for one reason — the raise names the BASENAME first so the cap
+        eats the least actionable end, `_pure_assembly_detail` drops the redundant exception
+        class, and the transport branch derives its evidence clip instead of fixing it at 110 —
+        and NONE of them is observable from its own side. Measured before those changes, on this
+        tree's longest spec path, the operator got a directory prefix with no filename and a
+        remedy nobody can follow.
+        """
+        (self.repo / self.refs.spec_path / "controlled_spec.md").unlink()
+        c = self.conductor(_envelope(_doc()))
+        outcome = c.run_substep(self.refs, "compile", "generate")
+        tag, detail = outcome.infra_error
+        self.assertEqual(tag, "pure_context_assembly_failed")
+        # `_pure_assembly_detail`: the message already names its reason, so the class is dropped.
+        self.assertTrue(detail.startswith("pure_controlled_spec_document_missing:"), detail)
+        # The composition the operator actually reads. Built here exactly as run_phase's
+        # transport branch builds it, from the module's own budget constant.
+        head = f"leaf_transport_error: leaf_exit=1 (tag: {tag}; )"
+        room = max(0, wc._PHASE_REASON_DETAIL_MAX_CHARS - len(head))
+        reason = f"leaf_transport_error: leaf_exit=1 (tag: {tag}; {detail[:room]})"
+        self.assertLessEqual(len(reason), wc._PHASE_REASON_DETAIL_MAX_CHARS)
+        self.assertIn("controlled_spec.md", reason,
+                      "the filename is the actionable half and must survive the cap")
+        self.assertIn("pure_controlled_spec_document_missing", reason)
+
+    def test_the_event_carries_the_whole_raise_the_reason_detail_clips(self) -> None:
+        """`docs/RUNBOOK.md` sends the operator to the `pure_context_assembly_failed` event for
+        the full string once `reason_detail` has spent its 200 characters. That promise is only
+        as good as the EVENT's own cap, which is why it is a named constant and not a literal:
+        the generate pair's raises still put an absolute path last and are the longest this tree
+        produces."""
+        (self.repo / self.refs.spec_path / "controlled_spec.md").unlink()
+        c = self.conductor(_envelope(_doc()))
+        events: list = []
+        c.emit = (  # type: ignore[assignment]
+            lambda ev, _sink=events, **f: _sink.append((ev, f)))
+        outcome = c.run_substep(self.refs, "compile", "generate")
+        detail = [f["detail"] for e, f in events if e == "pure_context_assembly_failed"][0]
+        self.assertGreater(wc._PURE_ASSEMBLY_EVENT_DETAIL_MAX_CHARS,
+                           wc._PHASE_REASON_DETAIL_MAX_CHARS,
+                           "the event exists to carry what reason_detail cannot")
+        # The whole raise, not a prefix of it: reason, filename AND directory.
+        self.assertIn("pure_controlled_spec_document_missing", detail)
+        self.assertIn("controlled_spec.md", detail)
+        self.assertIn(self.refs.spec_path, detail)
+        self.assertEqual(detail, outcome.infra_error[1])
+
     def test_a_missing_repository_document_raises_and_spawns_nothing(self) -> None:
         """A document the leaf cannot repair is a fail_closed BEFORE any launch. Driven through
         `run_substep` rather than the builder, so what is pinned is the recovery, not the raise."""

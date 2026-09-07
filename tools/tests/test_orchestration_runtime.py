@@ -30890,7 +30890,7 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # slacks ran 152 / 71 / 35 / 153 / 174 / 156 / 105 / 137 / 22 B down the table, so three
         # of the nine sit in the band this block's own header calls a tripwire. Nothing is red
         # today; re-measure the entry you are bumping rather than trusting a table-wide rule.
-        # Bumped 59990->65500 (issue #168, Z1) — measured 65337 with `wc -c` in
+        # Bumped 59990->66780 (issue #168, Z1) — measured 66618 with `wc -c` in
         # /home/seiya/atmofab at the commit that takes this bump, plus this entry's ~150 B slack
         # rule. §substep structure states that both LLM substeps of this phase now run as
         # `pure-function leaf`s and what the host inlines for each; §`ir_meta.json` required keys
@@ -30919,7 +30919,13 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # ordinary thing" — a leaf shortcut with the host's signature on it. The paragraph is now
         # split per substep. Each re-take of this entry has been an edit landing after the
         # previous measurement, which is what the round-5 note below says a ceiling does.)
-        "docs/workflow/phases/phase_01_compile.md": 65500,
+        # (A FIFTH re-take, at the round-5 HEAD, and the pattern is now the finding rather than
+        # the number: this document is INLINED VERBATIM into both compile prompts, so every round
+        # that corrected what a leaf is told grew it, and a ceiling taken at round N is stale by
+        # round N+1 by construction. Round 5's own edit states the reviewer's scope ONCE, in the
+        # section that defines it, because the document had been stating it four ways and the
+        # narrowest reading dropped the one invariant family no gate re-checks.)
+        "docs/workflow/phases/phase_01_compile.md": 66780,
         # Per-substep SKILLs — each force-read by its own LLM leaf.
         # Bumped 10800->11500: Compile.generate now authors the io_contract section (G2 /
         # docs/design/deterministic_followups.md) — it was moved here from Compile.verify so the
