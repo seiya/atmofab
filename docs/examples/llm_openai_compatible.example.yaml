@@ -94,11 +94,16 @@ phases:
     substeps:
       # PURE: the IR producer. The host inlines the controlled spec, the tests, the dependency
       # declaration and the phase contract; the leaf returns one JSON document holding the IR.
-      # THE CONTEXT IS LARGE. Measured on `problem/shallow_water2d@0.4.0` at the commit that
-      # added this comment: 126,981 bytes for this leaf and 160,401 for the reviewer below
-      # (`Conductor._build_pure_compile_context` / `_build_pure_compile_verify_context`,
-      # summed over the inlined documents). An endpoint with a 32k-token context window
-      # cannot run either. Check the window before pointing this entry at a server.
+      # THE CONTEXT IS LARGE, and it is ORDER-OF-MAGNITUDE guidance rather than a constant:
+      # most of it is `docs/workflow/phases/phase_01_compile.md` inlined in full, so it moves
+      # whenever that document is edited. Around 127 KB for this leaf and 161 KB for the
+      # reviewer below — measured on `problem/shallow_water2d@0.4.0` as 127,273 and 160,693
+      # bytes with `phase_01_compile.md` at 63,222 B — that file's size is the honest date
+      # stamp here, since it is most of the total — by summing the values of
+      # `Conductor._build_pure_compile_context` / `_build_pure_compile_verify_context`.
+      # (The exact figures were already 292 B stale one commit after they were first written.
+      # Re-measure with that one-liner rather than trusting these.) An endpoint with a
+      # 32k-token context window cannot run either leaf; check the window first.
       generate:
         provider: openai_compatible
         base_url: http://localhost:8000/v1

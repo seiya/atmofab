@@ -1387,8 +1387,9 @@ class PureRenderTests(unittest.TestCase):
     # `_render_pure_repair_prompt`) build their prompt WITHOUT a template at all — so a severity
     # hand-assigned in host code reaches a verify leaf with no file for the sweep above to read.
     # A Task Card is drawn BEFORE the must-read header, so a value written there outranks the
-    # SKILL and the phase rubric, and `Compile.verify` is agentic-only: this transport is its
-    # only one.
+    # SKILL and the phase rubric. That mattered most while `Compile.verify` was agentic-ONLY and
+    # this was its single transport; since Z1 (issue #168) it has a pure template as well, which
+    # the surface tuple above now lists — the sweep is unchanged, its subject grew.
     #
     # What follows renders the production prompt through the production entry point
     # (`wc.build_launch_request` -> `ort.prepare_launch_request_payload` ->

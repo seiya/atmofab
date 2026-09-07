@@ -61,9 +61,12 @@ phases:
     substeps:
       # PURE: the IR producer. The host inlines the controlled spec, the tests, the dependency
       # declaration and the phase contract; the leaf returns one JSON document holding the IR.
-      # Measured on `problem/shallow_water2d@0.4.0` at the commit that added this comment, the
-      # inlined context is 126,981 bytes for this leaf and 160,401 for the reviewer below —
-      # which this endpoint's window accommodates and a 32k-token one does not.
+      # The inlined context is around 127 KB for this leaf and 161 KB for the reviewer below —
+      # ORDER-OF-MAGNITUDE guidance, since most of it is
+      # `docs/workflow/phases/phase_01_compile.md` in full and moves whenever that document is
+      # edited (measured on `problem/shallow_water2d@0.4.0` as 127,273 and
+      # 160,693 bytes with `phase_01_compile.md` at 63,222 B, which is most of the total and
+      # is the honest date stamp for these figures). This endpoint's window accommodates it; a 32k-token one does not.
       generate:
         provider: anthropic_api
         api_key_env: ANTHROPIC_API_KEY

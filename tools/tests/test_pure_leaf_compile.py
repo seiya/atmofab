@@ -358,7 +358,18 @@ class PureIrDocumentViolationTests(_Fixture):
             ("missing key", {"ir": _valid_ir()}),
             ("reason wrong type", {"ir": None, "last_fail_reason": {"why": "x"}}),
             ("reason empty", {"ir": None, "last_fail_reason": "   "}),
-            ("ir not a mapping", {"ir": "schema_version: 1.0", "last_fail_reason": None}),
+            # The family must STRADDLE the `isinstance(ir, dict)` guard, and it did not: a
+            # STRING is iterable, so the section check below it (`k not in ir`, a substring
+            # test) produces a violation anyway and the guard could be deleted with this row
+            # green. A value that is NOT iterable is what reaches the guard — and without it
+            # the section check raises `TypeError`, which escapes `run_substep` uncaught and
+            # kills the conductor mid-run rather than costing one repair turn.
+            ("ir not a mapping (iterable)", {"ir": "schema_version: 1.0",
+                                             "last_fail_reason": None}),
+            ("ir not a mapping (a list)", {"ir": ["schema_version"], "last_fail_reason": None}),
+            ("ir is null", {"ir": None, "last_fail_reason": None}),
+            ("ir is a number", {"ir": 5, "last_fail_reason": None}),
+            ("ir is a bool", {"ir": True, "last_fail_reason": None}),
         ):
             with self.subTest(shape=label):
                 result = self.violations(doc)
@@ -388,6 +399,53 @@ class PureIrDocumentViolationTests(_Fixture):
         result = self.violations(_doc(ir))
         self.assertIsNotNone(result)
         self.assertIn("public_api", result[1])
+
+    def test_a_document_may_not_declare_a_kind_other_than_the_nodes_own(self) -> None:
+        """The other half of the row above, and the half that was missing: requiring the KEY by
+        the node's kind while leaving the VALUE leaf-chosen closes half a door.
+
+        `meta.spec_kind` is not a description. `--stage compile`'s published-surface gate reads
+        the kind from THIS field and returns without checking anything when it names a kind that
+        publishes no surface — so a `component` document declaring `problem` carries an EMPTY
+        `public_api` past V8 with the whole §5 / §5.1 transcription unchecked, and
+        `Generate.static` (which resolves the kind from the node_key instead) then fail-closes
+        and routes the finding to a substep that cannot edit the IR.
+
+        A leaf taking it skips rule 8 of its own prompt — every `operation_id`, published type,
+        structured signature and module parameter copied verbatim — and still reports the
+        substep done behind a green Compile phase.
+        """
+        for declared in ("problem", "profile", "", None, "Component"):
+            with self.subTest(declared=declared):
+                ir = _valid_ir()
+                if declared is None:
+                    del ir["meta"]["spec_kind"]
+                else:
+                    ir["meta"]["spec_kind"] = declared
+                result = self.violations(_doc(ir))
+                self.assertIsNotNone(result, declared)
+                self.assertEqual(result[0], wc.COMPILE_IR_DOCUMENT_VIOLATION)
+                self.assertIn("spec_kind", result[1])
+        # ...and the node's own kind is accepted, so this is not a blanket refusal — including
+        # PADDED, which every reader of this field resolves with `.strip()` and no case folding
+        # (`_validate_published_surface`, `_validate_toolchain_backend_supported`,
+        # `_conductor_authors_runner`). Refusing a spelling those readers agree on would be an
+        # over-refusal; `"Component"` above is refused because they do NOT case-fold.
+        self.assertIsNone(self.violations(_doc()))
+        padded = _valid_ir()
+        padded["meta"]["spec_kind"] = "  component  "
+        self.assertIsNone(self.violations(_doc(padded)))
+
+    def test_a_non_mapping_meta_is_a_violation_rather_than_a_crash(self) -> None:
+        """`meta` reaches the kind check, which must not assume the earlier presence check said
+        anything about its TYPE."""
+        for meta in (None, "component", ["component"], 5):
+            with self.subTest(meta=meta):
+                ir = _valid_ir()
+                ir["meta"] = meta
+                result = self.violations(_doc(ir))
+                self.assertIsNotNone(result, meta)
+                self.assertEqual(result[0], wc.COMPILE_IR_DOCUMENT_VIOLATION)
 
     def test_a_problem_node_is_not_asked_for_public_api(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -543,6 +601,20 @@ class PureCompileProducerTests(_Fixture):
         self.assertEqual(gmeta["failure_category"], wc.COMPILE_DECLARED_FAIL)
         self.assertNotIn(wc.COMPILE_DECLARED_FAIL, wc.COMPILE_DOCUMENT_FAILURE_ROUTING)
         self.assertIn("pure_compile_fail_declared", [e for e, _ in events])
+        # The leaf ANSWERED; it did not fail an attempt. The bookkeeping the loop runs for a
+        # failed attempt is guarded on `category`, not on `status`, precisely so this exit does
+        # not run it — and both halves of that are asserted here because the guard change is
+        # what distinguishes the two predicates, and nothing else in the suite can tell them
+        # apart (for the generate pair they are the same predicate).
+        self.assertNotIn("pure_ir_document_attempt_failed", [e for e, _ in events])
+        self.assertEqual(len(gmeta["per_attempt"]), 1)
+        self.assertNotIn("failure_category", gmeta["per_attempt"][0])
+        self.assertNotIn("failure_excerpt", gmeta["per_attempt"][0])
+        # ...and the finalized agent_run row says `fail`, not `pass`. Its `result_summary`
+        # already says `pure_compile_fail`, so a row recording `pass` would contradict the one
+        # field a pure row has to explain itself with.
+        row = _finalized(c)[-1]
+        self.assertEqual(row["status"], "fail")
 
     def test_a_declared_compile_fail_lands_on_the_severity_gate(self) -> None:
         reason = "deps.yaml names a dependency the registry does not carry"
@@ -602,7 +674,15 @@ class PureCompileReviewerTests(_Fixture):
         self.assertEqual(outcome.status, "fail")
         meta = json.loads((self.repo / self.refs.ir_ref
                            / "ir_meta.json").read_text(encoding="utf-8"))
+        # `verification_status` first, and it is the load-bearing one: the compile phase's own
+        # routing runs off `issue_severity`, so a projection that wrote `"pass"` here would
+        # change no verdict IN the run — and `ir_meta.json#verification_status` is the SOLE
+        # certification carrier a downstream consumer reads (`_dep_ir_meta_passes` compares it
+        # against `"pass"` with no cross-check against a passing step_result). A rejected IR
+        # would publish as certified. The generate-side twin pins this; this row did not.
+        self.assertEqual(meta["verification_status"], "fail")
         self.assertEqual(meta["issue_severity"], "minor")
+        self.assertEqual(meta["last_fail_reason"], "step_03 has no update target")
         decision = c.classify_failure(self.refs, "compile", [None, None, outcome])
         # `minor` is the verify-severity gate's warm same-phase repair. `target_phase` is None
         # there BY DESIGN — the caller reopens the phase it is already in — and the reason is what

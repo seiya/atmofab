@@ -37,8 +37,15 @@ DELIBERATELY NOT PINNED, and this is a REFUSAL rather than an omission: the docu
 compile pair inlines IN FULL (`docs/workflow/phases/phase_01_compile.md`, the two
 `docs/examples/spec_ir_algorithm*` files, `spec/schema/ir/impl_defaults.schema.json`). They meet
 the "host pastes it into the leaf's prompt" half of the bar above and fail the "stable" half:
-`phase_01_compile.md` took 59 commits in the seven weeks to 2026-09-07 (measured over 12 distinct
-days), so hashing it would bump `PURE_PROMPT_CONTRACT_VERSION` on most edits to it — and a bump
+`phase_01_compile.md` has taken 61 commits over 30 distinct days all-time, 43 of them over 16
+days in the seven weeks to 2026-09-07 — measured at `04a7b75` with
+`git log --oneline -- docs/workflow/phases/phase_01_compile.md | wc -l` and the same log with
+`--date=short --format=%ad | sort -u | wc -l`, the second run again with
+`--since=2026-07-19 --until=2026-09-08`. (An earlier version of this sentence said 59 commits
+over 12 days. That figure was carried in from the planning session rather than re-measured here,
+and no counting of this file's history reproduces it; the argument it supports is unaffected,
+but a refusal's own justification has to be checkable.) So hashing it would bump
+`PURE_PROMPT_CONTRACT_VERSION` on most edits to it — and a bump
 has two side effects that reach work this pin has nothing to do with: `_resolve_exemplar_source`
 stops offering every sibling exemplar certified at an earlier version, and
 `validate_pipeline_semantics._validate_orchestration_hierarchy` refuses to `--resume` an

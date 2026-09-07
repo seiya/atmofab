@@ -1484,18 +1484,31 @@ class PureLeafABSummaryTest(unittest.TestCase):
     def test_discovery_ignores_a_launch_that_is_not_a_pure_compile_leaf(self) -> None:
         """Three rejections, one row each, because a single combined fixture would let two of
         them stop working unnoticed: another step, an agentic compile launch (no `leaf_mode`),
-        and an `ir_ref` that is not a repo-relative workspace path."""
-        for label, kwargs in (
-            ("another step", {"step": "generate", "ir_ref": self.IR_A}),
+        and an `ir_ref` that is not a repo-relative workspace path.
+
+        EACH FIXTURE PUTS THE METAS WHERE THE ROW WOULD FIND THEM if the rejection did not fire
+        — at `IR_A` for the first two, and at the traversed path for the third. Round 1's first
+        version wrote them only at `IR_A`, so the traversal row was green with the guard deleted:
+        the escaping path held no metas and `found=False` produced the same empty list. A
+        rejection row that would pass with the rejection removed asserts nothing.
+        """
+        escaping = "../outside/ir"
+        for label, kwargs, meta_at in (
+            ("another step", {"step": "generate", "ir_ref": self.IR_A}, self.IR_A),
             ("agentic compile",
-             {"step": "compile", "ir_ref": self.IR_A, "leaf_mode": None}),
-            ("escaping ir_ref", {"step": "compile", "ir_ref": "../../etc"}),
+             {"step": "compile", "ir_ref": self.IR_A, "leaf_mode": None}, self.IR_A),
+            ("escaping ir_ref", {"step": "compile", "ir_ref": escaping}, escaping),
         ):
             with self.subTest(rejected=label), tempfile.TemporaryDirectory() as tmp:
                 repo = Path(tmp)
                 self._lay_out(repo, with_metas=False)
                 self._launch(repo, "a1", **kwargs)
-                self._compile_metas(repo, self.IR_A)
+                self._compile_metas(repo, meta_at)
+                # Self-test of the fixture: the metas the row must NOT pick up are readable
+                # where the discovery would look, so the empty result below is the rejection
+                # and not an absence.
+                self.assertTrue(
+                    (repo / meta_at / "compile_generate_meta.json").is_file(), label)
                 out = collect_pure_leaf_ab_summary(
                     repo, self.ORCH, {"invocation": {"generate_executor": "pure"}})
                 self.assertEqual(out["pure_compile_nodes"], [], label)

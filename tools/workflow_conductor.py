@@ -7084,6 +7084,23 @@ clean:
             return (COMPILE_IR_DOCUMENT_VIOLATION,
                     (f"`ir` is missing the required top-level section(s): {', '.join(absent)} "
                      f"(this node's kind is {kind!r})"))
+        # The document's SELF-DECLARED kind must equal the node's real one. `meta.spec_kind` is
+        # not a description the later gates ignore: `--stage compile`'s published-surface gate
+        # (`_validate_published_surface`) resolves the kind from THIS field and returns without
+        # checking anything when it is not one of the kinds that publish a surface — so a
+        # `component` document declaring `problem` is a `component` whose entire §5 / §5.1
+        # transcription goes unchecked, and the next phase's own resolver (which reads the
+        # node_key instead) then fail-closes with a finding it routes to a substep that cannot
+        # edit the IR. The key requirement above is decided from `refs` for exactly this reason;
+        # deciding it there and leaving the VALUE leaf-chosen closes half a door.
+        declared_kind = ((ir.get("meta") or {}).get("spec_kind")
+                         if isinstance(ir.get("meta"), dict) else None)
+        if str(declared_kind or "").strip() != kind:
+            return (COMPILE_IR_DOCUMENT_VIOLATION,
+                    (f"`ir.meta.spec_kind` must be this node's own kind {kind!r}; got "
+                     f"{declared_kind!r}. It selects which deterministic gates apply, so a "
+                     f"value other than the node's own turns those gates off rather than "
+                     f"describing the node."))
         # The host serializes `ir` itself, so a value the serializer cannot express — or one that
         # does not survive the round trip — must fail here as a repairable document defect rather
         # than at the host write, where it would be mis-routed as a transport fail_closed.
@@ -12309,9 +12326,10 @@ clean:
         # repair (bounded warm-resume of its own session inside `_run_pure_verify_substep`) and
         # the host authors source_meta.json from the returned verdict — there is no leaf-authored
         # meta to re-author here. A schema-exhausted pure verify is routed by classify_failure's
-        # verdict table (a cold generate restart), not by this agentic meta warm-resume loop. Only
-        # (generate, verify) is pure (compile.verify stays agentic), so this fires solely for the
-        # generate phase on a pure-leaf node.
+        # verdict table (a cold generate restart), not by this agentic meta warm-resume loop. Both
+        # `verify` substeps can be pure since Z1 (issue #168), so this loop now fires only where
+        # the configured entry keeps a `verify` leaf on the agentic path — the guard below is
+        # what decides it, and it was already asking the right question.
         if self._pure_leaf_substep(refs, phase, "verify"):
             return outcomes
         failed = outcomes[-1]
