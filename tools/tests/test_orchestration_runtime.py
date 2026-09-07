@@ -30890,7 +30890,7 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # slacks ran 152 / 71 / 35 / 153 / 174 / 156 / 105 / 137 / 22 B down the table, so three
         # of the nine sit in the band this block's own header calls a tripwire. Nothing is red
         # today; re-measure the entry you are bumping rather than trusting a table-wide rule.
-        # Bumped 59990->64780 (issue #168, Z1) — measured 64624 with `wc -c` in
+        # Bumped 59990->65500 (issue #168, Z1) — measured 65337 with `wc -c` in
         # /home/seiya/atmofab at the commit that takes this bump, plus this entry's ~150 B slack
         # rule. §substep structure states that both LLM substeps of this phase now run as
         # `pure-function leaf`s and what the host inlines for each; §`ir_meta.json` required keys
@@ -30913,7 +30913,13 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # `spec_catalog.yaml`, gained the per-path treatment their neighbours already had.
         # Re-measured at the round-3 HEAD; a third re-take, for the third time because an edit
         # landed after the previous one was taken.)
-        "docs/workflow/phases/phase_01_compile.md": 64780,
+        # (A FOURTH re-take, at the round-4 HEAD. Round 4's correctness axis rendered the
+        # `compile.verify` prompt and found round 3's own new paragraph landing in it, where
+        # every claim in it was false and its last sentence named the PASSING verdict as "the
+        # ordinary thing" — a leaf shortcut with the host's signature on it. The paragraph is now
+        # split per substep. Each re-take of this entry has been an edit landing after the
+        # previous measurement, which is what the round-5 note below says a ceiling does.)
+        "docs/workflow/phases/phase_01_compile.md": 65500,
         # Per-substep SKILLs — each force-read by its own LLM leaf.
         # Bumped 10800->11500: Compile.generate now authors the io_contract section (G2 /
         # docs/design/deterministic_followups.md) — it was moved here from Compile.verify so the
@@ -31066,13 +31072,17 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # rubric (the mirror of `workflow-generate-verify/SKILL.md`'s pointer), and the
         # self-sufficiency item states a `fail` instead of assigning `major`. Measured 16744 —
         # the old ceiling left 6 B.
-        # Bumped 16900->17520 (issue #168, Z1) — measured 17361 with `wc -c` in
+        # Bumped 16900->17620 (issue #168, Z1) — measured 17450 with `wc -c` in
         # /home/seiya/atmofab at the commit that takes this bump, plus this table's ~150 B slack.
         # The addition is a leading note that the file is read only by a RESIDUAL agentic compile
         # leaf, since the default `Compile.verify` is now a `pure-function leaf` that reads no
         # `SKILL`. The body is unchanged: deleting it is issue #171, and a deletion lands with
         # the migration that makes it dead, never ahead of it.
-        "skills/workflow-compile-verify/SKILL.md": 17520,
+        # (17520 first, from 17361 at the branch's first commit; the file then grew to 17450 in
+        # a later round and the ceiling was NOT re-taken, leaving 70 B of slack — inside the band
+        # this block's header calls a tripwire rather than a ceiling. Round 4's correctness axis
+        # measured all three entries together and found this one; re-taken at the round-4 HEAD.)
+        "skills/workflow-compile-verify/SKILL.md": 17620,
         # Bumped 22000->22400: inlined the leaf-actionable C003 directive placement
         # + the f2008 63-char identifier limit (previously only in phase_02, which
         # generate.generate no longer force-reads) to avoid a lint/build round-trip.

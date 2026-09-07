@@ -3803,6 +3803,19 @@ class UsageResetWaitPlan(NamedTuple):
     window: str | None
 
 
+def _pure_assembly_detail(exc: BaseException) -> str:
+    """The evidence string a `pure_context_assembly_failed` outcome carries.
+
+    Drops the `RuntimeError: ` prefix when the message already NAMES its reason (every
+    `pure_<name>_document_missing` / `_unsliceable` / `_unresolvable` raise does). The operator
+    meets this string in `phase_state.json#reason_detail`, which is capped at 200 characters and
+    composed with a tag that already says the class — so fourteen characters of exception class
+    are fourteen characters of the file path the operator has to restore. A message that does NOT
+    name itself keeps the class, because there the type is the only thing identifying it."""
+    text = str(exc)
+    return text if text.startswith("pure_") else f"{type(exc).__name__}: {text}"
+
+
 def _leaf_infra_error(proc: ProcResult) -> tuple[str, str] | None:
     """The infra `(tag, evidence)` for a dead leaf — the ONE entry point every caller uses.
 
@@ -6882,16 +6895,29 @@ clean:
         contrast stopped being true the moment the node artifacts started raising too, and it is
         the generate producer (`_build_pure_context`) that still degrades, not anything here.
 
-        Raising is what makes the failure recoverable: an empty string would satisfy the launch
-        validator's presence check on a REPOSITORY document — shipping a prompt whose contract,
-        example or schema section is blank — and would be REFUSED for a declared key, inside
-        `record_launch`, from a call the pure loop does not guard. `UnicodeError` is caught
-        alongside `OSError` because a decode error is a `ValueError`, not an `OSError`."""
+        Raising is what makes the failure RECOVERABLE, and the alternative is not a blank
+        prompt: every key this function feeds is a DECLARED one (set identity is pinned by
+        `test_the_key_source_table_covers_every_declared_key`), and
+        `_validate_pure_launch_request_payload` refuses a declared key that is empty rather than
+        merely absent — inside `record_launch`, from a call the pure loop does not guard, so the
+        `RuntimeError` would escape `run_substep` and abort the conductor. An empty string
+        therefore never ships a prompt with a blank contract, example or schema section; it
+        turns a named, resumable failure into a crash. `UnicodeError` is caught alongside
+        `OSError` because a decode error is a `ValueError`, not an `OSError`."""
         path = self.repo_root / rel
         try:
             return path.read_text(encoding="utf-8")
         except (OSError, UnicodeError) as exc:
-            raise RuntimeError(f"pure_{name}_document_missing: {path}: {exc}") from exc
+            # The BASENAME leads and the directory trails, on a repo-relative path. The operator
+            # meets this string in `phase_state.json#reason_detail`, which is capped at 200
+            # characters — and measured on this tree's longest spec path, an absolute path put
+            # the FILENAME past the cap, leaving a directory prefix and a remedy nobody can
+            # follow. Ordering it this way makes the truncation eat the least actionable end:
+            # what survives is which file, then as much of where as fits. The full string is on
+            # the `pure_context_assembly_failed` event either way.
+            raise RuntimeError(
+                f"pure_{name}_document_missing: {Path(rel).name} "
+                f"(under {Path(rel).parent}/): {type(exc).__name__}") from exc
 
     def _pure_profile_spec_document(self, refs: NodeRefs) -> str:
         """The controlled spec of each `profile` dependency this node declares, resolved through
@@ -7186,9 +7212,15 @@ clean:
     def _write_declared_compile_fail(self, refs: NodeRefs, reason: str, *,
                                      attempts: int) -> None:
         """Project a producer's `Compile fail` declaration onto `ir_meta.json`, and write NO
-        `spec.ir.yaml`: the leaf said the phase cannot be completed, so there is no IR, and a
-        stale one from an earlier attempt must not be left to look fresh (the `ir_id` is rotated
-        per attempt, so this directory holds none).
+        `spec.ir.yaml`: the leaf said the phase cannot be completed, so there is no IR.
+
+        No stale IR can be left looking fresh here, and the reason is the LOOP rather than the
+        id rotation: `_ensure_fresh_producer_id` runs once per `run_phase` entry, not per
+        attempt, so a repaired attempt writes into the same `<ir_ref>` — but every exit of the
+        producer loop is terminal for that phase entry, and the pass branch is the only one that
+        writes `spec.ir.yaml`. A declaration therefore reaches a directory this phase entry has
+        not written an IR into. (`determine_substep_status`'s defensive compile branch is the
+        second answer to the same question, for the path that does not come through this loop.)
 
         The severity is `major` because the phase's rubric assigns that to a finding whose subject
         is the INPUT rather than the artifact — which is exactly what this declaration is."""
@@ -7442,7 +7474,7 @@ clean:
                       detail=str(exc)[:200])
             return SubstepOutcome(
                 self.new_agent_run_id(), "fail", [], 1,
-                ("pure_context_assembly_failed", f"{type(exc).__name__}: {exc}"),
+                ("pure_context_assembly_failed", _pure_assembly_detail(exc)),
                 time.time(), 1)
         per_attempt: list[dict[str, Any]] = []
         resume_session_id: str | None = None
@@ -8111,7 +8143,7 @@ clean:
                       detail=str(exc)[:200])
             return SubstepOutcome(
                 self.new_agent_run_id(), "fail", [], 1,
-                ("pure_context_assembly_failed", f"{type(exc).__name__}: {exc}"),
+                ("pure_context_assembly_failed", _pure_assembly_detail(exc)),
                 time.time(), 1)
         per_attempt: list[dict[str, Any]] = []
         resume_session_id: str | None = None
@@ -12663,9 +12695,20 @@ clean:
             # the common case, and a bare `leaf_exit=1` sends the operator hunting for a bug that
             # is not there). The `leaf_transport_error` PREFIX is load-bearing: set_status maps the
             # fail_closed reason to a reason_code by prefix match, so the tag only ever appends.
-            # The evidence is clipped so the whole reason survives set_status's reason_detail[:200].
+            # The evidence is clipped so the whole reason survives set_status's
+            # reason_detail[:200] — and the clip is computed from the PREFIX rather than fixed at
+            # 110, which measured as the binding limit while 25 of the 200 characters went
+            # unused. A `pure_context_assembly_failed` names the repository file the operator
+            # has to restore, and a fixed clip cut the FILENAME off every compile node in this
+            # tree (the spec path alone is longer than the remainder), leaving a directory
+            # prefix and a remedy nobody can follow. Deriving it spends the whole budget on the
+            # evidence, which is the only part that varies.
             infra = transport.infra_error
-            suffix = f" (tag: {infra[0]}; {infra[1][:110]})" if infra else ""
+            if infra:
+                head = f"leaf_transport_error: leaf_exit={transport.leaf_returncode} (tag: {infra[0]}; )"
+                suffix = f" (tag: {infra[0]}; {infra[1][:max(0, 200 - len(head))]})"
+            else:
+                suffix = ""
             # The LAUNCH COUNT, and only that. It is worth printing — a bare transport error
             # invites an instant `--resume` that dies the same way — but it does NOT say which
             # budget ended the substep, and must not be read as if it did: it counts bundle

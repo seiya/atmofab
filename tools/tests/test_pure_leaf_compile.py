@@ -292,8 +292,18 @@ class PureCompileContextTests(_Fixture):
                     (self.repo / rel).unlink()
                     with self.assertRaises(RuntimeError) as caught:
                         builder(self.refs)
-                    self.assertIn("_missing", str(caught.exception))
-                    self.assertIn(rel, str(caught.exception))
+                    message = str(caught.exception)
+                    self.assertIn("_missing", message)
+                    # BOTH halves of the path, and the basename FIRST: the operator meets this
+                    # string through a 200-character `reason_detail`, so the message leads with
+                    # the file and trails with its directory — asserting the joined path would
+                    # pin the old order and would go green again if the two were swapped back.
+                    self.assertIn(Path(rel).name, message)
+                    self.assertIn(str(Path(rel).parent), message)
+                    self.assertLess(message.index(Path(rel).name),
+                                    message.index(str(Path(rel).parent)),
+                                    "the basename must precede the directory: it is what "
+                                    "survives the reason_detail cap")
 
     def test_the_key_source_table_covers_every_declared_key(self) -> None:
         """Set identity between the table above and the contract, with the two derived keys

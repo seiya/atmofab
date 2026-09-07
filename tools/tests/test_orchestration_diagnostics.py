@@ -1182,5 +1182,62 @@ class CollectorsDoNotSwallowTests(unittest.TestCase):
         self.assertEqual(_blanket_swallows(source, _DETECTION_PATH_FUNCS), [])
 
 
+class PureLeafMetaPhaseTests(unittest.TestCase):
+    """`summarize_pure_leaf_metas`' phase selector, both directions.
+
+    The `phase` argument is REQUIRED (no default), because the two phases' records live in
+    different directories under different names and a caller that forgot it would silently read
+    the wrong pair and report `found=False` — indistinguishable from an agentic node. The
+    unknown-phase guard exists for the same reason in reverse: this module promises
+    "best-effort: never raises", and a `KeyError` out of a diagnostics helper breaks an audit
+    instead of reporting a gap.
+    """
+
+    def _write(self, d, names):
+        d.mkdir(parents=True, exist_ok=True)
+        for name in names:
+            (d / name).write_text(json.dumps({
+                "result": "pass", "failure_category": None, "attempts": 1,
+                "per_attempt": [{"agent_run_id": "x", "model": "m",
+                                 "usage": {"input_tokens": 1, "output_tokens": 2}}],
+            }), encoding="utf-8")
+
+    def test_each_phase_reads_its_own_two_files(self) -> None:
+        for phase, mine, theirs in (
+            ("generate", ("bundle_meta.json", "verdict_meta.json"),
+             ("compile_generate_meta.json", "compile_verify_meta.json")),
+            ("compile", ("compile_generate_meta.json", "compile_verify_meta.json"),
+             ("bundle_meta.json", "verdict_meta.json")),
+        ):
+            with self.subTest(phase=phase), tempfile.TemporaryDirectory() as tmp:
+                d = Path(tmp) / "artifacts"
+                self._write(d, mine)
+                out = diag.summarize_pure_leaf_metas(d, phase)
+                self.assertTrue(out["found"], phase)
+                self.assertEqual(out["generate"]["result"], "pass")
+                self.assertEqual(out["verify"]["result"], "pass")
+            # ...and the OTHER phase's files are not picked up, which is the half that would
+            # silently pass if the table's two rows were swapped or shared.
+            with self.subTest(phase=phase, direction="other"), tempfile.TemporaryDirectory() as tmp:
+                d = Path(tmp) / "artifacts"
+                self._write(d, theirs)
+                self.assertFalse(diag.summarize_pure_leaf_metas(d, phase)["found"], phase)
+
+    def test_an_unknown_phase_reports_a_gap_rather_than_raising(self) -> None:
+        """The shape must match what a normal all-absent result returns, because both callers
+        label the row by `found` and read the two per-leaf dicts unconditionally."""
+        with tempfile.TemporaryDirectory() as tmp:
+            out = diag.summarize_pure_leaf_metas(Path(tmp), "validate")
+            absent = diag.summarize_pure_leaf_metas(Path(tmp), "compile")
+        self.assertEqual(out, absent)
+        self.assertEqual(out, {"generate": {"found": False}, "verify": {"found": False},
+                               "found": False})
+
+    def test_the_file_table_names_exactly_the_phases_that_have_a_pure_pair(self) -> None:
+        import tools.llm_config as lc
+        self.assertEqual(set(diag.PURE_LEAF_META_FILES),
+                         {phase for phase, _ in lc.PURE_CAPABLE_SUBSTEPS})
+
+
 if __name__ == "__main__":
     unittest.main()
