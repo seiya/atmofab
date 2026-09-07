@@ -348,3 +348,66 @@ mechanically rather than checking for them by hand.
 false by the removal, and repaired those three. The class was not then swept for elsewhere in the
 tree, so round 5 found a fourth citation, in `tools/tests/test_backend_boundary.py`, of a sentence
 the compression had dropped. **A fix that does not sweep its own class schedules the next round.**
+
+## "You corrected prose a LEAF reads, and you corrected it for ONE reader" (issue #168)
+
+The change made two `compile` `substep`s `pure-function leaf`s. On that path the host inlines a
+closed context into one prompt, and one of the documents it inlines VERBATIM is
+`docs/workflow/phases/phase_01_compile.md` — the same document, whole, into BOTH the producer's
+prompt and the reviewer's. That document had been written when both substeps were agentic, so
+every sentence in it assuming a filesystem, a tool, or the OTHER substep's contract became an
+instruction to a leaf that could not follow it, or could.
+
+**Round 3** found the first: §"Acceptance of retry from Validate" tells the leaf to read
+`launches/<agent_run_id>.request.json`, and, failing to find a quote there, to "stop with a
+`Compile fail`" and record `validate_feedback:<finding_id>` in `ir_meta.json.last_fail_reason`. On
+the pure path that field is the TERMINAL declaration channel — deliberately off the routing table
+— so a leaf following the sentence literally ends the run instead of recording a repair. The
+reviewer that found it did not reason about it: it drove the live Validate→Compile route and
+showed the rendered launch carries `repair_reason: none, repair_findings: None`, so the leaf is
+handed the paragraph and nothing to satisfy it with.
+
+**Round 4** found that round 3's fix — a per-path paragraph — landed in the REVIEWER's prompt too
+(the reviewer that found it named the rendered line), where every claim in it was false: the reviewer has no declared-fail exit at
+all, its `last_fail_reason` is the ordinary verify-fail channel, and the paragraph's closing advice
+("author the IR … and return `last_fail_reason: null`") is simultaneously forbidden by the
+reviewer's own template three lines above and identical to its PASS invariant. A host-authored
+sentence named the passing verdict "the ordinary thing", on precisely the re-submission where
+`Validate` had already said the IR was at fault. The always-on half was worse than the
+re-submission half: it reached every launch of that substep.
+
+**Round 5** found the third, in the same class and again in a sentence written to help. The
+reviewer's template said the phase contract's verify section "states them as a numbered list, and
+that list is the whole of your scope". That document states the scope FOUR times — the verify
+section, a §substep-structure summary naming three of six invariant families, a §fixed/knob
+sentence assigning two more from outside the verify section, and now the template. A sentence
+meant to BOUND the reviewer made the document's own disagreement load-bearing, and the narrowest
+reading is the summary, which drops the one family with no deterministic backstop. Measured:
+stripping every `algorithm.steps[].description` from a real certified IR still PASSES the
+deterministic compile gate, so that family at `verify` is the only thing between a de-mathed IR
+and a `Generate` leaf walled off from the spec.
+
+**What each round's instrument could and could not see.** All three were found by rendering the
+production prompt and reading it as the leaf, and by nothing else. The mutation sweep mutates
+code; the witness census enumerates code; a blank-slate reviewer reads HEAD's code. A reviewer in
+each of rounds 3, 4 and 5 confirmed the same thing independently: **delete or invert the sentence
+and the whole suite stays green.** The documents are unpinned by the prompt-contract drift guard
+by an explicit, argued refusal (hashing a document edited on 30 distinct days would bump the
+contract version on most edits, which stops prior-art exemplar selection and refuses `--resume`
+across the bump) — so the refusal is right and its cost is now measured rather than hypothetical,
+which is the only honest form for a residue entry.
+
+**Two rules came out of it.** A summary of a substep's scope stated anywhere but where the scope
+is defined is a SECOND DEFINITION — delete it, do not correct it; the fix that held was stating
+the scope once, in the section that defines it, and having the template refuse every narrower
+reading BY NAME, its own sentence included. And the per-path correction has to be per-SUBSTEP, not
+per-path: "the pure path" is not one reader.
+
+**The same branch's numeric-threshold episode, for the round-0 list.** Round 5 also found a
+regression in round 4's own fix: a `reason_detail` clip widened to fit a filename evicted the
+`[attempts=N]` marker, which is what tells an operator an outage outlasted every backoff. Every
+existing test in the class passed, because the class's flake constant is 79 characters and the
+clip it was supposed to exercise is 110 — the fixture had never been on the far side of the
+threshold it was measuring. The fix reserves the marker in the budget; the test asserts, in its
+own body, that its probe is longer than any clip.
+

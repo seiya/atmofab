@@ -239,7 +239,7 @@ When a rule derives its safety from an enumeration, **write a test that kills ea
 enumeration by mutation** (round 0 in `atmofab-review-loop`). A missing element shows up in no
 other test.
 
-The six surfaces that are none of exec / env / argv / FS / evidence paths and none of the
+The seven surfaces that are none of exec / env / argv / FS / evidence paths and none of the
 spelling variation. Each is one question; the episodes, the version tables and the measurement
 recipes are in `references/input-surfaces.md`:
 
@@ -320,6 +320,22 @@ recipes are in `references/input-surfaces.md`:
   one: a linter's walk exclusions and read errors, a compiler's error cap, a test runner's
   collection error, a build system's `-k`. Related but different from surface 5 — nothing here is
   caller-controlled; the tool is simply answering a narrower question than the gate asked.
+- **Surface 11 — does a field the LEAF authors decide which gate applies to its own artifact?**
+  Not what a gate reads to judge — what a gate reads to decide whether to judge at all. A gate that
+  resolves the artifact's kind, its language, its declared model, or the presence of a contract
+  section FROM THE ARTIFACT, and returns early when the value is one it does not cover, hands the
+  leaf the off switch. Issue #168: `_validate_published_surface` takes `spec_kind` from the IR's
+  own `meta`, and a `component` IR self-declaring `problem` passes the whole deterministic compile
+  gate with rc 0 — measured on a real certified IR — dropping every published-surface pin. The
+  same shape recurs: an `impl_defaults.toolchain` value decides who authors the control file, and
+  the phase contract already warns that whichever of three places a state contract appears in
+  first is the one the gate validates. **Rule: resolve the fact from the HOST'S OWN identity for
+  the node — the `node_key`, the launch request, the reservation — never from the document under
+  review, and where a gate legitimately must read it from the document, pin the document's value
+  against the host's before the gate runs.** **The tell**: an early `return` in a gate whose
+  condition is a field of the thing being gated. Enumerate those first; each one is a switch, and
+  the leaf holds it. Distinct from surface 5, where caller data pollutes a classification the host
+  computes — here the host asks the leaf a question and believes the answer.
 
 ### 2. Confirm the path production actually takes
 

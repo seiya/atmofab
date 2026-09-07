@@ -274,3 +274,52 @@ the fix there is to change the channel. Here nothing is caller-controlled — th
 a narrower question than the gate asked, and saying so somewhere else. The fix is to stop it
 narrowing, or to listen where it says it did.
 
+## Surface 11 — a field the leaf authors decides which gate applies (issue #168)
+
+A branch moved two `compile` `substep`s to `pure-function leaf`s and added a host-side floor over
+the document the leaf returns. The floor decided WHICH sections to require from the node's kind as
+the host knows it (`refs.node_key`), with a docstring saying that a leaf choosing its own key
+requirement "would be choosing which floor it is held to, which is the `leaf shortcut` class this
+floor exists inside" — and then left the VALUE of `meta.spec_kind` inside the document entirely to
+the leaf.
+
+`tools/validate_pipeline_semantics.py`'s published-surface gate reads the kind from that field and
+returns early for a kind that publishes no surface. Measured by a round-1 reviewer, on real
+certified IRs copied into a sandbox: flipping a `component` IR's `meta.spec_kind` to `problem`
+takes the deterministic compile gate from 2 violations to 1, dropping the `public_api` one; on the
+harness `infrastructure` node it drops 34 of the 38 (the second run directory gives 36 — the
+denominator depends on which artifact you take it from, which is itself why a record naming
+neither the run nor the command is uncheckable). A round-4 reviewer confirmed the other half by
+execution: with the floor's clause in place, `--stage compile` still passes a flipped IR, so the
+host check is the ONLY thing catching it and is correctly placed.
+
+**The gain sentence, which is what makes this a finding rather than a mechanism description**: a
+leaf taking it skips the entire published-interface transcription its own prompt spends a rule on
+— every operation id, published type, structured signature and module parameter copied verbatim —
+and still reports the `substep` done behind a green phase. It surfaces two phases later, in a gate
+that resolves the kind from the execution record instead, which fail-closes saying "Compile
+certified them" and routes the finding to a `substep` that cannot edit the IR.
+
+**Pre-existing, and that is not a reason to leave it.** An agentic leaf could write the same field.
+What was new is that the branch introduced the one place that already resolves the fact from the
+host for exactly this reason and stopped one clause short. Closing it was a clause; the argument
+for closing it took a round.
+
+**The over-refusal half, which the fix has to get right too.** Re-measured at the merge commit
+rather than taken from the reviewer who first ran it: eight pre-existing readers of this field
+across `tools/` and none in `mcp_servers/`, every one of them
+`str(meta.get("spec_kind") or "").strip()` with no case folding, and nothing building a path or an
+identity from it. So the pin ACCEPTS a padded spelling (every reader agrees on it) and REFUSES a
+case-folded one (no reader folds). Applying the predicate to all 204 `spec.ir.yaml` on disk —
+deriving the expected kind from each document's own `meta.node_key` — gives 0 mismatches. A pin
+that refused padding would have been the over-refusal this repository's error direction produces
+by default. **Both halves of that are one enumeration**: you cannot know which spellings to accept
+without listing the readers, and listing them is what tells you the pin is safe to add at all.
+
+**How to find the rest of the family.** Grep the gates for an early `return` whose condition is a
+field of the artifact being gated. In this tree that also finds: `impl_defaults.toolchain`'s
+values deciding who authors the control file and renders the runner, and — stated in the phase
+contract itself as a warning to the leaf — three possible placements of the multi-dimensional
+state contract, of which the gate validates whichever exists FIRST, so writing an empty mapping in
+the highest-priority place makes the gate validate nothing.
+

@@ -264,6 +264,15 @@ when a rule does not obviously apply:
     is what a later member added on one side only turns red. **Trigger**: any `isinstance` /
     `hasattr` in a guard whose purpose is to not raise — name the operation that would raise
     (`for … in`, `sort`, `len`, `[k]`) and ask which member reaches it
+  - **when the code applies a THRESHOLD, the fixture must straddle it too, and the straddle is
+    usually a LENGTH** — the same rule as the type case above, and the one that hides best,
+    because the fixture looks realistic. Issue #168: a class whose subject is how a failure reason
+    is composed carried an 79-character flake constant while the code clipped the evidence at 110,
+    so every row in it passed while observing nothing about the composition — and a later change
+    to that clip shipped a regression through all of them. **Trigger**: any cap, clip, budget,
+    `[:n]`, `max_`/`MAX_` or size comparison on the path under test. Name the threshold, then
+    assert IN THE TEST BODY that the probe is on the far side of it (`assertGreater(len(probe),
+    110)`), so a later shortening of the fixture is red rather than silent
   - **a hand-built fixture can test a shape that does not exist** — check the construct against
     the real corpus before writing the witness
   - **for stateful code, match the fixture to the lifetime of the state**, and always include a
@@ -905,6 +914,13 @@ would mislead you, can the deletion's measurement be re-taken from what is writt
 went with what was deleted**, what does a LEAF see, what does an OPERATOR see, would you merge". If
 it returns first-category items, the record has not converged even though the enforcement code has.
 
+**"What does a LEAF see" means RENDER THE PROMPT, once per leaf that receives it.** Ask for the
+production entry point (`build_launch_request` -> `prepare_launch_request_payload` ->
+`render_launch_prompt_text`) and for the result to be read end to end, as that leaf, against what
+the host will actually refuse. Reading the template is not the same thing: a host-inlined document
+arrives whole, and the sentence that matters is usually one nobody wrote for this leaf. Issue #168
+found the branch's two worst defects this way and no other way.
+
 **The added clause is not a flourish.** On PR #125 it is what surfaced the branch's only blocker —
 a check `origin/main` had that a round-2 fix narrowed away — and no other instrument in this loop
 could have: the sweep mutates what exists, the census enumerates what exists, and a blank-slate
@@ -964,6 +980,25 @@ that tells you how it closed.
   as the focus** in the next round's prompt. The more the change is a move or rename whose body is
   known correct, the more the review is really about **your own fixes** — put that instruction in
   from round 1
+- **You corrected prose a LEAF reads, and you corrected it for ONE reader** → every other leaf
+  handed the same text got your correction too, and a sentence that is true for one can be a
+  `leaf shortcut` in another. This is the RECORD row's twin on the delivery side: there the
+  correction was unverified, here it is verified for the reader you had in mind and shipped to
+  readers you did not. **Criterion, and it is not a reading**: list every leaf the document
+  reaches, RENDER each one's prompt through the production entry point, and read the new sentence
+  in place as that leaf — then ask the gain question of it, "a leaf following this sentence is
+  closer to ___". A host-inlined contract makes this the default rather than the exception: one
+  document, several personas, opposite obligations. Issue #168 hit it three rounds running, twice
+  in the SAME section: a per-path paragraph written for the producer told the reviewer that
+  authoring the IR and returning a null failure reason — the reviewer's own PASS invariant — was
+  "the ordinary thing", and a bounding sentence in the reviewer's template ("that list is the
+  whole of your scope") made a four-way disagreement in the inlined document load-bearing, whose
+  narrowest reading dropped the one invariant family no deterministic gate re-checks. **Both were
+  written while fixing this same class.** Two consequences worth carrying: a summary of a
+  substep's scope stated anywhere but where the scope is defined is a second definition, so delete
+  it rather than correct it; and **nothing in this loop catches these except the rendered prompt**
+  — the sweep mutates code, the census enumerates code, a blank-slate reviewer reads code, and the
+  suite stays green with the sentence inverted (measured, all three rounds)
 - **The fix was to a RECORD, so you verified it by reading** → a record fix carries the same
   defect rate as a code fix, and this is the sub-case of the row above that gets skipped, because
   prose does not look like something you run. Criterion: **the corrected sentence must pass the
