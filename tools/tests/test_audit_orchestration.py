@@ -1425,6 +1425,110 @@ class PureLeafABSummaryTest(unittest.TestCase):
         self.assertIn("claude --version", md)
         self.assertIn(self.SRC, md)
 
+    # -- the Z1 compile half (issue #168) ------------------------------------------
+    IR_A = f"workspace/ir/{SAFE}/demo_20260907_001"
+    IR_B = f"workspace/ir/{SAFE}/demo_20260907_002"
+
+    def _launch(self, repo: Path, arid: str, *, step: str, ir_ref: str,
+                leaf_mode: str | None = "pure") -> None:
+        """One persisted launch request — the discovery key for the compile half.
+
+        Deliberately NOT the reservation the generate half uses: `reserved_ir_id` is overwritten
+        on every rotation, so it names only the LIVE directory. A launch request is written once
+        per attempt and never rewritten, which is why a rotated attempt is discoverable at all.
+        """
+        d = repo / "workspace" / "orchestrations" / self.ORCH / "launches"
+        d.mkdir(parents=True, exist_ok=True)
+        row = {"agent_run_id": arid, "step": step, "substep": "generate", "ir_ref": ir_ref}
+        if leaf_mode is not None:
+            row["leaf_mode"] = leaf_mode
+        (d / f"{arid}.request.json").write_text(json.dumps(row), encoding="utf-8")
+
+    def _compile_metas(self, repo: Path, ir_ref: str, *, result: str = "pass") -> None:
+        d = repo / ir_ref
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "compile_generate_meta.json").write_text(json.dumps({
+            "result": result, "failure_category": None, "attempts": 1,
+            "prompt_contract_version": "pure-32",
+            "per_attempt": [{"agent_run_id": "c1", "model": "claude-opus-5",
+                             "usage": {"input_tokens": 700, "output_tokens": 300}}],
+        }), encoding="utf-8")
+        (d / "compile_verify_meta.json").write_text(json.dumps({
+            "result": "pass", "failure_category": None, "attempts": 1,
+            "prompt_contract_version": "pure-32",
+            "per_attempt": [{"agent_run_id": "c2", "model": "claude-sonnet-5",
+                             "usage": {"input_tokens": 200, "output_tokens": 20}}],
+        }), encoding="utf-8")
+
+    def test_the_compile_half_is_discovered_from_the_launch_requests(self) -> None:
+        """Every ir_ref a PURE compile leaf was launched into, including a rotated attempt the
+        live reservation no longer names — which is the undercount this discovery exists to
+        avoid, in the one place the A/B numbers are the point."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._lay_out(repo, with_metas=False)
+            self._launch(repo, "a1", step="compile", ir_ref=self.IR_A)
+            self._launch(repo, "a2", step="compile", ir_ref=self.IR_B)
+            self._compile_metas(repo, self.IR_A, result="fail")
+            self._compile_metas(repo, self.IR_B)
+            meta = {"invocation": {"generate_executor": "pure"}}
+            out = collect_pure_leaf_ab_summary(repo, self.ORCH, meta)
+        self.assertTrue(out["available"])
+        self.assertEqual([n["ir_ref"] for n in out["pure_compile_nodes"]],
+                         [self.IR_A, self.IR_B])
+        self.assertEqual(out["pure_compile_nodes"][0]["generate"]["result"], "fail")
+        self.assertEqual(
+            out["pure_compile_nodes"][1]["generate"]["usage_total"]["total_tokens"], 1000)
+        self.assertEqual(out["pure_compile_nodes"][1]["verify"]["result"], "pass")
+
+    def test_discovery_ignores_a_launch_that_is_not_a_pure_compile_leaf(self) -> None:
+        """Three rejections, one row each, because a single combined fixture would let two of
+        them stop working unnoticed: another step, an agentic compile launch (no `leaf_mode`),
+        and an `ir_ref` that is not a repo-relative workspace path."""
+        for label, kwargs in (
+            ("another step", {"step": "generate", "ir_ref": self.IR_A}),
+            ("agentic compile",
+             {"step": "compile", "ir_ref": self.IR_A, "leaf_mode": None}),
+            ("escaping ir_ref", {"step": "compile", "ir_ref": "../../etc"}),
+        ):
+            with self.subTest(rejected=label), tempfile.TemporaryDirectory() as tmp:
+                repo = Path(tmp)
+                self._lay_out(repo, with_metas=False)
+                self._launch(repo, "a1", **kwargs)
+                self._compile_metas(repo, self.IR_A)
+                out = collect_pure_leaf_ab_summary(
+                    repo, self.ORCH, {"invocation": {"generate_executor": "pure"}})
+                self.assertEqual(out["pure_compile_nodes"], [], label)
+
+    def test_a_compile_only_run_is_available_and_rendered(self) -> None:
+        """`available` must not be decided by the GENERATE half alone: a run stopped at Compile
+        writes no source dir at all, and reporting it as "no pure-leaf node located" would hide
+        the very arm the A/B compares."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._lay_out(repo, with_metas=False)
+            self._launch(repo, "a1", step="compile", ir_ref=self.IR_A)
+            self._compile_metas(repo, self.IR_A)
+            result = audit(repo, self.ORCH)
+            self.assertTrue(result["pure_leaf_ab_summary"]["available"])
+            self.assertEqual(result["pure_leaf_ab_summary"]["pure_nodes"], [])
+            md = _render_markdown(result)
+        self.assertIn(f"### compile `{self.IR_A}`", md)
+        self.assertNotIn("no pure-leaf node located", md)
+
+    def test_the_two_phases_are_labelled_apart_in_the_render(self) -> None:
+        """Both halves present. The rows of a compile node are keyed `generate` / `verify` too —
+        the key names the SUBSTEP — so the heading is the only thing that says which phase a
+        block belongs to."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._lay_out(repo)
+            self._launch(repo, "a1", step="compile", ir_ref=self.IR_A)
+            self._compile_metas(repo, self.IR_A)
+            md = _render_markdown(audit(repo, self.ORCH))
+        self.assertIn(f"### compile `{self.IR_A}`", md)
+        self.assertIn(f"### generate `{self.SRC}`", md)
+
     def test_discovers_failed_and_rotated_source_dirs_with_no_checkpoint_at_all(self) -> None:
         # A terminally-failed generate is never checkpointed, and a cold restart
         # rotates to a fresh source dir. Discovery must find BOTH from the pipeline

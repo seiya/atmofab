@@ -236,6 +236,24 @@ class PurePayloadValidationTests(unittest.TestCase):
                     ort._validate_pure_launch_request_payload(bad)
                 self.assertIn("leaf_mode=pure is only valid for", str(caught.exception))
 
+    def test_the_pair_refusal_names_the_pairs_that_are_admissible_now(self) -> None:
+        """The message is GENERATED from `PURE_CONTEXT_REQUIRED_KEYS`, and this is what makes
+        that load-bearing rather than incidental: it used to restate the set in prose, and a
+        migration that widened the table would have left an operator reading the old one.
+
+        Every admissible pair must appear, so a pair added to the table without the message
+        following is red — which a substring check for one pair would not catch."""
+        bad = _pure_request("judge", step="validate")
+        with self.assertRaises(ValueError) as caught:
+            ort._validate_pure_launch_request_payload(bad)
+        message = str(caught.exception)
+        self.assertTrue(ort.PURE_CONTEXT_REQUIRED_KEYS, "the table is empty; this reads nothing")
+        for step, substep in ort.PURE_CONTEXT_REQUIRED_KEYS:
+            self.assertIn(f"({step}, {substep})", message)
+        # ...and the refused pair is named too, so the operator can see what they asked for.
+        self.assertIn("validate", message)
+        self.assertIn("judge", message)
+
     def test_validate_payload_rejects_pure_with_deterministic(self) -> None:
         bad = _pure_request(deterministic=True)
         with self.assertRaises(ValueError):

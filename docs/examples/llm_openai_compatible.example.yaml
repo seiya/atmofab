@@ -105,12 +105,15 @@ phases:
         api_key_env: LOCAL_LLM_API_KEY
         model: qwen2.5-coder-32b-instruct
         effort: medium
-        # Sizes the ARTIFACT. Measured: the largest IR this repository has produced for
-        # `shallow_water2d` is 52,502 bytes of YAML, and the JSON document carrying it is
-        # larger again. A truncated IR is a wasted turn, not a repairable one. Re-size against
-        # the node and the model you run — and read the writer's budget note under
-        # `generate.generate` below, which explains why a reasoning model needs more than the
-        # artifact's own size.
+        # Sizes the ARTIFACT, over a stated POPULATION rather than one sample: across the
+        # 7 `shallow_water2d` IRs this repository has on disk the largest is 63,009 bytes
+        # of YAML (`workspace/ir/problem__shallow_water2d__0.4.0/shallow-water2d_20260805_001`)
+        # and the smallest 42,721; the JSON document carrying one is larger again, since the
+        # YAML is what the host writes from it. A truncated IR is a wasted turn, not a
+        # repairable one, so 32768 is a BOUND taken from that population and not a
+        # requirement — re-measure against the node and the model you run, and read the
+        # writer's budget note under `generate.generate` below, which explains why a
+        # reasoning model needs more than the artifact's own size.
         max_output_tokens: 32768
         # Declared rather than defaulted, on the same ground as `generate.generate` below: the
         # pair moves together, this endpoint has not been measured, and the value is generous

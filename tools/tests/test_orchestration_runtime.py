@@ -30887,7 +30887,7 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # slacks ran 152 / 71 / 35 / 153 / 174 / 156 / 105 / 137 / 22 B down the table, so three
         # of the nine sit in the band this block's own header calls a tripwire. Nothing is red
         # today; re-measure the entry you are bumping rather than trusting a table-wide rule.
-        # Bumped 59990->63090 (issue #168, Z1) — measured 62930 with `wc -c` in
+        # Bumped 59990->63380 (issue #168, Z1) — measured 63222 with `wc -c` in
         # /home/seiya/atmofab at the commit that takes this bump, plus this entry's ~150 B slack
         # rule. §substep structure states that both LLM substeps of this phase now run as
         # `pure-function leaf`s and what the host inlines for each; §`ir_meta.json` required keys
@@ -30898,7 +30898,12 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # rather than force-reading it, so the file is no longer only an agentic leaf's cold-start
         # cost — it is every compile leaf's prompt, on both paths, which makes re-bloat MORE
         # expensive here than the header's rationale assumes, not less.
-        "docs/workflow/phases/phase_01_compile.md": 63090,
+        # (63090 first, from 62930 measured at the branch's first commit. Round 1 then found
+        # §substep structure listing 5 of the reviewer's 8 inlined documents and corrected it,
+        # which is the shape this table's own comments warn about: a ceiling is a record of a
+        # measurement and goes stale on the commit AFTER the one that took it. Re-measured at
+        # the round-1 HEAD.)
+        "docs/workflow/phases/phase_01_compile.md": 63380,
         # Per-substep SKILLs — each force-read by its own LLM leaf.
         # Bumped 10800->11500: Compile.generate now authors the io_contract section (G2 /
         # docs/design/deterministic_followups.md) — it was moved here from Compile.verify so the

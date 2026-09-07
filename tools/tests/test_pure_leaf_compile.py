@@ -788,7 +788,83 @@ class PureCompileReviewerSpecValueTests(_Fixture):
         self.assertEqual(_superseded_reasons(c),
                          ["pure_compile_verify_host_write_failed_superseded: OSError"])
 
-  # ======================================================================================
+# ======================================================================================
+# The transport-shaped failure categories, on the COMPILE routing tables
+# ======================================================================================
+class PureCompileTransportCategoryTests(_Fixture):
+    """`pure_response_unparseable` and `pure_response_truncated` are members of BOTH new routing
+    tables and had no compile-side witness: the shared loop produces them, the generate tests
+    observe them on the GENERATE tables, and nothing checked that the compile tables route them.
+    A missing element of an enumeration is invisible when the enumeration is checked together,
+    so there is one row per (category, table) and two end-to-end drives besides.
+
+    Route: a provider that reports the reply was cut off, or a reply that is not one parseable
+    JSON document, on `compile.generate` / `compile.verify`. Without the table entry the phase
+    cold-restarts instead of warm-repairing, discarding a producer session that held the
+    diagnosis — and on `compile.verify` it would reuse a session that cannot help.
+    """
+
+    def test_the_producer_table_routes_every_declared_category(self) -> None:
+        from tools.pure_leaf import RESPONSE_TRUNCATED, RESPONSE_UNPARSEABLE
+        self.assertEqual(
+            set(wc.COMPILE_DOCUMENT_FAILURE_CATEGORIES),
+            {RESPONSE_UNPARSEABLE, RESPONSE_TRUNCATED, wc.COMPILE_IR_DOCUMENT_VIOLATION},
+            "the producer table's members are the shared loop's own categories plus this "
+            "phase's document violation; a member added to one side and not the other is what "
+            "this row exists to catch")
+        for category in wc.COMPILE_DOCUMENT_FAILURE_CATEGORIES:
+            with self.subTest(category=category):
+                self.assertEqual(wc.COMPILE_DOCUMENT_FAILURE_ROUTING[category],
+                                 ("compile", "reuse"))
+
+    def test_the_reviewer_table_routes_every_declared_category(self) -> None:
+        from tools.pure_leaf import RESPONSE_TRUNCATED, RESPONSE_UNPARSEABLE
+        self.assertEqual(
+            set(wc.COMPILE_VERDICT_FAILURE_CATEGORIES),
+            {RESPONSE_UNPARSEABLE, RESPONSE_TRUNCATED, wc.GENERATE_VERDICT_SCHEMA_VIOLATION})
+        for category in wc.COMPILE_VERDICT_FAILURE_CATEGORIES:
+            with self.subTest(category=category):
+                self.assertEqual(wc.COMPILE_VERDICT_FAILURE_ROUTING[category],
+                                 ("compile", "restart"))
+
+    def test_an_unparseable_producer_reply_is_recorded_and_routed(self) -> None:
+        """Driven end to end, not read off the table: the loop must CLASSIFY the reply into the
+        category the table then routes."""
+        from tools.pure_leaf import RESPONSE_UNPARSEABLE
+        c = self.conductor(_envelope("this reply is prose, not a document"))
+        outcome = c.run_substep(self.refs, "compile", "generate")
+        gmeta = json.loads((self.repo / self.refs.ir_ref
+                            / "compile_generate_meta.json").read_text(encoding="utf-8"))
+        self.assertEqual(gmeta["failure_category"], RESPONSE_UNPARSEABLE)
+        decision = c.classify_failure(self.refs, "compile", [outcome])
+        self.assertEqual((decision.action, decision.target_phase, decision.repair_strategy),
+                         ("retry", "compile", "reuse"))
+        self.assertEqual(decision.reason,
+                         f"{wc.COMPILE_DOCUMENT_REASON_PREFIX}{RESPONSE_UNPARSEABLE}")
+
+    def test_a_provider_reported_truncation_is_believed_over_the_document(self) -> None:
+        """The one category no reply CONTENT can produce: the provider says the answer was cut
+        off, and the loop must believe it over a partial document that happens to parse. The
+        payload here is a COMPLETE, valid IR document, so a loop that read the document instead
+        of the flag would pass and write it."""
+        from tools.pure_leaf import RESPONSE_TRUNCATED
+        c = self.conductor(_envelope(_doc()))
+        env = _envelope(_doc())
+        c.spawn_leaf = (  # type: ignore[assignment]
+            lambda *a, _e=env, **k: wc.ProcResult(0, _e, "", response_truncated=True))
+        outcome = c.run_substep(self.refs, "compile", "generate")
+        self.assertEqual(outcome.status, "fail")
+        self.assertFalse((self.repo / self.refs.ir_ref / "spec.ir.yaml").exists(),
+                         "a truncated reply must not be written even when it parses")
+        gmeta = json.loads((self.repo / self.refs.ir_ref
+                            / "compile_generate_meta.json").read_text(encoding="utf-8"))
+        self.assertEqual(gmeta["failure_category"], RESPONSE_TRUNCATED)
+        decision = c.classify_failure(self.refs, "compile", [outcome])
+        self.assertEqual(decision.reason,
+                         f"{wc.COMPILE_DOCUMENT_REASON_PREFIX}{RESPONSE_TRUNCATED}")
+
+
+# ======================================================================================
 # The defensive freshness branch
 # ======================================================================================
 class PureCompileSubstepStatusTests(_Fixture):

@@ -879,7 +879,7 @@ PURE_LEAF_META_FILES: dict[str, tuple[str, str]] = {
 }
 
 
-def summarize_pure_leaf_metas(artifact_dir: Path, phase: str = "generate") -> dict[str, Any]:
+def summarize_pure_leaf_metas(artifact_dir: Path, phase: str) -> dict[str, Any]:
     """A/B metrics for one phase's pure producer / reviewer leaves in one artifact directory.
 
     Reads the phase's two per-attempt records — the in-repo, ~/.claude-free per-attempt
@@ -895,6 +895,11 @@ def summarize_pure_leaf_metas(artifact_dir: Path, phase: str = "generate") -> di
     alone. The row carries no directory key: the caller passes the directory in and owns how it
     labels the result (the audit rollup labels it repo-relative), so there is no second,
     conflicting notion of the same field.
+
+    `phase` is REQUIRED and has no default. It selects which two filenames are read, and the two
+    phases' records live in different directories under different names — so a caller that forgot
+    it would silently read the wrong pair and report `found=False`, which is indistinguishable
+    from an agentic node. A caller that has not decided must be refused, not defaulted.
     """
     producer_file, reviewer_file = PURE_LEAF_META_FILES[phase]
     generate = _summarize_one_pure_meta(_read_json(artifact_dir / producer_file))

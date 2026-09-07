@@ -703,7 +703,7 @@ class SummarizePureLeafMetasTest(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            out = diag.summarize_pure_leaf_metas(src)
+            out = diag.summarize_pure_leaf_metas(src, "generate")
         self.assertTrue(out["found"])
         gen = out["generate"]
         self.assertTrue(gen["found"])
@@ -724,7 +724,7 @@ class SummarizePureLeafMetasTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             src = Path(tmp) / "src_legacy"
             src.mkdir(parents=True)
-            out = diag.summarize_pure_leaf_metas(src)
+            out = diag.summarize_pure_leaf_metas(src, "generate")
         self.assertFalse(out["found"])
         self.assertFalse(out["generate"]["found"])
         self.assertFalse(out["verify"]["found"])
@@ -746,7 +746,7 @@ class SummarizePureLeafMetasTest(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            out = diag.summarize_pure_leaf_metas(src)
+            out = diag.summarize_pure_leaf_metas(src, "generate")
         gen = out["generate"]
         self.assertTrue(gen["found"])
         # attempts falls back to the count of structurally-valid (dict) attempts
@@ -768,7 +768,7 @@ class SummarizePureLeafMetasTest(unittest.TestCase):
                 '{"result": "pass", "per_attempt": [{"usage": {"input_tokens": Infinity, "output_tokens": -5}}]}',
                 encoding="utf-8",
             )
-            out = diag.summarize_pure_leaf_metas(src)
+            out = diag.summarize_pure_leaf_metas(src, "generate")
         self.assertFalse(out["generate"]["found"])  # empty dict → not a pure meta
         ver = out["verify"]
         self.assertTrue(ver["found"])
@@ -779,7 +779,7 @@ class SummarizePureLeafMetasTest(unittest.TestCase):
             src = Path(tmp) / "src_broken"
             src.mkdir(parents=True)
             (src / "bundle_meta.json").write_text("{not json", encoding="utf-8")
-            out = diag.summarize_pure_leaf_metas(src)
+            out = diag.summarize_pure_leaf_metas(src, "generate")
         self.assertFalse(out["generate"]["found"])
 
     def test_non_utf8_meta_degrades_and_does_not_raise(self) -> None:
@@ -792,7 +792,7 @@ class SummarizePureLeafMetasTest(unittest.TestCase):
             (src / "bundle_meta.json").write_bytes(
                 b'{"per_attempt": [], "result": "\xff\xfe pass"}'
             )
-            out = diag.summarize_pure_leaf_metas(src)  # must not raise
+            out = diag.summarize_pure_leaf_metas(src, "generate")  # must not raise
         self.assertFalse(out["generate"]["found"])
         self.assertFalse(out["found"])
 
@@ -874,7 +874,7 @@ class SummarizePureLeafMetasTest(unittest.TestCase):
             (src / "bundle_meta.json").write_text(
                 json.dumps({"result": "ok", "attempts": 7}), encoding="utf-8"
             )
-            out = diag.summarize_pure_leaf_metas(src)
+            out = diag.summarize_pure_leaf_metas(src, "generate")
         self.assertFalse(out["generate"]["found"])
         self.assertFalse(out["found"])
 
@@ -902,7 +902,7 @@ class SummarizePureLeafMetasTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             src = Path(tmp) / "src_x"
             src.mkdir(parents=True)
-            out = diag.summarize_pure_leaf_metas(src)
+            out = diag.summarize_pure_leaf_metas(src, "generate")
         self.assertNotIn("source_dir", out)
 
 
@@ -934,7 +934,7 @@ class PureLeafMetaWriterReaderContractTest(unittest.TestCase):
                 refs, result="pass", failure_category=None, failure_excerpt=None,
                 attempts=1, per_attempt=per_attempt,
             )
-            out = diag.summarize_pure_leaf_metas(src_dir)
+            out = diag.summarize_pure_leaf_metas(src_dir, "generate")
 
         self.assertTrue(out["found"])
         gen = out["generate"]
