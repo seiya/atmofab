@@ -192,29 +192,36 @@ your own; issue #153 above says re-measure at the commit you are about to name. 
 danger is a figure you did not produce. This one I produced myself, from a command I ran, on a log I
 opened — and running the command is not what makes the reading a measurement.
 
-## The published instrument and the published number drifted apart (issue #181, PR #191)
+## The published instrument went stale beside the number it produced (issue #181, PR #191)
 
-A pull request body carried a verification script in a `<details>` block and, a few paragraphs
-above it, the output that script produced: `0 non-verbatim units`. The next commit changed the
-script — a different join rule and a different link rule — and republished neither the listing nor
-the number's derivation. A round-3 reviewer did the obvious thing, ran what was published against
-the tree it certifies, and got six failures. They were the commit's own deliberate edits, which
-the newer script accounts for and the published one does not, but from outside there is no way to
-tell those from work the compression lost.
+The pull request published its verification script — the thing that produced `0 non-verbatim units`
+— as a comment beside a body that quoted the output. The listing went up two minutes after
+`a602046`; `c56b2ac`, half an hour later, changed both the script's join rule and its record-link
+rule and republished neither. A round-3 reviewer ran what was published against the tree it
+certifies and it failed: the published script's reverse direction reports removed lines with no
+record, because it does not know about the pointer repairs the newer commit made. Those failures
+are the commit's own deliberate edits, and from outside there is no way to tell them from work the
+compression lost. The correction is recorded on the pull request
+(comment `5563141702`): "review round 3 measured [it] is NOT the one that produced any current
+file … Re-running it reproduces 97,566 bytes with 25 cross-bullet joins."
 
 **What makes this its own rule rather than an instance of the ones above it.** Every guard in this
 file so far is about a NUMBER: do not type it, generate it from the artifact, name the commit it
-was taken at, state the population. All of them hold here — the number was generated, and it was
-correct for the commit it was taken at. What went wrong is that the record published the
-INSTRUMENT as well, which is strictly better practice, and thereby created a second thing that can
-go stale. The instrument and the number are one record: republish both, or publish neither and
-state the property instead.
+was taken at, state the population. All of them held — the number was generated, and it was correct
+for the commit it was taken at. What went wrong is that the record published the INSTRUMENT as
+well, which is strictly better practice, and thereby created a second thing that can go stale. The
+instrument and the number are one record: republish both, or publish neither and state the property
+instead. **A stamped listing is the cheap third option** — say which commit it was run at, and it
+becomes historical rather than wrong.
 
-The same body carried the mirror case a round later. A reviewer had measured "423 of the 425
-sentences the compression drops are present in a linked record" at one commit; the body quoted it
-in the present tense, about a later commit whose dropped set was different. The figure was true
-where it was taken and the property it stands for held at both, but the sentence claimed the
-figure for a file nobody had measured. `atmofab-enforcement-change` rule 3 — do not write someone
-else's measurement as your own — does not fire here, because the attribution was correct and the
-reviewer was right. **The rule that does: a measurement names the commit it was taken at even when
-you are quoting it approvingly, and especially when the thing measured has changed since.**
+**Where the failure surface actually is.** Not the pull request body: this one carried no script at
+all. The body quoted the number and a COMMENT carried the listing, so the two drifted apart without
+either looking edited. Any record split across a body and its comments has this shape.
+
+The same pull request produced the mirror case a round later and it is NOT a new rule:
+a figure a reviewer measured at one commit was quoted in the present tense about a later one whose
+measured set had changed. `atmofab-enforcement-change` rule 3 covers it in its own words — "the
+place this fires that you will not expect is a CORRECTION: a reviewer's finding arrives already
+carrying evidence, so it feels verified before you write it" — and this file states the same rule
+above, under issue #153. **Correct attribution is not what rule 3 is about**; the commit is. Read
+this paragraph as a second instance of that rule rather than as anything new.

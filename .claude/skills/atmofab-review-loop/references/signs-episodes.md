@@ -283,41 +283,68 @@ the case history that tells you how it closed.
 
 ## The selection's DEFAULT, not the individual choices (issue #181, PR #191)
 
-`TODO.md` held 54 open items and the change compressed them. The first attempt rewrote each item by
-hand; round 1 enumerated all 54 and measured open content gone from about 35 of them, plus eleven
-claims the source did not support. The second attempt could not rewrite: each item was split into
-units — one whole sub-bullet, or one sentence of a long single-line item — and the compression
-SELECTED units, with a script asserting every retained unit is a substring of its pre-compression
-item. Three reviewers re-derived that property independently and it held. **Nothing was invented
-from that commit onward, and the loop still ran three more rounds.**
+`TODO.md` held 54 open items and the change compressed them. The first attempt (`a30b6cb`) rewrote
+each item by hand; round 1 enumerated all 54 and reported open content gone from about 35 of them,
+plus eleven claims the source did not support — of which five were reproduced before acting and two
+were statements false against the code. The second attempt (`a602046`) could not rewrite: each item
+was split into units — one whole sub-bullet, or one sentence of a long single-line item — and the
+compression SELECTED units, with a script asserting every retained unit appears in its
+pre-compression item. Both axes re-derived that property at round 2, and both again at rounds 4 and
+5. **Nothing was invented from that commit onward, and the loop still ran three more rounds.**
 
-Round 2 found the selection had dropped open work in twelve places. Round 3 found the same three
-classes again — a dropped fix direction, a pointer whose antecedent went, a claim outliving its
-qualifier — in the items round 2 had not opened. Both rounds' fixes were correct and neither
-changed anything: the next round found the same classes in the items IT had not opened.
+Round 2 found the selection had dropped open work in twelve places. Round 3's two axes returned 16
+and 7 findings, in the items round 2 had not opened, and in the same shapes: a dropped fix
+direction, a pointer whose antecedent went, a dropped reachability bound, a claim outliving its
+qualifier — plus two items left internally false, a completion criterion enumerating sub-findings
+the file no longer contained. Rounds 1 and 2 had each fixed their own findings correctly, and
+neither changed the rate.
 
-**What closed it was inverting the default.** Before: a unit is dropped unless it is selected.
-After: a unit is kept unless the item is one of five whose bulk is review history. The two are the
-same set of judgments; what differs is what happens to a unit nobody thought about. Under the
-first, it disappears and takes a fix direction or a pointer's antecedent with it, invisibly, in a
-file no test reads. Under the second it stays and costs bytes. Rounds 4 and 5 found five instances
-and then fewer, all of them inside the five items where selection still operated.
+**Round 3's fix was to invert the default** (`48cf175`): a unit is dropped only in the five items
+whose bulk is review history, and kept everywhere else. The two are the same set of judgments; what
+differs is what happens to a unit nobody thought about. Under the first it disappears and takes a
+fix direction or a pointer's antecedent with it, and the two witnesses over this file
+(`test_hooks_cli::GlobPatternTriggerSurfaceTests` and
+`test_build_runtime_server::McpCallClientTests`, both verified by truncating the file) pin two
+sentences and nothing else, so the loss is invisible. Under the second it stays and costs bytes.
 
-**The generalisation, and why it is a sign rather than a note about one file.** Any change that
-chooses a subset has this shape — an allowlist narrowed, a test set pruned, a document trimmed, a
-denylist replaced by an explicit roster. The individual choices are what review can see; the
-default is what decides whether a MISS is loud or silent, and it is a single decision made once.
-Ask it before the second round of one class rather than the third: *if I never think about element
-X, what happens to it, and would I notice?*
+**What the inversion is measured to have done, and what it is not.** Round 4's blank-slate axis
+found NO new instance of the three classes in the shipped text — the first descent in the loop —
+and its findings were a different class, the six whole items that commit removed. Round 5, the cap,
+found five instances "at a lower rate … rather than twelve". So the sequence after the inversion is
+zero, then five, and the loop **ended at its cap without the class reaching zero**. The inversion
+lowered the rate and changed what the rounds were about; it did not close the class, and PR #191's
+own disclosure says so.
 
-**Two corollaries this episode also paid for.** A byte-ratio instrument cannot see the loss — the
-same branch ran a check for "an item that lost more than a third of its bytes must link to a
-record", and it twice passed an item whose loss was a fix direction under that threshold. And an
-item's ACCEPTANCE BAR is open work by definition: eight completion criteria were selected out one
-at a time, and hand-checking is what missed them; adding them back mechanically is what held.
+**The generalisation, and its limit.** Any change that chooses a subset has this shape — an
+allowlist narrowed, a test set pruned, a document trimmed, a denylist replaced by an explicit
+roster. This is argued from one issue's episodes, not measured across two: a second instance would
+have to be a change that narrows a set where a round found a SILENTLY DROPPED element, and where
+flipping the default measurably lowered the following round's rate. Until there is one, read the
+sign as a question to ask, not as a law about which polarity to pick.
 
-**One more, from the round after.** Round 4 found three docstrings in a source file citing an item
-this branch had removed, two of them made false by the removal, and they were repaired. The class
-was not then swept for elsewhere in the tree, so round 5 found a fourth in a test file, citing a
-sentence the compression had dropped. **A fix that does not sweep its own class schedules the next
-round.**
+**Which polarity is right is NOT what this sign decides**, and the counter-cases are in this
+repository. `tools/hooks/common.py`'s `_PIPE_TAIL_ALLOWED_IMPORT_ROOTS` excludes `string` because
+`string.Formatter().get_field()` is a primitive the AST inspector cannot see; a module nobody
+considered must fall OUTSIDE it. `tools/validate_workspace_root.py`'s active-status set says so in
+its own comment: anything outside it, including an unreadable meta file, is treated as not active
+so leaked scratch is surfaced. `atmofab-enforcement-change` surface 8 states the rule those follow —
+bind ro and allowlist only the writable places, so unknown names fall on the inert side.
+**Drop-by-default is correct wherever dropping an element produces a REFUSAL**, because a refusal is
+loud; the sign's question answers that correctly on its own terms and the polarity follows from the
+answer. And there is a third option this repository actually took for the same failure:
+`tools/tests/test_backend_boundary.py`'s `_UNSCANNED_ROOT_FILES` is an explicit set precisely so
+that a new root file is REFUSED until someone decides which side it is on — the failure that
+produced it was two files landing outside a scan silently.
+
+**Two corollaries the same loop paid for.** A byte-ratio instrument cannot see the loss: the branch
+ran a check for "an item that lost more than a third of its bytes must link to a record", and
+round 3 recorded an item whose loss was its fix direction at 11 per cent, under the threshold. And
+an item's ACCEPTANCE BAR is open work by definition — the hand-rewritten attempt carried 12 of the
+base's 14 completion criteria, and what restored them and held them was adding them back
+mechanically rather than checking for them by hand.
+
+**One more, from the round after.** Round 4 found three docstrings in
+`tools/validate_pipeline_semantics.py` citing an item that commit had removed, two of them made
+false by the removal, and repaired those three. The class was not then swept for elsewhere in the
+tree, so round 5 found a fourth citation, in `tools/tests/test_backend_boundary.py`, of a sentence
+the compression had dropped. **A fix that does not sweep its own class schedules the next round.**

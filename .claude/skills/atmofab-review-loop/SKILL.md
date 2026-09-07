@@ -342,17 +342,17 @@ when a rule does not obviously apply:
      N runs that have one"), and the sweep that finds the population is one loop over the corpus,
      not a judgment call. Where the population is one, say so and call the number a bound rather
      than a requirement
-   - **When you PUBLISH the instrument beside the number, republish it whenever either changes.**
-     Generating a figure from the artifact is not enough once the record carries the script that
-     generated it: on issue #181 a pull request body published a verification script next to that
-     script's output, then changed the script in the next commit and left the old listing. A
-     reviewer ran what was published and got a RED result on the tree it certified, and could not
-     tell those failures from lost work. The same body later cited a figure another axis had
-     measured at an earlier commit, in the present tense, about a file whose measured set had
-     changed. Two rules: **a published instrument and a published number are one record, and both
-     are republished together**; and **a measurement someone else took names the commit it was
-     taken at even when you are quoting it approvingly** — the second is `atmofab-enforcement-change`
-     rule 3 applied to a figure you agree with, which is where it does not fire on its own
+   - **When you PUBLISH the instrument beside the number, republish it whenever either changes, or
+     stamp it with the commit it was run at.** Generating a figure from the artifact is not enough
+     once the record carries the script that generated it: on issue #181 a pull request published a
+     verification script in a COMMENT beside a body quoting its output, changed the script two
+     commits later, and republished neither. A reviewer ran what was published against the tree it
+     certifies and it failed — on the newer commit's own deliberate edits, which from outside are
+     indistinguishable from work the change lost. **A published instrument and a published number
+     are one record.** Note where the surface is: a record split across a body and its comments
+     drifts without either looking edited. The cheap form is the stamp — "run at `<sha>`" makes a
+     listing historical rather than wrong, which is the same cure this list already prescribes for
+     a figure
 
    Episodes: `references/measurement-records.md`.
 
@@ -1049,17 +1049,24 @@ that tells you how it closed.
   witness needs and drive a synthetic one; the coverage is real, it just must not be taken from
   the corpus the change stopped reading (issue #182)
 - **Your change SELECTS a subset — of text, of behaviour, of an allowlist — and you are choosing
-  what goes IN** → the DEFAULT for an element nobody considered decides the failure mode, and it is
-  the design decision, not the individual choices. Selecting means an unconsidered element is
-  DROPPED, and what leaves with it is silent: an open task, a pointer's antecedent, the qualifier a
-  surviving claim needs. Keeping unless explicitly dropped costs size and nothing else. Criterion,
-  one question: **if I never think about element X, what happens to it, and would I notice?** On
-  issue #181 three consecutive rounds found the same three classes — a dropped fix direction, a
-  pointer whose antecedent went, a claim outliving its qualifier — each time in the items the
-  previous round had not opened, and each time they were fixed one at a time. Inverting the default
-  is what ended it; the two rounds after found five, then fewer. **Reach for this at the SECOND
-  round of one class, not the third**: the recurrence is not evidence that you are careless, it is
-  evidence that the misses are invisible by construction
+  what goes IN** → the DEFAULT for an element nobody considered is a design decision made once, and
+  it decides whether a MISS is loud or silent. Criterion, one question: **if I never think about
+  element X, what happens to it, and would I notice?** **The answer decides the polarity; the sign
+  does not.** Where dropping X produces a REFUSAL — a gate allowlist, a write root, an import
+  roster — drop-by-default is the loud direction and is correct, which is `atmofab-enforcement-change`
+  surface 8 and not negotiable. Where dropping X produces silence, keeping unless explicitly
+  dropped costs size and nothing else. A third answer is often the best: make an unconsidered X
+  REFUSE until someone decides, which is what `_UNSCANNED_ROOT_FILES` does after two files landed
+  outside a scan unnoticed. On issue #181 three consecutive rounds found the same shapes — a
+  dropped fix direction, a pointer whose antecedent went, a claim outliving its qualifier — each
+  time in the items the previous round had not opened, and each time they were fixed one at a time;
+  inverting the default lowered the rate and the loop still ended at its cap. **Reach for the
+  question at the SECOND round of one class, not the third**: the recurrence is not evidence that
+  you are careless, it is evidence that the misses are invisible by construction. This is the
+  selection case of "the same family appeared two rounds running" below — that row asks whether the
+  rule is placed where a later addition is protected automatically, and the default IS that
+  placement. **Inverting a default is a shape change, so the "split everything after that into
+  another PR" row below applies to it**
 - **A fix changed the shape of the rule** (denylist → allowlist and the like) → split everything
   after that into another PR. If you continue without splitting, **give the user the options and
   ask**
