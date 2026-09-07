@@ -372,10 +372,39 @@ class PurePayloadValidationTests(unittest.TestCase):
         self.assertEqual(prepared["skill_name"], "")
         ort._validate_launch_request_payload(prepared)
 
+    def test_the_diagnose_pairs_are_in_the_gate_allowlist_table(self) -> None:
+        """`_lint_launch_prompt_gate_allowlist` FAILS OPEN on a pair it does not know: an
+        unknown `(step, substep)` returns `[]`, so the recurrence lint would not scan the
+        diagnostician's prompt at all. The four diagnose pairs are therefore in
+        `ALLOWED_VALIDATE_PIPELINE_STAGES` with the EMPTY set — the diagnostician invokes no
+        validator gate — and this row drives the lint rather than only reading the table, so
+        deleting the entries turns a scanned prompt into an unscanned one and is red.
+        """
+        forbidden = ("python3 tools/validate_pipeline_semantics.py "
+                     "--pipeline-ref workspace/pipelines/x/y --stage post_execute")
+        for step, substep in sorted(ort.DIAGNOSE_LAUNCH_PAIRS):
+            with self.subTest(pair=f"{step}.{substep}"):
+                self.assertEqual(
+                    ort.ALLOWED_VALIDATE_PIPELINE_STAGES[(step, substep)], frozenset())
+                violations = ort._lint_launch_prompt_gate_allowlist(
+                    f"do this:\n{forbidden}\n", step=step, substep=substep)
+                self.assertTrue(
+                    violations,
+                    "the lint must SCAN a diagnose prompt; an empty result here is the "
+                    "unknown-pair fail-open, not a clean prompt")
+        # The negative control: an unknown pair really does fall through silently, which is
+        # what makes the entries above load-bearing rather than decorative.
+        self.assertNotIn(("validate", "no_such_substep"), ort.ALLOWED_VALIDATE_PIPELINE_STAGES)
+        self.assertEqual(
+            ort._lint_launch_prompt_gate_allowlist(
+                f"do this:\n{forbidden}\n", step="validate", substep="no_such_substep"),
+            [])
+
 
 # ======================================================================================
 # B3 / B4 / B5 / B6 / B8: renderers, markers, fence carve-out
 # ======================================================================================
+
 class PureRenderTests(unittest.TestCase):
     def test_render_pure_prompt_full_skeleton(self) -> None:
         prepared = ort.prepare_launch_request_payload(_pure_request("generate"))

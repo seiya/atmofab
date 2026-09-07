@@ -1342,9 +1342,19 @@ def build_launch_request(
     # The escalate diagnostician. It belongs to a phase (`step` names the phase that failed,
     # and the payload keeps that phase's ids so `_validate_launch_request_payload` is
     # satisfied) but it produces nothing and reads nothing from disk, so every phase-specific
-    # must-read and output set below is skipped for it. The pure override at the end empties
-    # the skill fields and `allowed_output_paths` in any case; skipping here keeps the payload
-    # from claiming a read it will not make.
+    # must-read and output set below is skipped for it.
+    #
+    # MEASURED, so the next reader does not have to guess which half is load-bearing: of the
+    # four places `diagnose` is consulted below, only `deterministic` changes the payload a
+    # PURE diagnose request comes out with. Building all four phases' requests with the skips
+    # and again with them neutralised differs on `deterministic` for `build` and on NOTHING
+    # else, because the pure override at the end empties `allowed_output_paths` and the three
+    # skill fields anyway. The `deterministic` one is required — a `build` diagnostician IS a
+    # leaf, and `leaf_mode=pure` with `deterministic=True` is refused at validation. The other
+    # three are kept for the reason a fail-safe is kept rather than the reason a check is: they
+    # state that this launch claims no read, they cost nothing, and they are what a diagnose
+    # launch that is NOT pure would need. They are NOT pinned, and cannot be through this
+    # function's return value.
     diagnose = substep == DIAGNOSE_SUBSTEP
     # `deterministic` means "this substep runs in-process, with no leaf". The diagnostician IS
     # a leaf, so it is never deterministic — including on `build`, whose PHASE is in-process
