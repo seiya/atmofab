@@ -11,11 +11,15 @@
 # leaves are the LLM leaves that run as host-mediated PURE functions (one closed context
 # in, one JSON document out), so they are the ones an HTTP provider is admissible on.
 # `validate.judge` is the one that is not: assigning an HTTP provider to it is rejected at
-# load with `llm_config_capability_insufficient_for_substep`. `defaults`, which also runs the
-# `escalate` diagnostician, MAY be an HTTP provider since issue #169 put that diagnostician on
-# the pure transport — it is required only to support `pure` (`llm_config_defaults_not_pure`).
-# Until `validate.judge` goes pure it still needs an agentic entry of its own, which is why
-# this file names one; that is the only thing standing between it and an all-HTTP run.
+# load with `llm_config_capability_insufficient_for_substep`.
+#
+# `defaults` must stay a CLI provider, for TWO separate reasons. It serves the `escalate`
+# diagnostician, which issue #169 put on the pure transport, so the load-time rule is now
+# `llm_config_defaults_not_pure` rather than a requirement to be agentic. But the run's
+# preflight and `init` still speak ONE backend token derived from `defaults`, and it must be
+# `claude` or `codex`, so an HTTP `defaults` is refused at run start by
+# `llm_config_defaults_not_spawnable`. Two things therefore stand between this file and an
+# all-HTTP run: that single-backend vocabulary, and `validate.judge`, which is still agentic.
 #
 # The two GENERATE pure leaves are additionally gated on the node's M3c shape at run time,
 # so a pure-only provider reaching a non-M3c node fails that node closed rather than

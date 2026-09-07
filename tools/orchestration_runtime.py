@@ -8924,9 +8924,14 @@ def build_readonly_bwrap_profile(
 ) -> dict[str, Any]:
     """A bwrap profile for a READ-ONLY leaf that has no capability / write_roots.
 
-    Used by the conductor's failure diagnostician (spawned with no `child_arid`, hence
-    no record-launch, capability, or read manifest). The repo is bound read-only, there
-    are NO write_roots and NO read-root file pins, and the only writable surfaces are: a
+    The profile every PURE leaf runs under. Its sole production caller is `record_launch`'s
+    `if is_pure:` branch, which also writes that leaf's capability (`mode: pure_readonly`) and
+    its denied-all read manifest — so "no capability, no read manifest" describes what the
+    profile itself carries, not what the launch has. (It used to describe the launch too: the
+    failure diagnostician was spawned with no `child_arid` and built this in-process, reaching
+    no record-launch at all. Issue #169 put it on the pure transport with the other four
+    migrated pairs, and deleted that second construction site.) The repo is bound read-only,
+    there are NO write_roots and NO read-root file pins, and the only writable surfaces are: a
     tmp scratch (sandbox tmp + workspace/tmp/<arid>), the backend's config/credential
     home (auth/session, outside repo_root), and the per-orchestration hooks/ + audit/
     bookkeeping dirs the leaf's own PreToolUse/PostToolUse hooks persist to. A read-only

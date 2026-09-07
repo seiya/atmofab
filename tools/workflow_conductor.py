@@ -72,8 +72,10 @@ def _provider_command_base(entry: ResolvedLeafEntry) -> list[str]:
 
     ONE definition, because three places have to agree about it or they certify/probe a
     different executable than the leaf runs: `leaf_command`, `_ensure_codex_feature_cache`
-    (which certifies the codex hooks feature of that binary), the read-only diagnostician's
-    bwrap profile, and the host-side `/usage` probe."""
+    (which certifies the codex hooks feature of that binary), and the host-side `/usage`
+    probe. There was a fourth — the read-only diagnostician's in-process bwrap profile — until
+    issue #169 gave that leaf a recorded launch like every other one; its profile is now the
+    runtime's, built from the backend command `record-launch` is handed."""
     base = shlex.split(entry.command) if entry.command.strip() else []
     return base or [entry.backend_token]
 
@@ -3936,13 +3938,21 @@ def _ir_language(ir: Any) -> str:
 
 
 def _host_authored_m3c(refs: NodeRefs) -> tuple[bool, bool]:
-    """`(makefile_host_authored, runner_host_authored)` for a pure path bound to the M3c shape.
+    """The `(makefile_host_authored, runner_host_authored)` stamp the two Z1/Z2 pure paths use.
 
-    Compile and Generate reach the pure loops only on that shape (`_pure_leaf_substep`), where
-    the host authors both the control file and the runner, so their stamp is constant. It is a
-    SPEC field rather than a literal at the request builder because the stamp is read back
-    (`orchestration_runtime._payload_is_m3c_physics`): a pure path that also serves a node the
-    host authors nothing for has to supply the node's real values instead.
+    GENERATE reaches the pure loops only on the M3c shape (`_pure_leaf_substep` tests
+    `_conductor_authors_makefile` ∧ `_conductor_authors_runner` for its two pairs), where the
+    host authors both the control file and the runner — so for Generate this constant is the
+    node's truth. COMPILE carries no shape condition at all, deliberately: the Compile contract
+    does not depend on the node kind, and at `compile.generate` time there is no IR to read a
+    shape from. So an `infrastructure` node's Compile does reach these loops and IS stamped
+    `runner_host_authored=True` for a node whose runner the host does not author.
+
+    That is unchanged from before this was a function — both loops wrote the same literal — and
+    it is inert: the stamp's only reader is `_payload_is_m3c_physics`, which uses it to narrow
+    the contract-doc set, and a pure launch empties `skill_must_read_refs` regardless. It is
+    written down because this is the SEAM, and the next author needs to know it already has a
+    caller it does not fit rather than discover it after adding a second.
     """
     return (True, True)
 
@@ -12866,32 +12876,44 @@ clean:
             pure_context={"diagnosis_document": _diagnosis_document(
                 refs.node_key, phase, outcome.failed_substeps, context, self.workflow_mode)},
         )
+        # EVERY way the host can fail to produce a diagnosis lands on one conservative
+        # terminal, because `escalate` is called from `conduct` OUTSIDE its only `try` (which
+        # wraps `run_phase` alone — measured by AST: one `Try` at `conduct`, body
+        # `outcome = self.run_phase(...)`, and the `escalate` call is not inside it). So an
+        # exception escaping here does NOT reach a named fail_closed the way one escaping a
+        # pure LOOP does: it unwinds to `run_workflow`'s generic handler and the run is
+        # recorded as an unexplained `conductor_error`. `origin/main` folded `spawn_leaf`'s
+        # refusal for exactly this reason; the pure migration must not lose that.
+        #
+        # `RuntimeError` is in the set because `self.runtime(...)` raises it on a non-zero
+        # exit, which is how the tombstone and the finalize fail. `OSError` covers a missing
+        # bwrap/backend binary from `Popen`.
         try:
             self.record_launch(child_arid, request, entry)
+            # Tombstone BEFORE the spawn, not after the finalize. The diagnostician holds no
+            # deliverable and appears in no `step_result.json#substep_agent_run_ids`, so the
+            # pass completion vouch (`_validate_orchestration_completion_for_pass`) would
+            # demand a step_result it can never have; `superseded_run_ids` is the exemption.
+            # Ordering: a crash between the record and the tombstone leaves an unfinalized
+            # row, which the vouch already tolerates, whereas a crash between a TERMINAL row
+            # and the tombstone would block a later pass — and on the `build` phase (child
+            # role `step`) would also block the re-launch guard
+            # `_build_step_agents_missing_step_result`.
+            self._add_superseded_run_ids(
+                [child_arid], reason=f"escalate_diagnostician_consumed: {phase}")
+            turn = self._spawn_pure_turn(
+                request, entry, child_arid=child_arid, phase=phase, substep=DIAGNOSE_SUBSTEP,
+                node_key=refs.node_key)
         except (SandboxEnforcementError, OSError, RuntimeError) as exc:
-            # The host cannot RECORD the launch — the read-only sandbox profile is unbuildable,
-            # or the runtime refused the request. Nothing was spawned and nothing was recorded,
-            # so there is no row to finalize. The diagnostician is a best-effort recovery leaf,
-            # so treat an un-launchable diagnosis as conservatively terminal — the same posture
-            # as an unparsable directive — rather than crashing the conductor.
+            # The host could not record, tombstone or launch the sandboxed diagnostician —
+            # an unbuildable profile (SandboxEnforcementError), a missing binary (OSError), a
+            # runtime subcommand that refused (RuntimeError). The diagnostician is a
+            # best-effort recovery leaf, so an un-launchable diagnosis is conservatively
+            # terminal — the same posture as an unparsable directive — rather than a crash.
+            # A launch recorded but never finalized is left behind here; that is the residual
+            # the two pure loops already carry, and it is what `--resume` reconciles.
             self.emit("diagnose_launch_failed", phase=phase, error=str(exc)[:200])
             return RouteDecision("fail_closed", reason=f"{phase}_diagnose_sandbox_unavailable")
-        # Tombstone BEFORE the spawn, not after the finalize. The diagnostician holds no
-        # deliverable and appears in no `step_result.json#substep_agent_run_ids`, so the pass
-        # completion vouch (`_validate_orchestration_completion_for_pass`) would demand a
-        # step_result it can never have; `superseded_run_ids` is the exemption. Ordering: a
-        # crash between the record and the tombstone leaves an unfinalized row, which the vouch
-        # already tolerates, whereas a crash between a TERMINAL row and the tombstone would
-        # block a later pass — and on the `build` phase (child role `step`) would also block the
-        # re-launch guard `_build_step_agents_missing_step_result`.
-        self._add_superseded_run_ids(
-            [child_arid], reason=f"escalate_diagnostician_consumed: {phase}")
-        # A `spawn_leaf` refusal AFTER the record is NOT folded here: it is the same residual the
-        # two pure loops carry (a recorded, unfinalized child) and it propagates to `conduct`,
-        # which terminalizes it as `sandbox_enforcement_violation`.
-        turn = self._spawn_pure_turn(
-            request, entry, child_arid=child_arid, phase=phase, substep=DIAGNOSE_SUBSTEP,
-            node_key=refs.node_key)
         if turn is None:
             # `_spawn_pure_turn` returns None only for a rotated codex home under a warm
             # resume, and this launch passes no `resume_session_id`, so it is unreachable
@@ -12908,7 +12930,14 @@ clean:
         # never finished — while the operator is being told the leaf was killed and the phase
         # fails closed. Same conservative posture as an unparsable directive; the partial output
         # is already persisted as evidence.
-        decision = (None if (proc.timed_out or proc.returncode != 0 or not envelope.parsed)
+        # `envelope.is_error is True` is the disjunct the two pure loops carry
+        # (`not envelope.parsed or envelope.is_error is True`) and this one was missing: the
+        # CLI writes an is_error envelope whose `result` TEXT is still model-written, so a
+        # directive-shaped final line inside one would otherwise be obeyed AND recorded
+        # `diagnose_pass` for a turn the CLI itself marked errored. `returncode` is not a
+        # substitute — an is_error envelope arrives on a rc=0 launch.
+        decision = (None if (proc.timed_out or proc.returncode != 0
+                             or not envelope.parsed or envelope.is_error is True)
                     else _parse_directive(envelope.result if isinstance(envelope.result, str)
                                           else ""))
         status = "pass" if decision is not None else "fail"
@@ -12918,12 +12947,25 @@ clean:
             else f"diagnose_fail: {phase}_diagnose_unparsable")
         # A pure row carries EMPTY output_refs, so `result_summary` is the only thing that can
         # speak for it (`_validate_agent_summary_text`).
-        self.finalize_child(
-            child_arid, turn.token,
-            f"status: {status}\nleaf rc={proc.returncode}",
-            self._agent_run_json(refs, phase, DIAGNOSE_SUBSTEP, child_arid, status,
-                                 [], result_summary, entry=entry,
-                                 agent_model_override=turn.model, usage=turn.usage))
+        #
+        # Folded for the same reason the launch is (see above): `self.runtime(...)` raises
+        # `RuntimeError` on a non-zero exit, and this call is `escalate`'s LAST, so an escape
+        # here would take the conductor down holding a usable directive. The directive is then
+        # deliberately NOT acted on: the row that would say this leaf ran does not exist, and
+        # routing a phase on the word of an unrecorded turn is the false record the whole
+        # `agent_runs.jsonl` vouch exists to prevent. Its own terminal, because the repair is
+        # not the one an unusable directive calls for.
+        try:
+            self.finalize_child(
+                child_arid, turn.token,
+                f"status: {status}\nleaf rc={proc.returncode}",
+                self._agent_run_json(refs, phase, DIAGNOSE_SUBSTEP, child_arid, status,
+                                     [], result_summary, entry=entry,
+                                     agent_model_override=turn.model, usage=turn.usage))
+        except (OSError, RuntimeError) as exc:
+            self.emit("diagnose_finalize_failed", phase=phase, agent_run_id=child_arid,
+                      error=str(exc)[:200])
+            return RouteDecision("fail_closed", reason=f"{phase}_diagnose_unrecordable")
         if decision is None:
             return RouteDecision("fail_closed", reason=f"{phase}_diagnose_unparsable")
         # G5: normalize reuse-vs-discard from the graded severity so every escalate site

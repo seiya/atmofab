@@ -699,6 +699,26 @@ class LlmConfig:
         A codex entry whose slug the operator has blanked must LOAD — that is a document one
         can still read, diff and test — while still failing before a run that would launch
         `codex exec --model ''`."""
+        # The single-backend downstream vocabulary. `run_workflow` derives `--agent-backend`
+        # and the preflight's `--backend` from `defaults.backend_token`, and both parsers take
+        # `choices=sorted(SUPPORTED_BACKENDS)` = {claude, codex} — so an HTTP `defaults` dies
+        # at `init` with an argparse usage dump instead of a named refusal.
+        #
+        # Until issue #169 that could not happen: `defaults` had to be AGENTIC, which no HTTP
+        # provider is, so the load-time rule closed this by accident. The diagnostician is a
+        # pure leaf now, so the load-time rule is `llm_config_defaults_not_pure` and the
+        # accident is gone — this is the same refusal, moved to the layer whose constraint it
+        # actually is, and named. It refuses nothing that ran before: an HTTP `defaults` has
+        # never reached a launch.
+        if self.defaults.is_http:
+            raise LlmConfigError(
+                "llm_config_defaults_not_spawnable",
+                f"`defaults` provider {self.defaults.provider!r} launches no process, and the "
+                f"run's preflight and `init` still speak ONE backend token derived from it "
+                f"(claude or codex). Put a CLI provider in `defaults` and assign the HTTP "
+                f"provider to the leaves that should run on it; `defaults` itself only has to "
+                f"serve the `escalate` diagnostician",
+                where="defaults")
         for label, entry in self._labelled_entries():
             if entry.provider != "codex_cli":
                 continue

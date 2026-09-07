@@ -1819,10 +1819,18 @@ class PureRenderTests(unittest.TestCase):
           sites write the value in Python — is still invisible: the key's closing quote sits
           where the pattern wants `\\s*`. That is deliberate; those are values, not prose. It also
           means this sweep does not guard those six sites: it reads `_RENDER_REPAIR`.
-        - `workflow_conductor._DIRECTIVE_SCHEMA` / `_diagnosis_prompt` are out of scope. They
-          are not a verify leaf's surface: `severity` there is the diagnostician's own field on
-          a consequence axis, and its rubric is inside that same string. `TODO.md`'s
-          rubric-twin entry owns them.
+        - The escalate diagnostician's prompt is out of scope, and where it LIVES changed:
+          `workflow_conductor._DIRECTIVE_SCHEMA` / `_diagnosis_prompt` held it until issue
+          #169 deleted both and made `tools/prompt_templates/pure_escalate_diagnose.txt` the
+          single source. The exclusion still holds and is now STRUCTURAL rather than stated:
+          `_host_built_launch_requests` iterates `LLM_LEAF_SUBSTEPS ∪ PURE_CAPABLE_SUBSTEPS`,
+          neither of which carries a `diagnose` pair, so that template never reaches this
+          sweep. The reason is unchanged — `severity` there is the diagnostician's own field,
+          grading how compromised the existing artifacts are and mapping to reuse-vs-discard,
+          not the `Generate.verify` rubric's repair-route value — and the template is covered
+          instead by `PureRenderTests`' template-file sweep and by the prompt-contract drift
+          guard, which hashes it. `TODO.md`'s rubric-twin entry records that the pair it used
+          to own is gone.
         """
         found = self._host_built_severity_mentions()
         detail = "; ".join(f"{k!r} in {sorted(v)}" for k, v in sorted(found.items()))

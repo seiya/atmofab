@@ -350,7 +350,15 @@ PINNED: dict[str, str] = {
     # and its decision criteria used to live half in `workflow_conductor` constants and half in
     # `skills/workflow-escalate/SKILL.md` (read host-side, hashed by nothing); the template is
     # now the single source and this guard is what makes an edit to it an observable event.
-    "pure-35": "df3926d17c783aadef405f129a95ee3cf84bf2a0adeec57999b11052f5c34c71",}
+    # The digest below is the version round 1 settled on, after two corrections to text a leaf
+    # ACTS on: the null-`target_phase` rule (`_parse_directive` REFUSES a null target under
+    # `action="reopen"` and discards the whole directive, where the template had said only
+    # that null means the current phase), and the untrusted-data instruction its sibling
+    # `pure_bundle_repair.txt` carries — the inlined `diagnosis_document` quotes artifacts the
+    # failed agents wrote, one of which has an interest in the rollback the diagnostician
+    # picks. pure-35 was introduced by this branch and has never been recorded by a run, so
+    # re-pinning it is not editing a historical entry.
+    "pure-35": "22529e4f23739be3763e167250805c3f019c707d81751ee812d8a44f2473ef91",}
 
 
 def _contract_tuple() -> dict[str, object]:

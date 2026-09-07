@@ -7223,7 +7223,7 @@ class DiagnosticianTest(unittest.TestCase):
         # ...and the document is fenced as data, like every other inlined pure document.
         self.assertIn("verdict.json", prompt)
 
-    def test_diagnosis_prompt_keeps_every_artifact_under_a_large_context(self) -> None:
+    def test_the_diagnose_prompt_keeps_every_artifact_under_a_large_context(self) -> None:
         """Regression (E2E #4 run 1): the prompt truncated the whole context dump at 6000 chars,
         which silently dropped whichever artifacts sorted last — including source_meta.json, the
         primary evidence of the failed generate phase. The diagnostician then reported
@@ -7365,7 +7365,12 @@ class DiagnosticianTest(unittest.TestCase):
         self.assertEqual(row["agent_model"], "claude-opus-5[1m]")
         # A pure row carries no deliverable, so its summary is the only thing that speaks for
         # it (`_validate_agent_summary_text` requires one).
-        self.assertIn("diagnose_pass", row["result_summary"])
+        # The whole summary, not just its prefix: an output-less row's summary is the ONLY
+        # thing that speaks for it, and what an operator reads off a tombstoned row is which
+        # way the diagnostician routed the phase.
+        self.assertEqual(
+            row["result_summary"],
+            "diagnose_pass: action=reopen target=compile severity=major")
         self.assertEqual(row["output_refs"], [])
 
     def test_the_diagnosticians_cost_is_normalized_before_it_is_recorded(self) -> None:
@@ -7393,7 +7398,8 @@ class DiagnosticianTest(unittest.TestCase):
         row = self._finalized_row(c)
         self.assertEqual(row["usage"]["status"], "unavailable")
         self.assertEqual(row["status"], "fail")
-        self.assertIn("diagnose_fail", row["result_summary"])
+        self.assertEqual(row["result_summary"],
+                         "diagnose_fail: validate_diagnose_unparsable")
 
     def test_the_diagnostician_is_tombstoned_before_it_is_spawned(self) -> None:
         """It holds no deliverable and appears in no `step_result.json`, so the pass
@@ -7408,14 +7414,53 @@ class DiagnosticianTest(unittest.TestCase):
             raise wc.SandboxEnforcementError("profile went missing between record and spawn")
 
         c.spawn_leaf = spawn  # type: ignore[assignment]
-        with self.assertRaises(wc.SandboxEnforcementError):
-            c.escalate(self._refs(), "validate", wc.PhaseOutcome("validate", "fail"))
+        d = c.escalate(self._refs(), "validate", wc.PhaseOutcome("validate", "fail"))
         subs = [cap for sub, cap in c.calls if sub == "add-superseded-runs"]
         self.assertEqual(len(subs), 1, "the tombstone must be written before the spawn")
         self.assertEqual(subs[0]["--run-ids"], ["child-1"])
         self.assertIn("escalate_diagnostician_consumed", subs[0]["--reason"])
         # ...and it really did precede the spawn: no finalize happened at all.
         self.assertEqual([sub for sub, _ in c.calls if sub == "finalize-child"], [])
+        # WHERE the refusal lands, not just that it happened. `escalate` is called from
+        # `conduct` OUTSIDE its only `try` (which wraps `run_phase` alone), so an exception
+        # escaping here is NOT terminalized as `sandbox_enforcement_violation` — it unwinds to
+        # `run_workflow`'s generic handler and the run reads as an unexplained
+        # `conductor_error`. `origin/main` folded a `spawn_leaf` refusal into the named
+        # terminal for that reason, and the pure migration keeps it.
+        self.assertEqual(d.action, "fail_closed")
+        self.assertEqual(d.reason, "validate_diagnose_sandbox_unavailable")
+
+    def test_a_bookkeeping_failure_does_not_crash_out_of_escalate(self) -> None:
+        """The tombstone and the finalize are new calls the old `escalate` did not make, and
+        both go through `self.runtime(...)`, which raises `RuntimeError` on a non-zero exit.
+        Outside the fold, a finalize failure would lose a SUCCESSFUL diagnosis and take the
+        conductor down with it; folded, it is the same conservative terminal."""
+        for failing in ("add-superseded-runs", "finalize-child"):
+            with self.subTest(subcommand=failing):
+                c = self._conductor()
+                c.spawn_leaf = lambda prompt, env, entry=None, **kw: wc.ProcResult(  # type: ignore[assignment]
+                    0, self._directive_stdout(
+                        '{"action":"retry","target_phase":"generate","reason":"x"}'), "")
+                real_runtime = c.runtime
+
+                def runtime(args, *, input=None, _failing=failing,  # type: ignore[no-untyped-def]
+                            _real=real_runtime):
+                    if args[0] == _failing:
+                        raise RuntimeError(f"{_failing} exited 1")
+                    return _real(args, input=input)
+
+                c.runtime = runtime  # type: ignore[assignment]
+                d = c.escalate(self._refs(), "validate", wc.PhaseOutcome("validate", "fail"))
+                self.assertEqual(d.action, "fail_closed")
+                # Two different terminals, because the repairs differ: a tombstone that could
+                # not be written means the launch never got off the ground, while a finalize
+                # that failed means the leaf RAN and its row is missing — and in that second
+                # case the directive is deliberately dropped rather than obeyed, because
+                # routing on the word of an unrecorded turn is a false record.
+                self.assertEqual(
+                    d.reason,
+                    "validate_diagnose_sandbox_unavailable" if failing == "add-superseded-runs"
+                    else "validate_diagnose_unrecordable")
 
     def test_the_build_phases_diagnostician_is_a_step_role_row(self) -> None:
         """`STEP_REQUIRED_CHILD_AGENT` gives `build` a `step` child, and record-launch REFUSES
@@ -7500,6 +7545,111 @@ class DiagnosticianTest(unittest.TestCase):
         self.assertEqual(
             c2.escalate(self._refs(), "validate", wc.PhaseOutcome("validate", "fail")).action,
             "retry")
+
+    def test_the_template_tells_the_leaf_what_a_null_target_actually_does(self) -> None:
+        """A directive is prose the leaf ACTS on, so a sentence that is wrong there costs a
+        phase attempt.
+
+        `_parse_directive` treats a null `target_phase` three different ways, and the
+        difference is not obvious: `retry` accepts it (the current phase), `fail_closed`
+        ignores it, and `reopen` REJECTS THE WHOLE DIRECTIVE — the leaf's reasoning is
+        discarded and the phase fail_closes as `<phase>_diagnose_unparsable`. The template
+        said only "`null` targets the current phase", which is a trap for exactly one of the
+        three. Both halves are pinned here: the parser's behaviour, and that the template
+        states it — so correcting one without the other is red."""
+        # The behaviour.
+        for action, expected in (("retry", "retry"), ("fail_closed", "fail_closed"),
+                                 ("reopen", None)):
+            with self.subTest(action=action):
+                decision = wc._parse_directive(
+                    json.dumps({"action": action, "target_phase": None, "reason": "r"}))
+                if expected is None:
+                    self.assertIsNone(decision)
+                else:
+                    self.assertEqual(decision.action, expected)
+                    self.assertIsNone(decision.target_phase)
+        # ...and the prompt says so, in the leaf's own vocabulary. The literals come from the
+        # parser's own contract set, so a renamed action breaks both together.
+        prompt = self._rendered_diagnose_prompt("validate", {})
+        self.assertIn("reopen", prompt)
+        self.assertIn("null", prompt)
+        criteria = [b for b in prompt.split("\n\n") if b.startswith("Decision criteria")]
+        self.assertEqual(len(criteria), 1, "the decision-criteria paragraph moved or split")
+        # ONE SENTENCE has to carry the whole rule. A paragraph-wide `assertIn` is satisfied by
+        # the severity prose a few sentences later, which says artifacts are "discarded" —
+        # measured: with the null-target rule reversed to "null means the current phase,
+        # whatever the action", a paragraph-wide check still passed.
+        sentences = [t.strip() for t in criteria[0].replace("\n", " ").split(". ")]
+        refusal = [t for t in sentences
+                   if "reopen" in t and "null" in t
+                   and any(w in t for w in ("refused", "discarded", "invalid", "rejected"))]
+        self.assertEqual(
+            len(refusal), 1,
+            "exactly one sentence of the decision criteria must say that a null `target_phase` "
+            "with `action=\"reopen\"` is REFUSED — `_parse_directive` discards the whole "
+            f"directive there. Sentences mentioning both: "
+            f"{[t for t in sentences if 'reopen' in t and 'null' in t]}")
+        for phase in sorted(wc._DIAGNOSTICIAN_TARGET_PHASES):
+            self.assertIn(phase, criteria[0])
+
+    def test_each_half_of_the_directive_guard_refuses_on_its_own(self) -> None:
+        """`decision = None if (timed_out or returncode != 0 or not parsed or is_error)`.
+
+        Four disjuncts, and every fixture in this class that reaches them is a COMPLETE one:
+        the two killed-leaf rows set `timed_out` AND a non-zero return code, and
+        `_directive_stdout` always builds a well-formed, non-error envelope — so no row was
+        ever decided BY any single half, and deleting three of the four left the whole suite
+        green (measured, round 1). Each row below carries a syntactically perfect directive
+        and trips exactly ONE half, so each half is what refuses it.
+
+        The gain each half denies is the same: a leaf whose turn did not finish would
+        otherwise have its directive obeyed and its row written `diagnose_pass`.
+
+        MEASURED, so the claim is accurate: deleting `timed_out`, `returncode != 0` or
+        `is_error` one at a time each turns exactly one subtest below red. Deleting
+        `not envelope.parsed` does NOT — a neighbouring mechanism kills it, because an
+        unparsed envelope carries `result is _MISSING`, the `isinstance(..., str)` guard
+        beside the call reduces that to `""`, and `_parse_directive("")` is None anyway. That
+        disjunct is therefore REDUNDANT rather than unpinned; it is kept because it states the
+        intent at the point of decision and does not depend on a sentinel's type staying what
+        it is, and the `unparsed` row below is what would notice if that ever changed.
+        """
+        directive = '{"action":"retry","target_phase":"generate","reason":"x"}'
+        cases = {
+            # Killed at the cap, but the process still reported a zero exit.
+            "timed_out": wc.ProcResult(0, self._directive_stdout(directive), "",
+                                       timed_out=True),
+            # Died on its own (an HTTP 502, a codex leaf exiting after its final message)
+            # WITHOUT being killed, so `timed_out` is False and only the code refuses it.
+            "returncode": wc.ProcResult(1, self._directive_stdout(directive), ""),
+            # A live turn whose stdout is not a result envelope at all.
+            "unparsed": wc.ProcResult(0, "not an envelope at all", ""),
+            # The CLI's OWN error envelope. Its `result` text is still model-written, so it
+            # can carry a directive-shaped final line; `returncode` does not catch this one
+            # because an is_error envelope arrives on a zero-exit launch.
+            "is_error": wc.ProcResult(
+                0, json.dumps({"type": "result", "subtype": "error_during_execution",
+                               "is_error": True, "result": directive, "session_id": "s"}), ""),
+        }
+        for half, proc in cases.items():
+            with self.subTest(half=half):
+                c = self._conductor()
+                c.spawn_leaf = lambda prompt, env, entry=None, _p=proc, **kw: _p  # type: ignore[assignment]
+                d = c.escalate(self._refs(), "validate",
+                               wc.PhaseOutcome("validate", "fail"))
+                self.assertEqual(d.action, "fail_closed", half)
+                self.assertEqual(d.reason, "validate_diagnose_unparsable", half)
+                # ...and the row says the turn failed, so the cost is recorded against a
+                # `fail` rather than laundered into a `diagnose_pass`.
+                self.assertEqual(self._finalized_row(c)["status"], "fail", half)
+        # The control: the SAME directive from a turn that finished cleanly is honoured, so
+        # the four rows above refuse for their own reason and not because the payload is bad.
+        c = self._conductor()
+        c.spawn_leaf = lambda prompt, env, entry=None, **kw: wc.ProcResult(  # type: ignore[assignment]
+            0, self._directive_stdout(directive), "")
+        self.assertEqual(
+            c.escalate(self._refs(), "validate",
+                       wc.PhaseOutcome("validate", "fail")).action, "retry")
 
     def test_escalate_unparsable_is_fail_closed(self) -> None:
         c = self._conductor()

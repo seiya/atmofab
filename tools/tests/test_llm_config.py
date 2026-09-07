@@ -922,11 +922,19 @@ class RuleTests(_Tmp):
                                "  capabilities: [agentic]\n")
         self.assertIn("escalate", str(err))
 
-    def test_an_http_provider_is_admissible_as_defaults(self) -> None:
-        """The other side of the same change: before it, `defaults` had to be agentic, so no
-        HTTP provider could serve it and an all-HTTP configuration was impossible. It loads
-        now. `validate.judge` still needs an agentic entry of its own (it is the last agentic
-        leaf until Z3), so the config names one."""
+    def test_an_http_defaults_loads_but_is_refused_at_run_start(self) -> None:
+        """The two halves of the same change, and they land on DIFFERENT layers.
+
+        LOAD: `defaults` no longer has to be agentic — the launch it serves (the `escalate`
+        diagnostician) is a pure leaf — so an HTTP provider gets past `load_llm_config`, which
+        it could not before. A document one can read, diff and test.
+
+        RUN START: it is still refused, because `run_workflow` derives `--agent-backend` and
+        the preflight's `--backend` from `defaults.backend_token` and both parsers take
+        `choices={claude, codex}`. Measured before this rule existed: the run reached `init`
+        and died on `argument --agent-backend: invalid choice: 'anthropic_api'`. That is the
+        constraint of the single-backend downstream vocabulary, not of the capability rule, so
+        it is named HERE rather than left to argparse."""
         cfg = lc.load_llm_config(self.write(
             "defaults:\n"
             "  provider: anthropic_api\n"
@@ -936,6 +944,18 @@ class RuleTests(_Tmp):
             "        provider: claude_cli\n", "http_defaults.yaml"))
         self.assertEqual(cfg.defaults.provider, "anthropic_api")
         self.assertTrue(cfg.defaults.is_http)
+        with self.assertRaises(lc.LlmConfigError) as ctx:
+            cfg.validate_runnable()
+        self.assertEqual(ctx.exception.rule, "llm_config_defaults_not_spawnable")
+        self.assertEqual(ctx.exception.where, "defaults")
+        # ...and the CLI `defaults` an operator actually copies still passes, so this refuses
+        # nothing that runs today.
+        lc.load_llm_config(self.write(
+            "defaults:\n  provider: claude_cli\n"
+            "phases:\n  compile:\n    substeps:\n      generate:\n"
+            "        provider: anthropic_api\n        api_key_env: ANTHROPIC_API_KEY\n"
+            "        model: claude-opus-5\n        base_url: http://127.0.0.1:8000/v1\n",
+            "cli_defaults_http_leaf.yaml")).validate_runnable()
 
     def test_codex_requires_model_only_at_run_start(self) -> None:
         cfg = lc.load_llm_config(self.write("defaults:\n  provider: codex_cli\n"))
