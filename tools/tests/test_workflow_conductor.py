@@ -7588,8 +7588,12 @@ class DiagnosticianTest(unittest.TestCase):
         (a) The rule is there. (b) It does not claim the artifacts are ALL agent-written:
         `_gather_failure_context` collects host-authored metas too — `post_judge_meta.json` and
         `pre_judge_meta.json` are written by the conductor's own in-process substeps, and a
-        `build` escalate's `binary_meta.json` comes from a phase that launches no leaf at all,
-        so for that phase the document can contain no agent-written artifact whatever. Telling
+        `build` escalate's `binary_meta.json` comes from a phase that launches no leaf at all.
+        The document stays MIXED even there, and an earlier version of this docstring said the
+        build document held no agent-written artifact at all, which is wrong:
+        `_gather_failure_context` collects every candidate present on disk and only the ORDER
+        varies by phase, so by Build time the leaf-authored `ir_meta.json` and
+        `source_meta.json` are in it too. Mixed is the whole point. Telling
         the leaf its firmest evidence was written by an adversary, next to a rule that says to
         prefer `fail_closed` on insufficient evidence, is a prompt-sanctioned route to a
         terminal verdict without doing the attribution.
@@ -7614,6 +7618,71 @@ class DiagnosticianTest(unittest.TestCase):
         # ...and that distrusting content is not a licence to discount the artifact, which is
         # what would turn this rule into a shortcut to `fail_closed`.
         self.assertIn("insufficient evidence", rule)
+
+    def test_each_escalation_of_a_phase_is_a_fresh_conversation(self) -> None:
+        """On the HTTP transport the conversation lives in memory, keyed by `(step, substep)`
+        — `(<phase>, diagnose)` for every escalation of one phase — and `_run_http_leaf`
+        appends every turn to it. Both pure loops reset it at their own start; `escalate` did
+        not, so the second escalation of a phase carried the FIRST diagnosis document and the
+        first directive as prior turns, and the third carried both rounds.
+
+        Two things come out wrong, and the first is a `leaf shortcut`: the diagnostician reads
+        a superseded attempt's artifact content as input, which the closed-context contract
+        forbids and which this very template tells it it is not doing ("reason ONLY over the
+        diagnosis document below, and do not assume artifacts it does not show"). The second is
+        that attempts 2 and 3 are anchored on the model's own earlier answer, so a defect that
+        has since become `critical` keeps being graded the way it was graded first — and a
+        `minor` grade forces `reuse`, which keeps the artifacts a restart would have discarded.
+
+        A phase gets up to `MAX_ATTEMPTS_PER_PHASE` escalations, so the replay is bounded but
+        real. Unreachable until `defaults` was allowed to be an HTTP provider — this issue's
+        own change — which is why it is pinned here rather than assumed.
+        """
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        path = Path(d) / "llm.yaml"
+        path.write_text(
+            "defaults:\n  provider: anthropic_api\n"
+            "  api_key_env: ANTHROPIC_API_KEY\n  model: claude-opus-5\n"
+            "phases:\n  validate:\n    substeps:\n      judge:\n"
+            "        provider: claude_cli\n", encoding="utf-8")
+        oid = "o_http_history"
+        c = _FakeConductor(repo_root=self._repo_root(oid), orchestration_id=oid,
+                           orchestration_agent_run_id="ORCH",
+                           llm_config=lc.load_llm_config(path), env={})
+        c.calls = []
+        # Drive the REAL `_run_http_leaf` history bookkeeping by stubbing only the transport
+        # call it wraps, so what is observed is the message list the provider would receive.
+        sent: list[int] = []
+        directive = ('{"action":"retry","target_phase":"generate","severity":"minor",'
+                     '"repair_strategy":"reuse","reason":"x"}')
+
+        class _Resp:
+            text = directive
+            transport_error = None
+            usage: dict = {}
+            model = "m"
+            truncated = False
+            raw_response = directive
+
+        import tools.llm_http_leaf as hl
+        real = hl.run_pure_http_leaf
+
+        def fake(entry, messages, env=None):  # type: ignore[no-untyped-def]
+            sent.append(len(messages))
+            return _Resp()
+
+        hl.run_pure_http_leaf = fake  # type: ignore[assignment]
+        self.addCleanup(lambda: setattr(hl, "run_pure_http_leaf", real))
+        # The fixture's `spawn_leaf` is stubbed away; put the real one back so the HTTP branch
+        # of `spawn_leaf` — and with it `_run_http_leaf`'s history — is what runs.
+        c.spawn_leaf = wc.Conductor.spawn_leaf.__get__(c)  # type: ignore[assignment]
+        for _ in range(3):
+            c.escalate(self._refs(), "generate", wc.PhaseOutcome("generate", "fail"))
+        self.assertEqual(
+            sent, [1, 1, 1],
+            "each escalation must send ONE message — its own prompt. A growing count is the "
+            "previous diagnosis and the previous directive being replayed as prior turns.")
 
     def test_a_truncated_http_reply_does_not_get_to_route_the_phase(self) -> None:
         """The fifth disjunct, and the one only an HTTP `defaults` can reach.
@@ -7716,7 +7785,9 @@ class DiagnosticianTest(unittest.TestCase):
     def test_each_half_of_the_directive_guard_refuses_on_its_own(self) -> None:
         """`None if (timed_out or rc != 0 or truncated or not parsed or is_error)`.
 
-        FIVE disjuncts — the same five the two pure loops refuse a document on — and every
+        FIVE disjuncts — the four the two pure loops refuse a document on, plus `timed_out`
+        (neither loop tests it: `_timed_out_result` forces a nonzero `returncode` and is the
+        only producer of the flag, so `returncode` already answers for it there) — and every
         fixture in this class that reaches them used to be a COMPLETE one: the two killed-leaf
         rows set `timed_out` AND a non-zero return code, and `_directive_stdout` always builds
         a well-formed, non-error envelope — so no row was ever decided BY any single half, and
@@ -7727,15 +7798,26 @@ class DiagnosticianTest(unittest.TestCase):
         The gain each half denies is the same: a leaf whose turn did not finish would
         otherwise have its directive obeyed and its row written `diagnose_pass`.
 
-        MEASURED, so the claim is accurate: deleting `timed_out`, `returncode != 0`,
-        `response_truncated` or `is_error` one at a time each turns exactly one subtest below
-        red. Deleting
-        `not envelope.parsed` does NOT — a neighbouring mechanism kills it, because an
-        unparsed envelope carries `result is _MISSING`, the `isinstance(..., str)` guard
-        beside the call reduces that to `""`, and `_parse_directive("")` is None anyway. That
-        disjunct is therefore REDUNDANT rather than unpinned; it is kept because it states the
-        intent at the point of decision and does not depend on a sentinel's type staying what
-        it is, and the `unparsed` row below is what would notice if that ever changed.
+        MEASURED, and the three outcomes are different, so they are stated apart:
+
+        - deleting `returncode != 0` or `is_error` turns exactly one subtest BELOW red. Both
+          are reachable in production and pinned by a fixture production can emit.
+        - deleting `response_truncated` turns a DIFFERENT test method red
+          (`test_a_truncated_http_reply_does_not_get_to_route_the_phase`), because the row that
+          straddles it needs an HTTP `defaults` — on that transport `_spawn_pure_turn`
+          synthesises the envelope, so `not parsed` and `is_error` are constants and only this
+          half is left. A row here would have been killed by the neighbouring `not parsed`
+          instead; it was written that way first, and measured green.
+        - deleting `timed_out` or `not envelope.parsed` turns a subtest red on a fixture
+          PRODUCTION CANNOT EMIT, so neither is evidence of reachability. `_timed_out_result`
+          forces a nonzero `returncode` and is the only producer of the flag, so
+          `timed_out=True` with `returncode == 0` does not occur; and an unparsed envelope
+          carries `result is _MISSING`, which the `isinstance(..., str)` guard beside the call
+          reduces to `""`, so `_parse_directive("")` is None anyway. Both disjuncts are
+          REDUNDANT rather than unpinned. They are kept because they state the intent at the
+          point of decision and do not depend on another function's normalisation or on a
+          sentinel's type staying what it is — and the two rows are what would notice if
+          either ever changed.
         """
         directive = '{"action":"retry","target_phase":"generate","reason":"x"}'
         cases = {

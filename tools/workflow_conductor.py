@@ -12867,6 +12867,16 @@ clean:
         # which config validation requires to support the PURE capability for exactly this
         # reason (`llm_config_defaults_not_pure`).
         entry = self.entry_for(None, None)
+        # A fresh conversation per escalation (HTTP transport only), the same reset both pure
+        # loops do at their own start. Without it `_run_http_leaf`'s in-memory history — keyed
+        # by `(step, substep)`, so `(<phase>, diagnose)` for every escalation of one phase —
+        # replays the PREVIOUS diagnosis document and the previous directive as prior turns.
+        # That is a past artifact read as input, which the closed-context contract and this
+        # template's own "reason ONLY over the diagnosis document below" both forbid, and it
+        # anchors attempts 2 and 3 on the model's own earlier answer: a defect that has since
+        # become critical keeps being graded the way it was graded first. Unreachable until
+        # `defaults` was allowed to be an HTTP provider, which is this issue's own change.
+        self.reset_http_history(phase, DIAGNOSE_SUBSTEP)
         child_arid = self.new_agent_run_id()
         context = self._gather_failure_context(refs, phase)
         request = build_launch_request(
@@ -12957,9 +12967,13 @@ clean:
         # never finished — while the operator is being told the leaf was killed and the phase
         # fails closed. Same conservative posture as an unparsable directive; the partial output
         # is already persisted as evidence.
-        # The five conditions the two pure loops refuse a document on, all five. Two were
-        # missing and each was added after it was measured reachable, so they are listed with
-        # the transport that reaches them rather than as a formula:
+        # The four conditions the two pure loops refuse a document on, plus `timed_out`. Two
+        # were missing and each was added after it was measured reachable, so they are listed
+        # with the transport that reaches them rather than as a formula. (The loops carry FOUR
+        # — `returncode`, `response_truncated`, `not parsed`, `is_error`; neither tests
+        # `timed_out`, because `_timed_out_result` forces a nonzero `returncode` and is the
+        # only producer of the flag, so there `returncode` already answers for it. Here it is
+        # stated anyway, at the point of decision, for the same reason `not parsed` is.):
         #  - `is_error` — the CLI writes an error envelope whose `result` TEXT is still
         #    model-written, so a directive-shaped final line inside one would be obeyed AND
         #    recorded `diagnose_pass` for a turn the CLI itself marked errored. `returncode` is

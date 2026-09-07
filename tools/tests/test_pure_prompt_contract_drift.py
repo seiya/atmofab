@@ -350,15 +350,19 @@ PINNED: dict[str, str] = {
     # and its decision criteria used to live half in `workflow_conductor` constants and half in
     # `skills/workflow-escalate/SKILL.md` (read host-side, hashed by nothing); the template is
     # now the single source and this guard is what makes an edit to it an observable event.
-    # The digest below is the version round 1 settled on, after two corrections to text a leaf
+    # The digest below is what three review rounds settled on, after corrections to text a leaf
     # ACTS on: the null-`target_phase` rule (`_parse_directive` REFUSES a null target under
     # `action="reopen"` and discards the whole directive, where the template had said only
     # that null means the current phase), and the untrusted-data instruction its sibling
-    # `pure_bundle_repair.txt` carries — the inlined `diagnosis_document` quotes artifacts the
-    # failed agents wrote, one of which has an interest in the rollback the diagnostician
-    # picks. pure-35 was introduced by this branch and has never been recorded by a run, so
-    # re-pinning it is not editing a historical entry.
-    "pure-35": "c044b4148648f8a7cfdd708eaa6785e2ce56beea5874166f77b2fc58276adb93",}
+    # `pure_bundle_repair.txt` carries — the inlined `diagnosis_document` quotes artifact
+    # content VERBATIM, some of it written by the agents whose work failed, one of which has an
+    # interest in the rollback the diagnostician picks. The provenance is MIXED, not
+    # agent-only: `_gather_failure_context` also inlines host-written gate metas, and an
+    # earlier version of this comment (and of the template) said the artifacts were all
+    # agent-written, which would tell the leaf its firmest evidence is adversarial. pure-35 was
+    # introduced by this branch and has never been recorded by a run, so re-pinning it is not
+    # editing a historical entry.
+    "pure-35": "b233977bb47541afb4fecb4d113d75542b325a118f31e9c85dd0754936b9dc3b",}
 
 
 def _contract_tuple() -> dict[str, object]:

@@ -1275,6 +1275,19 @@ class PureRenderTests(unittest.TestCase):
     # subject is a generated source file is `minor`." to the SKILL's routing sentence and every
     # file stayed green, which is a new mention, the thing this check advertises as always red.
     _SEVERITY_ROUTING_ALLOWLIST = (
+        # Issue #169: the escalate diagnostician's output contract. It ROUTES — it states what
+        # the CONDUCTOR does with a value it was not given (`_parse_directive` coerces an
+        # absent or out-of-vocabulary `severity` to `major`, and `resolve_severity_directive`
+        # then forces `reuse` from it) — and it assigns nothing to a finding. It is here
+        # because the round-3 disclosure axis measured the template telling the leaf that an
+        # out-of-vocabulary value is refused, which is true for `action` and `target_phase` and
+        # false for the two fields that decide reuse-vs-discard: a leaf that omits `severity`
+        # was silently given the grade that keeps its artifacts. Note this severity is a
+        # DIFFERENT field from the verify rubric's `issue_severity` — it grades how compromised
+        # the existing artifacts are — which is why it can state its own three values without
+        # standing in for the rubric.
+        "tools/prompt_templates/pure_escalate_diagnose.txt: Output contract (routing directive)"
+        ": one JSON object with th #7a7143f90f63",
         # Both digests changed in issue #148: each line gained the `Compile.verify` pointer.
         "docs/AGENT_CONTRACT.md: - A verify-family finding always sets `verification_status=f"
         " #12a92add46ae",

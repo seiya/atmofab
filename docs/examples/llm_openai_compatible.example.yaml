@@ -18,8 +18,10 @@
 # `llm_config_defaults_not_pure` rather than a requirement to be agentic. `init` and the
 # preflight still take one CLI backend token, and it is resolved from whatever the file can
 # launch (`LlmConfig.cli_launch_identity`) rather than from `defaults`, so an HTTP `defaults`
-# beside a CLI leaf runs. One thing still stands between this file and an all-HTTP run:
-# `validate.judge`, which is agentic until Z3.
+# beside a CLI leaf runs. TWO things still stand between this file and an ALL-HTTP run, and
+# lifting only the first is not enough: `validate.judge`, which is agentic until Z3, and that
+# single CLI backend token, which a file naming no CLI provider at all cannot supply
+# (`llm_config_no_cli_backend`, refused at run start).
 #
 # The two GENERATE pure leaves are additionally gated on the node's M3c shape at run time,
 # so a pure-only provider reaching a non-M3c node fails that node closed rather than
