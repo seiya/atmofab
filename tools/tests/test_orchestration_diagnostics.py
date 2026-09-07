@@ -1224,19 +1224,44 @@ class PureLeafMetaPhaseTests(unittest.TestCase):
                 self.assertFalse(diag.summarize_pure_leaf_metas(d, phase)["found"], phase)
 
     def test_an_unknown_phase_reports_a_gap_rather_than_raising(self) -> None:
-        """The shape must match what a normal all-absent result returns, because both callers
-        label the row by `found` and read the two per-leaf dicts unconditionally."""
+        """`found: False` and no substep rows, because an unknown phase HAS no substeps to
+        name. The subject used to be `validate`, which is a real phase since Z3 (issue #169);
+        every caller labels the row by `found` and reaches its substep rows through `.get`."""
         with tempfile.TemporaryDirectory() as tmp:
-            out = diag.summarize_pure_leaf_metas(Path(tmp), "validate")
+            out = diag.summarize_pure_leaf_metas(Path(tmp), "no_such_phase")
             absent = diag.summarize_pure_leaf_metas(Path(tmp), "compile")
-        self.assertEqual(out, absent)
-        self.assertEqual(out, {"generate": {"found": False}, "verify": {"found": False},
-                               "found": False})
+        self.assertEqual(out, {"found": False})
+        self.assertFalse(absent["found"])
+        self.assertEqual(set(absent) - {"found"}, {"generate", "verify"})
+
+    def test_the_validate_phase_reads_its_single_judge_record(self) -> None:
+        """Z3: `validate` has ONE pure leaf, and the table is a substep mapping rather than a
+        producer/reviewer pair so it does not have to invent a second."""
+        with tempfile.TemporaryDirectory() as tmp:
+            run_node = Path(tmp)
+            (run_node / "judge_meta.json").write_text(json.dumps(
+                {"result": "pass", "attempts": 1, "prompt_contract_version": "pure-36",
+                 "per_attempt": [{"agent_run_id": "c1", "model": "opus",
+                                  "usage": {"input_tokens": 1, "output_tokens": 2}}]}),
+                encoding="utf-8")
+            out = diag.summarize_pure_leaf_metas(run_node, "validate")
+        self.assertTrue(out["found"])
+        self.assertTrue(out["judge"]["found"])
+        self.assertEqual(set(out) - {"found"}, {"judge"})
 
     def test_the_file_table_names_exactly_the_phases_that_have_a_pure_pair(self) -> None:
         import tools.llm_config as lc
         self.assertEqual(set(diag.PURE_LEAF_META_FILES),
                          {phase for phase, _ in lc.PURE_CAPABLE_SUBSTEPS})
+
+    def test_the_file_table_names_exactly_the_pure_capable_substeps(self) -> None:
+        """The finer half of the row above: since Z3 the table is keyed by substep too, so a
+        pure pair added to `llm_config` without a record here is red."""
+        import tools.llm_config as lc
+        self.assertEqual(
+            {(phase, substep)
+             for phase, files in diag.PURE_LEAF_META_FILES.items() for substep in files},
+            set(lc.PURE_CAPABLE_SUBSTEPS))
 
 
 if __name__ == "__main__":

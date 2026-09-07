@@ -11790,6 +11790,7 @@ _PROMPT_TEMPLATE_FILES = {
     "pure compile.verify": "pure_compile_verify.txt",
     "pure generate.generate": "pure_generate_generate.txt",
     "pure generate.verify": "pure_generate_verify.txt",
+    "pure validate.judge": "pure_validate_judge.txt",
     "pure bundle repair": "pure_bundle_repair.txt",
     # The escalate diagnostician: one template, four (step, substep) keys, because the pair is
     # what the renderer looks up and the prompt does not vary with the failed phase (the phase
@@ -11872,7 +11873,7 @@ def _build_gate_runbook(request_payload: dict[str, Any]) -> str:
     # compile.verify emits NO gate runbook: the workspace_root + check_artifact_syntax +
     # --stage compile gates it used to run now execute deterministically in the conductor's
     # compile.static substep (Conductor._compile_static_inproc) BEFORE verify, so verify is
-    # reached only on a deterministically-clean IR and is a pure LLM semantic pass (the
+    # reached only on a deterministically-clean IR and is a semantic pass holding no gate (the
     # spec-cross-reference invariants V1/V3/V5). It therefore falls through to the `else` branch
     # below and returns "" (no runbook) — mirroring generate.verify.
     elif step == "generate" and substep == "generate":
@@ -12598,6 +12599,15 @@ PURE_CONTEXT_REQUIRED_KEYS: dict[tuple[str, str], tuple[str, ...]] = {
     ("generate", "verify"): ("controlled_spec_document", "tests_document", "ir_document",
                              "checks_module_contract_document", "severity_rubric_document",
                              "bundle_document"),
+    # `validate.judge` (Z3, issue #169). The two canonical sources (tests + the IR's
+    # `io_contract`), the runner-output contract slice that says what the run's own output is
+    # obliged to be, the run's artifacts, and — in place of `raw/`, which is 13 MB of float
+    # arrays — the host-computed excerpt of it.
+    ("validate", "judge"): ("tests_document", "io_contract_document",
+                            "runner_output_contract_document", "diagnostics_document",
+                            "verdict_document", "perf_document", "trial_meta_document",
+                            "quality_check_document", "binary_meta_document",
+                            "source_meta_document", "raw_evidence_excerpt_document"),
     # The escalate diagnostician, one pair per escalatable phase. Its whole closed context is
     # the failure-artifact document the host composes (`_diagnosis_document`); the persona, the
     # directive schema and the decision criteria are static template body.

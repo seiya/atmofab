@@ -1958,10 +1958,13 @@ class PureLeafProvenanceUnderAMixedConfigTests(unittest.TestCase):
         self.assertIn("claude --version:", self._render(summary))
 
     def test_pure_leaves_on_another_provider_are_named_without_a_borrowed_version(self) -> None:
+        # Every LLM leaf is pure-capable since Z3 (issue #169), so the leaf that used to sit
+        # OUTSIDE the attributed set here — `validate.judge` on the default backend — is now
+        # inside it and would make the surface a mixture. The mixed-config subject is the one
+        # this row is about, so the non-default provider is put on every attributed leaf.
         summary = self._summary({
-            "generate.generate": {"backend": "openai_compatible", "model": "local-coder"},
-            "generate.verify": {"backend": "openai_compatible", "model": "local-coder"},
-            "validate.judge": {"backend": "claude", "model": "opus"},
+            f"{phase}.{substep}": {"backend": "openai_compatible", "model": "local-coder"}
+            for phase, substep in ao._PURE_CAPABLE_SUBSTEPS
         })
         rendered = self._render(summary)
         self.assertEqual(summary["backend"], "openai_compatible")
@@ -2003,10 +2006,85 @@ class PureLeafProvenanceUnderAMixedConfigTests(unittest.TestCase):
         # (issue #168), and this row asserted the opposite while it was outside.
         summary = self._summary({"compile.verify": {"backend": "codex", "model": "x"}})
         self.assertEqual(summary["backend"], "codex")
-        # A leaf OUTSIDE it does not. `validate.judge` is the one agentic LLM leaf left, so it
-        # is what keeps this half of the assertion alive.
-        outside = self._summary({"validate.judge": {"backend": "codex", "model": "x"}})
+        # A leaf OUTSIDE it does not. `validate.judge` used to be the subject here and is
+        # pure-capable since Z3 (issue #169), so the subject is now a DETERMINISTIC substep —
+        # one that launches no leaf at all, and therefore can never steer the attribution.
+        outside_key = "validate.execute"
+        self.assertNotIn(outside_key, ao._PURE_LEAF_MAP_KEYS)
+        outside = self._summary({outside_key: {"backend": "codex", "model": "x"}})
         self.assertEqual(outside["backend"], "claude")
+
+
+class PureJudgeAbRollupTests(unittest.TestCase):
+    """Z3 (issue #169): the judge's per-attempt record joins the A/B rollup.
+
+    Its directory is discovered from the persisted launch requests, like the compile pair's,
+    because a reservation names only the LIVE run and would drop every repaired attempt."""
+
+    def _rollup(self, *, request: dict, meta: dict | None = None) -> tuple[dict, str]:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            orch = repo_root / "workspace" / "orchestrations" / "o"
+            (orch / "launches").mkdir(parents=True)
+            (orch / "orchestration_meta.json").write_text(json.dumps({
+                "orchestration_id": "o",
+                "invocation": {"generate_executor": "pure", "llm_leaf_map": {}},
+            }), encoding="utf-8")
+            (orch / "preflight.json").write_text(json.dumps({
+                "backend": "claude", "agent_version": "2.1.9", "probe_command": "claude"}),
+                encoding="utf-8")
+            (orch / "launches" / "c1.request.json").write_text(json.dumps(request),
+                                                               encoding="utf-8")
+            if meta is not None:
+                run_node = (repo_root / request["pipeline_ref"] / "runs"
+                            / request["run_id"] / "component__spec_x__0.1.0")
+                run_node.mkdir(parents=True)
+                (run_node / "judge_meta.json").write_text(json.dumps(meta), encoding="utf-8")
+            orch_meta = json.loads(
+                (orch / "orchestration_meta.json").read_text(encoding="utf-8"))
+            summary = ao.collect_pure_leaf_ab_summary(repo_root, "o", orch_meta)
+        lines: list[str] = []
+        ao._render_pure_leaf_ab(summary, lines)
+        return summary, "\n".join(lines)
+
+    _REQUEST = {
+        "step": "validate", "substep": "judge", "leaf_mode": "pure",
+        "node_key": "component/spec_x@0.1.0",
+        "pipeline_ref": "workspace/pipelines/component__spec_x__0.1.0/p_1",
+        "run_id": "run_1",
+    }
+    _META = {"result": "pass", "attempts": 1, "prompt_contract_version": "pure-36",
+             "per_attempt": [{"agent_run_id": "c1", "model": "opus",
+                              "usage": {"input_tokens": 10, "output_tokens": 20}}]}
+
+    def test_a_pure_judge_run_reports_its_judge_row(self) -> None:
+        summary, rendered = self._rollup(request=self._REQUEST, meta=self._META)
+        self.assertTrue(summary["available"])
+        node = summary["pure_validate_nodes"][0]
+        self.assertEqual(node["run_node_dir"],
+                         "workspace/pipelines/component__spec_x__0.1.0/p_1/runs/run_1"
+                         "/component__spec_x__0.1.0")
+        self.assertTrue(node["judge"]["found"])
+        self.assertIn("### validate `workspace/pipelines/", rendered)
+        self.assertIn("judge", rendered)
+
+    def test_the_safe_node_key_is_read_out_of_the_pipeline_ref(self) -> None:
+        """Not recomputed from `node_key`: the tree already has two spellings of that
+        transform, and a third here would be the one nothing checks. A request whose
+        `pipeline_ref` is not the four-segment shape names no directory at all."""
+        request = dict(self._REQUEST, pipeline_ref="workspace/pipelines/component__spec_x__0.1.0")
+        summary, _ = self._rollup(request=request, meta=None)
+        self.assertEqual(summary["pure_validate_nodes"], [])
+
+    def test_an_agentic_judge_leaves_no_row(self) -> None:
+        request = dict(self._REQUEST)
+        del request["leaf_mode"]
+        summary, _ = self._rollup(request=request, meta=self._META)
+        self.assertEqual(summary["pure_validate_nodes"], [])
+
+    def test_a_launched_judge_with_no_record_leaves_no_row(self) -> None:
+        summary, _ = self._rollup(request=self._REQUEST, meta=None)
+        self.assertEqual(summary["pure_validate_nodes"], [])
 
 
 class ScriptPathDanglingLaunchWitnessTests(unittest.TestCase):

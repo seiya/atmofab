@@ -111,7 +111,32 @@ def _pure_context_for(step: str, substep: str) -> dict[str, str]:
         ("compile", "verify"): _pure_compile_verify_context,
         ("generate", "generate"): _pure_generate_context,
         ("generate", "verify"): _pure_verify_context,
+        ("validate", "judge"): _pure_judge_context,
     }[(step, substep)]()
+
+
+def _pure_judge_context() -> dict[str, str]:
+    """One non-empty value per `PURE_CONTEXT_REQUIRED_KEYS[("validate", "judge")]` key.
+
+    The excerpt value is a SHAPE, not a sample: what the judge reads out of it is the business
+    of `test_raw_evidence_excerpt`, and what this fixture has to satisfy is the launch
+    validator's "every declared key is a non-empty string"."""
+    return {
+        "tests_document": "- test: conserves mass",
+        "io_contract_document": "test_evidence_requirements:\n- test_id: t_a\n",
+        "runner_output_contract_document": (
+            "## 1. `diagnostics.json`\nchecks and verdict\n"),
+        "diagnostics_document": '{"per_case": {"case_a": {"metrics": {}}}}',
+        "verdict_document": '{"per_test": [{"test_id": "t_a", "status": "pass"}]}',
+        "perf_document": '{"wall_time_s": 1.0}',
+        "trial_meta_document": '{"trial": 1}',
+        "quality_check_document": '{"status": "pass"}',
+        "binary_meta_document": '{"binary_id": "bin_20260101_001"}',
+        "source_meta_document": '{"verification_status": "pass"}',
+        "raw_evidence_excerpt_document": (
+            '{"policy_version": 1, "coverage": {"missing": []}, '
+            '"metrics_basis_arrays": [], "problems": []}'),
+    }
 
 
 def _pure_diagnose_context() -> dict[str, str]:
@@ -242,11 +267,12 @@ class PurePayloadValidationTests(unittest.TestCase):
         so the rejection is the pair test and not a missing-key failure — which is how this row
         was passing for the wrong reason once `compile.generate` became admissible."""
         for step, substep, ctx in (
-            # The one agentic LLM leaf left.
-            ("validate", "judge", _pure_generate_context()),
-            # A deterministic substep, which launches no leaf at all.
+            # Deterministic substeps, which launch no leaf at all. `validate.judge` used to
+            # lead this list as the last agentic LLM leaf; Z3 (issue #169) made it admissible,
+            # so the subjects are now only the pairs that will never take a leaf.
             ("compile", "static", _pure_compile_context()),
             ("generate", "gate", _pure_generate_context()),
+            ("validate", "execute", _pure_generate_context()),
         ):
             with self.subTest(pair=f"{step}.{substep}"):
                 bad = _pure_request(substep, step=step, pure_context=ctx)
@@ -260,8 +286,11 @@ class PurePayloadValidationTests(unittest.TestCase):
         migration that widened the table would have left an operator reading the old one.
 
         Every admissible pair must appear, so a pair added to the table without the message
-        following is red — which a substring check for one pair would not catch."""
-        bad = _pure_request("judge", step="validate")
+        following is red — which a substring check for one pair would not catch.
+
+        The refused subject is a DETERMINISTIC substep: `validate.judge` was this row's subject
+        until Z3 made it admissible, and an admissible pair cannot demonstrate the refusal."""
+        bad = _pure_request("execute", step="validate")
         with self.assertRaises(ValueError) as caught:
             ort._validate_pure_launch_request_payload(bad)
         message = str(caught.exception)
@@ -270,7 +299,7 @@ class PurePayloadValidationTests(unittest.TestCase):
             self.assertIn(f"({step}, {substep})", message)
         # ...and the refused pair is named too, so the operator can see what they asked for.
         self.assertIn("validate", message)
-        self.assertIn("judge", message)
+        self.assertIn("execute", message)
 
     def test_validate_payload_rejects_pure_with_deterministic(self) -> None:
         bad = _pure_request(deterministic=True)
@@ -1243,6 +1272,12 @@ class PureRenderTests(unittest.TestCase):
         # not match. Scanned anyway, for the same reason every other template is: it reaches a
         # leaf, and a verify severity spelled here would outrank the rubric on that transport.
         ("tools/prompt_templates/pure_escalate_diagnose.txt", None, None),
+        # Issue #169 put `validate.judge` on a pure template. Its grading field is
+        # `confidence`, not `issue_severity` — a judge reports how sure it is of a finding and
+        # the workflow routes on `attribution` instead — so it assigns no rubric value at all.
+        # Scanned for the reason every template is: it reaches a leaf before that leaf's phase
+        # doc, so a verify severity spelled here would outrank the rubric on this transport.
+        ("tools/prompt_templates/pure_validate_judge.txt", None, None),
     )
     # A backticked or bolded severity value, one assigned to the field by name (with `=` or
     # `:`), or one in bare parentheses. The second spelling is round 4's:

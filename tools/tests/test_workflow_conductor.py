@@ -3115,8 +3115,12 @@ class ValidateGateReasonFromMetaTest(unittest.TestCase):
     def _run(self, repo: Path, substep: str, meta: dict | None) -> wc.PhaseOutcome:
         """Run the validate phase with `substep` failing and `meta` as its authored meta
         (None -> the substep writes no meta at all)."""
+        # The AGENTIC judge, by an explicitly narrowed config: the subject here is the reason a
+        # failed `pre_judge` / `post_judge` reports, and running the phase with a pure judge (the
+        # Z3 default) would end it at `pure_context_assembly_failed` in a temp repo that carries
+        # none of the documents the judge is handed — the gate substeps would never be reached.
         c = self._C(repo_root=repo, orchestration_id="orch_x",
-                    orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
+                    orchestration_agent_run_id="ORCH", llm_config=_agentic_cfg("claude"), env={})
         c.calls = []
         if meta is not None:
             setattr(c, f"{substep}_meta_fn", lambda n, m=meta: m)
@@ -3206,7 +3210,7 @@ class ValidateGateReasonFromMetaTest(unittest.TestCase):
         import tempfile
         with tempfile.TemporaryDirectory() as td:
             c = self._C(repo_root=Path(td), orchestration_id="orch_x",
-                        orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
+                        orchestration_agent_run_id="ORCH", llm_config=_agentic_cfg("claude"), env={})
             c.calls = []
             c.pre_judge_meta_fn = lambda n: {"status": "pass", "failure_category": None}
             c.status_fn = lambda phase, sub, n: (
@@ -3222,7 +3226,7 @@ class ValidateGateReasonFromMetaTest(unittest.TestCase):
         # all). The terminal reason is the escalate reason; the tombstone keeps the gate reason.
         with tempfile.TemporaryDirectory() as td:
             c = self._C(repo_root=Path(td), orchestration_id="orch_x",
-                        orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"),
+                        orchestration_agent_run_id="ORCH", llm_config=_agentic_cfg("claude"),
                         env={}, workflow_mode="dev")
             c.calls = []
             c.post_judge_meta_fn = lambda n: {"status": "fail",
@@ -3251,7 +3255,7 @@ class ValidateGateReasonFromMetaTest(unittest.TestCase):
         import tempfile
         with tempfile.TemporaryDirectory() as td:
             c = self._C(repo_root=Path(td), orchestration_id="orch_x",
-                        orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"),
+                        orchestration_agent_run_id="ORCH", llm_config=_agentic_cfg("claude"),
                         env={}, workflow_mode="dev")
             c.calls = []
             c.pre_judge_meta_fn = lambda n: {"status": "fail",
@@ -3273,7 +3277,7 @@ class ValidateGateReasonFromMetaTest(unittest.TestCase):
         import tempfile
         with tempfile.TemporaryDirectory() as td:
             c = self._C(repo_root=Path(td), orchestration_id="orch_x",
-                        orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"),
+                        orchestration_agent_run_id="ORCH", llm_config=_agentic_cfg("claude"),
                         env={}, workflow_mode="dev")
             c.calls = []
             c.judge_semantic_decision_value = "pass"  # decision != "fail" -> conformance block
@@ -3308,7 +3312,7 @@ class ValidateGateReasonFromMetaTest(unittest.TestCase):
         def _drive(td: str, substep: str, meta: dict | None) -> wc.PhaseOutcome:
             consulted.clear()
             c = _T(repo_root=Path(td), orchestration_id="orch_x",
-                   orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
+                   orchestration_agent_run_id="ORCH", llm_config=_agentic_cfg("claude"), env={})
             c.calls = []
             if meta is not None:
                 setattr(c, f"{substep}_meta_fn", lambda n, m=meta: m)
@@ -3349,7 +3353,7 @@ class ValidateGateReasonFromMetaTest(unittest.TestCase):
                 with tempfile.TemporaryDirectory() as td:
                     c = self._C(repo_root=Path(td), orchestration_id="orch_x",
                                 orchestration_agent_run_id="ORCH",
-                                llm_config=_cfg("claude"), env={})
+                                llm_config=_agentic_cfg("claude"), env={})
                     c.calls = []
                     setattr(c, f"{substep}_meta_fn", lambda n, pl=payload: pl)
                     c.status_fn = lambda phase, sub, n, want=substep: (
@@ -6260,8 +6264,11 @@ class LeafTransientRetryTest(unittest.TestCase):
                     # attempt 2: a cold leaf finds the file already there and writes nothing
                     return wc.ProcResult(0, "nothing to do", "")
 
+            # The AGENTIC judge: this row is about the shared leaf loop's retry leaving a dead
+            # attempt's artifact behind, and the pure judge does not reach that loop at all.
+            # Its own freshness branch is pinned in `test_pure_leaf_judge.py`.
             c = _C(repo_root=repo, orchestration_id="orch_x",
-                   orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
+                   orchestration_agent_run_id="ORCH", llm_config=_agentic_cfg("claude"), env={})
             c.calls, c.procs, c.slept, c.spawns = [], [], [], []
             with redirect_stdout(io.StringIO()):
                 oc = c.run_substep(refs, "validate", "judge")
@@ -6276,7 +6283,7 @@ class LeafTransientRetryTest(unittest.TestCase):
                 return wc.ProcResult(0, "re-authored", "")
 
             c2 = _C(repo_root=repo, orchestration_id="orch_x",
-                    orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
+                    orchestration_agent_run_id="ORCH", llm_config=_agentic_cfg("claude"), env={})
             c2.calls, c2.procs, c2.slept, c2.spawns = [], [], [], []
             c2.spawn_leaf = _reauthoring_judge  # type: ignore[assignment]
             self.assertEqual(c2.run_substep(refs, "validate", "judge").status, "pass")
@@ -14926,7 +14933,10 @@ class PureLeafSubstepPredicateTests(unittest.TestCase):
             self.assertTrue(c._pure_leaf_substep(refs, "compile", "verify"))
             self.assertFalse(c._pure_leaf_substep(refs, "generate", "static"))
             self.assertFalse(c._pure_leaf_substep(refs, "compile", "static"))
-            self.assertFalse(c._pure_leaf_substep(refs, "validate", "judge"))
+            # Z3 (issue #169): the judge is pure too, and on the same terms as the compile
+            # pairs — no shape condition, because what it reviews is the run's evidence
+            # against the tests, which every node kind has.
+            self.assertTrue(c._pure_leaf_substep(refs, "validate", "judge"))
 
     def test_a_capability_restricted_entry_keeps_its_leaf_agentic(self) -> None:
         """The operator-facing escape, and the mechanism the issue #168 A/B baseline arm uses:
@@ -18696,11 +18706,20 @@ class PostJudgeClassifierTest(unittest.TestCase):
 class G3JudgeGateSubstepTest(unittest.TestCase):
     """G3/G4: the `--stage pre_judge` gate is two deterministic substeps wrapping the judge —
     pre_judge (pre-spawn DAG readiness) authoring pre_judge_meta.json and post_judge (the gate +
-    severity classifier) authoring post_judge_meta.json."""
+    severity classifier) authoring post_judge_meta.json.
+
+    The judge here is the RESIDUAL AGENTIC one, by an explicitly narrowed config. Z3 (issue
+    #169) made the judge pure by default, and two of this class's subjects only exist on the
+    agentic path: the `recoverable` -> `warm_resume` disposition (a pure judge's
+    `semantic_review.json` is host-authored, so a violation naming it is the host's defect and
+    terminalizes), and `determine_substep_status` reading the review alone (the pure branch
+    also requires `judge_meta.json`). Their pure counterparts live in
+    `tools/tests/test_pure_leaf_judge.py`."""
 
     def _conductor(self, repo: Path) -> "wc.Conductor":
         return wc.Conductor(repo_root=repo, orchestration_id="t",
-                            orchestration_agent_run_id="x", llm_config=_cfg("claude"), env={})
+                            orchestration_agent_run_id="x",
+                            llm_config=_agentic_cfg("claude"), env={})
 
     def _refs(self) -> wc.NodeRefs:
         return wc.NodeRefs(

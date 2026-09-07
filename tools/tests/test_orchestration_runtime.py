@@ -31282,7 +31282,13 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # at execute from io_contract.test_predicates); the SKILL is now a pure semantic-review
         # contract (semantic_review.json only), so the per_test/failure_class authoring prose is
         # removed. The ceiling is tightened to the new (smaller) footprint.
-        "skills/workflow-validate-judge/SKILL.md": 8200,
+        # Bumped 8200->8800: issue #169 (Z3) made the default judge a PURE leaf that reads no
+        # SKILL at all, so this file needs the same "residual agentic only" banner the two
+        # compile SKILLs carry — a reader who does not know which path this document governs
+        # will follow its `raw/` recomputation rules into a leaf that has no filesystem. The
+        # banner is the whole growth; the body is unchanged and the ceiling still catches
+        # re-bloat of it.
+        "skills/workflow-validate-judge/SKILL.md": 8800,
     }
 
     def test_child_context_docs_within_budget(self) -> None:

@@ -730,6 +730,46 @@ def _pure_ir_dirs_of(
     return sorted(dirs)
 
 
+def _pure_run_node_dirs_of(repo_root: Path, orchestration_id: str) -> list[str]:
+    """Every repo-relative run-node directory this orchestration launched a PURE `validate`
+    leaf into, in sorted order (Z3, issue #169).
+
+    Discovered from the persisted launch requests for the same reason `_pure_ir_dirs_of` is:
+    one row per attempt, never rewritten. A `validate` request carries `pipeline_ref` and
+    `run_id` rather than the run-node path, so the directory is composed the way `NodeRefs`
+    composes it: `<pipeline_ref>/runs/<run_id>/<node_key_safe>`. The safe node key is READ OUT
+    of `pipeline_ref` (`workspace/pipelines/<safe>/<pipeline_id>`, the same `NodeRefs`
+    property) rather than recomputed from `node_key` — this tree already carries two spellings
+    of that transform, and a third living in an audit tool would be the one nothing checks.
+    """
+    dirs: list[str] = []
+    launches = _orch_root(repo_root, orchestration_id) / "launches"
+    if not launches.is_dir():
+        return dirs
+    for path in sorted(launches.glob("*.request.json")):
+        row = _load_json_if_dict(path) or {}
+        if _clean_str(row.get("step")) != "validate":
+            continue
+        if _clean_str(row.get("leaf_mode")) != "pure":
+            continue
+        pipeline_ref = _clean_str(row.get("pipeline_ref"))
+        run_id = _clean_str(row.get("run_id"))
+        if not (pipeline_ref and run_id):
+            continue
+        parts = PurePosixPath(pipeline_ref).parts
+        if len(parts) != 4 or parts[:2] != ("workspace", "pipelines"):
+            continue
+        if any(p in {".", ".."} for p in parts):
+            continue
+        safe = parts[2]
+        if "/" in run_id or run_id in {".", ".."}:
+            continue
+        ref = f"{pipeline_ref}/runs/{run_id}/{safe}"
+        if ref not in dirs:
+            dirs.append(ref)
+    return sorted(dirs)
+
+
 def _pure_leaf_keys_that_ran(repo_root: Path, orchestration_id: str) -> frozenset[str]:
     """The `llm_leaf_map` keys of the pure leaves this orchestration ACTUALLY LAUNCHED, read
     from its own persisted launch requests.
@@ -858,9 +898,16 @@ def collect_pure_leaf_ab_summary(
         summary = summarize_pure_leaf_metas(repo_root / ir_dir, "compile")
         if summary.get("found"):
             compile_nodes.append({**summary, "ir_ref": ir_dir})
+    # The Z3 judge (issue #169), discovered the same way and labelled by its run-node dir. One
+    # substep, so its row reads `judge` where the other two read `generate` / `verify`.
+    validate_nodes: list[dict[str, Any]] = []
+    for run_node_dir in _pure_run_node_dirs_of(repo_root, orchestration_id):
+        summary = summarize_pure_leaf_metas(repo_root / run_node_dir, "validate")
+        if summary.get("found"):
+            validate_nodes.append({**summary, "run_node_dir": run_node_dir})
 
     result: dict[str, Any] = {
-        "available": bool(nodes or compile_nodes),
+        "available": bool(nodes or compile_nodes or validate_nodes),
         "generate_executor": generate_executor,
         "backend": backend,
         "agent_cli_version": agent_cli_version,
@@ -870,8 +917,9 @@ def collect_pure_leaf_ab_summary(
         "pure_leaf_provider_differs": pure_leaf_provider_differs,
         "pure_nodes": nodes,
         "pure_compile_nodes": compile_nodes,
+        "pure_validate_nodes": validate_nodes,
     }
-    if not nodes and not compile_nodes:
+    if not nodes and not compile_nodes and not validate_nodes:
         if not pipeline_refs:
             # No pipeline reservation at all: `prepare_node` never ran for any node of
             # this orchestration (or the reservations were removed). Name it — this is
@@ -1361,7 +1409,8 @@ def _render_pure_leaf_ab(summary: dict[str, Any] | None, lines: list[str]) -> No
                      f"is recorded for it)")
     nodes = summary.get("pure_nodes") or []
     compile_nodes = summary.get("pure_compile_nodes") or []
-    if not summary.get("available") or not (nodes or compile_nodes):
+    validate_nodes = summary.get("pure_validate_nodes") or []
+    if not summary.get("available") or not (nodes or compile_nodes or validate_nodes):
         # Say which case this is. Under executor=pure, "legacy/agentic run" would
         # contradict the executor line rendered directly above; under an unknown or
         # unrecognized executor we cannot claim either arm.
@@ -1388,6 +1437,11 @@ def _render_pure_leaf_ab(summary: dict[str, Any] | None, lines: list[str]) -> No
         lines.append(f"### generate `{node.get('source_dir')}`")
         _render_pure_leaf_row("generate", node.get("generate") or {}, lines)
         _render_pure_leaf_row("verify", node.get("verify") or {}, lines)
+        lines.append("")
+    for node in validate_nodes:
+        # One row, and it is named `judge`: the phase has a single pure leaf.
+        lines.append(f"### validate `{node.get('run_node_dir')}`")
+        _render_pure_leaf_row("judge", node.get("judge") or {}, lines)
         lines.append("")
 
 

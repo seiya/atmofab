@@ -104,6 +104,7 @@ _TEMPLATE_FILES = (
     "pure_generate_verify.txt",
     "pure_bundle_repair.txt",
     "pure_escalate_diagnose.txt",
+    "pure_validate_judge.txt",
 )
 
 # sha256 of the canonical serialization of the coupled tuple, keyed by contract version. When an
@@ -362,7 +363,16 @@ PINNED: dict[str, str] = {
     # agent-written, which would tell the leaf its firmest evidence is adversarial. pure-35 was
     # introduced by this branch and has never been recorded by a run, so re-pinning it is not
     # editing a historical entry.
-    "pure-35": "fa5612cce3f15740f8c5f37a182e2fecd435863ec727e58a6111825dd0fb8a49",}
+    "pure-35": "fa5612cce3f15740f8c5f37a182e2fecd435863ec727e58a6111825dd0fb8a49",
+    # pure-36 (issue #169, PR-2): `validate.judge` moved onto the pure transport, so
+    # `pure_validate_judge.txt` joins the coupled tuple — and with it the §1 + §3 slice of
+    # `RUNNER_OUTPUT_CONTRACT.md`, which is inlined into that prompt verbatim. The judge is the
+    # leaf that used to hold tools, and what it used them for was to walk `raw/` with scripts it
+    # wrote per run; its template now tells it that the host-computed excerpt is its whole view
+    # of that evidence, which is a contract change in the strongest sense — the same leaf, asked
+    # the same question, reasoning from a different input. pure-36 was introduced by this branch
+    # and has never been recorded by a run.
+    "pure-36": "d852ef39331125d7cde2858c48097c0e3a6551c29539e80f67c67e2a1c2e0268",}
 
 
 def _contract_tuple() -> dict[str, object]:
@@ -397,6 +407,16 @@ def _contract_tuple() -> dict[str, object]:
             (Path(wc.__file__).resolve().parents[1]
              / "docs" / "workflow" / "phases" / "phase_02_generate.md").read_text(
                 encoding="utf-8")),
+        # The §1 + §3 SLICE of the runner-output contract, on the same ground as the two above
+        # (issue #169): since `pure-36` those sections are inlined verbatim into the pure
+        # `validate.judge` prompt, so they are a leaf INPUT rather than a document the leaf
+        # reads. Hashing the slice keeps §2, §4 and §5 out of the tuple — the judge is not shown
+        # them — and makes `_runner_output_contract_sections`' own anchors part of the contract,
+        # which matters more here than for the other two because this slicer takes TWO ranges
+        # and a silent widening would swallow §2 between them.
+        "runner_output_contract_sections": wc._runner_output_contract_sections(
+            (Path(wc.__file__).resolve().parents[1]
+             / "docs" / "workflow" / "RUNNER_OUTPUT_CONTRACT.md").read_text(encoding="utf-8")),
     }
 
 

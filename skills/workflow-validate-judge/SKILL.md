@@ -5,6 +5,14 @@ description: Use this when running the judge substep of the Validate stage: a pu
 
 # Workflow Validate Judge
 
+> **This `SKILL` is read only by a residual AGENTIC judge** — one whose configured entry drops
+> the `pure` capability. Since [issue #169](https://github.com/seiya/atmofab/issues/169) the
+> default `Validate.judge` is a `pure-function leaf`: it holds no tools, is handed a bounded
+> excerpt in place of `raw/`, returns only `{decision, findings, notes}`, and the HOST writes
+> `semantic_review.json`. Everything below about reading `raw/`, authoring that file, and
+> writing `review_method` is the agentic path. Pure path:
+> `docs/workflow/phases/phase_04_validate.md` §4-2 / §4-2-1.
+
 ## Purpose
 As the judge substep of the Validate phase, run an independent LLM semantic review of a run that already passed the deterministic per-test verdict, and record a `decision` + `findings` classification for retry routing on a semantic failure. This substep operates in an independent LLM context and reasons only from the primary evidence the execute substep generated.
 

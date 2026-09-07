@@ -42,7 +42,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from collections.abc import Callable
-from typing import Any, NamedTuple
+from typing import Any, ClassVar, NamedTuple
 from zoneinfo import ZoneInfo
 
 import yaml
@@ -153,8 +153,8 @@ SUBSTEPS: dict[str, tuple[str | None, ...]] = {
     # compile.generate produces spec.ir.yaml/ir_meta.json and BEFORE compile.verify:
     #   - static (Conductor._compile_static_inproc): runs validate_workspace_root +
     #     check_artifact_syntax + validate_pipeline_semantics --stage compile; the verify
-    #     leaf no longer invokes them, so compile.verify is a pure LLM semantic pass (the
-    #     spec-cross-reference invariants V1/V3/V5) reached only on a deterministically-clean
+    #     leaf no longer invokes them, so compile.verify is a semantic pass holding no gate
+    #     (the spec-cross-reference invariants V1/V3/V5) reached only on a deterministically-clean
     #     IR. A finding routes back to compile.generate via a warm-resume reopen
     #     (COMPILE_STATIC_FAILURE_ROUTING). Mirrors the static checker of generate.gate.
     "compile": ("generate", "static", "verify"),
@@ -190,8 +190,11 @@ SUBSTEPS: dict[str, tuple[str | None, ...]] = {
     #     execute so a cold judge is never spawned for an incomplete closure. A failure is a
     #     non-physics integrity blocker -> fail_closed (never warm-resumed; no judge has run).
     #   - execute    (Conductor._execute_inproc):    unchanged binary run + evidence capture.
-    #   - judge      (LLM leaf):                      pure LLM semantic pass; invokes NO
-    #     validator gate (ALLOWED_VALIDATE_PIPELINE_STAGES[(validate,judge)] == frozenset()).
+    #   - judge      (LLM leaf):                      a semantic pass holding neither a gate
+    #     nor an MCP grant (ALLOWED_VALIDATE_PIPELINE_STAGES[(validate,judge)] == frozenset()).
+    #     Since Z3 (issue #169) it holds no TOOLS either — it is a pure leaf in the Z2 sense,
+    #     which is a different and stronger claim than the "pure semantic pass" this comment
+    #     used to make, and the reason that older phrase is gone from these three lines.
     #   - post_judge (Conductor._post_judge_inproc):  runs `validate_pipeline_semantics
     #     --stage pre_judge` (the gate the judge leaf used to own) and CLASSIFIES the
     #     violation severity. A recoverable (leaf/judge-authored conformance) violation
@@ -563,6 +566,21 @@ GENERATE_VERDICT_FAILURE_ROUTING: dict[str, tuple[str, str]] = {
     category: ("generate", "restart") for category in GENERATE_VERDICT_FAILURE_CATEGORIES
 }
 
+# --- Z3 pure `validate.judge` document routing (issue #169) --------------------
+# The judge returns `{decision, findings, notes}` and the host writes `semantic_review.json`
+# from it (`tools/pure_leaf.semantic_review_document_violations`). A malformed document is
+# repaired in the same bounded warm loop the other reviewers use, under this category.
+# There is deliberately NO routing table beside it: when the budget IS exhausted the host has
+# written no `semantic_review.json`, so `_judge_semantic_decision` reads `""` and `run_phase`'s
+# existing `judge_conformance_block` raises `validate_judge_conformance_violation` — the very
+# terminus the agentic judge's exhausted warm-resume budget reached. One routing story, not two.
+SEMANTIC_REVIEW_DOCUMENT_VIOLATION = "semantic_review_document_violation"
+JUDGE_DOCUMENT_FAILURE_CATEGORIES: tuple[str, ...] = (
+    "pure_response_unparseable",
+    "pure_response_truncated",
+    SEMANTIC_REVIEW_DOCUMENT_VIOLATION,
+)
+
 # --- Z1 pure-leaf IR-document routing (issue #168) -----------------------------
 # The pure `compile.generate` producer returns exactly one IR document
 # (`{"ir": <object>, "last_fail_reason": null | string}`); the host validates its SHAPE
@@ -926,48 +944,97 @@ _PHASE_PRIMARY_ARTIFACTS: dict[str, tuple[str, ...]] = {
 # template already tells the reviewer not to re-check what `Generate.gate` settled. The title and
 # the preamble are outside it too: the preamble addresses the agentic leaf and describes how a
 # pure leaf is reached instead, which is orientation the reviewer is already living inside.
-_CHECKS_CONTRACT_ABI_BEGIN_RE = re.compile(r"^## 1\.(?:\s|$)")
-_CHECKS_CONTRACT_ABI_END_RE = re.compile(r"^## 5\.(?:\s|$)")
+
+
+def _numbered_section_heading_re(number: str) -> re.Pattern[str]:
+    """The line anchor for a `## <number>.` section heading.
+
+    `(?:\\s|$)` is what keeps `## 1.5` from anchoring `## 1.` — a subsection number is not a
+    section number, and a slice that started at one would be silently short.
+    """
+    return re.compile(rf"^## {re.escape(number)}\.(?:\s|$)")
+
+
+def _numbered_section_range(text: str, begin: str, end: str, *, subject: str) -> str:
+    """Return `## <begin>.` (inclusive) through `## <end>.` (exclusive), trailing blanks stripped.
+
+    The engine behind every numbered-section slice a pure leaf is given, extracted so the
+    `checks` ABI slice and the runner-output slice cannot drift into two different readings of
+    "a section". Its semantics are the ones issue #142 settled and this module's callers depend
+    on, unchanged:
+
+      * BOTH anchors must be present, and the end anchor is searched only AFTER the begin index
+        — a back-reference to `## <end>.` above the section must not produce an empty or
+        reversed slice. A missing anchor RAISES `ValueError` rather than degrading to a shorter
+        or empty slice: every caller turns that into a named fail-closed contract, because a
+        leaf handed a truncated contract is exactly the blindness these injections remove.
+      * The terminator is the LITERAL `## <end>.`, not "the first heading numbered above
+        `begin`". Renumbering a contract's sections is a contract change and should stop here
+        with a named error rather than silently widen the slice.
+      * Both anchors are LINE-ANCHORED and FENCE-UNAWARE: a ``` block containing a line that
+        begins `## <n>.` would anchor, cutting the slice inside the fence. Each caller's
+        docstring records what it measured about its own document.
+
+    A slice is a pure-leaf INPUT: changing what one spans changes what the leaf reads and
+    therefore requires a `PURE_PROMPT_CONTRACT_VERSION` bump. The drift guard hashes the slices
+    THEMSELVES (`tools/tests/test_pure_prompt_contract_drift.py`), so a silent re-slice changes
+    the digest instead of shipping unversioned.
+    """
+    begin_re = _numbered_section_heading_re(begin)
+    end_re = _numbered_section_heading_re(end)
+    lines = text.splitlines()
+    start = next((i for i, ln in enumerate(lines) if begin_re.match(ln)), None)
+    if start is None:
+        raise ValueError(f"{subject} has no '## {begin}.' section heading")
+    stop = next((i for i in range(start + 1, len(lines)) if end_re.match(lines[i])), None)
+    if stop is None:
+        raise ValueError(
+            f"{subject} has no '## {end}.' section heading after '## {begin}.'")
+    return "\n".join(lines[start:stop]).rstrip("\n")
 
 
 def _checks_contract_abi_sections(text: str) -> str:
-    """Return §1-§4 of `docs/workflow/CHECKS_MODULE_CONTRACT.md` — from the `## 1.` heading line
-    (inclusive) to the `## 5.` heading line (exclusive), trailing blank lines stripped.
+    """Return §1-§4 of `docs/workflow/CHECKS_MODULE_CONTRACT.md`, by `_numbered_section_range`,
+    which owns the anchoring and fail-closed semantics.
 
-    Raises `ValueError` when either anchor is absent, rather than degrading to a shorter or empty
-    slice: the caller turns that into a named fail-closed contract, because a reviewer handed a
-    truncated ABI is exactly the blindness this injection exists to remove.
+    What is specific to this document: the real file holds ONE fenced block (its two markers are
+    the only ``` lines in it) and no line inside it takes the shape of a `## 1.` / `## 5.`
+    heading (measured), so the engine's fence-unawareness has nothing to catch here — but a
+    maintainer reading "the `## 5.` heading line" would not otherwise know that a heading QUOTED
+    in an example counts. Section MEMBERSHIP is not re-derived here: what belongs to the slice is
+    pinned by `test_checks_contract_document_is_sections_1_to_4_of_the_real_doc`, which goes red
+    when §2, §3 or §4 leaves the document (measured, all three), rather than by a second
+    enumeration of the contract's structure inside this function."""
+    return _numbered_section_range(text, "1", "5", subject="checks-module contract")
 
-    The terminator is the LITERAL `## 5.`, not "the first heading numbered above 4". Renumbering
-    the contract's sections is a contract change, and it should stop here with a named error rather
-    than silently widen the slice. `(?:\\s|$)` keeps `## 1.5` / `## 5.1` from anchoring.
 
-    Both anchors are LINE-ANCHORED and FENCE-UNAWARE: a ``` block containing a line that begins
-    `## 1.` or `## 5.` would anchor, cutting the slice inside the fence. The real document holds
-    ONE fenced block (its two markers are the only ``` lines in the file) and no line in it takes
-    that shape (measured), and only an operator editing `docs/` could introduce one
-    — but a maintainer reading "the `## 5.` heading line" would not otherwise know that a heading
-    QUOTED in an example counts. Section MEMBERSHIP is not re-derived here: what belongs to the
-    slice is pinned by `test_checks_contract_document_is_sections_1_to_4_of_the_real_doc`, which
-    goes red when §2, §3 or §4 leaves the document (measured, all three), rather than by a second
-    enumeration of the contract's structure inside this function.
 
-    This slice is a pure-leaf INPUT: changing what it spans — extending the terminator to EOF if
-    §5 is ever removed, for instance — changes what the reviewer reads and therefore requires a
-    `PURE_PROMPT_CONTRACT_VERSION` bump. Since issue #142's round 2 the drift guard hashes the
-    slice ITSELF (`tools/tests/test_pure_prompt_contract_drift.py`), so a silent re-slice — an
-    anchor moved here, or the document renumbered so a different section terminates it — now
-    changes the digest instead of shipping unversioned."""
-    lines = text.splitlines()
-    begin = next((i for i, ln in enumerate(lines)
-                  if _CHECKS_CONTRACT_ABI_BEGIN_RE.match(ln)), None)
-    if begin is None:
-        raise ValueError("checks-module contract has no '## 1.' section heading")
-    end = next((i for i in range(begin + 1, len(lines))
-                if _CHECKS_CONTRACT_ABI_END_RE.match(lines[i])), None)
-    if end is None:
-        raise ValueError("checks-module contract has no '## 5.' section heading after '## 1.'")
-    return "\n".join(lines[begin:end]).rstrip("\n")
+# The runner-output contract's two evidence sections — §1 (`diagnostics.json`) and §3 (`raw/`
+# primary evidence) — as they reach the pure `validate.judge` reviewer (issue #169). They are
+# what a judge needs to read the two documents it is given about the run's own output: what
+# `diagnostics.json` is obliged to carry, and what `raw/` is obliged to hold and in what shape.
+# §2 (`perf.json` required fields) is `Validate.execute`'s deliverable gate rather than a
+# semantic question; §4 (JSON serialization) and §5 (other runner constraints) are settled
+# deterministically before the judge sees anything, and the template tells it not to re-check
+# what a gate has settled.
+_RUNNER_OUTPUT_CONTRACT_SECTIONS = (("1", "2"), ("3", "4"))
+
+
+def _runner_output_contract_sections(text: str) -> str:
+    """Return §1 and §3 of `docs/workflow/RUNNER_OUTPUT_CONTRACT.md`, joined by a blank line.
+
+    Two `_numbered_section_range` calls, which own the anchoring and the fail-closed semantics:
+    §2 sits between them, so this cannot be one range, and a slice that silently included §2
+    would be a different leaf input under the same contract version.
+
+    Specific to this document: the engine's anchors are fence-unaware, and this file holds NO
+    fenced block at all — zero ``` lines, measured — so there is nothing here for that
+    unawareness to catch; its examples are inline code spans. Only an operator editing `docs/`
+    could introduce a fence. What each section CONTAINS is not re-derived here; it is pinned by
+    the drift guard, which hashes this slice itself."""
+    return "\n\n".join(
+        _numbered_section_range(text, begin, end, subject="runner-output contract")
+        for begin, end in _RUNNER_OUTPUT_CONTRACT_SECTIONS)
 
 
 
@@ -1511,7 +1578,7 @@ def build_launch_request(
             # the leaf — it sits at the pipeline root which must stay non-writable to the
             # sandboxed leaf. So it is NOT in the leaf's allowed_output_paths.
             req["allowed_output_paths"] = [
-                f"{src}/src/{refs.spec_id}_model.f90",
+                f"{src}/src/{Conductor._model_basename(refs)}",
                 runner_or_checks,
                 *make_entry,
                 f"{src}/src/command_log.jsonl",
@@ -6050,6 +6117,15 @@ class Conductor:
         renderer's output is called; the build-graph seam reads it too."""
         return f"{refs.spec_id}_runner.f90"
 
+    @staticmethod
+    def _model_basename(refs: NodeRefs) -> str:
+        """The basename of the node's model source. ONE spelling, like the runner's above.
+
+        Extracted when `_semantic_review_scope` became a second reader (issue #169): the name is
+        pre-existing backend debt that `docs/BACKEND_BOUNDARY.md`'s ledger records, and the way
+        NOT to add to it is to call the one place that says it rather than to write it again."""
+        return f"{refs.spec_id}_model.f90"
+
     #: The basename of the build control file the host writes. ONE spelling, for the same reason.
     CONTROL_FILE_BASENAME = "Makefile"
 
@@ -6148,15 +6224,22 @@ class Conductor:
         cannot be evaluated. An `infrastructure` node's Compile therefore goes pure too — the
         Generate-side carve-out (#169) is a separate question.
 
-        Four LLM substeps go pure: `(compile, generate)` (the IR producer, Z1) and
+        `(validate, judge)` (Z3, issue #169) carries no shape condition either, and for a
+        related reason: what the judge reviews is the run's evidence against `tests.md` and the
+        IR's `io_contract`, which every node kind has. It went pure once the host could hand it
+        the one thing it used tools for — `raw/`, 13 MB of float arrays, now summarized by
+        `tools/raw_evidence_excerpt.py`.
+
+        Five LLM substeps go pure: `(compile, generate)` (the IR producer, Z1) and
         `(compile, verify)` (the IR reviewer, Z1); `(generate, generate)` (the CodegenBundle
-        producer, M-C) and `(generate, verify)` (the verdict reviewer, M-D) on an M3c node. Each
-        pair is dispatched to its own loop in `run_substep`. Deterministic substeps
-        (compile.static, generate lint/syntax/static) are never pure — they run in-process
-        regardless — and `validate.judge` stays agentic (Z3)."""
+        producer, M-C) and `(generate, verify)` (the verdict reviewer, M-D) on an M3c node; and
+        `(validate, judge)` (the semantic reviewer, Z3). Each pair is dispatched to its own loop
+        in `run_substep`. Deterministic substeps (compile.static, generate lint/syntax/static)
+        are never pure — they run in-process regardless."""
         if not self.entry_for(phase, substep).supports(CAP_PURE):
             return False
-        if (phase, substep) in (("compile", "generate"), ("compile", "verify")):
+        if (phase, substep) in (("compile", "generate"), ("compile", "verify"),
+                                ("validate", "judge")):
             return True
         if (phase, substep) not in (("generate", "generate"), ("generate", "verify")):
             return False
@@ -7268,11 +7351,14 @@ clean:
 
     def _write_pure_attempt_meta(self, refs: NodeRefs, basename: str, *, result: str,
                                  failure_category: str | None, failure_excerpt: str | None,
-                                 attempts: int, per_attempt: list[dict[str, Any]]) -> None:
-        """Author `<ir_ref>/<basename>` — the per-attempt record of a pure compile substep. Byte
-        for byte the key set `_write_bundle_meta` / `_write_verdict_meta` author, so
-        `orchestration_diagnostics._summarize_one_pure_meta` reads it unchanged. It lives beside
-        `compile_static_meta.json`, and is named after its substep the same way."""
+                                 attempts: int, per_attempt: list[dict[str, Any]],
+                                 parent: str | None = None) -> None:
+        """Author `<parent>/<basename>` — the per-attempt record of a pure substep, `<ir_ref>` by
+        default. Byte for byte the key set `_write_bundle_meta` / `_write_verdict_meta` author, so
+        `orchestration_diagnostics._summarize_one_pure_meta` reads it unchanged. For the compile
+        pair it lives beside `compile_static_meta.json` and is named after its substep the same
+        way; `validate.judge` passes its run-node dir, because that is where the run's own
+        records live."""
         from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION
         meta: dict[str, Any] = {
             "result": result,
@@ -7283,7 +7369,7 @@ clean:
         }
         if failure_excerpt:
             meta["failure_excerpt"] = failure_excerpt
-        path = self.repo_root / refs.ir_ref / basename
+        path = self.repo_root / (parent or refs.ir_ref) / basename
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(meta, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
@@ -7294,6 +7380,170 @@ clean:
     def _write_compile_verify_meta(self, refs: NodeRefs, **kwargs: Any) -> None:
         """The pure `compile.verify` reviewer's per-attempt record (`verdict_meta.json`'s twin)."""
         self._write_pure_attempt_meta(refs, "compile_verify_meta.json", **kwargs)
+
+    # --- the pure `validate.judge` reviewer (Z3, issue #169) ------------------
+
+    def _node_host_authored_flags(self, refs: NodeRefs) -> tuple[bool, bool]:
+        """The `(makefile_host_authored, runner_host_authored)` stamp read off the NODE.
+
+        `_host_authored_m3c` returns the constant `(True, True)`, which is the truth for the
+        pure paths that only ever see an M3c node. The judge sees every node kind, so it asks
+        instead — the stamp's reader, `_payload_is_m3c_physics`, believes what the request says.
+        """
+        return (self._conductor_authors_makefile(refs), self._conductor_authors_runner(refs))
+
+    def _write_judge_meta(self, refs: NodeRefs, **kwargs: Any) -> None:
+        """The pure `validate.judge` reviewer's per-attempt record, in the run-node dir beside
+        the run's other host-written records. Same key set as its `compile` / `generate` twins,
+        so `orchestration_diagnostics._summarize_one_pure_meta` reads it unchanged."""
+        self._write_pure_attempt_meta(refs, "judge_meta.json",
+                                      parent=refs.run_node_dir(), **kwargs)
+
+    def _semantic_review_scope(self, refs: NodeRefs) -> dict[str, Any]:
+        """The `scope` block of `semantic_review.json`: what the review was OF.
+
+        Every value here is a fact about the workspace, which is why the host writes it and the
+        leaf does not: `--stage pre_judge` requires each ref to be a `workspace/`-rooted path
+        that EXISTS, and a closed-context leaf could only guess. The model and runner refs come
+        from the bundle's declared roles when there is a bundle — each `files[]` entry is written
+        to `src/<logical_path>`, which is what makes the join below correct — and from the
+        conductor's own two basename helpers otherwise. Never from a spelling invented here: the
+        `docs/BACKEND_BOUNDARY.md` ledger records those basenames as pre-existing debt, and a
+        third copy would add to it.
+
+        `raw_refs` is empty when the run produced no `raw/` at all. That is left to fail at the
+        gate, which requires a non-empty list — deliberately, because a node certified on no
+        primary evidence is exactly what the gate is for, and the judge that passed such a run
+        was looking at an excerpt whose `raw_dir_present` said so."""
+        source_dir = refs.source_dir()
+        model_ref = f"{source_dir}/src/{self._model_basename(refs)}"
+        runner_ref = f"{source_dir}/src/{self._runner_basename(refs)}"
+        bundle_path = self.repo_root / source_dir / "codegen_bundle.json"
+        try:
+            bundle = json.loads(bundle_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            bundle = None
+        if isinstance(bundle, dict):
+            declared: dict[str, str] = {}
+            for role in ("model", "runner"):
+                named = [f["logical_path"] for f in (bundle.get("files") or [])
+                         if isinstance(f, dict) and f.get("role") == role
+                         and isinstance(f.get("logical_path"), str)]
+                # EXACTLY one, or the conductor's own naming stands: two files in a role is a
+                # bundle the gates refuse, and guessing which one the review was "of" would put
+                # an arbitrary path into the record the operator reads.
+                if len(named) == 1:
+                    declared[role] = f"{source_dir}/src/{named[0]}"
+            model_ref = declared.get("model", model_ref)
+            runner_ref = declared.get("runner", runner_ref)
+        raw_dir = self.repo_root / refs.run_node_dir() / "raw"
+        raw_refs = sorted(
+            str(path.relative_to(self.repo_root)).replace("\\", "/")
+            for path in raw_dir.rglob("*") if path.is_file()) if raw_dir.is_dir() else []
+        return {"model_ref": model_ref, "runner_ref": runner_ref, "raw_refs": raw_refs}
+
+    def _write_semantic_review(self, refs: NodeRefs, review: dict[str, Any], *,
+                               attempts: int) -> None:
+        """Author `<run_node_dir>/semantic_review.json` from the judge's returned judgement.
+
+        The leaf returns `{decision, findings, notes}` and NOTHING else; everything the
+        `--stage pre_judge` gate reads besides the decision is a fact about the workspace that
+        this method supplies. `review_method` is the exact literal the gate requires — the
+        SKILL used to spend a paragraph telling the leaf to write it correctly, and a
+        host-written literal cannot be written incorrectly.
+
+        `evidence_refs` are rewritten from `<document_key>[#fragment]` to the workspace path
+        that key was inlined FROM, which is what keeps the gate's "path list" a path list. The
+        in-loop validator has already refused any key that was not inlined, so a key that
+        somehow reaches here without a path is kept VERBATIM rather than dropped: a finding is
+        the operator's evidence, and silently deleting a reference to make a file look tidy is
+        worse than an unresolved one.
+
+        Never called on an exhausted attempt: no accepted document, no file — which is what
+        makes the file's absence the signal `run_phase` routes on."""
+        from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION
+        from tools.raw_evidence_excerpt import RAW_EXCERPT_POLICY_VERSION
+        paths = self._pure_judge_document_refs(refs)
+        findings = []
+        for finding in review["findings"]:
+            resolved = dict(finding)
+            refs_out = []
+            for ref in finding["evidence_refs"]:
+                key, _, fragment = ref.partition("#")
+                path = paths.get(key.strip())
+                refs_out.append(f"{path}#{fragment}" if (path and fragment)
+                                else (path or ref))
+            resolved["evidence_refs"] = refs_out
+            findings.append(resolved)
+        review_document = {
+            "review_method": "llm_semantic_review",
+            "decision": review["decision"],
+            "findings": findings,
+            "scope": self._semantic_review_scope(refs),
+            "node_key": refs.node_key,
+            "pipeline_id": refs.pipeline_id,
+            "run_id": refs.run_id,
+            "attempt_count": attempts,
+            "raw_excerpt_policy_version": RAW_EXCERPT_POLICY_VERSION,
+            "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
+        }
+        if review.get("notes"):
+            review_document["notes"] = review["notes"]
+        path = self.repo_root / refs.run_node_dir() / "semantic_review.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(review_document, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+    @staticmethod
+    def _semantic_review_violations(review: dict[str, Any]) -> list[str]:
+        """The judge document's schema, bound to the keys the host actually inlines.
+
+        The key set is taken from `PURE_CONTEXT_REQUIRED_KEYS`, the same table the renderer
+        validates the launch against, so a document slot added or removed there moves what an
+        `evidence_refs` entry may name WITHOUT a second list here going stale."""
+        from tools.orchestration_runtime import PURE_CONTEXT_REQUIRED_KEYS
+        from tools.pure_leaf import semantic_review_document_violations
+        return semantic_review_document_violations(
+            review, document_keys=PURE_CONTEXT_REQUIRED_KEYS[("validate", "judge")])
+
+    @staticmethod
+    def _semantic_review_summary(review: dict[str, Any], attempts: int) -> str:
+        """The `result_summary` of a judge row. A pure row's `output_refs` is empty, so this is
+        the only field that can satisfy `_validate_agent_summary_text`."""
+        if review["decision"] == "pass":
+            return f"pure_judge_pass: decision pass (findings=0, attempts={attempts})"
+        first = review["findings"][0]
+        return (f"pure_judge_fail: {first['attribution']}: "
+                f"{first['description'][:200]}")
+
+    def _pure_judge_spec(self) -> "Conductor._PureReviewerSpec":
+        """The `validate.judge` half of the pure reviewer loop.
+
+        `host_authored_flags` carries the NODE's real values rather than the M3c constant the
+        two older reviewers pass: the judge runs on every node kind, and the launch request's
+        stamp is read back by `_payload_is_m3c_physics`."""
+        return self._PureReviewerSpec(
+            build_context=self._build_pure_judge_context,
+            write_project_meta=self._write_semantic_review,
+            write_meta=self._write_judge_meta,
+            non_object_findings=(
+                "the reply parsed to a non-object JSON value (expected a semantic review)"),
+            repair_reason="pure_semantic_review_repair",
+            attempt_failed_event="pure_semantic_review_attempt_failed",
+            summary_prefix="pure_judge",
+            host_write_failed_reason="pure_judge_host_write_failed",
+            superseded_prefix="pure_semantic_review_repair",
+            host_authored_flags=self._node_host_authored_flags,
+            violations=self._semantic_review_violations,
+            schema_category=SEMANTIC_REVIEW_DOCUMENT_VIOLATION,
+            status_of=lambda doc: doc["decision"],
+            reply_of=lambda doc, rc: (
+                f"semantic review: decision {doc['decision']} "
+                f"(findings={len(doc['findings'])})\nleaf rc={rc}"),
+            summary_of=self._semantic_review_summary,
+            superseded_detail=lambda doc: f"decision={doc['decision']}",
+            document_name="semantic review",
+        )
 
     # --- the two pure loops, parametrised ------------------------------------
     # `_run_pure_producer_substep` / `_run_pure_reviewer_substep` are PHASE-INDEPENDENT: the
@@ -7377,6 +7627,8 @@ clean:
         summary_of: Callable[[dict[str, Any], int], str]
         #: (accepted document) -> the tombstone reason's trailing clause on a repaired document.
         superseded_detail: Callable[[dict[str, Any]], str]
+        #: What the document is CALLED, for the reply text of an attempt that returned none.
+        document_name: str
 
     class _PureTurn(NamedTuple):
         """One recorded pure launch and everything read back off it."""
@@ -8078,6 +8330,116 @@ clean:
             "bundle_document": _read(f"{refs.source_dir()}/codegen_bundle.json"),
         }
 
+    #: The `validate.judge` documents that are a FILE, keyed by the pure-context slot name.
+    #: One definition, three readers: the context builder reads each path, `_write_semantic_review`
+    #: resolves an `evidence_refs` key back to it, and `test_pure_leaf_judge` walks it. The three
+    #: DERIVED slots are added by `_pure_judge_document_refs`, which is what a caller should use.
+    _PURE_JUDGE_RUN_NODE_DOCUMENTS: ClassVar[tuple[tuple[str, str], ...]] = (
+        ("diagnostics_document", "diagnostics.json"),
+        ("verdict_document", "verdict.json"),
+        ("perf_document", "perf.json"),
+        ("trial_meta_document", "trial_meta.json"),
+        ("quality_check_document", "quality_check.json"),
+    )
+
+    def _pure_judge_document_refs(self, refs: NodeRefs) -> dict[str, str]:
+        """Each inlined judge document, mapped to the repository path it was inlined FROM.
+
+        This is what makes `evidence_refs` resolvable: the leaf cites the slot it was given and
+        the host turns that back into a path, so `semantic_review.json`'s "path list" stays a
+        path list without the leaf ever naming a workspace location. The raw-evidence excerpt
+        maps to the DIRECTORY it summarizes, which is the honest answer — there is no file
+        holding the excerpt, and `scope.raw_refs` enumerates what is under it."""
+        from tools.orchestration_runtime import RUNNER_OUTPUT_CONTRACT_REF
+        run_node_dir = refs.run_node_dir()
+        paths = {key: f"{run_node_dir}/{name}"
+                 for key, name in self._PURE_JUDGE_RUN_NODE_DOCUMENTS}
+        paths.update({
+            "tests_document": f"{refs.spec_path}/tests.md",
+            "io_contract_document": f"{refs.ir_ref}/spec.ir.yaml",
+            "runner_output_contract_document": RUNNER_OUTPUT_CONTRACT_REF,
+            "binary_meta_document": f"{refs.binary_dir()}/binary_meta.json",
+            "source_meta_document": f"{refs.source_dir()}/source_meta.json",
+            "raw_evidence_excerpt_document": f"{run_node_dir}/raw",
+        })
+        return paths
+
+    def _build_pure_judge_context(self, refs: NodeRefs) -> dict[str, str]:
+        """Assemble the closed context a pure `validate.judge` reviewer sees.
+
+        The judge is the one leaf that used to hold tools, and what it did with them was walk
+        `raw/` — 13 MB of float arrays — with scripts it wrote per run. Everything it can
+        legitimately reach is inlined here instead, and the arrays become
+        `raw_evidence_excerpt_document` (`tools/raw_evidence_excerpt.py`), which is the whole of
+        the judge's window onto `raw/`.
+
+        WHAT IS NOT HERE, and why. `spec.ir.yaml` in full (52 KB) — the judge's canonical sources
+        are `tests.md` and the IR's `io_contract`, so only that section is inlined.
+        `controlled_spec.md` — the behavioural contract is `Generate.verify`'s subject; the judge
+        asks whether the EVIDENCE supports the verdict. `phase_04_validate.md` — 40 KB of which
+        the judge's part is the review contract, and that is the template's job; it also took 12
+        commits in seven weeks, and a document edited that often is not a stable leaf input.
+        `pre_judge_meta.json` — a readiness status the conductor has already gated on, from which
+        the judge gains nothing.
+
+        EVERY read RAISES. The reviewer's `generate.verify` sibling degrades four node artifacts
+        to `""` (a recorded residual), and that disposition must not travel here: each document
+        below is evidence the judge weighs, and a blank one satisfies the renderer's presence
+        check while removing exactly the thing the leaf was asked about — a judge that cannot see
+        `diagnostics.json` has no basis for `pass` and would be answering about the absence.
+        `_run_pure_reviewer_substep` turns the `RuntimeError` into a `pure_context_assembly_failed`
+        fail-closed outcome and spawns no leaf, which is the pure form of the SKILL's rule that
+        the judge does not begin without its evidence.
+
+        The excerpt is the exception to nothing: it does not raise for a defect in the evidence,
+        because a missing or malformed `raw/` is precisely what the judge is there to find and an
+        exception would mean no judge ran. `tools/raw_evidence_excerpt.py` records that.
+        """
+        from tools.raw_evidence_excerpt import raw_evidence_excerpt
+        paths = self._pure_judge_document_refs(refs)
+
+        def _read(key: str) -> str:
+            path = self.repo_root / paths[key]
+            try:
+                return path.read_text(encoding="utf-8")
+            except (OSError, UnicodeError) as exc:
+                raise RuntimeError(f"pure_{key}_missing: {path}: {exc}") from exc
+
+        contract_text = _read("runner_output_contract_document")
+        try:
+            runner_output_contract = _runner_output_contract_sections(contract_text)
+        except ValueError as exc:
+            raise RuntimeError(
+                "pure_runner_output_contract_document_unsliceable: "
+                f"{paths['runner_output_contract_document']}: {exc}") from exc
+
+        ir_text = _read("io_contract_document")
+        try:
+            ir_document = yaml.safe_load(ir_text)
+        except yaml.YAMLError as exc:
+            raise RuntimeError(
+                f"pure_io_contract_document_unreadable: "
+                f"{paths['io_contract_document']}: {exc}") from exc
+        io_contract = ir_document.get("io_contract") if isinstance(ir_document, dict) else None
+        if not isinstance(io_contract, dict):
+            raise RuntimeError(
+                f"pure_io_contract_document_missing: {paths['io_contract_document']}: "
+                "the IR declares no io_contract")
+
+        excerpt = raw_evidence_excerpt(
+            self.repo_root / paths["raw_evidence_excerpt_document"], io_contract)
+        context = {key: _read(key) for key, _ in self._PURE_JUDGE_RUN_NODE_DOCUMENTS}
+        context.update({
+            "tests_document": _read("tests_document"),
+            "io_contract_document": yaml.safe_dump(io_contract, sort_keys=False,
+                                                   allow_unicode=True),
+            "runner_output_contract_document": runner_output_contract,
+            "binary_meta_document": _read("binary_meta_document"),
+            "source_meta_document": _read("source_meta_document"),
+            "raw_evidence_excerpt_document": json.dumps(excerpt, indent=2, allow_nan=False),
+        })
+        return context
+
     def _write_verdict_meta(self, refs: NodeRefs, *, result: str,
                             failure_category: str | None, failure_excerpt: str | None,
                             attempts: int, per_attempt: list[dict[str, Any]]) -> None:
@@ -8163,8 +8525,14 @@ clean:
 
         return summary
 
-    def _pure_reviewer_spec(self, phase: str) -> "Conductor._PureReviewerSpec":
-        """The phase-specific half of the pure reviewer loop."""
+    def _pure_reviewer_spec(self, phase: str,
+                            substep: str | None = None) -> "Conductor._PureReviewerSpec":
+        """The phase-specific half of the pure reviewer loop.
+
+        Keyed by `(phase, substep)` since Z3: `validate` has a reviewer that is not a `verify`,
+        and its document is a semantic review rather than a verify verdict."""
+        if (phase, substep) == ("validate", "judge"):
+            return self._pure_judge_spec()
         if phase == "compile":
             return self._PureReviewerSpec(
                 build_context=self._build_pure_compile_verify_context,
@@ -8184,6 +8552,7 @@ clean:
                 reply_of=self._verify_verdict_reply,
                 summary_of=self._verify_verdict_summary("pure_compile_verify"),
                 superseded_detail=lambda doc: f"verify_status={doc['verification_status']}",
+                document_name="verify verdict",
             )
         return self._PureReviewerSpec(
             build_context=self._build_pure_verify_context,
@@ -8203,6 +8572,7 @@ clean:
             reply_of=self._verify_verdict_reply,
             summary_of=self._verify_verdict_summary("pure_verify"),
             superseded_detail=lambda doc: f"verify_status={doc['verification_status']}",
+            document_name="verify verdict",
         )
 
     def _run_pure_reviewer_substep(self, refs: NodeRefs, phase: str, substep: str | None,
@@ -8462,7 +8832,9 @@ clean:
             self.emit(spec.attempt_failed_event, node_key=refs.node_key,
                       substep=substep, attempt=len(per_attempt), failure_category=category,
                       detail=(this_excerpt or "")[:200])
-            reply = (f"verify verdict: none\nleaf rc={proc.returncode}\n"
+            # The document's NAME comes from the spec: a judge that returned nothing did not
+            # fail to return a verify verdict.
+            reply = (f"{spec.document_name}: none\nleaf rc={proc.returncode}\n"
                      f"category: {category or 'none'}")
             result_summary = f"{spec.summary_prefix}_fail: {category}"
             self.finalize_child(
@@ -9065,6 +9437,25 @@ clean:
             ir_doc = self.repo_root / refs.ir_ref / "spec.ir.yaml"
             fresh = ir_doc.exists() and ir_doc.stat().st_mtime >= min_mtime
             status = "pass" if (gmeta.get("result") == "pass" and fresh) else "fail"
+            return status, output_refs
+        if (phase == "validate" and substep == "judge"
+                and self._pure_leaf_substep(refs, phase, substep)):
+            # Z3 pure judge freshness, the same defensive shape as the two pure producers above
+            # and for the same reason: the pure substep computes its own status and returns
+            # early in `run_substep`, so this is unreachable through the live path — but it must
+            # not be left to the branch below, where a pure judge's EMPTY `allowed_output_paths`
+            # makes `_fresh_deliverables_written` vacuously true and a `semantic_review.json`
+            # left by an earlier attempt would certify the node on its own. The two gated
+            # artifacts are the ones the host writes after the window closes: `judge_meta.json`
+            # (result==pass, i.e. a schema-valid review was obtained) and the review itself.
+            jmeta = _read_json(
+                self.repo_root / refs.run_node_dir() / "judge_meta.json") or {}
+            review = self.repo_root / refs.run_node_dir() / "semantic_review.json"
+            fresh = review.exists() and review.stat().st_mtime >= min_mtime
+            sem = _read_json(review) or {}
+            status = "pass" if (jmeta.get("result") == "pass" and fresh
+                                and str(sem.get("decision") or "").strip().lower() == "pass"
+                                ) else "fail"
             return status, output_refs
         if phase == "compile" and substep == "static":
             # Deterministic compile gate: the conductor-authored compile_static_meta records the
@@ -10557,7 +10948,7 @@ clean:
     def _compile_static_inproc(self, refs: NodeRefs, child_arid: str,
                                cap_token: str) -> dict[str, str]:
         """Deterministic Compile.static: run the purely-static IR gates the verify leaf used to
-        own (so verify is now a pure LLM semantic pass — the spec-cross-reference invariants
+        own (so verify is now a semantic pass holding no gate — the spec-cross-reference invariants
         V1/V3/V5 — reached only on a deterministically-clean IR). Runs, in the same order/idiom
         as the post_build gate in _build_inproc, the three gates the old compile.verify runbook
         emitted: validate_workspace_root.py (bare), check_artifact_syntax.py on
@@ -11136,14 +11527,18 @@ clean:
         # authority; the host writes the artifacts after the child window closes), not the generic
         # leaf loop below (no allowed_output_paths, no determine_substep_status-before-finalize).
         # WHICH substeps take it is `_pure_leaf_substep`'s docstring and nothing here: today the
-        # two `compile` pairs on every node, and the two `generate` pairs on an M3c node.
+        # two `compile` pairs and `validate.judge` on every node, and the two `generate` pairs on
+        # an M3c node.
         if self._pure_leaf_substep(refs, phase, substep):
-            if substep == "verify":
+            if substep in ("verify", "judge"):
                 # The pure reviewer: its own spawn/validate/repair/finalize loop, host-authors the
-                # phase's stage meta from the returned verdict after the child window closes.
+                # phase's stage meta from the returned document after the child window closes.
+                # `judge` joined it in Z3 — a judge reviews a run where a verify reviews an
+                # artifact, and the loop is the same shape either way; what differs is the
+                # document, which the spec says.
                 return self._run_pure_reviewer_substep(
                     refs, phase, substep, resolved_dependencies,
-                    self._pure_reviewer_spec(phase))
+                    self._pure_reviewer_spec(phase, substep))
             # The pure producer. `dependency_surface` is threaded through for the compile
             # producer, whose `<dependency_facts>` block is the published-operation catalog it
             # must transcribe verbatim; `build_launch_request` attaches it to that substep only.
@@ -11281,8 +11676,8 @@ clean:
                 token = self.read_parent_return_token(child_arid)
                 # G3 split: the `--stage pre_judge` gate that used to run here inline after the
                 # judge leaf is now the deterministic `post_judge` substep
-                # (Conductor._post_judge_inproc), so the judge leaf is a pure LLM semantic pass and
-                # run_substep no longer runs any gate for it.
+                # (Conductor._post_judge_inproc), so the judge leaf holds no gate and
+                # run_substep no longer runs any for it.
             status, output_refs = self.determine_substep_status(
                 refs, phase, substep, request["allowed_output_paths"], min_mtime=launched_at)
             # A nonzero leaf exit (crash / transport failure) fails the substep even if
@@ -11946,7 +12341,7 @@ clean:
     #     a recoverable (leaf/judge-authored) violation warm-resumes the judge, an integrity
     #     violation is fail_closed.
     # The judge leaf itself invokes no validator gate (ALLOWED_VALIDATE_PIPELINE_STAGES for
-    # all three of pre_judge/judge/post_judge == frozenset()), so it is a pure LLM semantic pass.
+    # all three of pre_judge/judge/post_judge == frozenset()), so it holds no gate at all.
 
     def _judge_pre_spawn_dag_block(self, refs: NodeRefs) -> str | None:
         """Pre-spawn Validate.judge dependency-DAG readiness (multi-node closures only).
@@ -12347,6 +12742,18 @@ clean:
             return {"returncode": 0, "stdout": "",
                     "stderr": "[post_judge gate fail]\n" + combined}
         severity = classify_post_judge_violations(violations)
+        # Z3 (issue #169): `recoverable` means "the JUDGE wrote it wrong, so re-run the judge",
+        # and that premise is false when the judge was PURE. There the leaf returned a
+        # judgement, the loop validated its shape before accepting it, and `semantic_review.json`
+        # was written by `_write_semantic_review` — so a `--stage pre_judge` violation naming
+        # that file is a defect in the HOST's own artifact, exactly like one naming
+        # `verdict.json`, and re-running the leaf would produce the identical file. Reclassified
+        # here rather than in `classify_post_judge_violations`, which is a pure function of the
+        # violation text and cannot know which transport ran; `_maybe_warm_resume_post_judge`
+        # then early-returns on the non-`warm_resume` disposition and stays for the residual
+        # agentic judge.
+        if severity == "recoverable" and self._pure_leaf_substep(refs, "validate", "judge"):
+            severity = "unrecoverable"
         # G5: an `unknown` violation (unclassifiable by the deterministic path-prefix rules) is
         # no longer a blind fail_closed — it routes to the unified escalate LLM. `recoverable`
         # (judge-authored) still warm-resumes deterministically; `unrecoverable` (integrity)
