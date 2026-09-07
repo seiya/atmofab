@@ -1513,6 +1513,73 @@ class PureLeafABSummaryTest(unittest.TestCase):
                     repo, self.ORCH, {"invocation": {"generate_executor": "pure"}})
                 self.assertEqual(out["pure_compile_nodes"], [], label)
 
+    def test_attribution_follows_the_leaves_that_ran_not_the_ones_configured(self) -> None:
+        """A run stopped at `Compile` launches no `generate` leaf, so a configured generate
+        provider must not reach the attribution: naming it labels a compile-only measurement
+        with a provider that never executed, and — because it differs from the probed one —
+        suppresses the CLI version of the provider that DID run. Both are false provenance in
+        the one instrument a billed A/B is read from.
+
+        Both directions in one fixture, because only the pair distinguishes the rule from
+        "attribute nothing": the compile leaves ran on the probed backend (so the version is
+        reported), and the configured generate leaves are on another (so a rule reading the
+        configured map would report `claude/codex` and blank the version).
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._lay_out(repo, with_metas=False)
+            root = repo / "workspace" / "orchestrations" / self.ORCH
+            meta = {"invocation": {"generate_executor": "pure", "llm_leaf_map": {
+                "compile.generate": {"backend": "claude", "model": "opus"},
+                "compile.verify": {"backend": "claude", "model": "sonnet"},
+                "generate.generate": {"backend": "codex", "model": "gpt-5.6-sol"},
+                "generate.verify": {"backend": "codex", "model": "gpt-5.6-terra"},
+            }}}
+            (root / "orchestration_meta.json").write_text(json.dumps(meta), encoding="utf-8")
+            self._launch(repo, "a1", step="compile", ir_ref=self.IR_A)
+            self._compile_metas(repo, self.IR_A)
+            out = collect_pure_leaf_ab_summary(repo, self.ORCH, meta)
+        self.assertFalse(out["pure_leaf_provider_differs"])
+        self.assertEqual(out["backend"], "claude")
+        self.assertEqual(out["agent_cli_version"], "1.2.3 (Claude Code)")
+
+    def test_attribution_still_names_a_provider_the_leaves_that_ran_are_on(self) -> None:
+        """The other polarity, so the row above cannot pass by attributing nothing: when the
+        leaves that RAN are on a provider the preflight did not probe, the report names it and
+        drops the version rather than borrowing one."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._lay_out(repo, with_metas=False)
+            root = repo / "workspace" / "orchestrations" / self.ORCH
+            meta = {"invocation": {"generate_executor": "pure", "llm_leaf_map": {
+                "compile.generate": {"backend": "codex", "model": "gpt-5.6-sol"},
+                "compile.verify": {"backend": "codex", "model": "gpt-5.6-terra"},
+                "generate.generate": {"backend": "claude", "model": "opus"},
+            }}}
+            (root / "orchestration_meta.json").write_text(json.dumps(meta), encoding="utf-8")
+            self._launch(repo, "a1", step="compile", ir_ref=self.IR_A)
+            self._compile_metas(repo, self.IR_A)
+            out = collect_pure_leaf_ab_summary(repo, self.ORCH, meta)
+        self.assertTrue(out["pure_leaf_provider_differs"])
+        self.assertEqual(out["backend"], "codex")
+        self.assertEqual(out["agent_cli_version"], "")
+
+    def test_an_orchestration_with_no_pure_launch_keeps_the_configured_attribution(self) -> None:
+        """The fallback, asserted rather than left implicit: with no launch record there is
+        nothing to derive from, and reporting the configured set is the older behaviour rather
+        than a new claim. This is also what keeps the generate-only fixtures above unchanged."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._lay_out(repo)
+            meta = {"invocation": {"generate_executor": "pure", "llm_leaf_map": {
+                "generate.generate": {"backend": "codex", "model": "gpt-5.6-sol"},
+            }}}
+            (repo / "workspace" / "orchestrations" / self.ORCH
+             / "orchestration_meta.json").write_text(json.dumps(meta), encoding="utf-8")
+            out = collect_pure_leaf_ab_summary(repo, self.ORCH, meta)
+        self.assertTrue(out["pure_leaf_provider_differs"])
+        self.assertEqual(out["backend"], "codex")
+
     def test_a_compile_only_run_is_available_and_rendered(self) -> None:
         """`available` must not be decided by the GENERATE half alone: a run stopped at Compile
         writes no source dir at all, and reporting it as "no pure-leaf node located" would hide

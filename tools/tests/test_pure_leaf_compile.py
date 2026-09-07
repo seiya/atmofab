@@ -196,6 +196,9 @@ class _Fixture(unittest.TestCase):
 # Context assembly
 # ======================================================================================
 class PureCompileContextTests(_Fixture):
+    # The reviewer's context reads the producer's output, so this class stages one.
+    STAGE_IR = True
+
     def test_the_two_builders_produce_exactly_the_declared_key_sets(self) -> None:
         """Set identity against `PURE_CONTEXT_REQUIRED_KEYS`, in both directions: a key the
         builder invents is never inlined by the renderer (the template has no slot for it), and
@@ -208,32 +211,45 @@ class PureCompileContextTests(_Fixture):
             set(c._build_pure_compile_verify_context(self.refs)),
             set(ort.PURE_CONTEXT_REQUIRED_KEYS[("compile", "verify")]))
 
-    def test_every_declared_key_is_a_non_empty_string(self) -> None:
-        # The reviewer reads the producer's output, so its fixture stages one.
-        (self.repo / self.refs.ir_ref / "spec.ir.yaml").write_text(
-            yaml.safe_dump(_valid_ir(), sort_keys=False), encoding="utf-8")
+    def test_a_missing_node_artifact_fails_closed_before_any_launch(self) -> None:
+        """NOT the generate producer's `""` degradation, and the difference is the point.
+
+        Every key these builders return is declared in `PURE_CONTEXT_REQUIRED_KEYS`, and
+        `_validate_pure_launch_request_payload` refuses an empty declared key — inside
+        `record_launch`, whose `runtime` helper raises `RuntimeError` on a non-zero exit, from a
+        call the pure loop does not guard. So an empty value would abort the CONDUCTOR with a
+        launch-validation error rather than produce the `pure_context_assembly_failed` outcome
+        the loop has a branch for. Raising at assembly is the same refusal one frame earlier,
+        where the caller can recover it.
+
+        Driven through `run_substep`, not the builder, so what is pinned is the recovery.
+        """
+        for artifact, marker in (("controlled_spec.md", "pure_controlled_spec_document_missing"),
+                                 ("tests.md", "pure_tests_document_missing"),
+                                 ("deps.yaml", "pure_deps_document_missing")):
+            with self.subTest(artifact=artifact):
+                _write_compile_node(self.repo, kind=self.KIND)
+                (self.repo / self.refs.spec_path / artifact).unlink()
+                c = self.conductor(_envelope(_doc()))
+                outcome = c.run_substep(self.refs, "compile", "generate")
+                self.assertEqual(outcome.status, "fail")
+                self.assertEqual(outcome.infra_error[0], "pure_context_assembly_failed")
+                self.assertIn(marker, outcome.infra_error[1])
+                self.assertEqual([s for s, _ in c.calls].count("record-launch"), 0)
+
+    def test_no_declared_context_key_can_be_empty(self) -> None:
+        """The property the row above protects, stated over the WHOLE key set rather than over
+        the three artifacts a test author happened to think of: the launch validator refuses an
+        empty declared key, so any builder read that can return `""` is a conductor abort waiting
+        for a corrupted checkout. Both builders, every key."""
         c = self.conductor()
         for name, ctx in (("generate", c._build_pure_compile_context(self.refs)),
                           ("verify", c._build_pure_compile_verify_context(self.refs))):
-            for key, value in ctx.items():
+            required = ort.PURE_CONTEXT_REQUIRED_KEYS[("compile", name)]
+            self.assertEqual(set(ctx), set(required), name)
+            for key in required:
                 with self.subTest(builder=name, key=key):
-                    self.assertIsInstance(value, str)
-                    self.assertTrue(value.strip())
-
-    def test_a_missing_node_artifact_degrades_to_empty(self) -> None:
-        """The same disposition the generate producer's ir/tests reads have. It is not silent:
-        an empty required key is refused by `_validate_pure_launch_request_payload`, so the
-        substep fails closed at record-launch rather than launching a blind leaf."""
-        (self.repo / self.refs.spec_path / "tests.md").unlink()
-        c = self.conductor()
-        ctx = c._build_pure_compile_context(self.refs)
-        self.assertEqual(ctx["tests_document"], "")
-        with self.assertRaises(ValueError) as caught:
-            ort._validate_pure_launch_request_payload({
-                "leaf_mode": "pure", "step": "compile", "substep": "generate",
-                "prompt_contract_version": ort.PURE_PROMPT_CONTRACT_VERSION,
-                "allowed_output_paths": [], "pure_context": ctx})
-        self.assertIn("tests_document", str(caught.exception))
+                    self.assertTrue(str(ctx[key]).strip(), key)
 
     def test_a_missing_repository_document_raises_and_spawns_nothing(self) -> None:
         """A document the leaf cannot repair is a fail_closed BEFORE any launch. Driven through

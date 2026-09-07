@@ -6852,6 +6852,24 @@ clean:
     _PURE_PROFILE_ABSENT_DOCUMENT = (
         "No profile dependency is declared in deps.yaml.")
 
+    def _pure_node_document(self, rel: str, name: str) -> str:
+        """A NODE artifact of the compile context, or RAISE.
+
+        The generate producer degrades its ir/tests reads to `""` (a residual `TODO.md` records).
+        The compile builders do NOT, and the reason is that the degradation is not a degradation:
+        every key these builders return is declared in `PURE_CONTEXT_REQUIRED_KEYS`, and
+        `_validate_pure_launch_request_payload` refuses an empty declared key — inside
+        `record_launch`, whose `runtime` helper raises `RuntimeError` on a non-zero exit, from a
+        call the pure loop does NOT guard. So an empty value here does not ship a blind prompt;
+        it aborts the conductor with a launch-validation error instead of producing the named
+        `pure_context_assembly_failed` outcome the loop has a branch for. Raising at assembly is
+        the same refusal one frame earlier, where the caller can recover it.
+
+        (An absent `controlled_spec.md` / `tests.md` / `deps.yaml` is not a shape a run reaches
+        anyway — spec-input gates all three before any phase runs — so this is the fail-closed
+        disposition for a corrupted checkout, not a live route.)"""
+        return self._pure_repo_document(rel, name)
+
     def _pure_repo_document(self, rel: str, name: str) -> str:
         """A repository document inlined VERBATIM into a pure compile context, or RAISE.
 
@@ -6946,12 +6964,13 @@ clean:
         """Assemble the closed context a pure `compile.generate` producer sees, each value a plain
         string the renderer data-fences.
 
-        The three NODE artifacts (`controlled_spec.md`, `tests.md`, `deps.yaml`) keep the same
-        `""` degradation the generate producer's ir/tests reads have. Everything else RAISES
-        through `_pure_repo_document` / the two derivations below, and the caller converts that
-        into a `pure_context_assembly_failed` fail_closed transport outcome with no leaf spawned:
-        a repository document, a host-derived sidecar, or an empty admissible-toolchain set is not
-        something a producer retry can repair.
+        EVERY read here RAISES on a missing or undecodable file — the three NODE artifacts
+        through `_pure_node_document` (whose docstring says why they do NOT keep the generate
+        producer's `""` degradation), the repository documents through `_pure_repo_document`,
+        and the two derivations below on their own terms. The caller converts any of them into a
+        `pure_context_assembly_failed` fail_closed transport outcome with no leaf spawned: a spec
+        document, a repository document, a host-derived sidecar and an empty admissible-toolchain
+        set are all things a producer retry cannot repair.
 
         The registry catalog itself is NOT inlined: the two facts a producer takes from it — the
         dependency closure and the published operation names — reach it already host-resolved, as
@@ -6961,11 +6980,6 @@ clean:
         adds no new reader of that document beyond the one `TODO.md` already records."""
         from tools.orchestration_runtime import (CHECKS_MODULE_CONTRACT_REF,
                                                  WORKFLOW_PHASE_DOC_BY_STEP)
-        def _node(rel: str) -> str:
-            try:
-                return (self.repo_root / rel).read_text(encoding="utf-8")
-            except OSError:
-                return ""
         contract_text = self._pure_repo_document(
             CHECKS_MODULE_CONTRACT_REF, "checks_contract")
         try:
@@ -6975,9 +6989,12 @@ clean:
                 "pure_checks_contract_document_unsliceable: "
                 f"{self.repo_root / CHECKS_MODULE_CONTRACT_REF}: {exc}") from exc
         return {
-            "controlled_spec_document": _node(f"{refs.spec_path}/controlled_spec.md"),
-            "tests_document": _node(f"{refs.spec_path}/tests.md"),
-            "deps_document": _node(f"{refs.spec_path}/deps.yaml"),
+            "controlled_spec_document": self._pure_node_document(
+                f"{refs.spec_path}/controlled_spec.md", "controlled_spec"),
+            "tests_document": self._pure_node_document(
+                f"{refs.spec_path}/tests.md", "tests"),
+            "deps_document": self._pure_node_document(
+                f"{refs.spec_path}/deps.yaml", "deps"),
             "profile_spec_document": self._pure_profile_spec_document(refs),
             "dependency_graph_document": self._pure_repo_document(
                 f"{refs.ir_ref}/dependency_graph.json", "dependency_graph"),
@@ -7004,17 +7021,17 @@ clean:
         this context already inlines in full, and inlining it twice would state one rule in two
         places inside one prompt."""
         from tools.orchestration_runtime import WORKFLOW_PHASE_DOC_BY_STEP
-        def _node(rel: str) -> str:
-            try:
-                return (self.repo_root / rel).read_text(encoding="utf-8")
-            except OSError:
-                return ""
         return {
-            "controlled_spec_document": _node(f"{refs.spec_path}/controlled_spec.md"),
-            "tests_document": _node(f"{refs.spec_path}/tests.md"),
-            "deps_document": _node(f"{refs.spec_path}/deps.yaml"),
-            "ir_document": _node(f"{refs.ir_ref}/spec.ir.yaml"),
-            "dependency_surface_document": _node(f"{refs.ir_ref}/dependency_surface.json"),
+            "controlled_spec_document": self._pure_node_document(
+                f"{refs.spec_path}/controlled_spec.md", "controlled_spec"),
+            "tests_document": self._pure_node_document(
+                f"{refs.spec_path}/tests.md", "tests"),
+            "deps_document": self._pure_node_document(
+                f"{refs.spec_path}/deps.yaml", "deps"),
+            "ir_document": self._pure_node_document(
+                f"{refs.ir_ref}/spec.ir.yaml", "ir"),
+            "dependency_surface_document": self._pure_node_document(
+                f"{refs.ir_ref}/dependency_surface.json", "dependency_surface"),
             "phase_contract_document": self._pure_repo_document(
                 WORKFLOW_PHASE_DOC_BY_STEP["compile"], "phase_contract"),
             "ir_algorithm_example_document": self._pure_repo_document(

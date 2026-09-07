@@ -730,6 +730,36 @@ def _pure_ir_dirs_of(
     return sorted(dirs)
 
 
+def _pure_leaf_keys_that_ran(repo_root: Path, orchestration_id: str) -> frozenset[str]:
+    """The `llm_leaf_map` keys of the pure leaves this orchestration ACTUALLY LAUNCHED, read
+    from its own persisted launch requests.
+
+    Attribution has to follow what ran, not what was configured. A run stopped at `Compile`
+    launches no `generate` leaf at all, so folding the whole configured map into the attributed
+    surface labels a compile-only measurement with a provider that never executed and — when
+    that provider differs from the probed one — suppresses the CLI version of the provider that
+    DID run. Both are false provenance in the one instrument a billed A/B is read from.
+
+    Returns the EMPTY set when no launches directory exists or no pure launch is recorded; the
+    caller falls back to the configured map there, because an orchestration with no launch
+    records is one this function can say nothing about, and reporting the configured set is the
+    older behaviour rather than a new claim.
+    """
+    keys: set[str] = set()
+    launches = _orch_root(repo_root, orchestration_id) / "launches"
+    if not launches.is_dir():
+        return frozenset()
+    for path in sorted(launches.glob("*.request.json")):
+        row = _load_json_if_dict(path) or {}
+        if _clean_str(row.get("leaf_mode")) != "pure":
+            continue
+        step = _clean_str(row.get("step"))
+        substep = _clean_str(row.get("substep"))
+        if step and substep:
+            keys.add(f"{step}.{substep}")
+    return frozenset(keys & _PURE_LEAF_MAP_KEYS)
+
+
 def collect_pure_leaf_ab_summary(
     repo_root: Path,
     orchestration_id: str,
@@ -790,10 +820,14 @@ def collect_pure_leaf_ab_summary(
         command = command.strip()
         return (token, "" if command == token else command)
 
+    # WHAT RAN, not what was configured (see `_pure_leaf_keys_that_ran`). The fallback to the
+    # configured set is deliberate and narrow: it applies only when this orchestration recorded
+    # no pure launch at all, where the older behaviour is the honest one.
+    attributed_keys = _pure_leaf_keys_that_ran(repo_root, orchestration_id) or _PURE_LEAF_MAP_KEYS
     pure_leaf_surfaces = sorted({
         _surface(_clean_str(row.get("backend")) or "", _clean_str(row.get("command")) or "")
         for key, row in leaf_map.items()
-        if key in _PURE_LEAF_MAP_KEYS and isinstance(row, dict)
+        if key in attributed_keys and isinstance(row, dict)
         and _clean_str(row.get("backend"))
     })
     pure_leaf_providers = sorted({surface[0] for surface in pure_leaf_surfaces})
