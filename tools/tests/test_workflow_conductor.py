@@ -7619,6 +7619,28 @@ class DiagnosticianTest(unittest.TestCase):
         # what would turn this rule into a shortcut to `fail_closed`.
         self.assertIn("insufficient evidence", rule)
 
+    def test_a_pure_codex_argv_without_a_session_id_is_refused_by_name(self) -> None:
+        """`leaf_command`'s `session_id` is still `str | None`, and `spawn_leaf` does NOT thread
+        its (now mandatory) `child_arid` into it — the two production callers simply pass
+        `session_id=child_arid`. So making `_codex_pure_schema_path` require a value did not
+        make the argument mandatory at the signature that feeds it; it turned a
+        signature-legal call into an `AttributeError` on `None.strip()`, where before this
+        branch there was a shared `codex-pure-schema` fallback filename.
+
+        The fallback is not coming back — two concurrent launches sharing one schema file is
+        what keying it per child fixes — but the refusal is now NAMED, so a host defect reports
+        itself instead of surfacing as an attribute error from inside argv construction.
+        """
+        c = _FakeConductor(repo_root=Path("/tmp/repo"), orchestration_id="o",
+                           orchestration_agent_run_id="O", env={},
+                           llm_config=_cfg("codex", agent_model="gpt-5.6-sol"))
+        with self.assertRaises(wc.SandboxEnforcementError) as caught:
+            c.leaf_command(c.entry_for(None, None), pure=True)
+        self.assertIn("session_id", str(caught.exception))
+        # ...and the ordinary call, the one both production callers make, still works.
+        argv = c.leaf_command(c.entry_for(None, None), session_id="child-1", pure=True)
+        self.assertIn("child-1", "\x00".join(argv))
+
     def test_each_escalation_of_a_phase_is_a_fresh_conversation(self) -> None:
         """On the HTTP transport the conversation lives in memory, keyed by `(step, substep)`
         — `(<phase>, diagnose)` for every escalation of one phase — and `_run_http_leaf`
@@ -7747,6 +7769,28 @@ class DiagnosticianTest(unittest.TestCase):
         said only "`null` targets the current phase", which is a trap for exactly one of the
         three. Both halves are pinned here: the parser's behaviour, and that the template
         states it — so correcting one without the other is red."""
+        # The severity policy is enforced only where a repair can happen, and a null target is
+        # not such a place: `conduct` defaults it to the current phase, so a strategy surviving
+        # there would fire the same-phase producer reopen on a directive that named no target.
+        # It used to survive whenever the LEAF spelled one — measured then: `critical` with
+        # `repair_strategy="reuse"` and a null target came back `reuse`, where naming the phase
+        # forces `restart`, so the grade that means "discard these artifacts" kept them. Every
+        # null-target directive now clears the strategy and terminalizes, which is what the
+        # no-strategy one always did.
+        for severity, spelled in (("minor", "restart"), ("critical", "reuse"),
+                                  ("major", "restart"), ("major", None)):
+            with self.subTest(severity=severity, spelled=spelled):
+                named = wc.resolve_severity_directive(wc.RouteDecision(
+                    "retry", target_phase="generate", repair_strategy=spelled,
+                    reason="r", severity=severity))
+                self.assertIn(named.repair_strategy, ("reuse", "restart"))
+                nulled = wc.resolve_severity_directive(wc.RouteDecision(
+                    "retry", target_phase=None, repair_strategy=spelled,
+                    reason="r", severity=severity))
+                self.assertIsNone(nulled.repair_strategy)
+        # ...and the prompt says so rather than telling the leaf null is the same as naming.
+        criteria_text = self._rendered_diagnose_prompt("generate", {})
+        self.assertIn("TERMINALIZES", criteria_text)
         # The behaviour.
         for action, expected in (("retry", "retry"), ("fail_closed", "fail_closed"),
                                  ("reopen", None)):

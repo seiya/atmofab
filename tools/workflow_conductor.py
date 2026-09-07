@@ -1204,15 +1204,27 @@ _SEVERITY_FORCED_STRATEGY: dict[str, str] = {
 
 def resolve_severity_directive(decision: RouteDecision) -> RouteDecision:
     """Normalize an escalate directive's `repair_strategy` from its `severity` per the G5
-    policy. No-op for a fail_closed decision, one carrying no severity, or one with no explicit
-    `target_phase` (an ambiguous/incomplete directive that must terminalize, NOT be turned into
-    a same-phase producer reopen — synthesizing a strategy would make `conduct` default the
-    null target to the current phase and fire the reopen branch). `re_execute` is passed through
-    (orthogonal to reuse/discard)."""
-    if decision.action == "fail_closed" or not decision.severity or not decision.target_phase:
+    policy. No-op for a fail_closed decision or one carrying no severity. `re_execute` is passed
+    through (orthogonal to reuse/discard).
+
+    A directive with NO `target_phase` must terminalize rather than become a same-phase producer
+    reopen, because `conduct` defaults a null target to the current phase and would then fire the
+    reopen branch. That was the documented intent before; what it actually did was RETURN THE
+    DIRECTIVE UNCHANGED, which terminalizes only while the leaf supplies no strategy of its own.
+    A leaf that spelled one kept it, `conduct` fired the reopen on it, and the severity policy —
+    "the conductor enforces this mapping deterministically" — was silently not enforced there:
+    measured, `severity=critical` with `repair_strategy=reuse` and a null target came back
+    `reuse`, where naming the phase forces `restart`. So the strategy is CLEARED instead, which
+    makes every null-target directive terminalize the way the no-strategy one already did."""
+    if decision.action == "fail_closed" or not decision.severity:
         return decision
     if decision.repair_strategy == "re_execute":
+        # Never carried by a diagnostician directive (`_parse_directive` emits only
+        # None / reuse / restart) and its one producer always names `validate`, so this
+        # passthrough never meets the null-target rule below.
         return decision
+    if not decision.target_phase:
+        return replace(decision, repair_strategy=None)
     forced = _SEVERITY_FORCED_STRATEGY.get(decision.severity)
     if forced is not None:  # minor -> reuse, critical -> restart
         strategy = forced
@@ -4451,17 +4463,29 @@ class Conductor:
             f"provider {entry.provider!r} launches no CLI leaf (it is not a spawnable "
             f"backend); this substep must not have reached spawn_leaf")
 
-    def _codex_pure_schema_path(self, child_arid: str) -> Path:
+    def _codex_pure_schema_path(self, child_arid: str | None) -> Path:
         """Host-author the JSON-object schema for a Codex pure response.
 
         Semantic CodegenBundle/verdict checks remain host-side.  This CLI schema
         guarantees the transport response is one object before those checks run.
 
-        The path is keyed by the child's own agent_run_id — every leaf has one (issue #169
-        made `child_arid` mandatory on `spawn_leaf`), so there is no shared fallback name two
-        concurrent launches could collide on.
+        The path is keyed by the child's own agent_run_id, so two concurrent launches cannot
+        collide on one filename — which the shared `codex-pure-schema` fallback this replaced
+        allowed. The argument is `leaf_command`'s `session_id`, NOT `spawn_leaf`'s `child_arid`:
+        that parameter is still optional at its own signature and `spawn_leaf` does not thread
+        `child_arid` into it, so the mandatory-`child_arid` change does not reach here and this
+        cannot assume a value. Both production callers pass `session_id=child_arid`; a caller
+        that does not gets a NAMED refusal rather than the `AttributeError` a bare `.strip()`
+        raised, because a pure codex launch with no per-child schema path is a host defect to
+        report, not a shared file to fall back to.
         """
-        child = child_arid.strip()
+        child = (child_arid or "").strip()
+        if not child:
+            raise SandboxEnforcementError(
+                "a pure codex launch needs a per-child output-schema path, and this one was "
+                "given no session id: pass `session_id=<child_arid>` to `leaf_command`. The "
+                "shared fallback filename this replaced let two concurrent launches overwrite "
+                "each other's schema")
         path = self.repo_root / "workspace" / "tmp" / child / "codex_pure_output.schema.json"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps({"type": "object"}) + "\n", encoding="utf-8")
@@ -13472,13 +13496,20 @@ clean:
 
             decision = outcome.decision or RouteDecision("escalate", reason="no_decision")
             if decision.action == "escalate":
-                # escalate() runs resolve_severity_directive, so a retry/reopen directive always
-                # arrives here with a concrete repair_strategy derived from its graded severity
-                # (G5: minor/major -> reuse, major-override/critical -> restart, re_execute
-                # passthrough). No conduct-side strategy normalization is needed — the severity
-                # policy is the single source of truth. A same-phase (compile/generate) target
-                # with a reuse/restart strategy fires the producer reopen below; a null / build /
-                # validate target terminalizes as before.
+                # escalate() runs resolve_severity_directive, so a retry/reopen directive that
+                # NAMES a target arrives here with a concrete repair_strategy derived from its
+                # graded severity (G5: minor/major -> reuse, major-override/critical -> restart,
+                # re_execute passthrough). No conduct-side strategy normalization is needed —
+                # the severity policy is the single source of truth. A same-phase
+                # (compile/generate) target with a reuse/restart strategy fires the producer
+                # reopen below; a `build` / `validate` target terminalizes as before, and so
+                # does a NULL target — that one arrives with its strategy CLEARED, which is what
+                # makes "terminalizes" true of it whatever the leaf spelled. Before, the clause
+                # said "terminalizes as before" of the null case while
+                # `resolve_severity_directive` returned a leaf-spelled strategy untouched, and
+                # `target = decision.target_phase or phase` two lines down then fired the reopen
+                # on it — with the severity forcing skipped, so a `critical` kept the artifacts
+                # it graded untrustworthy.
                 escalate_source = decision.reason
                 decision = self.escalate(refs, phase, outcome)
                 # G5: the validate post_judge / judge-conformance escalate returned WITHOUT
