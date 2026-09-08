@@ -6929,6 +6929,36 @@ class NodeAllocationTest(unittest.TestCase):
                 wc.resolve_node(repo, "spec/x/n1")
             self.assertIn("found 0", str(ctx.exception))
 
+    def test_resolve_node_refuses_a_profile_target(self) -> None:
+        """Issue #175: a `profile` is not a node any phase runs. `run_workflow` refuses it at
+        launch; this is the fail-closed backstop for every path that does not come through
+        that entry point.
+
+        The kind comes from the CATALOG, so a spec cannot self-declare its way past the gate
+        that decides whether it is gated (surface 11): a `deps.yaml` claiming `component` on a
+        spec the registry lists as a `profile` is still refused."""
+        for declared in ("profile", "component"):
+            with tempfile.TemporaryDirectory() as tmp:
+                repo = self._mini_spec_repo(tmp, spec_kind="profile", infra_entries=0)
+                # Rewrite ONLY the deps.yaml's self-declared kind; the catalog still says
+                # profile.
+                deps = repo / "spec" / "x" / "n1" / "deps.yaml"
+                deps.write_text(
+                    deps.read_text(encoding="utf-8").replace(
+                        "spec_kind: profile", f"spec_kind: {declared}"),
+                    encoding="utf-8")
+                with self.assertRaises(ValueError) as ctx:
+                    wc.resolve_node(repo, "spec/x/n1")
+                self.assertIn("spec_kind_not_certifiable", str(ctx.exception), declared)
+                self.assertIn("Run the node that ADOPTS it", str(ctx.exception))
+        # The refusal is on the KIND, not on the missing harness edge: a profile carrying one
+        # is refused with the same reason rather than with the dep-count message.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._mini_spec_repo(tmp, spec_kind="profile", infra_entries=1)
+            with self.assertRaises(ValueError) as ctx:
+                wc.resolve_node(repo, "spec/x/n1")
+            self.assertIn("spec_kind_not_certifiable", str(ctx.exception))
+
     def test_resolve_node_exempts_an_infrastructure_spec(self) -> None:
         # The harness authors its own self-test runner, so it declares no harness dep.
         with tempfile.TemporaryDirectory() as tmp:
@@ -15094,7 +15124,14 @@ class PureLeafSubstepPredicateTests(unittest.TestCase):
 
         Exercised through the VALIDATOR twin, which takes an IR dict directly; the conductor
         twin needs a workspace IR file, and `test_the_two_bundle_shape_readers_agree` pins the
-        two equal."""
+        two equal.
+
+        A `profile` catalog entry is the one kind held to the OPPOSITE assertion. Issue #175
+        made a profile a compile-time selection policy the host resolves rather than a node the
+        workflow certifies, so it declares no harness (`infra_dep_count_violation`) and no
+        `--with-deps` closure ever schedules it. Requiring it to have a bundle shape would
+        require it to be buildable, which is exactly what it stopped being; requiring the shape
+        to be None is what would break if it re-entered the closure as a node."""
         import yaml as _yaml
         import tools.validate_pipeline_semantics as vps
         from tools.codegen_bundle import BUNDLE_SHAPES
@@ -15117,6 +15154,9 @@ class PureLeafSubstepPredicateTests(unittest.TestCase):
                     for d in infra if isinstance(d, dict)]},
             }
             shape = vps._ir_bundle_shape(ir, node_key)
+            if entry.get("spec_kind") == "profile":
+                self.assertIsNone(shape, node_key)
+                continue
             self.assertIn(shape, BUNDLE_SHAPES, node_key)
             seen.add(shape)
         # Both shapes are represented, so a reader collapsed to one constant is red here rather

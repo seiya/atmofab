@@ -4704,6 +4704,82 @@ class DependencyClosureTests(unittest.TestCase):
             self.assertEqual(refs, ["c", "b"])
             self.assertTrue(all(n["spec_versions"] == ["0.1.0"] for n in ordered))
 
+    def test_an_adopted_profile_is_expanded_and_never_scheduled(self) -> None:
+        """Issue #175: `--with-deps` must launch no leaf for a `profile` and create no
+        `workspace/pipelines/profile__*`. The closure driver schedules exactly `ordered`, so
+        the property is that no profile node reaches it — the components the profile selects
+        do, as the adopting node's own direct dependencies."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            # problem/a → profile/pr → component/b ; b + a → harness c.
+            _write_catalog(repo_root, [
+                {"spec_kind": "problem", "spec_id": "a", "spec_version": "0.3.0",
+                 "deps_path": "spec/problem/a/deps.yaml"},
+                {"spec_kind": "profile", "spec_id": "pr", "spec_version": "0.1.0",
+                 "deps_path": "spec/profile/pr/deps.yaml"},
+                {"spec_kind": "component", "spec_id": "b", "spec_version": "0.1.0",
+                 "deps_path": "spec/component/b/deps.yaml"},
+                {"spec_kind": "infrastructure", "spec_id": "c", "spec_version": "0.1.0",
+                 "deps_path": "spec/component/c/deps.yaml"},
+            ])
+            _write_deps(repo_root, "spec/problem/a", "problem", "a",
+                        profiles=[("pr", ">=0.1.0 <1.0.0")],
+                        infrastructure=[("c", ">=0.1.0 <1.0.0")])
+            _write_deps(repo_root, "spec/profile/pr", "profile", "pr",
+                        components=[("b", ">=0.1.0 <1.0.0")], infrastructure=[])
+            _write_deps(repo_root, "spec/component/b", "component", "b",
+                        infrastructure=[("c", ">=0.1.0 <1.0.0")])
+            _write_deps(repo_root, "spec/component/c", "infrastructure", "c")
+            ordered, err = run_workflow._resolve_dependency_closure(
+                repo_root, "spec/problem/a")
+            self.assertIsNone(err)
+            self.assertEqual([n["spec_id"] for n in ordered], ["c", "b"])
+            self.assertNotIn("profile", {n["spec_kind"] for n in ordered})
+
+    def test_a_profile_declaring_a_harness_fails_the_closure_closed(self) -> None:
+        # A profile builds nothing, so a harness declared on it would enter the closure of the
+        # ADOPTING node through an edge that node never wrote. Refused before any leaf launches.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            _write_catalog(repo_root, [
+                {"spec_kind": "problem", "spec_id": "a", "spec_version": "0.3.0",
+                 "deps_path": "spec/problem/a/deps.yaml"},
+                {"spec_kind": "profile", "spec_id": "pr", "spec_version": "0.1.0",
+                 "deps_path": "spec/profile/pr/deps.yaml"},
+                {"spec_kind": "infrastructure", "spec_id": "c", "spec_version": "0.1.0",
+                 "deps_path": "spec/component/c/deps.yaml"},
+            ])
+            _write_deps(repo_root, "spec/problem/a", "problem", "a",
+                        profiles=[("pr", ">=0.1.0 <1.0.0")],
+                        infrastructure=[("c", ">=0.1.0 <1.0.0")])
+            # `infrastructure=None` gives the profile the default harness edge — the shape the
+            # in-tree profile specs carried before issue #175.
+            _write_deps(repo_root, "spec/profile/pr", "profile", "pr")
+            _write_deps(repo_root, "spec/component/c", "infrastructure", "c")
+            ordered, err = run_workflow._resolve_dependency_closure(
+                repo_root, "spec/problem/a")
+            self.assertEqual(ordered, [])
+            self.assertEqual(err["reason"], "profile_declares_infrastructure")
+
+    def test_a_profile_target_is_refused_at_launch(self) -> None:
+        """The launch-time half of the refusal (`resolve_node` keeps the backstop). Detected
+        before anything is launched, like `REQUIRED_CLI_TOOLS`."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            _write_catalog(repo_root, [
+                {"spec_kind": "profile", "spec_id": "pr", "spec_version": "0.1.0",
+                 "deps_path": "spec/profile/pr/deps.yaml"},
+                {"spec_kind": "problem", "spec_id": "a", "spec_version": "0.3.0",
+                 "deps_path": "spec/problem/a/deps.yaml"},
+            ])
+            with self.assertRaises(ValueError) as caught:
+                run_workflow._refuse_non_certifiable_target(repo_root, "spec/profile/pr")
+            self.assertIn("spec_kind_not_certifiable", str(caught.exception))
+            self.assertIn("Run the node that ADOPTS it", str(caught.exception))
+            # Every other kind, and an unregistered ref, pass through untouched.
+            run_workflow._refuse_non_certifiable_target(repo_root, "spec/problem/a")
+            run_workflow._refuse_non_certifiable_target(repo_root, "spec/component/nope")
+
     def test_cycle_detection_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)

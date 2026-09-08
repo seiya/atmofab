@@ -14667,6 +14667,9 @@ def resolve_node(repo_root: Path, spec_ref: str) -> tuple[str, str]:
     Accepts the same spec_ref forms as run_workflow: a spec directory OR a
     file-style ref (controlled_spec.md / tests.md / deps.yaml) under it — the
     latter is normalized to its parent directory before the catalog lookup.
+
+    Raises ``ValueError`` when the catalog resolves the ref to a ``profile``: a profile is
+    resolved as data at Compile and is not a node any phase runs (issue #175).
     """
     ref = Path(spec_ref.strip().rstrip("/"))
     spec_dir = ref.parent if ref.name in _SPEC_REF_FILE_NAMES else ref
@@ -14697,6 +14700,22 @@ def resolve_node(repo_root: Path, spec_ref: str) -> tuple[str, str]:
             kind = entry["spec_kind"]
             version = entry["spec_version"]
             spec_path = str(Path(entry["controlled_spec_path"]).parent)
+            # (3) A `profile` is not a certifiable node (issue #175). It is a compile-time
+            # component-selection policy the host resolves at Compile
+            # (`orchestration_runtime.expand_profile_dependencies`), so it has no code to
+            # generate, no runner to build and no verdict to reach. The kind is read from the
+            # CATALOG — never from the spec's own `deps.yaml`, which carries no schema for it —
+            # so a spec cannot self-declare its way past this. Without this the four phases
+            # would still run on a profile target and produce a certified artifact for
+            # something no closure consumes: a fail-open in the direction of doing billed work
+            # that nothing reads.
+            if str(kind).strip() == "profile":
+                raise ValueError(
+                    f"spec-input rejected: spec_kind_not_certifiable: {spec_id} is a `profile`, "
+                    f"a compile-time component-selection policy the host resolves at Compile "
+                    f"(issue #175), not a certified code node. It generates no code and no "
+                    f"closure schedules it. Run the node that ADOPTS it instead "
+                    f"(from spec_ref {spec_ref})")
             _infra_count = _direct_infra_dep_count(repo_root, spec_path)
             if _infra_count is None:
                 # `.strip()` and nothing else — the SAME spelling rule as

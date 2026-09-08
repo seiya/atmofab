@@ -40949,3 +40949,238 @@ class DevVerifyResumeDirectiveTests(unittest.TestCase):
                 meta.get("resume_directive"),
                 "no directive was derived for an `_ir` attribution either, so the negative "
                 "assertion above observes nothing about the dev_verify reasons")
+
+
+class ProfileExpansionTests(unittest.TestCase):
+    """`expand_profile_dependencies` (issue #175) and the four readiness consumers it feeds.
+
+    The primitive's REFUSALS are pinned in `tools/tests/test_dependency_graph.py` (the graph
+    builder is the other caller and drives every reason). What is pinned HERE is the
+    contract the four `orchestration_runtime` consumers depend on: the expanded entry list, the
+    record shape, and — for each consumer — that a `profile` never reaches the layer that asks
+    for a node's artifacts, while the components it selects do."""
+
+    HARNESS = "h"
+
+    def setUp(self) -> None:
+        from tools.orchestration_runtime import _load_spec_catalog
+        _load_spec_catalog.cache_clear()
+
+    def tearDown(self) -> None:
+        from tools.orchestration_runtime import _load_spec_catalog
+        _load_spec_catalog.cache_clear()
+
+    def _write_deps(self, repo: Path, spec_ref: str, kind: str, spec_id: str, *,
+                    components: list[tuple[str, str | None]] | None = None,
+                    profiles: list[tuple[str, str | None]] | None = None,
+                    infrastructure: list[tuple[str, str | None]] | None = None) -> None:
+        d = repo / spec_ref
+        d.mkdir(parents=True, exist_ok=True)
+        lines = [f"spec_id: {spec_id}", f"spec_kind: {kind}", "dependencies:"]
+        for key, field, items in (("components", "component_id", components),
+                                  ("profiles", "profile_id", profiles),
+                                  ("infrastructure", "infrastructure_id", infrastructure)):
+            if items is None:
+                if key != "infrastructure":
+                    lines.append(f"  {key}: []")
+                continue
+            if not items:
+                lines.append(f"  {key}: []")
+                continue
+            lines.append(f"  {key}:")
+            for sid, con in items:
+                lines.append(f"    - {field}: {sid}")
+                if con is not None:
+                    lines.append(f"      version_constraint: \"{con}\"")
+        (d / "deps.yaml").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    def _seed(self, repo: Path, *, profile_infra: bool = False) -> None:
+        """problem/a adopts profile/pr (which selects component/c1 and component/c2), declares
+        component/own directly, and declares the harness `h` itself."""
+        entries = [
+            ("problem", "a", "0.1.0", "spec/problem/a"),
+            ("profile", "pr", "0.1.0", "spec/profile/pr"),
+            ("component", "c1", "0.2.0", "spec/component/c1"),
+            ("component", "c2", "0.3.0", "spec/component/c2"),
+            ("component", "own", "0.1.0", "spec/component/own"),
+            ("infrastructure", self.HARNESS, "0.1.0", f"spec/infrastructure/{self.HARNESS}"),
+        ]
+        lines = ["catalog_version: 0.2.0", "updated_at: 2026-09-08", "specs:"]
+        for kind, sid, ver, ref in entries:
+            lines += [f"  - spec_kind: {kind}", f"    spec_id: {sid}",
+                      f"    spec_version: \"{ver}\"", f"    deps_path: {ref}/deps.yaml"]
+        (repo / "spec" / "registry").mkdir(parents=True, exist_ok=True)
+        (repo / "spec" / "registry" / "spec_catalog.yaml").write_text(
+            "\n".join(lines) + "\n", encoding="utf-8")
+        self._write_deps(repo, "spec/problem/a", "problem", "a",
+                         components=[("own", ">=0.1.0")], profiles=[("pr", ">=0.1.0")],
+                         infrastructure=[(self.HARNESS, ">=0.1.0")])
+        self._write_deps(repo, "spec/profile/pr", "profile", "pr",
+                         components=[("c1", ">=0.2.0"), ("c2", ">=0.3.0")],
+                         infrastructure=([(self.HARNESS, ">=0.1.0")] if profile_infra
+                                         else None))
+        for cid in ("c1", "c2", "own"):
+            self._write_deps(repo, f"spec/component/{cid}", "component", cid,
+                             infrastructure=[(self.HARNESS, ">=0.1.0")])
+        self._write_deps(repo, f"spec/infrastructure/{self.HARNESS}", "infrastructure",
+                         self.HARNESS)
+        from tools.orchestration_runtime import _load_spec_catalog
+        _load_spec_catalog.cache_clear()
+
+    def _entries(self, repo: Path, spec_ref: str):
+        from tools.orchestration_runtime import (
+            _load_spec_catalog, _parse_dep_entries, _read_deps_yaml)
+        entries, well_formed = _parse_dep_entries(_read_deps_yaml(repo, spec_ref))
+        self.assertTrue(well_formed)
+        return entries, _load_spec_catalog(str(repo.resolve()))
+
+    def test_the_expansion_replaces_the_profile_with_what_it_selects(self) -> None:
+        from tools.orchestration_runtime import expand_profile_dependencies
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._seed(repo)
+            entries, catalog = self._entries(repo, "spec/problem/a")
+            self.assertIn(("profile", "pr", ">=0.1.0"), entries)
+            expanded, record, err = expand_profile_dependencies(
+                repo, "spec/problem/a", entries, catalog)
+            self.assertIsNone(err)
+            self.assertEqual(sorted(expanded), sorted([
+                ("component", "own", ">=0.1.0"),
+                ("infrastructure", self.HARNESS, ">=0.1.0"),
+                ("component", "c1", ">=0.2.0"),
+                ("component", "c2", ">=0.3.0"),
+            ]))
+            self.assertNotIn("profile", {kind for kind, _s, _c in expanded})
+            self.assertEqual(record, [{
+                "node_key": "profile/pr@0.1.0",
+                "profile_id": "pr",
+                "profile_version": "0.1.0",
+                "version_constraint": ">=0.1.0",
+                "components": [
+                    {"component_id": "c1", "version_constraint": ">=0.2.0"},
+                    {"component_id": "c2", "version_constraint": ">=0.3.0"},
+                ],
+            }])
+
+    def test_a_node_with_no_profile_entry_is_returned_unchanged(self) -> None:
+        from tools.orchestration_runtime import expand_profile_dependencies
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._seed(repo)
+            entries, catalog = self._entries(repo, "spec/component/c1")
+            expanded, record, err = expand_profile_dependencies(
+                repo, "spec/component/c1", entries, catalog)
+            self.assertIsNone(err)
+            self.assertEqual(expanded, entries)
+            self.assertEqual(record, [])
+
+    def test_the_record_carries_no_resolved_component_version(self) -> None:
+        # The version a component resolves to is decided by the graph builder intersecting
+        # every requiring edge. Writing it into the record too would make it a fact two layers
+        # read, and they would drift the first time a second edge narrowed the range.
+        from tools.orchestration_runtime import expand_profile_dependencies
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._seed(repo)
+            entries, catalog = self._entries(repo, "spec/problem/a")
+            _expanded, record, _err = expand_profile_dependencies(
+                repo, "spec/problem/a", entries, catalog)
+            for component in record[0]["components"]:
+                self.assertEqual(set(component), {"component_id", "version_constraint"})
+
+    def test_readiness_asks_about_the_selected_components_and_never_the_profile(self) -> None:
+        from tools.orchestration_runtime import _verify_dependency_readiness
+        import tools.orchestration_runtime as ort
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._seed(repo)
+            asked: list[tuple[str, str]] = []
+
+            def _spy(_repo, kind, spec_id, _v, _stage):
+                asked.append((kind, spec_id))
+                return False
+
+            with mock.patch.object(ort, "_verify_dep_stage", _spy):
+                result = _verify_dependency_readiness(repo, "spec/problem/a")
+            self.assertEqual(result, {f"{s}_verified": False
+                                      for s in ort._DEPENDENCY_READINESS_STAGES})
+            self.assertEqual({sid for _k, sid in asked}, {"own", "c1", "c2", self.HARNESS})
+            self.assertNotIn("profile", {kind for kind, _sid in asked})
+
+    def test_readiness_fails_closed_when_the_expansion_does(self) -> None:
+        # Same class as a malformed schema: the declared dependency set does not resolve, so
+        # readiness must not degrade to vacuous true.
+        from tools.orchestration_runtime import _verify_dependency_readiness
+        import tools.orchestration_runtime as ort
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._seed(repo, profile_infra=True)
+            self.assertEqual(
+                _verify_dependency_readiness(repo, "spec/problem/a"),
+                {f"{s}_verified": False for s in ort._DEPENDENCY_READINESS_STAGES})
+
+    def test_the_catalog_subset_covers_the_profile_and_what_it_selects(self) -> None:
+        from tools.orchestration_runtime import _relevant_catalog_subset_bytes
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._seed(repo)
+            payload = json.loads(_relevant_catalog_subset_bytes(repo, "spec/problem/a"))
+            pairs = {(kind, sid) for kind, sid, _versions in payload}
+            # The components the profile selects contribute as themselves, and the profile
+            # contributes as itself — so a catalog edit to EITHER resets the readiness flags.
+            self.assertEqual(pairs, {
+                ("component", "own"), ("component", "c1"), ("component", "c2"),
+                ("infrastructure", self.HARNESS), ("profile", "pr")})
+
+    def test_the_catalog_subset_is_empty_when_the_expansion_fails(self) -> None:
+        from tools.orchestration_runtime import _relevant_catalog_subset_bytes
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._seed(repo, profile_infra=True)
+            self.assertEqual(_relevant_catalog_subset_bytes(repo, "spec/problem/a"), b"")
+
+    def test_the_launch_gate_snapshot_fails_closed_when_the_expansion_does(self) -> None:
+        from tools.orchestration_runtime import _certify_and_collect_dep_artifacts
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._seed(repo, profile_infra=True)
+            snap = _certify_and_collect_dep_artifacts(repo, "spec/problem/a")
+            self.assertTrue(snap["deps_doc_valid"])
+            self.assertFalse(snap["entries_well_formed"])
+            self.assertEqual(snap["certified_entries"], [])
+
+    def test_stale_details_names_the_profile_rather_than_going_silent(self) -> None:
+        # Readiness itself fails closed on an expansion error; this line is what turns the
+        # opaque `direct_dependency_*_readiness_not_pass` into a message naming the profile.
+        from tools.orchestration_runtime import _stale_dependency_details
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._seed(repo, profile_infra=True)
+            details = _stale_dependency_details(repo, "spec/problem/a")
+            self.assertEqual(len(details), 1, details)
+            self.assertIn("profile_declares_infrastructure", details[0])
+            self.assertIn("profile/pr", details[0])
+
+    def test_a_profile_expansion_failure_is_classified_stale_not_fresh(self) -> None:
+        """The R6-lite freshness reader splits builder errors into "the registry could not be
+        READ" (no comparison possible → fresh) and everything else (the recorded resolution
+        provably cannot be reproduced → stale). Every `profile_*` reason belongs to the second
+        set: the registry WAS read, and the declared closure does not resolve."""
+        from tools.orchestration_runtime import (
+            _PROFILE_EXPANSION_REASONS, _UNREADABLE_CLOSURE_REASONS,
+            _dependency_resolution_freshness)
+        self.assertEqual(_PROFILE_EXPANSION_REASONS & _UNREADABLE_CLOSURE_REASONS, frozenset())
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._seed(repo, profile_infra=True)
+            fresh, detail = _dependency_resolution_freshness(repo, "problem", "a", "0.1.0")
+            self.assertFalse(fresh)
+            self.assertIn("no longer resolves", detail)
+            self.assertIn("profile_declares_infrastructure", detail)
+            # ...and with a well-formed profile the same node no longer takes this branch at
+            # all (it is judged on the recorded-vs-derived COMPARISON, which this fixture seeds
+            # no artifacts for), so the assertion above could have come out the other way.
+            self._seed(repo, profile_infra=False)
+            _fresh_ok, detail_ok = _dependency_resolution_freshness(
+                repo, "problem", "a", "0.1.0")
+            self.assertNotIn("no longer resolves", detail_ok or "")

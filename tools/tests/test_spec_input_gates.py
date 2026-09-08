@@ -57,19 +57,51 @@ class SpecIdLengthGateTest(unittest.TestCase):
 
 class InfraDepCountGateTest(unittest.TestCase):
     """Spec-input gate: `infra_dep_count_violation` requires EXACTLY ONE `infrastructure`
-    direct dependency on every non-infrastructure spec. Sibling of the spec_id bound: both
-    are node-IDENTITY preconditions a Compile re-author cannot repair, so both are captured
-    at spec-input. Zero and >1 used to degrade silently to the removed leaf-authored-runner
-    path; they are hard rejections now."""
+    direct dependency on every spec that builds — every kind but `infrastructure` (exempt at
+    any count: the harness authors its own self-test runner) and `profile` (bounded to ZERO:
+    a profile is a compile-time selection policy that builds nothing, issue #175). Sibling of
+    the spec_id bound: both are node-IDENTITY preconditions a Compile re-author cannot repair,
+    so both are captured at spec-input. Zero and >1 used to degrade silently to the removed
+    leaf-authored-runner path; they are hard rejections now."""
+
+    # The kinds that build code and therefore need exactly one runner harness. `profile` is
+    # deliberately absent — its own rows are below.
+    BUILDING_KINDS = ("component", "problem")
 
     def test_exactly_one_passes(self) -> None:
-        for kind in ("component", "profile", "problem"):
+        for kind in self.BUILDING_KINDS:
             self.assertIsNone(infra_dep_count_violation(kind, 1), kind)
 
     def test_zero_and_more_than_one_violate(self) -> None:
-        for kind in ("component", "profile", "problem"):
+        for kind in self.BUILDING_KINDS:
             for count in (0, 2, 3):
                 self.assertIsNotNone(infra_dep_count_violation(kind, count), (kind, count))
+
+    def test_profile_must_declare_zero(self) -> None:
+        # Issue #175: a `profile` is resolved by the host at Compile and generates no code, so
+        # it has no runner to build. Unlike the `infrastructure` exemption this is a BOUND —
+        # a harness declared here would enter the closure of every ADOPTING node through an
+        # edge that node never wrote.
+        self.assertIsNone(infra_dep_count_violation("profile", 0))
+        for count in (1, 2, 5):
+            msg = infra_dep_count_violation("profile", count)
+            self.assertIsNotNone(msg, count)
+            self.assertIn(f"found {count}", msg)
+            self.assertIn("must declare no `infrastructure`", msg)
+            # The remedy for a building kind's over-count ("keep the one harness this node
+            # builds against") would be actively wrong here: a profile keeps none.
+            self.assertNotIn("keeping the one harness", msg)
+            self.assertIn("Remove the `infrastructure` entry", msg)
+
+    def test_the_profile_bound_is_case_sensitive_like_the_infrastructure_exemption(self) -> None:
+        # Same reason as the `infrastructure` row below: every downstream reader compares the
+        # stripped value with no case folding, so a `Profile` lower-cased into the zero-bound
+        # here would be judged a building kind everywhere else. Fail closed instead — under the
+        # building-kind rule `Profile` with 0 entries is a violation and with 1 is not.
+        self.assertIsNone(infra_dep_count_violation("  profile  ", 0))
+        for spelling in ("Profile", "PROFILE", "proFile"):
+            self.assertIsNotNone(infra_dep_count_violation(spelling, 0), spelling)
+            self.assertIsNone(infra_dep_count_violation(spelling, 1), spelling)
 
     def test_infrastructure_kind_is_exempt_at_every_count(self) -> None:
         # The harness authors its own self-test runner, so it declares no harness of its own.
