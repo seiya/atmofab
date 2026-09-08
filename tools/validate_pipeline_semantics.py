@@ -4923,6 +4923,22 @@ def _infra_direct_dep_node_keys(ir: dict[str, Any]) -> list[str]:
     return out
 
 
+def _ir_toolchain_tokens(ir: dict[str, Any]) -> tuple[str, str]:
+    """The ``(build_system, language)`` an IR declares, with the defaults its readers apply.
+
+    ONE place, for two reasons. The readers must not default differently — that is how this
+    mirror and the conductor drifted before — and the neutral core must not gain a second
+    spelling of either value (``docs/BACKEND_BOUNDARY.md``: the ledger counts occurrences, and a
+    new reader that re-spells the default is growth). Normalization stays the caller's, as it
+    does in ``workflow_conductor._ir_language`` / ``_ir_build_system``, because the readers of
+    these keys deliberately differ on padding.
+    """
+    impl = ir.get("impl_defaults") if isinstance(ir.get("impl_defaults"), dict) else {}
+    tc = impl.get("toolchain") if isinstance(impl.get("toolchain"), dict) else {}
+    return (str(tc.get("build_system") or "make").lower(),
+            str(tc.get("language") or "fortran").lower())
+
+
 def _ir_m3c_language(ir: dict[str, Any]) -> str | None:
     """The implementation language of an M3c physics node, or ``None`` when the IR is not one.
 
@@ -4941,10 +4957,7 @@ def _ir_m3c_language(ir: dict[str, Any]) -> str | None:
     meta = ir.get("meta") if isinstance(ir.get("meta"), dict) else {}
     if str(meta.get("spec_kind") or "").strip() == "infrastructure":
         return None
-    impl = ir.get("impl_defaults") if isinstance(ir.get("impl_defaults"), dict) else {}
-    tc = impl.get("toolchain") if isinstance(impl.get("toolchain"), dict) else {}
-    build_system = str(tc.get("build_system") or "make").lower()
-    language = str(tc.get("language") or "fortran").lower()
+    build_system, language = _ir_toolchain_tokens(ir)
     # The SAME question the conductor asks, asked the same way — see
     # `Conductor._core_authors_control_file` and `_conductor_authors_runner`. This mirror kept
     # comparing against `(make, fortran)` after the conductor moved to the registry, so declaring
@@ -4987,11 +5000,9 @@ def _ir_bundle_shape(ir: dict[str, Any], node_key: str) -> str | None:
         return "m3c"
     if node_key.split("/", 1)[0].strip() != "infrastructure":
         return None
-    impl = ir.get("impl_defaults") if isinstance(ir.get("impl_defaults"), dict) else {}
-    tc = impl.get("toolchain") if isinstance(impl.get("toolchain"), dict) else {}
-    build_system = str(tc.get("build_system") or "make").lower()
-    language = str(tc.get("language") or "fortran").lower()
-    # The same two questions `Conductor._conductor_authors_makefile` asks, asked the same way.
+    build_system, language = _ir_toolchain_tokens(ir)
+    # The same two questions the conductor's control-file predicate asks, asked the same way —
+    # see `Conductor._core_authors_control_file`, which is what that predicate delegates to.
     for axis, value in (("build_system", build_system), ("language", language)):
         if value != value.strip() or not backend_registry.provides(axis, value, "control_file"):
             return None
@@ -14022,8 +14033,8 @@ def _validate_post_generate_bundle(
     Then verifies every declared `files[]` entry exists on disk with byte-identical content (a
     post-write mutation is a violation), with no UNDECLARED source staged beyond the host glue.
     WHICH glue that is follows the node's bundle shape (`_ir_bundle_shape`): on `m3c` it is the
-    host-rendered `<spec_id>_runner.f90`, and on `harness` there is NONE — that file is declared
-    bundle content there, so the carve-out is closed and an undeclared one is a violation."""
+    host-rendered runner glue, and on `harness` there is NONE — that file is declared bundle
+    content there, so the carve-out is closed and an undeclared one is a violation."""
     bundle_path = gen_dir / "codegen_bundle.json"
     if not bundle_path.exists():
         return

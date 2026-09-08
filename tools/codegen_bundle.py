@@ -1714,7 +1714,11 @@ def harness_bundle_shape_violation(doc: Mapping[str, Any], spec_id: str,
         if role != "model":
             continue
         # The module comparison is casefolded, for the mirror-image reason the path one is not:
-        # a Fortran identifier IS case-insensitive, so `HFC_Model` and `hfc_model` are one module.
+        # a MODULE name is an identifier of the declared language, and in the languages this
+        # contract admits an identifier is case-insensitive — two spellings that differ only in
+        # case are one module. (`m3c_literal_name_violation` splits the two the same way, and
+        # says so in the language's own terms; this layer states it neutrally because it is new
+        # neutral-core text and `docs/BACKEND_BOUNDARY.md` counts what a new file adds.)
         modules = {str(m).casefold() for m in (entries[0].get("modules") or [])
                    if isinstance(m, str)}
         if model_stem.casefold() not in modules:
