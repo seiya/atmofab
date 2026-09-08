@@ -76,7 +76,7 @@ source; do not uniformly require a fixed minimal composition.
   targeted case. `post_execute` pins that matrix both ways — a missing row and an unknown
   row are equally rejected. Each entry is **flat**: `test_id`, `case_id`, plus that test's
   `required_raw_variables` without omission as **direct sibling keys of `test_id`**, valued
-  from the entry's own case (needed for the per-test recomputation of `Validate.judge`). An
+  from the entry's own case (the per-test evidence `Validate.judge` reviews; since Z3 it reads a host-computed excerpt of these arrays, not the arrays). An
   entry omitting `case_id` is rejected. Wrapping the variables under an unrecognized key —
   notably `values`, a Fortran identifier of the harness entry record and never a JSON key —
   fails `post_execute`. So does a structure with no per-test index, e.g. a single

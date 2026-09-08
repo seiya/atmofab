@@ -9,8 +9,8 @@ description: Use this when running the judge substep of the Validate stage: a pu
 > the `pure` capability. Since [issue #169](https://github.com/seiya/atmofab/issues/169) the
 > default `Validate.judge` is a `pure-function leaf`: it holds no tools, is handed a bounded
 > excerpt in place of `raw/`, returns only `{decision, findings, notes}`, and the HOST writes
-> `semantic_review.json`. Everything below about reading `raw/`, authoring that file, and
-> writing `review_method` is the agentic path. Pure path:
+> `semantic_review.json`. Everything below — reading `raw/`, authoring that file, writing
+> `review_method`, the `findings` schema — is the agentic path. Pure path:
 > `docs/workflow/phases/phase_04_validate.md` §4-2 / §4-2-1.
 
 ## Purpose

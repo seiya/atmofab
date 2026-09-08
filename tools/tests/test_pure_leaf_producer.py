@@ -727,7 +727,8 @@ class PureContextRunnerInjectionTests(unittest.TestCase):
 
     def test_missing_runner_raises_rather_than_shipping_a_blank_abi(self) -> None:
         # NOT the swallow-to-"" idiom ir/tests use: an empty string satisfies the renderer's
-        # presence check and would ship a prompt whose ABI section is blank — the very defect.
+        # presence check — FALSE (issue #169): counted missing, raises; degrading defers the
+        # refusal into `record_launch`.
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = _write_node(repo, stage_runner=False)

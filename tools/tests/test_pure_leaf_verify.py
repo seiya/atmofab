@@ -120,7 +120,8 @@ class PureVerifyContextTests(unittest.TestCase):
 
     def test_missing_checks_contract_raises_the_named_contract(self) -> None:
         # NOT the swallow-to-"" idiom the four node artifacts use: "" satisfies the renderer's
-        # presence check and would ship a reviewer prompt whose ABI section is blank.
+        # presence check — FALSE, measured in issue #169's review: a whitespace-only value is
+        # counted missing and raises. Degrading defers the refusal into `record_launch`.
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = _verify_node(repo, stage_checks_contract=False)
@@ -293,7 +294,8 @@ class PureVerifyContextTests(unittest.TestCase):
 
     def test_missing_phase_02_raises_the_named_contract(self) -> None:
         # Same disposition as the checks contract, and for the same reason: "" satisfies the
-        # renderer's presence check and would ship a reviewer prompt whose rubric is blank.
+        # renderer's presence check — FALSE (issue #169): such a value is counted missing and
+        # raises; degrading defers the refusal into `record_launch` instead.
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = _verify_node(repo, stage_phase_02=False)

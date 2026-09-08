@@ -109,6 +109,11 @@ class GateReadsThisMatrixTest(unittest.TestCase):
     def test_post_execute_gate_imports_the_same_functions(self):
         self.assertIs(vps.expected_metrics_basis_keys, rex.expected_metrics_basis_keys)
         self.assertIs(vps._metrics_basis_variable_keys, rex.metrics_basis_variable_keys)
+        # The one round 2 moved, and the one its commit message claimed was "pinned as an
+        # identity" while this list did not name it: two independent review axes reinstated
+        # the exact divergence Codex found — the gate preferring the map key, a local copy
+        # preferring an inner `test_id` — and the whole suite stayed green.
+        self.assertIs(vps._metrics_basis_entries, rex.metrics_basis_entries)
         self.assertIs(vps._METRICS_BASIS_NESTED_VARIABLE_FIELDS,
                       rex.METRICS_BASIS_NESTED_VARIABLE_FIELDS)
         self.assertIs(vps._METRICS_BASIS_BOOKKEEPING_KEYS,

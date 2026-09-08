@@ -383,7 +383,19 @@ PINNED: dict[str, str] = {
     # the agentic judge certified `pass`, carries 20 all-zero arrays, every one a flat bed or a
     # zero transverse momentum. A compliant judge following that sentence would have failed
     # sound runs, which the billed A/B would have surfaced as a spurious regression.
-    "pure-36": "52c3b71545e238a420db6eace17da9c9b1da8a0f82bb87973e030b01d20a1525",}
+    # Re-pinned a third time, in review round 3, and the reason is the mirror of round 2's.
+    # Round 2 removed the clause calling an all-zero array a fabrication; the DISCLOSURE axis
+    # rendered the prompt and read it as the judge, and found the clause beside it doing the
+    # same damage: "a metric the excerpt cannot support" is a fail, while round 1 had measured
+    # that 16 of 17 metrics on the reference node cannot be supported at any value. A compliant
+    # judge had to fail every run in the corpus. The checklist now distinguishes CONTRADICTED
+    # (a finding) from not-corroborated (expected, and never a finding), states the asymmetry
+    # and the 1-of-17 figure so the leaf knows its window is deliberately narrow, and restores
+    # `nan_count` / `inf_count` / `ragged` / `shape` as defects on their own — round 2's own
+    # correction had swept them into the all-zero carve-out, where nothing else in the workflow
+    # would have caught them. The inlined `RUNNER_OUTPUT_CONTRACT.md` slice moved too: §3
+    # promised the judge a "per-test recomputation" it no longer performs.
+    "pure-36": "1ead10776c7caf96b77b93701b39730ec3b55dcdf99d66bcc5aa0b3a80b21677",}
 
 
 def _contract_tuple() -> dict[str, object]:

@@ -6707,10 +6707,13 @@ clean:
             tests_text = ""
         ir = _read_yaml(ir_path) or {}
         impl = (ir.get("impl_defaults") or {}) if isinstance(ir, dict) else {}
-        # A missing runner RAISES rather than degrading to "" the way ir/tests do above: the
-        # empty string would satisfy the renderer's presence check and ship a prompt whose ABI
-        # section is blank, which is precisely the defect this injection fixes. The caller
-        # converts this into a fail_closed transport outcome (no leaf is spawned).
+        # A missing runner RAISES rather than degrading to "" the way ir/tests do above.
+        # MEASURED in review (issue #169): a blank value does NOT reach the leaf — `_validate_pure_launch_request_payload` counts a whitespace-only `pure_context` value as missing and raises — so what degrading buys is a refusal one frame later, out of `record_launch`, escaping the loop's named `pure_context_assembly_failed` branch and aborting the conductor. The reason recorded here until then —
+        # that the blank would reach the leaf and ship a prompt with an empty ABI section — was
+        # false, for this site and for every other pure pair. The disposition is right either
+        # way; the caller converts this into a fail_closed transport outcome (no leaf spawned),
+        # and it is the four ir/tests DEGRADATIONS above whose recorded rationale this
+        # measurement actually invalidates (TODO.md residual).
         runner_path = self.repo_root / refs.source_dir() / "src" / f"{refs.spec_id}_runner.f90"
         try:
             runner_text = runner_path.read_text(encoding="utf-8")
@@ -8284,10 +8287,9 @@ clean:
           * the four NODE artifacts keep the `""` degradation (the same deliberate design as the
             producer's ir/tests reads) — see TODO.md item on the residual;
           * the contract slice RAISES (`UnicodeError` included, since a decode error is a
-            ValueError and not an OSError), because an empty string would satisfy the renderer's
-            presence check and ship a prompt whose ABI section is blank — precisely the blindness
-            this injection removes. The caller converts it into a `pure_context_assembly_failed`
-            fail_closed transport outcome; no leaf is spawned.
+            ValueError and not an OSError). Not for the reason recorded here until issue #169's
+            review measured it: a blank value does NOT reach the leaf — `_validate_pure_launch_request_payload` counts a whitespace-only `pure_context` value as missing and raises — so what degrading buys is a refusal one frame later, out of `record_launch`, escaping the loop's named `pure_context_assembly_failed` branch and aborting the conductor. The caller converts it into a
+            `pure_context_assembly_failed` fail_closed transport outcome; no leaf is spawned.
 
         The SIXTH document is the `#### Severity of a finding` subsection of
         `docs/workflow/phases/phase_02_generate.md` §2-2, sliced by

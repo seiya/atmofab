@@ -229,9 +229,15 @@ class PureJudgeContextTests(_Fixture):
 
     def test_every_missing_document_raises(self) -> None:
         """The judge's disposition, and the one thing that must not be copied from its
-        `generate.verify` sibling: there a missing node artifact degrades to `""`, and here a
-        blank document would satisfy the renderer while removing the evidence the leaf was
-        asked about."""
+        `generate.verify` sibling, which degrades a missing node artifact to `""`.
+
+        NOT because a blank value would reach the leaf — it would not, and an earlier version of
+        this docstring said so wrongly, which is the same false sentence round 2 corrected in
+        the code and the reference doc and missed HERE, in the file that is this disposition's
+        canonical pin. `_validate_pure_launch_request_payload` counts a whitespace-only
+        `pure_context` value as missing. What degrading actually buys is a refusal one frame
+        later, inside `record_launch`, escaping this loop's named `pure_context_assembly_failed`
+        branch and aborting the conductor instead."""
         c = self.conductor()
         for key, rel in sorted(c._pure_judge_document_refs(self.refs).items()):
             if key == "raw_evidence_excerpt_document":
