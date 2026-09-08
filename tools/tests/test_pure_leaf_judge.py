@@ -593,17 +593,40 @@ class PostJudgeReclassificationTests(_Fixture):
         agentic judge DID author the file and can re-author it."""
         self.assertEqual(self._disposition(_agentic_cfg("claude")), "warm_resume")
 
+    def _warm_resume_outcomes(self) -> list:
+        """A phase state that WOULD warm-resume: post_judge is the failed last substep and its
+        meta says `warm_resume`. Without this the guard under test is unreachable — every later
+        guard returns `outcomes` unchanged too, so the assertion would hold with the guard
+        deleted, which is how the first version of this row passed for the wrong reason."""
+        self.run_node("post_judge_meta.json").write_text(json.dumps({
+            "status": "fail", "disposition": "warm_resume",
+            "failure_excerpt": "review_method must be the literal"}), encoding="utf-8")
+        return [wc.SubstepOutcome("a1", "pass", []), wc.SubstepOutcome("a2", "pass", []),
+                wc.SubstepOutcome("a3", "pass", []), wc.SubstepOutcome("a4", "fail", [])]
+
     def test_the_warm_resume_entry_point_refuses_a_pure_judge_too(self) -> None:
-        """Defence in depth (added in review): the reclassification above was the single point
-        of defence, in a different function from the one that acts on it.
-        `_maybe_warm_resume_post_judge` now carries the same guard its sibling
-        `_maybe_warm_resume_verify_meta` has always carried."""
+        """Defence in depth (added in review): the reclassification is one line in a DIFFERENT
+        function from the one that acts on it, so `_maybe_warm_resume_post_judge` carries the
+        same guard its sibling `_maybe_warm_resume_verify_meta` has always carried."""
         c = wc.Conductor(repo_root=self.repo, orchestration_id="o",
                          orchestration_agent_run_id="orch", llm_config=_cfg("claude"), env={})
-        outcomes = [wc.SubstepOutcome("a1", "pass", []), wc.SubstepOutcome("a2", "pass", []),
-                    wc.SubstepOutcome("a3", "pass", []), wc.SubstepOutcome("a4", "fail", [])]
-        # Returned unchanged, and without touching the filesystem for a meta it would have read.
+        outcomes = self._warm_resume_outcomes()
         self.assertIs(c._maybe_warm_resume_post_judge(self.refs, outcomes, ()), outcomes)
+
+    def test_the_fixture_really_would_warm_resume_an_agentic_judge(self) -> None:
+        """The self-test for the row above: same state, agentic config, and the loop must
+        actually ENTER (it emits `post_judge_warm_resume`). Without this, the guard's test is
+        satisfied by any of the three later early returns."""
+        c = wc.Conductor(repo_root=self.repo, orchestration_id="o",
+                         orchestration_agent_run_id="orch",
+                         llm_config=_agentic_cfg("claude"), env={})
+        events: list[str] = []
+        c.emit = lambda name, **kw: events.append(name)  # type: ignore[assignment]
+        c._add_superseded_run_ids = lambda *a, **k: None  # type: ignore[assignment]
+        c.run_substep = lambda *a, **k: wc.SubstepOutcome(  # type: ignore[assignment]
+            "a5", "fail", [], 1)
+        c._maybe_warm_resume_post_judge(self.refs, self._warm_resume_outcomes(), ())
+        self.assertIn("post_judge_warm_resume", events)
 
 
 class PureJudgeFreshnessTests(_Fixture):
@@ -670,6 +693,19 @@ class PureJudgeTableTests(unittest.TestCase):
     def test_every_llm_leaf_is_now_pure_capable(self) -> None:
         # Issue #169's completion criterion, in the module that holds both tables.
         self.assertEqual(lc.LLM_LEAF_SUBSTEPS, lc.PURE_CAPABLE_SUBSTEPS)
+
+    def test_the_template_states_the_cap_the_validator_enforces(self) -> None:
+        """A dual-read pair, and the reason it is worth a row: the leaf is told a number by the
+        TEMPLATE and refused by the VALIDATOR, so if they disagree a compliant judge is
+        rejected for obeying its instructions — this repository's recorded default error
+        direction, and exactly what the cap's own measurement was correcting. Neither number is
+        transcribed here; the template is required to state whatever the constant says."""
+        from tools.pure_leaf import SEMANTIC_REVIEW_NOTES_MAX_CHARS
+        template = (Path(wc.__file__).resolve().parents[1] / "tools" / "prompt_templates"
+                    / "pure_validate_judge.txt").read_text(encoding="utf-8")
+        self.assertIn(f"at most {SEMANTIC_REVIEW_NOTES_MAX_CHARS} characters", template)
+        # Self-test the search: the assertion above must be able to fail.
+        self.assertNotIn(f"at most {SEMANTIC_REVIEW_NOTES_MAX_CHARS + 1} characters", template)
 
     def test_the_judge_has_a_template_and_required_keys(self) -> None:
         self.assertIn(("validate", "judge"), ort.PURE_CONTEXT_REQUIRED_KEYS)
