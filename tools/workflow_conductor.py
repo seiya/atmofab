@@ -6921,8 +6921,13 @@ clean:
 
         The preset comes from the SAME table `_gate_lint_check` resolves it with, so the rules
         the leaf is shown are by construction the rules its source is checked against; the
-        module comes through `capability_module`, so a preset whose package does not claim the
-        `lint` job is refused rather than answered by a same-named attribute somewhere.
+        module comes through `capability_module` under the `lint_rules` capability — NOT `lint`.
+        A round-5 review measured why that distinction is the whole value of the call: `lint`
+        succeeds for every registered linter, because they all RUN, and the code then reached
+        `lint_rules_document` by `getattr` — the same-named-attribute dispatch
+        `capability_module`'s own docstring says it exists to prevent, leaving five of eight
+        languages resolving a module that answers nothing. `lint_rules` is declared by the
+        backend that implements it and by no other, so the refusal is the registry's.
 
         Every failure is NAMED and RAISES, on the same fail-closed disposition as the two
         repository documents beside it: a leaf that is not shown the rule set cannot satisfy
@@ -6937,7 +6942,7 @@ clean:
                 f"pure_lint_rules_document_unavailable: toolchain.language={language!r} has no "
                 f"static lint preset (expected one of {sorted(_LINT_PRESET_FOR_LANGUAGE)})")
         try:
-            module = backend_registry.capability_module("linter", preset, "lint")
+            module = backend_registry.capability_module("linter", preset, "lint_rules")
         except Exception as exc:
             raise RuntimeError(
                 f"pure_lint_rules_document_unavailable: linter preset {preset!r}: {exc}") from exc

@@ -167,6 +167,15 @@ class DeclarationTests(unittest.TestCase):
         for code, name in lint.RULE_NAMES.items():
             self.assertIn(f"{code} {name}", text, code)
         self.assertIn("disabled", text)  # the allow-comment channel is stated, not assumed
+        # The three glossed names, and the COUNT the sentence claims, so a fourth gloss added
+        # without updating the count is red. Measured on 0.8.0: `literal-kind` and
+        # `missing-intrinsic` interact (fixing the first the obvious way earns the second) and
+        # `missing-accessibility-statement` names one half of a two-part rule.
+        glossed = [c for c in ("PORT011", "C122", "C131")
+                   if text.count(lint.RULE_NAMES[c]) > 1]
+        self.assertEqual(sorted(glossed), ["C122", "C131", "PORT011"])
+        self.assertIn("Three of these names", text)
+        self.assertEqual(len(glossed), 3)
         # ...and it claims completeness, so it must not name a code the gate does not select.
         named = set(re.findall(r"^([A-Z]+\d+) ", text, re.M))
         self.assertEqual(named, set(lint.RULE_CODES))

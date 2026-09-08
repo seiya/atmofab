@@ -449,8 +449,14 @@ PINNED: dict[str, str] = {
     # that this shape has no file for. A SIXTH and last time, closing that gap at the operator's
     # decision: the linter backend now renders its declared rule set for a leaf
     # (`lint.lint_rules_document`), the host inlines it, and it joins the tuple — so adding a
-    # code to `RULE_CODES` is a leaf-contract change rather than a silent widening.
-    "pure-37": "ded87f017a18a02ce9d2cf1477723c6242a7c55ee0dbba7aac5ce5d60a670807",}
+    # code to `RULE_CODES` is a leaf-contract change rather than a silent widening. A SEVENTH
+    # and final time, by round 5: with two inlined rule sets the precedence sentence's "this
+    # list" no longer had one antecedent, and the reading that made the prose section govern the
+    # lint set would have dropped exactly the four codes the previous re-pin delivered. The
+    # precedence is now stated by NAME in all three directions. The m3c template's own version
+    # string moved with it — it still said 1.0.0, so the two producer templates were telling
+    # their leaves two versions of one contract.
+    "pure-37": "5ad32d360a1522cae8abedab657d9e15977d9dca357bb029f210b48f7ea88c9f",}
 
 
 def _contract_tuple() -> dict[str, object]:

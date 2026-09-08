@@ -193,8 +193,10 @@ layer refuses the role outright on such a node (`bundle_shape_unsupported`). It 
 only on a node the host renders no runner for — today the `harness` shape. Two further rules
 follow it: a member carries **at most one** `runner` file, and it is the ONE role that may
 declare an EMPTY `modules` list, because an executable entry is not something another file
-`use`s. (`validate_bundle` holds both; the schema states the second as
-`x-non-empty-unless-role`, which no draft-07 `minItems` can carry.)
+`use`s. (`validate_bundle` holds both. The schema states the second twice: as the marker
+`x-non-empty-unless-role`, which a reader sees, and as a draft-07 `if`/`then`/`else` keyed on
+`role`, which a generic validator applies — a bare `minItems` cannot carry the exception, but
+the conditional can, so the declarative copy is not weaker than the canonical one.)
 
 `member_node_key` is either one of the unit's members or `null`. `null` means the file
 is shared by the whole unit, and only `helper` / `internal_module` may be shared — a
@@ -538,7 +540,9 @@ result: `json.dumps(graph, sort_keys=True)` is byte-identical. This is what lets
 graph become a derivation input in `Z5`.
 
 **Parity.** For a bundle of the `harness` shape the derived order is
-`internal_module` → `helper` → `model` → `checks` → `runner`, so the executable entry is last
+`internal_module` → `helper` → `model` → `runner` — `checks` sits between the last two in
+`ROLE_BUILD_PRECEDENCE`, and this shape forbids that role, so no bundle of it can carry one —
+and the executable entry is last
 in the link exactly where the host glue is on the other shape; there is no `_write_makefile`
 counterpart to compare it against, because that renderer assumes the fixed model/checks/runner
 set. For a bundle of the `M3c` shape (one member, `model` + `checks`, a

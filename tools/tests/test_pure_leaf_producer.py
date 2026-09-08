@@ -2663,6 +2663,33 @@ class PureHarnessShapeTests(unittest.TestCase):
             with self.assertRaises(RuntimeError) as caught:
                 self.c._build_pure_harness_context(self.refs)
         self.assertIn("states no declared rule set", str(caught.exception))
+        # The FOURTH branch, which a round-5 sweep found unwitnessed while the commit message
+        # asserted "four named failure modes, all RAISING": a preset whose package does not
+        # DECLARE the `lint_rules` capability. Replacing the registry refusal with a silent
+        # fallback to fortitude survived every test file until this row.
+        with mock.patch.dict("tools.validate_pipeline_semantics._LINT_PRESET_FOR_LANGUAGE",
+                             {"fortran": "cppcheck"}, clear=True):
+            with self.assertRaises(RuntimeError) as caught:
+                self.c._build_pure_harness_context(self.refs)
+        self.assertIn("pure_lint_rules_document_unavailable", str(caught.exception))
+        self.assertIn("cppcheck", str(caught.exception))
+
+    def test_the_lint_rule_set_is_resolved_from_THIS_NODE_S_language(self) -> None:
+        """The docstring's load-bearing claim — the leaf is shown the rules its own source will
+        be checked against — rests on the language being READ, and a round-5 sweep found
+        hardcoding it to `"fortran"` survived every test file. The preset table is keyed by
+        language, so the witness varies the language and requires the resolution to follow."""
+        import yaml
+        ir_path = self.repo / self.refs.ir_ref / "spec.ir.yaml"
+        ir = yaml.safe_load(ir_path.read_text(encoding="utf-8"))
+        ir["impl_defaults"]["toolchain"]["language"] = "python"
+        ir_path.write_text(yaml.safe_dump(ir), encoding="utf-8")
+        # `python` resolves to a linter that declares no `lint_rules`, so a resolution that
+        # followed the node would refuse — and one that ignored it would answer fortitude's set.
+        with self.assertRaises(RuntimeError) as caught:
+            self.c._lint_rules_document(self.refs)
+        self.assertIn("pure_lint_rules_document_unavailable", str(caught.exception))
+        self.assertIn("ruff", str(caught.exception))
 
     def test_the_gate_guards_slice_is_SECTION_5_and_not_another(self) -> None:
         """CONTENT equality, not non-emptiness. A round-4 sweep found every new refusal of the

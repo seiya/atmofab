@@ -288,6 +288,21 @@ def lint_rules_document() -> str:
     Composed from `RULE_NAMES`, so a code added to the declared set reaches the leaf in the same
     edit that starts enforcing it — which is the property the absence of this function cost:
     a leaf can only satisfy a rule someone told it about.
+
+    THREE NAMES GET A SENTENCE OF THEIR OWN, because "the name IS the rule" is false for them and
+    a round-5 review measured the cost. `literal-kind` and `missing-intrinsic` interact: the
+    obvious fix for the first (import a named kind) earns the second unless the import is also
+    declared intrinsic — measured, `real(8)` -> PORT011, then a plain import -> C122, then the
+    intrinsic form -> clean. `missing-accessibility-statement` names one half of a rule with two:
+    this repository's gates require the default AND the export list, and a leaf that reads only
+    the name writes the half the name mentions. The rest of the set is left to its name
+    deliberately: a gloss per rule is a second statement of 39 rules, which is the drift this
+    file's own `RULE_CODES` comment exists to prevent.
+
+    The suppression sentence states what was MEASURED here on 0.8.0 under `check_argv`, not what
+    is intuitive: a directive placed on the span a rule reports leaves that finding firing and
+    earns nothing of its own, while one that names a rule nothing violates is a FORT002. Both
+    readings matter to a leaf, and an earlier version of this text claimed only the second.
     """
     lines = [
         "The static lint check selects EXACTLY the rules below and no others; a finding from "
@@ -298,9 +313,19 @@ def lint_rules_document() -> str:
     lines += [f"{code} {RULE_NAMES[code]}" for code in RULE_CODES]
     lines += [
         "",
-        "Suppression comments are disabled for this run, so a directive silences nothing and is "
-        "itself a finding under the FORT00x rules above. There is no way to author around a "
-        "rule; satisfy it.",
+        "Suppression comments are disabled for this run: a directive silences NOTHING — the "
+        "finding it names fires regardless — and a directive naming a rule the code does not "
+        "violate is itself a FORT002 finding. There is no way to author around a rule; satisfy "
+        "it.",
+        "",
+        "Three of these names do not say what to write, so they are spelled out. "
+        f"`{RULE_NAMES['PORT011']}` wants a NAMED kind constant taken from the standard "
+        "environment module rather than a numeric literal, and "
+        f"`{RULE_NAMES['C122']}` wants the import of that module to declare it intrinsic — so "
+        "the obvious fix for the first earns the second unless both are done at once. "
+        f"`{RULE_NAMES['C131']}` wants each module to state a default accessibility AND to "
+        "export what it publishes: a default alone publishes nothing, and an export list alone "
+        "is not a default.",
     ]
     return "\n".join(lines)
 

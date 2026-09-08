@@ -2135,7 +2135,7 @@ class RegistryConsistencyTests(unittest.TestCase):
         caller fails here until it is declared declaration-only; and none of it constrains what
         anyone registers.
         """
-        dispatched = {"control_file", "build_execute", "runner_render", "lint"}
+        dispatched = {"control_file", "build_execute", "runner_render", "lint", "lint_rules"}
         # `lint` joined them when the first linter's argv moved into its package (issue #111):
         # `mcp_servers/build_runtime_server.py`'s `_lint_preset_command` asks `capability_module`
         # for it. Note the asymmetry the instrument's own comment below records — the conductor's
@@ -2144,6 +2144,13 @@ class RegistryConsistencyTests(unittest.TestCase):
         # `lint` reached every linter that HAS an argv when issue #120 moved `cppcheck` and
         # `ruff` too; `mixed` is the one linter record still answering from `core_provides`, and
         # it has no argv of its own to move (it is a composite).
+        #
+        # `lint_rules` joined them with issue #169: `Conductor._lint_rules_document` asks
+        # `capability_module` for it when assembling a pure `harness`-shape producer's context.
+        # It is a SECOND capability on the same axis and the same submodule as `lint`, and the
+        # split is the point — every registered linter RUNS, so `lint` would have answered for
+        # all of them and left the dispatch to a `getattr`, which is what this registry's
+        # `capability_module` exists to prevent. Only `fortitude` declares it today.
         #
         # The rest are declaration-only TODAY: they are how their records answer `implemented`,
         # and they gain a dispatch when their ledger area lands (the compiler adapters and the
