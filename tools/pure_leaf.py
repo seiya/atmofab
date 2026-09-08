@@ -597,8 +597,16 @@ SEMANTIC_REVIEW_OPTIONAL_KEYS: tuple[str, ...] = ("notes",)
 SEMANTIC_REVIEW_FINDING_KEYS: tuple[str, ...] = (
     "attribution", "evidence_refs", "confidence", "description")
 #: `notes` is the one free-text field, and it is the whole budget for everything the leaf used
-#: to spread across those 34 improvised keys — so it is bounded rather than open.
-SEMANTIC_REVIEW_NOTES_MAX_CHARS = 4000
+#: to spread across those 34 improvised keys — so it is bounded rather than open. The bound is
+#: MEASURED over the population it has to serve, not chosen: across the 29 recorded
+#: `semantic_review.json` files, the JSON of everything outside the four core keys runs 1,518 to
+#: 9,773 characters (median 6,010), and one recorded `notes` field is already 4,272. The first
+#: value here was 4,000, which a review round showed would have REFUSED that real review and
+#: spent a repair turn on a judge that had done its job — this repository's recorded default
+#: error direction. 12,000 clears the observed maximum with headroom while keeping the field
+#: bounded; the template states the limit to the leaf, so a compliant one compresses rather
+#: than being refused.
+SEMANTIC_REVIEW_NOTES_MAX_CHARS = 12000
 
 
 def semantic_review_document_violations(

@@ -24,12 +24,14 @@ import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 os.environ.setdefault("ATMOFAB_DEP_READINESS_ALLOW_PERSISTED_FALLBACK", "1")
 
 import yaml
 
 import tools.llm_config as lc
+import tools.raw_evidence_excerpt as rex
 import tools.orchestration_runtime as ort
 import tools.workflow_conductor as wc
 from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION
@@ -240,7 +242,11 @@ class PureJudgeContextTests(_Fixture):
             with self.subTest(document=key):
                 with self.assertRaises(RuntimeError) as caught:
                     c._build_pure_judge_context(self.refs)
-                self.assertIn("pure_", str(caught.exception))
+                # The EXACT name, not `"pure_" in ...`: the weaker form this replaced was
+                # green for any of the nine keys against any other key's message, so the
+                # names could have been swapped wholesale without a red row. The name is what
+                # reaches the operator through `pure_context_assembly_failed`.
+                self.assertIn(f"pure_{key}_missing", str(caught.exception))
             moved.rename(path)
 
     def test_an_absent_raw_directory_does_not_raise(self) -> None:
@@ -260,6 +266,16 @@ class PureJudgeContextTests(_Fixture):
         with self.assertRaises(RuntimeError) as caught:
             self.conductor()._build_pure_judge_context(self.refs)
         self.assertIn("pure_io_contract_document_missing", str(caught.exception))
+
+    def test_an_unparseable_ir_raises_its_own_named_outcome(self) -> None:
+        """The IR is read twice — once as bytes, once as YAML — and the second failure had no
+        test. A file that exists and does not parse is a different outcome from one that is
+        absent, and the operator is told which."""
+        (self.repo / self.refs.ir_ref / "spec.ir.yaml").write_text(
+            "io_contract: [unclosed\n", encoding="utf-8")
+        with self.assertRaises(RuntimeError) as caught:
+            self.conductor()._build_pure_judge_context(self.refs)
+        self.assertIn("pure_io_contract_document_unreadable", str(caught.exception))
 
     def test_an_unsliceable_runner_output_contract_raises(self) -> None:
         (self.repo / _RUNNER_OUTPUT_CONTRACT).write_text(
@@ -292,7 +308,9 @@ class SemanticReviewWriterTests(_Fixture):
         self.assertEqual(doc["node_key"], self.refs.node_key)
         self.assertEqual(doc["run_id"], self.refs.run_id)
         self.assertEqual(doc["attempt_count"], 1)
-        self.assertIsInstance(doc["raw_excerpt_policy_version"], int)
+        # FROM the constant, not a literal: the stamp exists so a recorded review says which
+        # window its judge looked through, which a hardcoded number would not track.
+        self.assertEqual(doc["raw_excerpt_policy_version"], rex.RAW_EXCERPT_POLICY_VERSION)
         self.assertEqual(doc["prompt_contract_version"], PURE_PROMPT_CONTRACT_VERSION)
         self.assertNotIn("notes", doc)
 
@@ -444,6 +462,38 @@ class PureJudgeLoopTests(_Fixture):
         self.assertTrue(any("pure_semantic_review_repair_superseded" in r
                             for r in _superseded_reasons(c)))
 
+    def test_the_tombstone_names_the_decision_the_repaired_document_carried(self) -> None:
+        """`superseded_detail` is the judge's own: a verify verdict's `verify_status=` clause
+        would be the wrong noun in a judge's record, and only the reason's PREFIX was pinned."""
+        bad = _envelope(json.dumps({"decision": "pass", "findings": [], "extra": 1}))
+        c = self.conductor(bad, _envelope(json.dumps(_review("pass"))))
+        c.run_substep(self.refs, "validate", "judge")
+        self.assertTrue(any(r.endswith("decision=pass") for r in _superseded_reasons(c)),
+                        f"reasons were {_superseded_reasons(c)}")
+
+    def test_a_failed_attempt_says_which_document_was_missing(self) -> None:
+        """`document_name` is the judge's own too: a judge that returned nothing did not fail
+        to return a verify verdict, and that reply is what the agent-run record carries."""
+        c = self.conductor(_envelope("not a json document at all"))
+        c.spawn_leaf = lambda *a, **k: wc.ProcResult(1, "", "boom")  # type: ignore[assignment]
+        c.run_substep(self.refs, "validate", "judge")
+        replies = [cap["--reply-text"] for s, cap in c.calls
+                   if s == "record-child-return" and "--reply-text" in cap]
+        replies += [cap.get("--reply-text", "") for s, cap in c.calls if s == "finalize-child"]
+        self.assertTrue(any("semantic review: none" in (r or "") for r in replies),
+                        f"replies were {replies}")
+        self.assertFalse(any("verify verdict" in (r or "") for r in replies))
+
+    def test_a_failed_attempt_emits_its_own_event(self) -> None:
+        """`pure_semantic_review_attempt_failed` was the one event name in its family with no
+        test anywhere."""
+        c = self.conductor(_envelope(json.dumps({"decision": "maybe", "findings": []})))
+        events: list[dict] = []
+        c.emit = lambda name, **kw: events.append({"event": name, **kw})  # type: ignore[assignment]
+        c.run_substep(self.refs, "validate", "judge")
+        names = [e["event"] for e in events]
+        self.assertIn("pure_semantic_review_attempt_failed", names)
+
     def test_an_evidence_ref_naming_a_document_it_was_not_given_is_a_violation(self) -> None:
         """The in-loop check that keeps `semantic_review.json` a path list: the leaf may cite
         only what it was handed, and the host resolves that."""
@@ -499,25 +549,61 @@ class PureJudgeLoopTests(_Fixture):
 # Everything downstream of `semantic_review.json` becoming HOST-authored
 # ======================================================================================
 class PostJudgeReclassificationTests(_Fixture):
-    def _conductor_for(self, config) -> wc.Conductor:
-        return wc.Conductor(repo_root=self.repo, orchestration_id="o",
-                            orchestration_agent_run_id="orch", llm_config=config, env={})
+    """The disposition `_post_judge_inproc` WRITES, driven end to end.
 
-    _VIOLATIONS = ["workspace/.../semantic_review.json: review_method must be the literal ..."]
+    An earlier version of this class asserted the reclassification's two INPUTS —
+    `classify_post_judge_violations(...) == "recoverable"` and `_pure_leaf_substep(...) is
+    True` — and never called `_post_judge_inproc`. Three independent review axes reported the
+    same thing: deleting the reclassification left the whole suite green. Asserting the inputs
+    of a branch is not asserting the branch, so these rows read `post_judge_meta.json`.
+    """
 
-    def test_a_pure_judges_review_violation_is_the_hosts_defect(self) -> None:
-        """`recoverable` means "the judge wrote it wrong, so re-run the judge", and that
-        premise is false when the host wrote the file: the re-run would produce the identical
-        one. `classify_post_judge_violations` itself is unchanged — it is a pure function of
-        the violation text and cannot know which transport ran."""
-        self.assertEqual(wc.classify_post_judge_violations(self._VIOLATIONS), "recoverable")
-        c = self._conductor_for(_cfg("claude"))
-        self.assertTrue(c._pure_leaf_substep(self.refs, "validate", "judge"))
+    _VIOLATION = ("workspace/pipelines/p/runs/r/n/semantic_review.json: review_method must be "
+                  "the literal 'llm_semantic_review'")
+
+    def _disposition(self, config) -> str:
+        """Run the real `_post_judge_inproc` against a gate that fails with a violation naming
+        `semantic_review.json`, and return the disposition it recorded."""
+        c = wc.Conductor(repo_root=self.repo, orchestration_id="o",
+                         orchestration_agent_run_id="orch", llm_config=config, env={})
+        c._author_derived_validate_artifacts = lambda refs: None  # type: ignore[assignment]
+
+        def _gate(cmd, **kwargs):
+            return wc.subprocess.CompletedProcess(
+                cmd, 1, stdout=f"FAIL\n- {self._VIOLATION}\n", stderr="")
+
+        with mock.patch.object(wc.subprocess, "run", _gate):
+            c._post_judge_inproc(self.refs, "child-1", "tok")
+        meta = json.loads(self.run_node("post_judge_meta.json").read_text())
+        return meta["disposition"]
+
+    def test_the_classifier_still_calls_this_violation_recoverable(self) -> None:
+        """The premise the reclassification acts on. Kept so a row below cannot go green
+        because the CLASSIFIER changed — it must go green because the host reclassified."""
+        self.assertEqual(wc.classify_post_judge_violations([self._VIOLATION]), "recoverable")
+
+    def test_a_pure_judges_review_violation_terminalizes(self) -> None:
+        """`recoverable` means "the judge wrote it wrong, so re-run the judge", and that premise
+        is false when the HOST wrote the file: the re-run emits the identical one, so the
+        warm-resume cannot converge and burns the phase's attempt budget."""
+        self.assertEqual(self._disposition(_cfg("claude")), "fail_closed")
 
     def test_the_agentic_judge_keeps_the_warm_resume_disposition(self) -> None:
-        c = self._conductor_for(_agentic_cfg("claude"))
-        self.assertFalse(c._pure_leaf_substep(self.refs, "validate", "judge"))
-        self.assertEqual(wc.classify_post_judge_violations(self._VIOLATIONS), "recoverable")
+        """The other direction, and what stops the fix from being "always terminalize": an
+        agentic judge DID author the file and can re-author it."""
+        self.assertEqual(self._disposition(_agentic_cfg("claude")), "warm_resume")
+
+    def test_the_warm_resume_entry_point_refuses_a_pure_judge_too(self) -> None:
+        """Defence in depth (added in review): the reclassification above was the single point
+        of defence, in a different function from the one that acts on it.
+        `_maybe_warm_resume_post_judge` now carries the same guard its sibling
+        `_maybe_warm_resume_verify_meta` has always carried."""
+        c = wc.Conductor(repo_root=self.repo, orchestration_id="o",
+                         orchestration_agent_run_id="orch", llm_config=_cfg("claude"), env={})
+        outcomes = [wc.SubstepOutcome("a1", "pass", []), wc.SubstepOutcome("a2", "pass", []),
+                    wc.SubstepOutcome("a3", "pass", []), wc.SubstepOutcome("a4", "fail", [])]
+        # Returned unchanged, and without touching the filesystem for a meta it would have read.
+        self.assertIs(c._maybe_warm_resume_post_judge(self.refs, outcomes, ()), outcomes)
 
 
 class PureJudgeFreshnessTests(_Fixture):
@@ -557,6 +643,22 @@ class PureJudgeFreshnessTests(_Fixture):
     def test_an_exhausted_judge_meta_fails_even_beside_a_passing_review(self) -> None:
         self._seed(result="fail")
         self.assertEqual(self._status(0.0), "fail")
+
+
+class ConductorConstantIsNotAFieldTests(unittest.TestCase):
+    """`_PURE_JUDGE_RUN_NODE_DOCUMENTS` is annotated `ClassVar`, and `Conductor` is a
+    dataclass. Drop `ClassVar` from the annotation (or from the module's imports, which is how
+    `dataclasses` resolves it) and the constant silently becomes a FIELD: `Conductor` grows a
+    constructor parameter and every instance gets its own copy. Measured on this branch — the
+    import-line mutant survived the whole suite, because nothing anywhere pins the field set."""
+
+    def test_the_document_table_is_a_class_constant_not_a_field(self) -> None:
+        import dataclasses
+        names = {f.name for f in dataclasses.fields(wc.Conductor)}
+        self.assertNotIn("_PURE_JUDGE_RUN_NODE_DOCUMENTS", names)
+        # Self-test the probe: it must be reading a populated field set, or the assertion above
+        # is green because `fields()` returned nothing.
+        self.assertIn("repo_root", names)
 
 
 class PureJudgeTableTests(unittest.TestCase):

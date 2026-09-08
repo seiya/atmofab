@@ -27,7 +27,7 @@ The core workflow is five phases. Each phase produces exactly one kind of primar
 
 From `Generate` onward, `spec.ir.yaml` is the sole generation and verification contract; reading `controlled_spec.md` is forbidden except at `Generate.verify`, which reads it as a secondary requirement-fidelity cross-check.
 
-Each phase runs an ordered substep sequence. An `LLM` substep runs as one isolated leaf; a deterministic substep runs in the conductor's own process. Every `LLM` substep runs as a `pure-function leaf` — the host inlines a closed context, the model returns one JSON document, and the host validates and writes it. No leaf holds tools.
+Each phase runs an ordered substep sequence. An `LLM` substep runs as one isolated leaf; a deterministic substep runs in the conductor's own process. Every `LLM` substep is now `pure-function leaf` CAPABLE — the host inlines a closed context, the model returns one JSON document, and the host validates and writes it — and four of the five run that way on every node. `Generate.generate` / `Generate.verify` take the pure path only on a node whose runner and build control file the host renders; the `infrastructure` harness self-test, which authors its own runner, still runs the shared agentic leaf.
 
 | phase | substeps | `LLM` substeps |
 |---|---|---|

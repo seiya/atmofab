@@ -556,6 +556,19 @@ class SemanticReviewDocumentTest(unittest.TestCase):
         self.assertTrue(any("findings[0] has unknown key 'finding_id'" in c
                             for c in violations))
 
+    def test_finding_enums_are_exact_not_case_folded(self):
+        """`decision`'s exactness was pinned and these two were not — measured on this branch:
+        a mutant accepting `str(x).lower()` for either survived the suite. The module claims
+        all its enums are exact for ONE reason (a case-folded accept lets the leaf's casing
+        choice decide a verdict), so all of them need the row."""
+        for key, value in (("attribution", "Code"), ("confidence", "HIGH")):
+            with self.subTest(key=key):
+                violations = pl.semantic_review_document_violations(
+                    _review(decision="fail", findings=[_finding(**{key: value})]))
+                self.assertTrue(any(f"findings[0].{key} must be one of" in c
+                                    for c in violations),
+                                f"{value!r} was accepted for {key}")
+
     def test_finding_attribution_vocab(self):
         violations = pl.semantic_review_document_violations(
             _review(decision="fail", findings=[_finding(attribution="performance")]))

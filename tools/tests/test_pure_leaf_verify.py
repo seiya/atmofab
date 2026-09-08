@@ -373,6 +373,34 @@ class ChecksContractSlicerTests(unittest.TestCase):
         self.assertEqual(wc._checks_contract_abi_sections(doc), "## 1. ABI\nabi body")
 
 
+class NumberedSectionRangeTests(unittest.TestCase):
+    """The engine both numbered-section slicers delegate to (issue #169).
+
+    `ChecksContractSlicerTests` above drives it through the `checks` caller; these rows drive
+    the properties its docstring states that no caller's document can currently exercise —
+    measured: a mutant searching for the end anchor from index 0 rather than from `start + 1`
+    survived the whole suite, because both real documents happen to be in heading order.
+    """
+
+    def test_a_back_reference_above_the_section_is_not_the_terminator(self) -> None:
+        doc = "## 5. Legality\nearly\n\n## 1. ABI\nabi body\n\n## 5. Legality\nlate\n"
+        self.assertEqual(wc._numbered_section_range(doc, "1", "5", subject="s"),
+                         "## 1. ABI\nabi body")
+
+    def test_a_missing_anchor_raises_and_names_the_subject(self) -> None:
+        for begin, end, doc in (("1", "5", "## 5. only\nb\n"),
+                                ("1", "5", "## 1. only\nb\n")):
+            with self.subTest(doc=doc):
+                with self.assertRaises(ValueError) as caught:
+                    wc._numbered_section_range(doc, begin, end, subject="the runner contract")
+                self.assertIn("the runner contract", str(caught.exception))
+
+    def test_a_decimal_subsection_does_not_anchor(self) -> None:
+        with self.assertRaises(ValueError):
+            wc._numbered_section_range("## 1.5 sub\nb\n\n## 5. end\nb\n", "1", "5",
+                                       subject="s")
+
+
 # ======================================================================================
 # _generate_verify_severity_rubric_section (the slicer's own contract, on synthetic text)
 # ======================================================================================

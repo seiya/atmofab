@@ -1027,11 +1027,16 @@ def _runner_output_contract_sections(text: str) -> str:
     §2 sits between them, so this cannot be one range, and a slice that silently included §2
     would be a different leaf input under the same contract version.
 
-    Specific to this document: the engine's anchors are fence-unaware, and this file holds NO
-    fenced block at all — zero ``` lines, measured — so there is nothing here for that
-    unawareness to catch; its examples are inline code spans. Only an operator editing `docs/`
-    could introduce a fence. What each section CONTAINS is not re-derived here; it is pinned by
-    the drift guard, which hashes this slice itself."""
+    Specific to this document, and CORRECTED after a review round: it holds exactly ONE fenced
+    block, indented two spaces, at lines 151-164 inside §4. An earlier version of this docstring
+    said the file held none — measured with a column-0 probe (`startswith`) that an indented
+    fence evades, which is the contaminated-probe trap in miniature. The true statement is
+    narrower and is what the caller may rely on: the one fence lies OUTSIDE both slices' spans
+    (§4 is past the `## 4.` terminator of the second range) and carries no `## <n>.`-shaped line,
+    so the engine's fence-unawareness has nothing to catch HERE — not because there is no fence,
+    but because of where it sits. Extending `_RUNNER_OUTPUT_CONTRACT_SECTIONS` over §4 would put
+    a fence inside a slice and make that unawareness live. What each section CONTAINS is not
+    re-derived here; it is pinned by the drift guard, which hashes this slice itself."""
     return "\n\n".join(
         _numbered_section_range(text, begin, end, subject="runner-output contract")
         for begin, end in _RUNNER_OUTPUT_CONTRACT_SECTIONS)
@@ -8384,9 +8389,15 @@ clean:
 
         EVERY read RAISES. The reviewer's `generate.verify` sibling degrades four node artifacts
         to `""` (a recorded residual), and that disposition must not travel here: each document
-        below is evidence the judge weighs, and a blank one satisfies the renderer's presence
-        check while removing exactly the thing the leaf was asked about — a judge that cannot see
-        `diagnostics.json` has no basis for `pass` and would be answering about the absence.
+        below is evidence the judge weighs, and a judge that cannot see `diagnostics.json` has no
+        basis for `pass` and would be answering about the absence. The REASON given here was
+        wrong until a review round measured it — a blank value does NOT reach the leaf, because
+        `_validate_pure_launch_request_payload` counts a whitespace-only `pure_context` value as
+        missing and raises. What degrading actually buys is a refusal one frame too LATE: a
+        `ValueError` out of `record_launch`, escaping this loop's named
+        `pure_context_assembly_failed` branch and aborting the conductor instead — the issue #168
+        shape where a recoverable named outcome becomes a crash. Raising HERE keeps the named
+        outcome.
         `_run_pure_reviewer_substep` turns the `RuntimeError` into a `pure_context_assembly_failed`
         fail-closed outcome and spawns no leaf, which is the pure form of the SKILL's rule that
         the judge does not begin without its evidence.
@@ -12790,10 +12801,19 @@ clean:
         primitives (`_resolve_reuse_resume`, the slim prompt) directly on the judge substep,
         so the "repair only to index 0" rule is never consulted and the judge's index is
         irrelevant. An unrecoverable/unknown disposition, or a judge re-run that itself fails,
-        falls through unchanged to run_phase's fail_closed posture."""
+        falls through unchanged to run_phase's fail_closed posture.
+
+        DEFENCE IN DEPTH for the pure judge (issue #169, added in review). `semantic_review.json`
+        is HOST-authored there, so warm-resuming the judge to re-author it cannot converge — it
+        would re-emit the identical file. `_post_judge_inproc` already prevents that by
+        reclassifying the disposition, but that left the whole defence on one line in another
+        function; this early return is the second, and it mirrors `_maybe_warm_resume_verify_meta`,
+        which opens with exactly this guard for the same reason."""
         # Trigger only when the LAST (failed) substep is post_judge with a warm_resume verdict.
         # These guards touch no filesystem so a passing phase returns before reading anything.
         if not outcomes or outcomes[-1].status == "pass":
+            return outcomes
+        if self._pure_leaf_substep(refs, "validate", "judge"):
             return outcomes
         if SUBSTEPS["validate"][len(outcomes) - 1] != "post_judge":
             return outcomes

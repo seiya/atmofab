@@ -441,7 +441,12 @@ class ExcerptIsBoundedTest(unittest.TestCase):
     def test_no_numeric_array_survives_into_the_excerpt(self):
         raw = _RawDir(self)
         # 4 variables x 128 x 128 floats, twice — the shape of one real metrics-basis entry.
-        array = [[float(i * j) for j in range(128)] for i in range(128)]
+        # Every value is DISTINCT and 8 characters wide, so no element's repr is a substring of
+        # another's or of a summary statistic. The first version of this fixture used `i * j`,
+        # whose reprs nest (`129.0` inside `16129.0`), which made the leak search below report
+        # four false positives — a probe that cannot tell a leak from an overlap answers
+        # nothing.
+        array = [[100000.0 + (i * 128 + j) for j in range(128)] for i in range(128)]
         entries = [{"test_id": "t_a", "case_id": case, "h": array, "hu": array,
                     "hv": array, "dx": 0.5}
                    for case in ("case_a", "case_b")]
@@ -463,8 +468,25 @@ class ExcerptIsBoundedTest(unittest.TestCase):
         # The row count is the bound's shape: (entry x variable) + (snapshot x variable).
         excerpt = json.loads(rendered)
         self.assertEqual(len(excerpt["metrics_basis_arrays"]), 8)
-        # And the arrays themselves are gone: a value from inside one appears nowhere.
-        self.assertNotIn("8128.0", rendered)
+        # And the arrays themselves are gone. NOT by spot-checking one magic value: an earlier
+        # version of this row asserted only that `8128.0` (a value from deep inside the array)
+        # was absent, and a review round walked straight through it by making `_summarize`
+        # inline the first five elements of every array — the leak was at the FRONT, and the
+        # probe was at the back. The property is checked over the whole population instead:
+        # every distinct source value must be absent from the render EXCEPT the two the summary
+        # legitimately reports.
+        source_values = {v for row in array for v in row}
+        legitimate = {min(source_values), max(source_values)}
+        self.assertEqual({len(repr(v)) for v in source_values}, {8},
+                         "the fixture's values must be one width, or a substring search "
+                         "cannot tell a leak from an overlap")
+        leaked = sorted(v for v in source_values - legitimate if repr(v) in rendered)
+        self.assertEqual(leaked, [], f"{len(leaked)} array element(s) reached the excerpt")
+        # Self-test the probe: the two values it EXEMPTS must really be in the render, or the
+        # assertion above is green because the search itself finds nothing.
+        for value in legitimate:
+            self.assertIn(repr(value), rendered,
+                          f"{value!r} should appear as a summary statistic")
 
     def test_output_is_json_serializable_and_deterministic(self):
         raw = _RawDir(self)

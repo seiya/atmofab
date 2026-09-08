@@ -371,8 +371,13 @@ PINNED: dict[str, str] = {
     # wrote per run; its template now tells it that the host-computed excerpt is its whole view
     # of that evidence, which is a contract change in the strongest sense — the same leaf, asked
     # the same question, reasoning from a different input. pure-36 was introduced by this branch
-    # and has never been recorded by a run.
-    "pure-36": "d852ef39331125d7cde2858c48097c0e3a6551c29539e80f67c67e2a1c2e0268",}
+    # and has never been recorded by a run — which is also why its digest is RE-PINNED rather
+    # than superseded by a `pure-37`: a review round measured the `notes` cap this template
+    # states to the leaf (4,000 chars) against the population it has to serve and found it
+    # already below a recorded review's real `notes` field (4,272; the corpus runs to 9,773),
+    # so the cap moved to 12,000 in the template and in the validator. Re-pinning an entry no
+    # run has ever recorded is not editing a historical entry; `pure-37` stays free for PR-3.
+    "pure-36": "84f9bd1279e660f5e432596e1624bc1db2d22ad1a0e26b9f4b1f156b61940e97",}
 
 
 def _contract_tuple() -> dict[str, object]:
