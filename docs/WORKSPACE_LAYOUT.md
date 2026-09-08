@@ -154,7 +154,8 @@ workspace/
             │           ├── raw/
             │           ├── stdout.log
             │           ├── stderr.log
-            │           ├── semantic_review.json
+            │           ├── semantic_review.json          (host-written from the judge's judgement)
+            │           ├── judge_meta.json                (the pure judge's per-attempt record)
             │           ├── verdict.json
             │           ├── aggregate_verdict.json
             │           ├── summary.json

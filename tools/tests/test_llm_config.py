@@ -480,22 +480,35 @@ class CapabilityTests(_Tmp):
                 "        model: local-model\n"))
             self.assertEqual(cfg.entry_for("generate", substep).provider, "openai_compatible")
 
-    def test_http_provider_on_each_agentic_leaf_is_rejected(self) -> None:
-        """The subject of this test is a DERIVED set, and it has shrunk twice. Spelling what it
-        currently holds keeps the shrink a decision: when Z1 moved the two `compile` leaves onto
-        the pure path (issue #168) the loop silently went from three subjects to one, and a
-        subject set that reaches zero would leave the whole body vacuously green."""
-        agentic = sorted(lc.LLM_LEAF_SUBSTEPS - lc.PURE_CAPABLE_SUBSTEPS)
-        self.assertEqual(agentic, [("validate", "judge")])
-        for phase, substep in agentic:
-            err = self.assert_rule(
-                "llm_config_capability_insufficient_for_substep",
-                "defaults:\n  provider: claude_cli\n"
-                f"phases:\n  {phase}:\n    substeps:\n      {substep}:\n"
-                "        provider: anthropic_api\n"
-                "        api_key_env: ANTHROPIC_API_KEY\n"
-                "        model: claude-opus-5\n")
-            self.assertIn(f"{phase}.{substep}", str(err))
+    def test_no_llm_leaf_is_agentic_only_any_more(self) -> None:
+        """This row used to loop over the agentic leaves and reject an HTTP provider on each.
+        The set has now reached ZERO — that is issue #169's completion criterion, and it is
+        what makes an all-HTTP configuration valid — so the loop is gone and the emptiness is
+        asserted instead of being silently vacuous.
+
+        The rejection the loop used to make is not lost: it moved to
+        `test_an_agentic_only_leaf_would_still_refuse_an_http_provider`, which drives the same
+        branch with a synthetic pair, because there is no longer a real one to drive it with."""
+        self.assertEqual(sorted(lc.LLM_LEAF_SUBSTEPS - lc.PURE_CAPABLE_SUBSTEPS), [])
+        self.assertEqual(lc.LLM_LEAF_SUBSTEPS, lc.PURE_CAPABLE_SUBSTEPS)
+
+    def test_an_agentic_only_leaf_would_still_refuse_an_http_provider(self) -> None:
+        """The agentic-only branch of `_validate_assignment` has no reachable subject through
+        the configuration surface today, and it is NOT deleted: it re-arms the moment an LLM
+        leaf is added that the pure transport cannot express, and that is the moment an HTTP
+        provider must be refused on it rather than silently accepted.
+
+        Driven directly with a synthetic pair, since the config path cannot reach it — which is
+        what this test is FOR, and is also its limit: it pins the branch, not the wiring."""
+        entry = lc.ResolvedLeafEntry(
+            provider="anthropic_api",
+            capabilities=lc.PROVIDER_CAPABILITIES["anthropic_api"])
+        self.assertNotIn(("future", "leaf"), lc.PURE_CAPABLE_SUBSTEPS)
+        with self.assertRaises(lc.LlmConfigError) as ctx:
+            lc._validate_assignment("future", "leaf", entry, "phases.future.substeps.leaf")
+        self.assertEqual(ctx.exception.rule,
+                         "llm_config_capability_insufficient_for_substep")
+        self.assertIn("requires capability 'agentic'", str(ctx.exception))
 
     def test_every_declared_provider_validates_for_the_compile_leaves(self) -> None:
         """Issue #168's completion criterion: whichever provider this repository declares can be
@@ -902,16 +915,19 @@ class RuleTests(_Tmp):
         self.assertIn("agentic", str(err))
 
     def test_capability_insufficient_after_a_restriction(self) -> None:
-        """The rule is about the RESOLVED capability set, not the provider name: a claude
-        entry restricted to `pure` is as inadmissible on an agentic leaf as an HTTP one.
+        """The rule is about the RESOLVED capability set, not the provider name: a claude entry
+        restricted until it holds NEITHER transport is inadmissible on every LLM leaf, exactly
+        as a provider declaring neither would be.
 
-        The subject is `validate.judge` because it is the only agentic LLM leaf left (issue
-        #168 moved the two `compile` leaves onto the pure path, and this row was written on
-        `compile.verify`)."""
-        self.assert_rule("llm_config_capability_insufficient_for_substep",
-                         "defaults:\n  provider: claude_cli\n"
-                         "phases:\n  validate:\n    substeps:\n      judge:\n"
-                         "        capabilities: [pure]\n")
+        The restriction had to change with Z3. This row used to restrict to `pure` on
+        `validate.judge`, the last agentic-only leaf; the judge is now pure-capable (issue
+        #169), so `[pure]` is admissible there and everywhere else, and the restriction that
+        still reaches the rule is one that leaves no transport at all."""
+        err = self.assert_rule("llm_config_capability_insufficient_for_substep",
+                               "defaults:\n  provider: claude_cli\n"
+                               "phases:\n  validate:\n    substeps:\n      judge:\n"
+                               "        capabilities: [warm_resume]\n")
+        self.assertIn("has neither", str(err))
 
     def test_defaults_not_pure(self) -> None:
         """`defaults` serves the escalate diagnostician, which is a PURE launch (issue #169),
@@ -1238,7 +1254,9 @@ class MirrorTableDriftTests(unittest.TestCase):
         admissible there — the Compile contract does not depend on the node kind, and no IR
         exists at `compile.generate` time to read a shape from — so this row is what separates
         the pair test from the shape test in `_pure_leaf_substep`'s body. Without it, replacing
-        the compile arm with the generate arm's shape condition stays green."""
+        the shape-free arm with the generate arm's shape condition stays green.
+        `validate.judge` (Z3) joined that arm: what it reviews is the run's evidence
+        against the tests, which every node kind has."""
 
         class _Stub:
             backend = "claude"
@@ -1260,7 +1278,8 @@ class MirrorTableDriftTests(unittest.TestCase):
             (phase, substep) for (phase, substep) in lc.LLM_LEAF_SUBSTEPS
             if stub._pure_leaf_substep(None, phase, substep)
         }
-        self.assertEqual(derived, {("compile", "generate"), ("compile", "verify")})
+        self.assertEqual(derived, {("compile", "generate"), ("compile", "verify"),
+                                   ("validate", "judge")})
 
     def test_the_pure_capable_set_is_the_size_this_tree_decided(self) -> None:
         """One place where the SIZE of the set is a decision rather than a consequence.
@@ -1269,11 +1288,12 @@ class MirrorTableDriftTests(unittest.TestCase):
         map keys), so growing or shrinking it moves them all together and nothing says a member
         was added or removed. This row does — and it is where a reviewer is told which members
         those are."""
-        self.assertEqual(len(lc.PURE_CAPABLE_SUBSTEPS), 4)
+        self.assertEqual(len(lc.PURE_CAPABLE_SUBSTEPS), 5)
         self.assertEqual(
             sorted(lc.PURE_CAPABLE_SUBSTEPS),
             [("compile", "generate"), ("compile", "verify"),
-             ("generate", "generate"), ("generate", "verify")])
+             ("generate", "generate"), ("generate", "verify"),
+             ("validate", "judge")])
 
     def test_mcp_required_llm_substeps_matches_runtime(self) -> None:
         granted = {key for key, tools in ort._MCP_TOOL_GRANTS_BY_SUBSTEP.items() if tools}

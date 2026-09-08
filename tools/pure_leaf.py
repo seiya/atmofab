@@ -30,13 +30,14 @@ from __future__ import annotations
 
 import json
 import math
+from collections.abc import Sequence
 from typing import Any, NamedTuple
 
 # The prompt-contract version stamped into `bundle_meta.json` and the launch record, so a
 # contract change is an observable event (A7). Bumped when the pure prompt templates, the
 # fixed `PURE_SYSTEM_PROMPT`, or the transport's request shape change in a way that affects
 # producer behavior.
-PURE_PROMPT_CONTRACT_VERSION = "pure-35"
+PURE_PROMPT_CONTRACT_VERSION = "pure-36"
 
 # Claude's pure leaf system prompt is REPLACED with this fixed string via `--system-prompt`. The
 # default Claude Code system prompt injects per-machine DYNAMIC sections (cwd, environment,
@@ -560,4 +561,169 @@ def verify_verdict_violations(doc: Any) -> list[str]:
         if not (isinstance(reason, str) and reason.strip()):
             violations.append(
                 "verification_status 'fail' requires a non-empty last_fail_reason")
+    return violations
+
+
+# --------------------------------------------------------------------------------------
+# The `validate.judge` semantic-review document (issue #169, Z3)
+# --------------------------------------------------------------------------------------
+#
+# The judge leaf returns its JUDGEMENT and nothing else. `semantic_review.json` itself is
+# host-authored: everything the `--stage pre_judge` gate reads besides the decision — the
+# `review_method` literal, `scope.model_ref` / `scope.runner_ref` / `scope.raw_refs` — are
+# facts about the workspace that a closed-context leaf cannot know and must not guess.
+#
+# The shape below is `docs/workflow/phases/phase_04_validate.md`'s "Classification fields the
+# `judge` records as required" table, which was the only definition of it and which no
+# validator read. MEASURED 2026-09-08 over every `semantic_review.json` in this machine's
+# untracked `workspace/` (so the figures are of the recorded runs, not of a commit):
+# 29 reviews, **0 findings in any of them**, so the finding shape has never actually
+# been produced — and 34 distinct top-level keys across those 29 files, of which only
+# `review_method`, `decision`, `scope` and `findings` appear in all. Nineteen of the 34 appear
+# once or twice (`tests_md_intent_check`, `observations_not_findings`, `perf_review`, …): the
+# leaf improvises a structure per run and nothing reads it. Closing the object is what stops
+# that, and this is the first machine check the finding table has ever had.
+#
+# `finding_id` is deliberately NOT a key. The plan named one; the phase document's table does
+# not, no reader of `semantic_review.json#findings[*]` resolves one, and the only `finding_id`
+# this tree reads comes from `failure_analysis.json#original_finding`, a different,
+# agent-authored artifact (`orchestration_runtime._resume_directive_from_original_finding`).
+# Adding a field nothing reads is the surface this migration exists to remove.
+SEMANTIC_REVIEW_DECISIONS: tuple[str, ...] = ("pass", "fail")
+SEMANTIC_REVIEW_ATTRIBUTIONS: tuple[str, ...] = ("code", "ir", "spec", "evidence")
+SEMANTIC_REVIEW_CONFIDENCES: tuple[str, ...] = ("high", "medium", "low")
+SEMANTIC_REVIEW_REQUIRED_KEYS: tuple[str, ...] = ("decision", "findings")
+SEMANTIC_REVIEW_OPTIONAL_KEYS: tuple[str, ...] = ("notes",)
+SEMANTIC_REVIEW_FINDING_KEYS: tuple[str, ...] = (
+    "attribution", "evidence_refs", "confidence", "description")
+#: `notes` is the one free-text field, and it is the whole budget for everything the leaf used
+#: to spread across those 34 improvised keys — so it is bounded rather than open. The bound is
+#: MEASURED over the population it has to serve, not chosen: across the 29 recorded
+#: `semantic_review.json` files, the JSON of everything outside the four core keys runs 1,518 to
+#: 9,773 characters (median 6,010), and one recorded `notes` field is already 4,272. The first
+#: value here was 4,000, which a review round showed would have REFUSED that real review and
+#: spent a repair turn on a judge that had done its job — this repository's recorded default
+#: error direction. 12,000 clears the observed maximum with headroom while keeping the field
+#: bounded; the template states the limit to the leaf, so a compliant one compresses rather
+#: than being refused.
+SEMANTIC_REVIEW_NOTES_MAX_CHARS = 12000
+
+
+def semantic_review_document_violations(
+    doc: Any, *, document_keys: Sequence[str] = ()
+) -> list[str]:
+    """Validate a `validate.judge` semantic-review document; an empty list is a valid one.
+
+    Same two-layer shape as `verify_verdict_violations`: schema first (presence, enum, type,
+    closed keys), then the joint invariant only on a schema-sound document, so one defect is
+    never reported twice and the invariant never defends against a mistyped field. Enum checks
+    are EXACT, for that function's reason — a case-folded accept would let the leaf's casing
+    choice decide a verdict.
+
+    `document_keys` is the set of `pure_context` keys the host inlined for this launch. Every
+    `evidence_refs[]` entry must be `<document_key>[#<fragment>]` naming one of them: the leaf
+    cites what it was GIVEN, and the host resolves each key to the workspace path it inlined
+    from when it writes `semantic_review.json`, which is what keeps that file's "path list" a
+    path list. An empty `document_keys` skips only the key check (the shape is still checked),
+    so a caller that does not know them cannot be silently given a weaker validation.
+    """
+    if not isinstance(doc, dict):
+        return ["the semantic review must be a JSON object"]
+
+    violations: list[str] = []
+    known = (*SEMANTIC_REVIEW_REQUIRED_KEYS, *SEMANTIC_REVIEW_OPTIONAL_KEYS)
+    for key in SEMANTIC_REVIEW_REQUIRED_KEYS:
+        if key not in doc:
+            violations.append(f"{key} is required")
+    for key in sorted((k for k in doc if k not in known), key=repr):
+        violations.append(
+            f"unknown key {key!r} (the semantic review object is closed; put anything else "
+            f"in `notes`)")
+
+    decision = doc.get("decision", _MISSING)
+    if decision is not _MISSING and decision not in SEMANTIC_REVIEW_DECISIONS:
+        violations.append(
+            f"decision must be one of {', '.join(SEMANTIC_REVIEW_DECISIONS)}")
+    notes = doc.get("notes", _MISSING)
+    if notes is not _MISSING:
+        if not isinstance(notes, str):
+            violations.append("notes must be a string")
+        elif len(notes) > SEMANTIC_REVIEW_NOTES_MAX_CHARS:
+            violations.append(
+                f"notes must be at most {SEMANTIC_REVIEW_NOTES_MAX_CHARS} characters "
+                f"(got {len(notes)})")
+
+    findings = doc.get("findings", _MISSING)
+    if findings is not _MISSING:
+        if not isinstance(findings, list):
+            violations.append("findings must be an array")
+        else:
+            for index, finding in enumerate(findings):
+                violations.extend(
+                    _semantic_review_finding_violations(finding, index, document_keys))
+
+    if violations:
+        return violations
+
+    # The one joint invariant: the decision and the findings must agree. A `fail` with no
+    # finding gives the operator nothing to act on and gives `classify_failure` no attribution
+    # to route by; a `pass` with findings is a review that reports a defect and waves it
+    # through, which is the shape this whole substep exists to refuse.
+    if doc["decision"] == "pass":
+        if doc["findings"]:
+            violations.append("decision 'pass' requires an empty findings array")
+    elif not doc["findings"]:
+        violations.append("decision 'fail' requires at least one finding")
+    return violations
+
+
+def _semantic_review_finding_violations(
+    finding: Any, index: int, document_keys: Sequence[str]
+) -> list[str]:
+    """The schema of one `findings[]` entry. Split out so the loop above stays one screen."""
+    if not isinstance(finding, dict):
+        return [f"findings[{index}] must be an object"]
+
+    violations: list[str] = []
+    for key in SEMANTIC_REVIEW_FINDING_KEYS:
+        if key not in finding:
+            violations.append(f"findings[{index}].{key} is required")
+    for key in sorted((k for k in finding if k not in SEMANTIC_REVIEW_FINDING_KEYS), key=repr):
+        violations.append(
+            f"findings[{index}] has unknown key {key!r} (a finding object is closed)")
+
+    attribution = finding.get("attribution", _MISSING)
+    if attribution is not _MISSING and attribution not in SEMANTIC_REVIEW_ATTRIBUTIONS:
+        violations.append(
+            f"findings[{index}].attribution must be one of "
+            f"{', '.join(SEMANTIC_REVIEW_ATTRIBUTIONS)}")
+    confidence = finding.get("confidence", _MISSING)
+    if confidence is not _MISSING and confidence not in SEMANTIC_REVIEW_CONFIDENCES:
+        violations.append(
+            f"findings[{index}].confidence must be one of "
+            f"{', '.join(SEMANTIC_REVIEW_CONFIDENCES)}")
+    description = finding.get("description", _MISSING)
+    if description is not _MISSING and not (
+            isinstance(description, str) and description.strip()):
+        violations.append(f"findings[{index}].description must be a non-empty string")
+
+    refs = finding.get("evidence_refs", _MISSING)
+    if refs is _MISSING:
+        return violations
+    if not isinstance(refs, list) or not refs:
+        violations.append(f"findings[{index}].evidence_refs must be a non-empty array")
+        return violations
+    for ref_index, ref in enumerate(refs):
+        label = f"findings[{index}].evidence_refs[{ref_index}]"
+        if not isinstance(ref, str) or not ref.strip():
+            violations.append(f"{label} must be a non-empty string")
+            continue
+        key = ref.split("#", 1)[0].strip()
+        if not key:
+            violations.append(
+                f"{label} must name an inlined document before its '#' fragment")
+        elif document_keys and key not in document_keys:
+            violations.append(
+                f"{label} names {key!r}, which is not one of the documents you were given "
+                f"({', '.join(sorted(document_keys))})")
     return violations

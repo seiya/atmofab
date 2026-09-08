@@ -75,10 +75,10 @@
 # table — reasoning from it is the mistake this comment exists to prevent.
 #
 # To move one leaf elsewhere, replace its block. HTTP providers (`openai_compatible`,
-# `anthropic_api`) are admissible ONLY on the four pure leaves — both `compile` substeps and both
-# `generate` substeps — which run as host-mediated pure functions; assigning one to an agentic
-# leaf (`validate.judge`) is rejected at load with
-# `llm_config_capability_insufficient_for_substep`. `llm_openai_compatible.example.yaml` and
+# `anthropic_api`) are admissible on every LLM leaf since Z3 (issue #169): all five run as
+# host-mediated pure functions, `validate.judge` last of them. The capability rule that used to
+# refuse one on the judge (`llm_config_capability_insufficient_for_substep`) is unchanged and
+# now has no LLM leaf to refuse on. `llm_openai_compatible.example.yaml` and
 # `llm_anthropic_api.example.yaml` in this directory are worked examples of each.
 defaults:
   provider: claude_cli

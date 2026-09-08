@@ -104,6 +104,7 @@ _TEMPLATE_FILES = (
     "pure_generate_verify.txt",
     "pure_bundle_repair.txt",
     "pure_escalate_diagnose.txt",
+    "pure_validate_judge.txt",
 )
 
 # sha256 of the canonical serialization of the coupled tuple, keyed by contract version. When an
@@ -362,7 +363,65 @@ PINNED: dict[str, str] = {
     # agent-written, which would tell the leaf its firmest evidence is adversarial. pure-35 was
     # introduced by this branch and has never been recorded by a run, so re-pinning it is not
     # editing a historical entry.
-    "pure-35": "fa5612cce3f15740f8c5f37a182e2fecd435863ec727e58a6111825dd0fb8a49",}
+    "pure-35": "fa5612cce3f15740f8c5f37a182e2fecd435863ec727e58a6111825dd0fb8a49",
+    # pure-36 (issue #169, PR-2): `validate.judge` moved onto the pure transport, so
+    # `pure_validate_judge.txt` joins the coupled tuple — and with it the §1 + §3 slice of
+    # `RUNNER_OUTPUT_CONTRACT.md`, which is inlined into that prompt verbatim. The judge is the
+    # leaf that used to hold tools, and what it used them for was to walk `raw/` with scripts it
+    # wrote per run; its template now tells it that the host-computed excerpt is its whole view
+    # of that evidence, which is a contract change in the strongest sense — the same leaf, asked
+    # the same question, reasoning from a different input. pure-36 was introduced by this branch
+    # and has never been recorded by a run — which is also why its digest is RE-PINNED rather
+    # than superseded by a `pure-37`: a review round measured the `notes` cap this template
+    # states to the leaf (4,000 chars) against the population it has to serve and found it
+    # already below a recorded review's real `notes` field (4,272; the corpus runs to 9,773),
+    # so the cap moved to 12,000 in the template and in the validator. Re-pinning an entry no
+    # run has ever recorded is not editing a historical entry; `pure-37` stays free for PR-3.
+    # Re-pinned a second time, in review round 2: the template told the judge that an
+    # `all_zero` array is "the shape an unwritten one takes" and therefore a fabrication to
+    # fail on. Measured against the corpus, that is false and live — `run_20260802_001`, which
+    # the agentic judge certified `pass`, carries 20 all-zero arrays, every one a flat bed or a
+    # zero transverse momentum. A compliant judge following that sentence would have failed
+    # sound runs, which the billed A/B would have surfaced as a spurious regression.
+    # Re-pinned a third time, in review round 3, and the reason is the mirror of round 2's.
+    # Round 2 removed the clause calling an all-zero array a fabrication; the DISCLOSURE axis
+    # rendered the prompt and read it as the judge, and found the clause beside it doing the
+    # same damage: "a metric the excerpt cannot support" is a fail, while round 1 had measured
+    # that 16 of 17 metrics on the reference node cannot be supported at any value. A compliant
+    # judge had to fail every run in the corpus. The checklist now distinguishes CONTRADICTED
+    # (a finding) from not-corroborated (expected, and never a finding), states the asymmetry
+    # and the 1-of-17 figure so the leaf knows its window is deliberately narrow, and restores
+    # `nan_count` / `inf_count` / `ragged` / `shape` as defects on their own — round 2's own
+    # correction had swept them into the all-zero carve-out, where nothing else in the workflow
+    # would have caught them. The inlined `RUNNER_OUTPUT_CONTRACT.md` slice moved too: §3
+    # promised the judge a "per-test recomputation" it no longer performs.
+    # Re-pinned a fourth time, in review round 4, which rendered the prompt on two real nodes
+    # and read it as the judge. Three defects, all of them in text the leaf acts on:
+    #   * the slot-name instruction was FALSE — the labels read "**Tests (…):**", so ten of the
+    #     eleven `<document_key>` names appeared ZERO times in the rendered prompt and the leaf
+    #     had to guess them from one example. `evidence_refs` exists only inside `findings`, so
+    #     the guess is only ever made on a FAIL: the cost fell entirely on the correct-but-
+    #     expensive verdict. Every label now opens with its literal key.
+    #   * checklist (c) said "a missing declared variable is a fail". The excerpt's benign
+    #     `declared_variables_absent` (per-snapshot; non-empty on THREE cases of a
+    #     `pass`-certified node) matches that prose better than the intended
+    #     `coverage.missing_required_variables` does. Both are now named, and the neighbouring
+    #     keys that are not findings are named as not-findings.
+    #   * (b) ordered a `shape` vs `shape_expr` comparison that is not evaluable: `nx_face`
+    #     occurs nine times in the prompt and never with a value. Scoped to RANK, with an
+    #     explicit instruction not to infer a binding.
+    # The inlined `RUNNER_OUTPUT_CONTRACT.md` §3 clause moved again: round 3's fix had removed
+    # the only sentence telling the runner-authoring leaf that the VALUES are consumed, while
+    # `post_execute` checks key presence only — a shortcut this branch opened and now closes.
+    # Re-pinned a fifth time, by round 4's blank-slate axis: checklist (c) told the judge that
+    # a non-empty `coverage.missing` / `missing_required_variables` is its own `attribution=code`
+    # finding, while `--stage post_execute` refuses ALL THREE coverage conditions before a judge
+    # is launched — through the very function this branch moved into the excerpt module. The
+    # clause claimed a role the gate owns, in the same paragraph where (f) tells the leaf the
+    # gates are the authority for what they check. It now says these are gate-owned, that a
+    # non-empty one means the run reached the judge in a state the gate should have refused, and
+    # that it is an `attribution=evidence` integrity signal rather than the judge's contribution.
+    "pure-36": "b90892edf00f9fcef3320d8b17ed29f053bcd64b00606fa774f07c77842137dc",}
 
 
 def _contract_tuple() -> dict[str, object]:
@@ -397,6 +456,16 @@ def _contract_tuple() -> dict[str, object]:
             (Path(wc.__file__).resolve().parents[1]
              / "docs" / "workflow" / "phases" / "phase_02_generate.md").read_text(
                 encoding="utf-8")),
+        # The §1 + §3 SLICE of the runner-output contract, on the same ground as the two above
+        # (issue #169): since `pure-36` those sections are inlined verbatim into the pure
+        # `validate.judge` prompt, so they are a leaf INPUT rather than a document the leaf
+        # reads. Hashing the slice keeps §2, §4 and §5 out of the tuple — the judge is not shown
+        # them — and makes `_runner_output_contract_sections`' own anchors part of the contract,
+        # which matters more here than for the other two because this slicer takes TWO ranges
+        # and a silent widening would swallow §2 between them.
+        "runner_output_contract_sections": wc._runner_output_contract_sections(
+            (Path(wc.__file__).resolve().parents[1]
+             / "docs" / "workflow" / "RUNNER_OUTPUT_CONTRACT.md").read_text(encoding="utf-8")),
     }
 
 

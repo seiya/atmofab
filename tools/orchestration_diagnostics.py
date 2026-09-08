@@ -875,48 +875,49 @@ def _summarize_one_pure_meta(meta: dict[str, Any] | None) -> dict[str, Any]:
 #: The per-attempt record each pure phase's producer / reviewer writes, by phase. The two files
 #: of a phase share one schema (`_summarize_one_pure_meta`) and differ only in name and
 #: directory, so the rollup reads them through one function rather than two.
-PURE_LEAF_META_FILES: dict[str, tuple[str, str]] = {
-    "generate": ("bundle_meta.json", "verdict_meta.json"),
-    "compile": ("compile_generate_meta.json", "compile_verify_meta.json"),
+#: Each phase's pure per-attempt records, keyed by the SUBSTEP that wrote one. A mapping
+#: rather than a producer/reviewer PAIR since Z3 (issue #169): `validate` has one pure leaf,
+#: not two, and a table shaped for exactly two would have had to invent a second.
+PURE_LEAF_META_FILES: dict[str, dict[str, str]] = {
+    "generate": {"generate": "bundle_meta.json", "verify": "verdict_meta.json"},
+    "compile": {"generate": "compile_generate_meta.json",
+                "verify": "compile_verify_meta.json"},
+    "validate": {"judge": "judge_meta.json"},
 }
 
 
 def summarize_pure_leaf_metas(artifact_dir: Path, phase: str) -> dict[str, Any]:
     """A/B metrics for one phase's pure producer / reviewer leaves in one artifact directory.
 
-    Reads the phase's two per-attempt records — the in-repo, ~/.claude-free per-attempt
-    usage/model provenance — and returns `{generate, verify, found}`. For `generate` that is
-    `<source_dir>/bundle_meta.json` + `verdict_meta.json` (Z2, milestone M-E); for `compile` it
-    is `<ir_ref>/compile_generate_meta.json` + `compile_verify_meta.json` (Z1, issue #168). The
-    two rows are keyed `generate` / `verify` for BOTH phases: the key names the SUBSTEP, which is
-    what the A/B table compares, not the phase.
+    Reads the phase's per-attempt records — the in-repo, ~/.claude-free per-attempt
+    usage/model provenance — and returns one row per SUBSTEP plus `found`. For `generate` that
+    is `<source_dir>/bundle_meta.json` + `verdict_meta.json` (Z2, milestone M-E); for `compile`
+    it is `<ir_ref>/compile_generate_meta.json` + `compile_verify_meta.json` (Z1, issue #168);
+    for `validate` it is `<run_node_dir>/judge_meta.json` alone (Z3, issue #169). The keys name
+    the SUBSTEP, which is what the A/B table compares, not the phase — so a `compile` node's
+    rows read `generate` / `verify` exactly as a `generate` node's do, and a `validate` node's
+    reads `judge`.
 
-    `generate` / `verify` are per-leaf rows (see `_summarize_one_pure_meta`); `found` is true
-    when either file was present. Best-effort: never raises. An agentic node has neither file and
+    Each substep key holds a per-leaf row (see `_summarize_one_pure_meta`); `found` is true
+    when any of the phase's files was present. Best-effort: never raises. An agentic node has neither file and
     yields `found=False`, so the caller can tell a pure node from an agentic one by presence
     alone. The row carries no directory key: the caller passes the directory in and owns how it
     labels the result (the audit rollup labels it repo-relative), so there is no second,
     conflicting notion of the same field.
 
-    `phase` is REQUIRED and has no default. It selects which two filenames are read, and the two
-    phases' records live in different directories under different names — so a caller that forgot
-    it would silently read the wrong pair and report `found=False`, which is indistinguishable
-    from an agentic node. A caller that has not decided must be refused, not defaulted.
+    `phase` is REQUIRED and has no default. It selects which filenames are read, and the phases'
+    records live in different directories under different names — so a caller that forgot it
+    would silently read the wrong ones and report `found=False`, which is indistinguishable from
+    an agentic node. A caller that has not decided must be refused, not defaulted.
+
+    An UNKNOWN phase returns the same shape a known phase with no records would, except that it
+    can name no substeps: `{"found": False}`. "Best-effort: never raises" is the contract every
+    caller relies on, and a `KeyError` out of a DIAGNOSTICS helper would break an audit rather
+    than report a gap.
     """
-    try:
-        producer_file, reviewer_file = PURE_LEAF_META_FILES[phase]
-    except KeyError:
-        # "Best-effort: never raises" above is the contract every caller relies on, and a
-        # `KeyError` out of a DIAGNOSTICS helper would break an audit rather than report a gap.
-        # An unknown phase has no pure records by definition, which is what `found=False` says.
-        return {"generate": {"found": False}, "verify": {"found": False}, "found": False}
-    generate = _summarize_one_pure_meta(_read_json(artifact_dir / producer_file))
-    verify = _summarize_one_pure_meta(_read_json(artifact_dir / reviewer_file))
-    return {
-        "generate": generate,
-        "verify": verify,
-        "found": bool(generate.get("found") or verify.get("found")),
-    }
+    rows = {substep: _summarize_one_pure_meta(_read_json(artifact_dir / basename))
+            for substep, basename in PURE_LEAF_META_FILES.get(phase, {}).items()}
+    return {**rows, "found": any(row.get("found") for row in rows.values())}
 
 
 def build_launch_incident(

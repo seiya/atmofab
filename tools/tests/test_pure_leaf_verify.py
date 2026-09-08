@@ -119,8 +119,10 @@ class PureVerifyContextTests(unittest.TestCase):
                 self.assertNotIn(absent, doc)
 
     def test_missing_checks_contract_raises_the_named_contract(self) -> None:
-        # NOT the swallow-to-"" idiom the four node artifacts use: "" satisfies the renderer's
-        # presence check and would ship a reviewer prompt whose ABI section is blank.
+        # NOT the swallow-to-"" idiom the four node artifacts use. Measured in issue #169's
+        # review: a whitespace-only `pure_context` value never reaches the leaf — the launch
+        # validator counts it missing and raises — so degrading only defers the refusal one
+        # frame, into `record_launch`, where it escapes the loop's named branch.
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = _verify_node(repo, stage_checks_contract=False)
@@ -292,8 +294,9 @@ class PureVerifyContextTests(unittest.TestCase):
                          "open `- `identifier`:` — write it without the colon.")
 
     def test_missing_phase_02_raises_the_named_contract(self) -> None:
-        # Same disposition as the checks contract, and for the same reason: "" satisfies the
-        # renderer's presence check and would ship a reviewer prompt whose rubric is blank.
+        # Same disposition as the checks contract, and for the same corrected reason: a
+        # whitespace-only value is counted missing and raises, so degrading only defers the
+        # refusal one frame into `record_launch` (issue #169).
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = _verify_node(repo, stage_phase_02=False)
@@ -371,6 +374,34 @@ class ChecksContractSlicerTests(unittest.TestCase):
         doc = ("## 5. Legality\nearly\n\n## 1. ABI\nabi body\n\n"
                "## 5. Legality\nlegality body\n")
         self.assertEqual(wc._checks_contract_abi_sections(doc), "## 1. ABI\nabi body")
+
+
+class NumberedSectionRangeTests(unittest.TestCase):
+    """The engine both numbered-section slicers delegate to (issue #169).
+
+    `ChecksContractSlicerTests` above drives it through the `checks` caller; these rows drive
+    the properties its docstring states that no caller's document can currently exercise —
+    measured: a mutant searching for the end anchor from index 0 rather than from `start + 1`
+    survived the whole suite, because both real documents happen to be in heading order.
+    """
+
+    def test_a_back_reference_above_the_section_is_not_the_terminator(self) -> None:
+        doc = "## 5. Legality\nearly\n\n## 1. ABI\nabi body\n\n## 5. Legality\nlate\n"
+        self.assertEqual(wc._numbered_section_range(doc, "1", "5", subject="s"),
+                         "## 1. ABI\nabi body")
+
+    def test_a_missing_anchor_raises_and_names_the_subject(self) -> None:
+        for begin, end, doc in (("1", "5", "## 5. only\nb\n"),
+                                ("1", "5", "## 1. only\nb\n")):
+            with self.subTest(doc=doc):
+                with self.assertRaises(ValueError) as caught:
+                    wc._numbered_section_range(doc, begin, end, subject="the runner contract")
+                self.assertIn("the runner contract", str(caught.exception))
+
+    def test_a_decimal_subsection_does_not_anchor(self) -> None:
+        with self.assertRaises(ValueError):
+            wc._numbered_section_range("## 1.5 sub\nb\n\n## 5. end\nb\n", "1", "5",
+                                       subject="s")
 
 
 # ======================================================================================

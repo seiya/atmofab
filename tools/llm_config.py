@@ -181,11 +181,14 @@ LLM_LEAF_SUBSTEPS: frozenset[tuple[str, str]] = frozenset({
 # closed at run time (`pure_only_provider_on_agentic_path`), which config validation cannot see.
 # The two COMPILE pairs (Z1, issue #168) carry no shape condition: the Compile contract does not
 # depend on the node kind, and at `compile.generate` time no IR exists to read a shape from.
+# `validate.judge` (Z3, issue #169) carries none either, and for the same kind of reason: what it
+# reviews is the run's evidence against the tests, which every node kind has.
 PURE_CAPABLE_SUBSTEPS: frozenset[tuple[str, str]] = frozenset({
     ("compile", "generate"),
     ("compile", "verify"),
     ("generate", "generate"),
     ("generate", "verify"),
+    ("validate", "judge"),
 })
 
 # LLM leaves that hold a build-runtime MCP grant. EMPTY today — every non-empty key of
@@ -713,9 +716,11 @@ class LlmConfig:
         only its top-level description. Deterministic in the `(phase, substep)` order the
         entries sort in, so two runs of one file describe themselves identically.
 
-        Raises when nothing in the file launches a process. That is unreachable today —
-        `validate.judge` is still agentic, so every valid configuration names a CLI provider —
-        and it is the floor that has to be lifted, not worked around, when it stops being.
+        Raises when nothing in the file launches a process. Since Z3 (issue #169) that IS
+        reachable: `validate.judge` was the last leaf requiring `agentic`, so an all-HTTP file
+        is now valid to every other rule and this is the single remaining floor between one and
+        a run. It is a floor about `init` and the preflight — which take one CLI backend token
+        — not about the leaves, and it is to be lifted rather than worked around.
         """
         if not self.defaults.is_http:
             return self.defaults.backend_token, (self.defaults.command

@@ -111,7 +111,32 @@ def _pure_context_for(step: str, substep: str) -> dict[str, str]:
         ("compile", "verify"): _pure_compile_verify_context,
         ("generate", "generate"): _pure_generate_context,
         ("generate", "verify"): _pure_verify_context,
+        ("validate", "judge"): _pure_judge_context,
     }[(step, substep)]()
+
+
+def _pure_judge_context() -> dict[str, str]:
+    """One non-empty value per `PURE_CONTEXT_REQUIRED_KEYS[("validate", "judge")]` key.
+
+    The excerpt value is a SHAPE, not a sample: what the judge reads out of it is the business
+    of `test_raw_evidence_excerpt`, and what this fixture has to satisfy is the launch
+    validator's "every declared key is a non-empty string"."""
+    return {
+        "tests_document": "- test: conserves mass",
+        "io_contract_document": "test_evidence_requirements:\n- test_id: t_a\n",
+        "runner_output_contract_document": (
+            "## 1. `diagnostics.json`\nchecks and verdict\n"),
+        "diagnostics_document": '{"per_case": {"case_a": {"metrics": {}}}}',
+        "verdict_document": '{"per_test": [{"test_id": "t_a", "status": "pass"}]}',
+        "perf_document": '{"wall_time_s": 1.0}',
+        "trial_meta_document": '{"trial": 1}',
+        "quality_check_document": '{"status": "pass"}',
+        "binary_meta_document": '{"binary_id": "bin_20260101_001"}',
+        "source_meta_document": '{"verification_status": "pass"}',
+        "raw_evidence_excerpt_document": (
+            '{"policy_version": 1, "coverage": {"missing": []}, '
+            '"metrics_basis_arrays": [], "problems": []}'),
+    }
 
 
 def _pure_diagnose_context() -> dict[str, str]:
@@ -242,11 +267,12 @@ class PurePayloadValidationTests(unittest.TestCase):
         so the rejection is the pair test and not a missing-key failure — which is how this row
         was passing for the wrong reason once `compile.generate` became admissible."""
         for step, substep, ctx in (
-            # The one agentic LLM leaf left.
-            ("validate", "judge", _pure_generate_context()),
-            # A deterministic substep, which launches no leaf at all.
+            # Deterministic substeps, which launch no leaf at all. `validate.judge` used to
+            # lead this list as the last agentic LLM leaf; Z3 (issue #169) made it admissible,
+            # so the subjects are now only the pairs that will never take a leaf.
             ("compile", "static", _pure_compile_context()),
             ("generate", "gate", _pure_generate_context()),
+            ("validate", "execute", _pure_generate_context()),
         ):
             with self.subTest(pair=f"{step}.{substep}"):
                 bad = _pure_request(substep, step=step, pure_context=ctx)
@@ -260,8 +286,11 @@ class PurePayloadValidationTests(unittest.TestCase):
         migration that widened the table would have left an operator reading the old one.
 
         Every admissible pair must appear, so a pair added to the table without the message
-        following is red — which a substring check for one pair would not catch."""
-        bad = _pure_request("judge", step="validate")
+        following is red — which a substring check for one pair would not catch.
+
+        The refused subject is a DETERMINISTIC substep: `validate.judge` was this row's subject
+        until Z3 made it admissible, and an admissible pair cannot demonstrate the refusal."""
+        bad = _pure_request("execute", step="validate")
         with self.assertRaises(ValueError) as caught:
             ort._validate_pure_launch_request_payload(bad)
         message = str(caught.exception)
@@ -270,7 +299,7 @@ class PurePayloadValidationTests(unittest.TestCase):
             self.assertIn(f"({step}, {substep})", message)
         # ...and the refused pair is named too, so the operator can see what they asked for.
         self.assertIn("validate", message)
-        self.assertIn("judge", message)
+        self.assertIn("execute", message)
 
     def test_validate_payload_rejects_pure_with_deterministic(self) -> None:
         bad = _pure_request(deterministic=True)
@@ -404,6 +433,80 @@ class PurePayloadValidationTests(unittest.TestCase):
 # ======================================================================================
 # B3 / B4 / B5 / B6 / B8: renderers, markers, fence carve-out
 # ======================================================================================
+
+
+class BlankContextRationaleCouplingTests(unittest.TestCase):
+    """Couple the tree's PROSE to what the launch validator actually does with a blank value.
+
+    Four sweeps of one false sentence missed a site each time — "a blank value satisfies the
+    renderer's presence check", which was the recorded reason for several RAISE-vs-degrade
+    dispositions and is simply not true. Each sweep matched the previous round's exact wording
+    and the next site was phrased differently (across a line break, with `""` for "empty
+    string", citing a corrected paragraph as "the same reason"). At three statement sites the
+    project's own rule says discipline has lost and the rule must be coupled to a check; this
+    is that check, and it exists because the sweep is what kept failing, not the fix.
+
+    The rule is defined ONCE, IN CODE, by `test_the_rule_itself` below — the documents are
+    checked against the behaviour, never the reverse.
+    """
+
+    #: Where a leaf-facing rationale can live. Derived narrowly rather than scanning the tree:
+    #: a bound that grows silently is a bound that stops meaning anything.
+    _SCANNED = ("tools/workflow_conductor.py", "tools/orchestration_runtime.py",
+                "tools/pure_leaf.py", "tools/raw_evidence_excerpt.py",
+                "tools/tests/test_pure_leaf_producer.py", "tools/tests/test_pure_leaf_verify.py",
+                "tools/tests/test_pure_leaf_judge.py", "tools/tests/test_pure_leaf_wiring.py",
+                "docs/workflow/LAUNCH_PROMPT_REFERENCE.md",
+                "docs/workflow/phases/phase_04_validate.md")
+    #: `docs/design/deterministic_followups.md` is deliberately NOT scanned: issue #181 froze it
+    #: as a historical record, so the sentence standing there is a record of what was believed.
+    _CLAIM = re.compile(r"satisf(?:y|ies)\s+the\s+renderer", re.IGNORECASE)
+
+    def test_the_rule_itself(self) -> None:
+        """The behaviour every scanned sentence is describing, asserted against the code.
+
+        A whitespace-only `pure_context` value is counted MISSING and raises. So a degraded
+        `""` never reaches a leaf, and the cost of degrading is that the refusal happens one
+        frame later — inside `record_launch`, escaping the caller's named
+        `pure_context_assembly_failed` branch."""
+        req = _pure_request("generate", pure_context={
+            **_pure_generate_context(), "tests_document": "   "})
+        with self.assertRaises(ValueError) as caught:
+            ort._validate_pure_launch_request_payload(req)
+        self.assertIn("missing required key(s)", str(caught.exception))
+        self.assertIn("tests_document", str(caught.exception))
+
+    def test_no_scanned_file_still_states_the_false_reason(self) -> None:
+        repo_root = Path(ort.__file__).resolve().parents[1]
+        offenders = []
+        for rel in self._SCANNED:
+            text = (repo_root / rel).read_text(encoding="utf-8")
+            for lineno, line in enumerate(text.splitlines(), 1):
+                if self._CLAIM.search(line):
+                    offenders.append(f"{rel}:{lineno}: {line.strip()[:90]}")
+        self.assertEqual(offenders, [], "\n".join(
+            ["a blank value does NOT reach the leaf (see test_the_rule_itself); state the "
+             "real reason — degrading defers the refusal into record_launch:"] + offenders))
+
+    def test_the_scanner_and_its_bound_self_test(self) -> None:
+        """Two ways this check could pass while observing nothing: a pattern that matches no
+        real phrasing, and a file list that has drifted off the tree."""
+        # ASSEMBLED at runtime, never written out: this file is itself scanned, so a probe
+        # containing the literal phrase would make the check flag its own self-test. An
+        # exemption list is the other way to close that, and the project's notes record it
+        # getting broken from both sides; having no literal to exempt is simpler and cannot
+        # rot. `%s` stands where the real sentences vary.
+        stem, verb = "%s the renderer", ("satisfies", "satisfy", "SATISFIES")
+        for phrasing in (f"an empty string {stem % verb[0]}'s presence check",
+                         f'"" {stem % verb[0]}\'s presence check',
+                         f"a blank rubric {stem % verb[0]} presence check",
+                         f"would {stem % verb[2]}",
+                         f"values that {stem % verb[1]}'s check"):
+            with self.subTest(phrasing=phrasing):
+                self.assertTrue(self._CLAIM.search(phrasing))
+        repo_root = Path(ort.__file__).resolve().parents[1]
+        for rel in self._SCANNED:
+            self.assertTrue((repo_root / rel).is_file(), f"{rel} is no longer in the tree")
 
 class PureRenderTests(unittest.TestCase):
     def test_render_pure_prompt_full_skeleton(self) -> None:
@@ -1243,6 +1346,12 @@ class PureRenderTests(unittest.TestCase):
         # not match. Scanned anyway, for the same reason every other template is: it reaches a
         # leaf, and a verify severity spelled here would outrank the rubric on that transport.
         ("tools/prompt_templates/pure_escalate_diagnose.txt", None, None),
+        # Issue #169 put `validate.judge` on a pure template. Its grading field is
+        # `confidence`, not `issue_severity` — a judge reports how sure it is of a finding and
+        # the workflow routes on `attribution` instead — so it assigns no rubric value at all.
+        # Scanned for the reason every template is: it reaches a leaf before that leaf's phase
+        # doc, so a verify severity spelled here would outrank the rubric on this transport.
+        ("tools/prompt_templates/pure_validate_judge.txt", None, None),
     )
     # A backticked or bolded severity value, one assigned to the field by name (with `=` or
     # `:`), or one in bare parentheses. The second spelling is round 4's:
