@@ -28,11 +28,12 @@
 #            `~/.claude/settings.json`, which it no longer reads (`--setting-sources user`
 #            against a private CLAUDE_CONFIG_DIR carrying only this repository's leaf
 #            configuration, issue #63). A PURE launch carries no `--setting-sources`, so
-#            there the operator's settings can still decide, exactly as before. Which
-#            launches are pure is a property of the NODE, not of this file: the two
-#            `generate` leaves run pure on an M3c physics node and AGENTIC on an
-#            `infrastructure` node (`Conductor._pure_leaf_substep`), so the same entry can
-#            be either depending on what is being built.
+#            there the operator's settings can still decide, exactly as before. Since
+#            issue #169 EVERY leaf of every in-tree node runs pure: the `infrastructure`
+#            harness self-test was the last node whose two `generate` leaves ran agentic,
+#            and bundle v1.1.0's `runner` role gave it a bundle shape of its own. A node
+#            with no bundle shape at all would still run those two agentic
+#            (`Conductor._bundle_shape`), but the spec catalog holds none.
 #   effort   `low` | `medium` | `high` | `xhigh` | `max`, passed as `claude --effort`.
 #            Delete the lines and no `--effort` is passed; the same agentic/pure split
 #            applies to the operator's `effortLevel`.

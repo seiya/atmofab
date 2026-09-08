@@ -11790,6 +11790,11 @@ _PROMPT_TEMPLATE_FILES = {
     "pure compile.verify": "pure_compile_verify.txt",
     "pure generate.generate": "pure_generate_generate.txt",
     "pure generate.verify": "pure_generate_verify.txt",
+    # The second GENERATE bundle shape (issue #169): an `infrastructure` node's self-test, where
+    # the leaf authors the executable entry instead of a checks module. A SHAPE-keyed name, so a
+    # request that declares `pure_shape` renders the template for that shape.
+    "pure generate.generate.harness": "pure_generate_generate_harness.txt",
+    "pure generate.verify.harness": "pure_generate_verify_harness.txt",
     "pure validate.judge": "pure_validate_judge.txt",
     "pure bundle repair": "pure_bundle_repair.txt",
     # The escalate diagnostician: one template, four (step, substep) keys, because the pair is
@@ -12614,6 +12619,32 @@ PURE_CONTEXT_REQUIRED_KEYS: dict[tuple[str, str], tuple[str, ...]] = {
     **{pair: ("diagnosis_document",) for pair in sorted(DIAGNOSE_LAUNCH_PAIRS)},
 }
 
+#: The non-default bundle SHAPES a launch request may declare (`pure_shape`). The default shape
+#: names itself with the empty string and uses the tables keyed by `(step, substep)` above; a
+#: request that declares one of these uses the by-shape tables instead. A closed vocabulary: an
+#: unknown value is refused rather than falling back to the default, because the shape decides
+#: which template the leaf is sent and which context keys it must carry.
+#: Kept equal to the non-default values of `codegen_bundle.BUNDLE_SHAPES` — the acceptance
+#: layer's vocabulary — by `test_pure_leaf_wiring`.
+PURE_LAUNCH_SHAPES: frozenset[str] = frozenset({"harness"})
+
+#: Required `pure_context` keys for a `(step, substep, pure_shape)` that declares a shape. The
+#: pairs listed here are exactly the pairs a shape may be declared on; a `pure_shape` on any
+#: other pair is refused.
+PURE_CONTEXT_REQUIRED_KEYS_BY_SHAPE: dict[tuple[str, str, str], tuple[str, ...]] = {
+    # The harness self-test producer. Same four host-resolved documents as the default generate
+    # producer, with the runner-output contract in place of the host-rendered runner: on this
+    # shape there is no host-rendered runner, and the leaf authors the executable entry itself.
+    ("generate", "generate", "harness"): ("harness_capabilities", "target_profile",
+                                          "ir_document", "tests_document",
+                                          "runner_output_contract_document"),
+    # Its reviewer: the default generate reviewer's documents, with the runner-output contract
+    # in place of the checks-module ABI (a harness bundle carries no checks module).
+    ("generate", "verify", "harness"): ("controlled_spec_document", "tests_document",
+                                        "ir_document", "runner_output_contract_document",
+                                        "severity_rubric_document", "bundle_document"),
+}
+
 
 def _is_pure_launch_request(request_payload: dict[str, Any]) -> bool:
     """True when this launch is a Z2 pure-function leaf turn (`leaf_mode == "pure"`).
@@ -12666,9 +12697,15 @@ def _substitute_pure_placeholders(template: str, subs: dict[str, str]) -> str:
 
 
 def _pure_launch_template_name(request_payload: dict[str, Any]) -> str:
+    """The template key for a pure launch: `pure <step>.<substep>`, with the declared
+    `pure_shape` appended when the request carries one. The validator has already refused any
+    `pure_shape` outside `PURE_CONTEXT_REQUIRED_KEYS_BY_SHAPE`, so a name built here always
+    resolves in `_PROMPT_TEMPLATE_FILES` (a KeyError would be the two tables disagreeing, which
+    `test_pure_leaf_wiring` pins)."""
     step = str(request_payload.get("step", "")).strip().lower()
     substep = str(request_payload.get("substep", "")).strip().lower()
-    return f"pure {step}.{substep}"
+    shape = str(request_payload.get("pure_shape", "")).strip().lower()
+    return f"pure {step}.{substep}.{shape}" if shape else f"pure {step}.{substep}"
 
 
 def _render_pure_launch_prompt(request_payload: dict[str, Any]) -> str:
@@ -15603,6 +15640,32 @@ def _validate_pure_launch_request_payload(request_payload: dict[str, Any]) -> No
     step = str(request_payload.get("step", "")).strip().lower()
     substep = str(request_payload.get("substep", "")).strip().lower()
     key = (step, substep)
+    # A declared bundle SHAPE selects a different template and a different required-key set, so
+    # it is validated before either is looked up: the vocabulary is closed, and the shape must be
+    # declared on a pair that HAS one. An unknown value never falls back to the default.
+    shape = request_payload.get("pure_shape")
+    shape_key: tuple[str, str, str] | None = None
+    if isinstance(shape, str) and shape.strip():
+        shape_norm = shape.strip().lower()
+        if shape_norm not in PURE_LAUNCH_SHAPES:
+            raise ValueError(
+                f"pure launch request pure_shape must be one of "
+                f"{', '.join(sorted(PURE_LAUNCH_SHAPES))} when present; got {shape!r}")
+        shape_key = (step, substep, shape_norm)
+        if shape_key not in PURE_CONTEXT_REQUIRED_KEYS_BY_SHAPE:
+            admissible = ", ".join(
+                f"({st}, {ss}, {sh})"
+                for st, ss, sh in sorted(PURE_CONTEXT_REQUIRED_KEYS_BY_SHAPE))
+            raise ValueError(
+                f"pure launch request pure_shape is only valid for {admissible}; got "
+                f"(step={step!r}, substep={substep!r}, pure_shape={shape_norm!r})")
+    elif shape is not None:
+        # A non-string, or a blank one, is REFUSED rather than treated as absent: an absent
+        # `pure_shape` means the default shape, and silently defaulting a malformed one would
+        # render the default template for a node whose bundle is judged by another shape's rules.
+        raise ValueError(
+            f"pure launch request pure_shape must be a non-empty string when present; "
+            f"got {shape!r}")
     if key not in PURE_CONTEXT_REQUIRED_KEYS:
         # The admissible pairs are SPELLED FROM THE TABLE, never restated: a pair added to
         # `PURE_CONTEXT_REQUIRED_KEYS` must not leave this message naming the old set.
@@ -15646,14 +15709,16 @@ def _validate_pure_launch_request_payload(request_payload: dict[str, Any]) -> No
                 "pure launch request must include a pure_context object (except on a "
                 "warm-resume repair, where the resumed session already holds it)"
             )
+        required = (PURE_CONTEXT_REQUIRED_KEYS_BY_SHAPE[shape_key] if shape_key is not None
+                    else PURE_CONTEXT_REQUIRED_KEYS[key])
         missing = [
-            k for k in PURE_CONTEXT_REQUIRED_KEYS[key]
+            k for k in required
             if not (isinstance(ctx.get(k), str) and ctx.get(k).strip())
         ]
         if missing:
             raise ValueError(
-                f"pure launch request pure_context missing required key(s) for {key}: "
-                f"{', '.join(missing)}"
+                "pure launch request pure_context missing required key(s) for "
+                f"{shape_key or key}: {', '.join(missing)}"
             )
 
 

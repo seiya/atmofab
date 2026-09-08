@@ -14976,22 +14976,107 @@ class PureLeafSubstepPredicateTests(unittest.TestCase):
             WriteRunnerTest._write_consumer_ir(self, repo, refs, infra=2)
             self.assertFalse(c._pure_leaf_substep(refs, "generate", "generate"))
 
-    def test_infrastructure_spec_kind_is_not_pure(self) -> None:
-        # (d) an infrastructure node authors its own self-test runner (not glue), so it is non-M3c
-        # even with exactly one infra dep.
+    def _infra_refs(self) -> wc.NodeRefs:
+        return wc.NodeRefs(
+            node_key="infrastructure/harness_x@0.1.0",
+            spec_path="spec/infrastructure/infra/harness/harness_x",
+            ir_id="i1", pipeline_id="p1", source_id="s1", binary_id="b1")
+
+    def test_an_infrastructure_node_is_the_harness_shape_and_is_pure(self) -> None:
+        # (d) issue #169: an infrastructure node authors its own self-test entry rather than
+        # glue, so it is not M3c — but bundle v1.1.0's `runner` role gives it a shape of its
+        # own, and both its GENERATE substeps go pure. It was the last live fall-through to the
+        # agentic loop.
         from tools.tests.test_fortran_runner import _boundary_ir
         import yaml as _yaml
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
-            refs = self._refs()
+            refs = self._infra_refs()
             ir = _boundary_ir()
             ir["meta"]["spec_kind"] = "infrastructure"
-            ir["dependency"]["direct_deps"] = [
-                {"node_key": "infrastructure/harness_fortran_cpu@0.2.0"}]
+            ir["meta"]["node_key"] = refs.node_key
+            ir["dependency"]["direct_deps"] = []
             (repo / refs.ir_ref).mkdir(parents=True, exist_ok=True)
             (repo / refs.ir_ref / "spec.ir.yaml").write_text(_yaml.safe_dump(ir))
             c = self._conductor(repo, "claude")
+            self.assertEqual(c._bundle_shape(refs), "harness")
+            self.assertFalse(c._conductor_authors_runner(refs))  # the host renders none
+            self.assertTrue(c._pure_leaf_substep(refs, "generate", "generate"))
+            self.assertTrue(c._pure_leaf_substep(refs, "generate", "verify"))
+
+    def test_the_shape_is_read_off_the_node_key_not_the_documents_spec_kind(self) -> None:
+        """Surface 11: the shape decides which admissibility rules the bundle is judged
+        against, so it is resolved from the host's own identity for the node. An IR that
+        self-declares `infrastructure` on a `component/` node_key does NOT buy the harness
+        shape (it buys no shape at all, because `_conductor_authors_runner` also refuses it)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = self._refs()  # component/<sid>@0.1.0
+            WriteRunnerTest._write_consumer_ir(
+                self, repo, refs, infra=1, spec_kind="infrastructure")
+            c = self._conductor(repo, "claude")
+            self.assertIsNone(c._bundle_shape(refs))
             self.assertFalse(c._pure_leaf_substep(refs, "generate", "generate"))
+
+    def test_the_two_bundle_shape_readers_agree(self) -> None:
+        """`Conductor._bundle_shape` and `validate_pipeline_semantics._ir_bundle_shape` select
+        the file-shape layer of ONE acceptance contract — the producer's in-conversation gate
+        and the deterministic tamper gate — so a divergence certifies a bundle the producer
+        would have refused, or refuses one it accepted."""
+        import tools.validate_pipeline_semantics as vps
+        from tools.tests.test_fortran_runner import _boundary_ir
+        import yaml as _yaml
+        cases = [
+            (self._refs(), "component", 1, None),
+            (self._refs(), "component", 0, None),
+            (self._refs(), "component", 2, None),
+            (self._refs(), "infrastructure", 1, None),
+            (self._infra_refs(), "infrastructure", 0, None),
+            (self._infra_refs(), "infrastructure", 0, "zz_lang"),
+            (self._infra_refs(), "component", 0, None),
+            (self._refs(), "component", 1, "zz_lang"),
+        ]
+        for refs, spec_kind, infra, language in cases:
+            with tempfile.TemporaryDirectory() as tmp:
+                repo = Path(tmp)
+                ir = _boundary_ir()
+                ir["meta"]["spec_kind"] = spec_kind
+                if language is not None:
+                    ir["impl_defaults"]["toolchain"]["language"] = language
+                ir["dependency"]["direct_deps"] = [
+                    {"node_key": f"infrastructure/h{i}@0.2.0"} for i in range(infra)]
+                (repo / refs.ir_ref).mkdir(parents=True, exist_ok=True)
+                (repo / refs.ir_ref / "spec.ir.yaml").write_text(_yaml.safe_dump(ir))
+                c = self._conductor(repo, "claude")
+                self.assertEqual(
+                    c._bundle_shape(refs), vps._ir_bundle_shape(ir, refs.node_key),
+                    (refs.node_key, spec_kind, infra, language))
+
+    def test_every_catalog_node_has_a_bundle_shape(self) -> None:
+        """The issue #169 completion criterion: no in-tree node falls through `_bundle_shape`
+        to the agentic loop. Driven off the SPEC CATALOG rather than a fixture list, so a node
+        added without a shape fails here. Each node is exercised through the validator twin,
+        which takes the IR dict directly — the conductor twin needs a workspace IR file, and the
+        test above pins the two equal."""
+        import yaml as _yaml
+        import tools.validate_pipeline_semantics as vps
+        catalog = _yaml.safe_load(
+            (REPO_ROOT / "spec/registry/spec_catalog.yaml").read_text(encoding="utf-8"))
+        entries = [e for e in (catalog.get("specs") or []) if isinstance(e, dict)]
+        self.assertTrue(entries, "the spec catalog names no node")
+        checked = 0
+        for entry in entries:
+            node_key = (f"{entry.get('spec_kind')}/{entry.get('spec_id')}"
+                        f"@{entry.get('spec_version')}")
+            ir_dir = (REPO_ROOT / "workspace" / "ir"
+                      / node_key.replace("/", "__").replace("@", "__"))
+            irs = sorted(ir_dir.glob("*/spec.ir.yaml")) if ir_dir.is_dir() else []
+            if not irs:
+                continue  # no lowered IR in this workspace yet — nothing to read a shape from
+            ir = _yaml.safe_load(irs[-1].read_text(encoding="utf-8"))
+            self.assertIsNotNone(vps._ir_bundle_shape(ir, node_key), node_key)
+            checked += 1
+        self.assertTrue(checked, "no catalog node had a lowered IR to check")
 
 
 class GenerateLeafAuthorizationTest(unittest.TestCase):

@@ -1,18 +1,28 @@
-# CodegenBundle contract (`bundle_schema_version` 1.0.0)
+# CodegenBundle contract (`bundle_schema_version` 1.1.0)
 
 > **Scope note.** Under `Z2` (`docs/design/zero_base_architecture.md`) the pure
 > `Generate.generate` leaf produces exactly one `CodegenBundle`; the host validates
 > it with `validate_bundle` (the post-generate gate), writes the declared files, and
-> assembles the build graph. On a residual node that stays on the agentic leaf (a node
-> whose runner/Makefile are not host-rendered — since the non-M3c physics path was
-> removed, that is the `infrastructure` harness self-test; the pure executor is the only
-> executor since `M-F`, but such a node cannot be expressed as a pure producer), no
-> bundle is produced — the agentic `Generate.generate` leaf writes
-> the Fortran sources directly, as described in
-> `docs/workflow/phases/phase_02_generate.md` together with `CHECKS_MODULE_CONTRACT.md`.
+> assembles the build graph. Since issue #169 **every node the spec catalog holds is
+> expressible as a bundle**, in one of two SHAPES:
+>
+> | shape | node | the leaf authors | the host renders |
+> |---|---|---|---|
+> | `m3c` | a make+fortran physics node with exactly one `infrastructure` dependency | `model` + `checks` | the runner glue and the build control file |
+> | `harness` | an `infrastructure` self-test (bundle 1.1.0's `runner` role) | `model` + `runner` | the build control file only |
+>
+> WHICH shape a node has is not a property of this document — `validate_bundle` sees a
+> document and cannot know the node. It is the acceptance layer's argument
+> (`tools/codegen_bundle.py:pure_bundle_contract_violation`, `shape`), resolved by the twin
+> readers `Conductor._bundle_shape` / `validate_pipeline_semantics._ir_bundle_shape`. A node
+> with neither shape produces no bundle and runs the residual agentic `Generate.generate`
+> leaf, which writes the sources directly as described in
+> `docs/workflow/phases/phase_02_generate.md` together with `CHECKS_MODULE_CONTRACT.md`; no
+> such node is in the catalog.
+>
 > This document is the canonical contract for the bundle document itself; the schema
 > (`spec/schema/generate/codegen_bundle.schema.json`) and the validator module
-> `tools/codegen_bundle.py` are pinned at `bundle_schema_version` 1.0.0.
+> `tools/codegen_bundle.py` are pinned at `bundle_schema_version` 1.1.0.
 
 ## Purpose
 
@@ -67,7 +77,7 @@ token.
 ## Serialization
 
 A bundle is a single JSON document. `bundle_schema_version` is required and is
-compared by major version: `CODEGEN_BUNDLE_SCHEMA_VERSION = "1.0.0"`, and a document
+compared by major version: `CODEGEN_BUNDLE_SCHEMA_VERSION = "1.1.0"`, and a document
 whose major version differs from the module's is rejected without further inspection.
 Every object in the document is closed (`additionalProperties: false`) with **one declared
 exception**: the value objects of `target_lowering_plan` (`precision`, `data_layout`,
@@ -82,7 +92,9 @@ minor release is additive, so a `1.1` document may carry a field a `1.0` validat
 know, and closed-object validation rejects that field. This is intentional — the closure is a
 load-bearing security property (a command cannot ride in on an unknown key) and is never
 relaxed for forward compatibility. A producer that emits a new minor's fields therefore
-requires a validator of that minor; it does not silently pass an older one. The declarative
+requires a validator of that minor; it does not silently pass an older one. The 1.0.0 -> 1.1.0
+bump is the worked example of the additive case: it adds the `runner` role, which no 1.0.0
+validator's role enum admits, and producer and validator move together in one change. The declarative
 schema's `bundle_schema_version` pattern pins the supported major (`^1\.[0-9]+\.[0-9]+$`), so a
 schema-only consumer (structured generation) rejects an incompatible major at the schema
 boundary rather than admitting it to fail later at `validate_bundle`.
@@ -95,7 +107,7 @@ as untrusted model-authored input, exactly as it treats `files[].content`.
 
 ```json
 {
-  "bundle_schema_version": "1.0.0",
+  "bundle_schema_version": "1.1.0",
   "optimization_unit": {"members": ["problem/adv1d@0.1.0"]},
   "files": [{"logical_path": "adv1d_model.f90", "role": "model",
              "language": "fortran", "member_node_key": "problem/adv1d@0.1.0",
@@ -171,18 +183,27 @@ never parses the source.
 | `checks` | the member's checks module (`CHECKS_MODULE_CONTRACT.md`) | yes (`checks_interface`) |
 | `helper` | a private procedure set the generated code calls internally | no |
 | `internal_module` | an internal module (shared types, parameters, work arrays) | no |
+| `runner` | the unit member's executable entry (added in 1.1.0) | no |
 
-There is **no runner or glue role**: contract-boundary glue is host-rendered
-(host-rendered through `tools/host_render.py`) and can never be bundle content. There is **no build or
-script role**: this is the backbone of the no-arbitrary-command rule.
+There is **no build or script role**: this is the backbone of the no-arbitrary-command rule.
+
+**The `runner` role is shape-scoped.** Where the host renders the contract-boundary glue
+(through `tools/host_render.py`) that glue can never be bundle content, and the acceptance
+layer refuses the role outright on such a node (`bundle_shape_unsupported`). It is admissible
+only on a node the host renders no runner for — today the `harness` shape. Two further rules
+follow it: a member carries **at most one** `runner` file, and it is the ONE role that may
+declare an EMPTY `modules` list, because an executable entry is not something another file
+`use`s. (`validate_bundle` holds both; the schema states the second as
+`x-non-empty-unless-role`, which no draft-07 `minItems` can carry.)
 
 `member_node_key` is either one of the unit's members or `null`. `null` means the file
 is shared by the whole unit, and only `helper` / `internal_module` may be shared — a
-`model` or `checks` file belongs to exactly one member.
+`model`, `checks` or `runner` file belongs to exactly one member.
 
 **Privacy invariant.** A `helper` or `internal_module` file cannot be the `defined_in`
 of any entrypoint. This *is* the definition of "private" in this contract: privacy is
-declared by role, not inferred from a Fortran `private` statement.
+declared by role, not inferred from a Fortran `private` statement. A `runner` file cannot be
+one either, for the opposite reason: it is the executable entry, which nothing may `use`.
 
 ### `logical_path`
 
@@ -501,7 +522,9 @@ flattened to `__` (`core/util.f90` → `core__util.o`), so a flat `<name>.f90` k
 origin derive the same object name. Within the bundle that is already a validation
 violation; across origins only assembly can see it, and it is the case that matters: a
 bundle file at the host-rendered runner's path would otherwise overwrite the glue object
-and so capture the contract boundary the "no runner/glue role" rule denies it.
+and so capture the contract boundary the `m3c` shape's refusal of the `runner` role denies
+it. On the `harness` shape there is no glue to capture: the host renders none, the assembly
+is handed an EMPTY glue set, and the bundle's own `runner` file is what links.
 
 Derivation **also fails closed on a Fortran module-name collision** across origins: a bundle
 file may declare a `modules` name equal to a staged dependency's derived `<spec_id>_model`
@@ -514,11 +537,15 @@ the staged closure, so the bundle's own `<spec_id>_model` module never false-col
 result: `json.dumps(graph, sort_keys=True)` is byte-identical. This is what lets the
 graph become a derivation input in `Z5`.
 
-**Parity.** For a bundle of the `M3c` shape (one member, `model` + `checks`, a
+**Parity.** For a bundle of the `harness` shape the derived order is
+`internal_module` → `helper` → `model` → `checks` → `runner`, so the executable entry is last
+in the link exactly where the host glue is on the other shape; there is no `_write_makefile`
+counterpart to compare it against, because that renderer assumes the fixed model/checks/runner
+set. For a bundle of the `M3c` shape (one member, `model` + `checks`, a
 dependency closure, host-rendered runner glue), the derived object order equals the
 object order of the IR-shaped Makefile the conductor renders via `_write_makefile`
 (dependency objects → model → checks → runner). `_write_makefile` remains the live
-Makefile author for Model B dependency closures and for non-`M3c` agentic leaves, so it
+Makefile author for Model B dependency closures and for a residual agentic leaf, so it
 is not dead code. That equality is what the parity test pins: it compares
 `derive_build_graph(...)["link"]["objects"]` against the object list parsed out of the
 `_write_makefile`-authored Makefile. Under `Z2` a pure `M3c` node renders its Makefile

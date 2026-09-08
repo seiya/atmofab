@@ -150,7 +150,8 @@ class PrivateHelperTest(unittest.TestCase):
              "defined_in": "adv1d_limiter.f90", "module": "adv1d_limiter"})
         violations = cb.validate_bundle(doc)
         self.assertEqual(len(violations), 1)
-        self.assertIn("private and cannot define an entrypoint", violations[0])
+        self.assertIn("which cannot define an entrypoint", violations[0])
+        self.assertIn("private by role", violations[0])
 
     def test_internal_module_cannot_define_an_entrypoint(self) -> None:
         doc = _minimal_bundle()
@@ -158,7 +159,7 @@ class PrivateHelperTest(unittest.TestCase):
         doc["entrypoints"].append(
             {"symbol": "adv1d__types", "kind": "operation", "node_key": ADV,
              "defined_in": "adv1d_types.f90", "module": "adv1d_types"})
-        self.assertTrue(any("private and cannot define an entrypoint" in v
+        self.assertTrue(any("which cannot define an entrypoint" in v
                             for v in cb.validate_bundle(doc)))
 
     def test_shared_helper_takes_a_null_member(self) -> None:
@@ -212,7 +213,12 @@ class PrivateHelperTest(unittest.TestCase):
         self.assertIn("files[0].modules is required", cb.validate_bundle(doc))
         doc = _minimal_bundle()
         doc["files"][0]["modules"] = []
-        self.assertIn("files[0].modules must be a non-empty array", cb.validate_bundle(doc))
+        self.assertIn(
+            "files[0].modules must be a non-empty array (only role 'runner' may define no module)",
+            cb.validate_bundle(doc))
+        doc = _minimal_bundle()
+        doc["files"][0]["modules"] = "adv1d_model"  # a string is not an array
+        self.assertIn("files[0].modules must be an array", cb.validate_bundle(doc))
         doc = _minimal_bundle()
         doc["files"][0]["modules"] = ["9bad"]
         self.assertIn("files[0].modules[0] must be an identifier", cb.validate_bundle(doc))
@@ -1860,7 +1866,13 @@ class ContractPlumbingTest(unittest.TestCase):
             sorted(["logical_path", "role", "language", "member_node_key", "content", "modules"]))
         self.assertEqual(files_items["properties"]["modules"]["items"]["pattern"],
                          cb.IDENTIFIER_PATTERN)
-        self.assertEqual(files_items["properties"]["modules"]["minItems"], 1)
+        # v1.1.0: the non-empty rule carries an EXCEPTION a draft-07 `minItems` cannot, so the
+        # schema declares the rule as an `x-` marker and the walker holds it.
+        self.assertNotIn("minItems", files_items["properties"]["modules"])
+        self.assertEqual(files_items["properties"]["modules"]["x-non-empty-unless-role"],
+                         cb.ENTRY_BEARING_ROLE)
+        self.assertEqual(files_items["properties"]["role"]["x-entry-bearing-role"],
+                         cb.ENTRY_BEARING_ROLE)
         self.assertEqual(files_items["properties"]["compile_after"]["items"],
                          {"type": "string", "minLength": 1})
         plan = self.schema["properties"]["target_lowering_plan"]
@@ -2667,7 +2679,8 @@ class PurePublishedSurfacePinTests(unittest.TestCase):
 
     def _run(self, doc: dict, node_key: str, ir_published):
         return cb.pure_bundle_contract_violation(
-            doc, node_key=node_key, spec_id="bx", ir_state_variables=[],
+            doc, node_key=node_key, spec_id="bx", shape="m3c",
+            runner_basename="bx_runner.f90", ir_state_variables=[],
             harness_provided={"sync_single_case@1"}, build_graph=lambda d: None,
             ir_published_operations=ir_published)
 
@@ -2702,15 +2715,188 @@ class PurePublishedSurfacePinTests(unittest.TestCase):
         self.assertIsNone(
             self._run(self._bundle(self._NK, ["bx__whatever"]), self._NK, None))
 
-    def test_non_component_node_is_inert(self) -> None:
+    def test_infrastructure_node_is_pinned_too(self) -> None:
+        # L1c widened to `infrastructure` (issue #169): a harness IR carries a public_api pin
+        # and its bundle's operation entrypoints must equal it.
+        nk = "infrastructure/bx@0.1.0"
+        r = self._run(self._bundle(nk, ["bx__parse_cases"]), nk,
+                      ["bx__parse_cases", "bx__emit_real"])
+        self.assertIsNotNone(r)
+        self.assertEqual(r[0], "bundle_published_surface_mismatch")
+        self.assertIn("bx__emit_real", r[1])
+
+    def test_l1c_spec_kinds_equal_the_ir_producer_s(self) -> None:
+        # The set is DEFINED once in the code and the two readers must agree: a kind the IR
+        # producer authors no `public_api` for has no pinned surface to compare against.
+        from tools.workflow_conductor import Conductor
+        self.assertEqual(cb.L1C_PUBLISHED_SURFACE_SPEC_KINDS,
+                         Conductor._PURE_IR_PUBLIC_API_KINDS)
+
+    def test_non_pinned_node_kind_is_inert(self) -> None:
         # A profile publishes zero operations; passing a pin must not trip the surface layer
-        # (guarded on the component/ prefix).
+        # (its spec_kind is not in L1C_PUBLISHED_SURFACE_SPEC_KINDS).
         nk = "profile/bx@0.1.0"
         doc = self._bundle(nk, [])
         doc["entrypoints"] = [
             {"symbol": "checks_compute", "kind": "checks_interface", "node_key": nk,
              "defined_in": "bx_checks.f90", "module": "bx_checks"}]
         self.assertIsNone(self._run(doc, nk, ["bx__anything"]))
+
+
+class RunnerRoleTest(unittest.TestCase):
+    """Bundle v1.1.0: the `runner` role — the unit's executable entry, admissible only on a
+    node the host renders no glue for. The SHAPE question (which node) belongs to
+    `pure_bundle_contract_violation`; `validate_bundle` only knows the document."""
+
+    def _harness_bundle(self) -> dict:
+        return {
+            "bundle_schema_version": "1.1.0",
+            "optimization_unit": {"members": [HARNESS]},
+            "files": [
+                _file("harness_fortran_cpu_model.f90", "model", HARNESS,
+                      modules=["harness_fortran_cpu_model"]),
+                _file("harness_fortran_cpu_runner.f90", "runner", HARNESS, modules=[]),
+            ],
+            "entrypoints": [
+                {"symbol": "harness_fortran_cpu__parse_cases", "kind": "operation",
+                 "node_key": HARNESS, "defined_in": "harness_fortran_cpu_model.f90",
+                 "module": "harness_fortran_cpu_model"},
+            ],
+            "target_lowering_plan": {"precision": {"real_kind": "real64"},
+                                     "state_residency": "host"},
+            "capability_requirements": ["sync_single_case@1"],
+            "state_bindings": [],
+        }
+
+    def test_a_runner_bearing_bundle_is_valid(self) -> None:
+        self.assertEqual(cb.validate_bundle(self._harness_bundle()), [])
+
+    def test_only_the_runner_may_declare_no_modules(self) -> None:
+        doc = self._harness_bundle()
+        _find(doc["files"], "harness_fortran_cpu_model.f90")["modules"] = []
+        violations = cb.validate_bundle(doc)
+        self.assertTrue(any("modules must be a non-empty array" in v for v in violations))
+
+    def test_a_member_carries_at_most_one_runner(self) -> None:
+        doc = self._harness_bundle()
+        doc["files"].append(_file("second_runner.f90", "runner", HARNESS, modules=[]))
+        self.assertTrue(any("at most one executable entry" in v
+                            for v in cb.validate_bundle(doc)))
+
+    def test_a_runner_may_not_define_an_entrypoint(self) -> None:
+        doc = self._harness_bundle()
+        _find(doc["files"], "harness_fortran_cpu_runner.f90")["modules"] = ["hfc_runner"]
+        doc["entrypoints"].append(
+            {"symbol": "harness_fortran_cpu__x", "kind": "checks_interface",
+             "node_key": HARNESS, "defined_in": "harness_fortran_cpu_runner.f90",
+             "module": "hfc_runner"})
+        self.assertTrue(any("which cannot define an entrypoint" in v
+                            for v in cb.validate_bundle(doc)))
+
+    def test_a_runner_may_not_take_a_null_member(self) -> None:
+        doc = self._harness_bundle()
+        _find(doc["files"], "harness_fortran_cpu_runner.f90")["member_node_key"] = None
+        self.assertTrue(any("member_node_key may be null only for role" in v
+                            for v in cb.validate_bundle(doc)))
+
+    def test_the_runner_compiles_last(self) -> None:
+        doc = self._harness_bundle()
+        doc["files"].insert(0, _file("hfc_types.f90", "internal_module", HARNESS))
+        graph = cb.derive_build_graph(doc, toolchain={"language": "fortran"})
+        self.assertEqual([unit["object"] for unit in graph["compile_units"]],
+                         ["hfc_types.o", "harness_fortran_cpu_model.o",
+                          "harness_fortran_cpu_runner.o"])
+
+    def test_a_bundle_runner_colliding_with_host_glue_fails_assembly(self) -> None:
+        # The structural guarantee that a runner role cannot be smuggled onto an M3c node
+        # even if the shape layer were bypassed: the object names collide.
+        doc = self._harness_bundle()
+        with self.assertRaises(RuntimeError) as ctx:
+            cb.derive_build_graph(
+                doc, toolchain={"language": "fortran"},
+                host_glue_sources=("harness_fortran_cpu_runner.f90",))
+        self.assertIn("object name collision", str(ctx.exception))
+
+
+class BundleShapeAdmissibilityTest(unittest.TestCase):
+    """`pure_bundle_contract_violation`'s `shape` argument: which file shape a node's bundle
+    is judged against. Both callers (the producer's in-conversation gate and the
+    deterministic tamper gate) pass the same value, resolved by the twin readers."""
+
+    _MODEL = "module harness_fortran_cpu_model\n! allow(C003)\nend module harness_fortran_cpu_model\n"
+
+    def _harness_doc(self) -> dict:
+        doc = RunnerRoleTest()._harness_bundle()
+        _find(doc["files"], "harness_fortran_cpu_model.f90")["content"] = self._MODEL
+        return doc
+
+    def _run(self, doc: dict, shape: str, **kw):
+        params = dict(
+            node_key=HARNESS, spec_id="harness_fortran_cpu", shape=shape,
+            runner_basename="harness_fortran_cpu_runner.f90", ir_state_variables=[],
+            harness_provided={"sync_single_case@1"}, build_graph=lambda d: None,
+            ir_published_operations=["harness_fortran_cpu__parse_cases"])
+        params.update(kw)
+        return cb.pure_bundle_contract_violation(doc, **params)
+
+    def test_harness_shape_accepts_the_harness_bundle(self) -> None:
+        self.assertIsNone(self._run(self._harness_doc(), "harness"))
+
+    def test_m3c_shape_refuses_a_runner_role(self) -> None:
+        result = self._run(self._harness_doc(), "m3c")
+        self.assertIsNotNone(result)
+        self.assertEqual(result[0], "bundle_shape_unsupported")
+        self.assertIn("host-rendered glue", result[1])
+
+    def test_an_unknown_shape_is_refused(self) -> None:
+        result = self._run(self._harness_doc(), "whatever")
+        self.assertIsNotNone(result)
+        self.assertEqual(result[0], "bundle_shape_unsupported")
+        self.assertIn("unknown bundle shape", result[1])
+
+    def test_harness_shape_pins_the_runner_filename(self) -> None:
+        doc = self._harness_doc()
+        _find(doc["files"], "harness_fortran_cpu_runner.f90")["logical_path"] = "driver.f90"
+        result = self._run(doc, "harness")
+        self.assertEqual(result[0], "bundle_shape_unsupported")
+        self.assertIn("harness_fortran_cpu_runner.f90", result[1])
+
+    def test_harness_shape_pins_the_model_filename(self) -> None:
+        doc = self._harness_doc()
+        _find(doc["files"], "harness_fortran_cpu_model.f90")["logical_path"] = "hfc.f90"
+        doc["entrypoints"][0]["defined_in"] = "hfc.f90"
+        result = self._run(doc, "harness")
+        self.assertEqual(result[0], "bundle_shape_unsupported")
+        self.assertIn("harness_fortran_cpu_model.f90", result[1])
+
+    def test_harness_shape_requires_a_runner(self) -> None:
+        doc = self._harness_doc()
+        doc["files"] = [e for e in doc["files"] if e["role"] != "runner"]
+        result = self._run(doc, "harness")
+        self.assertEqual(result[0], "bundle_shape_unsupported")
+        self.assertIn("runner-role file", result[1])
+
+    def test_harness_shape_refuses_a_checks_file(self) -> None:
+        doc = self._harness_doc()
+        doc["files"].append(
+            _file("harness_fortran_cpu_checks.f90", "checks", HARNESS,
+                  modules=["harness_fortran_cpu_checks"]))
+        result = self._run(doc, "harness")
+        self.assertEqual(result[0], "bundle_shape_unsupported")
+        self.assertIn("no checks-role file", result[1])
+
+    def test_harness_shape_does_not_run_the_m3c_checks_abi_layer(self) -> None:
+        # The M3c layers would demand a `<spec_id>_checks.f90` this shape forbids; a plain
+        # non-None answer would not tell the two apart, so pin that the ACCEPTED harness
+        # bundle is exactly the one the M3c name layer rejects.
+        self.assertIsNotNone(
+            cb.m3c_literal_name_violation(self._harness_doc(), "harness_fortran_cpu"))
+        self.assertIsNone(self._run(self._harness_doc(), "harness"))
+
+    def test_l1c_applies_on_the_harness_shape(self) -> None:
+        result = self._run(self._harness_doc(), "harness",
+                           ir_published_operations=["harness_fortran_cpu__emit_real"])
+        self.assertEqual(result[0], "bundle_published_surface_mismatch")
 
 
 if __name__ == "__main__":

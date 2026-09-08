@@ -1219,8 +1219,8 @@ class MirrorTableDriftTests(unittest.TestCase):
         are both True and whose entry is pure-capable), so the pair test in that body is what
         is being compared — not a copy of it.
 
-        The M3c-shape half is exercised by `..._on_a_non_m3c_node` below: with both predicates
-        True this row cannot tell a pair that is admitted BECAUSE it is a compile pair from one
+        The shape half is exercised by `..._on_a_shapeless_node` below: with a shape present
+        this row cannot tell a pair that is admitted BECAUSE it is a compile pair from one
         admitted because the node's shape happened to allow it."""
 
         class _Stub:
@@ -1230,11 +1230,8 @@ class MirrorTableDriftTests(unittest.TestCase):
             backend = "claude"
             _pure_leaf_substep = wc.Conductor._pure_leaf_substep
 
-            def _conductor_authors_makefile(self, refs):  # noqa: D401 - stub
-                return True
-
-            def _conductor_authors_runner(self, refs):  # noqa: D401 - stub
-                return True
+            def _bundle_shape(self, refs):  # noqa: D401 - stub
+                return "m3c"
 
             def entry_for(self, phase, substep):
                 return lc.ResolvedLeafEntry(
@@ -1249,24 +1246,21 @@ class MirrorTableDriftTests(unittest.TestCase):
         self.assertEqual(derived, set(lc.PURE_CAPABLE_SUBSTEPS))
         self.assertLessEqual(lc.PURE_CAPABLE_SUBSTEPS, lc.LLM_LEAF_SUBSTEPS)
 
-    def test_pure_capable_substeps_matches_conductor_on_a_non_m3c_node(self) -> None:
-        """The same predicate with the node-shape half FALSE. Only the two COMPILE pairs stay
-        admissible there — the Compile contract does not depend on the node kind, and no IR
-        exists at `compile.generate` time to read a shape from — so this row is what separates
-        the pair test from the shape test in `_pure_leaf_substep`'s body. Without it, replacing
-        the shape-free arm with the generate arm's shape condition stays green.
-        `validate.judge` (Z3) joined that arm: what it reviews is the run's evidence
-        against the tests, which every node kind has."""
+    def test_pure_capable_substeps_matches_conductor_on_a_shapeless_node(self) -> None:
+        """The same predicate with the node-shape half absent (`_bundle_shape` -> None). Only
+        the two COMPILE pairs and the judge stay admissible there — the Compile contract does
+        not depend on the node kind, and no IR exists at `compile.generate` time to read a shape
+        from — so this row is what separates the pair test from the shape test in
+        `_pure_leaf_substep`'s body. Without it, replacing the shape-free arm with the generate
+        arm's shape condition stays green. No in-tree node answers None since issue #169; this
+        is the hand-crafted-IR fail-safe."""
 
         class _Stub:
             backend = "claude"
             _pure_leaf_substep = wc.Conductor._pure_leaf_substep
 
-            def _conductor_authors_makefile(self, refs):  # noqa: D401 - stub
-                return False
-
-            def _conductor_authors_runner(self, refs):  # noqa: D401 - stub
-                return False
+            def _bundle_shape(self, refs):  # noqa: D401 - stub
+                return None
 
             def entry_for(self, phase, substep):
                 return lc.ResolvedLeafEntry(
@@ -1280,6 +1274,29 @@ class MirrorTableDriftTests(unittest.TestCase):
         }
         self.assertEqual(derived, {("compile", "generate"), ("compile", "verify"),
                                    ("validate", "judge")})
+
+    def test_the_harness_shape_admits_the_generate_pairs_too(self) -> None:
+        """Issue #169: the second shape. A node whose `_bundle_shape` is `harness` reaches the
+        same five pairs — the predicate asks whether there IS a shape, not which one."""
+
+        class _Stub:
+            backend = "claude"
+            _pure_leaf_substep = wc.Conductor._pure_leaf_substep
+
+            def _bundle_shape(self, refs):  # noqa: D401 - stub
+                return "harness"
+
+            def entry_for(self, phase, substep):
+                return lc.ResolvedLeafEntry(
+                    provider="claude_cli",
+                    capabilities=lc.PROVIDER_CAPABILITIES["claude_cli"])
+
+        stub = _Stub()
+        derived = {
+            (phase, substep) for (phase, substep) in lc.LLM_LEAF_SUBSTEPS
+            if stub._pure_leaf_substep(None, phase, substep)
+        }
+        self.assertEqual(derived, set(lc.PURE_CAPABLE_SUBSTEPS))
 
     def test_the_pure_capable_set_is_the_size_this_tree_decided(self) -> None:
         """One place where the SIZE of the set is a decision rather than a consequence.

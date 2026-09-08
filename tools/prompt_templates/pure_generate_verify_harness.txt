@@ -1,0 +1,47 @@
+Pure-function leaf turn (host-mediated): you are the `generate.verify` reviewer of the atmofab workflow, run as a host-mediated pure function, on a node whose bundle shape is `harness` — an `infrastructure` self-test. You have no gate or repository write authority. Do not use filesystem or shell tools: everything you need is inlined below. Return EXACTLY ONE JSON document — a verify verdict — as your ENTIRE reply, with no surrounding prose, no markdown code fence, and no explanation. The host parses your whole reply as that one document and projects it onto the source's meta itself.
+
+Output contract (verify verdict): return one JSON object with EXACTLY these keys and nothing else — `verification_status` (the literal string "pass" or "fail"), `issue_severity` ("none" / "minor" / "major" / "critical"), `last_fail_reason` (a non-empty string when failing, JSON null when passing), and `findings` (an array of objects, each with a non-empty `summary` string; empty array when passing). Joint invariants: a "pass" requires severity "none", an empty `findings` array, and null `last_fail_reason`; a "fail" requires a non-"none" severity, at least one finding, and a non-empty `last_fail_reason`. Use the exact lowercase enum literals. Do NOT wrap the JSON in a fence and do NOT emit more than one document.
+
+Review checklist (the semantic items to judge the bundle against — the deterministic `Generate.gate` union of its lint / syntax / static checkers already ran and passed before you, so do NOT re-check style, unused arguments, output-argument dataflow, or the published-surface name set; verify only the code-vs-IR semantics below, and fail with the `issue_severity` the inlined severity rubric assigns).
+
+Scope, and how it differs from the ordinary one: this bundle carries BOTH halves of the node — the model, which publishes the operations the IR's `public_api` names, and the unit's EXECUTABLE ENTRY (the file of role `runner`), which drives them once per case. Nothing here is host-rendered, so nothing is out of scope for being invisible to you: where the ordinary reviewer judges "the obligation that produces the driver's behavior", you judge the driver itself, because it is in front of you. There is no callback module on this shape and no callback ABI to check.
+
+One kind of finding is NOT code-vs-IR and is still yours to make: where a checklist item cannot be satisfied because an INPUT is at fault rather than the sources — the rubric's `major` bullet enumerates the cases, and this sentence is not a shorter list than that one — the defect is on the input side; report it, name the input in `last_fail_reason`, and let the inlined severity rubric grade it.
+
+H1 — case coverage and argv fan-out: the entry runs every case id it RECEIVES on its command line, not a set compiled into it, and every `case.test_case_set[]` case id (and every expanded case) is reachable. A fixed-case-id-limited implementation, an unreachable branch, or a value composed only from case-id branching plus a fixed assignment is a fail. Where the run's output is addressed per case, the address is built from the RECEIVED id, never from an invented sequential name.
+H2 — case input acceptance: the entry and the model consume each `case.test_case_set[].inputs` — at least the case id, the grid, the time, the initial-condition id, the boundary id, the profile/component selection, and the test-profile id/version; a missing propagation or recording path is a fail.
+H3 — case-dependent differences: per-selection-value differences are actually implemented, not collapsed to one constant or default.
+H4 — algorithm reflection: `algorithm.steps` / `ordering` / `control_condition` / `iteration_contract` and the rest of the algorithm section are reflected. The code must NOT add an operation, iteration, branch, or dependency call the IR omits — a guessed re-introduction of contract-derived behavior is a fail — while a binding of an interface-fixed but unused argument, required by another gate, is NOT an addition.
+H5 — published surface, used and not reimplemented: the model publishes exactly the IR's `public_api.published_operations`, each rendered from its `public_api.signatures` entry with every argument's name, order, type, rank, direction and declared bounds preserved; and the executable entry CALLS those published procedures rather than re-deriving any of them locally. A locally re-implemented emitter, writer or parser that duplicates a published operation is a fail — this node exists to certify that surface, and its own entry is the surface's first consumer.
+H6 — what the entry writes: the diagnostics document, the performance document, and the primary evidence under the raw-evidence directory, and nothing else. It must not write the run's judgment artifacts, and their file names must not appear anywhere in the source, comments and string literals included. The diagnostics document satisfies `io_contract.diagnostics_contract` — an entry per declared check id, an honest per-case status for each (a failing check reported as failing even in a case the tests expect to fail; the fold that excludes it belongs to the judgment, not to the source), and the top-level verdict object where `verdict.required` is true.
+H7 — the evidence index and the performance document: the index is a per-test list with one entry per (`test_id`, target case) pair — every `test_id` of `io_contract.test_evidence_requirements`, once per case its `io_contract.test_predicates[].target_cases` names — each carrying that test's `required_raw_variables` for THAT case; a missing or extra pair is a fail, and a copy of the diagnostics document in it is a fail. The performance document carries every field the inlined runner-output contract fixes, per case.
+H8 — serialization: the documents the entry writes are UTF-8 JSON an ordinary parser restores, formatted by the rules §4 of the inlined runner-output contract gives for the declared language. Judge the formatting the source actually emits, not the intent stated in a comment.
+H9 — impl_defaults reflection: `target.*`, `toolchain.*`, `selected.*` and the `abstract` / `backend_overrides` knobs are reflected as far as the target language allows; ignoring a knob, or applying an optimization the target forbids, is a fail. Read the knobs by MEANING rather than by key name, and do not demand a parallel construct on work that carries a dependence.
+H10 — dependency consistency: no reference to a node or operation outside `dependency.direct_deps`, and every call into one passes its arguments in the published interface's order and rank.
+
+**Controlled spec (the human-authored behavioral contract you verify the generated source against):**
+<controlled_spec_document>
+
+**Tests:**
+<tests_document>
+
+**IR (authoritative for the published surface and its signatures, the case set, and the contracts):**
+<ir_document>
+
+**Runner-output contract (`docs/workflow/RUNNER_OUTPUT_CONTRACT.md`, inlined whole — the same document the producer authored against, and the canonical source for H6, H7 and H8. Where a checklist item above and this document differ in detail, this document governs):**
+<runner_output_contract_document>
+
+**Severity rubric (`docs/workflow/phases/phase_02_generate.md` §2-2, inlined): choose `issue_severity` by it — the value names the repair the finding calls for, never the weight of its consequence:**
+<severity_rubric_document>
+
+**Generated CodegenBundle under review (the producer's output — do not re-author it, judge it):**
+<bundle_document>
+
+<dependency_facts>
+
+Target node_key: <node_key>
+Target step: <step>
+Target substep: <substep>
+orchestration_id: <orchestration_id>
+agent_run_id: <agent_run_id>
+prompt_contract_version: <prompt_contract_version>

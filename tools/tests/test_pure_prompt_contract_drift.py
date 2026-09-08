@@ -102,6 +102,8 @@ _TEMPLATE_FILES = (
     "pure_compile_verify.txt",
     "pure_generate_generate.txt",
     "pure_generate_verify.txt",
+    "pure_generate_generate_harness.txt",
+    "pure_generate_verify_harness.txt",
     "pure_bundle_repair.txt",
     "pure_escalate_diagnose.txt",
     "pure_validate_judge.txt",
@@ -421,7 +423,16 @@ PINNED: dict[str, str] = {
     # gates are the authority for what they check. It now says these are gate-owned, that a
     # non-empty one means the run reached the judge in a state the gate should have refused, and
     # that it is an `attribution=evidence` integrity signal rather than the judge's contribution.
-    "pure-36": "b90892edf00f9fcef3320d8b17ed29f053bcd64b00606fa774f07c77842137dc",}
+    "pure-36": "b90892edf00f9fcef3320d8b17ed29f053bcd64b00606fa774f07c77842137dc",
+    # pure-37 (issue #169, PR-3): the second GENERATE bundle SHAPE. `_TEMPLATE_FILES` grew by two
+    # — `pure_generate_generate_harness.txt` / `pure_generate_verify_harness.txt`, the producer
+    # and reviewer an `infrastructure` self-test now runs as a pure leaf, where before it was the
+    # last live fall-through to the agentic loop. The two side effects are the usual ones and are
+    # not new: an exemplar certified at pure-36 or earlier stops being offered, and an
+    # orchestration whose `generate` ran under pure-36 cannot be `--resume`d across this bump.
+    # The coupled tuple also gained a member: the WHOLE `RUNNER_OUTPUT_CONTRACT.md`, which those
+    # two templates inline (the §1+§3 slice the judge sees stays its own member).
+    "pure-37": "e0b90b919f81d4d2503d6bd6d8c668dd557001aa1df45e9e85450798917953de",}
 
 
 def _contract_tuple() -> dict[str, object]:
@@ -466,6 +477,27 @@ def _contract_tuple() -> dict[str, object]:
         "runner_output_contract_sections": wc._runner_output_contract_sections(
             (Path(wc.__file__).resolve().parents[1]
              / "docs" / "workflow" / "RUNNER_OUTPUT_CONTRACT.md").read_text(encoding="utf-8")),
+        # ...and the WHOLE of the same document, because since `pure-37` the `harness` bundle
+        # shape's two `generate` prompts inline all of it (issue #169): a leaf that AUTHORS the
+        # program reads every section, where the judge that only reads its output is shown two.
+        # The slice above stays a separate member deliberately — it is what the judge sees, and
+        # a widening of `_runner_output_contract_sections` must still be visible as a change to
+        # THAT member rather than be absorbed by the whole-document one.
+        #
+        # This is the one document treated as a leaf CONTRACT rather than as leaf INPUT DATA
+        # (the disposition `phase_01_compile.md` and `controlled_spec.md` take above), and the
+        # churn measurement is why: 11 commits over 8 distinct days all-time, 3 since
+        # 2026-07-19 — measured at `ed36c77` with
+        # `git log --oneline -- docs/workflow/RUNNER_OUTPUT_CONTRACT.md | wc -l`, the same log
+        # with `--date=short --format=%ad | sort -u | wc -l`, and again with `--since=2026-07-19`.
+        # A document that stable does not make the bump a churn magnet, and it additionally
+        # carries a size ceiling (`test_orchestration_runtime.ChildContextDocSizeTests`), so it
+        # is edited deliberately. The known cost is the usual pair: a bump stops
+        # `_resolve_exemplar_source` offering earlier-version exemplars and refuses `--resume`
+        # across it.
+        "runner_output_contract_document": (
+            Path(wc.__file__).resolve().parents[1]
+            / "docs" / "workflow" / "RUNNER_OUTPUT_CONTRACT.md").read_text(encoding="utf-8"),
     }
 
 

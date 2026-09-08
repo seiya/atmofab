@@ -45,7 +45,7 @@ from tools.backends import registry as backend_registry
 # constants and never the file, so a missing or unreadable schema cannot fail-open a gate.
 # --------------------------------------------------------------------------------------
 
-CODEGEN_BUNDLE_SCHEMA_VERSION = "1.0.0"
+CODEGEN_BUNDLE_SCHEMA_VERSION = "1.1.0"
 
 BUNDLE_SCHEMA_PATH = "spec/schema/generate/codegen_bundle.schema.json"
 HARNESS_CAPABILITIES_SCHEMA_PATH = "spec/schema/generate/harness_capabilities.schema.json"
@@ -60,15 +60,21 @@ REQUIRED_BUNDLE_KEYS: tuple[str, ...] = (
 )
 OPTIONAL_BUNDLE_KEYS: tuple[str, ...] = ("state_bindings",)
 
-FILE_ROLES: tuple[str, ...] = ("model", "checks", "helper", "internal_module")
+FILE_ROLES: tuple[str, ...] = ("model", "checks", "helper", "internal_module", "runner")
 # Only these roles may define an externally visible symbol. A helper / internal_module
 # file is private BY ROLE — privacy is declared, not inferred from a Fortran `private`.
+# A `runner` file defines no entrypoint either, for the opposite reason: it is the unit's
+# executable entry, so nothing else in the unit may `use` it.
 ROLE_FOR_ENTRYPOINT_KIND: dict[str, str] = {"operation": "model", "checks_interface": "checks"}
 ENTRYPOINT_KINDS: tuple[str, ...] = tuple(ROLE_FOR_ENTRYPOINT_KIND)
 # A file shared by the whole unit (`member_node_key: null`) may only be private.
 UNIT_SHAREABLE_ROLES: frozenset[str] = frozenset({"helper", "internal_module"})
+#: The role whose file carries the unit's executable entry. It is the ONE role that may
+#: declare no modules (v1.1.0): an executable entry is not something another file `use`s.
+ENTRY_BEARING_ROLE = "runner"
 # Compile order derives from the role alone — no `use`-statement analysis of generated code.
-ROLE_BUILD_PRECEDENCE: tuple[str, ...] = ("internal_module", "helper", "model", "checks")
+ROLE_BUILD_PRECEDENCE: tuple[str, ...] = (
+    "internal_module", "helper", "model", "checks", "runner")
 
 def _language_bundle(language: str) -> Any | None:
     """The language backend's bundle interface, or `None` when there is none to reach.
@@ -614,7 +620,7 @@ def _files_schema_violations(files: Any) -> list[str]:
         if "role" in entry and role not in FILE_ROLES:
             violations.append(
                 f"{prefix}role must be one of {', '.join(FILE_ROLES)} "
-                "(there is no runner/glue role and no build/script role)")
+                "(there is no build/script role)")
         language = entry.get("language")
         if "language" in entry and language not in LANGUAGES:
             violations.append(f"{prefix}language must be one of {', '.join(LANGUAGES)}")
@@ -633,11 +639,19 @@ def _files_schema_violations(files: Any) -> list[str]:
             violations.append(f"{prefix}content must be a non-empty string")
         # The Fortran modules this file defines, so the host can resolve an entrypoint's /
         # binding's `module` to the file that owns it (and thereby to a member) without
-        # parsing the source. Non-empty: a bundle file publishes through a module.
+        # parsing the source. Non-empty: a bundle file publishes through a module — EXCEPT
+        # the one role that carries the unit's executable entry (`ENTRY_BEARING_ROLE`,
+        # v1.1.0), which nothing else `use`s and which therefore may define none. This walker
+        # is the canonical validator (`x-canonical-validator`); the schema JSON carries the
+        # same rule declaratively as `x-non-empty-unless-role`.
         if "modules" in entry:
             modules = entry.get("modules")
-            if not isinstance(modules, list) or not modules:
-                violations.append(f"{prefix}modules must be a non-empty array")
+            if not isinstance(modules, list):
+                violations.append(f"{prefix}modules must be an array")
+            elif not modules and role != ENTRY_BEARING_ROLE:
+                violations.append(
+                    f"{prefix}modules must be a non-empty array "
+                    f"(only role {ENTRY_BEARING_ROLE!r} may define no module)")
             else:
                 for mod_index, module in enumerate(modules):
                     if not _is_identifier(module):
@@ -938,8 +952,10 @@ def bundle_invariant_violations(doc: Mapping[str, Any]) -> list[str]:
         role = target.get("role")
         if role not in ROLE_FOR_ENTRYPOINT_KIND.values():
             violations.append(
-                f"{prefix}defined_in {defined_in!r} has role {role!r}, which is private "
-                "and cannot define an entrypoint")
+                f"{prefix}defined_in {defined_in!r} has role {role!r}, which cannot define an "
+                f"entrypoint (only {' / '.join(sorted(set(ROLE_FOR_ENTRYPOINT_KIND.values())))} "
+                "may: helper / internal_module are private by role, and a runner is the unit's "
+                "executable entry, which nothing may `use`)")
             continue
         expected_role = ROLE_FOR_ENTRYPOINT_KIND.get(entry.get("kind"))
         if expected_role is not None and role != expected_role:
@@ -969,6 +985,18 @@ def bundle_invariant_violations(doc: Mapping[str, Any]) -> list[str]:
             for entry in files)
         if not has_model:
             violations.append(f"optimization_unit member {member!r} has no files[] entry of role model")
+        # A member has AT MOST ONE executable entry (v1.1.0). Two would leave the link with two
+        # program entries and no rule to pick one; zero is the ordinary case (the host renders
+        # the glue). `member_node_key: null` is already refused for this role above
+        # (`UNIT_SHAREABLE_ROLES`), so counting by member sees every runner in the bundle.
+        runner_count = sum(
+            1 for entry in files
+            if entry.get("role") == ENTRY_BEARING_ROLE
+            and entry.get("member_node_key") == member)
+        if runner_count > 1:
+            violations.append(
+                f"optimization_unit member {member!r} has {runner_count} files[] entries of role "
+                f"{ENTRY_BEARING_ROLE!r}; a member carries at most one executable entry")
         # Operation cardinality is by node KIND. A `problem` node publishes exactly one
         # operation — its single integration update path — so two would leave the host with no
         # rule to pick THE update path. A `component` / `infrastructure` node publishes an API of
@@ -1450,7 +1478,9 @@ def derive_build_graph(doc: Mapping[str, Any], *,
     # checks uniqueness WITHIN the bundle, but the closure and the glue are host inputs, so
     # only assembly can compare the three origins. A bundle file at the runner's path would
     # otherwise overwrite the host-rendered glue object — exactly the contract-boundary
-    # capture that the "no runner/glue role" rule exists to deny.
+    # capture that the M3c shape's refusal of a `runner`-role file exists to deny. Since
+    # v1.1.0 a bundle CAN carry a runner, but only on a node the host renders no glue for
+    # (`host_glue_sources` empty); on a node where both exist this raise is what stops them.
     folded = [obj.casefold() for obj in objects]
     duplicates = sorted({obj for obj, key in zip(objects, folded) if folded.count(key) > 1})
     if duplicates:
@@ -1629,6 +1659,52 @@ def m3c_checks_abi_violation(doc: Mapping[str, Any], spec_id: str) -> str | None
     return None
 
 
+def harness_bundle_shape_violation(doc: Mapping[str, Any], spec_id: str,
+                                   runner_basename: str) -> str | None:
+    """The file-shape constraint on a HARNESS bundle (v1.1.0), or None.
+
+    The harness shape is the second admissible pure-producer shape (issue #169). Unlike M3c —
+    where the host renders the runner glue and the leaf authors model + checks — a harness node
+    self-tests: the leaf authors the model AND the executable entry, and there is no checks
+    module at all (nothing drives per-case checks callbacks for it; its runner records the
+    status of the plumbing check each case id names).
+
+    So the shape is: EXACTLY ONE `model`-role file named `<spec_id>_model<ext>`, EXACTLY ONE
+    `runner`-role file named `runner_basename`, and NO `checks`-role file. Both literal names
+    come from the caller's own spelling of them — `runner_basename` is passed in, and the model
+    basename takes its extension from it — so this layer adds no second place that says what a
+    node's files are called (`docs/BACKEND_BOUNDARY.md` ledger).
+
+    Why the names are pinned at all, when no host-rendered glue `use`s them here: the build
+    control file's binary name is derived from `spec_id` by the host (`_resolve_exe_name`), Build
+    stages and links
+    `<spec_id>_model<ext>` for a CONSUMER of this harness by that literal name
+    (`derive_build_graph`'s `staged:` sources), and the deterministic gates open the model
+    source by that filename. A differently-named model file therefore certifies a harness no
+    consumer can link.
+
+    `m3c_literal_name_violation` / `m3c_checks_abi_violation` are deliberately NOT run for this
+    shape: the first requires a checks file this shape forbids, and the second an ABI it has no
+    module to publish."""
+    ext = runner_basename[runner_basename.rfind("."):] if "." in runner_basename else ""
+    model_basename = f"{spec_id}_model{ext}"
+    files = [e for e in (doc.get("files") or []) if isinstance(e, dict)]
+    for role, want_path in ((ENTRY_BEARING_ROLE, runner_basename), ("model", model_basename)):
+        paths = [str(e.get("logical_path", "")) for e in files if e.get("role") == role]
+        # EXACT comparison, not casefold, for the same reason `m3c_literal_name_violation`
+        # uses one: `logical_path` becomes a filename that the build and the gates open
+        # verbatim on a case-sensitive filesystem.
+        if paths != [want_path]:
+            return (f"a harness bundle carries exactly one {role}-role file, named "
+                    f"{want_path!r} (the host derives the staged source name and the binary "
+                    f"name from the spec_id); got {paths}")
+    checks_paths = [str(e.get("logical_path", "")) for e in files if e.get("role") == "checks"]
+    if checks_paths:
+        return ("a harness bundle carries no checks-role file (nothing drives per-case checks "
+                f"callbacks for a self-testing node); got {checks_paths}")
+    return None
+
+
 def published_operations_from_ir(ir: Mapping[str, Any]) -> list[str] | None:
     """The IR's ``public_api.published_operations`` operation_id names (L1c input), or ``None``
     when the IR carries no ``public_api`` pin (a legacy pre-L1 IR — the L1c layer is then inert).
@@ -1650,11 +1726,29 @@ def published_operations_from_ir(ir: Mapping[str, Any]) -> list[str] | None:
     ]
 
 
+#: The bundle SHAPES a pure producer may be asked to satisfy. `m3c` is a physics node (the host
+#: renders the runner glue, the leaf authors model + checks); `harness` is an `infrastructure`
+#: node's self-test (the leaf authors model + the executable entry, and there is no checks
+#: module). WHICH one a node has is the caller's question — `validate_bundle(doc)` sees a
+#: document and cannot know the node — and the two callers resolve it from the twin readers
+#: `Conductor._bundle_shape` / `validate_pipeline_semantics._ir_bundle_shape`.
+BUNDLE_SHAPES: tuple[str, ...] = ("m3c", "harness")
+
+#: The `spec_kind`s whose IR carries a `public_api.published_operations` pin the L1c layer holds
+#: a bundle's `operation` entrypoints to. Kept equal to the kinds the pure IR producer authors a
+#: `public_api` for (`workflow_conductor._PURE_IR_PUBLIC_API_KINDS`); a kind absent here has no
+#: pinned surface to compare against, so the layer stays inert for it rather than fail-closing on
+#: an IR that was never asked for the section.
+L1C_PUBLISHED_SURFACE_SPEC_KINDS: frozenset[str] = frozenset({"component", "infrastructure"})
+
+
 def pure_bundle_contract_violation(
     doc: Mapping[str, Any],
     *,
     node_key: str,
     spec_id: str,
+    shape: str,
+    runner_basename: str,
     ir_state_variables: Iterable[str],
     harness_provided: Iterable[str] | None,
     harness_label: str | None = None,
@@ -1668,19 +1762,27 @@ def pure_bundle_contract_violation(
     (`validate_pipeline_semantics._validate_post_generate_bundle`), so a bundle the producer
     would reject can never be certified by the independent re-check (and the two cannot drift).
 
+    `shape` (one of `BUNDLE_SHAPES`) selects the file-shape layer and nothing else — every other
+    layer runs identically for both. An unknown value is REFUSED rather than defaulted: the shape
+    decides which admissibility rules apply. `runner_basename` is the caller's own spelling of
+    the host glue / executable-entry filename, passed in so this module does not become a second
+    place that says what it is called.
+
     Fail-closed layers, in order, each STOPPING at the first that fails (so one defect is one
-    report AND a later layer never runs on a doc an earlier one already rejected): schema
-    (`validate_bundle`) -> single-node unit shape -> harness capability negotiation (the manifest
-    MUST exist — an undeclared harness satisfies nothing) -> state_variable ∈ IR
-    algorithm.state_variables -> the M3c literal name the host-rendered runner `use`s -> the
-    fixed checks-module ABI -> `build_graph(doc)` (the caller's assembly derivation, which raises
-    RuntimeError on a cross-origin object/module collision or a straddle).
+    report AND a later layer never runs on a doc an earlier one already rejected): shape
+    vocabulary -> schema (`validate_bundle`) -> single-node unit shape -> (m3c) no `runner`-role
+    file -> harness capability negotiation (the manifest MUST exist — an undeclared harness
+    satisfies nothing) -> state_variable ∈ IR algorithm.state_variables -> the file-shape layer
+    (m3c: the literal names the host-rendered runner `use`s, then the fixed checks-module ABI;
+    harness: `harness_bundle_shape_violation`) -> the L1c published surface -> `build_graph(doc)`
+    (the caller's assembly derivation, which raises RuntimeError on a cross-origin object/module
+    collision or a straddle).
 
     `harness_provided` is the caller-resolved harness capability set (`None` = undeclared harness
     = nothing provided, fail-closed); `harness_label` only names it in the findings text.
-    `ir_published_operations` (L1c) is the component IR's `public_api.published_operations` name
-    list (`None` = a legacy IR with no public_api pin, or a non-component node → the surface layer
-    is inert); when present and `node_key` is a `component/`, the bundle's `operation` entrypoint
+    `ir_published_operations` (L1c) is the IR's `public_api.published_operations` name
+    list (`None` = a legacy IR with no public_api pin → the surface layer is inert); when present
+    and the node's `spec_kind` is one of `L1C_PUBLISHED_SURFACE_SPEC_KINDS`, the bundle's `operation` entrypoint
     symbols for this member must equal that set (casefold), so the bundle entrypoints cannot drift
     from the pinned published surface. `build_graph(doc)` performs the caller's `derive_build_graph`
     assembly. (The former
@@ -1688,6 +1790,10 @@ def pure_bundle_contract_violation(
     checks ABI passes each declared id to `checks_compute` as a literal actual, so a dropped id is
     structurally impossible — the module authors only the status. `post_execute` stays the
     sufficient backstop for status honesty.)"""
+    if shape not in BUNDLE_SHAPES:
+        return ("bundle_shape_unsupported",
+                f"unknown bundle shape {shape!r}; the admissible shapes are "
+                f"{', '.join(BUNDLE_SHAPES)}")
     violations = validate_bundle(doc)
     if violations:
         return ("bundle_schema_violation",
@@ -1697,6 +1803,18 @@ def pure_bundle_contract_violation(
         return ("bundle_shape_unsupported",
                 f"optimization_unit.members must be exactly [{node_key!r}] on the live "
                 f"pure path (single-node unit); got {list(members)}")
+    # An M3c node's runner is HOST-rendered glue, so a `runner`-role file in its bundle is the
+    # leaf reaching across the contract boundary — refused here BY SHAPE rather than left to
+    # `derive_build_graph`'s object-name collision, which only fires when the leaf also picks
+    # the glue's exact filename.
+    if shape == "m3c":
+        runner_paths = [e.get("logical_path") for e in (doc.get("files") or [])
+                        if isinstance(e, dict) and e.get("role") == ENTRY_BEARING_ROLE]
+        if runner_paths:
+            return ("bundle_shape_unsupported",
+                    f"role {ENTRY_BEARING_ROLE!r} is not admissible on this node: its runner is "
+                    f"host-rendered glue ({runner_basename!r}), not bundle content; got "
+                    f"{runner_paths}")
     required = doc.get("capability_requirements") or []
     unsatisfied = unsatisfied_capability_requirements(required, harness_provided)
     if unsatisfied:
@@ -1723,16 +1841,22 @@ def pure_bundle_contract_violation(
             return ("bundle_state_binding_mismatch",
                     f"state_bindings[{idx}].state_variable {sv!r} is not an IR "
                     f"algorithm.state_variable (declared: {sorted(ir_state_vars)})")
-    name_violation = m3c_literal_name_violation(doc, spec_id)
-    if name_violation is not None:
-        return ("bundle_assembly_collision", name_violation)
-    abi_violation = m3c_checks_abi_violation(doc, spec_id)
-    if abi_violation is not None:
-        return ("bundle_checks_abi_violation", abi_violation)
+    if shape == "harness":
+        shape_violation = harness_bundle_shape_violation(doc, spec_id, runner_basename)
+        if shape_violation is not None:
+            return ("bundle_shape_unsupported", shape_violation)
+    else:
+        name_violation = m3c_literal_name_violation(doc, spec_id)
+        if name_violation is not None:
+            return ("bundle_assembly_collision", name_violation)
+        abi_violation = m3c_checks_abi_violation(doc, spec_id)
+        if abi_violation is not None:
+            return ("bundle_checks_abi_violation", abi_violation)
     # L1c: a component's `operation` entrypoint symbols must equal its IR public_api published
     # surface (casefold). Inert when `ir_published_operations` is None (legacy IR / non-component)
     # — the single-source pin against the certified IR, checked identically by both callers.
-    if ir_published_operations is not None and node_key.split("/", 1)[0] == "component":
+    if (ir_published_operations is not None
+            and node_key.split("/", 1)[0] in L1C_PUBLISHED_SURFACE_SPEC_KINDS):
         published = {
             p.strip() for p in ir_published_operations
             if isinstance(p, str) and p.strip()
@@ -1760,7 +1884,7 @@ def pure_bundle_contract_violation(
                     + ", ".join(extra))
             catalog = ", ".join(sorted(published)) or "(none)"
             return ("bundle_published_surface_mismatch",
-                    f"component {node_key} bundle operation entrypoints must match the IR "
+                    f"{node_key} bundle operation entrypoints must match the IR "
                     f"public_api.published_operations exactly [{catalog}] — " + "; ".join(parts))
     try:
         build_graph(doc)

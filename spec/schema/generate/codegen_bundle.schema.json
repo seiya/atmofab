@@ -18,7 +18,7 @@
       "description": "Semantic version of this contract. The pattern pins the supported MAJOR (1), so a schema-only consumer rejects an incompatible major here rather than admitting it to fail later at validate_bundle; the canonical validator additionally reports a malformed version and an unsupported major as distinct clauses.",
       "type": "string",
       "pattern": "^1\\.[0-9]+\\.[0-9]+(?![\\s\\S])",
-      "x-current-version": "1.0.0"
+      "x-current-version": "1.1.0"
     },
     "optimization_unit": {
       "description": "The semantic nodes generated as this one bundle. The ordered member list IS the unit identity; no derived unit_id exists.",
@@ -52,11 +52,12 @@
             "x-segment-pattern": "^[A-Za-z0-9_][A-Za-z0-9_.-]*(?![\\s\\S])"
           },
           "role": {
-            "description": "The file's build and visibility role. There is no runner/glue role (contract-boundary glue is host-rendered and can never be bundle content) and no build/script role (the backbone of the no-arbitrary-command rule). Only helper and internal_module may be private (they cannot define an entrypoint) and only they may be shared across unit members (member_node_key: null).",
+            "description": "The file's build and visibility role. There is no build/script role (the backbone of the no-arbitrary-command rule). Only model and checks may define an entrypoint: helper and internal_module are private by role, and runner carries the unit's executable entry, which nothing may `use`. Only helper and internal_module may be shared across unit members (member_node_key: null). The runner role (added in 1.1.0) is admissible only on a node the host renders no contract-boundary glue for; where the host does render it, that glue can never be bundle content. WHICH nodes those are is not a property of this document — the acceptance layer decides it from the node (tools/codegen_bundle.py:pure_bundle_contract_violation, `shape`).",
             "type": "string",
-            "enum": ["model", "checks", "helper", "internal_module"],
+            "enum": ["model", "checks", "helper", "internal_module", "runner"],
             "x-entrypoint-bearing-roles": ["model", "checks"],
-            "x-unit-shareable-roles": ["helper", "internal_module"]
+            "x-unit-shareable-roles": ["helper", "internal_module"],
+            "x-entry-bearing-role": "runner"
           },
           "language": {
             "description": "Source language. v1 is fortran only; a new language is added by extending this enum and LANGUAGE_EXTENSION_ALLOWLIST together.",
@@ -74,9 +75,9 @@
             "minLength": 1
           },
           "modules": {
-            "description": "The Fortran modules this file defines. Non-empty, and a module name is unique across the whole bundle (one .mod per module). The host resolves an entrypoint's / state_binding's `module` to the file (and thus member) that owns it via this list, and renders `use <module>, only: <symbol>` without parsing the source; tools/codegen_bundle.py:bundle_invariant_violations ties module attribution to file/member ownership.",
+            "description": "The Fortran modules this file defines. Non-empty except for the runner role — the unit's executable entry defines no module, because nothing else `use`s it (x-non-empty-unless-role; the canonical validator holds this rule, a draft-07 `minItems` cannot carry the exception). A module name is unique across the whole bundle (one .mod per module). The host resolves an entrypoint's / state_binding's `module` to the file (and thus member) that owns it via this list, and renders `use <module>, only: <symbol>` without parsing the source; tools/codegen_bundle.py:bundle_invariant_violations ties module attribution to file/member ownership.",
             "type": "array",
-            "minItems": 1,
+            "x-non-empty-unless-role": "runner",
             "items": {"type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_]{0,62}(?![\\s\\S])"}
           },
           "compile_after": {
@@ -246,7 +247,7 @@
     {"note": "no build/script role exists", "role": "script"},
     {"note": "the bundle carries no commands; the object is closed", "build_commands": ["gfortran -c x.f90"]},
     {"note": "the bundle carries no compiler flags; the target backend derives them", "compile_flags": "-O3"},
-    {"note": "an entrypoint may not be defined in a private (helper / internal_module) file", "kind": "operation", "defined_in": "adv1d_limiter.f90"},
+    {"note": "an entrypoint may not be defined in a private (helper / internal_module) file, nor in the runner", "kind": "operation", "defined_in": "adv1d_limiter.f90"},
     {"note": "a capability name outside CAPABILITY_VOCABULARY", "capability_requirements": ["gpu_magic@1"]}
   ],
   "x-forbidden-examples-note": "This schema rejects on its own: the closed-key entries (an unknown top-level or per-object key), the unknown role, and — through the whole-path logical_path pattern — every traversal, separator, and normalization example ('../escape.f90', '/abs.f90', 'a/../b.f90', 'a//b.f90', 'dir\\win.f90', './x.f90'). The canonical validator tools/codegen_bundle.py:validate_bundle rejects the rest, because no draft-07 pattern can carry them: the reserved build filenames ('Makefile'), the build/script extensions ('build.sh'), the per-language extension allowlist, the case-folded duplicate path ('A.f90' beside 'a.f90'), the closed capability vocabulary ('gpu_magic@1' matches the token pattern), and every cross-field invariant (entrypoint privacy and attribution, member coverage, the residency-capability coupling, object-name uniqueness). A consumer that applies this schema with a generic JSON Schema library obtains the field grammar only and must still call the canonical validator.",

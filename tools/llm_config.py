@@ -176,8 +176,10 @@ LLM_LEAF_SUBSTEPS: frozenset[tuple[str, str]] = frozenset({
 
 # The subset that CAN run as a pure leaf. Mirror of the `(phase, substep)` pair test in
 # `Conductor._pure_leaf_substep`; guarded by `test_pure_capable_substeps_matches_conductor`.
-# NOTE the dispatch there additionally gates the two GENERATE pairs on the node's M3c shape, so
-# a pure-only provider on a non-M3c node has no pure path for them — the conductor fails that
+# NOTE the dispatch there additionally gates the two GENERATE pairs on the node having a bundle
+# SHAPE at all (`Conductor._bundle_shape`: `m3c` or, since issue #169, `harness`). No in-tree node
+# answers None, so a pure-only provider has a pure path for every node the catalog carries; a
+# hand-crafted IR with no shape would have none for those two pairs, and the conductor fails that
 # closed at run time (`pure_only_provider_on_agentic_path`), which config validation cannot see.
 # The two COMPILE pairs (Z1, issue #168) carry no shape condition: the Compile contract does not
 # depend on the node kind, and at `compile.generate` time no IR exists to read a shape from.
