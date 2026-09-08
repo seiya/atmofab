@@ -2950,6 +2950,22 @@ class BundleShapeAdmissibilityTest(unittest.TestCase):
         self.assertEqual(result[0], "bundle_shape_unsupported")
         self.assertIn("harness_fortran_cpu_model", result[1])
 
+    def test_harness_shape_compares_the_PATH_case_sensitively(self) -> None:
+        """The other half of the pair below, and the one the comment argues for at length: a
+        `logical_path` becomes a filename the build and the gates open verbatim, so an
+        uppercase spelling of the pinned name is a DIFFERENT file. A round-3 census found the
+        claim vacuous — casefolding the path comparison survived every test file — and the two
+        rows are deliberately adjacent, because what makes each meaningful is that the other
+        goes the other way."""
+        doc = self._harness_doc()
+        model = _find(doc["files"], "harness_fortran_cpu_model.f90")
+        model["logical_path"] = "Harness_Fortran_CPU_Model.f90"
+        doc["entrypoints"][0]["defined_in"] = "Harness_Fortran_CPU_Model.f90"
+        result = self._run(doc, "harness")
+        self.assertIsNotNone(result)
+        self.assertEqual(result[0], "bundle_shape_unsupported")
+        self.assertIn("harness_fortran_cpu_model.f90", result[1])
+
     def test_harness_shape_takes_the_module_name_case_insensitively(self) -> None:
         """A Fortran identifier is case-insensitive, so the module comparison must be — unlike
         the path one beside it, which becomes a filename a case-sensitive filesystem opens."""

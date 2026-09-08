@@ -489,8 +489,11 @@ class HttpPureLeafWiringTests(unittest.TestCase):
         self.assertEqual(outcome.infra_error[0], "pure_only_provider_on_agentic_path")
         self.assertIn("no CodegenBundle shape", outcome.infra_error[1])
         self.assertNotIn("M3c", outcome.infra_error[1])
+        # ...and it names BOTH inputs the predicate reads. A round-3 reviewer caught the first
+        # replacement sending an operator to the IR alone, when the node_key can decide.
+        self.assertIn("node_key", outcome.infra_error[1])
 
-    def test_an_agentic_provider_on_a_non_m3c_node_is_untouched(self) -> None:
+    def test_an_agentic_provider_on_a_shapeless_node_is_untouched(self) -> None:
         c = _HttpConductor(
             repo_root=self.repo, orchestration_id="o", orchestration_agent_run_id="orch",
             env={KEY_ENV: "sk-test"}, llm_config=_cfg("claude", agent_model="opus"))
