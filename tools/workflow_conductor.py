@@ -11742,11 +11742,12 @@ clean:
         # safety net for the record-launch-less diagnostician leaf.
         entry = self.entry_for(phase, substep)
         # RUNTIME half of the pure-only rule. Config validation rejects an HTTP provider on an
-        # agentic SUBSTEP, but `_pure_leaf_substep` additionally requires the node's M3c shape:
-        # the `infrastructure` harness self-test has no bundle representation for its runner
-        # and falls through to the shared agentic loop. (The other former non-M3c shapes — a
-        # c/cpp/mixed toolchain, a physics node without exactly one infra dep — are rejected
-        # upstream now, so a non-M3c IR reaching here is hand-crafted.)
+        # agentic SUBSTEP, but `_pure_leaf_substep` additionally requires the node to have a
+        # bundle SHAPE (`_bundle_shape`). Since issue #169 no in-tree node lacks one — the
+        # `infrastructure` harness self-test, which used to fall through here, is the `harness`
+        # shape — so a shapeless IR reaching this line is hand-crafted, the remaining None
+        # answers (a c/cpp/mixed toolchain, a language with no bundle backend) being rejected
+        # upstream.
         # An entry that cannot run that loop must fail here, not launch into it.
         if not entry.supports(CAP_AGENTIC) and not self._pure_leaf_substep(refs, phase, substep):
             detail = (

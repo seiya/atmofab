@@ -58,7 +58,7 @@ Sequenced (the pure-leaf migration and what it makes dead):
 
 ## Corrections the verification made to the survey
 
-- Agentic launches numbered six, not five: the escalate diagnostician was the sixth. It went pure in #169's PR-1, leaving the five `LLM` leaf pairs; `validate.judge` went pure in PR-2, so what is still agentic is the `infrastructure` node's Generate (PR-3).
+- Agentic launches numbered six, not five: the escalate diagnostician was the sixth. It went pure in #169's PR-1, leaving the five `LLM` leaf pairs; `validate.judge` went pure in PR-2, and the `infrastructure` node's Generate in PR-3 — after which no `LLM` leaf of any catalog node runs agentic.
 - The sandbox wraps LLM CLI processes only; build and execute run in-process and unsandboxed today, so "keep the sandbox on build/execute" would be new work (#171).
 - The judge recomputes from `raw/` with scripts it writes, which a tool-free leaf cannot do; its pure form needs a host-side excerpting policy (#169). That policy is `tools/raw_evidence_excerpt.py`, landed with PR-2: the host summarizes each array rather than handing over any of it, and the judge is asked whether the reported metrics are SUPPORTED rather than to recompute them.
 - Non-default target-stack values are refused at `Compile.static`, not at spec-input (recorded on #173).
