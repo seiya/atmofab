@@ -30925,7 +30925,16 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # round N+1 by construction. Round 5's own edit states the reviewer's scope ONCE, in the
         # section that defines it, because the document had been stating it four ways and the
         # narrowest reading dropped the one invariant family no gate re-checks.)
-        "docs/workflow/phases/phase_01_compile.md": 66780,
+        # Bumped 66780->68623 (issue #175) — measured 68473 with `wc -c` in
+        # /home/seiya/atmofab at the commit that takes this bump, plus this entry's ~150 B
+        # slack rule. The growth is one rule and one sidecar key a compile leaf cannot get
+        # right without being told: `<ir_ref>/dependency_graph.json` now carries `profiles`,
+        # `direct_deps` is sourced from the graph rather than from `deps.yaml` (an adopted
+        # `profile` is not a node and the components it selects are the direct set), and
+        # `inputs.profile_selection` is a two-key pointer a new deterministic gate pins.
+        # A leaf told none of this writes `direct_deps` from the dependency declaration it
+        # is also handed and fails the V4 gate on every retry.
+        "docs/workflow/phases/phase_01_compile.md": 68623,
         # Per-substep SKILLs — each force-read by its own LLM leaf.
         # Bumped 10800->11500: Compile.generate now authors the io_contract section (G2 /
         # docs/design/deterministic_followups.md) — it was moved here from Compile.verify so the

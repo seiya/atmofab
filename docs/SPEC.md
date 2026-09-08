@@ -96,7 +96,6 @@ spec/
       <family>/
         <spec_id>/
           controlled_spec.md
-          tests.md
           deps.yaml
   infrastructure/
     <domain>/
@@ -118,16 +117,16 @@ releases/
 ```
 
 3. Make the definitions of `domain` and `family` match the "`spec` classification vocabulary" in `GLOSSARY.md`.
-4. `spec_id` must be unique within the repository, and requires the form `^[a-z][a-z0-9_]{2,63}$` and a length of **at most 55 characters**. The 55-character bound keeps the identifiers derived from it (`<spec_id>_model` / `<spec_id>_runner` / `<spec_id>_checks`) within the `f2008` 63-character identifier limit. It is checked at **spec-input**, before any phase runs, for the target `spec` and for every member of a `--with-deps` dependency closure alike; an over-length `spec_id` is an error there and is resolved only by a rename (re-authoring the `IR` or the source cannot resolve it). The bound reflects the identifier limit of the only current backend (`fortran`); when a backend with a different limit is added, the bound moves to a language-aware point and does not enter the name grammar above.
-5. `tests.md` allows placing only 1 file per `spec`.
+4. `spec_id` must be unique within the repository, and requires the form `^[a-z][a-z0-9_]{2,63}$` and a length of **at most 55 characters**. The 55-character bound keeps the identifiers derived from it (`<spec_id>_model` / `<spec_id>_runner` / `<spec_id>_checks`) within the `f2008` 63-character identifier limit. It is checked at **spec-input**, before any phase runs, for the target `spec` and for every member of a `--with-deps` dependency closure alike — a `profile` is out of scope, because nothing is generated from its `spec_id`; an over-length `spec_id` is an error there and is resolved only by a rename (re-authoring the `IR` or the source cannot resolve it). The bound reflects the identifier limit of the only current backend (`fortran`); when a backend with a different limit is added, the bound moves to a language-aware point and does not enter the name grammar above.
+5. `tests.md` allows placing only 1 file per `spec`. A `profile spec` carries NONE: nothing is generated or executed for it, so there is nothing for a test to be about (issue #175).
 6. `component_id` requires the form `^[a-z][a-z0-9_]{2,63}$`, and the recommended form is `<domain>_<family>_<operator>_<dim>d_<scheme>`. A `component spec`'s `component_id` is its `spec_id`, so the 55-character bound of requirement 4 applies to it as well.
 7. `operation_id` requires the form `<component_id>__<action>`.
 8. The published names of the generated code require compatibility management, and a change that breaks `major` compatibility is separated into a different name.
-9. Every `spec` declares its dependencies in `deps.yaml`, and direct path references (relative `import`) are forbidden. Every `spec` whose `spec_kind` is not `infrastructure` declares **exactly one** `infrastructure` (R1 harness) direct dependency: its runner is host-rendered glue over that harness, and there is no other runner path. An `infrastructure spec` declares none (it authors its own self-test runner). Like the `spec_id` bound of requirement 4, this is checked at **spec-input**, before any phase runs, for the target `spec` and for every member of a `--with-deps` dependency closure alike; zero or more than one is an error there, resolved only by editing `deps.yaml`.
-10. A `problem spec` must declare its dependent `component` and adopted `profile`.
+9. Every `spec` declares its dependencies in `deps.yaml`, and direct path references (relative `import`) are forbidden. Every `spec` whose `spec_kind` is not `infrastructure` declares **exactly one** `infrastructure` (R1 harness) direct dependency: its runner is host-rendered glue over that harness, and there is no other runner path. An `infrastructure spec` declares none (it authors its own self-test runner), and a `profile spec` declares none and may not declare one: it builds nothing, and a harness declared there would enter the closure of every adopting `node` through an edge that `node` never wrote. Like the `spec_id` bound of requirement 4, this is checked at **spec-input**, before any phase runs, for the target `spec` and for every member of a `--with-deps` dependency closure alike; zero or more than one is an error there, resolved only by editing `deps.yaml`.
+10. A `problem spec` must have a direct `component` set — declared in its own `deps.yaml`, selected by a `profile` it adopts, or both. A `component` has exactly ONE source: one an adopted `profile` selects is not declared again by the adopting `spec`, and declaring it twice is refused at closure resolution.
 11. Unregistered dependencies, unimplemented dependencies, and compatibility-violating dependencies are not allowed.
 12. `releases/registry/component_catalog.yaml` holds the per-`component` responsibility, the published `operation`, compatibility information, and implementation state.
-13. Each `tests.md` must define at least 1 `L0` test.
+13. Each `tests.md` must define at least 1 `L0` test. (A `profile spec` has no `tests.md` — requirement 5.)
 14. Official-version artifacts must not be placed under `spec`. The storage location requires `releases/<spec_kind>/<domain>/<family>/<spec_id>/<target_architecture>/<toolchain_language>/<release_id>/`.
 15. The granularity decision requires the following criteria.
 - Replaceability: make only a boundary where there is a decision to replace it independently into a `component spec`.
@@ -138,7 +137,7 @@ releases/
 ### Design Policy
 - A `problem spec` defines the integration scenario and guarantees the consistency of multiple `component`.
 - A `component spec` defines the reusable physics-operation contract and guarantees interchangeability and `API` stability.
-- A `profile spec` defines the `component` selection rules and parameter constraints and manages operational differences. The selection is resolved at Compile time, by the host, for the `node` that adopts the profile; a runtime selection among schemes belongs to the driver of the assembled model, itself a future `spec`-driven `node`. A `profile` is not a certified code `node` (target state; `docs/design/simplification_program.md` §Premise statements, issue #175).
+- A `profile spec` defines the `component` selection rules and parameter constraints and manages operational differences. The selection is resolved at Compile time, by the host, for the `node` that adopts the profile; a runtime selection among schemes belongs to the driver of the assembled model, itself a future `spec`-driven `node`. A `profile` is not a certified code `node` (`docs/design/simplification_program.md` §Premise statements, issue #175): no `phase` runs on one, no dependency closure schedules one, and running the workflow with a `profile` as its target is refused at launch.
 - An operation shared across `spec` is managed independently as a `component`.
 
 ### Operations Rules
@@ -146,7 +145,7 @@ releases/
 - The check is a pre-`Compile` step that sits **outside** the phase sequence. It is not a `phase`, `tools/workflow_conductor.py` does not launch it, and it forms no part of any `step agent` / `substep agent` contract. The `spec` author runs it.
 - Updating a `spec` also requires running the check against every `spec` that declares it as a dependency. A rename or a contract change is applied in lockstep across the dependent's `deps.yaml` and the prose of its `controlled_spec.md`, and a half-applied change is a contradiction that only the dependent's own check surfaces.
 - When adding a new `spec`, registration into `spec/registry/spec_catalog.yaml` is required.
-- The required items of `spec_catalog.yaml` are `spec_kind`, `domain`, `family`, `spec_id`, `spec_version`, `status`, `controlled_spec_path`, and `tests_path`.
+- The required items of `spec_catalog.yaml` are `spec_kind`, `domain`, `family`, `spec_id`, `spec_version`, `status`, `controlled_spec_path`, and `tests_path` — the last on every kind but `profile`, which has no `tests.md` (requirement 5).
 - When the reuse boundary of a `problem spec` is changed, update `releases/registry/component_catalog.yaml` at the same time.
 - While the implementation state of a `component` is `spec_defined_not_implemented`, set the depending `problem spec` to `status=draft`.
 - `workspace/` is a working area for trial artifacts and must not be used as the canonical source for official-version artifacts.

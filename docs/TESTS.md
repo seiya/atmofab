@@ -1,13 +1,12 @@
 # Requirements and format of tests (canonical source)
 
 ## Purpose
-`tests.md` is the canonical source for the verification input and judgment conditions of a `spec`. It is commonly used for all `spec_kind` of `problem` / `component` / `profile` / `infrastructure`.
+`tests.md` is the canonical source for the verification input and judgment conditions of a `spec`. It is commonly used for the `spec_kind` `problem` / `component` / `infrastructure`. A `profile` has none: it is a compile-time selection policy the host resolves, nothing is generated or executed for it, and there is therefore nothing for a test to be about (`docs/SPEC.md` requirement 5, issue #175).
 The evaluation result of `tests.md` is mapped to the relevant `node`'s `self_verdict` in `verdict.json`, and the aggregated judgment including dependencies is handled in `aggregate_verdict.json`.
 
 ## Scope
 - `spec/problem/<domain>/<family>/<spec_id>/tests.md`
 - `spec/component/<domain>/<family>/<spec_id>/tests.md`
-- `spec/profile/<domain>/<family>/<spec_id>/tests.md`
 - `spec/infrastructure/<domain>/<family>/<spec_id>/tests.md`
 
 ## Requirements
@@ -28,10 +27,6 @@ The evaluation result of `tests.md` is mapped to the relevant `node`'s `self_ver
 - `component`
   - For each published `operation`, define at least one normal case and one guard case (`fail` or `xfail`) each.
   - Add `L1`-and-above accuracy / conservation / equivalence tests as needed.
-
-- `profile`
-  - Define the judgment of the selection-establishment condition, exclusion condition, and fallback-prohibition condition.
-  - Define guard-case tests for input outside the compatibility range.
 
 - `infrastructure` (R1 harness)
   - For each published harness operation, define at least one normal case and one guard case (`fail` / `xfail`) each — e.g. numeric round-trip (negative / min / max), boolean-literal emission, case fan-out → per-case snapshot naming, a missing-`--cases` guard (`xfail`), and per-test index completeness.
