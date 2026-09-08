@@ -2625,6 +2625,45 @@ class PureHarnessShapeTests(unittest.TestCase):
         shown = json.loads(ctx["harness_capabilities"])
         self.assertEqual([m["node_key"] for m in shown["manifests"]], [_HARNESS])
 
+    def test_the_lint_rule_set_reaches_the_leaf_from_the_BACKEND(self) -> None:
+        """The rules §5 does not state (round 4 measured four of seven missing) reach the leaf
+        only here, and they come from the backend that IMPOSES them rather than from prose in a
+        neutral-core template — which is the placement `docs/BACKEND_BOUNDARY.md` prescribes and
+        the reason they were absent.
+
+        Pinned by IDENTITY against the backend's own renderer and by the property that matters:
+        every code the gate selects is named in what the leaf is shown. A test that only checked
+        non-emptiness is what let the previous document ship unnoticed."""
+        from tools.backends.linter.fortitude import lint as fortitude
+        ctx = self.c._build_pure_harness_context(self.refs)
+        self.assertEqual(ctx["lint_rules_document"], fortitude.lint_rules_document())
+        for code in fortitude.RULE_CODES:
+            self.assertIn(code, ctx["lint_rules_document"], code)
+            self.assertIn(fortitude.RULE_NAMES[code], ctx["lint_rules_document"], code)
+        # The four this branch's round 4 measured as unreachable, named so a reader can see the
+        # defect this row closes rather than re-deriving it.
+        for code in ("C011", "C122", "C131", "PORT011"):
+            self.assertIn(code, ctx["lint_rules_document"])
+
+    def test_the_lint_rule_set_fails_CLOSED_when_the_backend_cannot_answer(self) -> None:
+        """Every branch of the resolution raises a NAMED reason rather than degrading: a leaf
+        that is not shown the rule set cannot satisfy it, so an empty slot is the defect, not a
+        smaller prompt. The caller turns each into `pure_context_assembly_failed`."""
+        from tools.backends.linter.fortitude import lint as fortitude
+        with mock.patch.dict(
+                "tools.validate_pipeline_semantics._LINT_PRESET_FOR_LANGUAGE", {}, clear=True):
+            with self.assertRaises(RuntimeError) as caught:
+                self.c._build_pure_harness_context(self.refs)
+        self.assertIn("pure_lint_rules_document_unavailable", str(caught.exception))
+        with mock.patch.object(fortitude, "lint_rules_document", lambda: "   "):
+            with self.assertRaises(RuntimeError) as caught:
+                self.c._build_pure_harness_context(self.refs)
+        self.assertIn("pure_lint_rules_document_unavailable", str(caught.exception))
+        with mock.patch.object(fortitude, "lint_rules_document", None):
+            with self.assertRaises(RuntimeError) as caught:
+                self.c._build_pure_harness_context(self.refs)
+        self.assertIn("states no declared rule set", str(caught.exception))
+
     def test_the_gate_guards_slice_is_SECTION_5_and_not_another(self) -> None:
         """CONTENT equality, not non-emptiness. A round-4 sweep found every new refusal of the
         round-3 fix unwitnessed, and the sharpest mutant was swapping the slicer for

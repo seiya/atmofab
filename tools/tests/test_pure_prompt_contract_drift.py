@@ -95,6 +95,7 @@ import tools.codegen_bundle as cb
 import tools.orchestration_runtime as ort
 import tools.workflow_conductor as wc
 import tools.backends.language.fortran.runner as rr
+import tools.backends.linter.fortitude.lint as _fortitude_lint
 from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION, PURE_SYSTEM_PROMPT
 
 _TEMPLATE_FILES = (
@@ -445,8 +446,11 @@ PINNED: dict[str, str] = {
     # 4, which measured what that inline actually covers: §5 states three of the seven rule codes
     # the leaf lost, so the rule that pointed at it claimed a completeness it does not have, and
     # the escape hatch beside it did not cover a §5 clause naming procedures of the §1-§4 ABI
-    # that this shape has no file for.
-    "pure-37": "074bb58fb1fa79715cb1c9817ad2aee39178741c56dcb4a5dd749b982b258e70",}
+    # that this shape has no file for. A SIXTH and last time, closing that gap at the operator's
+    # decision: the linter backend now renders its declared rule set for a leaf
+    # (`lint.lint_rules_document`), the host inlines it, and it joins the tuple — so adding a
+    # code to `RULE_CODES` is a leaf-contract change rather than a silent widening.
+    "pure-37": "ded87f017a18a02ce9d2cf1477723c6242a7c55ee0dbba7aac5ce5d60a670807",}
 
 
 def _contract_tuple() -> dict[str, object]:
@@ -522,6 +526,11 @@ def _contract_tuple() -> dict[str, object]:
         # the whole suite green. `test_pure_leaf_producer.PureHarnessShapeTests` drives both
         # refusals on synthetic text, and pins the slice's identity against
         # `_checks_contract_abi_sections` so swapping the two is red.
+        # The static lint rule set as the harness producer is shown it. A leaf INPUT like the
+        # slices beside it, and the one member that comes from a BACKEND rather than a document:
+        # adding a code to `RULE_CODES` changes what the leaf is told, which is a contract change
+        # and has to bump the version rather than ship silently.
+        "lint_rules_document": _fortitude_lint.lint_rules_document(),
         "checks_contract_gate_guards_section": wc._checks_contract_gate_guards_section(
             (Path(wc.__file__).resolve().parents[1]
              / "docs" / "workflow" / "CHECKS_MODULE_CONTRACT.md").read_text(encoding="utf-8")),

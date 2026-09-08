@@ -12641,7 +12641,8 @@ PURE_CONTEXT_REQUIRED_KEYS_BY_SHAPE: dict[tuple[str, str, str], tuple[str, ...]]
     ("generate", "generate", "harness"): ("harness_capabilities", "target_profile",
                                           "ir_document", "tests_document",
                                           "runner_output_contract_document",
-                                          "gate_guards_document"),
+                                          "gate_guards_document",
+                                          "lint_rules_document"),
     # Its reviewer: the default generate reviewer's documents, with the runner-output contract
     # in place of the checks-module ABI (a harness bundle carries no checks module).
     ("generate", "verify", "harness"): ("controlled_spec_document", "tests_document",
@@ -12811,6 +12812,7 @@ PURE_REPAIR_STATIC_PARAGRAPH_PREFIXES: tuple[str, ...] = (
     "File shape (",
     "**Runner-output contract (",
     "**Legality and gate guards (",
+    "**Static lint rule set (",
 )
 
 # A line that is nothing but a `<placeholder>` token — the launch template's document slots.

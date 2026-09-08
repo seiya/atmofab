@@ -6848,6 +6848,15 @@ clean:
         governs a leaf that writes the program, where the judge (which reads §1+§3) only reads
         the output afterwards.
 
+        The SEVENTH document is the static lint check's DECLARED RULE SET, asked of the linter
+        backend the node's language resolves to (`lint_rules_document`). §5 below states the
+        obligations that are this repository's in prose, and a round-4 review measured that it
+        states three of the seven rule codes this leaf must satisfy; the other four reach it only
+        this way. The rule set is the linter backend's knowledge, so a `neutral core` prompt
+        template may not carry it (`docs/BACKEND_BOUNDARY.md`) — asking the registry and inlining
+        the answer is the placement that rule prescribes, and it means a code added to the
+        declared set reaches the leaf in the same edit that starts enforcing it.
+
         The SIXTH document is §5 of `docs/workflow/CHECKS_MODULE_CONTRACT.md` — its legality
         and gate-guard section — sliced by `_checks_contract_gate_guards_section`. It is the
         rule set the deterministic `Generate.gate` lint and syntax checkers apply to every
@@ -6893,6 +6902,7 @@ clean:
         except ValueError as exc:
             raise RuntimeError(
                 f"pure_gate_guards_document_unsliceable: {guards_path}: {exc}") from exc
+        lint_rules = self._lint_rules_document(refs)
         return {
             "harness_capabilities": json.dumps(
                 harness_capability_manifest_document_for(
@@ -6903,7 +6913,45 @@ clean:
             "tests_document": tests_text,
             "runner_output_contract_document": contract_text,
             "gate_guards_document": gate_guards,
+            "lint_rules_document": lint_rules,
         }
+
+    def _lint_rules_document(self, refs: NodeRefs) -> str:
+        """The static lint check's declared rule set, from the backend that imposes it.
+
+        The preset comes from the SAME table `_gate_lint_check` resolves it with, so the rules
+        the leaf is shown are by construction the rules its source is checked against; the
+        module comes through `capability_module`, so a preset whose package does not claim the
+        `lint` job is refused rather than answered by a same-named attribute somewhere.
+
+        Every failure is NAMED and RAISES, on the same fail-closed disposition as the two
+        repository documents beside it: a leaf that is not shown the rule set cannot satisfy
+        it, and shipping one that has not been shown it is how issue #169's round 4 defined the
+        defect this closes. The caller turns the raise into `pure_context_assembly_failed`."""
+        from tools.backends import registry as backend_registry
+        from tools.validate_pipeline_semantics import _LINT_PRESET_FOR_LANGUAGE
+        language = self._read_toolchain(refs)["language"]
+        preset = _LINT_PRESET_FOR_LANGUAGE.get(language)
+        if preset is None:
+            raise RuntimeError(
+                f"pure_lint_rules_document_unavailable: toolchain.language={language!r} has no "
+                f"static lint preset (expected one of {sorted(_LINT_PRESET_FOR_LANGUAGE)})")
+        try:
+            module = backend_registry.capability_module("linter", preset, "lint")
+        except Exception as exc:
+            raise RuntimeError(
+                f"pure_lint_rules_document_unavailable: linter preset {preset!r}: {exc}") from exc
+        render = getattr(module, "lint_rules_document", None)
+        if render is None:
+            raise RuntimeError(
+                f"pure_lint_rules_document_unavailable: linter preset {preset!r} states no "
+                "declared rule set for a leaf")
+        text = render()
+        if not (isinstance(text, str) and text.strip()):
+            raise RuntimeError(
+                f"pure_lint_rules_document_unavailable: linter preset {preset!r} returned an "
+                f"empty rule set ({text!r})")
+        return text
 
     def _pure_bundle_violations(self, refs: NodeRefs,
                                 doc: Any) -> tuple[str, str] | None:
