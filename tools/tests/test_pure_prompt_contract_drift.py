@@ -438,8 +438,11 @@ PINNED: dict[str, str] = {
     # THIRD time, by round 2: the reviewer template's checklist preamble sat in separate `\n\n`
     # blocks, so `PURE_REPAIR_STATIC_PARAGRAPH_PREFIXES`' lift carried the header and none of
     # H1-H10 into a cold repair; the paragraphs are folded into one and two producer-side
-    # prefixes were added beside them.
-    "pure-37": "4a30ac0f1a1f35b16f2a2a13c4174252218894309cc24465f0d22fd017084974",}
+    # prefixes were added beside them. And a FOURTH time, by round 3, which rendered the prompt
+    # and looked for the deterministic gate's rule set: making this leaf pure had cut the only
+    # carrier it had (a force-read `CHECKS_MODULE_CONTRACT.md` §5, which a pure leaf does not
+    # read), so §5 is now inlined and joins the tuple as its own member.
+    "pure-37": "01cda18025320e51ad5b44dddd41f6c8d98870f4d344b7bfffa9b5d6a30968b2",}
 
 
 def _contract_tuple() -> dict[str, object]:
@@ -505,6 +508,14 @@ def _contract_tuple() -> dict[str, object]:
         "runner_output_contract_document": (
             Path(wc.__file__).resolve().parents[1]
             / "docs" / "workflow" / "RUNNER_OUTPUT_CONTRACT.md").read_text(encoding="utf-8"),
+        # §5 of the checks-module contract, on the same ground as the §1-§4 slice beside it: it
+        # is inlined verbatim into the `harness` producer's prompt, so it is a leaf INPUT rather
+        # than a document the leaf reads. Hashing the SLICE keeps §1-§4 out of this member (they
+        # are already their own) and makes `_checks_contract_gate_guards_section`'s anchoring —
+        # including its refusal of a section appended after §5 — part of the contract.
+        "checks_contract_gate_guards_section": wc._checks_contract_gate_guards_section(
+            (Path(wc.__file__).resolve().parents[1]
+             / "docs" / "workflow" / "CHECKS_MODULE_CONTRACT.md").read_text(encoding="utf-8")),
     }
 
 

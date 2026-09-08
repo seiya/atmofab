@@ -12635,9 +12635,13 @@ PURE_CONTEXT_REQUIRED_KEYS_BY_SHAPE: dict[tuple[str, str, str], tuple[str, ...]]
     # The harness self-test producer. Same four host-resolved documents as the default generate
     # producer, with the runner-output contract in place of the host-rendered runner: on this
     # shape there is no host-rendered runner, and the leaf authors the executable entry itself.
+    # `gate_guards_document` is §5 of the checks-module contract — the deterministic gate's rule
+    # set for every leaf-authored source. The AGENTIC leaf force-read it; a pure leaf force-reads
+    # nothing, so it is inlined here or the leaf is held to rules no document it receives states.
     ("generate", "generate", "harness"): ("harness_capabilities", "target_profile",
                                           "ir_document", "tests_document",
-                                          "runner_output_contract_document"),
+                                          "runner_output_contract_document",
+                                          "gate_guards_document"),
     # Its reviewer: the default generate reviewer's documents, with the runner-output contract
     # in place of the checks-module ABI (a harness bundle carries no checks module).
     ("generate", "verify", "harness"): ("controlled_spec_document", "tests_document",
@@ -12806,6 +12810,7 @@ PURE_REPAIR_STATIC_PARAGRAPH_PREFIXES: tuple[str, ...] = (
     "What makes this shape different",
     "File shape (",
     "**Runner-output contract (",
+    "**Legality and gate guards (",
 )
 
 # A line that is nothing but a `<placeholder>` token — the launch template's document slots.
@@ -13045,6 +13050,13 @@ def leaf_contract_doc_refs(step: str | None, *, is_m3c_physics: bool = False) ->
       hand-authors its own runner is the one with ABI-fixed unused dummies. Do NOT gate
       this injection on `is_m3c_physics`. validate.judge never sees the checks source, so
       it is NOT carried there.
+      WHAT THIS FUNCTION NO LONGER REACHES, since issue #169: that runner-authoring leaf
+      is now a PURE leaf, and a pure launch force-reads nothing (`build_launch_request`
+      empties `skill_must_read_refs` for it), so §5 gets to it as an inlined context
+      document instead — `Conductor._build_pure_harness_context`'s
+      `gate_guards_document`. The rule above is unchanged and still governs what this
+      function returns; it simply has no live `generate` caller left. Keep the two in
+      step: a change to WHICH leaf §5 binds has to move both.
       (Build / Validate.execute are deterministic — no leaf reaches here.)
 
     M3d: the runner-output contract is dropped from a **physics** generate leaf's

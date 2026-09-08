@@ -955,6 +955,11 @@ def _numbered_section_heading_re(number: str) -> re.Pattern[str]:
     return re.compile(rf"^## {re.escape(number)}\.(?:\s|$)")
 
 
+#: ANY `## <n>.` section heading — the same anchor as above with the number unbound. Used by the
+#: one slice that runs to the end of its document, to refuse a section appended after it.
+_ANY_NUMBERED_SECTION_RE = re.compile(r"^## \d+\.(?:\s|$)")
+
+
 def _numbered_section_range(text: str, begin: str, end: str, *, subject: str) -> str:
     """Return `## <begin>.` (inclusive) through `## <end>.` (exclusive), trailing blanks stripped.
 
@@ -1006,6 +1011,45 @@ def _checks_contract_abi_sections(text: str) -> str:
     when §2, §3 or §4 leaves the document (measured, all three), rather than by a second
     enumeration of the contract's structure inside this function."""
     return _numbered_section_range(text, "1", "5", subject="checks-module contract")
+
+
+def _checks_contract_gate_guards_section(text: str) -> str:
+    """Return §5 of `docs/workflow/CHECKS_MODULE_CONTRACT.md` — its legality and gate-guard
+    section — from that heading to the end of the document.
+
+    NOT `_numbered_section_range`, because §5 is the LAST section and that engine requires an
+    end anchor by design (a missing one is a contract change it must stop on). The same
+    fail-closed disposition is kept in the form this position allows: the heading must be
+    present, and NO later `## <n>.` heading may exist. A §6 added above this slice would
+    silently widen it, which is exactly the drift the engine's literal terminator prevents for
+    the other slices, so it raises instead.
+
+    WHY A LEAF NEEDS IT, and why it is the one section a pure `generate.generate` leaf on the
+    `harness` shape is shown. §5 says of itself that it applies to every leaf-authored source
+    of any `Generate` node — naming the model, the checks module, and the hand-authored runner
+    of an `infrastructure` node's self-test — and it carries the rules of the deterministic
+    `Generate.gate` lint and syntax checkers, which are this REPOSITORY's rule set rather than
+    the language's. The agentic leaf received it as a force-read must-read
+    (`orchestration_runtime.leaf_contract_doc_refs`, whose docstring names this very leaf as the
+    reason not to gate that injection on the node's shape). A pure leaf force-reads nothing, so
+    making that leaf pure (issue #169) cut the only carrier those rules had — found by a
+    round-3 disclosure review that rendered the prompt and looked for them. Inlining the section
+    is also what keeps the rules out of a `neutral core` template
+    (`docs/BACKEND_BOUNDARY.md`): a document body is data the host resolves, not template text.
+    §1-§4 are excluded for the reason they are included for the reviewer and not the producer —
+    they are the checks-module ABI, and this shape has no checks module."""
+    lines = text.splitlines()
+    heading = _numbered_section_heading_re("5")
+    start = next((i for i, ln in enumerate(lines) if heading.match(ln)), None)
+    if start is None:
+        raise ValueError("checks-module contract has no '## 5.' section heading")
+    for index in range(start + 1, len(lines)):
+        if _ANY_NUMBERED_SECTION_RE.match(lines[index]):
+            raise ValueError(
+                "checks-module contract has a numbered section after '## 5.' "
+                f"({lines[index].strip()!r}); this slice runs to the end of the document and "
+                "would silently widen over it")
+    return "\n".join(lines[start:]).rstrip("\n")
 
 
 
@@ -6804,13 +6848,23 @@ clean:
         governs a leaf that writes the program, where the judge (which reads §1+§3) only reads
         the output afterwards.
 
+        The SIXTH document is §5 of `docs/workflow/CHECKS_MODULE_CONTRACT.md` — its legality
+        and gate-guard section — sliced by `_checks_contract_gate_guards_section`. It is the
+        rule set the deterministic `Generate.gate` lint and syntax checkers apply to every
+        leaf-authored source, and it reached this leaf as a force-read must-read while the leaf
+        was agentic. A pure leaf force-reads nothing, so without this it would be held to seven
+        active rules no document it receives states — and to rules that are this repository's
+        rather than the language's, which is why "author to the standard the profile names" is
+        not a substitute. See the slicer's docstring for the full history.
+
         Same reads and the same dispositions as the m3c producer otherwise: the harness manifest
         (its OWN, see `_pure_harness_node_key`), the toolchain/target defaults, the lowered IR
-        and the tests. The contract document RAISES on an unreadable file the way the m3c
-        producer's runner does — the caller converts it into a `pure_context_assembly_failed`
-        fail_closed transport outcome, with no leaf spawned."""
+        and the tests. Both repository documents RAISE on an unreadable or unsliceable file the
+        way the m3c producer's runner does — the caller converts it into a
+        `pure_context_assembly_failed` fail_closed transport outcome, with no leaf spawned."""
         from tools.codegen_bundle import harness_capability_manifest_document_for
-        from tools.orchestration_runtime import RUNNER_OUTPUT_CONTRACT_REF
+        from tools.orchestration_runtime import (CHECKS_MODULE_CONTRACT_REF,
+                                                 RUNNER_OUTPUT_CONTRACT_REF)
         ir_path = self.repo_root / refs.ir_ref / "spec.ir.yaml"
         try:
             ir_text = ir_path.read_text(encoding="utf-8")
@@ -6828,6 +6882,17 @@ clean:
         except (OSError, UnicodeError) as exc:
             raise RuntimeError(
                 f"pure_runner_output_contract_document_missing: {contract_path}: {exc}") from exc
+        guards_path = self.repo_root / CHECKS_MODULE_CONTRACT_REF
+        try:
+            guards_text = guards_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            raise RuntimeError(
+                f"pure_gate_guards_document_missing: {guards_path}: {exc}") from exc
+        try:
+            gate_guards = _checks_contract_gate_guards_section(guards_text)
+        except ValueError as exc:
+            raise RuntimeError(
+                f"pure_gate_guards_document_unsliceable: {guards_path}: {exc}") from exc
         return {
             "harness_capabilities": json.dumps(
                 harness_capability_manifest_document_for(
@@ -6837,6 +6902,7 @@ clean:
             "ir_document": ir_text,
             "tests_document": tests_text,
             "runner_output_contract_document": contract_text,
+            "gate_guards_document": gate_guards,
         }
 
     def _pure_bundle_violations(self, refs: NodeRefs,
@@ -11753,9 +11819,10 @@ clean:
             detail = (
                 f"provider {entry.provider!r} is configured for {phase}."
                 f"{substep or ''} but can only run the pure leaf, and this node has no pure "
-                f"path (its IR yields no CodegenBundle shape, so the substep runs the agentic "
-                f"leaf loop). Configure an agentic provider for this substep, or run this "
-                f"node's generate phase on one.")
+                f"path (the node has no CodegenBundle shape — `Conductor._bundle_shape` reads "
+                f"its node_key and its IR's toolchain — so the substep runs the agentic leaf "
+                f"loop). Configure an agentic provider for this substep, or run this node's "
+                f"generate phase on one.")
             self.emit("pure_only_provider_on_agentic_path", node_key=refs.node_key,
                       phase=phase, substep=substep or "", provider=entry.provider)
             return SubstepOutcome(

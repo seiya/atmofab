@@ -1293,6 +1293,7 @@ class PureHarnessVerifyWiringTests(unittest.TestCase):
     """
 
     _REPO_DOCS = ("docs/workflow/RUNNER_OUTPUT_CONTRACT.md",
+                  "docs/workflow/CHECKS_MODULE_CONTRACT.md",
                   "docs/workflow/phases/phase_02_generate.md")
 
     def setUp(self) -> None:
@@ -1321,6 +1322,53 @@ class PureHarnessVerifyWiringTests(unittest.TestCase):
     def _last_request(self) -> dict:
         return [cap["--request-json"] for sub, cap in self.c.calls
                 if sub == "record-launch"][-1]
+
+    def test_every_repository_document_of_this_context_fails_CLOSED(self) -> None:
+        """One row per repository document the harness reviewer's context reads, each REMOVING
+        that document and requiring the failure to name it.
+
+        A round-3 census found the severity rubric's two raises here vacuous while the same
+        mutation on the m3c twin was killed — a fail-closed guard copied into the new shape with
+        its witness left behind on the old one, and the mutation direction is fail-OPEN (the
+        reviewer would judge with an empty rubric and choose `issue_severity` by how heavy the
+        defect looks, which is what terminalized a run before issue #143).
+
+        The unsliceable case is driven for the rubric too, because a document present but
+        re-organized is the failure the slicer exists for and reads nothing like a missing file.
+        Set identity against the context builder's own output is asserted last, so a document
+        added later is either given a row or shows up here."""
+        cases = {
+            "docs/workflow/RUNNER_OUTPUT_CONTRACT.md": "pure_runner_output_contract_document_missing",
+            "docs/workflow/phases/phase_02_generate.md": "pure_severity_rubric_document_missing",
+        }
+        for rel, reason in cases.items():
+            with self.subTest(document=rel):
+                target = self.repo / rel
+                body = target.read_text(encoding="utf-8")
+                target.unlink()
+                try:
+                    with self.assertRaises(RuntimeError) as caught:
+                        self.c._build_pure_harness_verify_context(self.refs)
+                    self.assertIn(reason, str(caught.exception))
+                finally:
+                    target.write_text(body, encoding="utf-8")
+        # ...and a rubric whose anchors moved is a DIFFERENT named failure, not a blank slot.
+        phase_doc = self.repo / "docs/workflow/phases/phase_02_generate.md"
+        body = phase_doc.read_text(encoding="utf-8")
+        phase_doc.write_text(body.replace("#### Severity of a finding", "#### Grading"),
+                             encoding="utf-8")
+        try:
+            with self.assertRaises(RuntimeError) as caught:
+                self.c._build_pure_harness_verify_context(self.refs)
+            self.assertIn("pure_severity_rubric_document_unsliceable", str(caught.exception))
+        finally:
+            phase_doc.write_text(body, encoding="utf-8")
+        # The two rows above cover the RAISING documents; the rest of the context is node
+        # artifacts, which degrade to "" by the same deliberate design as the m3c reviewer's.
+        ctx = self.c._build_pure_harness_verify_context(self.refs)
+        self.assertEqual(set(ctx) - set(cases.values()) - {
+            "controlled_spec_document", "tests_document", "ir_document", "bundle_document"},
+            {"runner_output_contract_document", "severity_rubric_document"})
 
     def test_the_verify_seam_wires_the_harness_shape_through(self) -> None:
         self.c.envelopes = [_envelope(_verdict("pass"))]

@@ -1883,10 +1883,28 @@ class PureProducerExemplarTests(unittest.TestCase):
 class PureColdRepairPromptTests(unittest.TestCase):
     @staticmethod
     def _generate_template_variants() -> "list[tuple[str, str]]":
-        """Every `(substep, pure_shape)` a pure GENERATE launch can render, read off the
-        renderer's own template table so a template added later is exercised automatically.
+        """Every `(substep, pure_shape)` a pure GENERATE launch can render.
+
+        WHAT IS DERIVED AND WHAT IS NOT, because a round-3 census caught the first version of
+        this docstring overclaiming: the SHAPED variants are read off
+        `PURE_CONTEXT_REQUIRED_KEYS_BY_SHAPE`, which is the table the launch validator refuses a
+        `pure_shape` against — so a new shape genuinely cannot be omitted. The DEFAULT-shape
+        pair is derived from `_PROMPT_TEMPLATE_FILES` instead, because no by-shape table
+        mentions it, and deriving it is what closes the remaining hole: a new default-shape
+        GENERATE substep template would otherwise be silently unexercised, which is the exact
+        class this helper was introduced to close.
+
         `pure_shape` is `""` for the default shape, which is how the request spells it."""
-        out = [("generate", ""), ("verify", "")]
+        # The escalate diagnostician holds a `pure generate.diagnose` key of its own and is NOT
+        # one of these: it has no static rule paragraphs and no repair loop (issue #169 PR-1).
+        # Excluded by asking `DIAGNOSE_LAUNCH_PAIRS`, so a second diagnose pair follows.
+        diagnose = {substep for step, substep in ort.DIAGNOSE_LAUNCH_PAIRS
+                    if step == "generate"}
+        default = sorted(
+            key.split(".", 1)[1] for key in ort._PROMPT_TEMPLATE_FILES
+            if key.startswith("pure generate.") and key.count(".") == 1
+            and key.split(".", 1)[1] not in diagnose)
+        out = [(substep, "") for substep in default]
         out += [(substep, shape)
                 for step, substep, shape in sorted(ort.PURE_CONTEXT_REQUIRED_KEYS_BY_SHAPE)
                 if step == "generate"]
@@ -2487,6 +2505,7 @@ class PureHarnessProducerEndToEndTests(unittest.TestCase):
     producer tests do for their shape, for this one."""
 
     _REPO_DOCS = ("docs/workflow/RUNNER_OUTPUT_CONTRACT.md",
+                  "docs/workflow/CHECKS_MODULE_CONTRACT.md",
                   "docs/workflow/phases/phase_02_generate.md")
 
     def setUp(self) -> None:
@@ -2567,6 +2586,7 @@ class PureHarnessShapeTests(unittest.TestCase):
     #: way `test_pure_leaf_verify` seeds the checks contract: the builders read them off
     #: `repo_root`, so the fixture's throwaway root has to carry them.
     _REPO_DOCS = ("docs/workflow/RUNNER_OUTPUT_CONTRACT.md",
+                  "docs/workflow/CHECKS_MODULE_CONTRACT.md",
                   "docs/workflow/phases/phase_02_generate.md")
 
     def setUp(self) -> None:
