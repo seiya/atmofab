@@ -413,7 +413,15 @@ PINNED: dict[str, str] = {
     # The inlined `RUNNER_OUTPUT_CONTRACT.md` §3 clause moved again: round 3's fix had removed
     # the only sentence telling the runner-authoring leaf that the VALUES are consumed, while
     # `post_execute` checks key presence only — a shortcut this branch opened and now closes.
-    "pure-36": "2800e2635c4bd91fd33f03cc3724a84400b5f4878944f17b5f0fa0bddd348608",}
+    # Re-pinned a fifth time, by round 4's blank-slate axis: checklist (c) told the judge that
+    # a non-empty `coverage.missing` / `missing_required_variables` is its own `attribution=code`
+    # finding, while `--stage post_execute` refuses ALL THREE coverage conditions before a judge
+    # is launched — through the very function this branch moved into the excerpt module. The
+    # clause claimed a role the gate owns, in the same paragraph where (f) tells the leaf the
+    # gates are the authority for what they check. It now says these are gate-owned, that a
+    # non-empty one means the run reached the judge in a state the gate should have refused, and
+    # that it is an `attribution=evidence` integrity signal rather than the judge's contribution.
+    "pure-36": "b90892edf00f9fcef3320d8b17ed29f053bcd64b00606fa774f07c77842137dc",}
 
 
 def _contract_tuple() -> dict[str, object]:

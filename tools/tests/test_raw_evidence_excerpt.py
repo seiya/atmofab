@@ -183,9 +183,11 @@ class CoverageTest(unittest.TestCase):
         self.assertEqual(sorted(r["variable"] for r in rows), ["dx", "h"])
 
     def test_a_bookkeeping_key_cannot_satisfy_a_required_variable(self):
-        # Both readers of the key rule are exercised: `metrics_basis_variable_keys` decides
-        # the shortage, `_entry_variables` decides the rows, and each is a separate
-        # spelling of the exclusion. A contract naming `status` as evidence is not a real
+        # Both readers of the BOOKKEEPING half are exercised here:
+        # `metrics_basis_variable_keys` decides the shortage and `_entry_variables` decides the
+        # rows. Their NESTING half (`raw_variables` / `variables` / `evidence`) is covered for
+        # the first by `test_a_nested_entry_is_read_the_way_the_gate_reads_it` and for the
+        # second only incidentally — a review round found no row asserting it directly. A contract naming `status` as evidence is not a real
         # IR, but it is the only input that tells the two apart.
         contract = _contract(test_evidence_requirements=[
             {"test_id": "t_a", "required_raw_variables": ["status"]}])
@@ -353,6 +355,19 @@ class ArraySummaryTest(unittest.TestCase):
 
     def test_all_zero(self):
         self.assertTrue(self._row([[0.0, 0.0], [0.0, -0.0]])["all_zero"])
+
+    def test_a_uniformly_negative_array_is_not_all_zero(self):
+        """The sign direction, which the rest of this family could not distinguish.
+
+        MEASURED: a mutant clearing `all_zero` only for `number > 0.0` survived the whole
+        suite, because every other probe here uses zeros or a POSITIVE array — inputs on which
+        `!= 0.0` and `> 0.0` agree. The corpus has the distinguishing input: `flux_dif` on
+        `l0_linear_state_diff_flux_pass` is uniformly negative in three recorded certified-pass
+        pipelines, so the mutant would have asserted `all_zero: true` about real passing
+        evidence, and the template spends its longest carve-out on what that flag means."""
+        row = self._row([[-0.025, -0.0249], [-0.0251, -0.025]])
+        self.assertFalse(row["all_zero"])
+        self.assertLess(row["max"], 0.0)
 
     def test_all_zero_is_false_when_a_zero_array_also_carries_a_non_finite(self):
         # Zeros and a `nan` is not "all zero" — and it is the pair that names the defect,

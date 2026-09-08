@@ -411,11 +411,18 @@ def _coverage(
 ) -> dict[str, Any]:
     """The expected matrix against the produced one, in both directions.
 
-    `missing` and `unexpected` are the two directions `post_execute` already pins; they appear
-    here because the judge is asked whether the evidence SUPPORTS the verdict, and a row that
-    was never produced supports nothing. `missing_required_variables` is the finer question the
-    gate does not ask of `metrics_basis.json`: a row that exists but omits a variable its test
-    declared.
+    ALL THREE are pinned by `post_execute` before a judge is ever launched — `missing` and
+    `unexpected` as the two directions of the matrix, and `missing_required_variables` through
+    the very same `metrics_basis_variable_keys` this module now owns
+    (`_validate_metrics_basis_per_test`). An earlier version of this docstring called the third
+    "the finer question the gate does not ask", which was false and load-bearing: it is the
+    recorded reason for computing the signal, and `phase_04_validate.md` §4-2-1 argues Z3's
+    detection cost from what the judge uniquely catches, so the error inflated that argument by
+    a whole category.
+
+    They are still reported, and the reason is different from the one that was written here: a
+    non-empty set means the run reached the judge in a state the gate should have refused, so
+    it is an INTEGRITY signal about the pipeline rather than the judge's own contribution.
     """
     missing_vars: list[dict[str, Any]] = []
     for key in sorted(present & keys.expected):
