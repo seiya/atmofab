@@ -259,7 +259,7 @@ In this section, the input of each phase is described separately as `execution i
 ### 0. Spec (manual)
 - execution input: the requirements, physics requirements, and dependency-selection policy given outside the workflow
 - verification input: none
-- output: `spec/<spec_kind>/<domain>/<family>/<spec_id>/controlled_spec.md`, `spec/<spec_kind>/<domain>/<family>/<spec_id>/tests.md`, `spec/<spec_kind>/<domain>/<family>/<spec_id>/deps.yaml`
+- output: `spec/<spec_kind>/<domain>/<family>/<spec_id>/controlled_spec.md`, `spec/<spec_kind>/<domain>/<family>/<spec_id>/tests.md` (every `spec_kind` but `profile`), `spec/<spec_kind>/<domain>/<family>/<spec_id>/deps.yaml`
 
 ### 1. Compile
 - execution input: `controlled_spec.md`, `tests.md`, `deps.yaml`, `spec/registry/spec_catalog.yaml`

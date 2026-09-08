@@ -8,13 +8,13 @@ The phase that manually writes the `Controlled Spec`, `tests`, and `deps` and es
 - verification input: none
 - output:
   - `spec/<spec_kind>/<domain>/<family>/<spec_id>/controlled_spec.md`
-  - `spec/<spec_kind>/<domain>/<family>/<spec_id>/tests.md`
+  - `spec/<spec_kind>/<domain>/<family>/<spec_id>/tests.md` (every `spec_kind` but `profile`, which has none — `docs/SPEC.md` req. 5)
   - `spec/<spec_kind>/<domain>/<family>/<spec_id>/deps.yaml`
 
 ## Required requirements
 - Define the intent of the physics algorithm (A) in the `Controlled Spec`.
 - A `problem spec` declares its adopted `profile` in `deps.yaml`, together with any `component` no adopted `profile` selects. A `component` has exactly one source: one an adopted `profile` selects is not declared again here.
-- `tests.md` defines the experiment conditions, judgment conditions, and the required evidence per `test_id`.
+- `tests.md` defines the experiment conditions, judgment conditions, and the required evidence per `test_id`. A `profile spec` authors none: nothing is generated or executed for it.
 - The natural-language notation is the canonical source, and the `Compile` phase integrates it into the structured IR (`spec.ir.yaml`).
 - The `spec_version` of `controlled_spec.md` is a required record. When updating a spec, update `spec_version`.
 

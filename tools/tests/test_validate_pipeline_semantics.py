@@ -16233,6 +16233,22 @@ class ProfileSelectionGateTests(unittest.TestCase):
         self.assertIn("'case1'", v[0])
         self.assertIn("'case2'", v[1])
 
+    def test_a_non_string_value_is_a_violation_and_not_a_crash(self) -> None:
+        # `profile_version: 0.1` is what a leaf writes when it treats a two-segment version as a
+        # number, and its reply is JSON, so it arrives as a float. Without this branch the next
+        # line's `.strip()` raises inside `Compile.static` — a validator crash instead of a
+        # repairable violation. Round-1 finding: the branch had no row.
+        for bad in (0.1, 1, None, ["0.1.1"], {"v": "0.1.1"}):
+            with self.subTest(profile_version=bad):
+                v = self._run(selections=[{"profile_id": "pr", "profile_version": bad}],
+                              profiles=[self._PROFILE])
+                self.assertEqual(len(v), 1, v)
+                self.assertIn("must be strings", v[0])
+        v = self._run(selections=[{"profile_id": 7, "profile_version": "0.1.1"}],
+                      profiles=[self._PROFILE])
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("must be strings", v[0])
+
     def test_a_node_adopting_no_profile_is_not_gated_at_all(self) -> None:
         # The `infrastructure` harness spec uses the same field name for an unrelated plumbing
         # aspect. Refusing it here would re-certify the harness and, through the closure

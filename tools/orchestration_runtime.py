@@ -747,6 +747,26 @@ _PROFILE_EXPANSION_REASONS: frozenset[str] = frozenset({
 })
 
 
+def _profile_expansion_failure(reason: str, detail: str) -> dict[str, str]:
+    """The ONLY constructor of an `expand_profile_dependencies` error, so that
+    `_PROFILE_EXPANSION_REASONS` is the source of these strings rather than a list beside them.
+
+    That membership is not decoration: `_dependency_resolution_freshness` splits builder errors
+    into "the registry could not be READ" (`_UNREADABLE_CLOSURE_REASONS` -> fresh) and everything
+    else (-> stale), and every reason here belongs to the second set. Renaming one to a member of
+    the first — `dependency_spec_ref_unresolved` is one keystroke from
+    `profile_spec_ref_unresolved` — would silently flip a stale node to fresh, and before this
+    helper existed that rename changed no test. Raising on an undeclared reason can only ever fire
+    on a coding error, never on spec input.
+    """
+    if reason not in _PROFILE_EXPANSION_REASONS:
+        raise AssertionError(
+            f"{reason!r} is not a declared profile-expansion reason; add it to "
+            f"_PROFILE_EXPANSION_REASONS (and confirm it belongs on the STALE side of "
+            f"_dependency_resolution_freshness) before emitting it")
+    return {"reason": reason, "detail": detail}
+
+
 def expand_profile_dependencies(
     repo_root: Path,
     spec_ref: Any,
@@ -803,7 +823,7 @@ def expand_profile_dependencies(
     profile_component_slot: dict[str, int] = {}
 
     def _fail(reason: str, detail: str) -> tuple[list, list, dict[str, str]]:
-        return [], [], {"reason": reason, "detail": detail}
+        return [], [], _profile_expansion_failure(reason, detail)
 
     for kind, sid, constraint in entries:
         if kind != "profile":
@@ -820,7 +840,10 @@ def expand_profile_dependencies(
         try:
             profile_ref = resolve_spec_ref_for(repo_root, "profile", sid)
         except SpecCatalogCorruption as exc:
-            return _fail("spec_catalog_corrupt", str(exc))
+            # NOT a `_PROFILE_EXPANSION_REASONS` member on purpose: this one IS the
+            # registry-read failure, so it belongs to `_UNREADABLE_CLOSURE_REASONS` and its
+            # freshness disposition is the opposite of every reason above.
+            return [], [], {"reason": "spec_catalog_corrupt", "detail": str(exc)}
         if not profile_ref:
             return _fail(
                 "profile_spec_ref_unresolved",
@@ -1089,10 +1112,12 @@ def _dep_ir_meta_passes(repo_root: Path, kind: str, spec_id: str, version: str) 
     )
 
 
-def _closure_signature(graph: Any) -> tuple[list[list[Any]], list[str]] | None:
+def _closure_signature(
+    graph: Any,
+) -> tuple[list[list[Any]], list[str], list[str]] | None:
     """Canonical comparable form of a dependency graph: the sorted `all_nodes`
-    `[[node_key, topo_level], ...]` PLUS the sorted `transitive_deps` node_key list.
-    `None` when the graph is unusable.
+    `[[node_key, topo_level], ...]`, the sorted `transitive_deps` node_key list, AND the
+    sorted `profiles[].node_key` list. `None` when the graph is unusable.
 
     `all_nodes` alone is NOT a faithful signature. `topo_level` is a node's height, so two
     genuinely different closures can share every `(node_key, topo_level)` pair: with nodes
@@ -1143,7 +1168,34 @@ def _closure_signature(graph: Any) -> tuple[list[list[Any]], list[str]] | None:
             return None
         trans.append(node_key.strip())
     trans.sort()
-    return (out, trans)
+    # Issue #175: the adopted `profile` set is part of the resolution, and it is the ONLY part
+    # that does not show up in `all_nodes` — the profile is not a node. Without it, bumping a
+    # profile's `spec_version` (its §3 parameter/compatibility constraints are what an adopter's
+    # `algorithm` is written to honour, and what `_pure_profile_spec_document` inlines) left
+    # every adopter's signature byte-identical, so R6-lite called it fresh and `--with-deps`
+    # reused a node certified against a policy that had since changed — while its IR's
+    # `profile_selection` went on naming the retired version. Measured on this tree before the
+    # fix: identical signature across a 0.1.1 -> 0.9.0 bump of the adopted profile.
+    #
+    # A MISSING key normalizes to `[]` rather than to `None`, and that is load-bearing: every
+    # sidecar written before issue #175 lacks it, and treating absence as a distinct value would
+    # restale the whole certified corpus instead of only the nodes whose closure actually moved
+    # (the two adopters, which are stale on `all_nodes` alone anyway). A node adopting no
+    # profile derives `[]` and matches its own older sidecar exactly.
+    profiles = graph.get("profiles")
+    profile_keys: list[str] = []
+    if profiles is not None:
+        if not isinstance(profiles, list):
+            return None
+        for entry in profiles:
+            if not isinstance(entry, dict):
+                return None
+            node_key = entry.get("node_key")
+            if not isinstance(node_key, str) or not node_key.strip():
+                return None
+            profile_keys.append(node_key.strip())
+        profile_keys.sort()
+    return (out, trans, profile_keys)
 
 
 # `build_dependency_graph` error reasons that mean "the registry could not be READ" — they carry
@@ -1286,13 +1338,22 @@ def _dependency_resolution_freshness(
         recorded_keys = [item[0] for item in recorded[0]]
         derived_keys = [item[0] for item in derived[0]]
         if recorded_keys == derived_keys:
-            # Same nodes, different SHAPE (a node moved between direct and transitive). Say so,
-            # or the message reads as though nothing changed.
+            # Same nodes, different SHAPE. Say WHICH part moved, or the message reads as though
+            # nothing changed — and there are two parts that can move without the node set: a
+            # node between direct and transitive, and (issue #175) the adopted `profile` set,
+            # which is never in `all_nodes` at all.
+            if recorded[1] != derived[1]:
+                return (
+                    False,
+                    f"{node_key} was certified against a dependency closure with the same nodes "
+                    f"but a different shape: transitive deps were {recorded[1]}, deps.yaml + "
+                    f"spec_catalog.yaml now derive {derived[1]}",
+                )
             return (
                 False,
-                f"{node_key} was certified against a dependency closure with the same nodes but "
-                f"a different shape: transitive deps were {recorded[1]}, deps.yaml + "
-                f"spec_catalog.yaml now derive {derived[1]}",
+                f"{node_key} was certified against the same dependency closure but a different "
+                f"adopted profile set: profiles were {recorded[2]}, deps.yaml + "
+                f"spec_catalog.yaml now derive {derived[2]}",
             )
         return (
             False,

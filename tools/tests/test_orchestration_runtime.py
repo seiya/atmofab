@@ -30934,7 +30934,16 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # `inputs.profile_selection` is a two-key pointer a new deterministic gate pins.
         # A leaf told none of this writes `direct_deps` from the dependency declaration it
         # is also handed and fails the V4 gate on every retry.
-        "docs/workflow/phases/phase_01_compile.md": 68623,
+        # Re-taken at the round-1 HEAD (69051, measured 68901) — the SIXTH re-take, for
+        # the reason the round-5 note above gives: round 1 rendered the real prompt and read it
+        # as the leaf, and found this document's §1-1 still telling the producer that
+        # `direct_deps` is 'the directly-read dependencies from deps.yaml' — false since this
+        # branch, and landing 700 lines AFTER the template rule that contradicts it, under a
+        # preamble naming this document canonical. It also found the `profile_selection`
+        # comment ORDERING omission on a node with no adopted profile, which the harness
+        # spec's own `tests.md` requires for an unrelated plumbing aspect. Both are now
+        # per-path rather than absolute, and both cost words.
+        "docs/workflow/phases/phase_01_compile.md": 69051,
         # Per-substep SKILLs — each force-read by its own LLM leaf.
         # Bumped 10800->11500: Compile.generate now authors the io_contract section (G2 /
         # docs/design/deterministic_followups.md) — it was moved here from Compile.verify so the
@@ -41169,6 +41178,175 @@ class ProfileExpansionTests(unittest.TestCase):
             self.assertEqual(len(details), 1, details)
             self.assertIn("profile_declares_infrastructure", details[0])
             self.assertIn("profile/pr", details[0])
+
+    def test_a_profile_version_bump_moves_the_closure_signature(self) -> None:
+        """R6-lite restales a node when a dependency it was certified against moves. An adopted
+        `profile` is such a dependency — its §3 parameter and compatibility constraints are what
+        the adopter's `algorithm` is written to honour — and it is the ONE part of the resolution
+        that never appears in `all_nodes`, because it is not a node. Round-1 finding: without
+        the `profiles` term the signature was byte-identical across a profile version bump, so
+        every adopter stayed fresh against a policy that had changed, while its IR's
+        `profile_selection` went on naming the retired version."""
+        from tools.dependency_graph import build_dependency_graph
+        from tools.orchestration_runtime import _closure_signature, _load_spec_catalog
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._seed(repo)
+            args = dict(target_spec_ref="spec/problem/a", target_node_key="problem/a@0.1.0",
+                        include_via=False)
+            before, err = build_dependency_graph(repo, **args)
+            self.assertIsNone(err)
+            catalog = repo / "spec" / "registry" / "spec_catalog.yaml"
+            catalog.write_text(
+                catalog.read_text(encoding="utf-8").replace(
+                    "spec_id: pr\n    spec_version: \"0.1.0\"",
+                    "spec_id: pr\n    spec_version: \"0.9.0\""),
+                encoding="utf-8")
+            _load_spec_catalog.cache_clear()
+            after, err = build_dependency_graph(repo, **args)
+            self.assertIsNone(err)
+            # Nothing else moved: the component set the profile selects is untouched, so the
+            # node set is identical and `all_nodes` alone could not have seen this.
+            self.assertEqual([n["node_key"] for n in before["all_nodes"]],
+                             [n["node_key"] for n in after["all_nodes"]])
+            self.assertEqual(before["transitive_deps"], after["transitive_deps"])
+            self.assertNotEqual(_closure_signature(before), _closure_signature(after))
+
+    def test_a_sidecar_predating_the_profiles_key_is_not_restaled_by_it(self) -> None:
+        # The other direction, and the reason a missing key normalizes to `[]`: every sidecar
+        # written before issue #175 lacks it, and treating absence as a distinct value would
+        # restale the whole certified corpus rather than only the nodes whose closure moved.
+        from tools.dependency_graph import build_dependency_graph
+        from tools.orchestration_runtime import _closure_signature
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._seed(repo)
+            graph, err = build_dependency_graph(
+                repo, target_spec_ref="spec/component/c1",
+                target_node_key="component/c1@0.2.0", include_via=False)
+            self.assertIsNone(err)
+            self.assertEqual(graph["profiles"], [])
+            legacy = {k: v for k, v in graph.items() if k != "profiles"}
+            self.assertEqual(_closure_signature(graph), _closure_signature(legacy))
+            # ...and a node that DOES adopt one is not silently equal to its own legacy sidecar.
+            adopter, err = build_dependency_graph(
+                repo, target_spec_ref="spec/problem/a",
+                target_node_key="problem/a@0.1.0", include_via=False)
+            self.assertIsNone(err)
+            self.assertNotEqual(
+                _closure_signature(adopter),
+                _closure_signature({k: v for k, v in adopter.items() if k != "profiles"}))
+
+    def test_a_profile_only_drift_is_reported_as_a_profile_drift(self) -> None:
+        # The message has to name the part that moved. A profile-only drift has an identical
+        # node set AND identical transitive deps, so the "same nodes, different shape" branch
+        # would print two identical transitive lists and read as though nothing had changed.
+        from tools.dependency_graph import build_dependency_graph
+        from tools.orchestration_runtime import (
+            _dependency_resolution_freshness, _load_spec_catalog, _node_key_to_safe)
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._seed(repo)
+            recorded, err = build_dependency_graph(
+                repo, target_spec_ref="spec/problem/a",
+                target_node_key="problem/a@0.1.0", include_via=False)
+            self.assertIsNone(err)
+            ir_dir = (repo / "workspace" / "ir" / _node_key_to_safe("problem/a@0.1.0")
+                      / "a_20260101_001")
+            ir_dir.mkdir(parents=True)
+            (ir_dir / "dependency_graph.json").write_text(
+                json.dumps(recorded), encoding="utf-8")
+            (ir_dir / "ir_meta.json").write_text(
+                json.dumps({"verification_status": "pass"}), encoding="utf-8")
+            fresh, detail = _dependency_resolution_freshness(repo, "problem", "a", "0.1.0")
+            self.assertTrue(fresh, detail)
+            catalog = repo / "spec" / "registry" / "spec_catalog.yaml"
+            catalog.write_text(
+                catalog.read_text(encoding="utf-8").replace(
+                    "spec_id: pr\n    spec_version: \"0.1.0\"",
+                    "spec_id: pr\n    spec_version: \"0.9.0\""),
+                encoding="utf-8")
+            _load_spec_catalog.cache_clear()
+            fresh, detail = _dependency_resolution_freshness(repo, "problem", "a", "0.1.0")
+            self.assertFalse(fresh)
+            self.assertIn("adopted profile set", detail)
+            self.assertIn("profile/pr@0.1.0", detail)
+            self.assertIn("profile/pr@0.9.0", detail)
+            self.assertNotIn("different shape", detail)
+
+    def test_every_expansion_refusal_uses_a_declared_reason(self) -> None:
+        """`_PROFILE_EXPANSION_REASONS` is what pins these reasons to the STALE side of the
+        freshness taxonomy, so it has to be the source of the emitted strings rather than a
+        list beside them. Round-1 finding: it was a documentation constant nothing emitted
+        from, so renaming a reason to a `_UNREADABLE_CLOSURE_REASONS` member — which flips the
+        disposition from stale to fresh — changed no test."""
+        from tools.orchestration_runtime import _PROFILE_EXPANSION_REASONS
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._seed(repo, profile_infra=True)
+            entries, catalog = self._entries(repo, "spec/problem/a")
+            from tools.orchestration_runtime import expand_profile_dependencies
+            _e, _r, err = expand_profile_dependencies(repo, "spec/problem/a", entries, catalog)
+            self.assertIn(err["reason"], _PROFILE_EXPANSION_REASONS)
+        # The guard fires on an UNDECLARED reason rather than being satisfied by the one
+        # refusal this fixture happens to reach.
+        import tools.orchestration_runtime as ort
+        with self.assertRaises(AssertionError):
+            ort._profile_expansion_failure("not_a_declared_reason", "x")
+
+    def test_an_unresolvable_profile_directory_fails_closed(self) -> None:
+        """`profile_spec_ref_unresolved`: the catalog names the profile but resolves it to no
+        unique directory (a path-less entry, or two entries pointing at different ones). Round-1
+        finding: this class had no test, and turning its refusal into a `continue` — which
+        DROPS the adopted profile and certifies the adopter with an empty component set —
+        survived the whole suite."""
+        from tools.orchestration_runtime import (
+            _load_spec_catalog, expand_profile_dependencies)
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._seed(repo)
+            catalog = repo / "spec" / "registry" / "spec_catalog.yaml"
+            # A second entry for the same (profile, pr) resolving to a DIFFERENT directory:
+            # `resolve_spec_ref_for` fail-closes on the ambiguity rather than choosing.
+            catalog.write_text(
+                catalog.read_text(encoding="utf-8")
+                + "  - spec_kind: profile\n    spec_id: pr\n    spec_version: \"0.1.0\"\n"
+                  "    deps_path: spec/profile/pr_elsewhere/deps.yaml\n",
+                encoding="utf-8")
+            _load_spec_catalog.cache_clear()
+            entries, cat = self._entries(repo, "spec/problem/a")
+            expanded, record, err = expand_profile_dependencies(
+                repo, "spec/problem/a", entries, cat)
+            self.assertEqual(err["reason"], "profile_spec_ref_unresolved")
+            self.assertIn("profile/pr", err["detail"])
+            # Fail-closed with NO partial expansion: the caller must not be handed an entry
+            # list that silently lost the adopted profile's components.
+            self.assertEqual(expanded, [])
+            self.assertEqual(record, [])
+
+    def test_the_adopted_profile_version_is_the_descending_head(self) -> None:
+        # The same rule the graph builder pins a NODE by. Taking any other member would make
+        # `profiles[].profile_version` — which `_validate_profile_selection` pins into every
+        # case of the IR — name a version the node was not built against.
+        from tools.orchestration_runtime import (
+            _load_spec_catalog, expand_profile_dependencies)
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._seed(repo)
+            catalog = repo / "spec" / "registry" / "spec_catalog.yaml"
+            catalog.write_text(
+                catalog.read_text(encoding="utf-8")
+                + "  - spec_kind: profile\n    spec_id: pr\n    spec_version: \"0.4.0\"\n"
+                  "    deps_path: spec/profile/pr/deps.yaml\n",
+                encoding="utf-8")
+            _load_spec_catalog.cache_clear()
+            entries, cat = self._entries(repo, "spec/problem/a")
+            _expanded, record, err = expand_profile_dependencies(
+                repo, "spec/problem/a", entries, cat)
+            self.assertIsNone(err)
+            # Both 0.1.0 and 0.4.0 satisfy the adopting node's `>=0.1.0`; the head is taken.
+            self.assertEqual(record[0]["profile_version"], "0.4.0")
+            self.assertEqual(record[0]["node_key"], "profile/pr@0.4.0")
 
     def test_a_profile_expansion_failure_is_classified_stale_not_fresh(self) -> None:
         """The R6-lite freshness reader splits builder errors into "the registry could not be
