@@ -15054,29 +15054,52 @@ class PureLeafSubstepPredicateTests(unittest.TestCase):
 
     def test_every_catalog_node_has_a_bundle_shape(self) -> None:
         """The issue #169 completion criterion: no in-tree node falls through `_bundle_shape`
-        to the agentic loop. Driven off the SPEC CATALOG rather than a fixture list, so a node
-        added without a shape fails here. Each node is exercised through the validator twin,
-        which takes the IR dict directly — the conductor twin needs a workspace IR file, and the
-        test above pins the two equal."""
+        to the agentic loop.
+
+        Driven off REPOSITORY-TRACKED data only — `spec/registry/spec_catalog.yaml` for each
+        node's kind, and its own `deps.yaml` for the `infrastructure` dependency count, which
+        together with the toolchain are the whole of what either shape reader consults. An
+        earlier version read the newest lowered IR under `workspace/ir/`, which is gitignored
+        machine-local state: it FAILED in a clean checkout and, worse, `continue`d past any
+        catalog node whose IR happened to be absent, so the criterion could rot to "one node
+        was checked" while staying green. Both were round-1 findings.
+
+        The IR is SYNTHESIZED with no `impl_defaults`, so both readers apply their own
+        toolchain defaults — which is the toolchain, and the only one, that
+        `_validate_toolchain_backend_supported` lets a node reach Generate with. Asserting the
+        shape under any other toolchain would be asserting about a node the workflow refuses
+        earlier.
+
+        Exercised through the VALIDATOR twin, which takes an IR dict directly; the conductor
+        twin needs a workspace IR file, and `test_the_two_bundle_shape_readers_agree` pins the
+        two equal."""
         import yaml as _yaml
         import tools.validate_pipeline_semantics as vps
+        from tools.codegen_bundle import BUNDLE_SHAPES
         catalog = _yaml.safe_load(
             (REPO_ROOT / "spec/registry/spec_catalog.yaml").read_text(encoding="utf-8"))
         entries = [e for e in (catalog.get("specs") or []) if isinstance(e, dict)]
         self.assertTrue(entries, "the spec catalog names no node")
-        checked = 0
+        seen: set[str] = set()
         for entry in entries:
             node_key = (f"{entry.get('spec_kind')}/{entry.get('spec_id')}"
                         f"@{entry.get('spec_version')}")
-            ir_dir = (REPO_ROOT / "workspace" / "ir"
-                      / node_key.replace("/", "__").replace("@", "__"))
-            irs = sorted(ir_dir.glob("*/spec.ir.yaml")) if ir_dir.is_dir() else []
-            if not irs:
-                continue  # no lowered IR in this workspace yet — nothing to read a shape from
-            ir = _yaml.safe_load(irs[-1].read_text(encoding="utf-8"))
-            self.assertIsNotNone(vps._ir_bundle_shape(ir, node_key), node_key)
-            checked += 1
-        self.assertTrue(checked, "no catalog node had a lowered IR to check")
+            deps_path = REPO_ROOT / str(entry.get("deps_path") or "")
+            self.assertTrue(deps_path.is_file(), f"{node_key}: {deps_path} is not a file")
+            deps = _yaml.safe_load(deps_path.read_text(encoding="utf-8")) or {}
+            infra = ((deps.get("dependencies") or {}).get("infrastructure") or [])
+            ir = {
+                "meta": {"spec_kind": entry.get("spec_kind"), "node_key": node_key},
+                "dependency": {"direct_deps": [
+                    {"node_key": f"infrastructure/{d.get('infrastructure_id')}@0.0.0"}
+                    for d in infra if isinstance(d, dict)]},
+            }
+            shape = vps._ir_bundle_shape(ir, node_key)
+            self.assertIn(shape, BUNDLE_SHAPES, node_key)
+            seen.add(shape)
+        # Both shapes are represented, so a reader collapsed to one constant is red here rather
+        # than green on a sweep that only ever asked "not None".
+        self.assertEqual(seen, set(BUNDLE_SHAPES))
 
 
 class GenerateLeafAuthorizationTest(unittest.TestCase):
