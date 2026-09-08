@@ -113,9 +113,17 @@ def _write_compile_node(repo: Path, *, kind: str = "component", profile: bool = 
         prof_dir.mkdir(parents=True, exist_ok=True)
         (prof_dir / "controlled_spec.md").write_text(
             "# demo_profile\n\nThe profile fixes the component set.\n", encoding="utf-8")
+        # `deps_path` is what `resolve_spec_ref_for` reads to answer WHERE the profile lives —
+        # the same resolver the closure expansion uses (issue #175), so the fixture resolves
+        # the profile by the production rule rather than by a bare-id catalog scan.
+        (prof_dir / "deps.yaml").write_text(yaml.safe_dump(
+            {"spec_id": "demo_profile", "spec_kind": "profile",
+             "dependencies": {"components": [], "profiles": []}}, sort_keys=False),
+            encoding="utf-8")
         specs.append({"spec_kind": "profile", "spec_id": "demo_profile",
                       "spec_version": "0.1.0",
-                      "controlled_spec_path": "spec/profile/demo/demo_profile/controlled_spec.md"})
+                      "controlled_spec_path": "spec/profile/demo/demo_profile/controlled_spec.md",
+                      "deps_path": "spec/profile/demo/demo_profile/deps.yaml"})
     catalog = repo / "spec" / "registry" / "spec_catalog.yaml"
     catalog.parent.mkdir(parents=True, exist_ok=True)
     catalog.write_text(yaml.safe_dump({"catalog_version": "0.2.0", "specs": specs},
@@ -125,8 +133,16 @@ def _write_compile_node(repo: Path, *, kind: str = "component", profile: bool = 
                        pipeline_id="p_20260907_001")
     ir_dir = repo / refs.ir_ref
     ir_dir.mkdir(parents=True, exist_ok=True)
+    # `profiles` is the sidecar key the host writes for the adopted-profile record (issue
+    # #175); it is what `_pure_profile_spec_document` reads, so a profile fixture has to carry
+    # it here rather than only in `deps.yaml`.
     (ir_dir / "dependency_graph.json").write_text(
-        json.dumps({"node_key": node, "direct_deps": [], "all_nodes": [node]}, indent=2),
+        json.dumps({"node_key": node, "direct_deps": [], "all_nodes": [node],
+                    "profiles": ([{"node_key": "profile/demo_profile@0.1.0",
+                                   "profile_id": "demo_profile",
+                                   "profile_version": "0.1.0",
+                                   "version_constraint": ">=0.1.0 <1.0.0",
+                                   "components": []}] if profile else [])}, indent=2),
         encoding="utf-8")
     (ir_dir / "dependency_surface.json").write_text(
         json.dumps([{"node_key": node, "published_operations": [f"{spec_id}__apply"],
@@ -478,11 +494,41 @@ class PureCompileContextTests(_Fixture):
 class PureCompileProfileContextTests(_Fixture):
     PROFILE = True
 
-    def test_a_declared_profile_is_resolved_through_the_catalog(self) -> None:
+    def test_an_adopted_profile_is_resolved_through_the_sidecar(self) -> None:
         c = self.conductor()
         doc = c._build_pure_compile_context(self.refs)["profile_spec_document"]
         self.assertIn("demo_profile", doc)
         self.assertIn("The profile fixes the component set.", doc)
+
+    def test_the_sidecar_and_not_deps_yaml_decides_which_profiles_are_inlined(self) -> None:
+        """Issue #175: the adopted set is the host's, taken from the record
+        `_write_dependency_graph` wrote. Reading `deps.yaml` here instead would resolve the
+        same fact by a second rule — by bare id, first-wins, with no version constraint — and
+        the two could name different catalog entries."""
+        graph_path = self.repo / self.refs.ir_ref / "dependency_graph.json"
+        graph = json.loads(graph_path.read_text(encoding="utf-8"))
+        graph["profiles"] = []
+        graph_path.write_text(json.dumps(graph, indent=2), encoding="utf-8")
+        # `deps.yaml` still declares `demo_profile`; the sidecar says none is adopted.
+        deps = yaml.safe_load(
+            (self.repo / self.refs.spec_path / "deps.yaml").read_text(encoding="utf-8"))
+        self.assertTrue(deps["dependencies"]["profiles"])
+        c = self.conductor()
+        doc = c._build_pure_compile_context(self.refs)["profile_spec_document"]
+        self.assertEqual(doc, wc.Conductor._PURE_PROFILE_ABSENT_DOCUMENT)
+        self.assertNotIn("demo_profile", doc)
+
+    def test_a_sidecar_with_no_profiles_record_is_a_recoverable_assembly_failure(self) -> None:
+        # Not a silent empty document: the key is declared, and a blind prompt would ask the
+        # producer to invent the constraints its algorithm must honour.
+        graph_path = self.repo / self.refs.ir_ref / "dependency_graph.json"
+        graph = json.loads(graph_path.read_text(encoding="utf-8"))
+        del graph["profiles"]
+        graph_path.write_text(json.dumps(graph, indent=2), encoding="utf-8")
+        c = self.conductor()
+        with self.assertRaises(RuntimeError) as caught:
+            c._build_pure_compile_context(self.refs)
+        self.assertIn("pure_profile_spec_document_missing", str(caught.exception))
 
     def test_an_unresolvable_profile_is_named_rather_than_failing_the_substep(self) -> None:
         (self.repo / "spec/profile/demo/demo_profile/controlled_spec.md").unlink()

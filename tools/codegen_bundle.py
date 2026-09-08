@@ -1000,9 +1000,7 @@ def bundle_invariant_violations(doc: Mapping[str, Any]) -> list[str]:
         # Operation cardinality is by node KIND. A `problem` node publishes exactly one
         # operation — its single integration update path — so two would leave the host with no
         # rule to pick THE update path. A `component` / `infrastructure` node publishes an API of
-        # one or more operations (the harness ABI is many). A `profile` publishes EXACTLY ZERO:
-        # it is consumed through its selection result, not a call (`phase_02_generate.md`), so an
-        # operation entrypoint is an invented callable interface the Generate contract forbids.
+        # one or more operations (the harness ABI is many).
         # (Multiple `checks_interface` entrypoints are always fine — a fixed ABI, not the
         # published operation.)
         operation_count = sum(
@@ -1010,10 +1008,17 @@ def bundle_invariant_violations(doc: Mapping[str, Any]) -> list[str]:
             if entry.get("kind") == "operation" and entry.get("node_key") == member)
         spec_kind = member.split("/", 1)[0] if isinstance(member, str) and "/" in member else ""
         if spec_kind == "profile":
-            if operation_count > 0:
-                violations.append(
-                    f"optimization_unit member {member!r} is a profile and publishes no "
-                    f"operation, but has {operation_count} operation entrypoint(s)")
+            # Issue #175: a `profile` is a compile-time component-selection policy the host
+            # resolves; no phase runs on one, so no IR of that kind is authored and no
+            # optimization unit can legitimately name one. Unreachable today — but stated as a
+            # refusal rather than deleted, because DELETING the branch would silently route a
+            # profile member into the general rule below, where one with an operation
+            # entrypoint would PASS. One line of refusal is cheaper than the argument that the
+            # shape cannot occur.
+            violations.append(
+                f"optimization_unit member {member!r} is a profile; a profile is a "
+                f"compile-time selection policy resolved by the host and not a certified node "
+                f"(issue #175)")
         elif operation_count == 0:
             violations.append(f"optimization_unit member {member!r} has no operation entrypoint")
         elif spec_kind == "problem" and operation_count > 1:

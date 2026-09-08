@@ -7189,7 +7189,7 @@ clean:
     # re-runs `--stage compile`.
 
     _PURE_PROFILE_ABSENT_DOCUMENT = (
-        "No profile dependency is declared in deps.yaml.")
+        "This node adopts no profile.")
 
     def _pure_node_document(self, rel: str, name: str) -> str:
         """A NODE artifact of the compile context, or RAISE.
@@ -7246,41 +7246,59 @@ clean:
                 f"(under {Path(rel).parent}/): {type(exc).__name__}") from exc
 
     def _pure_profile_spec_document(self, refs: NodeRefs) -> str:
-        """The controlled spec of each `profile` dependency this node declares, resolved through
-        the catalog, or the host's fixed sentence when it declares none.
+        """The controlled spec of each `profile` this node ADOPTS, or the host's fixed sentence
+        when it adopts none.
 
-        The profile carries the component-set selection a node's algorithm is written against, and
-        the agentic leaf reads it today. Resolution is best-effort per entry (an entry the catalog
-        does not carry contributes a named line rather than failing the substep): the deterministic
-        gates already own dependency resolvability, and a profile that cannot be resolved is their
-        finding, not a reason to refuse to launch. The sentinel keeps the value a NON-EMPTY string,
-        which the launch validator requires of every declared key."""
-        deps = _read_yaml(self.repo_root / refs.spec_path / "deps.yaml") or {}
-        dependencies = deps.get("dependencies") if isinstance(deps, dict) else None
-        entries = (dependencies or {}).get("profiles") if isinstance(dependencies, dict) else None
+        The profile carries the parameter and compatibility constraints a node's algorithm is
+        written to honour (§3). What it SELECTS does not travel here: since issue #175 the host
+        resolves the selection and the components are ordinary members of the
+        dependency-graph document's `all_nodes`.
+
+        WHICH profiles, and at WHICH version, is read from `<ir_ref>/dependency_graph.json`
+        (written by `_write_dependency_graph` at phase start, so it is always present by the
+        time a producer launches) rather than re-derived from `deps.yaml` + the catalog. The
+        old derivation looked each `profile_id` up by BARE id, first-wins, with no version
+        constraint applied, so it could inline a different catalog entry than the one the
+        sidecar pinned — the same fact resolved twice, by two rules.
+
+        Resolution of the DIRECTORY is still best-effort per entry (an entry whose
+        `controlled_spec.md` cannot be read contributes a named line rather than failing the
+        substep): a profile the registry cannot resolve at all never reaches here, because
+        `_write_dependency_graph` fail-closes the phase on it first. The sentinel keeps the
+        value a NON-EMPTY string, which the launch validator requires of every declared key.
+
+        A missing/unreadable sidecar RAISES, like `_pure_repo_document` — the same disposition
+        for the same reason, and the same recoverable `pure_context_assembly_failed`."""
+        from tools.orchestration_runtime import resolve_spec_ref_for
+
+        graph = _read_json(self.repo_root / refs.ir_ref / "dependency_graph.json")
+        if not isinstance(graph, dict) or not isinstance(graph.get("profiles"), list):
+            raise RuntimeError(
+                "pure_profile_spec_document_missing: dependency_graph.json "
+                f"(under {refs.ir_ref}/): no readable `profiles` record")
         profile_ids: list[str] = []
-        for entry in entries or []:
-            pid = entry.get("profile_id") if isinstance(entry, dict) else entry
+        for entry in graph["profiles"]:
+            pid = entry.get("profile_id") if isinstance(entry, dict) else None
             if isinstance(pid, str) and pid.strip():
                 profile_ids.append(pid.strip())
         if not profile_ids:
             return self._PURE_PROFILE_ABSENT_DOCUMENT
-        catalog = _read_yaml(self.repo_root / "spec" / "registry" / "spec_catalog.yaml") or {}
-        by_id = {e.get("spec_id"): e for e in (catalog.get("specs") or [])
-                 if isinstance(e, dict)}
         sections: list[str] = []
         for pid in profile_ids:
-            entry = by_id.get(pid) or {}
-            rel = entry.get("controlled_spec_path")
             text = ""
-            if isinstance(rel, str) and rel.strip():
+            try:
+                spec_ref = resolve_spec_ref_for(self.repo_root, "profile", pid)
+            except Exception:  # noqa: BLE001 — a registry outage is the graph builder's finding
+                spec_ref = None
+            if spec_ref:
                 try:
-                    text = (self.repo_root / rel).read_text(encoding="utf-8")
+                    text = (self.repo_root / spec_ref / "controlled_spec.md").read_text(
+                        encoding="utf-8")
                 except (OSError, UnicodeError):
                     text = ""
             sections.append(f"# profile: {pid}\n\n"
                             + (text if text.strip()
-                               else "(this profile is declared in deps.yaml but the registry "
+                               else "(this profile is adopted by this node but the registry "
                                     "does not resolve it to a controlled spec)"))
         return "\n\n".join(sections)
 
@@ -7356,9 +7374,12 @@ clean:
                 f"{refs.spec_path}/tests.md", "tests"),
             "deps_document": self._pure_node_document(
                 f"{refs.spec_path}/deps.yaml", "deps"),
-            "profile_spec_document": self._pure_profile_spec_document(refs),
+            # Ordered before `profile_spec_document`, which READS the same sidecar: a missing
+            # or unreadable file is then reported as the document it is, rather than as the
+            # profile record it also happens to carry.
             "dependency_graph_document": self._pure_repo_document(
                 f"{refs.ir_ref}/dependency_graph.json", "dependency_graph"),
+            "profile_spec_document": self._pure_profile_spec_document(refs),
             "phase_contract_document": self._pure_repo_document(
                 WORKFLOW_PHASE_DOC_BY_STEP["compile"], "phase_contract"),
             "ir_algorithm_example_document": self._pure_repo_document(

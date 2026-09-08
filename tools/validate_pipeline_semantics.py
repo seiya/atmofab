@@ -5415,7 +5415,7 @@ def _validate_generate_outputs_for_generation(
     # §5.1 signature pin: a node whose `spec_kind` publishes an EXACT surface
     # (`_EXACT_PUBLISHED_SURFACE_KINDS` — `infrastructure` since R1/M3c-α, `component` since issue
     # #153 PR-2) must publish every §5.1 canonical signature verbatim in its generated model. A
-    # no-op for `profile` / `problem`, whose interface is legitimately derived post-hoc.
+    # no-op for `problem`, whose interface is legitimately derived post-hoc.
     _validate_generated_signatures(
         repo_root, execution, model_files, violations
     )
@@ -5661,9 +5661,10 @@ _IMPL_PARALLELIZATION_MODEL_KEYS = frozenset({"method", "scheme", "kind"})
 
 # The floor applies to leaf-authored physics only. `infrastructure/` is the host's measurement
 # harness — its ~20 counted loops are timing/reduction bookkeeping that must not be forced to
-# parallelize (the same reason `_validate_local_operation_lowering` exempts it), and `profile/`
-# nodes compose components around trivial zero-fill init loops, where an `!$omp` demand is a pure
-# false positive. Restricting to a positive list also keeps a future spec_kind fail-open.
+# parallelize (the same reason `_validate_local_operation_lowering` exempts it). Restricting to a
+# positive list also keeps a future spec_kind fail-open. (`profile/` used to be named here as a
+# second exemption; since issue #175 no profile IR is authored at all, so the exclusion is dead
+# rather than load-bearing.)
 _OPENMP_FLOOR_NODE_KINDS = ("component/", "problem/")
 
 
@@ -11185,6 +11186,7 @@ def _validate_compile_stage_impl(
     _validate_ir_source_refs_tests(repo_root, ir_dir, violations)
     _validate_ir_meta_json(ir_dir, violations)
     _validate_compile_dependency_consistency(repo_root, ir_dir, violations)
+    _validate_profile_selection(repo_root, ir_dir, violations)
     _validate_component_dep_operations(repo_root, ir_dir, violations)
     _validate_component_dep_operations_membership(repo_root, ir_dir, violations)
     _validate_local_operation_lowering(repo_root, ir_dir, violations)
@@ -11674,7 +11676,7 @@ def _validate_component_dep_operations(
 
     Only ``component/`` deps are gated: an ``infrastructure`` (harness) dep correctly
     authors ``operations: []`` (the physics leaf never calls the harness API — the
-    host-rendered runner is the sole caller), and ``profile`` / ``problem`` deps are not
+    host-rendered runner is the sole caller), and a ``problem`` dep is not
     called through the ``<dep>__*`` operation surface. No-op on a missing / unparseable IR
     (already flagged upstream) or a node with no component dependency."""
     derived_path = ir_dir / "spec.ir.yaml"
@@ -12548,7 +12550,11 @@ def _validate_public_api_name_surface(
 #: that publishes an exact surface; this is the WHOLE set, and it exists so an unrecognised
 #: spelling can be REFUSED rather than silently skipping the surface gate a node needs.
 #: Derived from the kinds `spec/registry/spec_catalog.yaml` carries.
-_CANONICAL_SPEC_KINDS = ("component", "infrastructure", "problem", "profile")
+#: `profile` is deliberately absent: since issue #175 a profile is a compile-time
+#: component-selection policy the host resolves, and no phase runs on one — so no IR of that
+#: kind is ever authored, and an IR whose `meta.spec_kind` claims one is REFUSED as an
+#: unrecognised spelling rather than exempted from the surface gate.
+_CANONICAL_SPEC_KINDS = ("component", "infrastructure", "problem")
 
 #: The `spec_kind`s whose controlled_spec publishes an EXACT surface that `Compile.static` pins:
 #: §5 published NAMES and §5.1 canonical signatures + module parameters. Every other kind's
@@ -13924,6 +13930,124 @@ def _validate_compile_dependency_consistency(
             f"{ir_dir / 'spec.ir.yaml'}: dependency.direct_deps disagrees with the "
             f"deterministic dependency closure (deps.yaml via dependency_graph.json); "
             f"missing direct deps {missing}; unexpected direct deps {extra}")
+
+
+def _validate_profile_selection(
+    repo_root: Path, ir_dir: Path, violations: list[str]
+) -> None:
+    """Every case's ``inputs.profile_selection`` POINTS AT an adopted profile the host resolved.
+
+    Issue #175: a ``profile`` is a compile-time component-selection policy the host resolves at
+    Compile, not a certified node. What it selects is already in the sidecar's ``all_nodes``
+    (and pinned against the IR by V4); what remains for the IR to carry is the POINTER — which
+    policy each case was authored under — so the record says which selection produced the code.
+    The host owns the value: the leaf transcribes it from the ``dependency_graph.json`` the
+    conductor wrote at phase start, and any other value is a violation.
+
+    Exactly ``{profile_id, profile_version}``, on every case. An extra key is refused because
+    the leaf's own invention was a ``components:`` sub-map restating the component set — a
+    second copy of a fact ``all_nodes`` already carries, and the drift this gate exists to stop.
+
+    WHICH nodes the field is required on comes from the SIDECAR, never from the IR
+    (`atmofab-enforcement-change` surface 11): a field the leaf authors must not decide whether
+    the leaf is gated. A sidecar with ``profiles: []`` is a node that adopts none, and the field
+    is not read there at all — an `infrastructure` harness spec uses the same field name for an
+    unrelated plumbing aspect, and refusing it on a node with no adopted profile would
+    re-certify the harness and, through the closure bindings, every consumer of it. A sidecar
+    with NO ``profiles`` key predates this builder: refused, with "re-run Compile" as the
+    remedy, rather than skipped.
+
+    A violation is a content failure routed by ``classify_compile_static_failure`` to a
+    ``compile.generate`` warm reopen, the same route V4 takes — the leaf can repair it by
+    transcribing the sidecar."""
+    sidecar_path = ir_dir / "dependency_graph.json"
+    if not sidecar_path.is_file():
+        return  # `_validate_compile_dependency_consistency` owns the missing-sidecar report
+    try:
+        graph = _read_json(sidecar_path)
+    except (json.JSONDecodeError, OSError):
+        return  # likewise for an unparseable one
+    if not isinstance(graph, dict):
+        return
+    profiles = graph.get("profiles")
+    if profiles is None:
+        violations.append(
+            f"{sidecar_path}: dependency_graph.json carries no `profiles` key; it was written "
+            "by a builder that predates the host-side profile resolution (issue #175), so "
+            "whether this node adopts a profile cannot be decided. Re-run Compile to "
+            "re-author the sidecar.")
+        return
+    if not isinstance(profiles, list):
+        violations.append(
+            f"{sidecar_path}: dependency_graph.json `profiles` must be a list")
+        return
+    if not profiles:
+        # Adopts no profile. The field is not read here — see the docstring.
+        return
+    allowed: set[tuple[str, str]] = set()
+    for entry in profiles:
+        if not isinstance(entry, dict):
+            violations.append(
+                f"{sidecar_path}: dependency_graph.json `profiles` entry is not an object")
+            return
+        pid = entry.get("profile_id")
+        pver = entry.get("profile_version")
+        if not (isinstance(pid, str) and pid.strip()
+                and isinstance(pver, str) and pver.strip()):
+            violations.append(
+                f"{sidecar_path}: dependency_graph.json `profiles` entry is missing "
+                "profile_id / profile_version")
+            return
+        allowed.add((pid.strip(), pver.strip()))
+
+    derived_path = ir_dir / "spec.ir.yaml"
+    if not derived_path.exists():
+        return  # missing IR already flagged upstream
+    try:
+        ir = _read_yaml(derived_path)
+    except (yaml.YAMLError, OSError):
+        return  # malformed IR already flagged upstream
+    if not isinstance(ir, dict):
+        return
+    case_block = ir.get("case")
+    tcs = case_block.get("test_case_set") if isinstance(case_block, dict) else None
+    if not isinstance(tcs, list):
+        return  # the case block's own shape is another gate's finding
+    expected = sorted(f"{pid}@{pver}" for pid, pver in allowed)
+    for index, case in enumerate(tcs):
+        if not isinstance(case, dict):
+            continue
+        label = case.get("case_id") if isinstance(case.get("case_id"), str) else f"[{index}]"
+        inputs = case.get("inputs")
+        selection = inputs.get("profile_selection") if isinstance(inputs, dict) else None
+        if not isinstance(selection, dict):
+            violations.append(
+                f"{derived_path}: case {label!r} has no `inputs.profile_selection` mapping; "
+                f"this node adopts {expected}, so every case must record which one it was "
+                f"authored under, as {{profile_id, profile_version}} copied from "
+                f"{sidecar_path.name}")
+            continue
+        keys = set(selection)
+        if keys != {"profile_id", "profile_version"}:
+            violations.append(
+                f"{derived_path}: case {label!r} `inputs.profile_selection` has keys "
+                f"{sorted(keys)}; it is exactly {{profile_id, profile_version}} — a pointer at "
+                f"the adopted policy, not a copy of what it selects (the component set is "
+                f"{sidecar_path.name}#all_nodes, pinned against the IR by the dependency "
+                f"consistency gate)")
+            continue
+        pid = selection.get("profile_id")
+        pver = selection.get("profile_version")
+        if not (isinstance(pid, str) and isinstance(pver, str)):
+            violations.append(
+                f"{derived_path}: case {label!r} `inputs.profile_selection` values must be "
+                f"strings")
+            continue
+        if (pid.strip(), pver.strip()) not in allowed:
+            violations.append(
+                f"{derived_path}: case {label!r} `inputs.profile_selection` names "
+                f"{pid.strip()}@{pver.strip()}, which is not an adopted profile of this node; "
+                f"{sidecar_path.name} resolved {expected}. Copy the host's value.")
 
 
 def _lineage_node_key_and_ir_ref(

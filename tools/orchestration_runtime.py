@@ -626,6 +626,10 @@ def _resolve_dep_version(
 _DEPS_YAML_REQUIRED_KEYS: frozenset[str] = frozenset({"components", "profiles"})
 _DEPS_YAML_ALLOWED_KEYS: frozenset[str] = frozenset({"components", "profiles", "infrastructure"})
 # (deps key, per-item id field). `kind = key.rstrip("s")` yields component/profile/infrastructure.
+# A `profile` entry is expanded into the components it selects by
+# `expand_profile_dependencies` and never becomes a node of any closure (issue #175); the two
+# readers that deliberately see the RAW declaration are `_dependency_readiness_state`'s
+# trivial-leaf test and `workflow_conductor._direct_infra_dep_count`.
 _DEPS_KEY_KIND_FIELDS: tuple[tuple[str, str], ...] = (
     ("components", "component_id"),
     ("profiles", "profile_id"),
@@ -2320,9 +2324,9 @@ def _resolve_dependency_facts(repo_root: Path, ir_ref: Any) -> list[dict[str, An
     authoring wobble the ``_validate_component_dep_operations`` compile gate is meant to
     catch, but which a resume can still step over on an already-certified IR — the
     interfaces of ALL ``<dep_spec_id>__``-prefixed public subroutines in the certified
-    source are surfaced instead. Scoped to ``component/`` deps: a ``profile``/``problem`` dep
-    authors ``operations: []`` legitimately and must not be called, so its prefixed
-    subroutines are never surfaced (matching the ``_validate_component_dep_operations`` scope). Without this, the ``use``/``call`` the generate-side gate
+    source are surfaced instead. Scoped to ``component/`` deps: a ``problem`` dep authors
+    ``operations: []`` legitimately and must not be called, so its prefixed subroutines are
+    never surfaced (matching the ``_validate_component_dep_operations`` scope). Without this, the ``use``/``call`` the generate-side gate
     unconditionally requires for a component dep has no facts to build against, and the
     pure closed-context leaf must invent symbol names / argument orders that ``Generate.gate``
     rejects every retry — the closure fail_closed this fallback closes. The empty-list
@@ -2460,7 +2464,7 @@ def _resolve_dependency_facts(repo_root: Path, ir_ref: Any) -> list[dict[str, An
                                 # against. Scoped to `component/` deps because the empty-ops
                                 # fail_closed loop this closes is driven by the component-only
                                 # generate gate (`_validate_dependency_operation_on_model_files`); a
-                                # profile/problem dep authors `operations: []` legitimately and must
+                                # problem dep authors `operations: []` legitimately and must
                                 # NOT be called (the validator + docs exempt it), so surfacing its
                                 # prefixed subroutines would tempt Generate into an undeclared call.
                                 # See `_validate_component_dep_operations`.
@@ -2541,7 +2545,7 @@ def _resolve_component_dep_surface(
     not-yet-existing consumer IR (this is the L2 correction: ``_resolve_dependency_facts`` is
     keyed on the consumer IR's ``direct_deps`` and cannot run before compile authors it).
 
-    Only ``component/`` deps are surfaced — a ``profile``/``problem`` dep is not
+    Only ``component/`` deps are surfaced — a ``problem`` dep is not
     operation-enumerated by the consumer's ``public_api`` gate, and an ``infrastructure`` dep
     is never called (the runner harness is host-rendered). Each entry is ``{node_key,
     published_operations: [op_name, ...], source}`` where ``source`` is:
@@ -3486,9 +3490,12 @@ def _compute_initial_dependency_readiness(
     - If `spec_ref` is missing or the target `deps.yaml` cannot be parsed, return
       a fail-closed payload (all flags false) so the gate refuses to launch until
       a real verifier writes verified state.
-    - If `deps.yaml` lists no `components` and no `profiles`, dependency readiness
+    - If `deps.yaml` declares no dependency entry at all, dependency readiness
       is vacuously satisfied — return all flags true (matches the audit's empty-
-      dependency case where launches should proceed).
+      dependency case where launches should proceed). This reader looks at the RAW
+      declaration, before `expand_profile_dependencies`: a node declaring only a
+      `profile` is not a trivial leaf, and expanding here would be the one place that
+      turned a declared dependency into none.
     - Otherwise, return fail-closed. A future readiness builder must explicitly
       flip these flags after verifying each direct dependency's `ir_meta.json` /
       `pipeline_meta.json` / `aggregate_verdict`. The fail-closed default ensures
