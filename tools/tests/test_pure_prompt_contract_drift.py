@@ -377,7 +377,13 @@ PINNED: dict[str, str] = {
     # already below a recorded review's real `notes` field (4,272; the corpus runs to 9,773),
     # so the cap moved to 12,000 in the template and in the validator. Re-pinning an entry no
     # run has ever recorded is not editing a historical entry; `pure-37` stays free for PR-3.
-    "pure-36": "84f9bd1279e660f5e432596e1624bc1db2d22ad1a0e26b9f4b1f156b61940e97",}
+    # Re-pinned a second time, in review round 2: the template told the judge that an
+    # `all_zero` array is "the shape an unwritten one takes" and therefore a fabrication to
+    # fail on. Measured against the corpus, that is false and live — `run_20260802_001`, which
+    # the agentic judge certified `pass`, carries 20 all-zero arrays, every one a flat bed or a
+    # zero transverse momentum. A compliant judge following that sentence would have failed
+    # sound runs, which the billed A/B would have surfaced as a spurious regression.
+    "pure-36": "52c3b71545e238a420db6eace17da9c9b1da8a0f82bb87973e030b01d20a1525",}
 
 
 def _contract_tuple() -> dict[str, object]:

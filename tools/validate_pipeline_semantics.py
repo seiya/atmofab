@@ -53,6 +53,7 @@ try:
         METRICS_BASIS_NESTED_VARIABLE_FIELDS as _METRICS_BASIS_NESTED_VARIABLE_FIELDS,
         contract_test_evidence_requirements as _contract_test_evidence_requirements,
         expected_metrics_basis_keys,
+        metrics_basis_entries as _metrics_basis_entries,
         metrics_basis_variable_keys as _metrics_basis_variable_keys,
         normalize_raw_evidence_artifact as _normalize_raw_evidence_artifact,
     )
@@ -94,6 +95,7 @@ except ModuleNotFoundError:  # pragma: no cover - import bootstrap for direct CL
         METRICS_BASIS_NESTED_VARIABLE_FIELDS as _METRICS_BASIS_NESTED_VARIABLE_FIELDS,
         contract_test_evidence_requirements as _contract_test_evidence_requirements,
         expected_metrics_basis_keys,
+        metrics_basis_entries as _metrics_basis_entries,
         metrics_basis_variable_keys as _metrics_basis_variable_keys,
         normalize_raw_evidence_artifact as _normalize_raw_evidence_artifact,
     )
@@ -6696,92 +6698,6 @@ def _case_ids_for_execution(repo_root: Path, execution: NodeExecution) -> set[st
         and isinstance(item.get("case_id"), str)
         and item["case_id"].strip()
     }
-
-
-def _metrics_basis_entries(
-    metrics_basis: dict[str, Any],
-) -> tuple[dict[tuple[str, str], dict[str, Any]], list[str], str | None]:
-    """Index a ``raw/metrics_basis.json`` document by its ``(test_id, case_id)`` entry key.
-
-    R3-core: a test's primary evidence is the evidence of EVERY case its predicate ranges over,
-    so ``test_id`` alone is not a key. Every entry carries a non-empty ``case_id`` as a direct
-    sibling of ``test_id`` (harness controlled_spec §2), and ``(test_id, case_id)`` is unique.
-
-    Returns ``(entries, problems, form)`` where ``form`` names the container actually parsed
-    (``"per_test"`` / ``"tests"``, or ``None`` when neither did). The ``tests`` object form is
-    keyed by test_id and therefore cannot hold two entries for one test — it is deprecated for
-    that reason; ``_validate_metrics_basis_per_test`` turns a multi-target test written that way
-    into an actionable violation rather than an opaque "missing evidence".
-    """
-    raw_entries = metrics_basis.get("per_test")
-    form: str | None = "per_test"
-    if raw_entries is None:
-        raw_entries = metrics_basis.get("tests")
-        form = "tests"
-
-    entries: dict[tuple[str, str], dict[str, Any]] = {}
-    problems: list[str] = []
-
-    def _entry_case_id(item: dict[str, Any], loc: str, test_id: str) -> str | None:
-        raw_case_id = item.get("case_id")
-        if not isinstance(raw_case_id, str) or not raw_case_id.strip():
-            problems.append(
-                f"{loc} (test_id {test_id}) must carry a non-empty `case_id` as a direct "
-                "sibling of `test_id` — metrics-basis evidence is keyed by (test_id, case_id), "
-                "one entry per case the test's predicate targets"
-            )
-            return None
-        return raw_case_id.strip()
-
-    if isinstance(raw_entries, list):
-        for idx, item in enumerate(raw_entries):
-            if not isinstance(item, dict):
-                problems.append(f"per_test[{idx}] must be object")
-                continue
-            raw_test_id = item.get("test_id")
-            if not isinstance(raw_test_id, str) or not raw_test_id.strip():
-                problems.append(f"per_test[{idx}].test_id must be non-empty string")
-                continue
-            test_id = raw_test_id.strip()
-            case_id = _entry_case_id(item, f"per_test[{idx}]", test_id)
-            if case_id is None:
-                continue
-            if (test_id, case_id) in entries:
-                problems.append(
-                    f"per_test has duplicated (test_id, case_id) (({test_id}, {case_id}))"
-                )
-                continue
-            entries[(test_id, case_id)] = item
-        return entries, problems, form
-
-    if isinstance(raw_entries, dict):
-        for raw_test_id, item in raw_entries.items():
-            if not isinstance(raw_test_id, str) or not raw_test_id.strip():
-                problems.append("tests keys must be non-empty strings")
-                continue
-            if not isinstance(item, dict):
-                problems.append(f"tests[{raw_test_id!r}] must be object")
-                continue
-            test_id = raw_test_id.strip()
-            case_id = _entry_case_id(item, f"tests[{raw_test_id!r}]", test_id)
-            if case_id is None:
-                continue
-            # JSON object keys are unique as WRITTEN, but this reader strips them — so
-            # `"test_a"` and `" test_a "` are two distinct keys that name one entry. Without
-            # this check the later one silently overwrites the earlier, and a malformed row
-            # (say, one missing a required variable) simply disappears. Same rule as the
-            # `per_test` list branch: one entry per (test_id, case_id).
-            if (test_id, case_id) in entries:
-                problems.append(
-                    f"tests has duplicated (test_id, case_id) (({test_id}, {case_id})) — two "
-                    "keys normalize to the same test_id"
-                )
-                continue
-            entries[(test_id, case_id)] = item
-        return entries, problems, form
-
-    problems.append("must contain per_test list or tests object")
-    return entries, problems, None
 
 
 def _metrics_basis_unrecognized_wrapper(

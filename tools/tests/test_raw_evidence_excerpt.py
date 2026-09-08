@@ -240,13 +240,33 @@ class MalformedEvidenceIsAFactNotAnExceptionTest(unittest.TestCase):
         self.assertTrue(any("neither a `per_test` list nor a `tests` object" in p
                             for p in self._excerpt()["problems"]))
 
+    # The two rows below assert the SHARED reader's wording, not this module's own. Since the
+    # keying moved to `metrics_basis_entries` (one definition for the judge and the
+    # `--stage post_execute` gate), these messages are the GATE's, prefixed with the file — a
+    # judge and an operator now read the same sentence about the same defect.
     def test_entry_without_a_case_id(self):
         self.raw.write("metrics_basis.json", {"per_test": [{"test_id": "t_a", "h": []}]})
-        self.assertTrue(any("carries no case_id" in p for p in self._excerpt()["problems"]))
+        self.assertTrue(any("must carry a non-empty `case_id`" in p
+                            for p in self._excerpt()["problems"]))
 
     def test_duplicated_entry(self):
         self.raw.write("metrics_basis.json", {"per_test": [_entry(), _entry()]})
-        self.assertTrue(any("duplicated entry" in p for p in self._excerpt()["problems"]))
+        self.assertTrue(any("duplicated (test_id, case_id)" in p
+                            for p in self._excerpt()["problems"]))
+
+    def test_the_tests_object_form_is_keyed_the_way_the_gate_keys_it(self):
+        """Codex, round 2: the excerpt had its own reader and preferred an inner `test_id` over
+        the map key, while the gate always uses the key. The gate then accepted evidence as
+        `t_key` while the judge evaluated those arrays against `t_inner`'s required variables,
+        so a real shortage became invisible. Pinned as the AGREEMENT, since the fix was to
+        share one reader rather than to patch the keying."""
+        doc = {"tests": {"t_key": {"test_id": "t_inner", "case_id": "case_a",
+                                   "h": [[1.0]], "dx": 0.5}}}
+        self.raw.write("metrics_basis.json", doc)
+        gate_entries, _problems, _form = rex.metrics_basis_entries(doc)
+        present = {tuple(k) for k in self._excerpt()["coverage"]["present"]}
+        self.assertEqual(present, set(gate_entries))
+        self.assertEqual(present, {("t_key", "case_a")})
 
     def test_a_malformed_entry_does_not_hide_the_sound_ones(self):
         self.raw.write("metrics_basis.json",
@@ -254,6 +274,36 @@ class MalformedEvidenceIsAFactNotAnExceptionTest(unittest.TestCase):
         result = self._excerpt()
         self.assertEqual(result["coverage"]["present"], [["t_a", "case_a"]])
         self.assertTrue(result["problems"])
+
+    def test_raggedness_under_a_later_branch_is_detected(self):
+        """Codex, round 2: `_shape` descended through `children[0]` only, so raggedness under
+        any later sibling was invisible — `[[[1,2],[3,4]], [[5],[6,7,8]]]` reported shape
+        `[2,2,2]` with `ragged=False`, and its element count matched the rectangular shape too,
+        so nothing in the summary betrayed it. Malformed evidence reached the judge looking
+        structurally sound, which is the one thing these summaries exist to prevent."""
+        self.raw.write("metrics_basis.json", {"per_test": [
+            _entry(h=[[[1.0, 2.0], [3.0, 4.0]], [[5.0], [6.0, 7.0, 8.0]]])]})
+        row = next(r for r in self._excerpt()["metrics_basis_arrays"]
+                   if r["variable"] == "h")
+        self.assertTrue(row["ragged"])
+
+    def test_a_rank_change_partway_across_a_level_is_ragged(self):
+        """The other direction of the same walk: a level whose members are some lists and some
+        scalars changes rank partway, which no length comparison alone would catch."""
+        self.raw.write("metrics_basis.json", {"per_test": [_entry(h=[[1.0, [2.0]]])]})
+        row = next(r for r in self._excerpt()["metrics_basis_arrays"]
+                   if r["variable"] == "h")
+        self.assertTrue(row["ragged"])
+
+    def test_a_rectangular_array_is_not_called_ragged(self):
+        """The over-refusal direction of the fix above: widening raggedness detection must not
+        start flagging the ordinary shape, which is every real array in the corpus."""
+        self.raw.write("metrics_basis.json", {"per_test": [
+            _entry(h=[[[1.0, 2.0], [3.0, 4.0]], [[5.0, 6.0], [7.0, 8.0]]])]})
+        row = next(r for r in self._excerpt()["metrics_basis_arrays"]
+                   if r["variable"] == "h")
+        self.assertFalse(row["ragged"])
+        self.assertEqual(row["shape"], [2, 2, 2])
 
     def test_ragged_array_is_summarized_not_refused(self):
         self.raw.write("metrics_basis.json",

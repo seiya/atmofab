@@ -17,8 +17,9 @@ of 100 KB - 1.65 MB, all `[nx, ny]` float arrays), so it cannot be inlined and
 the leaf cannot go and read it. What the host inlines instead is this excerpt: the
 COVERAGE of that matrix, and per-array SUMMARIES — shape, extent, non-finite counts,
 all-zero — from which the judge can ask whether `diagnostics.json`'s metrics are supported
-by the evidence they claim to come from, and whether an array is the degenerate shape a
-fabricated one takes.
+by the evidence they claim to come from. These are FACTS, not verdicts: an all-zero array is
+ordinary physics on many nodes (see `_summarize`), and what makes one a finding is what the
+tests and the IO contract say that variable should do.
 
 **No numeric array is ever inlined**, at any size. The output is bounded by
 (test x case x variable) plus (snapshot x variable). MEASURED on `shallow_water2d`'s
@@ -211,6 +212,102 @@ METRICS_BASIS_BOOKKEEPING_KEYS = frozenset(
 )
 
 
+def metrics_basis_entries(
+    metrics_basis: dict[str, Any],
+) -> tuple[dict[tuple[str, str], dict[str, Any]], list[str], str | None]:
+    """Index a ``raw/metrics_basis.json`` document by its ``(test_id, case_id)`` entry key.
+
+    Moved here from `validate_pipeline_semantics` in review (issue #169). The excerpt had its
+    OWN reader of this document, and Codex found the two disagreeing on the deprecated `tests`
+    object form: the gate keys an entry by its MAP KEY, the excerpt preferred an inner
+    `test_id` when one was present. Given `{"tests": {"t_key": {"test_id": "t_inner", ...}}}`
+    the gate accepted the evidence as `t_key` while the judge evaluated those same arrays
+    against `t_inner`'s `required_raw_variables` — so the shortage the judge exists to catch
+    became invisible. The commit that introduced the second reader was the one whose premise
+    was "one evidence matrix, two readers"; this is that premise applied to the last helper it
+    missed, which is why the fix is a MOVE and not a patch to the keying.
+
+    R3-core: a test's primary evidence is the evidence of EVERY case its predicate ranges over,
+    so ``test_id`` alone is not a key. Every entry carries a non-empty ``case_id`` as a direct
+    sibling of ``test_id`` (harness controlled_spec §2), and ``(test_id, case_id)`` is unique.
+
+    Returns ``(entries, problems, form)`` where ``form`` names the container actually parsed
+    (``"per_test"`` / ``"tests"``, or ``None`` when neither did). The ``tests`` object form is
+    keyed by test_id and therefore cannot hold two entries for one test — it is deprecated for
+    that reason; ``_validate_metrics_basis_per_test`` turns a multi-target test written that way
+    into an actionable violation rather than an opaque "missing evidence".
+    """
+    raw_entries = metrics_basis.get("per_test")
+    form: str | None = "per_test"
+    if raw_entries is None:
+        raw_entries = metrics_basis.get("tests")
+        form = "tests"
+
+    entries: dict[tuple[str, str], dict[str, Any]] = {}
+    problems: list[str] = []
+
+    def _entry_case_id(item: dict[str, Any], loc: str, test_id: str) -> str | None:
+        raw_case_id = item.get("case_id")
+        if not isinstance(raw_case_id, str) or not raw_case_id.strip():
+            problems.append(
+                f"{loc} (test_id {test_id}) must carry a non-empty `case_id` as a direct "
+                "sibling of `test_id` — metrics-basis evidence is keyed by (test_id, case_id), "
+                "one entry per case the test's predicate targets"
+            )
+            return None
+        return raw_case_id.strip()
+
+    if isinstance(raw_entries, list):
+        for idx, item in enumerate(raw_entries):
+            if not isinstance(item, dict):
+                problems.append(f"per_test[{idx}] must be object")
+                continue
+            raw_test_id = item.get("test_id")
+            if not isinstance(raw_test_id, str) or not raw_test_id.strip():
+                problems.append(f"per_test[{idx}].test_id must be non-empty string")
+                continue
+            test_id = raw_test_id.strip()
+            case_id = _entry_case_id(item, f"per_test[{idx}]", test_id)
+            if case_id is None:
+                continue
+            if (test_id, case_id) in entries:
+                problems.append(
+                    f"per_test has duplicated (test_id, case_id) (({test_id}, {case_id}))"
+                )
+                continue
+            entries[(test_id, case_id)] = item
+        return entries, problems, form
+
+    if isinstance(raw_entries, dict):
+        for raw_test_id, item in raw_entries.items():
+            if not isinstance(raw_test_id, str) or not raw_test_id.strip():
+                problems.append("tests keys must be non-empty strings")
+                continue
+            if not isinstance(item, dict):
+                problems.append(f"tests[{raw_test_id!r}] must be object")
+                continue
+            test_id = raw_test_id.strip()
+            case_id = _entry_case_id(item, f"tests[{raw_test_id!r}]", test_id)
+            if case_id is None:
+                continue
+            # JSON object keys are unique as WRITTEN, but this reader strips them — so
+            # `"test_a"` and `" test_a "` are two distinct keys that name one entry. Without
+            # this check the later one silently overwrites the earlier, and a malformed row
+            # (say, one missing a required variable) simply disappears. Same rule as the
+            # `per_test` list branch: one entry per (test_id, case_id).
+            if (test_id, case_id) in entries:
+                problems.append(
+                    f"tests has duplicated (test_id, case_id) (({test_id}, {case_id})) — two "
+                    "keys normalize to the same test_id"
+                )
+                continue
+            entries[(test_id, case_id)] = item
+        return entries, problems, form
+
+    problems.append("must contain per_test list or tests object")
+    return entries, problems, None
+
+
 def metrics_basis_variable_keys(entry: dict[str, Any]) -> set[str]:
     """The variable names one metrics-basis entry holds.
 
@@ -294,40 +391,16 @@ def _read_metrics_basis(
         problems.append("raw/metrics_basis.json: not a JSON object")
         return set(), entries
 
-    raw_entries = doc.get("per_test")
-    if raw_entries is None:
-        raw_entries = doc.get("tests")
-    if isinstance(raw_entries, list):
-        items = list(enumerate(raw_entries))
-    elif isinstance(raw_entries, dict):
-        items = list(raw_entries.items())
-    else:
+    # Keyed by the SHARED reader, so the judge and the `--stage post_execute` gate cannot
+    # disagree about which test an entry belongs to. Its problem strings are the gate's; they
+    # are prefixed with the file so the judge reads them the way it reads the rest.
+    entries, problems_found, form = metrics_basis_entries(doc)
+    for problem in problems_found:
+        problems.append(f"raw/metrics_basis.json: {problem}")
+    if form is None or (not entries and not problems_found):
         problems.append(
             "raw/metrics_basis.json: neither a `per_test` list nor a `tests` object")
-        return set(), entries
-
-    for where, item in items:
-        if not isinstance(item, dict):
-            problems.append(f"raw/metrics_basis.json: entry {where!r} is not an object")
-            continue
-        test_id = item.get("test_id")
-        if not isinstance(test_id, str) or not test_id.strip():
-            # The `tests` object form keys entries by test_id, so the key is the id there.
-            test_id = where if isinstance(where, str) else None
-        if not isinstance(test_id, str) or not test_id.strip():
-            problems.append(f"raw/metrics_basis.json: entry {where!r} names no test_id")
-            continue
-        case_id = item.get("case_id")
-        if not isinstance(case_id, str) or not case_id.strip():
-            problems.append(
-                f"raw/metrics_basis.json: entry for test_id {test_id.strip()!r} carries no "
-                "case_id — evidence is keyed by (test_id, case_id)")
-            continue
-        key = (test_id.strip(), case_id.strip())
-        if key in entries:
-            problems.append(f"raw/metrics_basis.json: duplicated entry for {list(key)}")
-            continue
-        entries[key] = item
+        return set(), {}
     return set(entries), entries
 
 
@@ -497,9 +570,18 @@ def _summarize(value: Any) -> dict[str, Any]:
 
     The statistics are chosen for what a judge is actually asked: `nan_count` / `inf_count`
     because a non-finite entry invalidates whatever metric was computed from it, `all_zero`
-    and a collapsed extent because those are the shapes an array takes when it was never
-    written, and `shape` because an array of the wrong rank is a runner defect no numeric
-    check would notice.
+    and a collapsed extent because an array that was never written looks like that, and
+    `shape` because an array of the wrong rank is a runner defect no numeric check would
+    notice.
+
+    `all_zero` IS NOT EVIDENCE OF FABRICATION, and an earlier version of this docstring said it
+    was ("the shape an array takes when it was never written", full stop). MEASURED against the
+    corpus: on `shallow_water2d`'s `run_20260802_001` — certified `pass` by the agentic judge —
+    20 arrays are all-zero, every one of them `hv` (transverse momentum in a setup with none) or
+    `z_b` (a flat bed). A physically-zero field is ordinary, and the excerpt cannot tell it from
+    an unwritten one: `min` and `max` are `0.0` either way. So this flag is a FACT to be weighed
+    against what the tests and the IO contract say the variable should do, and the prompt says so
+    in those terms. Reporting it as fabrication made a compliant judge fail sound runs.
     """
     if isinstance(value, bool) or value is None:
         return {"kind": "scalar", "value": value}
@@ -538,21 +620,36 @@ def _summarize(value: Any) -> dict[str, Any]:
 
 
 def _shape(value: Any) -> tuple[list[int], bool]:
-    """The nested length of an array, and whether its sublists disagree on any level."""
+    """The nested length of an array, and whether its sublists disagree on any level.
+
+    EVERY branch is inspected, not just the first. Descending through `children[0]` alone —
+    which this did until a review round — misses raggedness under any later sibling:
+    `[[[1,2],[3,4]], [[5],[6,7,8]]]` reported shape `[2,2,2]` and `ragged=False`, and its
+    element count matched the rectangular shape too, so nothing in the summary betrayed it. A
+    runner emitting malformed evidence would have had it presented to the judge as structurally
+    sound, which is the one thing this summary exists to prevent.
+    """
     shape: list[int] = []
     ragged = False
-    level: Any = value
-    while isinstance(level, list):
-        shape.append(len(level))
-        children = [item for item in level if isinstance(item, list)]
-        if children and len(children) != len(level):
-            ragged = True
-        if not children:
-            break
-        lengths = {len(item) for item in children}
+    level: list[Any] = [value] if isinstance(value, list) else []
+    while level:
+        lengths = {len(item) for item in level}
+        shape.append(max(lengths))
         if len(lengths) > 1:
             ragged = True
-        level = children[0]
+        children: list[Any] = []
+        listed = 0
+        for item in level:
+            for element in item:
+                if isinstance(element, list):
+                    children.append(element)
+                    listed += 1
+        total = sum(len(item) for item in level)
+        # A level whose members are SOME lists and some scalars is ragged in the other
+        # direction — the array changes rank partway across.
+        if children and listed != total:
+            ragged = True
+        level = children
     return shape, ragged
 
 
