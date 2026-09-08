@@ -41279,20 +41279,60 @@ class ProfileExpansionTests(unittest.TestCase):
         freshness taxonomy, so it has to be the source of the emitted strings rather than a
         list beside them. Round-1 finding: it was a documentation constant nothing emitted
         from, so renaming a reason to a `_UNREADABLE_CLOSURE_REASONS` member — which flips the
-        disposition from stale to fresh — changed no test."""
-        from tools.orchestration_runtime import _PROFILE_EXPANSION_REASONS
+        disposition from stale to fresh — changed no test.
+
+        The WIRING is what this row observes, not the shape of the result: asserting only that
+        the reason is a member passes just as well when the refusal bypasses the guard and the
+        literals happen to be right today, which is the mutant that survived round 1's own
+        sweep of this fix."""
+        import tools.orchestration_runtime as ort
+        from tools.orchestration_runtime import (
+            _PROFILE_EXPANSION_REASONS, expand_profile_dependencies)
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             self._seed(repo, profile_infra=True)
             entries, catalog = self._entries(repo, "spec/problem/a")
-            from tools.orchestration_runtime import expand_profile_dependencies
-            _e, _r, err = expand_profile_dependencies(repo, "spec/problem/a", entries, catalog)
+            seen: list[str] = []
+            real = ort._profile_expansion_failure
+
+            def _spy(reason, detail):
+                seen.append(reason)
+                return real(reason, detail)
+
+            with mock.patch.object(ort, "_profile_expansion_failure", _spy):
+                _e, _r, err = expand_profile_dependencies(
+                    repo, "spec/problem/a", entries, catalog)
+            self.assertEqual(seen, ["profile_declares_infrastructure"])
             self.assertIn(err["reason"], _PROFILE_EXPANSION_REASONS)
         # The guard fires on an UNDECLARED reason rather than being satisfied by the one
         # refusal this fixture happens to reach.
-        import tools.orchestration_runtime as ort
         with self.assertRaises(AssertionError):
             ort._profile_expansion_failure("not_a_declared_reason", "x")
+
+    def test_a_registry_outage_inside_the_expansion_is_not_a_profile_reason(self) -> None:
+        """`spec_catalog_corrupt` is the ONE error the expansion can return that belongs to
+        `_UNREADABLE_CLOSURE_REASONS` — the registry could not be READ, so no comparison is
+        possible and the freshness disposition is the opposite of every `profile_*` reason.
+        It therefore must NOT go through `_profile_expansion_failure`, which would raise on it;
+        round 1's sweep showed that routing it back through the guard changed no test."""
+        import tools.orchestration_runtime as ort
+        from tools.orchestration_runtime import (
+            SpecCatalogCorruption, _UNREADABLE_CLOSURE_REASONS, expand_profile_dependencies)
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._seed(repo)
+            entries, catalog = self._entries(repo, "spec/problem/a")
+
+            def _boom(*_a, **_k):
+                raise SpecCatalogCorruption("spec_catalog.yaml is unreadable")
+
+            with mock.patch.object(ort, "resolve_spec_ref_for", _boom):
+                expanded, record, err = expand_profile_dependencies(
+                    repo, "spec/problem/a", entries, catalog)
+            self.assertEqual(err["reason"], "spec_catalog_corrupt")
+            self.assertIn("spec_catalog_corrupt", _UNREADABLE_CLOSURE_REASONS)
+            self.assertNotIn("spec_catalog_corrupt", ort._PROFILE_EXPANSION_REASONS)
+            self.assertEqual((expanded, record), ([], []))
 
     def test_an_unresolvable_profile_directory_fails_closed(self) -> None:
         """`profile_spec_ref_unresolved`: the catalog names the profile but resolves it to no
