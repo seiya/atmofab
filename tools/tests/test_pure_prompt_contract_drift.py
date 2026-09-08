@@ -431,8 +431,11 @@ PINNED: dict[str, str] = {
     # not new: an exemplar certified at pure-36 or earlier stops being offered, and an
     # orchestration whose `generate` ran under pure-36 cannot be `--resume`d across this bump.
     # The coupled tuple also gained a member: the WHOLE `RUNNER_OUTPUT_CONTRACT.md`, which those
-    # two templates inline (the §1+§3 slice the judge sees stays its own member).
-    "pure-37": "e0b90b919f81d4d2503d6bd6d8c668dd557001aa1df45e9e85450798917953de",}
+    # two templates inline (the §1+§3 slice the judge sees stays its own member). Re-pinned once
+    # inside the same version, by round 1: the producer template was missing the model MODULE
+    # name obligation (only the FILE name was stated, and the host only checked the file name),
+    # and its `state_bindings` line invited a binding this shape can never satisfy.
+    "pure-37": "5a2021ddb2b67af5c783f9aa396b01402468c6339318e56153bff3c96b9206ac",}
 
 
 def _contract_tuple() -> dict[str, object]:

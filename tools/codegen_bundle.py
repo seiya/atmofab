@@ -1669,10 +1669,11 @@ def harness_bundle_shape_violation(doc: Mapping[str, Any], spec_id: str,
     module at all (nothing drives per-case checks callbacks for it; its runner records the
     status of the plumbing check each case id names).
 
-    So the shape is: EXACTLY ONE `model`-role file named `<spec_id>_model<ext>`, EXACTLY ONE
-    `runner`-role file named `runner_basename`, and NO `checks`-role file. Both literal names
-    come from the caller's own spelling of them — `runner_basename` is passed in, and the model
-    basename takes its extension from it — so this layer adds no second place that says what a
+    So the shape is: EXACTLY ONE `model`-role file named `<spec_id>_model<ext>` and DECLARING
+    the module `<spec_id>_model`, EXACTLY ONE `runner`-role file named `runner_basename`, and NO
+    `checks`-role file. Every literal name comes from the caller's own spelling of them —
+    `runner_basename` is passed in, the model basename takes its extension from it, and the
+    module name is that basename's stem — so this layer adds no second place that says what a
     node's files are called (`docs/BACKEND_BOUNDARY.md` ledger).
 
     Why the names are pinned at all, when no host-rendered glue `use`s them here: the build
@@ -1683,14 +1684,26 @@ def harness_bundle_shape_violation(doc: Mapping[str, Any], spec_id: str,
     source by that filename. A differently-named model file therefore certifies a harness no
     consumer can link.
 
-    `m3c_literal_name_violation` / `m3c_checks_abi_violation` are deliberately NOT run for this
-    shape: the first requires a checks file this shape forbids, and the second an ABI it has no
-    module to publish."""
+    The MODULE pin is the half that is easy to drop with the checks file, and a round-1 review
+    found it dropped: `m3c_literal_name_violation` pins the model file's module as well as its
+    name, and nothing downstream re-checks it here — the only deterministic module-name gate in
+    the tree is the checks module's, and this shape has no checks module. The consequence is
+    entirely on the CONSUMER side, which is why the node's own gates cannot see it: a harness's
+    model and runner are both leaf-authored, so they agree with each other whatever the module
+    is called, while every physics node that later links this harness has its module name
+    DERIVED from the spec_id rather than read (`derive_build_graph`'s staged sources) and its
+    host-rendered glue imports it by that derived name.
+
+    `m3c_literal_name_violation` / `m3c_checks_abi_violation` are still deliberately NOT run for
+    this shape: the first requires a checks file this shape forbids, and the second an ABI it
+    has no module to publish."""
     ext = runner_basename[runner_basename.rfind("."):] if "." in runner_basename else ""
-    model_basename = f"{spec_id}_model{ext}"
+    model_stem = f"{spec_id}_model"
+    model_basename = f"{model_stem}{ext}"
     files = [e for e in (doc.get("files") or []) if isinstance(e, dict)]
     for role, want_path in ((ENTRY_BEARING_ROLE, runner_basename), ("model", model_basename)):
-        paths = [str(e.get("logical_path", "")) for e in files if e.get("role") == role]
+        entries = [e for e in files if e.get("role") == role]
+        paths = [str(e.get("logical_path", "")) for e in entries]
         # EXACT comparison, not casefold, for the same reason `m3c_literal_name_violation`
         # uses one: `logical_path` becomes a filename that the build and the gates open
         # verbatim on a case-sensitive filesystem.
@@ -1698,6 +1711,16 @@ def harness_bundle_shape_violation(doc: Mapping[str, Any], spec_id: str,
             return (f"a harness bundle carries exactly one {role}-role file, named "
                     f"{want_path!r} (the host derives the staged source name and the binary "
                     f"name from the spec_id); got {paths}")
+        if role != "model":
+            continue
+        # The module comparison is casefolded, for the mirror-image reason the path one is not:
+        # a Fortran identifier IS case-insensitive, so `HFC_Model` and `hfc_model` are one module.
+        modules = {str(m).casefold() for m in (entries[0].get("modules") or [])
+                   if isinstance(m, str)}
+        if model_stem.casefold() not in modules:
+            return (f"{want_path} must declare module {model_stem!r} — a consumer of this node "
+                    f"imports it by that name, DERIVED from the spec_id rather than read from "
+                    f"this bundle; its modules are {sorted(entries[0].get('modules') or [])}")
     checks_paths = [str(e.get("logical_path", "")) for e in files if e.get("role") == "checks"]
     if checks_paths:
         return ("a harness bundle carries no checks-role file (nothing drives per-case checks "

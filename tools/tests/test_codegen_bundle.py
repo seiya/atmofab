@@ -2885,6 +2885,53 @@ class BundleShapeAdmissibilityTest(unittest.TestCase):
         self.assertEqual(result[0], "bundle_shape_unsupported")
         self.assertIn("harness_fortran_cpu_model.f90", result[1])
 
+    def test_harness_shape_pins_the_model_module_name(self) -> None:
+        """The half the shape layer dropped when it stopped running the m3c name layer, found in
+        round 1. It is invisible to this node's own gates — its model and runner are both
+        leaf-authored and agree with each other whatever the module is called — and shows up on
+        the CONSUMER, whose glue imports the module by a name derived from the spec_id."""
+        doc = self._harness_doc()
+        model = _find(doc["files"], "harness_fortran_cpu_model.f90")
+        model["modules"] = ["hfc_internals"]
+        doc["entrypoints"][0]["module"] = "hfc_internals"
+        # The document is schema-VALID: nothing but this layer objects.
+        self.assertEqual(cb.validate_bundle(doc), [])
+        result = self._run(doc, "harness")
+        self.assertIsNotNone(result)
+        self.assertEqual(result[0], "bundle_shape_unsupported")
+        self.assertIn("harness_fortran_cpu_model", result[1])
+
+    def test_harness_shape_takes_the_module_name_case_insensitively(self) -> None:
+        """A Fortran identifier is case-insensitive, so the module comparison must be — unlike
+        the path one beside it, which becomes a filename a case-sensitive filesystem opens."""
+        doc = self._harness_doc()
+        model = _find(doc["files"], "harness_fortran_cpu_model.f90")
+        model["modules"] = ["Harness_Fortran_CPU_Model"]
+        doc["entrypoints"][0]["module"] = "Harness_Fortran_CPU_Model"
+        self.assertIsNone(self._run(doc, "harness"))
+
+    def test_the_pinned_names_take_their_extension_from_the_caller(self) -> None:
+        """The docstring's claim that this layer is not a second place saying what a node's
+        files are called. Driven with a non-Fortran spelling, because a hardcoded `.f90` passes
+        every fixture in this file otherwise — a round-1 mutation sweep found `ext = ".f90"`
+        surviving the whole suite, caught only by the backend-boundary ratchet, which
+        `AGENTS.md` says is frozen out of it."""
+        doc = self._harness_doc()
+        for entry in doc["files"]:
+            entry["logical_path"] = entry["logical_path"].replace(".f90", ".zz")
+        doc["entrypoints"][0]["defined_in"] = "harness_fortran_cpu_model.zz"
+        self.assertIsNone(
+            cb.harness_bundle_shape_violation(doc, "harness_fortran_cpu",
+                                              "harness_fortran_cpu_runner.zz"))
+        # ...and the message it produces for a wrong name carries that extension too.
+        wrong = copy.deepcopy(doc)
+        _find(wrong["files"], "harness_fortran_cpu_model.zz")["logical_path"] = "other.zz"
+        wrong["entrypoints"][0]["defined_in"] = "other.zz"
+        clause = cb.harness_bundle_shape_violation(
+            wrong, "harness_fortran_cpu", "harness_fortran_cpu_runner.zz")
+        self.assertIn("harness_fortran_cpu_model.zz", clause)
+        self.assertNotIn(".f90", clause)
+
     def test_harness_shape_requires_a_runner(self) -> None:
         doc = self._harness_doc()
         doc["files"] = [e for e in doc["files"] if e["role"] != "runner"]
