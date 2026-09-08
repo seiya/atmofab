@@ -1881,17 +1881,38 @@ class PureProducerExemplarTests(unittest.TestCase):
 # Cold-repair prompt contract (M-C 修正4)
 # ======================================================================================
 class PureColdRepairPromptTests(unittest.TestCase):
-    def _req(self, **overrides):
+    @staticmethod
+    def _generate_template_variants() -> "list[tuple[str, str]]":
+        """Every `(substep, pure_shape)` a pure GENERATE launch can render, read off the
+        renderer's own template table so a template added later is exercised automatically.
+        `pure_shape` is `""` for the default shape, which is how the request spells it."""
+        out = [("generate", ""), ("verify", "")]
+        out += [(substep, shape)
+                for step, substep, shape in sorted(ort.PURE_CONTEXT_REQUIRED_KEYS_BY_SHAPE)
+                if step == "generate"]
+        return out
+
+    def _req(self, *, shape: str = "", **overrides):
+        substep = overrides.get("substep", "generate")
+        if shape:
+            context = {k: f"<{k} body>"
+                       for k in ort.PURE_CONTEXT_REQUIRED_KEYS_BY_SHAPE[
+                           ("generate", substep, shape)]}
+        else:
+            context = {"harness_capabilities": "hc", "target_profile": "tp",
+                       "ir_document": "ir", "tests_document": "tt",
+                       "runner_document": "program r\nend program\n"}
         req = {
             "leaf_mode": "pure", "step": "generate", "substep": "generate",
             "node_key": _NODE, "orchestration_id": "o", "agent_run_id": "c",
             "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
             "repair_findings": "capability_requirements missing",
-            "pure_context": {"harness_capabilities": "hc", "target_profile": "tp",
-                             "ir_document": "ir", "tests_document": "tt",
-                             "runner_document": "program r\nend program\n"},
+            "pure_context": context,
             "prior_document": '{"bundle_schema_version": "1.0.0"}',
         }
+        if shape:
+            req["pure_shape"] = shape
+            req["node_key"] = _HARNESS
         req.update(overrides)
         return req
 
@@ -1960,9 +1981,18 @@ class PureColdRepairPromptTests(unittest.TestCase):
         # that template's cold repair, AND every prefix in the list is present in at least one
         # template — a prefix that matches nothing anywhere is a typo silently lifting nothing.
         placed = {prefix: [] for prefix in ort.PURE_REPAIR_STATIC_PARAGRAPH_PREFIXES}
-        for substep in ("generate", "verify"):
-            template = ort._load_launch_prompt_templates()[f"pure generate.{substep}"]
-            text = ort._render_pure_repair_prompt(self._req(substep=substep))
+        # Every pure GENERATE template, derived from the renderer's own table rather than a
+        # hand-written pair. A round-2 reviewer measured what the pair cost: issue #169 added two
+        # `.harness` templates whose rule paragraphs opened with prefixes this list did not
+        # carry, and neither this row nor its sibling below drove those keys — so a cold-fallback
+        # repair shipped without the shape's file rules (producer) and without a single checklist
+        # item (reviewer), with the suite green. Deriving the keys is what makes a THIRD template
+        # impossible to omit the same way.
+        for substep, shape in self._generate_template_variants():
+            template = ort._load_launch_prompt_templates()[
+                ort._pure_launch_template_name({"step": "generate", "substep": substep,
+                                                "pure_shape": shape})]
+            text = ort._render_pure_repair_prompt(self._req(substep=substep, shape=shape))
             for prefix in ort.PURE_REPAIR_STATIC_PARAGRAPH_PREFIXES:
                 if prefix not in template:
                     continue
@@ -1972,7 +2002,8 @@ class PureColdRepairPromptTests(unittest.TestCase):
                 for line in (ln.strip() for ln in template[start:end].splitlines()):
                     if line and not line.startswith("<"):  # the doc slot is filled elsewhere
                         self.assertIn(line, text,
-                                      f"cold repair ({substep}) dropped: {line[:60]}")
+                                      f"cold repair ({substep}, {shape or 'default'}) "
+                                      f"dropped: {line[:60]}")
         for prefix, substeps in placed.items():
             self.assertTrue(substeps, f"prefix matches no pure template: {prefix!r}")
 
@@ -2058,6 +2089,59 @@ class PureColdRepairPromptTests(unittest.TestCase):
                     self.assertIn(line, lifted, f"verify lift dropped: {line[:70]}")
 
         self.assertNotIn("<authoring_rules>", ort._render_pure_repair_prompt(req))
+
+    def test_harness_verify_lift_is_the_whole_reviewer_paragraphs(self) -> None:
+        """The same two properties on the `harness` shape's reviewer template (issue #169).
+
+        Its checklist opens with a scope paragraph and an input-side clause that the m3c one
+        states elsewhere; those were separate `\n\n` blocks until a round-2 reviewer measured
+        the cold repair carrying the checklist HEADER and none of H1-H10 — the reviewer would
+        re-judge holding "the deterministic gate already ran, do NOT re-check style" and no
+        checklist at all. They are one paragraph now, and the terminators below are INDEPENDENT
+        of the `\n\n` split that does the lifting, so re-introducing a blank line is red here."""
+        req = self._req(substep="verify", shape="harness")
+        lifted = ort._pure_authoring_rules_text(req)
+        template = ort._load_launch_prompt_templates()["pure generate.verify.harness"]
+
+        for block in lifted.split("\n\n"):
+            head = block.lstrip().splitlines()[0]
+            self.assertTrue(
+                any(head.startswith(pfx) for pfx in ort.PURE_REPAIR_STATIC_PARAGRAPH_PREFIXES),
+                f"lifted block is not a declared static paragraph: {head[:70]}")
+            self.assertIn(head, template, f"lifted block is foreign to this template: {head[:70]}")
+
+        for prefix, terminator in (("Review checklist", "**Controlled spec"),
+                                   ("**Runner-output contract (", "**Severity rubric ("),
+                                   ("**Severity rubric (", "**Generated CodegenBundle")):
+            start = template.index(prefix)
+            end = template.index(terminator)
+            self.assertGreater(end, start, (prefix, terminator))
+            for line in (ln.strip() for ln in template[start:end].splitlines()):
+                if line and not line.startswith("<"):
+                    self.assertIn(line, lifted, f"harness verify lift dropped: {line[:70]}")
+        # ...including the last checklist item, which is what a re-introduced blank line eats.
+        self.assertIn("H10 — dependency consistency", lifted)
+
+    def test_harness_generate_lift_carries_the_shape_rules(self) -> None:
+        """The producer half. `File shape (` is the ONLY statement of this shape's host-enforced
+        rules — one model named and declaring `<spec_id>_model`, one runner, no checks file — so
+        a cold repair of a `bundle_shape_unsupported` finding without it hands the leaf the
+        findings text and not the contract it violated (the recorded Z2 defect D, in the
+        recovery path)."""
+        lifted = ort._pure_authoring_rules_text(self._req(shape="harness"))
+        template = ort._load_launch_prompt_templates()["pure generate.generate.harness"]
+        for prefix, terminator in (("What makes this shape different", "Output contract ("),
+                                   ("File shape (", "Authoring rules ("),
+                                   ("Authoring rules (", "**Harness capabilities"),
+                                   ("**Runner-output contract (", "Target node_key:")):
+            start = template.index(prefix)
+            end = template.index(terminator)
+            self.assertGreater(end, start, (prefix, terminator))
+            for line in (ln.strip() for ln in template[start:end].splitlines()):
+                if line and not line.startswith("<"):
+                    self.assertIn(line, lifted, f"harness generate lift dropped: {line[:70]}")
+        self.assertIn("EXACTLY ONE file of role `model`", lifted)
+        self.assertIn("(11)", lifted)  # the last authoring rule
 
     def test_cold_repair_paragraphs_are_lifted_in_template_order(self) -> None:
         # The loop iterated `PURE_REPAIR_STATIC_PARAGRAPH_PREFIXES` while its docstring said
@@ -2632,6 +2716,34 @@ class PureHarnessShapeTests(unittest.TestCase):
         v2: list[str] = []
         vps._validate_post_generate_bundle(self.repo, gen, _HARNESS, self.refs.ir_ref, v2)
         self.assertTrue([x for x in v2 if "bundle_shape_unsupported" in x], v2)
+
+    def test_the_tamper_gate_refuses_a_bundle_on_a_shapeless_node(self) -> None:
+        """`shape=(shape or "")` is the gate's fail-CLOSED default, and a round-2 sweep found it
+        unpinned: `shape=(shape or "m3c")` survived every test file.
+
+        The mutation direction is fail-OPEN, and the node it matters on is exactly the node
+        whose Generate falls through to the AGENTIC leaf — which holds filesystem tools and can
+        therefore stage a `codegen_bundle.json` of its own. This refusal is the only thing
+        between that document and an acceptance layer applying another shape's rules to it."""
+        import yaml
+        ir_path = self.repo / self.refs.ir_ref / "spec.ir.yaml"
+        ir = yaml.safe_load(ir_path.read_text(encoding="utf-8"))
+        # A toolchain the neutral core writes no control file for: both readers answer None.
+        ir["impl_defaults"]["toolchain"]["language"] = "zz_lang"
+        ir_path.write_text(yaml.safe_dump(ir), encoding="utf-8")
+        self.assertIsNone(self.c._bundle_shape(self.refs))
+        self.assertIsNone(vps._ir_bundle_shape(ir, self.refs.node_key))
+
+        doc = _harness_bundle()
+        gen = self.repo / self.refs.source_dir()
+        src = gen / "src"
+        src.mkdir(parents=True, exist_ok=True)
+        for entry in doc["files"]:
+            (src / entry["logical_path"]).write_text(entry["content"], encoding="utf-8")
+        (gen / "codegen_bundle.json").write_text(json.dumps(doc), encoding="utf-8")
+        v: list[str] = []
+        vps._validate_post_generate_bundle(self.repo, gen, _HARNESS, self.refs.ir_ref, v)
+        self.assertTrue([x for x in v if "unknown bundle shape ''" in x], v)
 
     def test_the_two_gates_resolve_the_same_shape_and_glue(self) -> None:
         """The producer's acceptance and the tamper gate must judge one bundle by one shape."""

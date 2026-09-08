@@ -12795,6 +12795,17 @@ PURE_REPAIR_STATIC_PARAGRAPH_PREFIXES: tuple[str, ...] = (
     "**Checks-module behavioral contract",
     "**Checks-module contract (",
     "**Severity rubric (",
+    # The `harness` bundle shape (issue #169). Its producer states the shape's file rules in
+    # their own paragraph rather than inside the output contract, and both its templates label
+    # the inlined runner-output contract — the same reason `**Checks-module contract (` and
+    # `**Severity rubric (` are here, since `pure_context` re-inlines the document body into the
+    # cold repair regardless and an unlabelled body loses its "this document governs" clause.
+    # A round-2 reviewer measured the omission: without these, a cold-fallback repair of a
+    # `bundle_shape_unsupported` finding handed the leaf the findings text and NOT the shape
+    # rules it had violated.
+    "What makes this shape different",
+    "File shape (",
+    "**Runner-output contract (",
 )
 
 # A line that is nothing but a `<placeholder>` token — the launch template's document slots.
