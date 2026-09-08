@@ -434,6 +434,80 @@ class PurePayloadValidationTests(unittest.TestCase):
 # B3 / B4 / B5 / B6 / B8: renderers, markers, fence carve-out
 # ======================================================================================
 
+
+class BlankContextRationaleCouplingTests(unittest.TestCase):
+    """Couple the tree's PROSE to what the launch validator actually does with a blank value.
+
+    Four sweeps of one false sentence missed a site each time — "a blank value satisfies the
+    renderer's presence check", which was the recorded reason for several RAISE-vs-degrade
+    dispositions and is simply not true. Each sweep matched the previous round's exact wording
+    and the next site was phrased differently (across a line break, with `""` for "empty
+    string", citing a corrected paragraph as "the same reason"). At three statement sites the
+    project's own rule says discipline has lost and the rule must be coupled to a check; this
+    is that check, and it exists because the sweep is what kept failing, not the fix.
+
+    The rule is defined ONCE, IN CODE, by `test_the_rule_itself` below — the documents are
+    checked against the behaviour, never the reverse.
+    """
+
+    #: Where a leaf-facing rationale can live. Derived narrowly rather than scanning the tree:
+    #: a bound that grows silently is a bound that stops meaning anything.
+    _SCANNED = ("tools/workflow_conductor.py", "tools/orchestration_runtime.py",
+                "tools/pure_leaf.py", "tools/raw_evidence_excerpt.py",
+                "tools/tests/test_pure_leaf_producer.py", "tools/tests/test_pure_leaf_verify.py",
+                "tools/tests/test_pure_leaf_judge.py", "tools/tests/test_pure_leaf_wiring.py",
+                "docs/workflow/LAUNCH_PROMPT_REFERENCE.md",
+                "docs/workflow/phases/phase_04_validate.md")
+    #: `docs/design/deterministic_followups.md` is deliberately NOT scanned: issue #181 froze it
+    #: as a historical record, so the sentence standing there is a record of what was believed.
+    _CLAIM = re.compile(r"satisf(?:y|ies)\s+the\s+renderer", re.IGNORECASE)
+
+    def test_the_rule_itself(self) -> None:
+        """The behaviour every scanned sentence is describing, asserted against the code.
+
+        A whitespace-only `pure_context` value is counted MISSING and raises. So a degraded
+        `""` never reaches a leaf, and the cost of degrading is that the refusal happens one
+        frame later — inside `record_launch`, escaping the caller's named
+        `pure_context_assembly_failed` branch."""
+        req = _pure_request("generate", pure_context={
+            **_pure_generate_context(), "tests_document": "   "})
+        with self.assertRaises(ValueError) as caught:
+            ort._validate_pure_launch_request_payload(req)
+        self.assertIn("missing required key(s)", str(caught.exception))
+        self.assertIn("tests_document", str(caught.exception))
+
+    def test_no_scanned_file_still_states_the_false_reason(self) -> None:
+        repo_root = Path(ort.__file__).resolve().parents[1]
+        offenders = []
+        for rel in self._SCANNED:
+            text = (repo_root / rel).read_text(encoding="utf-8")
+            for lineno, line in enumerate(text.splitlines(), 1):
+                if self._CLAIM.search(line):
+                    offenders.append(f"{rel}:{lineno}: {line.strip()[:90]}")
+        self.assertEqual(offenders, [], "\n".join(
+            ["a blank value does NOT reach the leaf (see test_the_rule_itself); state the "
+             "real reason — degrading defers the refusal into record_launch:"] + offenders))
+
+    def test_the_scanner_and_its_bound_self_test(self) -> None:
+        """Two ways this check could pass while observing nothing: a pattern that matches no
+        real phrasing, and a file list that has drifted off the tree."""
+        # ASSEMBLED at runtime, never written out: this file is itself scanned, so a probe
+        # containing the literal phrase would make the check flag its own self-test. An
+        # exemption list is the other way to close that, and the project's notes record it
+        # getting broken from both sides; having no literal to exempt is simpler and cannot
+        # rot. `%s` stands where the real sentences vary.
+        stem, verb = "%s the renderer", ("satisfies", "satisfy", "SATISFIES")
+        for phrasing in (f"an empty string {stem % verb[0]}'s presence check",
+                         f'"" {stem % verb[0]}\'s presence check',
+                         f"a blank rubric {stem % verb[0]} presence check",
+                         f"would {stem % verb[2]}",
+                         f"values that {stem % verb[1]}'s check"):
+            with self.subTest(phrasing=phrasing):
+                self.assertTrue(self._CLAIM.search(phrasing))
+        repo_root = Path(ort.__file__).resolve().parents[1]
+        for rel in self._SCANNED:
+            self.assertTrue((repo_root / rel).is_file(), f"{rel} is no longer in the tree")
+
 class PureRenderTests(unittest.TestCase):
     def test_render_pure_prompt_full_skeleton(self) -> None:
         prepared = ort.prepare_launch_request_payload(_pure_request("generate"))

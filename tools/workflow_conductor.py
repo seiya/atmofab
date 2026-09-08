@@ -8294,9 +8294,11 @@ clean:
         The SIXTH document is the `#### Severity of a finding` subsection of
         `docs/workflow/phases/phase_02_generate.md` §2-2, sliced by
         `_generate_verify_severity_rubric_section` (issue #143). It carries the same RAISING
-        disposition as the contract slice and for the same reason: a blank rubric satisfies the
-        renderer's presence check and returns the reviewer to choosing `issue_severity` by how
-        heavy the defect looks, which is what terminalized a run on a contract-conforming bundle.
+        disposition as the contract slice, and the same CORRECTED reason: degrading would defer
+        the refusal one frame into `record_launch` rather than ship a blank rubric to the leaf.
+        What a blank rubric would cost if it did arrive is why the disposition matters — the
+        reviewer returns to choosing `issue_severity` by how heavy the defect looks, which is
+        what terminalized a run on a contract-conforming bundle.
         The phase-doc path is taken from `WORKFLOW_PHASE_DOC_BY_STEP` rather than restated here,
         so the reviewer reads the same document the phase contract names."""
         from tools.orchestration_runtime import (CHECKS_MODULE_CONTRACT_REF,

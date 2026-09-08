@@ -726,9 +726,10 @@ class PureContextRunnerInjectionTests(unittest.TestCase):
             self.assertIn("pure_runner_document_missing", str(cm.exception))
 
     def test_missing_runner_raises_rather_than_shipping_a_blank_abi(self) -> None:
-        # NOT the swallow-to-"" idiom ir/tests use: an empty string satisfies the renderer's
-        # presence check — FALSE (issue #169): counted missing, raises; degrading defers the
-        # refusal into `record_launch`.
+        # NOT the swallow-to-"" idiom ir/tests use. Measured in issue #169's review: a
+        # whitespace-only `pure_context` value never reaches the leaf — the launch
+        # validator counts it missing and raises — so degrading only defers the refusal
+        # one frame, into `record_launch`, where it escapes the loop's named branch.
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = _write_node(repo, stage_runner=False)

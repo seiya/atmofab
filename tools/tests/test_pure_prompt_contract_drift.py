@@ -395,7 +395,25 @@ PINNED: dict[str, str] = {
     # correction had swept them into the all-zero carve-out, where nothing else in the workflow
     # would have caught them. The inlined `RUNNER_OUTPUT_CONTRACT.md` slice moved too: §3
     # promised the judge a "per-test recomputation" it no longer performs.
-    "pure-36": "1ead10776c7caf96b77b93701b39730ec3b55dcdf99d66bcc5aa0b3a80b21677",}
+    # Re-pinned a fourth time, in review round 4, which rendered the prompt on two real nodes
+    # and read it as the judge. Three defects, all of them in text the leaf acts on:
+    #   * the slot-name instruction was FALSE — the labels read "**Tests (…):**", so ten of the
+    #     eleven `<document_key>` names appeared ZERO times in the rendered prompt and the leaf
+    #     had to guess them from one example. `evidence_refs` exists only inside `findings`, so
+    #     the guess is only ever made on a FAIL: the cost fell entirely on the correct-but-
+    #     expensive verdict. Every label now opens with its literal key.
+    #   * checklist (c) said "a missing declared variable is a fail". The excerpt's benign
+    #     `declared_variables_absent` (per-snapshot; non-empty on THREE cases of a
+    #     `pass`-certified node) matches that prose better than the intended
+    #     `coverage.missing_required_variables` does. Both are now named, and the neighbouring
+    #     keys that are not findings are named as not-findings.
+    #   * (b) ordered a `shape` vs `shape_expr` comparison that is not evaluable: `nx_face`
+    #     occurs nine times in the prompt and never with a value. Scoped to RANK, with an
+    #     explicit instruction not to infer a binding.
+    # The inlined `RUNNER_OUTPUT_CONTRACT.md` §3 clause moved again: round 3's fix had removed
+    # the only sentence telling the runner-authoring leaf that the VALUES are consumed, while
+    # `post_execute` checks key presence only — a shortcut this branch opened and now closes.
+    "pure-36": "2800e2635c4bd91fd33f03cc3724a84400b5f4878944f17b5f0fa0bddd348608",}
 
 
 def _contract_tuple() -> dict[str, object]:

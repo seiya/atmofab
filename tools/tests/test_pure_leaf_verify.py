@@ -119,9 +119,10 @@ class PureVerifyContextTests(unittest.TestCase):
                 self.assertNotIn(absent, doc)
 
     def test_missing_checks_contract_raises_the_named_contract(self) -> None:
-        # NOT the swallow-to-"" idiom the four node artifacts use: "" satisfies the renderer's
-        # presence check — FALSE, measured in issue #169's review: a whitespace-only value is
-        # counted missing and raises. Degrading defers the refusal into `record_launch`.
+        # NOT the swallow-to-"" idiom the four node artifacts use. Measured in issue #169's
+        # review: a whitespace-only `pure_context` value never reaches the leaf — the launch
+        # validator counts it missing and raises — so degrading only defers the refusal one
+        # frame, into `record_launch`, where it escapes the loop's named branch.
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = _verify_node(repo, stage_checks_contract=False)
@@ -293,9 +294,9 @@ class PureVerifyContextTests(unittest.TestCase):
                          "open `- `identifier`:` — write it without the colon.")
 
     def test_missing_phase_02_raises_the_named_contract(self) -> None:
-        # Same disposition as the checks contract, and for the same reason: "" satisfies the
-        # renderer's presence check — FALSE (issue #169): such a value is counted missing and
-        # raises; degrading defers the refusal into `record_launch` instead.
+        # Same disposition as the checks contract, and for the same corrected reason: a
+        # whitespace-only value is counted missing and raises, so degrading only defers the
+        # refusal one frame into `record_launch` (issue #169).
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = _verify_node(repo, stage_phase_02=False)
