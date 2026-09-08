@@ -15026,23 +15026,34 @@ class PureLeafSubstepPredicateTests(unittest.TestCase):
         import tools.validate_pipeline_semantics as vps
         from tools.tests.test_fortran_runner import _boundary_ir
         import yaml as _yaml
-        cases = [
-            (self._refs(), "component", 1, None),
-            (self._refs(), "component", 0, None),
-            (self._refs(), "component", 2, None),
-            (self._refs(), "infrastructure", 1, None),
-            (self._infra_refs(), "infrastructure", 0, None),
-            (self._infra_refs(), "infrastructure", 0, "zz_lang"),
-            (self._infra_refs(), "component", 0, None),
-            (self._refs(), "component", 1, "zz_lang"),
-        ]
-        for refs, spec_kind, infra, language in cases:
+        # The dimensions are varied INDEPENDENTLY, because each one is read by its own line in
+        # each twin. A round-2 sweep measured what a narrower family missed: with `build_system`
+        # fixed, deleting `_ir_bundle_shape`'s build-system capability check made the two readers
+        # DIVERGE with the suite green, and with `language` fixed in case, dropping the `.lower()`
+        # in `_ir_toolchain_tokens` did the same — the validator compares the value against
+        # `BUNDLE_LANGUAGES` case-sensitively while the conductor lowercases in `_ir_language`.
+        # `Fortran` is not hypothetical: `_validate_toolchain_backend_supported` checks the plain
+        # token and padding, never the case.
+        kinds = [(self._refs(), "component"), (self._refs(), "infrastructure"),
+                 (self._infra_refs(), "infrastructure"), (self._infra_refs(), "component")]
+        languages = [None, "fortran", "Fortran", "FORTRAN", " fortran", "zz_lang", ""]
+        build_systems = [None, "make", "MAKE", " make", "cmake", ""]
+        cases = []
+        for refs, spec_kind in kinds:
+            for infra in (0, 1, 2):
+                for language in languages:
+                    cases.append((refs, spec_kind, infra, language, None))
+                for build_system in build_systems[1:]:
+                    cases.append((refs, spec_kind, infra, None, build_system))
+        for refs, spec_kind, infra, language, build_system in cases:
             with tempfile.TemporaryDirectory() as tmp:
                 repo = Path(tmp)
                 ir = _boundary_ir()
                 ir["meta"]["spec_kind"] = spec_kind
                 if language is not None:
                     ir["impl_defaults"]["toolchain"]["language"] = language
+                if build_system is not None:
+                    ir["impl_defaults"]["toolchain"]["build_system"] = build_system
                 ir["dependency"]["direct_deps"] = [
                     {"node_key": f"infrastructure/h{i}@0.2.0"} for i in range(infra)]
                 (repo / refs.ir_ref).mkdir(parents=True, exist_ok=True)
@@ -15050,7 +15061,18 @@ class PureLeafSubstepPredicateTests(unittest.TestCase):
                 c = self._conductor(repo, "claude")
                 self.assertEqual(
                     c._bundle_shape(refs), vps._ir_bundle_shape(ir, refs.node_key),
-                    (refs.node_key, spec_kind, infra, language))
+                    (refs.node_key, spec_kind, infra, language, build_system))
+        # The family is only evidence if it could have come out otherwise: it must straddle
+        # every answer, or a reader collapsed to one constant would agree with itself.
+        answers = {vps._ir_bundle_shape(ir, nk) for ir, nk in [
+            ({"meta": {"spec_kind": "component"},
+              "dependency": {"direct_deps": [{"node_key": "infrastructure/h@0.1.0"}]}},
+             "component/x@0.1.0"),
+            ({"meta": {"spec_kind": "infrastructure"}, "dependency": {"direct_deps": []}},
+             "infrastructure/x@0.1.0"),
+            ({"meta": {"spec_kind": "component"}, "dependency": {"direct_deps": []}},
+             "component/x@0.1.0")]}
+        self.assertEqual(answers, {"m3c", "harness", None})
 
     def test_every_catalog_node_has_a_bundle_shape(self) -> None:
         """The issue #169 completion criterion: no in-tree node falls through `_bundle_shape`

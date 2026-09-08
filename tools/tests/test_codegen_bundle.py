@@ -17,6 +17,7 @@ import re
 import tempfile
 import unittest
 from pathlib import Path
+from typing import ClassVar
 from unittest import mock
 
 from tools import codegen_bundle as cb
@@ -1866,13 +1867,29 @@ class ContractPlumbingTest(unittest.TestCase):
             sorted(["logical_path", "role", "language", "member_node_key", "content", "modules"]))
         self.assertEqual(files_items["properties"]["modules"]["items"]["pattern"],
                          cb.IDENTIFIER_PATTERN)
-        # v1.1.0: the non-empty rule carries an EXCEPTION a draft-07 `minItems` cannot, so the
-        # schema declares the rule as an `x-` marker and the walker holds it.
+        # v1.1.0: the non-empty rule carries an EXCEPTION, so it moved off the property (where
+        # a bare `minItems` could not express it) into a draft-07 conditional beside it. Both
+        # halves are pinned, because a round-2 reviewer measured the cost of keeping only the
+        # marker: the branch had made the DECLARATIVE copy strictly weaker for the four roles
+        # that did not change, so a schema-only consumer stopped rejecting `modules: []` on a
+        # `model` too — against `x-forbidden-examples-note`'s promise that such a consumer gets
+        # the field grammar.
         self.assertNotIn("minItems", files_items["properties"]["modules"])
         self.assertEqual(files_items["properties"]["modules"]["x-non-empty-unless-role"],
                          cb.ENTRY_BEARING_ROLE)
+        conditional, = files_items["allOf"]
+        self.assertEqual(conditional["if"]["properties"]["role"]["const"],
+                         cb.ENTRY_BEARING_ROLE)
+        self.assertIs(conditional["then"], True)
+        self.assertEqual(conditional["else"]["properties"]["modules"]["minItems"], 1)
         self.assertEqual(files_items["properties"]["role"]["x-entry-bearing-role"],
                          cb.ENTRY_BEARING_ROLE)
+        # What is NOT asserted, stated rather than implied: nothing here APPLIES the conditional
+        # with a generic draft-07 library. `tools/` carries no `jsonschema` dependency by design,
+        # and a permanently-skipped row would observe nothing. The pin above is the document's
+        # exact shape; that it means "every role but `runner` needs a module" is draft-07's
+        # semantics, and the behaviour a consumer of this repository relies on is the canonical
+        # validator's, which `test_only_the_runner_may_declare_no_modules` drives directly.
         self.assertEqual(files_items["properties"]["compile_after"]["items"],
                          {"type": "string", "minLength": 1})
         plan = self.schema["properties"]["target_lowering_plan"]
@@ -1989,20 +2006,52 @@ class ContractPlumbingTest(unittest.TestCase):
             found += ContractPlumbingTest._schema_nodes(items, f"{path}.items")
         for index, branch in enumerate(node.get("oneOf") or []):
             found += ContractPlumbingTest._schema_nodes(branch, f"{path}.oneOf[{index}]")
+        # `allOf` and the draft-07 conditional. Added with the 1.1.0 `modules` rule (issue #169):
+        # without them the walker's two invariants — every node declares a type, every object is
+        # closed — stop at the conditional's boundary, and a constraint smuggled into a `then`
+        # branch would be exempt from both. `if` is deliberately walked too: its schema
+        # constrains an instance exactly as the branches do.
+        for index, branch in enumerate(node.get("allOf") or []):
+            found += ContractPlumbingTest._schema_nodes(branch, f"{path}.allOf[{index}]")
+        for keyword in ("if", "then", "else"):
+            branch = node.get(keyword)
+            if isinstance(branch, dict):
+                found += ContractPlumbingTest._schema_nodes(branch, f"{path}.{keyword}")
         return found
+
+    #: The nodes of the schema that are pure STRUCTURE — an applicator whose children carry the
+    #: constraints — and are therefore exempt from "every node declares a type". An explicit set,
+    #: not a pattern: deciding "is this an applicator" by shape is how an exemption gets broken
+    #: from both sides, and a set makes a new unlisted one RED until someone reads it. Added with
+    #: the 1.1.0 `modules` conditional (issue #169), which is the only conditional in either
+    #: schema.
+    _STRUCTURAL_SCHEMA_NODES: ClassVar[frozenset[str]] = frozenset({
+        "codegen_bundle.properties.files.items.allOf[0]",
+        "codegen_bundle.properties.files.items.allOf[0].if",
+        "codegen_bundle.properties.files.items.allOf[0].else",
+    })
 
     def test_every_schema_node_declares_a_type(self) -> None:
         # Without an explicit `type`, a draft-07 sibling constraint (pattern, minItems,
         # items, minLength) is vacuous for a wrongly-typed instance: `"content": {...}` or
-        # `"logical_path": [...]` would validate. A node constrains by `type`, `$ref`, or
-        # `oneOf` — never by nothing.
+        # `"logical_path": [...]` would validate. A node constrains by `type`, `$ref`, `oneOf`
+        # or `const` — never by nothing. (`const` pins the value itself, which is strictly
+        # stronger than pinning its type; it entered the vocabulary with the 1.1.0 conditional's
+        # `if`, which selects on `role`.)
+        exempt = set()
         for schema, name in ((self.schema, "codegen_bundle"),
                              (self.capability_schema, "harness_capabilities")):
             for path, node in self._schema_nodes(schema, name):
+                if path in self._STRUCTURAL_SCHEMA_NODES:
+                    exempt.add(path)
+                    continue
                 with self.subTest(path=path):
                     self.assertTrue(
-                        {"type", "$ref", "oneOf"} & set(node),
-                        f"{path} constrains nothing: it declares no type, $ref, or oneOf")
+                        {"type", "$ref", "oneOf", "const"} & set(node),
+                        f"{path} constrains nothing: it declares no type, $ref, oneOf or const")
+        # The exemption list is compared as a SET, so an entry that stops existing (a
+        # reorganized conditional) is as red as a node that newly needs one.
+        self.assertEqual(exempt, set(self._STRUCTURAL_SCHEMA_NODES))
 
     def test_schema_objects_are_closed_except_the_declared_extension_point(self) -> None:
         # "The bundle cannot smuggle a build command" rests on the closure of every object,
@@ -2931,6 +2980,34 @@ class BundleShapeAdmissibilityTest(unittest.TestCase):
             wrong, "harness_fortran_cpu", "harness_fortran_cpu_runner.zz")
         self.assertIn("harness_fortran_cpu_model.zz", clause)
         self.assertNotIn(".f90", clause)
+
+    def test_harness_shape_refuses_a_SECOND_model_file(self) -> None:
+        """CARDINALITY, not membership. `paths != [want_path]` carries both, and a round-2
+        mutation sweep found the cardinality half unwitnessed: `want_path not in paths` survived
+        every test file. Nothing else would catch it — `validate_bundle` accepts the document,
+        and the deterministic signature gate globs the model file by NAME, so a second
+        model-role file under another basename is invisible to it."""
+        doc = self._harness_doc()
+        doc["files"].append(
+            _file("harness_fortran_cpu_extra.f90", "model", HARNESS,
+                  modules=["harness_fortran_cpu_extra"]))
+        self.assertEqual(cb.validate_bundle(doc), [])   # schema-valid: this layer alone refuses
+        result = self._run(doc, "harness")
+        self.assertIsNotNone(result)
+        self.assertEqual(result[0], "bundle_shape_unsupported")
+        self.assertIn("exactly one model-role file", result[1])
+
+    def test_harness_shape_refuses_a_SECOND_runner_file(self) -> None:
+        """The runner's own cardinality reaches this layer through `validate_bundle`'s
+        at-most-one-per-member invariant, so the two halves are refused by different layers and
+        each needs its own row."""
+        doc = self._harness_doc()
+        doc["files"].append(
+            _file("harness_fortran_cpu_second.f90", "runner", HARNESS, modules=[]))
+        result = self._run(doc, "harness")
+        self.assertIsNotNone(result)
+        self.assertEqual(result[0], "bundle_schema_violation")
+        self.assertIn("at most one executable entry", result[1])
 
     def test_harness_shape_requires_a_runner(self) -> None:
         doc = self._harness_doc()

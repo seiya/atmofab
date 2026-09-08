@@ -11753,9 +11753,9 @@ clean:
             detail = (
                 f"provider {entry.provider!r} is configured for {phase}."
                 f"{substep or ''} but can only run the pure leaf, and this node has no pure "
-                f"path (it is not an M3c node, so the substep runs the agentic leaf loop). "
-                f"Configure an agentic provider for this substep, or run this node's generate "
-                f"phase on one.")
+                f"path (its IR yields no CodegenBundle shape, so the substep runs the agentic "
+                f"leaf loop). Configure an agentic provider for this substep, or run this "
+                f"node's generate phase on one.")
             self.emit("pure_only_provider_on_agentic_path", node_key=refs.node_key,
                       phase=phase, substep=substep or "", provider=entry.provider)
             return SubstepOutcome(

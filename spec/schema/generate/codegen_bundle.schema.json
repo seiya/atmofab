@@ -43,6 +43,14 @@
         "type": "object",
         "additionalProperties": false,
         "required": ["logical_path", "role", "language", "member_node_key", "content", "modules"],
+        "allOf": [
+          {
+            "description": "The non-empty `modules` rule and its ONE exception, in the form draft-07 can carry: every role but the entry-bearing one must declare at least one module. `x-non-empty-unless-role` on the property states the same fact for a reader; this is what a generic validator applies. The canonical validator (tools/codegen_bundle.py:validate_bundle) holds the rule either way and is what a consumer must still call.",
+            "if": {"properties": {"role": {"const": "runner"}}, "required": ["role"]},
+            "then": true,
+            "else": {"properties": {"modules": {"type": "array", "minItems": 1}}}
+          }
+        ],
         "properties": {
           "logical_path": {
             "description": "Path relative to the assembled source root: normalized, POSIX-separated, confined (no leading '/', no '.'/'..' segment), unique within the bundle after case folding, with a language-allowed extension and no reserved build filename. The full rule set is tools/codegen_bundle.py:logical_path_violations; this pattern bears the per-segment grammar only.",
