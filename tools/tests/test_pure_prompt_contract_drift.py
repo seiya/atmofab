@@ -456,7 +456,12 @@ PINNED: dict[str, str] = {
     # precedence is now stated by NAME in all three directions. The m3c template's own version
     # string moved with it — it still said 1.0.0, so the two producer templates were telling
     # their leaves two versions of one contract.
-    "pure-37": "5ad32d360a1522cae8abedab657d9e15977d9dca357bb029f210b48f7ea88c9f",}
+    "pure-37": "5ad32d360a1522cae8abedab657d9e15977d9dca357bb029f210b48f7ea88c9f",
+    # issue #175: compile.generate rule 3 now sources `direct_deps` from the graph
+    # document (a `profile` entry in deps.yaml is not a node), rule 9 pins
+    # `profile_selection`, and the profile-document heading says the selected component
+    # set is already resolved.
+    "pure-38": "afa2518f028761ba25590d63530348ecc7b2a8051cb9d0665e74c9a8102dbe7c",}
 
 
 def _contract_tuple() -> dict[str, object]:

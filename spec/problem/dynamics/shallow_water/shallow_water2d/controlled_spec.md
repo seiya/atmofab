@@ -2,7 +2,7 @@
 
 ## 0. Meta information
 - `spec_id`: `shallow_water2d`
-- `spec_version`: `0.4.0`
+- `spec_version`: `0.4.1`
 - `status`: `controlled_draft`
 - `spec_kind`: `problem`
 - `domain`: `dynamics`
@@ -46,12 +46,12 @@ The domain is the orthogonal periodic domain $[0,L_x)\times[0,L_y)$. The grid is
 The boundary condition is fixed to periodic boundary on all boundaries. The default input used for verification is defined in `tests.md`.
 
 ## 4. Dependent `component` and adopted `profile`
-This `problem spec` references the following `component`.
+The adopted `profile` is `dynamics_shallow_water_profile_2d_rusanov_p0_ssprk2`, and it selects the following `component`, which are therefore this `spec`'s direct dependencies.
 - `dynamics_shallow_water_flux_2d_rusanov_p0`
 - `dynamics_shallow_water_boundary_2d_periodic_copy`
 - `dynamics_shallow_water_time_update_2d_ssprk2`
 
-The adopted `profile` is `dynamics_shallow_water_profile_2d_rusanov_p0_ssprk2`.
+No `component` is declared directly here: a `component` has exactly one source, so a `component` an adopted `profile` selects is not declared again in this `spec`'s own `deps.yaml`. A `component` no adopted `profile` selects would be declared there directly, together with its compatibility constraint.
 
 ## 5. Integration algorithm
 The spatial discretization is **well-balanced** by the first-order hydrostatic reconstruction of Audusse et al. (2004). The interface states supplied to the flux `component` and the discrete bottom-topography source term are built from the same reconstructed depths.
@@ -139,7 +139,7 @@ so that the reconstructed interface depth satisfies $h^{*}>0$ in the initial sta
 Forbid non-periodic boundary, automatic switching of `topography_profile`, the introduction of a bottom-topography function or parameter other than the allowed values, the introduction of a forcing term other than the bottom-topography source term, and the runtime automatic switching of the discretization scheme. Forbid `clip` / `limiter` / `filter` on `h`. The $\max(0,\cdot)$ of the hydrostatic reconstruction of section 5 is applied to the reconstructed interface depth $h^{*}$, a derived quantity of the reconstruction of step 2, and never to the cell-centered state `h`; it is not a `clip` on `h`.
 
 ## 8. Traceability
-`case.resolved.yaml` requires recording the resolution result of `spec_kind`, `spec_id`, `spec_version`, `component_id@version`, and `profile_id@version`.
+The resolution result is recorded by the host: `<ir_ref>/ir_meta.json` carries the node's own `spec_kind` / `spec_id` / `spec_version`, and `<ir_ref>/dependency_graph.json` carries the resolved closure — `all_nodes` as `component_id@version`, and `profiles[]` as `profile_id@version`.
 
 The reference basis is Williamson et al. (1992, JCP, DOI:10.1016/S0021-9991(05)80016-6), Audusse et al. (2004, SIAM J. Sci. Comput. 25(6), DOI:10.1137/S1064827503431090), LeVeque (2002), and Toro (2009).
 
