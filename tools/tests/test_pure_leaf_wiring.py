@@ -98,6 +98,16 @@ def _pure_compile_verify_context() -> dict[str, str]:
     }
 
 
+def _pure_context_by_shape(step: str, substep: str, shape: str) -> dict[str, str]:
+    """The fixture context for one `(step, substep, pure_shape)` of
+    `PURE_CONTEXT_REQUIRED_KEYS_BY_SHAPE`. Derived from the table rather than hand-listed, so a
+    key added there is exercised rather than silently absent — what each value CONTAINS is the
+    business of the context builder's own tests; what this has to satisfy is the launch
+    validator's "every declared key is a non-empty string"."""
+    return {k: f"<{k} fixture body>"
+            for k in ort.PURE_CONTEXT_REQUIRED_KEYS_BY_SHAPE[(step, substep, shape)]}
+
+
 def _pure_context_for(step: str, substep: str) -> dict[str, str]:
     """The fixture context for one migrated pure pair, keyed by BOTH halves of the pair. Keying
     on `substep` alone silently handed the compile pairs the generate contexts, whose keys the
@@ -261,6 +271,79 @@ class PurePayloadValidationTests(unittest.TestCase):
                                     pure_context=_pure_context_for(step, substep))
                 ort._validate_launch_request_payload(
                     ort.prepare_launch_request_payload(req))
+
+    def test_validate_payload_accepts_every_declared_shape(self) -> None:
+        """Issue #169: the by-shape table is the second admissible surface, and it is walked the
+        same way — a triple added without a fixture context is red here."""
+        for step, substep, shape in sorted(ort.PURE_CONTEXT_REQUIRED_KEYS_BY_SHAPE):
+            with self.subTest(triple=f"{step}.{substep}.{shape}"):
+                req = _pure_request(
+                    substep, step=step, dependency_ref=_DEP_REF,
+                    pure_context=_pure_context_by_shape(step, substep, shape))
+                req["pure_shape"] = shape
+                ort._validate_launch_request_payload(
+                    ort.prepare_launch_request_payload(req))
+
+    def test_a_declared_shape_requires_its_own_context_keys(self) -> None:
+        """The by-shape table REPLACES the pair's default key set rather than adding to it: the
+        harness producer is shown the runner-output contract where the default one is shown the
+        host-rendered runner, and each is missing the other's key."""
+        step, substep, shape = "generate", "generate", "harness"
+        req = _pure_request(substep, step=step, dependency_ref=_DEP_REF,
+                            pure_context=_pure_context_for(step, substep))
+        req["pure_shape"] = shape
+        with self.assertRaises(ValueError) as caught:
+            ort._validate_pure_launch_request_payload(req)
+        self.assertIn("runner_output_contract_document", str(caught.exception))
+        # ...and the default pair still requires ITS keys, which the shape context lacks.
+        req2 = _pure_request(substep, step=step, dependency_ref=_DEP_REF,
+                             pure_context=_pure_context_by_shape(step, substep, shape))
+        with self.assertRaises(ValueError) as caught2:
+            ort._validate_pure_launch_request_payload(req2)
+        self.assertIn("runner_document", str(caught2.exception))
+
+    def test_the_shape_vocabulary_is_closed_and_pair_scoped(self) -> None:
+        """An unknown `pure_shape` never falls back to the default template or key set, and a
+        known one is refused on a pair that has no shape."""
+        req = _pure_request("generate", step="generate", dependency_ref=_DEP_REF,
+                            pure_context=_pure_context_by_shape(
+                                "generate", "generate", "harness"))
+        for value, expected in ((" ", "must be a non-empty string"),
+                                ("m3c", "must be one of"),
+                                ("HARNESS_TYPO", "must be one of"),
+                                (17, "must be a non-empty string")):
+            bad = dict(req)
+            bad["pure_shape"] = value
+            with self.subTest(pure_shape=value):
+                with self.assertRaises(ValueError) as caught:
+                    ort._validate_pure_launch_request_payload(bad)
+                self.assertIn(expected, str(caught.exception))
+        # A KNOWN shape on a pair the by-shape table does not carry.
+        bad = _pure_request("judge", step="validate",
+                            pure_context=_pure_context_for("validate", "judge"))
+        bad["pure_shape"] = "harness"
+        with self.assertRaises(ValueError) as caught:
+            ort._validate_pure_launch_request_payload(bad)
+        self.assertIn("pure_shape is only valid for", str(caught.exception))
+
+    def test_the_shape_vocabulary_matches_the_acceptance_layers(self) -> None:
+        """One vocabulary, two readers: the launch validator's non-default shapes and the
+        acceptance contract's `BUNDLE_SHAPES`. A shape the acceptance layer knows and the
+        transport does not cannot be launched; the reverse renders a template against a layer
+        that would refuse it."""
+        import tools.codegen_bundle as cb
+        self.assertEqual(ort.PURE_LAUNCH_SHAPES,
+                         frozenset(cb.BUNDLE_SHAPES) - {"m3c"})
+
+    def test_every_shape_triple_has_a_template(self) -> None:
+        """`_pure_launch_template_name` composes the key; this pins that every key it can
+        compose resolves, so the two tables cannot drift into a KeyError at render time."""
+        for step, substep, shape in sorted(ort.PURE_CONTEXT_REQUIRED_KEYS_BY_SHAPE):
+            with self.subTest(triple=f"{step}.{substep}.{shape}"):
+                name = ort._pure_launch_template_name(
+                    {"step": step, "substep": substep, "pure_shape": shape})
+                self.assertEqual(name, f"pure {step}.{substep}.{shape}")
+                self.assertIn(name, ort._load_launch_prompt_templates())
 
     def test_validate_payload_rejects_pure_outside_the_migrated_pairs(self) -> None:
         """The pair gate itself. Each subject carries a context that is VALID for its own pair,
@@ -1306,6 +1389,11 @@ class PureRenderTests(unittest.TestCase):
         ("skills/workflow-generate-generate/SKILL.md", None, None),
         ("skills/workflow-compile-generate/SKILL.md", None, None),
         ("tools/prompt_templates/pure_generate_verify.txt", None, None),
+        # Issue #169: the `harness` bundle shape's own two GENERATE templates. The producer one
+        # is scanned for the same reason its `m3c` twin is — a template reaches a leaf before
+        # anything else, so a severity spelled in one outranks the rubric.
+        ("tools/prompt_templates/pure_generate_verify_harness.txt", None, None),
+        ("tools/prompt_templates/pure_generate_generate_harness.txt", None, None),
         # Z1 (issue #168) put `compile.verify` on a pure template of its own, so the sentence
         # below about `Compile.verify` being agentic-only now describes the RESIDUAL agentic
         # path rather than the only one. Both compile templates are scanned for the same reason
@@ -1413,6 +1501,12 @@ class PureRenderTests(unittest.TestCase):
         # making that new mention be read before it shipped.
         "tools/prompt_templates/pure_generate_verify.txt: Review checklist (the semantic items "
         "to judge the bundle aga #13a2cbb5bb66",
+        # `pure-37` (issue #169): the same input-side clause on the `harness` shape's reviewer
+        # template, where it stands as its own paragraph rather than inside the checklist
+        # sentence. Same judgment as the line above — it POINTS at the rubric's `major` bullet
+        # and explicitly refuses to be read as a shorter enumeration of it; it assigns nothing.
+        "tools/prompt_templates/pure_generate_verify_harness.txt: One kind of finding is NOT "
+        "code-vs-IR and is still yours to  #18a97797a2d9",
     )
 
     def test_no_leaf_surface_hand_assigns_a_severity_outside_the_rubric(self) -> None:

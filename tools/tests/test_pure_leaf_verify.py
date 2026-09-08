@@ -23,6 +23,7 @@ from zoneinfo import ZoneInfo
 
 os.environ.setdefault("ATMOFAB_DEP_READINESS_ALLOW_PERSISTED_FALLBACK", "1")
 
+import tools.orchestration_runtime as wc_ort
 import tools.workflow_conductor as wc
 from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION, VERDICT_SEVERITIES
 from tools.tests.test_pure_leaf_producer import (
@@ -1277,6 +1278,153 @@ class PureVerifyTransientWallClockBudgetScopeTest(unittest.TestCase):
         self.assertEqual([e["event"] for e in events].count("leaf_transient_retry"), 1)
         self.assertEqual(
             [e["event"] for e in events].count("leaf_transient_retry_declined"), 0)
+
+
+# ======================================================================================
+# The `harness` bundle shape's reviewer (issue #169) — driven through the loop
+# ======================================================================================
+class PureHarnessVerifyWiringTests(unittest.TestCase):
+    """The reviewer half of the second shape, driven through `_run_pure_verify_substep` and
+    `run_substep` rather than by calling `_pure_reviewer_spec` directly.
+
+    Choosing the spec and WIRING the choice into the two call sites are different things: a
+    round-0 mutation sweep reported both call sites as unpinned while the spec's own rows were
+    green, which is exactly the "the predicate has a test, the call site does not" shape.
+    """
+
+    #: The reviewer context reads two of these; the third is here because this class also drives
+    #: the PRODUCER through `run_substep`, and that context reads the checks-module contract.
+    _REPO_DOCS = ("docs/workflow/RUNNER_OUTPUT_CONTRACT.md",
+                  "docs/workflow/CHECKS_MODULE_CONTRACT.md",
+                  "docs/workflow/phases/phase_02_generate.md")
+
+    def setUp(self) -> None:
+        from tools.tests.test_pure_leaf_producer import (
+            _write_harness_node, _harness_bundle, _HARNESS_SPEC_ID)
+        self._harness_bundle = _harness_bundle
+        self._spec_id = _HARNESS_SPEC_ID
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.repo = Path(self._tmp.name)
+        real_root = Path(wc.__file__).resolve().parents[1]
+        for rel in self._REPO_DOCS:
+            dest = self.repo / rel
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(real_root / rel, dest)
+        self.refs = _write_harness_node(self.repo)
+        src = self.repo / self.refs.source_dir()
+        src.mkdir(parents=True, exist_ok=True)
+        (src / "codegen_bundle.json").write_text(
+            json.dumps(_harness_bundle()), encoding="utf-8")
+        (self.repo / "workspace" / "orchestrations" / "o").mkdir(parents=True, exist_ok=True)
+        self.c = _PureFakeConductor(
+            repo_root=self.repo, orchestration_id="o", orchestration_agent_run_id="orch",
+            llm_config=_cfg("claude"), env={})
+
+    def _last_request(self) -> dict:
+        return [cap["--request-json"] for sub, cap in self.c.calls
+                if sub == "record-launch"][-1]
+
+    def test_every_repository_document_of_this_context_fails_CLOSED(self) -> None:
+        """One row per repository document the harness reviewer's context reads, each REMOVING
+        that document and requiring the failure to name it.
+
+        A round-3 census found the severity rubric's two raises here vacuous while the same
+        mutation on the m3c twin was killed — a fail-closed guard copied into the new shape with
+        its witness left behind on the old one, and the mutation direction is fail-OPEN (the
+        reviewer would judge with an empty rubric and choose `issue_severity` by how heavy the
+        defect looks, which is what terminalized a run before issue #143).
+
+        The unsliceable case is driven for the rubric too, because a document present but
+        re-organized is the failure the slicer exists for and reads nothing like a missing file.
+        Set identity against the context builder's own output is asserted last, so a document
+        added later is either given a row or shows up here."""
+        cases = {
+            "docs/workflow/RUNNER_OUTPUT_CONTRACT.md": "pure_runner_output_contract_document_missing",
+            "docs/workflow/phases/phase_02_generate.md": "pure_severity_rubric_document_missing",
+        }
+        for rel, reason in cases.items():
+            with self.subTest(document=rel):
+                target = self.repo / rel
+                body = target.read_text(encoding="utf-8")
+                target.unlink()
+                try:
+                    with self.assertRaises(RuntimeError) as caught:
+                        self.c._build_pure_harness_verify_context(self.refs)
+                    self.assertIn(reason, str(caught.exception))
+                finally:
+                    target.write_text(body, encoding="utf-8")
+        # ...and a rubric whose anchors moved is a DIFFERENT named failure, not a blank slot.
+        phase_doc = self.repo / "docs/workflow/phases/phase_02_generate.md"
+        body = phase_doc.read_text(encoding="utf-8")
+        phase_doc.write_text(body.replace("#### Severity of a finding", "#### Grading"),
+                             encoding="utf-8")
+        try:
+            with self.assertRaises(RuntimeError) as caught:
+                self.c._build_pure_harness_verify_context(self.refs)
+            self.assertIn("pure_severity_rubric_document_unsliceable", str(caught.exception))
+        finally:
+            phase_doc.write_text(body, encoding="utf-8")
+        # The two rows above cover the RAISING documents; the rest of the context is node
+        # artifacts, which degrade to "" by the same deliberate design as the m3c reviewer's.
+        # Set identity against the builder's own output, so a document added later is either
+        # given a row above or shows up here. (An earlier form subtracted the reason STRINGS
+        # from a set of context KEYS — a no-op term a round-4 reviewer spotted; the two sets
+        # are named explicitly now.)
+        ctx = self.c._build_pure_harness_verify_context(self.refs)
+        degrading = {"controlled_spec_document", "tests_document", "ir_document",
+                     "bundle_document"}
+        raising = {"runner_output_contract_document", "severity_rubric_document"}
+        self.assertEqual(set(ctx), degrading | raising)
+        self.assertEqual(len(cases), len(raising))
+
+    def test_the_verify_seam_wires_the_harness_shape_through(self) -> None:
+        self.c.envelopes = [_envelope(_verdict("pass"))]
+        oc = self.c._run_pure_verify_substep(self.refs, "generate", "verify", ())
+        self.assertEqual(oc.status, "pass", getattr(oc, "failure_excerpt", None))
+        request = self._last_request()
+        self.assertEqual(request["pure_shape"], "harness")
+        self.assertEqual(
+            sorted(request["pure_context"]),
+            sorted(wc_ort.PURE_CONTEXT_REQUIRED_KEYS_BY_SHAPE[
+                ("generate", "verify", "harness")]))
+        # ...and the runner-output contract really is what the fifth slot carries, not the
+        # checks-module ABI the m3c reviewer receives.
+        self.assertNotIn("checks_module_contract_document", request["pure_context"])
+        self.assertIn("runner_output_contract_document", request["pure_context"])
+
+    def test_run_substep_dispatches_the_reviewer_with_the_shape(self) -> None:
+        """The other call site: `run_substep`'s pure branch resolves the shape itself."""
+        self.c.envelopes = [_envelope(_verdict("pass"))]
+        oc = self.c.run_substep(self.refs, "generate", "verify")
+        self.assertEqual(oc.status, "pass", getattr(oc, "failure_excerpt", None))
+        self.assertEqual(self._last_request()["pure_shape"], "harness")
+
+    def test_run_substep_dispatches_the_producer_with_the_shape(self) -> None:
+        from tools.tests.test_pure_leaf_producer import _harness_bundle
+        self.c.envelopes = [_envelope(_harness_bundle())]
+        oc = self.c.run_substep(self.refs, "generate", "generate")
+        self.assertEqual(oc.status, "pass", getattr(oc, "failure_excerpt", None))
+        request = self._last_request()
+        self.assertEqual(request["pure_shape"], "harness")
+        self.assertIn("runner_output_contract_document", request["pure_context"])
+
+    def test_the_m3c_node_still_carries_no_shape_through_the_same_sites(self) -> None:
+        """The negative half: `pure_shape` is ABSENT on the default shape, so a mutation that
+        stamped one unconditionally is red here rather than green on the harness rows above."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = _verify_node(repo)
+            (repo / "workspace" / "orchestrations" / "o").mkdir(parents=True, exist_ok=True)
+            c = _PureFakeConductor(
+                repo_root=repo, orchestration_id="o", orchestration_agent_run_id="orch",
+                llm_config=_cfg("claude"), env={})
+            c.envelopes = [_envelope(_verdict("pass"))]
+            c.run_substep(refs, "generate", "verify")
+            request = [cap["--request-json"] for sub, cap in c.calls
+                       if sub == "record-launch"][-1]
+        self.assertNotIn("pure_shape", request)
+        self.assertIn("checks_module_contract_document", request["pure_context"])
 
 
 if __name__ == "__main__":

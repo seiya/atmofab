@@ -472,19 +472,28 @@ class HttpPureLeafWiringTests(unittest.TestCase):
 
     # --- the pure-only rule, at run time ---------------------------------------------
 
-    def test_a_pure_only_provider_on_a_non_m3c_node_fails_closed(self) -> None:
+    def test_a_pure_only_provider_on_a_shapeless_node_fails_closed(self) -> None:
         """Config validation cannot see node shape. A node with no pure path would otherwise
-        take the shared agentic loop with a provider that cannot run it. The live non-M3c node
-        is the `infrastructure` harness self-test, which authors its own runner."""
+        take the shared agentic loop with a provider that cannot run it.
+
+        Since issue #169 NO in-tree node is such a node — the `infrastructure` harness self-test
+        was the last one and is now the `harness` bundle shape — so the subject is built by
+        stubbing the predicate the shape reader consults first. The refusal text is checked
+        because an operator acts on it: it used to say "it is not an M3c node", which stopped
+        being the deciding property when the second shape landed."""
         c = self._conductor()
         c._conductor_authors_makefile = lambda refs: False   # type: ignore[assignment]
         outcome = c.run_substep(self.refs, "generate", "generate")
         self.assertEqual(outcome.status, "fail")
         assert outcome.infra_error is not None
         self.assertEqual(outcome.infra_error[0], "pure_only_provider_on_agentic_path")
-        self.assertIn("not an M3c node", outcome.infra_error[1])
+        self.assertIn("no CodegenBundle shape", outcome.infra_error[1])
+        self.assertNotIn("M3c", outcome.infra_error[1])
+        # ...and it names BOTH inputs the predicate reads. A round-3 reviewer caught the first
+        # replacement sending an operator to the IR alone, when the node_key can decide.
+        self.assertIn("node_key", outcome.infra_error[1])
 
-    def test_an_agentic_provider_on_a_non_m3c_node_is_untouched(self) -> None:
+    def test_an_agentic_provider_on_a_shapeless_node_is_untouched(self) -> None:
         c = _HttpConductor(
             repo_root=self.repo, orchestration_id="o", orchestration_agent_run_id="orch",
             env={KEY_ENV: "sk-test"}, llm_config=_cfg("claude", agent_model="opus"))

@@ -17,6 +17,7 @@ import re
 import tempfile
 import unittest
 from pathlib import Path
+from typing import ClassVar
 from unittest import mock
 
 from tools import codegen_bundle as cb
@@ -150,7 +151,8 @@ class PrivateHelperTest(unittest.TestCase):
              "defined_in": "adv1d_limiter.f90", "module": "adv1d_limiter"})
         violations = cb.validate_bundle(doc)
         self.assertEqual(len(violations), 1)
-        self.assertIn("private and cannot define an entrypoint", violations[0])
+        self.assertIn("which cannot define an entrypoint", violations[0])
+        self.assertIn("private by role", violations[0])
 
     def test_internal_module_cannot_define_an_entrypoint(self) -> None:
         doc = _minimal_bundle()
@@ -158,7 +160,7 @@ class PrivateHelperTest(unittest.TestCase):
         doc["entrypoints"].append(
             {"symbol": "adv1d__types", "kind": "operation", "node_key": ADV,
              "defined_in": "adv1d_types.f90", "module": "adv1d_types"})
-        self.assertTrue(any("private and cannot define an entrypoint" in v
+        self.assertTrue(any("which cannot define an entrypoint" in v
                             for v in cb.validate_bundle(doc)))
 
     def test_shared_helper_takes_a_null_member(self) -> None:
@@ -212,7 +214,12 @@ class PrivateHelperTest(unittest.TestCase):
         self.assertIn("files[0].modules is required", cb.validate_bundle(doc))
         doc = _minimal_bundle()
         doc["files"][0]["modules"] = []
-        self.assertIn("files[0].modules must be a non-empty array", cb.validate_bundle(doc))
+        self.assertIn(
+            "files[0].modules must be a non-empty array (only role 'runner' may define no module)",
+            cb.validate_bundle(doc))
+        doc = _minimal_bundle()
+        doc["files"][0]["modules"] = "adv1d_model"  # a string is not an array
+        self.assertIn("files[0].modules must be an array", cb.validate_bundle(doc))
         doc = _minimal_bundle()
         doc["files"][0]["modules"] = ["9bad"]
         self.assertIn("files[0].modules[0] must be an identifier", cb.validate_bundle(doc))
@@ -1860,7 +1867,29 @@ class ContractPlumbingTest(unittest.TestCase):
             sorted(["logical_path", "role", "language", "member_node_key", "content", "modules"]))
         self.assertEqual(files_items["properties"]["modules"]["items"]["pattern"],
                          cb.IDENTIFIER_PATTERN)
-        self.assertEqual(files_items["properties"]["modules"]["minItems"], 1)
+        # v1.1.0: the non-empty rule carries an EXCEPTION, so it moved off the property (where
+        # a bare `minItems` could not express it) into a draft-07 conditional beside it. Both
+        # halves are pinned, because a round-2 reviewer measured the cost of keeping only the
+        # marker: the branch had made the DECLARATIVE copy strictly weaker for the four roles
+        # that did not change, so a schema-only consumer stopped rejecting `modules: []` on a
+        # `model` too — against `x-forbidden-examples-note`'s promise that such a consumer gets
+        # the field grammar.
+        self.assertNotIn("minItems", files_items["properties"]["modules"])
+        self.assertEqual(files_items["properties"]["modules"]["x-non-empty-unless-role"],
+                         cb.ENTRY_BEARING_ROLE)
+        conditional, = files_items["allOf"]
+        self.assertEqual(conditional["if"]["properties"]["role"]["const"],
+                         cb.ENTRY_BEARING_ROLE)
+        self.assertIs(conditional["then"], True)
+        self.assertEqual(conditional["else"]["properties"]["modules"]["minItems"], 1)
+        self.assertEqual(files_items["properties"]["role"]["x-entry-bearing-role"],
+                         cb.ENTRY_BEARING_ROLE)
+        # What is NOT asserted, stated rather than implied: nothing here APPLIES the conditional
+        # with a generic draft-07 library. `tools/` carries no `jsonschema` dependency by design,
+        # and a permanently-skipped row would observe nothing. The pin above is the document's
+        # exact shape; that it means "every role but `runner` needs a module" is draft-07's
+        # semantics, and the behaviour a consumer of this repository relies on is the canonical
+        # validator's, which `test_only_the_runner_may_declare_no_modules` drives directly.
         self.assertEqual(files_items["properties"]["compile_after"]["items"],
                          {"type": "string", "minLength": 1})
         plan = self.schema["properties"]["target_lowering_plan"]
@@ -1977,20 +2006,52 @@ class ContractPlumbingTest(unittest.TestCase):
             found += ContractPlumbingTest._schema_nodes(items, f"{path}.items")
         for index, branch in enumerate(node.get("oneOf") or []):
             found += ContractPlumbingTest._schema_nodes(branch, f"{path}.oneOf[{index}]")
+        # `allOf` and the draft-07 conditional. Added with the 1.1.0 `modules` rule (issue #169):
+        # without them the walker's two invariants — every node declares a type, every object is
+        # closed — stop at the conditional's boundary, and a constraint smuggled into a `then`
+        # branch would be exempt from both. `if` is deliberately walked too: its schema
+        # constrains an instance exactly as the branches do.
+        for index, branch in enumerate(node.get("allOf") or []):
+            found += ContractPlumbingTest._schema_nodes(branch, f"{path}.allOf[{index}]")
+        for keyword in ("if", "then", "else"):
+            branch = node.get(keyword)
+            if isinstance(branch, dict):
+                found += ContractPlumbingTest._schema_nodes(branch, f"{path}.{keyword}")
         return found
+
+    #: The nodes of the schema that are pure STRUCTURE — an applicator whose children carry the
+    #: constraints — and are therefore exempt from "every node declares a type". An explicit set,
+    #: not a pattern: deciding "is this an applicator" by shape is how an exemption gets broken
+    #: from both sides, and a set makes a new unlisted one RED until someone reads it. Added with
+    #: the 1.1.0 `modules` conditional (issue #169), which is the only conditional in either
+    #: schema.
+    _STRUCTURAL_SCHEMA_NODES: ClassVar[frozenset[str]] = frozenset({
+        "codegen_bundle.properties.files.items.allOf[0]",
+        "codegen_bundle.properties.files.items.allOf[0].if",
+        "codegen_bundle.properties.files.items.allOf[0].else",
+    })
 
     def test_every_schema_node_declares_a_type(self) -> None:
         # Without an explicit `type`, a draft-07 sibling constraint (pattern, minItems,
         # items, minLength) is vacuous for a wrongly-typed instance: `"content": {...}` or
-        # `"logical_path": [...]` would validate. A node constrains by `type`, `$ref`, or
-        # `oneOf` — never by nothing.
+        # `"logical_path": [...]` would validate. A node constrains by `type`, `$ref`, `oneOf`
+        # or `const` — never by nothing. (`const` pins the value itself, which is strictly
+        # stronger than pinning its type; it entered the vocabulary with the 1.1.0 conditional's
+        # `if`, which selects on `role`.)
+        exempt = set()
         for schema, name in ((self.schema, "codegen_bundle"),
                              (self.capability_schema, "harness_capabilities")):
             for path, node in self._schema_nodes(schema, name):
+                if path in self._STRUCTURAL_SCHEMA_NODES:
+                    exempt.add(path)
+                    continue
                 with self.subTest(path=path):
                     self.assertTrue(
-                        {"type", "$ref", "oneOf"} & set(node),
-                        f"{path} constrains nothing: it declares no type, $ref, or oneOf")
+                        {"type", "$ref", "oneOf", "const"} & set(node),
+                        f"{path} constrains nothing: it declares no type, $ref, oneOf or const")
+        # The exemption list is compared as a SET, so an entry that stops existing (a
+        # reorganized conditional) is as red as a node that newly needs one.
+        self.assertEqual(exempt, set(self._STRUCTURAL_SCHEMA_NODES))
 
     def test_schema_objects_are_closed_except_the_declared_extension_point(self) -> None:
         # "The bundle cannot smuggle a build command" rests on the closure of every object,
@@ -2667,7 +2728,8 @@ class PurePublishedSurfacePinTests(unittest.TestCase):
 
     def _run(self, doc: dict, node_key: str, ir_published):
         return cb.pure_bundle_contract_violation(
-            doc, node_key=node_key, spec_id="bx", ir_state_variables=[],
+            doc, node_key=node_key, spec_id="bx", shape="m3c",
+            runner_basename="bx_runner.f90", ir_state_variables=[],
             harness_provided={"sync_single_case@1"}, build_graph=lambda d: None,
             ir_published_operations=ir_published)
 
@@ -2702,15 +2764,300 @@ class PurePublishedSurfacePinTests(unittest.TestCase):
         self.assertIsNone(
             self._run(self._bundle(self._NK, ["bx__whatever"]), self._NK, None))
 
-    def test_non_component_node_is_inert(self) -> None:
+    def test_infrastructure_node_is_pinned_too(self) -> None:
+        # L1c widened to `infrastructure` (issue #169): a harness IR carries a public_api pin
+        # and its bundle's operation entrypoints must equal it.
+        nk = "infrastructure/bx@0.1.0"
+        r = self._run(self._bundle(nk, ["bx__parse_cases"]), nk,
+                      ["bx__parse_cases", "bx__emit_real"])
+        self.assertIsNotNone(r)
+        self.assertEqual(r[0], "bundle_published_surface_mismatch")
+        self.assertIn("bx__emit_real", r[1])
+
+    def test_l1c_spec_kinds_equal_the_ir_producer_s(self) -> None:
+        # The set is DEFINED once in the code and the two readers must agree: a kind the IR
+        # producer authors no `public_api` for has no pinned surface to compare against.
+        from tools.workflow_conductor import Conductor
+        self.assertEqual(cb.L1C_PUBLISHED_SURFACE_SPEC_KINDS,
+                         Conductor._PURE_IR_PUBLIC_API_KINDS)
+
+    def test_non_pinned_node_kind_is_inert(self) -> None:
         # A profile publishes zero operations; passing a pin must not trip the surface layer
-        # (guarded on the component/ prefix).
+        # (its spec_kind is not in L1C_PUBLISHED_SURFACE_SPEC_KINDS).
         nk = "profile/bx@0.1.0"
         doc = self._bundle(nk, [])
         doc["entrypoints"] = [
             {"symbol": "checks_compute", "kind": "checks_interface", "node_key": nk,
              "defined_in": "bx_checks.f90", "module": "bx_checks"}]
         self.assertIsNone(self._run(doc, nk, ["bx__anything"]))
+
+
+class RunnerRoleTest(unittest.TestCase):
+    """Bundle v1.1.0: the `runner` role — the unit's executable entry, admissible only on a
+    node the host renders no glue for. The SHAPE question (which node) belongs to
+    `pure_bundle_contract_violation`; `validate_bundle` only knows the document."""
+
+    def _harness_bundle(self) -> dict:
+        return {
+            "bundle_schema_version": "1.1.0",
+            "optimization_unit": {"members": [HARNESS]},
+            "files": [
+                _file("harness_fortran_cpu_model.f90", "model", HARNESS,
+                      modules=["harness_fortran_cpu_model"]),
+                _file("harness_fortran_cpu_runner.f90", "runner", HARNESS, modules=[]),
+            ],
+            "entrypoints": [
+                {"symbol": "harness_fortran_cpu__parse_cases", "kind": "operation",
+                 "node_key": HARNESS, "defined_in": "harness_fortran_cpu_model.f90",
+                 "module": "harness_fortran_cpu_model"},
+            ],
+            "target_lowering_plan": {"precision": {"real_kind": "real64"},
+                                     "state_residency": "host"},
+            "capability_requirements": ["sync_single_case@1"],
+            "state_bindings": [],
+        }
+
+    def test_the_role_refusal_names_the_roles_and_denies_no_admissible_one(self) -> None:
+        """The message a repair leaf acts on. Two halves, because a substring pin on the
+        admissible list would stay green with the old sentence "there is no runner/glue role"
+        still appended — and a leaf reading that would not emit the role this shape requires.
+        The member list is DERIVED from `FILE_ROLES`, so adding a role breaks this with the
+        message rather than ratifying it."""
+        doc = self._harness_bundle()
+        _find(doc["files"], "harness_fortran_cpu_runner.f90")["role"] = "script"
+        clause = next(v for v in cb.validate_bundle(doc) if "role must be one of" in v)
+        for role in cb.FILE_ROLES:
+            self.assertIn(role, clause)
+        self.assertNotIn("no runner", clause)
+        self.assertNotIn("runner/glue", clause)
+        # ...and it still says what IS refused.
+        self.assertIn("build/script role", clause)
+
+    def test_a_runner_bearing_bundle_is_valid(self) -> None:
+        self.assertEqual(cb.validate_bundle(self._harness_bundle()), [])
+
+    def test_only_the_runner_may_declare_no_modules(self) -> None:
+        doc = self._harness_bundle()
+        _find(doc["files"], "harness_fortran_cpu_model.f90")["modules"] = []
+        violations = cb.validate_bundle(doc)
+        self.assertTrue(any("modules must be a non-empty array" in v for v in violations))
+
+    def test_a_member_carries_at_most_one_runner(self) -> None:
+        doc = self._harness_bundle()
+        doc["files"].append(_file("second_runner.f90", "runner", HARNESS, modules=[]))
+        self.assertTrue(any("at most one executable entry" in v
+                            for v in cb.validate_bundle(doc)))
+
+    def test_a_runner_may_not_define_an_entrypoint(self) -> None:
+        doc = self._harness_bundle()
+        _find(doc["files"], "harness_fortran_cpu_runner.f90")["modules"] = ["hfc_runner"]
+        doc["entrypoints"].append(
+            {"symbol": "harness_fortran_cpu__x", "kind": "checks_interface",
+             "node_key": HARNESS, "defined_in": "harness_fortran_cpu_runner.f90",
+             "module": "hfc_runner"})
+        self.assertTrue(any("which cannot define an entrypoint" in v
+                            for v in cb.validate_bundle(doc)))
+
+    def test_a_runner_may_not_take_a_null_member(self) -> None:
+        doc = self._harness_bundle()
+        _find(doc["files"], "harness_fortran_cpu_runner.f90")["member_node_key"] = None
+        self.assertTrue(any("member_node_key may be null only for role" in v
+                            for v in cb.validate_bundle(doc)))
+
+    def test_the_runner_compiles_last(self) -> None:
+        doc = self._harness_bundle()
+        doc["files"].insert(0, _file("hfc_types.f90", "internal_module", HARNESS))
+        graph = cb.derive_build_graph(doc, toolchain={"language": "fortran"})
+        self.assertEqual([unit["object"] for unit in graph["compile_units"]],
+                         ["hfc_types.o", "harness_fortran_cpu_model.o",
+                          "harness_fortran_cpu_runner.o"])
+
+    def test_a_bundle_runner_colliding_with_host_glue_fails_assembly(self) -> None:
+        # The structural guarantee that a runner role cannot be smuggled onto an M3c node
+        # even if the shape layer were bypassed: the object names collide.
+        doc = self._harness_bundle()
+        with self.assertRaises(RuntimeError) as ctx:
+            cb.derive_build_graph(
+                doc, toolchain={"language": "fortran"},
+                host_glue_sources=("harness_fortran_cpu_runner.f90",))
+        self.assertIn("object name collision", str(ctx.exception))
+
+
+class BundleShapeAdmissibilityTest(unittest.TestCase):
+    """`pure_bundle_contract_violation`'s `shape` argument: which file shape a node's bundle
+    is judged against. Both callers (the producer's in-conversation gate and the
+    deterministic tamper gate) pass the same value, resolved by the twin readers."""
+
+    _MODEL = "module harness_fortran_cpu_model\n! allow(C003)\nend module harness_fortran_cpu_model\n"
+
+    def _harness_doc(self) -> dict:
+        doc = RunnerRoleTest()._harness_bundle()
+        _find(doc["files"], "harness_fortran_cpu_model.f90")["content"] = self._MODEL
+        return doc
+
+    def _run(self, doc: dict, shape: str, **kw):
+        params = dict(
+            node_key=HARNESS, spec_id="harness_fortran_cpu", shape=shape,
+            runner_basename="harness_fortran_cpu_runner.f90", ir_state_variables=[],
+            harness_provided={"sync_single_case@1"}, build_graph=lambda d: None,
+            ir_published_operations=["harness_fortran_cpu__parse_cases"])
+        params.update(kw)
+        return cb.pure_bundle_contract_violation(doc, **params)
+
+    def test_harness_shape_accepts_the_harness_bundle(self) -> None:
+        self.assertIsNone(self._run(self._harness_doc(), "harness"))
+
+    def test_m3c_shape_refuses_a_runner_role(self) -> None:
+        result = self._run(self._harness_doc(), "m3c")
+        self.assertIsNotNone(result)
+        self.assertEqual(result[0], "bundle_shape_unsupported")
+        self.assertIn("host-rendered glue", result[1])
+
+    def test_an_unknown_shape_is_refused(self) -> None:
+        result = self._run(self._harness_doc(), "whatever")
+        self.assertIsNotNone(result)
+        self.assertEqual(result[0], "bundle_shape_unsupported")
+        self.assertIn("unknown bundle shape", result[1])
+
+    def test_harness_shape_pins_the_runner_filename(self) -> None:
+        doc = self._harness_doc()
+        _find(doc["files"], "harness_fortran_cpu_runner.f90")["logical_path"] = "driver.f90"
+        result = self._run(doc, "harness")
+        self.assertEqual(result[0], "bundle_shape_unsupported")
+        self.assertIn("harness_fortran_cpu_runner.f90", result[1])
+
+    def test_harness_shape_pins_the_model_filename(self) -> None:
+        doc = self._harness_doc()
+        _find(doc["files"], "harness_fortran_cpu_model.f90")["logical_path"] = "hfc.f90"
+        doc["entrypoints"][0]["defined_in"] = "hfc.f90"
+        result = self._run(doc, "harness")
+        self.assertEqual(result[0], "bundle_shape_unsupported")
+        self.assertIn("harness_fortran_cpu_model.f90", result[1])
+
+    def test_harness_shape_pins_the_model_module_name(self) -> None:
+        """The half the shape layer dropped when it stopped running the m3c name layer, found in
+        round 1. It is invisible to this node's own gates — its model and runner are both
+        leaf-authored and agree with each other whatever the module is called — and shows up on
+        the CONSUMER, whose glue imports the module by a name derived from the spec_id."""
+        doc = self._harness_doc()
+        model = _find(doc["files"], "harness_fortran_cpu_model.f90")
+        model["modules"] = ["hfc_internals"]
+        doc["entrypoints"][0]["module"] = "hfc_internals"
+        # The document is schema-VALID: nothing but this layer objects.
+        self.assertEqual(cb.validate_bundle(doc), [])
+        result = self._run(doc, "harness")
+        self.assertIsNotNone(result)
+        self.assertEqual(result[0], "bundle_shape_unsupported")
+        self.assertIn("harness_fortran_cpu_model", result[1])
+
+    def test_harness_shape_compares_the_PATH_case_sensitively(self) -> None:
+        """The other half of the pair below, and the one the comment argues for at length: a
+        `logical_path` becomes a filename the build and the gates open verbatim, so an
+        uppercase spelling of the pinned name is a DIFFERENT file. A round-3 census found the
+        claim vacuous — casefolding the path comparison survived every test file — and the two
+        rows are deliberately adjacent, because what makes each meaningful is that the other
+        goes the other way."""
+        doc = self._harness_doc()
+        model = _find(doc["files"], "harness_fortran_cpu_model.f90")
+        model["logical_path"] = "Harness_Fortran_CPU_Model.f90"
+        doc["entrypoints"][0]["defined_in"] = "Harness_Fortran_CPU_Model.f90"
+        result = self._run(doc, "harness")
+        self.assertIsNotNone(result)
+        self.assertEqual(result[0], "bundle_shape_unsupported")
+        self.assertIn("harness_fortran_cpu_model.f90", result[1])
+
+    def test_harness_shape_takes_the_module_name_case_insensitively(self) -> None:
+        """A Fortran identifier is case-insensitive, so the module comparison must be — unlike
+        the path one beside it, which becomes a filename a case-sensitive filesystem opens."""
+        doc = self._harness_doc()
+        model = _find(doc["files"], "harness_fortran_cpu_model.f90")
+        model["modules"] = ["Harness_Fortran_CPU_Model"]
+        doc["entrypoints"][0]["module"] = "Harness_Fortran_CPU_Model"
+        self.assertIsNone(self._run(doc, "harness"))
+
+    def test_the_pinned_names_take_their_extension_from_the_caller(self) -> None:
+        """The docstring's claim that this layer is not a second place saying what a node's
+        files are called. Driven with a non-Fortran spelling, because a hardcoded `.f90` passes
+        every fixture in this file otherwise — a round-1 mutation sweep found `ext = ".f90"`
+        surviving the whole suite, caught only by the backend-boundary ratchet, which
+        `AGENTS.md` says is frozen out of it."""
+        doc = self._harness_doc()
+        for entry in doc["files"]:
+            entry["logical_path"] = entry["logical_path"].replace(".f90", ".zz")
+        doc["entrypoints"][0]["defined_in"] = "harness_fortran_cpu_model.zz"
+        self.assertIsNone(
+            cb.harness_bundle_shape_violation(doc, "harness_fortran_cpu",
+                                              "harness_fortran_cpu_runner.zz"))
+        # ...and the message it produces for a wrong name carries that extension too.
+        wrong = copy.deepcopy(doc)
+        _find(wrong["files"], "harness_fortran_cpu_model.zz")["logical_path"] = "other.zz"
+        wrong["entrypoints"][0]["defined_in"] = "other.zz"
+        clause = cb.harness_bundle_shape_violation(
+            wrong, "harness_fortran_cpu", "harness_fortran_cpu_runner.zz")
+        self.assertIn("harness_fortran_cpu_model.zz", clause)
+        self.assertNotIn(".f90", clause)
+
+    def test_harness_shape_refuses_a_SECOND_model_file(self) -> None:
+        """CARDINALITY, not membership. `paths != [want_path]` carries both, and a round-2
+        mutation sweep found the cardinality half unwitnessed: `want_path not in paths` survived
+        every test file. Nothing else would catch it — `validate_bundle` accepts the document,
+        and the deterministic signature gate globs the model file by NAME, so a second
+        model-role file under another basename is invisible to it."""
+        doc = self._harness_doc()
+        doc["files"].append(
+            _file("harness_fortran_cpu_extra.f90", "model", HARNESS,
+                  modules=["harness_fortran_cpu_extra"]))
+        self.assertEqual(cb.validate_bundle(doc), [])   # schema-valid: this layer alone refuses
+        result = self._run(doc, "harness")
+        self.assertIsNotNone(result)
+        self.assertEqual(result[0], "bundle_shape_unsupported")
+        self.assertIn("exactly one model-role file", result[1])
+
+    def test_harness_shape_refuses_a_SECOND_runner_file(self) -> None:
+        """The runner's own cardinality reaches this layer through `validate_bundle`'s
+        at-most-one-per-member invariant, so the two halves are refused by different layers and
+        each needs its own row."""
+        doc = self._harness_doc()
+        doc["files"].append(
+            _file("harness_fortran_cpu_second.f90", "runner", HARNESS, modules=[]))
+        result = self._run(doc, "harness")
+        self.assertIsNotNone(result)
+        self.assertEqual(result[0], "bundle_schema_violation")
+        self.assertIn("at most one executable entry", result[1])
+
+    def test_harness_shape_requires_a_runner(self) -> None:
+        doc = self._harness_doc()
+        doc["files"] = [e for e in doc["files"] if e["role"] != "runner"]
+        result = self._run(doc, "harness")
+        self.assertEqual(result[0], "bundle_shape_unsupported")
+        self.assertIn("runner-role file", result[1])
+
+    def test_harness_shape_refuses_a_checks_file(self) -> None:
+        doc = self._harness_doc()
+        doc["files"].append(
+            _file("harness_fortran_cpu_checks.f90", "checks", HARNESS,
+                  modules=["harness_fortran_cpu_checks"]))
+        result = self._run(doc, "harness")
+        self.assertEqual(result[0], "bundle_shape_unsupported")
+        self.assertIn("no checks-role file", result[1])
+
+    def test_harness_shape_does_not_run_the_m3c_checks_abi_layer(self) -> None:
+        # The M3c layers would demand a `<spec_id>_checks.f90` this shape forbids; a plain
+        # non-None answer would not tell the two apart, so pin that the ACCEPTED harness
+        # bundle is exactly the one the M3c name layer rejects.
+        self.assertIsNotNone(
+            cb.m3c_literal_name_violation(self._harness_doc(), "harness_fortran_cpu"))
+        self.assertIsNone(self._run(self._harness_doc(), "harness"))
+
+    def test_l1c_applies_on_the_harness_shape(self) -> None:
+        result = self._run(self._harness_doc(), "harness",
+                           ir_published_operations=["harness_fortran_cpu__emit_real"])
+        self.assertEqual(result[0], "bundle_published_surface_mismatch")
+        # The findings text names the node it is about. It used to open "component <node_key>",
+        # which on this shape would tell a repair leaf the wrong thing about its own node — the
+        # layer stopped being component-only when `L1C_PUBLISHED_SURFACE_SPEC_KINDS` widened.
+        self.assertIn(HARNESS, result[1])
+        self.assertNotIn("component", result[1])
 
 
 if __name__ == "__main__":

@@ -12,11 +12,11 @@
 > exactly one `infrastructure`/harness dependency) the `runner` is **host-rendered** —
 > the leaf authors `<spec_id>_model.f90` + `<spec_id>_checks.f90` (see
 > `CHECKS_MODULE_CONTRACT.md`) and the harness owns the JSON assembly + verdict fold.
-> Since M3d this doc is **not a must-read for a physics `Generate` leaf** (it authors
-> no runner). It IS still a must-read for a runner-authoring `Generate` leaf — the
-> `infrastructure` harness self-test, whose §3 cites §4 here, and the only node kind
-> that authors its own runner — and for `Validate.judge`. The *authoring* rules below
-> also survive as
+> Since M3d this doc is **not for a physics `Generate` leaf** (it authors no runner). It
+> governs the runner-authoring one — the `infrastructure` self-test — and
+> `Validate.judge`. Since issue #169 both are pure and get it INLINED: whole in the
+> `harness` shape's two `generate` prompts, §1+§3 in the judge's. The *authoring* rules
+> below survive as
 > **deterministic backstops** (name / forbidden-output / JSON-descriptor /
 > snapshot-filename gates in `validate_pipeline_semantics.py`).
 

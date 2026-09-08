@@ -176,6 +176,15 @@ CAPABILITIES: dict[str, tuple[tuple[str, ...], str]] = {
         ("linter",),
         "The static-lint step can run this linter and read its findings.",
     ),
+    "lint_rules": (
+        ("linter",),
+        "This linter states its declared rule set as a document a leaf can be handed, so a "
+        "closed-context leaf can be told which rules its source will be judged by. A separate "
+        "capability from `lint` because running a linter and being able to EXPLAIN its rule set "
+        "to a leaf are different jobs, and a package that does the first does not thereby do "
+        "the second — reaching it through `lint` alone would be the same-named-attribute "
+        "dispatch `capability_module` exists to prevent.",
+    ),
     "parallel_directives": (
         ("parallel",),
         "The host renders this parallel model's directives and knobs into the generated source.",
@@ -201,6 +210,9 @@ CAPABILITIES: dict[str, tuple[tuple[str, ...], str]] = {
 CAPABILITY_MODULE_ATTR: dict[str, str] = {
     "runner_render": "runner",
     "lint": "lint",
+    # Same submodule as `lint`, a different declared job — the case this table's docstring
+    # contemplates when it says a package with two capabilities has no single "the module".
+    "lint_rules": "lint",
 }
 
 
@@ -275,7 +287,7 @@ _BACKENDS: dict[tuple[str, str], Backend] = {
         # other two).
         Backend(
             "linter", "fortitude", "tools.backends.linter.fortitude",
-            backend_provides=frozenset({"lint"}),
+            backend_provides=frozenset({"lint", "lint_rules"}),
         ),
         Backend(
             "linter", "cppcheck", "tools.backends.linter.cppcheck",

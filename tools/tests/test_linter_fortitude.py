@@ -143,6 +143,43 @@ class DeclarationTests(unittest.TestCase):
         self.assertEqual(lint.check_argv()[-1], ".")
         self.assertEqual(lint.check_argv("src")[-1], "src")
 
+    def test_every_declared_code_has_a_name_and_the_document_agrees(self) -> None:
+        """`RULE_NAMES` is what a leaf is SHOWN (`lint_rules_document`), so a code with no name
+        is a rule nobody can satisfy, and a name that drifts from the document is two answers to
+        one question. The direction is the one this backend's document already declares: the
+        code is the authority and the document is compared to it."""
+        self.assertEqual(set(lint.RULE_NAMES), set(lint.RULE_CODES))
+        self.assertEqual(tuple(lint.RULE_NAMES), lint.RULE_CODES)  # and in the same ORDER
+        for code, name in lint.RULE_NAMES.items():
+            self.assertRegex(name, r"^[a-z][a-z0-9-]*$", code)
+        doc = (REPO_ROOT / "docs" / "backends" / "linter" / "fortitude"
+               / "RULES.md").read_text(encoding="utf-8")
+        rows = dict(re.findall(r"^\| `([A-Z]+\d+)` \| ([a-z0-9-]+) \|$", doc, re.M))
+        self.assertEqual(rows, lint.RULE_NAMES)
+
+    def test_the_rule_set_document_names_every_declared_rule(self) -> None:
+        """What the host inlines for a pure leaf. It has to carry the NAME as well as the code —
+        a code is not a rule to a reader who has not memorized the table — and it has to cover
+        the whole selected set, because the leaf is told it is the complete list. Issue #169
+        measured the absence: four codes the harness producer must satisfy were stated in no
+        document it received."""
+        text = lint.lint_rules_document()
+        for code, name in lint.RULE_NAMES.items():
+            self.assertIn(f"{code} {name}", text, code)
+        self.assertIn("disabled", text)  # the allow-comment channel is stated, not assumed
+        # The three glossed names, and the COUNT the sentence claims, so a fourth gloss added
+        # without updating the count is red. Measured on 0.8.0: `literal-kind` and
+        # `missing-intrinsic` interact (fixing the first the obvious way earns the second) and
+        # `missing-accessibility-statement` names one half of a two-part rule.
+        glossed = [c for c in ("PORT011", "C122", "C131")
+                   if text.count(lint.RULE_NAMES[c]) > 1]
+        self.assertEqual(sorted(glossed), ["C122", "C131", "PORT011"])
+        self.assertIn("Three of these names", text)
+        self.assertEqual(len(glossed), 3)
+        # ...and it claims completeness, so it must not name a code the gate does not select.
+        named = set(re.findall(r"^([A-Z]+\d+) ", text, re.M))
+        self.assertEqual(named, set(lint.RULE_CODES))
+
     def test_the_declared_set_is_sorted_and_free_of_repeats(self) -> None:
         # Not cosmetic: the set is compared against a resolved listing and against the codes the
         # documents name, and both comparisons are over sets — a duplicate would make the

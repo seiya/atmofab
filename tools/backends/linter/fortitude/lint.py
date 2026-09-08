@@ -116,6 +116,59 @@ RULE_CODES: tuple[str, ...] = (
     "S001", "S061", "S071", "S081", "S091", "S101",
 )
 
+#: Each declared code's rule NAME, as the tool itself reports it. Same set as `RULE_CODES` — a
+#: test pins the two together, and pins the backend document's table against this mapping, which
+#: is the direction the document already declares (the code is the authority).
+#:
+#: WHY THE NAMES ARE HERE AND NOT ONLY IN THE DOCUMENT. A pure `Generate` leaf force-reads
+#: nothing, so a rule it must satisfy reaches it only if the host INLINES it
+#: (`Conductor._build_pure_harness_context`). `lint_rules_document` below is what the host
+#: inlines, and it has to name the rules rather than only their codes, because a code is not a
+#: rule to anyone who has not memorized this table. Issue #169 measured the cost of the absence:
+#: the harness self-test's producer went pure with four of the codes it must satisfy stated in no
+#: document it received.
+RULE_NAMES: dict[str, str] = {
+    "C001": "implicit-typing",
+    "C002": "interface-implicit-typing",
+    "C011": "missing-default-case",
+    "C051": "trailing-backslash",
+    "C061": "missing-intent",
+    "C071": "assumed-size",
+    "C072": "assumed-size-character-intent",
+    "C081": "initialisation-in-declaration",
+    "C091": "external-procedure",
+    "C092": "procedure-not-in-module",
+    "C101": "missing-default-pointer-initalisation",
+    "C121": "use-all",
+    "C122": "missing-intrinsic",
+    "C131": "missing-accessibility-statement",
+    "C141": "missing-exit-or-cycle-label",
+    "E000": "io-error",
+    "E001": "syntax-error",
+    "FORT001": "invalid-rule-code-or-name",
+    "FORT002": "unused-allow-comment",
+    "FORT003": "redirected-allow-comment",
+    "FORT004": "duplicated-allow-comment",
+    "FORT005": "disabled-allow-comment",
+    "MOD011": "old-style-array-literal",
+    "MOD021": "deprecated-relational-operator",
+    "OB011": "common-block",
+    "OB021": "entry-statement",
+    "OB031": "specific-name",
+    "OB041": "computed-go-to",
+    "OB051": "pause-statement",
+    "OB061": "deprecated-character-syntax",
+    "PORT011": "literal-kind",
+    "PORT012": "literal-kind-suffix",
+    "PORT021": "star-kind",
+    "S001": "line-too-long",
+    "S061": "unnamed-end-statement",
+    "S071": "missing-double-colon",
+    "S081": "superfluous-semicolon",
+    "S091": "non-standard-file-extension",
+    "S101": "trailing-whitespace",
+}
+
 #: Codes deliberately left OUT of `RULE_CODES`, with the reason, so a reader asking "why is this
 #: not checked" gets an answer here instead of re-deriving it. Not machine-consulted; the set
 #: above is what runs.
@@ -222,6 +275,59 @@ def self_check_reason(returncode: int, stdout: str, stderr: str) -> str | None:
         f"withdrawn, is the measured cause — re-measure the set against this build and record it "
         f"in docs/backends/linter/fortitude/RULES.md: {(stdout or stderr).strip()[:400]}"
     )
+
+
+def lint_rules_document() -> str:
+    """The declared rule set as a document a leaf can be handed, one `code name` line per rule.
+
+    Backend-owned prose, deliberately: the rule set is this backend's knowledge, and a
+    `neutral core` prompt template may not carry it (`docs/BACKEND_BOUNDARY.md`). The host asks
+    the registry for this module and inlines the result, so the leaf is told what the gate
+    selects without the neutral core learning a rule name.
+
+    Composed from `RULE_NAMES`, so a code added to the declared set reaches the leaf in the same
+    edit that starts enforcing it — which is the property the absence of this function cost:
+    a leaf can only satisfy a rule someone told it about.
+
+    THREE NAMES GET A SENTENCE OF THEIR OWN, because "the name IS the rule" is false for them and
+    a round-5 review measured the cost. `literal-kind` and `missing-intrinsic` interact: the
+    obvious fix for the first (import a named kind) earns the second unless the import is also
+    declared intrinsic — measured, `real(8)` -> PORT011, then a plain import -> C122, then the
+    intrinsic form -> clean. `missing-accessibility-statement` names one half of a rule with two:
+    this repository's gates require the default AND the export list, and a leaf that reads only
+    the name writes the half the name mentions. The rest of the set is left to its name
+    deliberately: a gloss per rule is a second statement of 39 rules, which is the drift this
+    file's own `RULE_CODES` comment exists to prevent.
+
+    The suppression sentence states what was MEASURED here on 0.8.0 under `check_argv`, not what
+    is intuitive: a directive placed on the span a rule reports leaves that finding firing and
+    earns nothing of its own, while one that names a rule nothing violates is a FORT002. Both
+    readings matter to a leaf, and an earlier version of this text claimed only the second.
+    """
+    lines = [
+        "The static lint check selects EXACTLY the rules below and no others; a finding from "
+        "any of them fails the gate, and the gate runs after you return.",
+        "Each line is `<code> <rule-name>`. The name IS the rule — satisfy what it names.",
+        "",
+    ]
+    lines += [f"{code} {RULE_NAMES[code]}" for code in RULE_CODES]
+    lines += [
+        "",
+        "Suppression comments are disabled for this run: a directive silences NOTHING — the "
+        "finding it names fires regardless — and a directive naming a rule the code does not "
+        "violate is itself a FORT002 finding. There is no way to author around a rule; satisfy "
+        "it.",
+        "",
+        "Three of these names do not say what to write, so they are spelled out. "
+        f"`{RULE_NAMES['PORT011']}` wants a NAMED kind constant taken from the standard "
+        "environment module rather than a numeric literal, and "
+        f"`{RULE_NAMES['C122']}` wants the import of that module to declare it intrinsic — so "
+        "the obvious fix for the first earns the second unless both are done at once. "
+        f"`{RULE_NAMES['C131']}` wants each module to state a default accessibility AND to "
+        "export what it publishes: a default alone publishes nothing, and an export list alone "
+        "is not a default.",
+    ]
+    return "\n".join(lines)
 
 
 def check_argv(target: str = ".") -> tuple[str, ...]:

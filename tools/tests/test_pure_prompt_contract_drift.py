@@ -95,6 +95,7 @@ import tools.codegen_bundle as cb
 import tools.orchestration_runtime as ort
 import tools.workflow_conductor as wc
 import tools.backends.language.fortran.runner as rr
+import tools.backends.linter.fortitude.lint as _fortitude_lint
 from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION, PURE_SYSTEM_PROMPT
 
 _TEMPLATE_FILES = (
@@ -102,6 +103,8 @@ _TEMPLATE_FILES = (
     "pure_compile_verify.txt",
     "pure_generate_generate.txt",
     "pure_generate_verify.txt",
+    "pure_generate_generate_harness.txt",
+    "pure_generate_verify_harness.txt",
     "pure_bundle_repair.txt",
     "pure_escalate_diagnose.txt",
     "pure_validate_judge.txt",
@@ -421,7 +424,39 @@ PINNED: dict[str, str] = {
     # gates are the authority for what they check. It now says these are gate-owned, that a
     # non-empty one means the run reached the judge in a state the gate should have refused, and
     # that it is an `attribution=evidence` integrity signal rather than the judge's contribution.
-    "pure-36": "b90892edf00f9fcef3320d8b17ed29f053bcd64b00606fa774f07c77842137dc",}
+    "pure-36": "b90892edf00f9fcef3320d8b17ed29f053bcd64b00606fa774f07c77842137dc",
+    # pure-37 (issue #169, PR-3): the second GENERATE bundle SHAPE. `_TEMPLATE_FILES` grew by two
+    # — `pure_generate_generate_harness.txt` / `pure_generate_verify_harness.txt`, the producer
+    # and reviewer an `infrastructure` self-test now runs as a pure leaf, where before it was the
+    # last live fall-through to the agentic loop. The two side effects are the usual ones and are
+    # not new: an exemplar certified at pure-36 or earlier stops being offered, and an
+    # orchestration whose `generate` ran under pure-36 cannot be `--resume`d across this bump.
+    # The coupled tuple also gained a member: the WHOLE `RUNNER_OUTPUT_CONTRACT.md`, which those
+    # two templates inline (the §1+§3 slice the judge sees stays its own member). Re-pinned once
+    # inside the same version, by round 1: the producer template was missing the model MODULE
+    # name obligation (only the FILE name was stated, and the host only checked the file name),
+    # and its `state_bindings` line invited a binding this shape can never satisfy. Re-pinned a
+    # THIRD time, by round 2: the reviewer template's checklist preamble sat in separate `\n\n`
+    # blocks, so `PURE_REPAIR_STATIC_PARAGRAPH_PREFIXES`' lift carried the header and none of
+    # H1-H10 into a cold repair; the paragraphs are folded into one and two producer-side
+    # prefixes were added beside them. And a FOURTH time, by round 3, which rendered the prompt
+    # and looked for the deterministic gate's rule set: making this leaf pure had cut the only
+    # carrier it had (a force-read `CHECKS_MODULE_CONTRACT.md` §5, which a pure leaf does not
+    # read), so §5 is now inlined and joins the tuple as its own member. A FIFTH time, by round
+    # 4, which measured what that inline actually covers: §5 states three of the seven rule codes
+    # the leaf lost, so the rule that pointed at it claimed a completeness it does not have, and
+    # the escape hatch beside it did not cover a §5 clause naming procedures of the §1-§4 ABI
+    # that this shape has no file for. A SIXTH and last time, closing that gap at the operator's
+    # decision: the linter backend now renders its declared rule set for a leaf
+    # (`lint.lint_rules_document`), the host inlines it, and it joins the tuple — so adding a
+    # code to `RULE_CODES` is a leaf-contract change rather than a silent widening. A SEVENTH
+    # and final time, by round 5: with two inlined rule sets the precedence sentence's "this
+    # list" no longer had one antecedent, and the reading that made the prose section govern the
+    # lint set would have dropped exactly the four codes the previous re-pin delivered. The
+    # precedence is now stated by NAME in all three directions. The m3c template's own version
+    # string moved with it — it still said 1.0.0, so the two producer templates were telling
+    # their leaves two versions of one contract.
+    "pure-37": "5ad32d360a1522cae8abedab657d9e15977d9dca357bb029f210b48f7ea88c9f",}
 
 
 def _contract_tuple() -> dict[str, object]:
@@ -466,6 +501,45 @@ def _contract_tuple() -> dict[str, object]:
         "runner_output_contract_sections": wc._runner_output_contract_sections(
             (Path(wc.__file__).resolve().parents[1]
              / "docs" / "workflow" / "RUNNER_OUTPUT_CONTRACT.md").read_text(encoding="utf-8")),
+        # ...and the WHOLE of the same document, because since `pure-37` the `harness` bundle
+        # shape's two `generate` prompts inline all of it (issue #169): a leaf that AUTHORS the
+        # program reads every section, where the judge that only reads its output is shown two.
+        # The slice above stays a separate member deliberately — it is what the judge sees, and
+        # a widening of `_runner_output_contract_sections` must still be visible as a change to
+        # THAT member rather than be absorbed by the whole-document one.
+        #
+        # This is the one document treated as a leaf CONTRACT rather than as leaf INPUT DATA
+        # (the disposition `phase_01_compile.md` and `controlled_spec.md` take above), and the
+        # churn measurement is why: 11 commits over 8 distinct days all-time, 3 since
+        # 2026-07-19 — measured at `ed36c77` with
+        # `git log --oneline -- docs/workflow/RUNNER_OUTPUT_CONTRACT.md | wc -l`, the same log
+        # with `--date=short --format=%ad | sort -u | wc -l`, and again with `--since=2026-07-19`.
+        # A document that stable does not make the bump a churn magnet, and it additionally
+        # carries a size ceiling (`test_orchestration_runtime.ChildContextDocSizeTests`), so it
+        # is edited deliberately. The known cost is the usual pair: a bump stops
+        # `_resolve_exemplar_source` offering earlier-version exemplars and refuses `--resume`
+        # across it.
+        "runner_output_contract_document": (
+            Path(wc.__file__).resolve().parents[1]
+            / "docs" / "workflow" / "RUNNER_OUTPUT_CONTRACT.md").read_text(encoding="utf-8"),
+        # §5 of the checks-module contract, on the same ground as the §1-§4 slice beside it: it
+        # is inlined verbatim into the `harness` producer's prompt, so it is a leaf INPUT rather
+        # than a document the leaf reads. Hashing the SLICE keeps §1-§4 out of this member (they
+        # are already their own) and makes the section's CONTENT part of the contract.
+        # WHAT THIS DOES NOT PIN, corrected by round 4 after the first version of this comment
+        # claimed it did: the slicer's REFUSALS. A digest over the slice of today's document —
+        # which carries no `## 6.` — cannot see a guard against one, and deleting that guard left
+        # the whole suite green. `test_pure_leaf_producer.PureHarnessShapeTests` drives both
+        # refusals on synthetic text, and pins the slice's identity against
+        # `_checks_contract_abi_sections` so swapping the two is red.
+        # The static lint rule set as the harness producer is shown it. A leaf INPUT like the
+        # slices beside it, and the one member that comes from a BACKEND rather than a document:
+        # adding a code to `RULE_CODES` changes what the leaf is told, which is a contract change
+        # and has to bump the version rather than ship silently.
+        "lint_rules_document": _fortitude_lint.lint_rules_document(),
+        "checks_contract_gate_guards_section": wc._checks_contract_gate_guards_section(
+            (Path(wc.__file__).resolve().parents[1]
+             / "docs" / "workflow" / "CHECKS_MODULE_CONTRACT.md").read_text(encoding="utf-8")),
     }
 
 

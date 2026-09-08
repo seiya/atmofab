@@ -24,10 +24,12 @@
 # (`llm_config_no_cli_backend`, refused at run start). It is why `defaults` here is the CLI
 # provider rather than the endpoint every leaf uses.
 #
-# The two GENERATE pure leaves are additionally gated on the node's M3c shape at run time,
-# so a pure-only provider reaching a non-M3c node fails that node closed rather than
-# silently launching an agentic session on it. The two COMPILE pure leaves carry no such
-# condition — the Compile contract does not depend on the node kind.
+# The two GENERATE pure leaves are additionally gated at run time on the node having a
+# CodegenBundle SHAPE (`Conductor._bundle_shape`: `m3c` for a physics node, `harness` for an
+# `infrastructure` self-test since issue #169). Every node the spec catalog holds has one, so a
+# pure-only provider has a pure path everywhere; a hand-crafted IR with no shape would fail that
+# node closed rather than silently launching an agentic session on it. The two COMPILE pure
+# leaves carry no such condition — the Compile contract does not depend on the node kind.
 #
 # EVERY phase, substep and provider is written out, even though the resolution rules would let
 # the unmentioned leaves inherit `defaults`. The file is the answer to "what runs where" — a

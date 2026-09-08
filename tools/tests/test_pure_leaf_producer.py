@@ -780,10 +780,12 @@ class PureHarnessManifestNarrowingTests(unittest.TestCase):
     def test_context_and_gate_resolve_the_same_harness(self) -> None:
         # The invariant the fix rests on: one resolution, so the two cannot drift.
         ir = {"dependency": {"direct_deps": [{"node_key": _HARNESS}]}}
-        self.assertEqual(self.c._pure_harness_node_key(ir), _HARNESS)
+        self.assertEqual(
+            self.c._pure_harness_node_key(ir, self.refs.node_key), _HARNESS)
         shown = json.loads(self.c._build_pure_context(self.refs)["harness_capabilities"])
         from_ir = self.c._pure_harness_node_key(
-            wc._read_yaml(self.repo / self.refs.ir_ref / "spec.ir.yaml") or {})
+            wc._read_yaml(self.repo / self.refs.ir_ref / "spec.ir.yaml") or {},
+            self.refs.node_key)
         self.assertEqual([m["node_key"] for m in shown["manifests"]], [from_ir])
 
     def test_narrowing_is_fail_closed_for_an_unresolvable_harness(self) -> None:
@@ -795,9 +797,24 @@ class PureHarnessManifestNarrowingTests(unittest.TestCase):
                 f"narrowing must be empty for {key!r}")
 
     def test_zero_or_multiple_infra_deps_resolve_to_none(self) -> None:
-        self.assertIsNone(self.c._pure_harness_node_key({"dependency": {"direct_deps": []}}))
+        nk = self.refs.node_key
+        self.assertIsNone(
+            self.c._pure_harness_node_key({"dependency": {"direct_deps": []}}, nk))
         self.assertIsNone(self.c._pure_harness_node_key({"dependency": {"direct_deps": [
-            {"node_key": _HARNESS}, {"node_key": "infrastructure/harness_gpu_next@0.1.0"}]}}))
+            {"node_key": _HARNESS},
+            {"node_key": "infrastructure/harness_gpu_next@0.1.0"}]}}, nk))
+
+    def test_an_infrastructure_node_negotiates_against_its_own_manifest(self) -> None:
+        """Issue #169: on the `harness` shape the leaf IS the harness, so the manifest it is
+        shown and judged against is its own — resolved from the NODE_KEY, not from the IR's
+        (empty) `direct_deps`, which would otherwise fail closed to None."""
+        own = "infrastructure/harness_gpu_next@0.1.0"
+        self.assertEqual(
+            self.c._pure_harness_node_key({"dependency": {"direct_deps": []}}, own), own)
+        # ...and it wins over a dependency read, which cannot apply on this shape.
+        self.assertEqual(
+            self.c._pure_harness_node_key(
+                {"dependency": {"direct_deps": [{"node_key": _HARNESS}]}}, own), own)
 
     def test_full_document_still_carries_every_manifest(self) -> None:
         # The unnarrowed document is the canonical Z6 shape; narrowing is the leaf's projection
@@ -855,9 +872,10 @@ class PureProducerSubstepTests(unittest.TestCase):
         rather than a fact, so it is now the spec's `host_authored_flags`, and the generate /
         compile specs bind `_host_authored_m3c`, which returns that same constant WITH its
         reason attached. This row drives the seam: a spec whose flags answer False produces a
-        request that does not stamp, which is what a later pure path serving another shape
-        (issue #169's PR-2 / PR-3) depends on. No in-tree node can produce it today, so
-        nothing else can distinguish the seam from the literal it replaced.
+        request that does not stamp, which is what a pure path serving another shape depends
+        on. Since issue #169's PR-3 an in-tree node DOES produce it — the `harness` shape binds
+        `_node_host_authored_flags`, and `PureHarnessShapeTests` drives that end — so this row
+        is now the m3c side of a live pair rather than the only witness of the seam.
         """
         self._tmp = tempfile.TemporaryDirectory()
         repo = Path(self._tmp.name)
@@ -1863,17 +1881,56 @@ class PureProducerExemplarTests(unittest.TestCase):
 # Cold-repair prompt contract (M-C 修正4)
 # ======================================================================================
 class PureColdRepairPromptTests(unittest.TestCase):
-    def _req(self, **overrides):
+    @staticmethod
+    def _generate_template_variants() -> "list[tuple[str, str]]":
+        """Every `(substep, pure_shape)` a pure GENERATE launch can render.
+
+        WHAT IS DERIVED AND WHAT IS NOT, because a round-3 census caught the first version of
+        this docstring overclaiming: the SHAPED variants are read off
+        `PURE_CONTEXT_REQUIRED_KEYS_BY_SHAPE`, which is the table the launch validator refuses a
+        `pure_shape` against — so a new shape genuinely cannot be omitted. The DEFAULT-shape
+        pair is derived from `_PROMPT_TEMPLATE_FILES` instead, because no by-shape table
+        mentions it, and deriving it is what closes the remaining hole: a new default-shape
+        GENERATE substep template would otherwise be silently unexercised, which is the exact
+        class this helper was introduced to close.
+
+        `pure_shape` is `""` for the default shape, which is how the request spells it."""
+        # The escalate diagnostician holds a `pure generate.diagnose` key of its own and is NOT
+        # one of these: it has no static rule paragraphs and no repair loop (issue #169 PR-1).
+        # Excluded by asking `DIAGNOSE_LAUNCH_PAIRS`, so a second diagnose pair follows.
+        diagnose = {substep for step, substep in ort.DIAGNOSE_LAUNCH_PAIRS
+                    if step == "generate"}
+        default = sorted(
+            key.split(".", 1)[1] for key in ort._PROMPT_TEMPLATE_FILES
+            if key.startswith("pure generate.") and key.count(".") == 1
+            and key.split(".", 1)[1] not in diagnose)
+        out = [(substep, "") for substep in default]
+        out += [(substep, shape)
+                for step, substep, shape in sorted(ort.PURE_CONTEXT_REQUIRED_KEYS_BY_SHAPE)
+                if step == "generate"]
+        return out
+
+    def _req(self, *, shape: str = "", **overrides):
+        substep = overrides.get("substep", "generate")
+        if shape:
+            context = {k: f"<{k} body>"
+                       for k in ort.PURE_CONTEXT_REQUIRED_KEYS_BY_SHAPE[
+                           ("generate", substep, shape)]}
+        else:
+            context = {"harness_capabilities": "hc", "target_profile": "tp",
+                       "ir_document": "ir", "tests_document": "tt",
+                       "runner_document": "program r\nend program\n"}
         req = {
             "leaf_mode": "pure", "step": "generate", "substep": "generate",
             "node_key": _NODE, "orchestration_id": "o", "agent_run_id": "c",
             "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
             "repair_findings": "capability_requirements missing",
-            "pure_context": {"harness_capabilities": "hc", "target_profile": "tp",
-                             "ir_document": "ir", "tests_document": "tt",
-                             "runner_document": "program r\nend program\n"},
+            "pure_context": context,
             "prior_document": '{"bundle_schema_version": "1.0.0"}',
         }
+        if shape:
+            req["pure_shape"] = shape
+            req["node_key"] = _HARNESS
         req.update(overrides)
         return req
 
@@ -1942,9 +1999,18 @@ class PureColdRepairPromptTests(unittest.TestCase):
         # that template's cold repair, AND every prefix in the list is present in at least one
         # template — a prefix that matches nothing anywhere is a typo silently lifting nothing.
         placed = {prefix: [] for prefix in ort.PURE_REPAIR_STATIC_PARAGRAPH_PREFIXES}
-        for substep in ("generate", "verify"):
-            template = ort._load_launch_prompt_templates()[f"pure generate.{substep}"]
-            text = ort._render_pure_repair_prompt(self._req(substep=substep))
+        # Every pure GENERATE template, derived from the renderer's own table rather than a
+        # hand-written pair. A round-2 reviewer measured what the pair cost: issue #169 added two
+        # `.harness` templates whose rule paragraphs opened with prefixes this list did not
+        # carry, and neither this row nor its sibling below drove those keys — so a cold-fallback
+        # repair shipped without the shape's file rules (producer) and without a single checklist
+        # item (reviewer), with the suite green. Deriving the keys is what makes a THIRD template
+        # impossible to omit the same way.
+        for substep, shape in self._generate_template_variants():
+            template = ort._load_launch_prompt_templates()[
+                ort._pure_launch_template_name({"step": "generate", "substep": substep,
+                                                "pure_shape": shape})]
+            text = ort._render_pure_repair_prompt(self._req(substep=substep, shape=shape))
             for prefix in ort.PURE_REPAIR_STATIC_PARAGRAPH_PREFIXES:
                 if prefix not in template:
                     continue
@@ -1954,7 +2020,8 @@ class PureColdRepairPromptTests(unittest.TestCase):
                 for line in (ln.strip() for ln in template[start:end].splitlines()):
                     if line and not line.startswith("<"):  # the doc slot is filled elsewhere
                         self.assertIn(line, text,
-                                      f"cold repair ({substep}) dropped: {line[:60]}")
+                                      f"cold repair ({substep}, {shape or 'default'}) "
+                                      f"dropped: {line[:60]}")
         for prefix, substeps in placed.items():
             self.assertTrue(substeps, f"prefix matches no pure template: {prefix!r}")
 
@@ -2041,6 +2108,59 @@ class PureColdRepairPromptTests(unittest.TestCase):
 
         self.assertNotIn("<authoring_rules>", ort._render_pure_repair_prompt(req))
 
+    def test_harness_verify_lift_is_the_whole_reviewer_paragraphs(self) -> None:
+        """The same two properties on the `harness` shape's reviewer template (issue #169).
+
+        Its checklist opens with a scope paragraph and an input-side clause that the m3c one
+        states elsewhere; those were separate `\n\n` blocks until a round-2 reviewer measured
+        the cold repair carrying the checklist HEADER and none of H1-H10 — the reviewer would
+        re-judge holding "the deterministic gate already ran, do NOT re-check style" and no
+        checklist at all. They are one paragraph now, and the terminators below are INDEPENDENT
+        of the `\n\n` split that does the lifting, so re-introducing a blank line is red here."""
+        req = self._req(substep="verify", shape="harness")
+        lifted = ort._pure_authoring_rules_text(req)
+        template = ort._load_launch_prompt_templates()["pure generate.verify.harness"]
+
+        for block in lifted.split("\n\n"):
+            head = block.lstrip().splitlines()[0]
+            self.assertTrue(
+                any(head.startswith(pfx) for pfx in ort.PURE_REPAIR_STATIC_PARAGRAPH_PREFIXES),
+                f"lifted block is not a declared static paragraph: {head[:70]}")
+            self.assertIn(head, template, f"lifted block is foreign to this template: {head[:70]}")
+
+        for prefix, terminator in (("Review checklist", "**Controlled spec"),
+                                   ("**Runner-output contract (", "**Severity rubric ("),
+                                   ("**Severity rubric (", "**Generated CodegenBundle")):
+            start = template.index(prefix)
+            end = template.index(terminator)
+            self.assertGreater(end, start, (prefix, terminator))
+            for line in (ln.strip() for ln in template[start:end].splitlines()):
+                if line and not line.startswith("<"):
+                    self.assertIn(line, lifted, f"harness verify lift dropped: {line[:70]}")
+        # ...including the last checklist item, which is what a re-introduced blank line eats.
+        self.assertIn("H10 — dependency consistency", lifted)
+
+    def test_harness_generate_lift_carries_the_shape_rules(self) -> None:
+        """The producer half. `File shape (` is the ONLY statement of this shape's host-enforced
+        rules — one model named and declaring `<spec_id>_model`, one runner, no checks file — so
+        a cold repair of a `bundle_shape_unsupported` finding without it hands the leaf the
+        findings text and not the contract it violated (the recorded Z2 defect D, in the
+        recovery path)."""
+        lifted = ort._pure_authoring_rules_text(self._req(shape="harness"))
+        template = ort._load_launch_prompt_templates()["pure generate.generate.harness"]
+        for prefix, terminator in (("What makes this shape different", "Output contract ("),
+                                   ("File shape (", "Authoring rules ("),
+                                   ("Authoring rules (", "**Harness capabilities"),
+                                   ("**Runner-output contract (", "Target node_key:")):
+            start = template.index(prefix)
+            end = template.index(terminator)
+            self.assertGreater(end, start, (prefix, terminator))
+            for line in (ln.strip() for ln in template[start:end].splitlines()):
+                if line and not line.startswith("<"):
+                    self.assertIn(line, lifted, f"harness generate lift dropped: {line[:70]}")
+        self.assertIn("EXACTLY ONE file of role `model`", lifted)
+        self.assertIn("(11)", lifted)  # the last authoring rule
+
     def test_cold_repair_paragraphs_are_lifted_in_template_order(self) -> None:
         # The loop iterated `PURE_REPAIR_STATIC_PARAGRAPH_PREFIXES` while its docstring said
         # "in template order". Inert while the generate template's three paragraphs happened to
@@ -2118,8 +2238,18 @@ class PurePostGenerateBundleTests(unittest.TestCase):
             vps._validate_post_generate_bundle(repo, gen, _NODE, ir_ref, v)
         self.assertTrue([x for x in v if "smuggled.f90" in x and "undeclared" in x], v)
         # The host-rendered runner is present in the same tree and must NOT be reported: it is
-        # the carve-out, and a widened set is caught by the row below rather than here.
-        self.assertEqual([], [x for x in v if f"{_SPEC_ID}_runner.f90" in x], v)
+        # the carve-out, and a widened set is caught by the row below rather than here. Filter
+        # on the violation's SUBJECT (the path before the first colon), not on the whole line:
+        # the message NAMES the glue set it admitted, so a substring test over the line matches
+        # every undeclared-source violation and pins nothing (it did, until issue #169 made the
+        # set shape-dependent and the row went red for the right reason).
+        subjects = [x.split(":", 1)[0] for x in v]
+        self.assertEqual([], [x for x in subjects if x.endswith(f"{_SPEC_ID}_runner.f90")], v)
+        # The refusal NAMES the glue it admitted, so the operator reading it can tell an
+        # undeclared source from a carve-out that did not fire. The name is derived from
+        # `_expected_runner_name`, the one function that says what the host renders.
+        clause = next(x for x in v if "smuggled.f90" in x)
+        self.assertIn(vps._expected_runner_name(_SPEC_ID), clause)
 
     def test_the_build_graph_is_told_which_source_is_host_glue(self) -> None:
         """`host_glue_sources` is what makes the runner's object name a KNOWN one.
@@ -2293,6 +2423,482 @@ class GenerateExecutorFlagTests(unittest.TestCase):
             else:
                 os.environ.pop("ATMOFAB_GENERATE_EXECUTOR", None)
 
+
+
+# ======================================================================================
+# The `harness` bundle shape (issue #169): an `infrastructure` node's self-test
+# ======================================================================================
+_HARNESS_SPEC_PATH = "spec/infrastructure/infra/harness/harness_fortran_cpu"
+_HARNESS_SAFE = wc.node_key_safe(_HARNESS)
+_HARNESS_OPS = ("harness_fortran_cpu__parse_cases", "harness_fortran_cpu__emit_real")
+
+
+def _harness_ir() -> dict:
+    return {
+        "meta": {"spec_id": _HARNESS_SPEC_ID, "spec_kind": "infrastructure",
+                 "node_key": _HARNESS},
+        "impl_defaults": {
+            "toolchain": {"language": "fortran", "standard": "f2008", "build_system": "make"},
+            "target": {"backend": "openmp"},
+        },
+        "algorithm": {"state_variables": []},
+        "dependency": {"direct_deps": []},
+        "case": {"test_case_set": [{"case_id": "c1"}]},
+        "public_api": {
+            "published_operations": [{"operation_id": op} for op in _HARNESS_OPS],
+        },
+        "io_contract": {
+            "raw_requirements": {"required_evidence": []},
+            "test_evidence_requirements": [{"test_id": "c1", "required_raw_variables": []}],
+            "diagnostics_contract": {"checks": [{"id": "plumbing"}]},
+            "test_predicates": [
+                {"test_id": "c1", "expected_outcome": "pass", "target_cases": ["c1"]}],
+        },
+    }
+
+
+def _write_harness_node(repo: Path, *, ir_id="h_20260908_001",
+                        source_id="src_20260908_001") -> wc.NodeRefs:
+    """The harness node's IR + sidecar + spec documents. NO runner is staged: on this shape the
+    host renders none — that is what makes it the second shape rather than an M3c node."""
+    import yaml
+    ir_dir = repo / "workspace" / "ir" / _HARNESS_SAFE / ir_id
+    ir_dir.mkdir(parents=True, exist_ok=True)
+    (ir_dir / "spec.ir.yaml").write_text(yaml.safe_dump(_harness_ir()), encoding="utf-8")
+    (ir_dir / "dependency_graph.json").write_text(
+        json.dumps({"all_nodes": [
+            {"node_key": _HARNESS, "topo_level": 0, "direct_deps": []}]}), encoding="utf-8")
+    spec_dir = repo / _HARNESS_SPEC_PATH
+    spec_dir.mkdir(parents=True, exist_ok=True)
+    (spec_dir / "tests.md").write_text("- test: the plumbing round-trips\n", encoding="utf-8")
+    (spec_dir / "controlled_spec.md").write_text("## 5 Algorithm\nplumbing\n", encoding="utf-8")
+    return wc.NodeRefs(node_key=_HARNESS, spec_path=_HARNESS_SPEC_PATH, ir_id=ir_id,
+                       pipeline_id="h_20260908_001", source_id=source_id)
+
+
+def _harness_bundle() -> dict:
+    model = (f"module {_HARNESS_SPEC_ID}_model\n! model\nend module {_HARNESS_SPEC_ID}_model\n")
+    return {
+        "bundle_schema_version": "1.1.0",
+        "optimization_unit": {"members": [_HARNESS]},
+        "files": [
+            {"logical_path": f"{_HARNESS_SPEC_ID}_model.f90", "role": "model",
+             "language": "fortran", "member_node_key": _HARNESS, "content": model,
+             "modules": [f"{_HARNESS_SPEC_ID}_model"]},
+            {"logical_path": f"{_HARNESS_SPEC_ID}_runner.f90", "role": "runner",
+             "language": "fortran", "member_node_key": _HARNESS,
+             "content": f"program {_HARNESS_SPEC_ID}_runner\nend program\n", "modules": []},
+        ],
+        "entrypoints": [
+            {"symbol": op, "kind": "operation", "node_key": _HARNESS,
+             "defined_in": f"{_HARNESS_SPEC_ID}_model.f90",
+             "module": f"{_HARNESS_SPEC_ID}_model"} for op in _HARNESS_OPS],
+        "target_lowering_plan": {"precision": {"real_kind": "real64"},
+                                 "state_residency": "host"},
+        "capability_requirements": ["sync_single_case@1"],
+    }
+
+
+class PureHarnessProducerEndToEndTests(unittest.TestCase):
+    """The whole host side of one harness-shape `generate.generate` turn, driven through the
+    production loop: launch request -> envelope -> acceptance -> host writes. What the m3c
+    producer tests do for their shape, for this one."""
+
+    _REPO_DOCS = ("docs/workflow/RUNNER_OUTPUT_CONTRACT.md",
+                  "docs/workflow/CHECKS_MODULE_CONTRACT.md",
+                  "docs/workflow/phases/phase_02_generate.md")
+
+    def setUp(self) -> None:
+        import shutil
+        self._tmp = tempfile.TemporaryDirectory()
+        self.repo = Path(self._tmp.name)
+        real_root = Path(wc.__file__).resolve().parents[1]
+        for rel in self._REPO_DOCS:
+            dest = self.repo / rel
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(real_root / rel, dest)
+        self.refs = _write_harness_node(self.repo)
+        self.c = _conductor(self.repo)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_one_accepted_turn_writes_the_declared_sources_and_the_control_file(self) -> None:
+        self.c.envelopes = [_envelope(_harness_bundle())]
+        oc = self.c._run_pure_generate_substep(self.refs, "generate", "generate", None, ())
+        self.assertEqual(oc.status, "pass", getattr(oc, "failure_excerpt", None))
+        src = self.repo / self.refs.source_dir() / "src"
+        for entry in _harness_bundle()["files"]:
+            self.assertEqual((src / entry["logical_path"]).read_text(encoding="utf-8"),
+                             entry["content"])
+        control = (src / self.c.CONTROL_FILE_BASENAME).read_text(encoding="utf-8")
+        self.assertIn(f"$(OBJDIR)/{_HARNESS_SPEC_ID}_model.o", control)
+        self.assertIn(f"$(OBJDIR)/{_HARNESS_SPEC_ID}_runner.o", control)
+        self.assertIn(f"BIN ?= {_HARNESS_SPEC_ID}_runner", control)
+        gen = self.repo / self.refs.source_dir()
+        self.assertEqual(json.loads((gen / "codegen_bundle.json").read_text())["files"][1]["role"],
+                         "runner")
+        self.assertEqual(json.loads((gen / "bundle_meta.json").read_text())["result"], "pass")
+
+    def test_the_launch_carried_the_shape_the_template_and_the_harness_context(self) -> None:
+        self.c.envelopes = [_envelope(_harness_bundle())]
+        self.c._run_pure_generate_substep(self.refs, "generate", "generate", None, ())
+        request = [cap["--request-json"]
+                   for sub, cap in self.c.calls if sub == "record-launch"][-1]
+        self.assertEqual(request["pure_shape"], "harness")
+        self.assertEqual(request["leaf_mode"], "pure")
+        self.assertNotIn("runner_host_authored", request)
+        self.assertEqual(
+            sorted(request["pure_context"]),
+            sorted(ort.PURE_CONTEXT_REQUIRED_KEYS_BY_SHAPE[
+                ("generate", "generate", "harness")]))
+        # ...and the prompt the runtime renders for it is the harness template, not the default.
+        prompt = ort.render_launch_prompt_text(
+            ort.prepare_launch_request_payload(request))
+        self.assertIn("bundle shape is `harness`", prompt)
+
+    def test_a_wrong_shape_bundle_is_repaired_rather_than_written(self) -> None:
+        """The acceptance layer runs on this shape too: an m3c-shaped bundle (a checks file, no
+        runner) is refused, the loop repairs, and the accepted second attempt is what lands."""
+        wrong = _harness_bundle()
+        wrong["files"] = [wrong["files"][0], {
+            "logical_path": f"{_HARNESS_SPEC_ID}_checks.f90", "role": "checks",
+            "language": "fortran", "member_node_key": _HARNESS,
+            "content": "module c\nend module c\n",
+            "modules": [f"{_HARNESS_SPEC_ID}_checks"]}]
+        self.c.envelopes = [_envelope(wrong), _envelope(_harness_bundle())]
+        oc = self.c._run_pure_generate_substep(self.refs, "generate", "generate", None, ())
+        self.assertEqual(oc.status, "pass", getattr(oc, "failure_excerpt", None))
+        src = self.repo / self.refs.source_dir() / "src"
+        self.assertTrue((src / f"{_HARNESS_SPEC_ID}_runner.f90").exists())
+        self.assertFalse((src / f"{_HARNESS_SPEC_ID}_checks.f90").exists())
+        meta = json.loads(
+            (self.repo / self.refs.source_dir() / "bundle_meta.json").read_text())
+        self.assertEqual(meta["attempts"], 2)
+        self.assertEqual(meta["per_attempt"][0]["failure_category"], "bundle_shape_unsupported")
+
+
+class PureHarnessShapeTests(unittest.TestCase):
+    """The host side of the second bundle shape: what the leaf is shown, what it is judged
+    against, and what the assembly declares as host glue."""
+
+    #: The repository documents the harness contexts inline. Copied into the fixture repo the
+    #: way `test_pure_leaf_verify` seeds the checks contract: the builders read them off
+    #: `repo_root`, so the fixture's throwaway root has to carry them.
+    _REPO_DOCS = ("docs/workflow/RUNNER_OUTPUT_CONTRACT.md",
+                  "docs/workflow/CHECKS_MODULE_CONTRACT.md",
+                  "docs/workflow/phases/phase_02_generate.md")
+
+    def setUp(self) -> None:
+        import shutil
+        self._tmp = tempfile.TemporaryDirectory()
+        self.repo = Path(self._tmp.name)
+        real_root = Path(wc.__file__).resolve().parents[1]
+        for rel in self._REPO_DOCS:
+            dest = self.repo / rel
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(real_root / rel, dest)
+        self.refs = _write_harness_node(self.repo)
+        self.c = _conductor(self.repo)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_the_node_takes_the_harness_shape_and_both_generate_pairs_go_pure(self) -> None:
+        self.assertEqual(self.c._bundle_shape(self.refs), "harness")
+        self.assertTrue(self.c._pure_leaf_substep(self.refs, "generate", "generate"))
+        self.assertTrue(self.c._pure_leaf_substep(self.refs, "generate", "verify"))
+
+    def test_the_producer_context_carries_the_output_contract_not_a_runner(self) -> None:
+        ctx = self.c._build_pure_harness_context(self.refs)
+        self.assertEqual(
+            sorted(ctx),
+            sorted(ort.PURE_CONTEXT_REQUIRED_KEYS_BY_SHAPE[
+                ("generate", "generate", "harness")]))
+        self.assertNotIn("runner_document", ctx)
+        # The document is inlined WHOLE, not sliced: a runner-authoring leaf reads all of it.
+        contract = (Path(wc.__file__).resolve().parents[1]
+                    / "docs" / "workflow" / "RUNNER_OUTPUT_CONTRACT.md").read_text(
+                        encoding="utf-8")
+        self.assertEqual(ctx["runner_output_contract_document"], contract)
+        # ...and the manifest it is shown is its OWN.
+        shown = json.loads(ctx["harness_capabilities"])
+        self.assertEqual([m["node_key"] for m in shown["manifests"]], [_HARNESS])
+
+    def test_the_lint_rule_set_reaches_the_leaf_from_the_BACKEND(self) -> None:
+        """The rules §5 does not state (round 4 measured four of seven missing) reach the leaf
+        only here, and they come from the backend that IMPOSES them rather than from prose in a
+        neutral-core template — which is the placement `docs/BACKEND_BOUNDARY.md` prescribes and
+        the reason they were absent.
+
+        Pinned by IDENTITY against the backend's own renderer and by the property that matters:
+        every code the gate selects is named in what the leaf is shown. A test that only checked
+        non-emptiness is what let the previous document ship unnoticed."""
+        from tools.backends.linter.fortitude import lint as fortitude
+        ctx = self.c._build_pure_harness_context(self.refs)
+        self.assertEqual(ctx["lint_rules_document"], fortitude.lint_rules_document())
+        for code in fortitude.RULE_CODES:
+            self.assertIn(code, ctx["lint_rules_document"], code)
+            self.assertIn(fortitude.RULE_NAMES[code], ctx["lint_rules_document"], code)
+        # The four this branch's round 4 measured as unreachable, named so a reader can see the
+        # defect this row closes rather than re-deriving it.
+        for code in ("C011", "C122", "C131", "PORT011"):
+            self.assertIn(code, ctx["lint_rules_document"])
+
+    def test_the_lint_rule_set_fails_CLOSED_when_the_backend_cannot_answer(self) -> None:
+        """Every branch of the resolution raises a NAMED reason rather than degrading: a leaf
+        that is not shown the rule set cannot satisfy it, so an empty slot is the defect, not a
+        smaller prompt. The caller turns each into `pure_context_assembly_failed`."""
+        from tools.backends.linter.fortitude import lint as fortitude
+        with mock.patch.dict(
+                "tools.validate_pipeline_semantics._LINT_PRESET_FOR_LANGUAGE", {}, clear=True):
+            with self.assertRaises(RuntimeError) as caught:
+                self.c._build_pure_harness_context(self.refs)
+        self.assertIn("pure_lint_rules_document_unavailable", str(caught.exception))
+        with mock.patch.object(fortitude, "lint_rules_document", lambda: "   "):
+            with self.assertRaises(RuntimeError) as caught:
+                self.c._build_pure_harness_context(self.refs)
+        self.assertIn("pure_lint_rules_document_unavailable", str(caught.exception))
+        with mock.patch.object(fortitude, "lint_rules_document", None):
+            with self.assertRaises(RuntimeError) as caught:
+                self.c._build_pure_harness_context(self.refs)
+        self.assertIn("states no declared rule set", str(caught.exception))
+        # The FOURTH branch, which a round-5 sweep found unwitnessed while the commit message
+        # asserted "four named failure modes, all RAISING": a preset whose package does not
+        # DECLARE the `lint_rules` capability. Replacing the registry refusal with a silent
+        # fallback to fortitude survived every test file until this row.
+        with mock.patch.dict("tools.validate_pipeline_semantics._LINT_PRESET_FOR_LANGUAGE",
+                             {"fortran": "cppcheck"}, clear=True):
+            with self.assertRaises(RuntimeError) as caught:
+                self.c._build_pure_harness_context(self.refs)
+        self.assertIn("pure_lint_rules_document_unavailable", str(caught.exception))
+        self.assertIn("cppcheck", str(caught.exception))
+
+    def test_the_lint_rule_set_is_resolved_from_THIS_NODE_S_language(self) -> None:
+        """The docstring's load-bearing claim — the leaf is shown the rules its own source will
+        be checked against — rests on the language being READ, and a round-5 sweep found
+        hardcoding it to `"fortran"` survived every test file. The preset table is keyed by
+        language, so the witness varies the language and requires the resolution to follow."""
+        import yaml
+        ir_path = self.repo / self.refs.ir_ref / "spec.ir.yaml"
+        ir = yaml.safe_load(ir_path.read_text(encoding="utf-8"))
+        ir["impl_defaults"]["toolchain"]["language"] = "python"
+        ir_path.write_text(yaml.safe_dump(ir), encoding="utf-8")
+        # `python` resolves to a linter that declares no `lint_rules`, so a resolution that
+        # followed the node would refuse — and one that ignored it would answer fortitude's set.
+        with self.assertRaises(RuntimeError) as caught:
+            self.c._lint_rules_document(self.refs)
+        self.assertIn("pure_lint_rules_document_unavailable", str(caught.exception))
+        self.assertIn("ruff", str(caught.exception))
+
+    def test_the_gate_guards_slice_is_SECTION_5_and_not_another(self) -> None:
+        """CONTENT equality, not non-emptiness. A round-4 sweep found every new refusal of the
+        round-3 fix unwitnessed, and the sharpest mutant was swapping the slicer for
+        `_checks_contract_abi_sections` — handing the leaf §1-§4, the checks-module ABI this
+        shape has no file for and the slicer's docstring says is excluded. Nothing noticed,
+        because the only assertion was that the value was non-empty."""
+        ctx = self.c._build_pure_harness_context(self.refs)
+        real = (Path(wc.__file__).resolve().parents[1]
+                / "docs" / "workflow" / "CHECKS_MODULE_CONTRACT.md").read_text(encoding="utf-8")
+        self.assertEqual(ctx["gate_guards_document"],
+                         wc._checks_contract_gate_guards_section(real))
+        self.assertNotEqual(ctx["gate_guards_document"],
+                            wc._checks_contract_abi_sections(real))
+
+    def test_the_gate_guards_slicer_refuses_a_section_appended_after_it(self) -> None:
+        """The slicer runs to the END of its document, so a `## 6.` added above it would widen
+        the slice silently — which is what every other slice's literal end anchor prevents. It
+        raises instead, and BOTH refusals are driven here: a round-4 sweep deleted each of them
+        in turn and the whole suite stayed green, while `test_pure_prompt_contract_drift`'s
+        comment claimed the digest pinned them (the digest pins the slice's CONTENT under
+        today's document, which has no §6 — it cannot see the guard).
+
+        Driven on synthetic text, because the real document must not carry a §6 for this to be
+        checkable, and on the real document, so the two cannot diverge."""
+        real = (Path(wc.__file__).resolve().parents[1]
+                / "docs" / "workflow" / "CHECKS_MODULE_CONTRACT.md").read_text(encoding="utf-8")
+        self.assertTrue(wc._checks_contract_gate_guards_section(real).startswith("## 5."))
+        with self.assertRaises(ValueError) as later:
+            wc._checks_contract_gate_guards_section(real + "\n## 6. Appendix\n\nbody\n")
+        self.assertIn("numbered section after", str(later.exception))
+        with self.assertRaises(ValueError) as absent:
+            wc._checks_contract_gate_guards_section(
+                real.replace("## 5. ", "## Five ", 1))
+        self.assertIn("no '## 5.' section heading", str(absent.exception))
+        # A SUBSECTION is not a section: `## 5.1` must stay inside the slice, or a document
+        # that grows a subsection loses everything after it.
+        widened = wc._checks_contract_gate_guards_section(
+            real + "\n## 5.1 More guards\n\nbody\n")
+        self.assertIn("## 5.1 More guards", widened)
+
+    def test_the_gate_guards_read_fails_CLOSED_in_both_directions(self) -> None:
+        """The two RAISING reads the context builder added. Same shape as the reviewer's row in
+        `test_pure_leaf_verify`, and written because round 3 claimed both were driven and
+        neither was: soft-failing either one to `""` survived seven test files."""
+        target = self.repo / "docs" / "workflow" / "CHECKS_MODULE_CONTRACT.md"
+        body = target.read_text(encoding="utf-8")
+        target.unlink()
+        try:
+            with self.assertRaises(RuntimeError) as caught:
+                self.c._build_pure_harness_context(self.refs)
+            self.assertIn("pure_gate_guards_document_missing", str(caught.exception))
+        finally:
+            target.write_text(body, encoding="utf-8")
+        target.write_text(body.replace("## 5. ", "## Five ", 1), encoding="utf-8")
+        try:
+            with self.assertRaises(RuntimeError) as caught:
+                self.c._build_pure_harness_context(self.refs)
+            self.assertIn("pure_gate_guards_document_unsliceable", str(caught.exception))
+        finally:
+            target.write_text(body, encoding="utf-8")
+
+    def test_the_producer_context_raises_when_the_contract_is_unreadable(self) -> None:
+        """The disposition the m3c producer's runner read has: a document the leaf cannot repair
+        makes fail_closed the correct terminus, and the caller turns this into
+        `pure_context_assembly_failed` with no leaf spawned. Degrading to `""` would defer the
+        refusal one frame into `record_launch` and abort the conductor instead."""
+        (self.repo / "docs/workflow/RUNNER_OUTPUT_CONTRACT.md").unlink()
+        with self.assertRaises(RuntimeError) as caught:
+            self.c._build_pure_harness_context(self.refs)
+        self.assertIn("pure_runner_output_contract_document_missing", str(caught.exception))
+        with self.assertRaises(RuntimeError) as caught2:
+            self.c._build_pure_harness_verify_context(self.refs)
+        self.assertIn("pure_runner_output_contract_document_missing", str(caught2.exception))
+
+    def test_the_verify_context_carries_the_output_contract_not_the_checks_abi(self) -> None:
+        ctx = self.c._build_pure_harness_verify_context(self.refs)
+        self.assertEqual(
+            sorted(ctx),
+            sorted(ort.PURE_CONTEXT_REQUIRED_KEYS_BY_SHAPE[("generate", "verify", "harness")]))
+        self.assertNotIn("checks_module_contract_document", ctx)
+
+    def test_the_assembly_declares_no_host_glue(self) -> None:
+        graph = self.c._build_pure_bundle_graph(self.refs, _harness_bundle())
+        sources = [str(u["source"]) for u in graph["compile_units"]]
+        self.assertEqual([s for s in sources if s.startswith("glue:")], [])
+        self.assertIn(f"bundle:{_HARNESS_SPEC_ID}_runner.f90", sources)
+        # ...and the runner's object is still LINKED — an empty glue set must not drop it.
+        self.assertIn(f"{_HARNESS_SPEC_ID}_runner.o", graph["link"]["objects"])
+        # The m3c node's graph still declares its glue, so this is a shape difference and not a
+        # blanket removal.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = _write_node(repo)
+            m3c = _conductor(repo)._build_pure_bundle_graph(refs, _valid_bundle())
+        self.assertIn(f"glue:{_SPEC_ID}_runner.f90",
+                      [str(u["source"]) for u in m3c["compile_units"]])
+
+    def test_the_acceptance_layer_takes_the_harness_shape(self) -> None:
+        self.assertIsNone(self.c._pure_bundle_violations(self.refs, _harness_bundle()))
+
+    def test_a_checks_bearing_bundle_is_refused_on_this_shape(self) -> None:
+        doc = _harness_bundle()
+        doc["files"].append(
+            {"logical_path": f"{_HARNESS_SPEC_ID}_checks.f90", "role": "checks",
+             "language": "fortran", "member_node_key": _HARNESS,
+             "content": "module x\nend module x\n",
+             "modules": [f"{_HARNESS_SPEC_ID}_checks"]})
+        result = self.c._pure_bundle_violations(self.refs, doc)
+        self.assertIsNotNone(result)
+        self.assertEqual(result[0], "bundle_shape_unsupported")
+
+    def test_a_runner_role_is_refused_on_the_m3c_shape(self) -> None:
+        """The other direction, driven through the CONDUCTOR so the shape resolution is the
+        production one: an M3c node's bundle may not carry the role at all."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = _write_node(repo)
+            c = _conductor(repo)
+            doc = _valid_bundle()
+            doc["files"].append(
+                {"logical_path": f"{_SPEC_ID}_extra_runner.f90", "role": "runner",
+                 "language": "fortran", "member_node_key": _NODE,
+                 "content": "program p\nend program\n", "modules": []})
+            result = c._pure_bundle_violations(refs, doc)
+        self.assertIsNotNone(result)
+        self.assertEqual(result[0], "bundle_shape_unsupported")
+        self.assertIn("host-rendered glue", result[1])
+
+    def test_the_launch_request_stamps_the_shape_and_the_real_authorship(self) -> None:
+        spec = self.c._pure_producer_spec("generate", self.c._bundle_shape(self.refs))
+        self.assertEqual(spec.pure_shape, "harness")
+        self.assertFalse(spec.wants_exemplar)
+        makefile_ha, runner_ha = spec.host_authored_flags(self.refs)
+        self.assertTrue(makefile_ha)
+        self.assertFalse(runner_ha)  # the host renders no runner on this shape
+        req = wc.build_launch_request(
+            self.refs, step="generate", substep="generate", orchestration_id="o",
+            orchestration_agent_run_id="p", child_agent_run_id="c", agent_model="m",
+            workflow_mode="dev", makefile_host_authored=makefile_ha,
+            runner_host_authored=runner_ha, pure_leaf=True,
+            pure_shape=spec.pure_shape,
+            pure_context=self.c._build_pure_harness_context(self.refs))
+        self.assertEqual(req["pure_shape"], "harness")
+        self.assertNotIn("runner_host_authored", req)
+        ort._validate_launch_request_payload(ort.prepare_launch_request_payload(req))
+
+    def test_the_reviewer_spec_takes_the_harness_shape(self) -> None:
+        spec = self.c._pure_reviewer_spec("generate", "verify", "harness")
+        self.assertEqual(spec.pure_shape, "harness")
+        self.assertIs(spec.build_context.__func__,
+                      wc.Conductor._build_pure_harness_verify_context)
+
+    def test_the_tamper_gate_admits_no_undeclared_source_on_this_shape(self) -> None:
+        """C8: the `m3c` carve-out for the host-rendered runner is CLOSED here — the runner is
+        declared bundle content, so an undeclared source beside it is a provenance violation."""
+        doc = _harness_bundle()
+        gen = self.repo / self.refs.source_dir()
+        src = gen / "src"
+        src.mkdir(parents=True, exist_ok=True)
+        for entry in doc["files"]:
+            (src / entry["logical_path"]).write_text(entry["content"], encoding="utf-8")
+        (gen / "codegen_bundle.json").write_text(json.dumps(doc), encoding="utf-8")
+        v: list[str] = []
+        vps._validate_post_generate_bundle(self.repo, gen, _HARNESS, self.refs.ir_ref, v)
+        self.assertEqual(v, [])
+        # The runner is DECLARED, so removing it from files[] makes the staged file undeclared.
+        doc2 = _harness_bundle()
+        doc2["files"] = [e for e in doc2["files"] if e["role"] != "runner"]
+        (gen / "codegen_bundle.json").write_text(json.dumps(doc2), encoding="utf-8")
+        v2: list[str] = []
+        vps._validate_post_generate_bundle(self.repo, gen, _HARNESS, self.refs.ir_ref, v2)
+        self.assertTrue([x for x in v2 if "bundle_shape_unsupported" in x], v2)
+
+    def test_the_tamper_gate_refuses_a_bundle_on_a_shapeless_node(self) -> None:
+        """`shape=(shape or "")` is the gate's fail-CLOSED default, and a round-2 sweep found it
+        unpinned: `shape=(shape or "m3c")` survived every test file.
+
+        The mutation direction is fail-OPEN, and the node it matters on is exactly the node
+        whose Generate falls through to the AGENTIC leaf — which holds filesystem tools and can
+        therefore stage a `codegen_bundle.json` of its own. This refusal is the only thing
+        between that document and an acceptance layer applying another shape's rules to it."""
+        import yaml
+        ir_path = self.repo / self.refs.ir_ref / "spec.ir.yaml"
+        ir = yaml.safe_load(ir_path.read_text(encoding="utf-8"))
+        # A toolchain the neutral core writes no control file for: both readers answer None.
+        ir["impl_defaults"]["toolchain"]["language"] = "zz_lang"
+        ir_path.write_text(yaml.safe_dump(ir), encoding="utf-8")
+        self.assertIsNone(self.c._bundle_shape(self.refs))
+        self.assertIsNone(vps._ir_bundle_shape(ir, self.refs.node_key))
+
+        doc = _harness_bundle()
+        gen = self.repo / self.refs.source_dir()
+        src = gen / "src"
+        src.mkdir(parents=True, exist_ok=True)
+        for entry in doc["files"]:
+            (src / entry["logical_path"]).write_text(entry["content"], encoding="utf-8")
+        (gen / "codegen_bundle.json").write_text(json.dumps(doc), encoding="utf-8")
+        v: list[str] = []
+        vps._validate_post_generate_bundle(self.repo, gen, _HARNESS, self.refs.ir_ref, v)
+        self.assertTrue([x for x in v if "unknown bundle shape ''" in x], v)
+
+    def test_the_two_gates_resolve_the_same_shape_and_glue(self) -> None:
+        """The producer's acceptance and the tamper gate must judge one bundle by one shape."""
+        import yaml
+        ir = yaml.safe_load(
+            (self.repo / self.refs.ir_ref / "spec.ir.yaml").read_text(encoding="utf-8"))
+        self.assertEqual(self.c._bundle_shape(self.refs),
+                         vps._ir_bundle_shape(ir, self.refs.node_key))
 
 
 if __name__ == "__main__":

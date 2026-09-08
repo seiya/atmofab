@@ -955,6 +955,11 @@ def _numbered_section_heading_re(number: str) -> re.Pattern[str]:
     return re.compile(rf"^## {re.escape(number)}\.(?:\s|$)")
 
 
+#: ANY `## <n>.` section heading — the same anchor as above with the number unbound. Used by the
+#: one slice that runs to the end of its document, to refuse a section appended after it.
+_ANY_NUMBERED_SECTION_RE = re.compile(r"^## \d+\.(?:\s|$)")
+
+
 def _numbered_section_range(text: str, begin: str, end: str, *, subject: str) -> str:
     """Return `## <begin>.` (inclusive) through `## <end>.` (exclusive), trailing blanks stripped.
 
@@ -1006,6 +1011,45 @@ def _checks_contract_abi_sections(text: str) -> str:
     when §2, §3 or §4 leaves the document (measured, all three), rather than by a second
     enumeration of the contract's structure inside this function."""
     return _numbered_section_range(text, "1", "5", subject="checks-module contract")
+
+
+def _checks_contract_gate_guards_section(text: str) -> str:
+    """Return §5 of `docs/workflow/CHECKS_MODULE_CONTRACT.md` — its legality and gate-guard
+    section — from that heading to the end of the document.
+
+    NOT `_numbered_section_range`, because §5 is the LAST section and that engine requires an
+    end anchor by design (a missing one is a contract change it must stop on). The same
+    fail-closed disposition is kept in the form this position allows: the heading must be
+    present, and NO later `## <n>.` heading may exist. A §6 added above this slice would
+    silently widen it, which is exactly the drift the engine's literal terminator prevents for
+    the other slices, so it raises instead.
+
+    WHY A LEAF NEEDS IT, and why it is the one section a pure `generate.generate` leaf on the
+    `harness` shape is shown. §5 says of itself that it applies to every leaf-authored source
+    of any `Generate` node — naming the model, the checks module, and the hand-authored runner
+    of an `infrastructure` node's self-test — and it carries the rules of the deterministic
+    `Generate.gate` lint and syntax checkers, which are this REPOSITORY's rule set rather than
+    the language's. The agentic leaf received it as a force-read must-read
+    (`orchestration_runtime.leaf_contract_doc_refs`, whose docstring names this very leaf as the
+    reason not to gate that injection on the node's shape). A pure leaf force-reads nothing, so
+    making that leaf pure (issue #169) cut the only carrier those rules had — found by a
+    round-3 disclosure review that rendered the prompt and looked for them. Inlining the section
+    is also what keeps the rules out of a `neutral core` template
+    (`docs/BACKEND_BOUNDARY.md`): a document body is data the host resolves, not template text.
+    §1-§4 are excluded for the reason they are included for the reviewer and not the producer —
+    they are the checks-module ABI, and this shape has no checks module."""
+    lines = text.splitlines()
+    heading = _numbered_section_heading_re("5")
+    start = next((i for i, ln in enumerate(lines) if heading.match(ln)), None)
+    if start is None:
+        raise ValueError("checks-module contract has no '## 5.' section heading")
+    for index in range(start + 1, len(lines)):
+        if _ANY_NUMBERED_SECTION_RE.match(lines[index]):
+            raise ValueError(
+                "checks-module contract has a numbered section after '## 5.' "
+                f"({lines[index].strip()!r}); this slice runs to the end of the document and "
+                "would silently widen over it")
+    return "\n".join(lines[start:]).rstrip("\n")
 
 
 
@@ -1416,6 +1460,7 @@ def build_launch_request(
     warm_resume: bool = False,
     pure_leaf: bool = False,
     pure_context: dict[str, str] | None = None,
+    pure_shape: str = "",
 ) -> dict[str, Any]:
     """Construct the record-launch --request-json payload for one substep.
 
@@ -1777,6 +1822,11 @@ def build_launch_request(
         req["skill_name"] = ""
         req["skill_ref"] = ""
         req["skill_must_read_refs"] = ""
+        # The node's bundle SHAPE, when it is not the default one. It picks the template the
+        # runtime renders and the `pure_context` key set the validator requires, so it is part
+        # of the request rather than something the renderer re-derives from the node.
+        if pure_shape:
+            req["pure_shape"] = pure_shape
         if pure_context is not None:
             req["pure_context"] = dict(pure_context)
     return req
@@ -6204,24 +6254,67 @@ class Conductor:
             return False
         return len(self._infra_direct_deps(ir)) == 1
 
+    def _shape_for_spec(self, refs: NodeRefs, phase: str) -> str | None:
+        """`_bundle_shape` for the phase that has one, None otherwise.
+
+        Only GENERATE produces a bundle. Asking the shape of a `compile` substep would read an
+        IR that `compile.generate` has not authored yet, and a `validate` one would read it for
+        an answer no `validate` spec consults — so the question is not asked at all there."""
+        return self._bundle_shape(refs) if phase == "generate" else None
+
+    def _bundle_shape(self, refs: NodeRefs) -> str | None:
+        """The CodegenBundle SHAPE this node's Generate produces, or None when it has none.
+
+        Two shapes are expressible (`codegen_bundle.BUNDLE_SHAPES`), and this is the one place
+        the conductor decides which a node has:
+
+        * `m3c` — a physics node whose runner the host renders (`_conductor_authors_runner`).
+          The leaf authors model + checks; the runner and the control file are host glue.
+        * `harness` — an `infrastructure` node's self-test (issue #169). The host renders no
+          runner for it, so the leaf authors model + the executable entry as a `runner`-role
+          bundle file (bundle v1.1.0), and there is no checks module.
+        * None — no bundle representation, so the node's GENERATE substeps fall through to the
+          shared agentic leaf loop. Since #169 no in-tree node answers None; it is the
+          fail-safe for a hand-crafted IR whose toolchain the neutral core cannot write a
+          control file for, or whose language has no bundle backend.
+
+        The `infrastructure` question is asked of the NODE_KEY, not of the IR's self-declared
+        `meta.spec_kind`: the shape decides which admissibility rules the bundle is judged
+        against, and a fact a gate reads off the document under review is a switch the leaf
+        holds (`.claude/skills/atmofab-enforcement-change`, surface 11). The two are pinned
+        equal for a pure node anyway by `_pure_ir_document_violations`, so this costs nothing
+        and cannot be turned off from inside a document. `validate_pipeline_semantics
+        ._ir_bundle_shape` is the twin the deterministic tamper gate asks the same question of;
+        a parity test pins the two."""
+        from tools.codegen_bundle import LANGUAGES as BUNDLE_LANGUAGES
+        if not self._conductor_authors_makefile(refs):
+            return None
+        if self._conductor_authors_runner(refs):
+            return "m3c"
+        if refs.node_key.split("/", 1)[0].strip() != "infrastructure":
+            return None
+        ir = _read_yaml(self.repo_root / refs.ir_ref / "spec.ir.yaml") or {}
+        language = _ir_language(ir) if isinstance(ir, dict) else ""
+        return "harness" if language in BUNDLE_LANGUAGES else None
+
     def _pure_leaf_substep(self, refs: NodeRefs, phase: str, substep: str | None) -> bool:
         """True when this substep runs as a host-mediated pure-function leaf.
 
         Since M-F the generate-executor is no longer selectable (legacy execution removed; `pure`
         is the only executor), so this dispatch is decided by the provider's `pure` capability
         (Claude's closed tool-free transport or Codex's sandboxed structured approximation), the
-        migrated `(phase, substep)` pair, and — for the two GENERATE pairs only — the node's M3c
-        shape (`_conductor_authors_makefile` ∧ `_conductor_authors_runner`), the shape the
-        CodegenBundle v1 producer can express (the leaf authors model+checks; the host renders the
-        runner glue + the build control file).
+        migrated `(phase, substep)` pair, and — for the two GENERATE pairs only — whether the node
+        has a CodegenBundle shape at all (`_bundle_shape`, which answers `m3c` or `harness`).
 
-        A non-M3c node has no bundle representation for its runner, so its GENERATE substeps fall
-        through to the shared AGENTIC leaf loop in `run_substep`. Live case: the `infrastructure`
-        harness self-test. The former non-M3c physics shapes (c/cpp/mixed, or no infra dep) no
-        longer reach a run — spec-input rejects the dep count and the compile.static toolchain gate
-        rejects the backend — so for a hand-crafted non-M3c IR this dispatch is a FAIL-SAFE to
-        the agentic loop, not a selectable executor: their invocation record still stamps
-        `generate_executor=pure` (a provenance stamp), and they are not rejected on resume.
+        A node with no bundle shape falls through to the shared AGENTIC leaf loop in
+        `run_substep`. Since issue #169 NO in-tree node does: the `infrastructure` harness
+        self-test, which was the one live fall-through, is the `harness` shape (bundle v1.1.0's
+        `runner` role). The remaining None answers — a toolchain the neutral core writes no
+        control file for, a language with no bundle backend — no longer reach a run either
+        (spec-input rejects the dep count and the compile.static toolchain gate rejects the
+        backend), so this dispatch is a FAIL-SAFE to the agentic loop rather than a selectable
+        executor: such a node's invocation record still stamps `generate_executor=pure` (a
+        provenance stamp), and it is not rejected on resume.
 
         The two COMPILE pairs (Z1, issue #168) carry NO shape condition, deliberately: the Compile
         contract does not depend on the node kind, and at `compile.generate` time no IR exists, so
@@ -6237,7 +6330,8 @@ class Conductor:
 
         Five LLM substeps go pure: `(compile, generate)` (the IR producer, Z1) and
         `(compile, verify)` (the IR reviewer, Z1); `(generate, generate)` (the CodegenBundle
-        producer, M-C) and `(generate, verify)` (the verdict reviewer, M-D) on an M3c node; and
+        producer, M-C) and `(generate, verify)` (the verdict reviewer, M-D) on a node with a
+        bundle shape; and
         `(validate, judge)` (the semantic reviewer, Z3). Each pair is dispatched to its own loop
         in `run_substep`. Deterministic substeps (compile.static, generate lint/syntax/static)
         are never pure — they run in-process regardless."""
@@ -6248,7 +6342,7 @@ class Conductor:
             return True
         if (phase, substep) not in (("generate", "generate"), ("generate", "verify")):
             return False
-        return self._conductor_authors_makefile(refs) and self._conductor_authors_runner(refs)
+        return self._bundle_shape(refs) is not None
 
     @staticmethod
     def _infra_direct_deps(ir: dict[str, Any]) -> list[str]:
@@ -6652,19 +6746,26 @@ clean:
     # and the bundle-derived Makefile. Gated by `_pure_leaf_substep`; unreachable on the agentic
     # leaf path (existing suite green proves the agentic path is byte-for-byte unchanged).
 
-    def _pure_harness_node_key(self, ir: dict[str, Any]) -> str | None:
-        """The ONE harness a pure leaf negotiates against: its node's single `infrastructure`
-        direct dependency, or None when there is not exactly one.
+    def _pure_harness_node_key(self, ir: dict[str, Any], node_key: str) -> str | None:
+        """The ONE harness a pure leaf negotiates against, or None when it cannot be resolved.
+
+        On an `m3c` node that is the node's single `infrastructure` direct dependency: the
+        certified harness whose plumbing its runner glue drives. On a `harness` node it is the
+        node ITSELF (issue #169) — a harness's self-test bundle declares the execution model the
+        harness implements, so it negotiates against its own manifest. `infrastructure` is read
+        off the NODE_KEY, the host's own identity for the node, never off the IR's self-declared
+        `meta.spec_kind`; see `_bundle_shape`.
 
         The SINGLE resolution shared by the context assembly (`_build_pure_context`, which shows
         the leaf that harness's manifest) and the acceptance layer (`_pure_bundle_violations`,
         which negotiates `capability_requirements` against it). One source, so the capabilities
-        the leaf is shown are by construction the capabilities it is judged against. Every caller is
-        on the GENERATE side, where `_pure_leaf_substep` requires the node's M3c shape and
-        therefore exactly one infra dep — it is no longer "a pure node is M3c", since the compile
-        pairs are pure on every node, so this holds by where it is called from rather than by what
-        `pure` means. None is the fail-closed answer for anything else (nothing provided, every
-        requirement unsatisfied)."""
+        the leaf is shown are by construction the capabilities it is judged against. Every caller
+        is on the GENERATE side, where `_pure_leaf_substep` requires a bundle shape — so an
+        `m3c` node here has exactly one infra dep by construction. None is the fail-closed answer
+        for anything else, including an `infrastructure` node no manifest declares (an undeclared
+        harness provides nothing, so every requirement is unsatisfied)."""
+        if node_key.split("/", 1)[0].strip() == "infrastructure":
+            return node_key
         infra = self._infra_direct_deps(ir)
         return infra[0] if len(infra) == 1 else None
 
@@ -6725,13 +6826,137 @@ clean:
                 f"pure_runner_document_missing: {runner_path}: {exc}") from exc
         return {
             "harness_capabilities": json.dumps(
-                harness_capability_manifest_document_for(self._pure_harness_node_key(ir)),
+                harness_capability_manifest_document_for(
+                    self._pure_harness_node_key(ir, refs.node_key)),
                 indent=2, ensure_ascii=False),
             "target_profile": json.dumps(impl, indent=2, ensure_ascii=False),
             "ir_document": ir_text,
             "tests_document": tests_text,
             "runner_document": runner_text,
         }
+
+    def _build_pure_harness_context(self, refs: NodeRefs) -> dict[str, str]:
+        """Assemble the closed context a pure `generate.generate` leaf sees on the HARNESS shape.
+
+        The `m3c` producer's context (`_build_pure_context`) shows the leaf the host-rendered
+        runner, because on that shape the runner is the CONSUMER of the checks ABI the leaf must
+        author against. Here there is no host-rendered runner and no checks module: the leaf
+        authors the executable entry itself, so what takes the runner's place is the contract
+        that entry's OUTPUT must satisfy — `docs/workflow/RUNNER_OUTPUT_CONTRACT.md`, verbatim
+        and whole, which is what the agentic runner-authoring leaf force-read
+        (`leaf_contract_doc_refs`, the non-M3c branch). Whole, not sliced: every section of it
+        governs a leaf that writes the program, where the judge (which reads §1+§3) only reads
+        the output afterwards.
+
+        The SEVENTH document is the static lint check's DECLARED RULE SET, asked of the linter
+        backend the node's language resolves to (`lint_rules_document`). §5 below states the
+        obligations that are this repository's in prose, and a round-4 review measured that it
+        states three of the seven rule codes this leaf must satisfy; the other four reach it only
+        this way. The rule set is the linter backend's knowledge, so a `neutral core` prompt
+        template may not carry it (`docs/BACKEND_BOUNDARY.md`) — asking the registry and inlining
+        the answer is the placement that rule prescribes, and it means a code added to the
+        declared set reaches the leaf in the same edit that starts enforcing it.
+
+        The SIXTH document is §5 of `docs/workflow/CHECKS_MODULE_CONTRACT.md` — its legality
+        and gate-guard section — sliced by `_checks_contract_gate_guards_section`. It is the
+        rule set the deterministic `Generate.gate` lint and syntax checkers apply to every
+        leaf-authored source, and it reached this leaf as a force-read must-read while the leaf
+        was agentic. A pure leaf force-reads nothing, so without this it would be held to seven
+        active rules no document it receives states — and to rules that are this repository's
+        rather than the language's, which is why "author to the standard the profile names" is
+        not a substitute. See the slicer's docstring for the full history.
+
+        Same reads and the same dispositions as the m3c producer otherwise: the harness manifest
+        (its OWN, see `_pure_harness_node_key`), the toolchain/target defaults, the lowered IR
+        and the tests. Both repository documents RAISE on an unreadable or unsliceable file the
+        way the m3c producer's runner does — the caller converts it into a
+        `pure_context_assembly_failed` fail_closed transport outcome, with no leaf spawned."""
+        from tools.codegen_bundle import harness_capability_manifest_document_for
+        from tools.orchestration_runtime import (CHECKS_MODULE_CONTRACT_REF,
+                                                 RUNNER_OUTPUT_CONTRACT_REF)
+        ir_path = self.repo_root / refs.ir_ref / "spec.ir.yaml"
+        try:
+            ir_text = ir_path.read_text(encoding="utf-8")
+        except OSError:
+            ir_text = ""
+        try:
+            tests_text = (self.repo_root / refs.spec_path / "tests.md").read_text(encoding="utf-8")
+        except OSError:
+            tests_text = ""
+        ir = _read_yaml(ir_path) or {}
+        impl = (ir.get("impl_defaults") or {}) if isinstance(ir, dict) else {}
+        contract_path = self.repo_root / RUNNER_OUTPUT_CONTRACT_REF
+        try:
+            contract_text = contract_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            raise RuntimeError(
+                f"pure_runner_output_contract_document_missing: {contract_path}: {exc}") from exc
+        guards_path = self.repo_root / CHECKS_MODULE_CONTRACT_REF
+        try:
+            guards_text = guards_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            raise RuntimeError(
+                f"pure_gate_guards_document_missing: {guards_path}: {exc}") from exc
+        try:
+            gate_guards = _checks_contract_gate_guards_section(guards_text)
+        except ValueError as exc:
+            raise RuntimeError(
+                f"pure_gate_guards_document_unsliceable: {guards_path}: {exc}") from exc
+        lint_rules = self._lint_rules_document(refs)
+        return {
+            "harness_capabilities": json.dumps(
+                harness_capability_manifest_document_for(
+                    self._pure_harness_node_key(ir, refs.node_key)),
+                indent=2, ensure_ascii=False),
+            "target_profile": json.dumps(impl, indent=2, ensure_ascii=False),
+            "ir_document": ir_text,
+            "tests_document": tests_text,
+            "runner_output_contract_document": contract_text,
+            "gate_guards_document": gate_guards,
+            "lint_rules_document": lint_rules,
+        }
+
+    def _lint_rules_document(self, refs: NodeRefs) -> str:
+        """The static lint check's declared rule set, from the backend that imposes it.
+
+        The preset comes from the SAME table `_gate_lint_check` resolves it with, so the rules
+        the leaf is shown are by construction the rules its source is checked against; the
+        module comes through `capability_module` under the `lint_rules` capability — NOT `lint`.
+        A round-5 review measured why that distinction is the whole value of the call: `lint`
+        succeeds for every registered linter, because they all RUN, and the code then reached
+        `lint_rules_document` by `getattr` — the same-named-attribute dispatch
+        `capability_module`'s own docstring says it exists to prevent, leaving five of eight
+        languages resolving a module that answers nothing. `lint_rules` is declared by the
+        backend that implements it and by no other, so the refusal is the registry's.
+
+        Every failure is NAMED and RAISES, on the same fail-closed disposition as the two
+        repository documents beside it: a leaf that is not shown the rule set cannot satisfy
+        it, and shipping one that has not been shown it is how issue #169's round 4 defined the
+        defect this closes. The caller turns the raise into `pure_context_assembly_failed`."""
+        from tools.backends import registry as backend_registry
+        from tools.validate_pipeline_semantics import _LINT_PRESET_FOR_LANGUAGE
+        language = self._read_toolchain(refs)["language"]
+        preset = _LINT_PRESET_FOR_LANGUAGE.get(language)
+        if preset is None:
+            raise RuntimeError(
+                f"pure_lint_rules_document_unavailable: toolchain.language={language!r} has no "
+                f"static lint preset (expected one of {sorted(_LINT_PRESET_FOR_LANGUAGE)})")
+        try:
+            module = backend_registry.capability_module("linter", preset, "lint_rules")
+        except Exception as exc:
+            raise RuntimeError(
+                f"pure_lint_rules_document_unavailable: linter preset {preset!r}: {exc}") from exc
+        render = getattr(module, "lint_rules_document", None)
+        if render is None:
+            raise RuntimeError(
+                f"pure_lint_rules_document_unavailable: linter preset {preset!r} states no "
+                "declared rule set for a leaf")
+        text = render()
+        if not (isinstance(text, str) and text.strip()):
+            raise RuntimeError(
+                f"pure_lint_rules_document_unavailable: linter preset {preset!r} returned an "
+                f"empty rule set ({text!r})")
+        return text
 
     def _pure_bundle_violations(self, refs: NodeRefs,
                                 doc: Any) -> tuple[str, str] | None:
@@ -6763,11 +6988,13 @@ clean:
         # by the same `_pure_harness_node_key` that narrows the manifest the leaf is SHOWN — so a
         # capability the context advertises is always one this layer accepts. Its manifest MUST be
         # declared (None => nothing provided => every requirement unsatisfied, fail-closed).
-        harness_nk = self._pure_harness_node_key(ir)
+        harness_nk = self._pure_harness_node_key(ir, refs.node_key)
         provided = harness_provided_capabilities(harness_nk) if harness_nk else None
         algorithm = (ir.get("algorithm") or {}) if isinstance(ir, dict) else {}
         return pure_bundle_contract_violation(
             doc, node_key=refs.node_key, spec_id=refs.spec_id,
+            shape=(self._bundle_shape(refs) or ""),
+            runner_basename=self._runner_basename(refs),
             ir_state_variables=(algorithm.get("state_variables") or []),
             harness_provided=provided, harness_label=harness_nk,
             build_graph=lambda d: self._build_pure_bundle_graph(refs, d),
@@ -6801,9 +7028,15 @@ clean:
                     for d in (entry.get("direct_deps") or [])]
             if isinstance(nk, str):
                 edges[nk] = [d for d in deps if isinstance(d, str)]
+        # The host glue is exactly what the host RENDERS: the runner on an `m3c` node, nothing
+        # on a `harness` one (where the runner is bundle content). Asked of the one predicate
+        # that decides the render (`_conductor_authors_runner`), so the graph can never declare
+        # a glue object the host does not write, nor omit one it does.
+        host_glue = ((self._runner_basename(refs),)
+                     if self._conductor_authors_runner(refs) else ())
         return derive_build_graph(
             doc, dependency_closure=tuple(closure_nodes), toolchain=toolchain,
-            host_glue_sources=(self._runner_basename(refs),),
+            host_glue_sources=host_glue,
             dependency_edges=edges or None)
 
     def _render_pure_makefile_from_graph(self, refs: NodeRefs, graph: dict[str, Any]) -> str:
@@ -7594,6 +7827,9 @@ clean:
         #: The request's stamp is read back by `_payload_is_m3c_physics`, so it must carry the
         #: node's real values, not the shape the phase happened to have when it went pure.
         host_authored_flags: Callable[[NodeRefs], tuple[bool, bool]]
+        #: The `pure_shape` the launch request carries, or "" for the default (shape-less)
+        #: template and required-key table. Only the non-default shapes name themselves.
+        pure_shape: str = ""
         #: (accepted document) -> the leaf's own "this phase cannot be completed" declaration, or
         #: None. A schema-VALID document can carry one; it is neither a pass nor a repairable
         #: defect, so it is the loop's THIRD exit. None for a phase with no such declaration.
@@ -7637,6 +7873,8 @@ clean:
         superseded_detail: Callable[[dict[str, Any]], str]
         #: What the document is CALLED, for the reply text of an attempt that returned none.
         document_name: str
+        #: The `pure_shape` the launch request carries; see the producer spec.
+        pure_shape: str = ""
 
     class _PureTurn(NamedTuple):
         """One recorded pure launch and everything read back off it."""
@@ -7724,10 +7962,15 @@ clean:
         producer tests drive."""
         return self._run_pure_producer_substep(
             refs, phase, substep, repair, resolved_dependencies,
-            self._pure_producer_spec("generate"))
+            self._pure_producer_spec("generate", self._bundle_shape(refs)))
 
-    def _pure_producer_spec(self, phase: str) -> "Conductor._PureProducerSpec":
-        """The phase-specific half of the pure producer loop."""
+    def _pure_producer_spec(self, phase: str,
+                            shape: str | None = None) -> "Conductor._PureProducerSpec":
+        """The phase-specific half of the pure producer loop.
+
+        `shape` is the node's CodegenBundle shape (`_bundle_shape`) and is consulted only for
+        `generate`, where the two shapes differ in what the leaf is shown and what it authors.
+        Compile has no shape."""
         if phase == "compile":
             return self._PureProducerSpec(
                 build_context=self._build_pure_compile_context,
@@ -7751,6 +7994,31 @@ clean:
                 write_declared_fail=self._write_declared_compile_fail,
                 declared_fail_category=COMPILE_DECLARED_FAIL,
                 declared_fail_event="pure_compile_fail_declared",
+            )
+        if shape == "harness":
+            # The harness self-test: the leaf authors the model AND the executable entry, so it
+            # is shown the runner-output contract in place of the host-rendered runner, and no
+            # sibling exemplar is resolved (a harness has no family sibling, and
+            # `_resolve_exemplar_source` excludes the node itself — see `_build_exemplar`).
+            return self._PureProducerSpec(
+                build_context=self._build_pure_harness_context,
+                violations=self._pure_bundle_violations,
+                write_artifacts=self._write_pure_bundle_artifacts_from_doc,
+                write_meta=self._write_bundle_meta,
+                schema_category="bundle_schema_violation",
+                unencodable_findings=(
+                    "the bundle contains characters that cannot be encoded as UTF-8 (e.g. an "
+                    "unpaired surrogate); re-emit the bundle with valid text"),
+                non_object_findings=(
+                    "the reply parsed to a non-object JSON value (expected a bundle)"),
+                repair_reason="pure_bundle_repair",
+                attempt_failed_event="pure_bundle_attempt_failed",
+                summary_prefix="pure_generate",
+                accept_noun="bundle",
+                host_write_failed_reason="pure_host_write_failed",
+                wants_exemplar=False,
+                host_authored_flags=self._node_host_authored_flags,
+                pure_shape="harness",
             )
         return self._PureProducerSpec(
             build_context=self._build_pure_context,
@@ -7918,6 +8186,7 @@ clean:
                 exemplar=(exemplar if renders_launch_prompt else None),
                 warm_resume=warm,
                 pure_leaf=True,
+                pure_shape=spec.pure_shape,
                 # On a warm reuse repair the resumed session already holds the context, so it is
                 # omitted — but ONLY when the validator's exemption holds (warm + reuse +
                 # findings). A cold launch, or a cold-fallback repair (session GC'd), carries the
@@ -8339,6 +8608,53 @@ clean:
             "bundle_document": _read(f"{refs.source_dir()}/codegen_bundle.json"),
         }
 
+    def _build_pure_harness_verify_context(self, refs: NodeRefs) -> dict[str, str]:
+        """Assemble the closed context a pure `generate.verify` reviewer sees on the HARNESS shape.
+
+        The four node artifacts are the m3c reviewer's (`_build_pure_verify_context`) — the
+        human-authored behavioral contract it verifies against, the tests, the IR, and the bundle
+        under review — with the same `""` degradation. The severity rubric is the same slice, and
+        raises for the same reason.
+
+        What differs is the fifth document. The m3c reviewer receives the checks-module ABI,
+        because the bundle it reviews carries a checks module; a harness bundle carries an
+        executable entry instead, so it receives `docs/workflow/RUNNER_OUTPUT_CONTRACT.md` whole
+        — the same document the producer wrote against, so the two are judged by one text rather
+        than by the reviewer's recollection of it."""
+        from tools.orchestration_runtime import (RUNNER_OUTPUT_CONTRACT_REF,
+                                                 WORKFLOW_PHASE_DOC_BY_STEP)
+
+        def _read(rel: str) -> str:
+            try:
+                return (self.repo_root / rel).read_text(encoding="utf-8")
+            except OSError:
+                return ""
+        contract_path = self.repo_root / RUNNER_OUTPUT_CONTRACT_REF
+        try:
+            contract_text = contract_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            raise RuntimeError(
+                f"pure_runner_output_contract_document_missing: {contract_path}: {exc}") from exc
+        phase_doc_path = self.repo_root / WORKFLOW_PHASE_DOC_BY_STEP["generate"]
+        try:
+            phase_doc_text = phase_doc_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            raise RuntimeError(
+                f"pure_severity_rubric_document_missing: {phase_doc_path}: {exc}") from exc
+        try:
+            severity_rubric = _generate_verify_severity_rubric_section(phase_doc_text)
+        except ValueError as exc:
+            raise RuntimeError(
+                f"pure_severity_rubric_document_unsliceable: {phase_doc_path}: {exc}") from exc
+        return {
+            "controlled_spec_document": _read(f"{refs.spec_path}/controlled_spec.md"),
+            "tests_document": _read(f"{refs.spec_path}/tests.md"),
+            "ir_document": _read(f"{refs.ir_ref}/spec.ir.yaml"),
+            "runner_output_contract_document": contract_text,
+            "severity_rubric_document": severity_rubric,
+            "bundle_document": _read(f"{refs.source_dir()}/codegen_bundle.json"),
+        }
+
     #: The `validate.judge` documents that are a FILE, keyed by the pure-context slot name.
     #: One definition, three readers: the context builder reads each path, `_write_semantic_review`
     #: resolves an `evidence_refs` key back to it, and `test_pure_leaf_judge` walks it. The three
@@ -8513,7 +8829,7 @@ clean:
         and is kept as the seam the existing reviewer tests drive."""
         return self._run_pure_reviewer_substep(
             refs, phase, substep, resolved_dependencies,
-            self._pure_reviewer_spec("generate"))
+            self._pure_reviewer_spec("generate", "verify", self._bundle_shape(refs)))
 
     # The verify-verdict half of a reviewer spec, shared by the two phases that review one.
     # Bound as functions so the loop asks the SPEC what a document means instead of reading
@@ -8541,11 +8857,14 @@ clean:
         return summary
 
     def _pure_reviewer_spec(self, phase: str,
-                            substep: str | None = None) -> "Conductor._PureReviewerSpec":
+                            substep: str | None = None,
+                            shape: str | None = None) -> "Conductor._PureReviewerSpec":
         """The phase-specific half of the pure reviewer loop.
 
         Keyed by `(phase, substep)` since Z3: `validate` has a reviewer that is not a `verify`,
-        and its document is a semantic review rather than a verify verdict."""
+        and its document is a semantic review rather than a verify verdict. `shape` is the
+        node's CodegenBundle shape and is consulted only for `generate.verify`, where what the
+        reviewer is shown alongside the bundle differs between the two shapes."""
         if (phase, substep) == ("validate", "judge"):
             return self._pure_judge_spec()
         if phase == "compile":
@@ -8568,6 +8887,28 @@ clean:
                 summary_of=self._verify_verdict_summary("pure_compile_verify"),
                 superseded_detail=lambda doc: f"verify_status={doc['verification_status']}",
                 document_name="verify verdict",
+            )
+        if phase == "generate" and shape == "harness":
+            return self._PureReviewerSpec(
+                build_context=self._build_pure_harness_verify_context,
+                write_project_meta=self._write_verify_source_meta,
+                write_meta=self._write_verdict_meta,
+                non_object_findings=(
+                    "the reply parsed to a non-object JSON value (expected a verdict)"),
+                repair_reason="pure_verdict_repair",
+                attempt_failed_event="pure_verdict_attempt_failed",
+                summary_prefix="pure_verify",
+                host_write_failed_reason="pure_verify_host_write_failed",
+                superseded_prefix="pure_verdict_repair",
+                host_authored_flags=self._node_host_authored_flags,
+                violations=self._verify_verdict_violations,
+                schema_category=GENERATE_VERDICT_SCHEMA_VIOLATION,
+                status_of=lambda doc: doc["verification_status"],
+                reply_of=self._verify_verdict_reply,
+                summary_of=self._verify_verdict_summary("pure_verify"),
+                superseded_detail=lambda doc: f"verify_status={doc['verification_status']}",
+                document_name="verify verdict",
+                pure_shape="harness",
             )
         return self._PureReviewerSpec(
             build_context=self._build_pure_verify_context,
@@ -8681,6 +9022,7 @@ clean:
                 resolved_dependencies=resolved_dependencies,
                 warm_resume=warm,
                 pure_leaf=True,
+                pure_shape=spec.pure_shape,
                 # Same context-omission rule as the producer: a warm reuse repair's resumed session
                 # already holds the context (the validator exempts it); a cold launch or a
                 # cold-fallback repair (session GC'd) carries the full context.
@@ -11519,19 +11861,21 @@ clean:
         # safety net for the record-launch-less diagnostician leaf.
         entry = self.entry_for(phase, substep)
         # RUNTIME half of the pure-only rule. Config validation rejects an HTTP provider on an
-        # agentic SUBSTEP, but `_pure_leaf_substep` additionally requires the node's M3c shape:
-        # the `infrastructure` harness self-test has no bundle representation for its runner
-        # and falls through to the shared agentic loop. (The other former non-M3c shapes — a
-        # c/cpp/mixed toolchain, a physics node without exactly one infra dep — are rejected
-        # upstream now, so a non-M3c IR reaching here is hand-crafted.)
+        # agentic SUBSTEP, but `_pure_leaf_substep` additionally requires the node to have a
+        # bundle SHAPE (`_bundle_shape`). Since issue #169 no in-tree node lacks one — the
+        # `infrastructure` harness self-test, which used to fall through here, is the `harness`
+        # shape — so a shapeless IR reaching this line is hand-crafted, the remaining None
+        # answers (a c/cpp/mixed toolchain, a language with no bundle backend) being rejected
+        # upstream.
         # An entry that cannot run that loop must fail here, not launch into it.
         if not entry.supports(CAP_AGENTIC) and not self._pure_leaf_substep(refs, phase, substep):
             detail = (
                 f"provider {entry.provider!r} is configured for {phase}."
                 f"{substep or ''} but can only run the pure leaf, and this node has no pure "
-                f"path (it is not an M3c node, so the substep runs the agentic leaf loop). "
-                f"Configure an agentic provider for this substep, or run this node's generate "
-                f"phase on one.")
+                f"path (the node has no CodegenBundle shape — `Conductor._bundle_shape` reads "
+                f"its node_key and its IR's toolchain — so the substep runs the agentic leaf "
+                f"loop). Configure an agentic provider for this substep, or run this node's "
+                f"generate phase on one.")
             self.emit("pure_only_provider_on_agentic_path", node_key=refs.node_key,
                       phase=phase, substep=substep or "", provider=entry.provider)
             return SubstepOutcome(
@@ -11543,7 +11887,7 @@ clean:
         # leaf loop below (no allowed_output_paths, no determine_substep_status-before-finalize).
         # WHICH substeps take it is `_pure_leaf_substep`'s docstring and nothing here: today the
         # two `compile` pairs and `validate.judge` on every node, and the two `generate` pairs on
-        # an M3c node.
+        # any node with a bundle shape.
         if self._pure_leaf_substep(refs, phase, substep):
             if substep in ("verify", "judge"):
                 # The pure reviewer: its own spawn/validate/repair/finalize loop, host-authors the
@@ -11553,13 +11897,14 @@ clean:
                 # document, which the spec says.
                 return self._run_pure_reviewer_substep(
                     refs, phase, substep, resolved_dependencies,
-                    self._pure_reviewer_spec(phase, substep))
+                    self._pure_reviewer_spec(phase, substep, self._shape_for_spec(refs, phase)))
             # The pure producer. `dependency_surface` is threaded through for the compile
             # producer, whose `<dependency_facts>` block is the published-operation catalog it
             # must transcribe verbatim; `build_launch_request` attaches it to that substep only.
             return self._run_pure_producer_substep(
                 refs, phase, substep, repair, resolved_dependencies,
-                self._pure_producer_spec(phase), dependency_surface)
+                self._pure_producer_spec(phase, self._shape_for_spec(refs, phase)),
+                dependency_surface)
         # Resolve the warm-resume decision BEFORE building the request so the slim-vs-full
         # prompt choice (build_launch_request) matches what record_launch persists and what
         # spawn_leaf sends below. None => cold launch (full prompt). Deterministic substeps
