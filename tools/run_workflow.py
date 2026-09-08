@@ -395,7 +395,15 @@ def _refuse_non_certifiable_target(repo_root: Path, spec_ref: str) -> None:
     ``deps.yaml``, whose top-level ``spec_kind`` carries no schema and would let a spec declare
     its way past the gate that decides whether it is gated.
     """
-    spec_id = Path(spec_ref.strip().rstrip("/")).name
+    from tools.workflow_conductor import _SPEC_REF_FILE_NAMES
+
+    # The same normalization `resolve_node` applies, and imported from it rather than
+    # respelled: a spec_ref may name the directory OR one of the three files under it, and a
+    # launch check that only understood the directory form would let
+    # `spec/profile/<id>/deps.yaml` past — leaving the refusal to the conductor's backstop,
+    # which is the later moment this check exists to beat.
+    ref = Path(spec_ref.strip().rstrip("/"))
+    spec_id = (ref.parent if ref.name in _SPEC_REF_FILE_NAMES else ref).name
     catalog_path = repo_root / "spec" / "registry" / "spec_catalog.yaml"
     import yaml as _yaml
 

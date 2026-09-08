@@ -908,6 +908,56 @@ class RunWorkflowTests(unittest.TestCase):
             # never a pinned version id
             self.assertNotRegex(recorded, r"-\d+-\d+$")
 
+    def test_a_profile_target_stops_before_anything_is_launched(self) -> None:
+        """Issue #175: pinned at the HANDLER, not at the helper. `_run_main` is where the
+        refusal has to sit for it to beat the conductor's backstop, and a call site deleted
+        from there leaves every helper-level row green.
+
+        Both spec_ref spellings are driven: the directory and the file-style ref, which
+        `resolve_node` normalizes and which this check therefore has to normalize too."""
+        for ref in ("spec/profile/demo/pr", "spec/profile/demo/pr/deps.yaml"):
+            with self.subTest(spec_ref=ref), tempfile.TemporaryDirectory() as tmp:
+                repo_root = Path(tmp)
+                self._seed_spec_tree(repo_root)
+                prof = repo_root / "spec" / "profile" / "demo" / "pr"
+                prof.mkdir(parents=True)
+                (prof / "controlled_spec.md").write_text("# pr\n", encoding="utf-8")
+                (prof / "deps.yaml").write_text(
+                    "spec_id: pr\nspec_kind: profile\ndependencies:\n"
+                    "  components: []\n  profiles: []\n", encoding="utf-8")
+                reg = repo_root / "spec" / "registry"
+                reg.mkdir(parents=True, exist_ok=True)
+                (reg / "spec_catalog.yaml").write_text(
+                    "catalog_version: 0.2.0\nspecs:\n"
+                    "  - spec_kind: profile\n    spec_id: pr\n    spec_version: \"0.1.0\"\n"
+                    "    controlled_spec_path: spec/profile/demo/pr/controlled_spec.md\n"
+                    "    deps_path: spec/profile/demo/pr/deps.yaml\n", encoding="utf-8")
+                code, out, calls = self._run_main_with_fake_runtime(
+                    [ref, "validate", "--repo-root", str(repo_root), "--no-run-conductor"])
+                self.assertEqual(code, 2, out)
+                self.assertEqual(out["reason"], "invalid_startup_input")
+                self.assertIn("spec_kind_not_certifiable", out["detail"])
+                # Nothing was launched, and no orchestration state was created.
+                self.assertEqual(calls, [])
+
+    def test_a_non_profile_target_is_not_stopped_by_that_check(self) -> None:
+        # The control for the row above: the same fixture with a `problem` catalog entry runs.
+        # Without it, a check that refused everything would look identical.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed_spec_tree(repo_root)
+            reg = repo_root / "spec" / "registry"
+            reg.mkdir(parents=True, exist_ok=True)
+            (reg / "spec_catalog.yaml").write_text(
+                "catalog_version: 0.2.0\nspecs:\n"
+                "  - spec_kind: problem\n    spec_id: test.md\n    spec_version: \"0.1.0\"\n"
+                "    controlled_spec_path: spec/problem/test.md\n"
+                "    deps_path: spec/problem/deps.yaml\n", encoding="utf-8")
+            code, out, _calls = self._run_main_with_fake_runtime(
+                ["spec/problem/test.md", "compile",
+                 "--repo-root", str(repo_root), "--no-run-conductor"])
+            self.assertEqual(code, 0, out)
+
     def test_a_codex_configuration_without_a_slug_stops_before_launching(self) -> None:
         """Codex has no alias to resolve at runtime, and the run-wide flag that used to
         supply one is gone — so the configuration file is the only place a slug can come

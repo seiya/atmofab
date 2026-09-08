@@ -7188,6 +7188,10 @@ clean:
     # (which already routes its own violations back to `(compile, reuse)`), so nothing here
     # re-runs `--stage compile`.
 
+    # The sentinel's WORDING is not pinned, deliberately: the test that observes it compares
+    # against this constant rather than transcribing it, so a reworded sentence is not a
+    # behaviour change. What IS pinned is that the value is non-empty (the launch validator
+    # refuses an empty declared key) and that it is what a node adopting no profile receives.
     _PURE_PROFILE_ABSENT_DOCUMENT = (
         "This node adopts no profile.")
 
