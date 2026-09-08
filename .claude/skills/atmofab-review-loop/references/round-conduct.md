@@ -46,6 +46,29 @@ file the round does not attack** — so the omission did not merely misdescribe 
 a second round at the price of the first. The afterthought edits are the dangerous ones precisely
 because they are where a rule gets COPIED.
 
+**The narrower trigger, measured on issue #169: one file edited for TWO findings in one round.**
+Twice in that loop the message was wrong, both times while splitting one commit per finding — so
+the folded-commit framing above never fired. The mechanism is dull, and both instances are
+checkable at the commits named. Round 2: `tools/tests/test_pure_leaf_producer.py` carried the
+repair-lift rows AND the tamper gate's fail-closed-default row; `git add` on that path put both
+in `6531bc1`, whose message describes only the first, while `6439198`'s message claims the second
+(`git show 6531bc1 -- tools/tests/test_pure_leaf_producer.py | grep -c shapeless_node` -> 1).
+Round 3, wider: `test_pure_leaf_verify.py`, `tools/workflow_conductor.py` and
+`test_pure_leaf_producer.py` each carried work for the round's blocker AND for a separate
+finding, so `21d2303` absorbed all three and `107d946` describes them (`git show 21d2303 --
+tools/workflow_conductor.py | grep -c "no CodegenBundle shape"` -> 2). Both commits were
+individually coherent, both suites green, and the only reader who would ever notice is one going
+to look for a specific witness — which is exactly the reader a review loop writes commit messages
+for.
+
+Two consequences worth separating. The mechanical one: **the guard belongs before `git add`, not
+before the message** — `git add -p` for a file two findings touched, or commit in the order the
+file was edited. The recovery one: once it is committed, **do not rewrite history to tidy it**.
+Both instances were recorded in the following commit instead, which is right; but the first
+recovery cited a SHA from an amended commit, and a dangling pre-amend SHA resolves in the local
+repository and in no clone — so a reader sent there finds nothing. Cite the commit that is on the
+branch, and check it with `git merge-base --is-ancestor <sha> HEAD` before writing it down.
+
 **`git commit --amend` for a message-only fix requires an empty index** (or pass `--only`).
 `--amend` silently absorbs whatever is staged. In PR #58 an `--amend` meant to fix one false
 sentence swallowed a file replacement that happened to be staged, leaving **a commit that

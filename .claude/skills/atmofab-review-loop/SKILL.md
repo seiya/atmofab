@@ -63,6 +63,24 @@ the same defect again in the document, as a `leaf shortcut` on the other transpo
 line in a message cost a whole round.** Read the stat, and name every file, especially the ones you
 edited as an afterthought — those are exactly the copies.
 
+**The trigger that actually fires is ONE FILE EDITED FOR TWO FINDINGS, and the two rules above
+read as if it is not.** They are written for a FOLDED commit — one you chose to make wide — so
+neither comes to mind while you are splitting properly. Issue #169 broke it twice in one loop
+while following both: the fixes for two findings landed in one file, `git add <that file>` swept
+the second finding's work into the first finding's commit, and the message described work that
+was not there while the next commit claimed work already committed. Nothing detects it, because
+both commits are individually coherent and the suite is green either way. **The rule is
+mechanical and belongs before `git add`, not before the message: when a round touched a file for
+more than one finding, stage that file with `git add -p` or commit the findings in the order the
+file was edited.** And read the stat BEFORE writing the message rather than after — writing it
+first and staging second is how a correct-looking message gets attached to the wrong diff.
+
+**When it has already happened and the commit is pushed or built on, do not rewrite history to
+tidy it** — say in the later commit which finding's work is in which commit, and why. A reader
+looking for a witness needs the pointer more than the history needs to be neat; and give them a
+SHA that resolves, since an amended commit leaves a dangling one that looks fine locally and
+exists in no clone.
+
 **`git commit --amend` for a message-only fix requires an empty index** (or `--only`); it
 silently absorbs whatever is staged (PR #58: an amend swallowed a file replacement, leaving a
 commit that claims work `git log -S` cannot find). **If it is unpushed you can fix it by

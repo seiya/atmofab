@@ -1,4 +1,4 @@
-# Input surfaces 5-11: the episodes behind them
+# Input surfaces 5-12: the episodes behind them
 
 Moved out of `SKILL.md` verbatim (2026-08-25). `SKILL.md` §1 "Inventory the surface before
 fixing" keeps each surface's question and its rule in a few lines; this file is what each one
@@ -348,3 +348,62 @@ so the rule does not apply — and applying it there would be wrong twice over, 
 build, so "resolve it from the host" is already what the allowlist does. **The test is not "a
 leaf-authored field decides something" — it is "a leaf-authored value makes a check not run".**
 
+## Surface 12 — changing a leaf's transport deletes its force-read set (issue #169)
+
+The episode. Issue #169's PR-3 moved the `infrastructure` harness self-test's two `Generate`
+leaves from the shared agentic loop to the pure one. The diff is about a bundle SHAPE: a new
+`runner` role, a `shape` argument on the acceptance contract, twin readers deciding which node
+gets which. Nothing in it mentions a document.
+
+But `build_launch_request` empties `skill_must_read_refs` for a pure launch, so the move deleted
+every force-read that leaf had. One of them was `docs/workflow/CHECKS_MODULE_CONTRACT.md` §5,
+which is the deterministic `Generate.gate` lint and syntax rule set for leaf-authored source and
+says of itself that it applies to "the hand-authored runner of an `infrastructure` node's
+self-test" — that leaf, named. `orchestration_runtime.leaf_contract_doc_refs`' docstring is
+sharper still: "the non-M3c leaf that hand-authors its own runner is the one with ABI-fixed
+unused dummies. Do NOT gate this injection on `is_m3c_physics`." The change gated it on
+something stronger than node shape — on the transport — and no reader of either sentence would
+have predicted that.
+
+**What made it invisible.** The prompt template had been written language-NEUTRAL on purpose,
+because a new file under `tools/prompt_templates/` starts at zero in the backend-boundary
+baseline and `AGENTS.md` forbids growth. So the template could not restate the rules, and the
+author (me) recorded that as a known cost in the commit message — while believing the rules
+still reached the leaf through the document. They did not. Both halves were true and the
+conjunction was the defect.
+
+**What each instrument said.** The round-0 mutation sweep: clean. Two rounds of security and
+correctness axes with their own mutants: clean on this. A Codex pass: clean. A witness census:
+clean. All correct — there is no mutant for a document that is not delivered, and no test
+asserts the absence of an absence. The disclosure axis found it in one step by RENDERING the
+production prompt and looking for the rule set in it.
+
+Re-measured here at `107d946`, because the first version of this paragraph quoted the reviewer's
+count and the count depends on what you look for. By CODE: the m3c producer's template names all
+seven of `C011 C072 C121 C122 C131 PORT011 S001`; the harness prompt, §5 included, named **none**
+— §5 states obligations without their codes. By OBLIGATION: §5 covers three (the column limit,
+the `only:` import form, the assumed-length `intent(out)` character dummy) and is silent on the
+other four. Either way the leaf was held to rules no document it received stated; the two numbers
+answer different questions, and quoting one without saying which is how a measurement rots.
+
+**The enumeration that would have caught it**, and it is cheap — under a minute against the
+code:
+
+1. what SKILL did the old transport deliver, and does anything replace it;
+2. what does `leaf_contract_doc_refs` return for this `(step, is_m3c_physics)`, entry by entry;
+3. what did `build_launch_request` append to `must_read` on this branch;
+4. for each, one of: inlined as a `pure_context` document / restated in the template / genuinely
+   not needed for this leaf / **nowhere** — and the fourth is the finding.
+
+**The fix's own trap, recorded because it took two more rounds.** Inlining §5 restored three of
+the seven codes; the other four are in the linter's rule set and in no document at all. The
+template could not carry them (boundary), so they came from the linter BACKEND — a
+`lint_rules_document()` composed from `RULE_CODES`, reached through a `lint_rules` capability
+declared by the one backend that implements it. Two things went wrong on the way and both are
+general: the first version asked `capability_module` for `lint`, which every registered linter
+declares because they all RUN, so the dispatch fell through to a `getattr` for five of eight
+languages — the exact shape `capability_module` exists to prevent, and it needed a capability of
+its own to become a registry refusal. And the prompt sentence introducing the new section said
+the inlined document "is" the gate's rule set, which it was not: a rule that overclaims
+completeness sends the leaf away from the rest. **When you deliver a rule set to a leaf, state
+what it does NOT cover in the same sentence.**

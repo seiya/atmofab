@@ -239,7 +239,7 @@ When a rule derives its safety from an enumeration, **write a test that kills ea
 enumeration by mutation** (round 0 in `atmofab-review-loop`). A missing element shows up in no
 other test.
 
-The seven surfaces that are none of exec / env / argv / FS / evidence paths and none of the
+The eight surfaces that are none of exec / env / argv / FS / evidence paths and none of the
 spelling variation. Each is one question; the episodes, the version tables and the measurement
 recipes are in `references/input-surfaces.md`:
 
@@ -341,6 +341,29 @@ recipes are in `references/input-surfaces.md`:
   condition is a field of the thing being gated. Enumerate those first; each one is a switch, and
   the leaf holds it. Distinct from surface 5, where caller data pollutes a classification the host
   computes — here the host asks the leaf a question and believes the answer.
+- **Surface 12 — when you change how a leaf is DRIVEN, what stops being delivered to it?** The
+  other eleven ask what an input decides. This one asks what a TRANSPORT carries, and it is
+  invisible from the diff: moving a leaf from the agentic loop to the pure one deletes its
+  `skill_must_read_refs` wholesale, so **every force-read document it had is silently cut**, and
+  a rule that reached it only that way is now enforced by a gate and stated to nobody. Issue #169
+  cut `docs/workflow/CHECKS_MODULE_CONTRACT.md` §5 — the deterministic lint/syntax rule set for
+  leaf-authored source — off the one leaf whose runner it was written for, while
+  `leaf_contract_doc_refs`' own docstring names that leaf as the reason not to gate the injection
+  on node shape. **Rule: before changing a leaf's transport, enumerate what the OLD transport
+  delivered — the SKILL, each `leaf_contract_doc_refs` entry, each must-read the request built —
+  and say for each where it goes now.** Three answers are legitimate (inlined as context,
+  restated in the template, genuinely not needed) and a fourth is the defect (nowhere). **The
+  tell is that nothing fails**: the gate still runs, the suite is green, and the cost is a leaf
+  that cannot satisfy a rule it was never shown — a pass-rate defect that reads as model
+  weakness — and the count you quote has to say what it counted: measured at issue #169's round-3
+  commit, the leaf's prompt named NONE of the seven rule codes by code and carried three of the
+  seven obligations in prose. **Where the cut document is BACKEND knowledge, restating it in the
+  template is the one option `docs/BACKEND_BOUNDARY.md` forbids** (a new neutral-core file starts
+  at zero, so any such token is growth); deliver it from the backend package through the registry
+  instead, which is where that rule says the knowledge already lives.
+  **Nothing in this repository's review loop finds this except rendering the prompt** — the
+  mutation sweep mutates code, the census enumerates code, a blank-slate reviewer reads code, and
+  all three were green on it; see `atmofab-review-loop`'s "what does a LEAF see" clause.
 
 ### 2. Confirm the path production actually takes
 
