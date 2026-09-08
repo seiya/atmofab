@@ -2768,6 +2768,22 @@ class RunnerRoleTest(unittest.TestCase):
             "state_bindings": [],
         }
 
+    def test_the_role_refusal_names_the_roles_and_denies_no_admissible_one(self) -> None:
+        """The message a repair leaf acts on. Two halves, because a substring pin on the
+        admissible list would stay green with the old sentence "there is no runner/glue role"
+        still appended — and a leaf reading that would not emit the role this shape requires.
+        The member list is DERIVED from `FILE_ROLES`, so adding a role breaks this with the
+        message rather than ratifying it."""
+        doc = self._harness_bundle()
+        _find(doc["files"], "harness_fortran_cpu_runner.f90")["role"] = "script"
+        clause = next(v for v in cb.validate_bundle(doc) if "role must be one of" in v)
+        for role in cb.FILE_ROLES:
+            self.assertIn(role, clause)
+        self.assertNotIn("no runner", clause)
+        self.assertNotIn("runner/glue", clause)
+        # ...and it still says what IS refused.
+        self.assertIn("build/script role", clause)
+
     def test_a_runner_bearing_bundle_is_valid(self) -> None:
         self.assertEqual(cb.validate_bundle(self._harness_bundle()), [])
 
@@ -2897,6 +2913,11 @@ class BundleShapeAdmissibilityTest(unittest.TestCase):
         result = self._run(self._harness_doc(), "harness",
                            ir_published_operations=["harness_fortran_cpu__emit_real"])
         self.assertEqual(result[0], "bundle_published_surface_mismatch")
+        # The findings text names the node it is about. It used to open "component <node_key>",
+        # which on this shape would tell a repair leaf the wrong thing about its own node — the
+        # layer stopped being component-only when `L1C_PUBLISHED_SURFACE_SPEC_KINDS` widened.
+        self.assertIn(HARNESS, result[1])
+        self.assertNotIn("component", result[1])
 
 
 if __name__ == "__main__":

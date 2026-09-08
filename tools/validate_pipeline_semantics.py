@@ -14113,6 +14113,13 @@ def _validate_post_generate_bundle(
     # case-INSENSITIVELY: `rglob("*.f90")` misses an uppercase `extra.F90` on a case-sensitive
     # filesystem, which would let an undeclared Fortran source slip past this provenance check
     # while the rest of the gate treats suffixes case-insensitively.
+    # Derived from the shape's glue set so this carve-out cannot name a file the assembly does
+    # not build. NOT PINNED, and deliberately so: on `harness` the set is empty, but the contract
+    # layer above has already required the runner to be DECLARED (it returns on any violation),
+    # so a staged runner is in `declared` either way and no input distinguishes `{}` from
+    # `{<spec_id>_runner}` here. A round-0 mutation sweep reported the line as a survivor and a
+    # reproduction was attempted along that route and failed; it stays because it is the honest
+    # derivation and the alternative is a second place that says what the host renders.
     allowed_extra = {name.casefold() for name in host_glue}
     if src_dir.is_dir():
         f90_paths = [p for p in src_dir.rglob("*")

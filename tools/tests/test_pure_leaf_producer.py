@@ -2143,6 +2143,11 @@ class PurePostGenerateBundleTests(unittest.TestCase):
         # set shape-dependent and the row went red for the right reason).
         subjects = [x.split(":", 1)[0] for x in v]
         self.assertEqual([], [x for x in subjects if x.endswith(f"{_SPEC_ID}_runner.f90")], v)
+        # The refusal NAMES the glue it admitted, so the operator reading it can tell an
+        # undeclared source from a carve-out that did not fire. The name is derived from
+        # `_expected_runner_name`, the one function that says what the host renders.
+        clause = next(x for x in v if "smuggled.f90" in x)
+        self.assertIn(vps._expected_runner_name(_SPEC_ID), clause)
 
     def test_the_build_graph_is_told_which_source_is_host_glue(self) -> None:
         """`host_glue_sources` is what makes the runner's object name a KNOWN one.
