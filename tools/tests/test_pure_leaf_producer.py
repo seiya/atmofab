@@ -2625,6 +2625,67 @@ class PureHarnessShapeTests(unittest.TestCase):
         shown = json.loads(ctx["harness_capabilities"])
         self.assertEqual([m["node_key"] for m in shown["manifests"]], [_HARNESS])
 
+    def test_the_gate_guards_slice_is_SECTION_5_and_not_another(self) -> None:
+        """CONTENT equality, not non-emptiness. A round-4 sweep found every new refusal of the
+        round-3 fix unwitnessed, and the sharpest mutant was swapping the slicer for
+        `_checks_contract_abi_sections` — handing the leaf §1-§4, the checks-module ABI this
+        shape has no file for and the slicer's docstring says is excluded. Nothing noticed,
+        because the only assertion was that the value was non-empty."""
+        ctx = self.c._build_pure_harness_context(self.refs)
+        real = (Path(wc.__file__).resolve().parents[1]
+                / "docs" / "workflow" / "CHECKS_MODULE_CONTRACT.md").read_text(encoding="utf-8")
+        self.assertEqual(ctx["gate_guards_document"],
+                         wc._checks_contract_gate_guards_section(real))
+        self.assertNotEqual(ctx["gate_guards_document"],
+                            wc._checks_contract_abi_sections(real))
+
+    def test_the_gate_guards_slicer_refuses_a_section_appended_after_it(self) -> None:
+        """The slicer runs to the END of its document, so a `## 6.` added above it would widen
+        the slice silently — which is what every other slice's literal end anchor prevents. It
+        raises instead, and BOTH refusals are driven here: a round-4 sweep deleted each of them
+        in turn and the whole suite stayed green, while `test_pure_prompt_contract_drift`'s
+        comment claimed the digest pinned them (the digest pins the slice's CONTENT under
+        today's document, which has no §6 — it cannot see the guard).
+
+        Driven on synthetic text, because the real document must not carry a §6 for this to be
+        checkable, and on the real document, so the two cannot diverge."""
+        real = (Path(wc.__file__).resolve().parents[1]
+                / "docs" / "workflow" / "CHECKS_MODULE_CONTRACT.md").read_text(encoding="utf-8")
+        self.assertTrue(wc._checks_contract_gate_guards_section(real).startswith("## 5."))
+        with self.assertRaises(ValueError) as later:
+            wc._checks_contract_gate_guards_section(real + "\n## 6. Appendix\n\nbody\n")
+        self.assertIn("numbered section after", str(later.exception))
+        with self.assertRaises(ValueError) as absent:
+            wc._checks_contract_gate_guards_section(
+                real.replace("## 5. ", "## Five ", 1))
+        self.assertIn("no '## 5.' section heading", str(absent.exception))
+        # A SUBSECTION is not a section: `## 5.1` must stay inside the slice, or a document
+        # that grows a subsection loses everything after it.
+        widened = wc._checks_contract_gate_guards_section(
+            real + "\n## 5.1 More guards\n\nbody\n")
+        self.assertIn("## 5.1 More guards", widened)
+
+    def test_the_gate_guards_read_fails_CLOSED_in_both_directions(self) -> None:
+        """The two RAISING reads the context builder added. Same shape as the reviewer's row in
+        `test_pure_leaf_verify`, and written because round 3 claimed both were driven and
+        neither was: soft-failing either one to `""` survived seven test files."""
+        target = self.repo / "docs" / "workflow" / "CHECKS_MODULE_CONTRACT.md"
+        body = target.read_text(encoding="utf-8")
+        target.unlink()
+        try:
+            with self.assertRaises(RuntimeError) as caught:
+                self.c._build_pure_harness_context(self.refs)
+            self.assertIn("pure_gate_guards_document_missing", str(caught.exception))
+        finally:
+            target.write_text(body, encoding="utf-8")
+        target.write_text(body.replace("## 5. ", "## Five ", 1), encoding="utf-8")
+        try:
+            with self.assertRaises(RuntimeError) as caught:
+                self.c._build_pure_harness_context(self.refs)
+            self.assertIn("pure_gate_guards_document_unsliceable", str(caught.exception))
+        finally:
+            target.write_text(body, encoding="utf-8")
+
     def test_the_producer_context_raises_when_the_contract_is_unreadable(self) -> None:
         """The disposition the m3c producer's runner read has: a document the leaf cannot repair
         makes fail_closed the correct terminus, and the caller turns this into

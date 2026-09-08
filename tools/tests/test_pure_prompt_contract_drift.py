@@ -441,8 +441,12 @@ PINNED: dict[str, str] = {
     # prefixes were added beside them. And a FOURTH time, by round 3, which rendered the prompt
     # and looked for the deterministic gate's rule set: making this leaf pure had cut the only
     # carrier it had (a force-read `CHECKS_MODULE_CONTRACT.md` §5, which a pure leaf does not
-    # read), so §5 is now inlined and joins the tuple as its own member.
-    "pure-37": "01cda18025320e51ad5b44dddd41f6c8d98870f4d344b7bfffa9b5d6a30968b2",}
+    # read), so §5 is now inlined and joins the tuple as its own member. A FIFTH time, by round
+    # 4, which measured what that inline actually covers: §5 states three of the seven rule codes
+    # the leaf lost, so the rule that pointed at it claimed a completeness it does not have, and
+    # the escape hatch beside it did not cover a §5 clause naming procedures of the §1-§4 ABI
+    # that this shape has no file for.
+    "pure-37": "074bb58fb1fa79715cb1c9817ad2aee39178741c56dcb4a5dd749b982b258e70",}
 
 
 def _contract_tuple() -> dict[str, object]:
@@ -511,8 +515,13 @@ def _contract_tuple() -> dict[str, object]:
         # §5 of the checks-module contract, on the same ground as the §1-§4 slice beside it: it
         # is inlined verbatim into the `harness` producer's prompt, so it is a leaf INPUT rather
         # than a document the leaf reads. Hashing the SLICE keeps §1-§4 out of this member (they
-        # are already their own) and makes `_checks_contract_gate_guards_section`'s anchoring —
-        # including its refusal of a section appended after §5 — part of the contract.
+        # are already their own) and makes the section's CONTENT part of the contract.
+        # WHAT THIS DOES NOT PIN, corrected by round 4 after the first version of this comment
+        # claimed it did: the slicer's REFUSALS. A digest over the slice of today's document —
+        # which carries no `## 6.` — cannot see a guard against one, and deleting that guard left
+        # the whole suite green. `test_pure_leaf_producer.PureHarnessShapeTests` drives both
+        # refusals on synthetic text, and pins the slice's identity against
+        # `_checks_contract_abi_sections` so swapping the two is red.
         "checks_contract_gate_guards_section": wc._checks_contract_gate_guards_section(
             (Path(wc.__file__).resolve().parents[1]
              / "docs" / "workflow" / "CHECKS_MODULE_CONTRACT.md").read_text(encoding="utf-8")),

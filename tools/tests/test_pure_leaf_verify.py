@@ -1292,6 +1292,8 @@ class PureHarnessVerifyWiringTests(unittest.TestCase):
     green, which is exactly the "the predicate has a test, the call site does not" shape.
     """
 
+    #: The reviewer context reads two of these; the third is here because this class also drives
+    #: the PRODUCER through `run_substep`, and that context reads the checks-module contract.
     _REPO_DOCS = ("docs/workflow/RUNNER_OUTPUT_CONTRACT.md",
                   "docs/workflow/CHECKS_MODULE_CONTRACT.md",
                   "docs/workflow/phases/phase_02_generate.md")
@@ -1365,10 +1367,16 @@ class PureHarnessVerifyWiringTests(unittest.TestCase):
             phase_doc.write_text(body, encoding="utf-8")
         # The two rows above cover the RAISING documents; the rest of the context is node
         # artifacts, which degrade to "" by the same deliberate design as the m3c reviewer's.
+        # Set identity against the builder's own output, so a document added later is either
+        # given a row above or shows up here. (An earlier form subtracted the reason STRINGS
+        # from a set of context KEYS — a no-op term a round-4 reviewer spotted; the two sets
+        # are named explicitly now.)
         ctx = self.c._build_pure_harness_verify_context(self.refs)
-        self.assertEqual(set(ctx) - set(cases.values()) - {
-            "controlled_spec_document", "tests_document", "ir_document", "bundle_document"},
-            {"runner_output_contract_document", "severity_rubric_document"})
+        degrading = {"controlled_spec_document", "tests_document", "ir_document",
+                     "bundle_document"}
+        raising = {"runner_output_contract_document", "severity_rubric_document"}
+        self.assertEqual(set(ctx), degrading | raising)
+        self.assertEqual(len(cases), len(raising))
 
     def test_the_verify_seam_wires_the_harness_shape_through(self) -> None:
         self.c.envelopes = [_envelope(_verdict("pass"))]
