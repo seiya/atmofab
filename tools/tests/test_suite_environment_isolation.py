@@ -882,8 +882,14 @@ class NoShadowedTestMethodTests(unittest.TestCase):
     suite, so a reader believes whichever half they land on.
 
     Scans every `tools/tests/test_*.py` by AST rather than by regex, because a `def test_` inside
-    a string or a nested function is not a method. Repository-wide on purpose: the rule is not
-    about one file, and a check scoped to the file that broke would be a pin on the result.
+    a string or a nested function is not a method. Suite-wide on purpose: the rule is not about
+    one file, and a check scoped to the file that broke would be a pin on the result.
+
+    NOT repository-wide, since issue #183 moved the two review instruments' tests to
+    `.claude/skills/<skill>/scripts/tests/`. Those two are outside this scan, and outside
+    `test_skip_reasons_are_declared.py`'s corpus for the same reason. Deliberately not widened:
+    the whole point of that move is that the default run stops reading `.claude/`, and a glob
+    added here would put it back. Each skill states the command that runs its own tests.
     """
 
     def test_no_test_class_defines_the_same_test_twice(self) -> None:
