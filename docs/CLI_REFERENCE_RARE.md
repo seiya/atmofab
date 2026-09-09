@@ -25,8 +25,6 @@ Related canonical sources:
 | `preflight` | execution-platform launchability probe / generate `preflight.json` | called internally by `tools/run_workflow.py`. A manual call is forbidden |
 | `preflight-status` | read back an existing `preflight.json` | post-launch state confirmation |
 | `record-timeout` | the canonical recovery path for an `Agent` tool API stream idle timeout etc. | manual finalization of a child agent that produced no terminal entry while the driver is alive (a leaf that merely WEDGES is killed and terminalized by the conductor's own per-leaf cap — `docs/RUNBOOK.md#substep-timeout-recovery`). `--force-reason` is the last resort for a marker-check bypass |
-| `read-checkpoint` | obtain `workspace/orchestrations/<orch>/orchestration_checkpoint.json` | at the resume decision in an orchestration with `resume_enabled=true` |
-| `verify-checkpoint-integrity` | reconcile the artifact hash recorded in the checkpoint with the current state | the consistency confirmation at resume start. On `stale` detection, that step must not be skipped |
 | `check-step-completed` | with `resume_enabled=true`, confirm the completion state of the target step | the canonical skip-decision path. A skip must not be decided by a direct reference to `step_result.json` |
 | `orchestration-read` | the gate-mediated, audited re-read of a path **inside** the manifest (an out-of-manifest path is not granted: it records a `rule_source_violation` and fails the orchestration) | usually called via `run-gate --gate orchestration_read --args-json '{"read_path": "..."}'` |
 | `repair-agent-runs` | in-place backfill the `parent_agent_run_id` / `agent_model` missing from the step/substep rows of a pre-`caa10ab` `agent_runs.jsonl`, and make it `pre_judge`-compliant. The orchestration row is also covered for `agent_model` only (it is the graph root, so no `parent_agent_run_id` is added) | auto-run at `--resume`. Only when auto-derivation is `needs_manual`, run it manually with `--agent-model <id>` (for details, `RUNBOOK.md` §3-1) |
@@ -49,5 +47,4 @@ The argparse output includes the description / the help string of all arguments,
 
 - the use condition of `record-timeout`'s `--force-reason`: `docs/RUNBOOK.md#substep-timeout-recovery`
 - the recovery for an incomplete launch (dangling active_child window / `reason_code=launch_incomplete_active_child`), and reading the `launch_incident.runtime.*.json` diagnostics snapshot via `python3 tools/audit_orchestration.py --orchestration-id <id>` ("Dangling launch" section): `docs/RUNBOOK.md#launch-incomplete-recovery`
-- the response when `verify-checkpoint-integrity` detects `stale`: the relevant section of `docs/RUNBOOK.md`
 - the whole resume flow including `check-step-completed`: [docs/RUNBOOK.md](RUNBOOK.md) §3-1 (the conductor drives resume; `tools/workflow_conductor.py` is the implementation)

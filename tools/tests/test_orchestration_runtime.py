@@ -70,7 +70,6 @@ from tools.orchestration_runtime import (
     probe_execution_platform,
     prepare_launch_request_payload,
     probe_codex_cli,
-    read_checkpoint,
     record_agent_run,
     record_launch,
     record_timeout,
@@ -104,7 +103,6 @@ from tools.orchestration_runtime import (
     update_checkpoint,
     update_orchestration_status,
     validate_mcp_build_tool_invocation,
-    verify_checkpoint_integrity,
     workflow_launch_check,
     write_preflight,
     write_step_result,
@@ -12654,98 +12652,6 @@ class CheckpointResumeRuntimeTests(unittest.TestCase):
             )
             self.assertEqual(entry["artifact_hashes"][missing_ref], "sha256:missing")
 
-    def test_verify_checkpoint_integrity_ok(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            init_orchestration(repo_root=repo, orchestration_id="o1")
-            _mark_dependencies_ready(repo, "o1")
-            out = repo / self._OUT
-            out.parent.mkdir(parents=True, exist_ok=True)
-            out.write_text("ok", encoding="utf-8")
-            update_checkpoint(
-                repo,
-                "o1",
-                node_key=self._NK,
-                step="compile",
-                agent_run_id="r1",
-                result={
-                    "status": "pass",
-                    "required_outputs": [self._OUT],
-                    "ir_ref": "p",
-                    "pipeline_ref": "",
-                },
-            )
-            vr = verify_checkpoint_integrity(repo, "o1")
-            self.assertTrue(vr["valid"])
-            self.assertEqual(vr["steps"][0]["integrity"], "ok")
-
-    def test_verify_checkpoint_integrity_stale(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            init_orchestration(repo_root=repo, orchestration_id="o1")
-            _mark_dependencies_ready(repo, "o1")
-            out = repo / self._OUT
-            out.parent.mkdir(parents=True, exist_ok=True)
-            out.write_text("v1", encoding="utf-8")
-            update_checkpoint(
-                repo,
-                "o1",
-                node_key=self._NK,
-                step="compile",
-                agent_run_id="r1",
-                result={
-                    "status": "pass",
-                    "required_outputs": [self._OUT],
-                    "ir_ref": "p",
-                    "pipeline_ref": "",
-                },
-            )
-            out.write_text("v2", encoding="utf-8")
-            vr = verify_checkpoint_integrity(repo, "o1")
-            self.assertFalse(vr["valid"])
-            self.assertEqual(vr["steps"][0]["integrity"], "stale")
-
-    def test_verify_checkpoint_integrity_missing_artifacts(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            init_orchestration(repo_root=repo, orchestration_id="o1")
-            _mark_dependencies_ready(repo, "o1")
-            path = repo / "workspace/orchestrations/o1/orchestration_checkpoint.json"
-            path.write_text(
-                json.dumps({
-                    "orchestration_id": "o1",
-                    "schema_version": "1",
-                    "last_updated_at": "2026-04-15T00:00:00Z",
-                    "completed_steps": [
-                        {
-                            "node_key": self._NK,
-                            "node_key_safe": "component__solver__0.1.0",
-                            "step": "compile",
-                            "agent_run_id": "r1",
-                            "status": "pass",
-                            "completed_at": "2026-04-15T00:00:00Z",
-                            "ir_ref": "p",
-                            "pipeline_ref": "",
-                            "output_refs": ["x"],
-                            "artifact_hashes": {"x": "sha256:missing"},
-                        }
-                    ],
-                }),
-                encoding="utf-8",
-            )
-            vr = verify_checkpoint_integrity(repo, "o1")
-            self.assertFalse(vr["valid"])
-            self.assertEqual(vr["steps"][0]["integrity"], "missing_artifacts")
-
-    def test_verify_checkpoint_integrity_no_checkpoint(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            init_orchestration(repo_root=repo, orchestration_id="o1")
-            _mark_dependencies_ready(repo, "o1")
-            vr = verify_checkpoint_integrity(repo, "o1")
-            self.assertFalse(vr["valid"])
-            self.assertIn("error", vr)
-
     def test_check_step_completed_returns_none_when_no_checkpoint(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
@@ -13413,86 +13319,6 @@ class CheckpointResumeRuntimeTests(unittest.TestCase):
             self.assertEqual(rc, 0)
             outj = json.loads(buf.getvalue())
             self.assertTrue(outj["completed"])
-
-    def test_read_checkpoint_cli_empty(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            init_orchestration(repo_root=repo, orchestration_id="o1")
-            _mark_dependencies_ready(repo, "o1")
-            buf = io.StringIO()
-            with redirect_stdout(buf):
-                rc = main(
-                    [
-                        "read-checkpoint",
-                        "--repo-root",
-                        str(repo),
-                        "--orchestration-id",
-                        "o1",
-                    ]
-                )
-            self.assertEqual(rc, 0)
-            outj = json.loads(buf.getvalue())
-            self.assertEqual(outj["completed_steps"], [])
-
-    def test_read_checkpoint_forbidden_without_resume(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            init_orchestration(repo_root=repo, orchestration_id="o2")
-            _mark_dependencies_ready(repo, "o2")
-            ck_path = repo / "workspace/orchestrations/o2/orchestration_checkpoint.json"
-            ck_path.write_text(
-                json.dumps(
-                    {
-                        "orchestration_id": "o2",
-                        "schema_version": "1",
-                        "completed_steps": [{"node_key": "problem/shallow_water2d@0.3.0", "step": "compile"}],
-                    }
-                ),
-                encoding="utf-8",
-            )
-            with self.assertRaisesRegex(RuntimeError, "read_checkpoint forbidden"):
-                read_checkpoint(repo_root=repo, orchestration_id="o2")
-
-    def test_read_checkpoint_allowed_when_resume_enabled(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            init_orchestration(repo_root=repo, orchestration_id="o3")
-            _mark_dependencies_ready(repo, "o3")
-            enable_checkpoint_resume(repo_root=repo, orchestration_id="o3")
-            ck_path = repo / "workspace/orchestrations/o3/orchestration_checkpoint.json"
-            ck_path.write_text(
-                json.dumps(
-                    {
-                        "orchestration_id": "o3",
-                        "schema_version": "1",
-                        "completed_steps": [{"node_key": "problem/shallow_water2d@0.3.0", "step": "compile"}],
-                    }
-                ),
-                encoding="utf-8",
-            )
-            out = read_checkpoint(repo_root=repo, orchestration_id="o3")
-            self.assertIsInstance(out, dict)
-            self.assertEqual(len(out.get("completed_steps", [])), 1)
-
-    def test_verify_checkpoint_integrity_cli(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            init_orchestration(repo_root=repo, orchestration_id="o1")
-            _mark_dependencies_ready(repo, "o1")
-            buf = io.StringIO()
-            with redirect_stdout(buf):
-                rc = main(
-                    [
-                        "verify-checkpoint-integrity",
-                        "--repo-root",
-                        str(repo),
-                        "--orchestration-id",
-                        "o1",
-                    ]
-                )
-            self.assertEqual(rc, 0)
-            outj = json.loads(buf.getvalue())
-            self.assertFalse(outj["valid"])
 
     def test_record_agent_run_accepts_skipped_by_checkpoint(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -49,8 +49,6 @@ TIER_B_SUBCOMMANDS: frozenset[str] = frozenset({
     "preflight",
     "preflight-status",
     "record-timeout",
-    "read-checkpoint",
-    "verify-checkpoint-integrity",
     "check-step-completed",
     "orchestration-read",
     "repair-agent-runs",

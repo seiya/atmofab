@@ -14353,113 +14353,6 @@ def update_checkpoint(
     return entry
 
 
-def _guard_checkpoint_read_requires_resume(repo_root: Path, orchestration_id: str) -> None:
-    ck_path = _checkpoint_path(repo_root, orchestration_id)
-    if not ck_path.is_file():
-        return
-    try:
-        ck = _read_json(ck_path)
-    except (OSError, json.JSONDecodeError):
-        return
-    if not isinstance(ck, dict):
-        return
-    steps = ck.get("completed_steps")
-    if not isinstance(steps, list) or not steps:
-        return
-    meta_path = _orchestration_root(repo_root, orchestration_id) / "orchestration_meta.json"
-    if not meta_path.is_file():
-        return
-    try:
-        meta = _read_json(meta_path)
-    except (OSError, json.JSONDecodeError):
-        return
-    if isinstance(meta, dict) and meta.get("resume_enabled") is True:
-        return
-    raise RuntimeError(
-        "read_checkpoint forbidden unless orchestration_meta.resume_enabled is true "
-        f"(orchestration_id={orchestration_id!r})"
-    )
-
-
-def read_checkpoint(
-    repo_root: Path,
-    orchestration_id: str,
-) -> dict[str, Any] | None:
-    """Read and return orchestration_checkpoint.json. None if it does not exist."""
-    _guard_checkpoint_read_requires_resume(repo_root, orchestration_id)
-    return _load_checkpoint(repo_root, orchestration_id)
-
-
-def verify_checkpoint_integrity(
-    repo_root: Path,
-    orchestration_id: str,
-) -> dict[str, Any]:
-    """Recompute all artifact hashes of the checkpoint and verify the integrity."""
-    checkpoint = _load_checkpoint(repo_root, orchestration_id)
-    if checkpoint is None:
-        return {
-            "orchestration_id": orchestration_id,
-            "valid": False,
-            "error": "orchestration_checkpoint.json not found",
-            "steps": [],
-        }
-
-    step_results: list[dict[str, Any]] = []
-    all_ok = True
-
-    for entry in checkpoint.get("completed_steps", []):
-        node_key = entry.get("node_key", "")
-        step = entry.get("step", "")
-        stored_hashes: dict[str, str] = entry.get("artifact_hashes", {})
-        if not isinstance(stored_hashes, dict):
-            stored_hashes = {}
-        mismatches: list[dict[str, str]] = []
-        missing: list[str] = []
-
-        for ref, expected_hash in stored_hashes.items():
-            if not isinstance(ref, str):
-                continue
-            if not isinstance(expected_hash, str):
-                continue
-            if expected_hash == "sha256:missing":
-                missing.append(ref)
-                continue
-            actual_hash = _compute_sha256(repo_root / ref)
-            if actual_hash != expected_hash:
-                mismatches.append(
-                    {
-                        "ref": ref,
-                        "expected": expected_hash,
-                        "actual": actual_hash,
-                    }
-                )
-
-        if missing:
-            integrity = "missing_artifacts"
-            all_ok = False
-        elif mismatches:
-            integrity = "stale"
-            all_ok = False
-        else:
-            integrity = "ok"
-
-        step_results.append(
-            {
-                "node_key": node_key,
-                "step": step,
-                "integrity": integrity,
-                "mismatches": mismatches,
-                "missing_artifacts": missing,
-            }
-        )
-
-    return {
-        "orchestration_id": orchestration_id,
-        "valid": all_ok,
-        "steps": step_results,
-    }
-
-
 def check_step_completed(
     repo_root: Path,
     orchestration_id: str,
@@ -25038,14 +24931,6 @@ def main(argv: list[str] | None = None) -> int:
     reserve_root_parser.add_argument("--reserved-by-agent-run-id", required=True,
                                      help="UUID of the agent that will use this reserved ID.")
 
-    read_cp_parser = subparsers.add_parser("read-checkpoint")
-    read_cp_parser.add_argument("--repo-root", required=True)
-    read_cp_parser.add_argument("--orchestration-id", required=True)
-
-    verify_cp_parser = subparsers.add_parser("verify-checkpoint-integrity")
-    verify_cp_parser.add_argument("--repo-root", required=True)
-    verify_cp_parser.add_argument("--orchestration-id", required=True)
-
     check_step_parser = subparsers.add_parser("check-step-completed")
     check_step_parser.add_argument("--repo-root", required=True)
     check_step_parser.add_argument("--orchestration-id", required=True)
@@ -25524,18 +25409,6 @@ def main(argv: list[str] | None = None) -> int:
         except (ValueError, RuntimeError) as exc:
             print(str(exc), file=sys.stderr)
             return 1
-    elif args.command == "read-checkpoint":
-        loaded = read_checkpoint(repo_root=repo_root, orchestration_id=args.orchestration_id)
-        result = (
-            loaded
-            if loaded is not None
-            else {"orchestration_id": args.orchestration_id, "completed_steps": []}
-        )
-    elif args.command == "verify-checkpoint-integrity":
-        result = verify_checkpoint_integrity(
-            repo_root=repo_root,
-            orchestration_id=args.orchestration_id,
-        )
     elif args.command == "check-step-completed":
         info = check_step_completed(
             repo_root=repo_root,
