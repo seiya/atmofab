@@ -1637,7 +1637,7 @@ def _start_claims_root() -> Path:
     leaves it unset: one file per orchestration and per spec, which the OS releases
     on process death, is the point.
 
-    `expanduser` before `absolute`, matching the two resolvers in
+    `expanduser` before `absolute`, matching `workflow_homes_root` in
     `tools/hooks/common.py`. It is a behaviour CHANGE: a quoted
     `ATMOFAB_START_CLAIM_ROOT='~/claims'` used to become a literal `~` directory under
     the caller's working directory, because the shell does not expand inside quotes.
@@ -1646,7 +1646,7 @@ def _start_claims_root() -> Path:
     "proceed" by design, so there is no failing closed to do. That is a statement about
     the CALLER: `expanduser()` itself raises `RuntimeError` for a `~account` naming no
     account, and `_exclusive_claim` catches it to keep the promise. This resolver is not
-    total either (`TODO.md` carries the item for all three of them); what makes the
+    total either (`TODO.md` carries the item for both of them); what makes the
     consequence different here is that the claim has a caller allowed to shrug.
     """
     override = os.environ.get(START_CLAIMS_ROOT_ENV, "").strip()

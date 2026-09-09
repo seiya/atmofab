@@ -16630,13 +16630,15 @@ def _require_usable_private_root_override(env_name: str, root: Path, subject: st
                 "There is no working configuration here to preserve. Point it at a "
                 "directory that neither contains nor sits inside the checkout"
             )
-    # NOT PINNED for the HOMES caller, and redundant there rather than missing: the very
-    # next thing `_create_workflow_backend_home` does is the ancestors loop, whose
-    # `_require_secure_home_ancestor` refuses a non-directory at the same path. Deleting
-    # the check below therefore changes the homes MESSAGE and not the homes verdict
-    # (round-3 census, measured: `test_orchestration_runtime.py` stays fully green while
-    # the token-side subtests fail). Kept so both callers refuse the same input in the
-    # same place, and recorded so the survivor does not read as a gap.
+    # Redundant for the VERDICT and load-bearing for the MESSAGE: the very next thing
+    # `_create_workflow_backend_home` does is the ancestors loop, whose
+    # `_require_secure_home_ancestor` refuses a non-directory at the same path — but with a
+    # message that names neither the variable nor the reason. It WAS unpinned for this
+    # caller (a round-3 census measured `test_orchestration_runtime.py` staying green while
+    # only the token-side subtests failed); issue #176 ported that token-side row to the
+    # homes caller, so `test_operator_private_root.py::WorkflowHomesRootOverrideTests::
+    # test_an_override_naming_an_existing_file_is_refused_before_the_first_write` now goes
+    # red for both spellings when this check is removed. There is no survivor left to record.
     parent = root.parent
     if not parent.exists():
         raise ValueError(

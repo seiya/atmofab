@@ -470,9 +470,9 @@ cannot name it either. For Bash on both backends the block comes from one of two
 and which one tells the operator WHICH tree was touched: `homes/` and everything under it
 is a protected root of its own and answers `forbid_backend_credential_direct_read` (with
 the leaf's OWN home naming itself, since the roots sort longest-path-first), while
-`start_claims/` answers `forbid_operator_secret_direct_read`.
-`start_claims/` has no entry of its own and is attributed to `~/.atmofab` above it — the files are 0-byte advisory locks, so
-they are covered by the root rather than protected in their own right. Both are refusals, and neither has a
+`start_claims/` answers `forbid_operator_secret_direct_read`: it has no entry of its own
+and is attributed to `~/.atmofab` above it, because the files are 0-byte advisory locks and
+are covered by the root rather than protected in their own right. Both are refusals, and neither has a
 remedy other than dropping the read: these paths are outside every manifest and no agent
 task needs them. (The `#hook-recovery` table covers both policy ids in ONE row;
 this section is canonical for what lives under that root.) **`chmod 700 ~/.atmofab` is recommended** on a
@@ -513,11 +513,18 @@ paragraph after the list for what that leaves):
   containment rule that would otherwise drop a root overlapping the checkout — that
   exemption is what keeps the guard when one of them does — so a root ABOVE the checkout
   makes every in-repo path a path under a protected root, and the guard matches the
-  command's TOKENS rather than only its read targets. Measured: with either relocatable
-  root set to the checkout's parent, `cat README.md`, `ls`, `python3 tools/x.py` and even
-  `echo hi` are all blocked. An earlier version of this bullet called that "every
-  recursive in-repo read", which understated it by a wide margin. (It also said the homes
-  root was exempt from the drop before it was; that was the defect, and it is closed.)
+  command's TOKENS rather than only its read targets. Measured with
+  `ATMOFAB_WORKFLOW_HOMES_ROOT` set to the checkout's parent: `cat README.md`, `ls`,
+  `python3 tools/x.py` and even `echo hi` are all blocked. An earlier version of this
+  bullet called that "every recursive in-repo read", which understated it by a wide
+  margin. (It also said the homes root was exempt from the drop before it was; that was
+  the defect, and it is closed.) **This is the homes root's property, not every
+  relocator's**: the measurement used to say "either relocatable root" because the other
+  one was the operator token store, which was a protected root too. Issue #176 deleted
+  that store, and the relocator left beside the homes root —
+  `ATMOFAB_START_CLAIM_ROOT` — has no `protected_host_read_roots` entry, so pointing IT
+  at the checkout's parent blocks nothing (re-measured through `evaluate_common_policy`:
+  all three commands ALLOW). The claims root's own hazard is the paragraph below.
 
   Both halves resolve symlinks, so the path cannot be laundered through one — and the
   **moment** of the refusal decides where you look when it bites. It runs when a leaf is
@@ -536,7 +543,7 @@ paragraph after the list for what that leaves):
 **`ATMOFAB_START_CLAIM_ROOT` is checked by nothing**, and that is the price of the claim
 being advisory: a claim that cannot be taken yields "proceed" rather than failing, so
 there is no refusal to hang the checks on. Pointing it inside the checkout is therefore
-possible and is a bad idea for a different reason from the other two — a 0-byte lock file
+possible and is a bad idea for a different reason from the homes root — a 0-byte lock file
 created under the repository while a leaf is running lands in that leaf's terminal
 write-diff and is misattributed as an unauthorized write, which is the reason the claims
 live outside the repository at all.
