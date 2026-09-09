@@ -3318,24 +3318,6 @@ def _format_event_human(payload: dict[str, Any], *, elide_detail: bool = True) -
         return (f"    [warn   ] usage limit in {phase}.{substep} [wait {attempt}]{origin}: "
                 f"waiting {wait}s for the reset, then re-launching")
 
-    if status == "info" and event == "transport_substep_resume":
-        step = payload.get("step", "?")
-        substep = payload.get("resume_substep", "?")
-        producer = payload.get("producer_arid", "?")
-        artifact = payload.get("artifact_id", "?")
-        return (f"    [resume ] {step} resumes at {substep} — producer {producer} / "
-                f"{artifact} reused")
-
-    if status == "info" and event == "substep_resumed":
-        phase = payload.get("phase", "?")
-        substep = payload.get("substep") or "step"
-        return f"    [substep] {phase}.{substep} reused (resumed)"
-
-    if status == "info" and event == "transport_resume_declined":
-        reason = payload.get("reason", "?")
-        return (f"    [warn   ] transport substep resume declined: {reason} "
-                f"— full phase re-run")
-
     if status == "info" and event == "prior_incomplete_orchestration":
         orch = payload.get("orchestration_id", "?")
         liveness = payload.get("liveness", "?")

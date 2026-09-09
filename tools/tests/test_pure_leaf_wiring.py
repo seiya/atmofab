@@ -1486,10 +1486,13 @@ class PureRenderTests(unittest.TestCase):
         "tools/prompt_templates/pure_escalate_diagnose.txt: Output contract (routing directive)"
         ": one JSON object with th #7a7143f90f63",
         # Both digests changed in issue #148: each line gained the `Compile.verify` pointer.
+        # The RUNBOOK digest changed again in issue #176: the deleted transport deriver left
+        # this routing sentence naming three derivers instead of four. It still routes on
+        # `dev_verify_major` / `dev_verify_critical` and assigns nothing.
         "docs/AGENT_CONTRACT.md: - A verify-family finding always sets `verification_status=f"
         " #12a92add46ae",
         "docs/RUNBOOK.md: - Recovery from a **`conductor_phase_fail_closed` whose `rea"
-        " #460f6855d596",
+        " #39f57d810497",
         "skills/workflow-generate-verify/SKILL.md: - A finding always sets "
         "`verification_status=fail` (record ` #4a2a99cfe8e9",
         # Issue #148: the `Compile.verify` mirror of the line above. It routes and points; it
