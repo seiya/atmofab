@@ -154,8 +154,8 @@ and `atmofab-enforcement-change/scripts/measure_claude_tool.py` — carry their 
 collects them — measured at `8b9e38a`: `pytest tools/tests/`, a bare `pytest` and `pytest .`
 each collect 6105, and the two directories hold 70 tests between them.
 
-**Those two commands get none of the guards below**, which `tools/tests/conftest.py` installs
-for the suite's own directory: not the environment strip, not the private-root redirect, not
+**Those two commands get none of the guards `tools/tests/conftest.py` installs** for the suite's
+own directory: not the environment strip, not the private-root redirect, not
 the secret-root refusal, and `--keep-operator-env` is an unrecognized argument there. Nothing
 is known to bite — neither instrument test nor either script reads an `ATMOFAB_*` name,
 `CODEX_HOME` or `CLAUDE_CONFIG_DIR` — and no `conftest.py` is placed beside them, so an
