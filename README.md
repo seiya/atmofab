@@ -148,18 +148,18 @@ leaf deadline / abandon / teardown guards executed by nobody.
 
 The two review instruments under `.claude/skills/` — `atmofab-review-loop/scripts/mutation_check.py`
 and `atmofab-enforcement-change/scripts/measure_claude_tool.py` — carry their tests beside them in
-`scripts/tests/`, and neither command above collects them: `pytest tools/tests/` because they are
-not under `tools/tests/`, a bare `pytest` because `testpaths` points there. `pytest .` does not
-collect them either, and that one IS held by `norecursedirs`, whose default list contains `.*`.
-Each instrument's own skill states the command that runs its tests —
-`.claude/skills/atmofab-review-loop/SKILL.md` and
-`.claude/skills/atmofab-enforcement-change/SKILL.md`. **Those two commands do not get the
-environment guard described next**: `tools/tests/conftest.py` is directory-scoped, so it is
-not loaded for a path outside `tools/tests/`, and `--keep-operator-env` is an unrecognized
-argument there. Neither instrument test reads an `ATMOFAB_*` name, `CODEX_HOME` or
-`CLAUDE_CONFIG_DIR`, so nothing is known to bite; a `conftest.py` beside them is deliberately
-not added, because it would put the default run back into `.claude/` — the thing moving them
-out was for.
+`scripts/tests/`. Each instrument's own skill states the command that runs its tests
+(`.claude/skills/atmofab-review-loop/SKILL.md` and
+`.claude/skills/atmofab-enforcement-change/SKILL.md`), because no command in this section
+collects them — measured at `8b9e38a`: `pytest tools/tests/`, a bare `pytest` and `pytest .`
+each collect 6105, and the two directories hold 70 tests between them.
+
+**Those two commands get none of the guards below**, which `tools/tests/conftest.py` installs
+for the suite's own directory: not the environment strip, not the private-root redirect, not
+the secret-root refusal, and `--keep-operator-env` is an unrecognized argument there. Nothing
+is known to bite — neither instrument test nor either script reads an `ATMOFAB_*` name,
+`CODEX_HOME` or `CLAUDE_CONFIG_DIR` — and no `conftest.py` is placed beside them, so an
+instrument test that ever does need a guard has to say so itself.
 
 **The suite ignores your `ATMOFAB_*`, `CODEX_HOME` and `CLAUDE_CONFIG_DIR` environment
 variables** (issue #84). They are per-run knobs that `tools/run_workflow.py` sets in every
