@@ -73,10 +73,8 @@ try:
         _COMPILER_BYPRODUCT_EXTENSIONS,
         _resolve_lenient,
         backend_credential_home_paths as _backend_credential_home_paths,
-        operator_tokens_root as _hooks_operator_tokens_root,
         validate_pipeline_semantics_stage,
         workflow_homes_root as _hooks_workflow_homes_root,
-        OPERATOR_TOKENS_ROOT_ENV,
         WORKFLOW_HOMES_ROOT_ENV,
     )
     from tools.meta_contracts import (
@@ -108,10 +106,8 @@ except ModuleNotFoundError:  # pragma: no cover - import bootstrap for direct CL
         _COMPILER_BYPRODUCT_EXTENSIONS,
         _resolve_lenient,
         backend_credential_home_paths as _backend_credential_home_paths,
-        operator_tokens_root as _hooks_operator_tokens_root,
         validate_pipeline_semantics_stage,
         workflow_homes_root as _hooks_workflow_homes_root,
-        OPERATOR_TOKENS_ROOT_ENV,
         WORKFLOW_HOMES_ROOT_ENV,
     )
     from tools.meta_contracts import (
@@ -10725,197 +10721,8 @@ def _write_unauthorized_write_violation(
         record["manifest_file_tool_paths"] = manifest_file_tool_paths
     if directory_authorized_paths is not None:
         record["directory_authorized_paths"] = directory_authorized_paths
-    # P2-B: preserve prior operator dismissal evidence.  When a re-detection
-    # surfaces unauthorized paths that are NOT a subset of a previously
-    # dismissed set, this function overwrites the existing violation file.
-    # Without carrying it forward, the operator's prior `dismissed_at` /
-    # `dismiss_reason` / `dismissed_paths` approval would be silently destroyed,
-    # misleading auditors into thinking no dismissal ever happened.  Accumulate
-    # the history under `prior_dismissals` so the full trail survives overwrite.
-    if out.exists():
-        try:
-            prior = json.loads(out.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            prior = None
-        if isinstance(prior, dict):
-            # Always carry forward any accumulated history first, so a SECOND
-            # consecutive re-detection (no intervening re-dismiss, hence no
-            # `dismissed_at` on the prior record) does not drop the earlier
-            # entries.  Then append the current dismissal if the prior record
-            # was itself in a dismissed state.
-            prior_history = prior.get("prior_dismissals")
-            history_list = list(prior_history) if isinstance(prior_history, list) else []
-            if prior.get("dismissed_at"):
-                history_list.append({
-                    "dismissed_at": prior.get("dismissed_at"),
-                    "dismiss_reason": prior.get("dismiss_reason"),
-                    "dismissed_paths": prior.get("dismissed_paths"),
-                    "superseded_at": record["detected_at"],
-                })
-            if history_list:
-                record["prior_dismissals"] = history_list
     _write_json(out, record)
     return out
-
-
-def dismiss_violation(
-    repo_root: Path,
-    orchestration_id: str,
-    *,
-    agent_run_id: str,
-    dismiss_reason: str,
-    paths: list[str],
-    operator_token: str,
-) -> dict[str, Any]:
-    """dismiss-violation: mark a known benign unauthorized_write_violation as operator-approved.
-
-    Append ``dismissed_at`` / ``dismiss_reason`` / ``dismissed_paths`` to
-    violations/<arid>.unauthorized_write_violation.json. On the next
-    ``_validate_actual_write_paths`` call, if the detected unauthorized paths are
-    a subset of dismissed_paths, skip the raise.
-
-    Args:
-        repo_root: the repository root
-        orchestration_id: orchestration ID
-        agent_run_id: the agent run ID to dismiss
-        dismiss_reason: the dismiss reason (free-form, remains in the audit log)
-        paths: the file paths to dismiss (relative to repo root)
-        operator_token: the content of the token file `init_orchestration` wrote —
-            ~/.atmofab/operator_tokens/<oid>.txt unless ATMOFAB_OPERATOR_TOKENS_ROOT
-            moved the store
-    """
-    # Operator-only gate via token validation.
-    # The token is written to ~/.atmofab/operator_tokens/<oid>.txt at orchestration
-    # init (mode 0o600) and is NOT under any workspace/ path that agents may read.
-    # Two hook layers keep it out of agent reach: (a) the orchestration agent's
-    # allowed_read_roots include workspace/ but NOT ~/.atmofab/, so the Read tool
-    # is blocked by read_manifest_read_guard; (b) forbid_operator_secret_direct_read
-    # blocks `cat ~/.atmofab/...` (and $HOME/absolute spellings) via Bash — and it
-    # blocks the store wherever ATMOFAB_OPERATOR_TOKENS_ROOT put it, because the guard
-    # and this reader ask the SAME resolver (issue #132).
-    # Residual: a written `python3 script.py` whose body reads the token file
-    # internally is not interceptable by PreToolUse hooks — this is an accepted
-    # architectural limit shared by all on-disk secrets; the operator passes the
-    # token from their own terminal and is not expected to materialize it on disk
-    # where the agent runs.
-    # This replaces the prior mutable-env-var check, which an agent could bypass
-    # by clearing os.environ['ATMOFAB_WORKFLOW_MODE'] before calling this function
-    # from a tmp Python script.
-    token_path = _operator_token_path(orchestration_id)
-    if not token_path.exists():
-        # Name the relocator's state, because the likeliest cause is that this shell is
-        # not the shell that started the run: the store is per-environment, and an export
-        # present in one terminal and absent in another sends the writer and the reader to
-        # two different directories. Ordered by reachability — the relocation is the thing
-        # the operator can check in one command; re-running init is the answer only once
-        # that is ruled out.
-        _tokens_override = os.environ.get(OPERATOR_TOKENS_ROOT_ENV, "").strip()
-        _where = (
-            f"{OPERATOR_TOKENS_ROOT_ENV}={_tokens_override!r} in this shell"
-            if _tokens_override
-            else f"{OPERATOR_TOKENS_ROOT_ENV} is unset in this shell (default store)"
-        )
-        raise ValueError(
-            f"dismiss-violation: operator_token.txt not found at {token_path} "
-            f"({_where}). If the run was started from a shell with a different "
-            f"{OPERATOR_TOKENS_ROOT_ENV}, re-run this command with that same value; "
-            "otherwise re-run orchestration init to generate the token."
-        )
-    expected_token = token_path.read_text(encoding="utf-8").strip()
-    # Reject an empty/corrupt stored token: a 0-byte file (e.g. from a crash
-    # mid-write) must NEVER validate.  Without this, `compare_digest("", "")`
-    # is True and `--operator-token " "` (which survives the `not` guard but
-    # strips to "") would pass — letting an agent self-approve a violation.
-    if not expected_token:
-        raise ValueError(
-            "dismiss-violation: stored operator token is empty or corrupt at "
-            f"{token_path}. Re-run orchestration init to regenerate it."
-        )
-    _candidate = operator_token.strip() if operator_token else ""
-    # Constant-time compare so the gate does not leak the token via timing.
-    if not _candidate or not secrets.compare_digest(_candidate, expected_token):
-        raise ValueError(
-            "dismiss-violation: --operator-token does not match the stored "
-            f"token in {token_path}. Read the token from that file and pass it "
-            "as --operator-token."
-        )
-    if not dismiss_reason or not dismiss_reason.strip():
-        raise ValueError("dismiss-violation: --dismiss-reason must be non-empty")
-    if not paths:
-        raise ValueError("dismiss-violation: --paths must contain at least one path")
-    viol_path = _violations_dir(repo_root, orchestration_id) / f"{agent_run_id}.unauthorized_write_violation.json"
-    if not viol_path.exists():
-        raise ValueError(
-            f"dismiss-violation: violation file not found: {viol_path}. "
-            "Run record-agent-run once to produce the violation, then dismiss."
-        )
-    viol_doc = _read_json(viol_path)
-    if not isinstance(viol_doc, dict):
-        raise ValueError(f"dismiss-violation: violation file is not a JSON object: {viol_path}")
-    # Validate: every requested dismiss path must be present in the violation's
-    # recorded unauthorized_paths. This prevents operators from over-broadly
-    # pre-approving paths that were never in the evidence, which would create a
-    # wildcard pass-gate for future unauthorized writes.
-    recorded_unauthorized: set[str] = set()
-    up_obj = viol_doc.get("unauthorized_paths")
-    if isinstance(up_obj, list):
-        recorded_unauthorized = {
-            _normalize_rel_posix(str(p)) for p in up_obj if isinstance(p, str) and p.strip()
-        }
-    normalized_paths = sorted({_normalize_rel_posix(p) for p in paths if p.strip()})
-    unknown = set(normalized_paths) - recorded_unauthorized
-    if unknown:
-        raise ValueError(
-            f"dismiss-violation: the following paths are not in the violation's "
-            f"unauthorized_paths and cannot be dismissed: {sorted(unknown)}. "
-            f"Dismissable paths: {sorted(recorded_unauthorized)}"
-        )
-    # Allow re-dismiss with updated reason/paths; overwrite previous dismiss.
-    viol_doc["dismissed_at"] = _utc_now_iso()
-    viol_doc["dismiss_reason"] = dismiss_reason.strip()
-    viol_doc["dismissed_paths"] = normalized_paths
-    _write_json(viol_path, viol_doc)
-    return {
-        "dismissed": True,
-        "violation_path": str(viol_path.relative_to(repo_root)),
-        "dismissed_paths": normalized_paths,
-        "dismissed_at": viol_doc["dismissed_at"],
-        "dismiss_reason": viol_doc["dismiss_reason"],
-    }
-
-
-def _is_violation_dismissed(
-    repo_root: Path,
-    orchestration_id: str,
-    *,
-    agent_run_id: str,
-    unauthorized_paths: list[str],
-) -> bool:
-    """Pass-gate of _validate_actual_write_paths: True if already dismiss-approved.
-
-    If the violation file exists and has a ``dismissed_at`` field,
-    and the ``unauthorized_paths`` detected this time are a subset of ``dismissed_paths``,
-    return True (to skip the raise).
-    """
-    viol_path = _violations_dir(repo_root, orchestration_id) / f"{agent_run_id}.unauthorized_write_violation.json"
-    if not viol_path.exists():
-        return False
-    try:
-        viol_doc = _read_json(viol_path)
-    except Exception:
-        return False
-    if not isinstance(viol_doc, dict):
-        return False
-    if not viol_doc.get("dismissed_at"):
-        return False
-    dismissed_set: set[str] = set()
-    dp_obj = viol_doc.get("dismissed_paths")
-    if isinstance(dp_obj, list):
-        dismissed_set = {_normalize_rel_posix(str(p)) for p in dp_obj if isinstance(p, str) and p.strip()}
-    if not dismissed_set:
-        return False
-    unauthorized_normalized = {_normalize_rel_posix(p) for p in unauthorized_paths}
-    return unauthorized_normalized <= dismissed_set
 
 
 def _expected_host_evidence_rel_path(
@@ -11364,39 +11171,31 @@ def _validate_actual_write_paths(
             manifest_allowed_output_dirs=manifest_allowed_output_dirs,
         )
     if unauthorized:
-        # Pass-gate: a violation already approved by the operator via dismiss-violation
-        # skips the raise and passes record-agent-run.
-        # Confirm that the dismissed target is a strict subset of the detected unauthorized.
-        if _is_violation_dismissed(
+        # No pass-gate. An operator-approved dismissal used to skip this raise; issue #176
+        # deleted it (no violation was ever dismissed — 13 recorded
+        # `unauthorized_write_violation.json`, 0 with `dismissed_at`), so an unauthorized
+        # write is a leaf content failure that always fail_closes. Recovery is `reopen-phase`
+        # with the diverted arid as the trigger, or a fresh run (`docs/RUNBOOK.md` §3-1).
+        violation_path = _write_unauthorized_write_violation(
             repo_root,
             orchestration_id,
             agent_run_id=run_id,
+            actor_role=actor_role,
+            actual_changed_paths=actual_changed_paths,
             unauthorized_paths=unauthorized,
-        ):
-            # Evidence: the violation file's dismissed_at is already written by dismiss_violation(),
-            # so an append indicating this pass is unnecessary (the file remains as-is).
-            pass
-        else:
-            violation_path = _write_unauthorized_write_violation(
-                repo_root,
-                orchestration_id,
-                agent_run_id=run_id,
-                actor_role=actor_role,
-                actual_changed_paths=actual_changed_paths,
-                unauthorized_paths=unauthorized,
-                output_refs=output_refs,
-                write_roots=write_roots,
-                manifest_file_tool_paths=sorted(manifest_file_tool_paths) if manifest_file_tool_paths else None,
-                directory_authorized_paths=directory_authorized if directory_authorized else None,
-            )
-            if actor_role in {"step", "substep"}:
-                # Cleanup runs AFTER violation is recorded so evidence is preserved for auditors.
-                _cleanup_agent_tmp_root(repo_root, orchestration_id, agent_run_id=run_id)
-            raise ValueError(
-                "terminal run has unauthorized write paths: "
-                + ", ".join(unauthorized)
-                + f" (violation: {violation_path})"
-            )
+            output_refs=output_refs,
+            write_roots=write_roots,
+            manifest_file_tool_paths=sorted(manifest_file_tool_paths) if manifest_file_tool_paths else None,
+            directory_authorized_paths=directory_authorized if directory_authorized else None,
+        )
+        if actor_role in {"step", "substep"}:
+            # Cleanup runs AFTER violation is recorded so evidence is preserved for auditors.
+            _cleanup_agent_tmp_root(repo_root, orchestration_id, agent_run_id=run_id)
+        raise ValueError(
+            "terminal run has unauthorized write paths: "
+            + ", ".join(unauthorized)
+            + f" (violation: {violation_path})"
+        )
     if actor_role in {"step", "substep"}:
         # Success path: persist the managed-write snapshot.
         # NEW-M2: tmp cleanup is DEFERRED to the post-lock end-of-function
@@ -14526,8 +14325,8 @@ def _derive_unauthorized_write_resume_directive(
     # (`reopen-phase` -> noop) — the `resume_reopen_no_valid_trigger` dead end again.
     superseded_run_ids = _load_superseded_run_ids(repo_root, orchestration_id)
     # An invalid-log arid that now also has a canonical `agent_runs.jsonl` row was
-    # retried to success with the same arid (the documented same-arid retry path, e.g.
-    # after `dismiss-violation`); its stale invalid row + violation file linger but are
+    # retried to success with the same arid (the documented same-arid retry path); its
+    # stale invalid row + violation file linger but are
     # NOT the current failure — and `reopen_phase` would reject it anyway (it accepts a
     # trigger only when absent from `agent_runs.jsonl`). Exclude such recovered IDs so
     # they do not inflate the candidate count and suppress the directive.
@@ -16685,28 +16484,28 @@ def _chmod_directory_no_follow(path: Path, mode: int, label: str) -> None:
         os.close(fd)
 
 
-# `WORKFLOW_HOMES_ROOT_ENV`, `OPERATOR_TOKENS_ROOT_ENV` and the two resolvers below are
-# IMPORTED from `tools/hooks/common.py`, not defined here. THREE subtrees of the
-# operator-private root are relocatable, and each name moves exactly one of them:
+# `WORKFLOW_HOMES_ROOT_ENV` and the resolver below are IMPORTED from
+# `tools/hooks/common.py`, not defined here. TWO subtrees of the operator-private root are
+# relocatable, and each name moves exactly one of them:
 #
 #   * `ATMOFAB_WORKFLOW_HOMES_ROOT`  -> `~/.atmofab/homes` (this module writes it)
-#   * `ATMOFAB_OPERATOR_TOKENS_ROOT` -> `~/.atmofab/operator_tokens` (this module too)
 #   * `ATMOFAB_START_CLAIM_ROOT`     -> `~/.atmofab/start_claims` (`tools/run_workflow.py`)
 #
-# All three exist for the same reason: a test, or an operator with a reason, needs the
+# Both exist for the same reason: a test, or an operator with a reason, needs the
 # tree somewhere other than the real `~/.atmofab`. (`ATMOFAB_HOME` is deliberately NOT
 # reused — it already means "the operator's `~/.codex`" on the codex auth path, and one
 # name with two meanings is how two resolutions silently drift apart.) The ROOT itself is
 # deliberately not relocatable: it is the Bash read guard's anchor.
 #
-# The first two resolve in the hooks module because the side that CREATES these trees and
-# the side that FORBIDS a leaf from reading them have to resolve the same location — the
+# The homes one resolves in the hooks module because the side that CREATES that tree and
+# the side that FORBIDS a leaf from reading it have to resolve the same location — the
 # arrangement `backend_credential_home_paths` already uses. When `WORKFLOW_HOMES_ROOT_ENV`
 # lived here, the Bash guard knew only `~/.atmofab`, so setting the override moved the
 # homes out from under the one protected root that covers every orchestration and a leaf
 # could read a SIBLING run's transcript (measured). Codex found that; the fix is that
-# there is now one resolver. Issue #132 finished the job for the token store, which had
-# been spelled inline by its writer and its reader here.
+# there is now one resolver. (A third relocatable subtree, the dismiss-violation operator
+# token store, was resolved the same way from issue #132 until issue #176 deleted the
+# subcommand it served.)
 #
 # `start_claims` is the one that is NOT a protected read root, and that is a judgment
 # rather than an omission: the files are 0-byte advisory flocks, and a leaf that reads one
@@ -16741,40 +16540,14 @@ def _workflow_homes_root() -> Path:
     return _hooks_workflow_homes_root()
 
 
-def _operator_tokens_root() -> Path:
-    """`~/.atmofab/operator_tokens` — where the dismiss-violation tokens live.
-
-    A thin alias over `tools/hooks/common.py::operator_tokens_root`, kept as a name for
-    the same reason `_workflow_homes_root` is: this module's tests and the suite's
-    session guard patch it. The RESOLUTION is not duplicated — the guard lists whatever
-    this returns as a protected read root, so the store that gets written is by
-    construction the store that gets guarded.
-    """
-    return _hooks_operator_tokens_root()
-
-
-def _operator_token_path(orchestration_id: str) -> Path:
-    """The dismiss-violation token file for one orchestration.
-
-    The single place the `<oid>.txt` layout is spelled. `init_orchestration` writes it and
-    `dismiss_violation` reads it; before issue #132 each built the whole path from
-    `Path.home()` for itself, so the writer and the reader were two independent
-    resolutions that happened to agree.
-    """
-    return _operator_tokens_root() / f"{orchestration_id}.txt"
-
-
 def _require_usable_private_root_override(env_name: str, root: Path, subject: str,
-                                          creator: str = "a home",
                                           repo_root: Path | None = None) -> None:
     """Refuse an override that names a location this process cannot honour.
 
-    `subject` names the tree in the operator's words ("isolated claude home root", "operator
-    token store") and `creator` names what the writing side is about to make. They are
-    parameters rather than one shared sentence because the homes wording was the only
-    wording when this was extracted, and a message telling an operator their TOKEN STORE
-    failed because of "a home" names the wrong one of three relocatable trees — which is
-    the confusion the RUNBOOK sweep on this branch exists to remove.
+    `subject` names the tree in the operator's words ("isolated claude home root"); it is a
+    parameter because the backend label varies. A second parameter named what the writing
+    side was about to create, for the operator-token store that shared this refusal until
+    issue #176 deleted it; with the homes root the only caller, the sentence is fixed.
 
     The resolvers in `tools/hooks/common.py` stay TOTAL — they feed the Bash read guard,
     and a hook that raises while deciding a read is worse than one that guards a path
@@ -16793,18 +16566,16 @@ def _require_usable_private_root_override(env_name: str, root: Path, subject: st
         refused for different reasons and both are measured.
 
         INSIDE is a leaf-facing rule and the others are not.
-        The Bash read guard covers the token store wherever it goes, but the READ TOOL is
+        The Bash read guard covers the homes root wherever it goes, but the READ TOOL is
         a different layer: `_write_read_access_manifest` grants every agentic leaf
         `docs/` and `spec/` unconditionally and never consults
-        `protected_host_read_roots`, so a store at `<repo>/spec/tokens` is readable by
-        every leaf — and a leaf that reads the dismiss-violation token can approve the
-        `unauthorized_write_violation` its own `substep` produced and report the substep
-        done. Found by Codex; measured before the refusal existed
-        (`init_orchestration` accepted it and wrote the token there). The same is true of
-        the homes root, whose relocator predates this rule: leaf transcripts under
+        `protected_host_read_roots`, so leaf transcripts under a homes root at
         `<repo>/spec/homes/<oid>/<backend>/projects/` would be Read-tool reachable, and
         reading an earlier leaf's transcript is the past-run state the workflow forbids.
-        Measured for that caller too rather than argued from the first — both are refused.
+        Measured for this caller. The rule was written for TWO relocatable trees, and the
+        other one — the dismiss-violation operator token store, whose measured instance
+        was a leaf reading the token and approving the `unauthorized_write_violation` its
+        own `substep` produced — was deleted by issue #176 along with the subcommand.
 
         CONTAINING the checkout is refused because the run cannot work at all. These
         roots are exempt from the containment drop (`_command_reads_protected_host_path`
@@ -16831,7 +16602,7 @@ def _require_usable_private_root_override(env_name: str, root: Path, subject: st
         raise ValueError(
             f"{env_name} must be an absolute path (got "
             f"{raw_override!r}): a relative one resolves against each process's "
-            f"working directory, so the conductor that creates {creator} and the hook "
+            "working directory, so the conductor that creates the home and the hook "
             "that forbids reading it would resolve different trees"
         )
     if repo_root is not None:
@@ -16928,10 +16699,10 @@ def _require_secure_home_ancestor(path: Path, label: str, *, require_private: bo
     so tightening here makes the two agree rather than adding an authority.
 
     The tightening is `require_private`-gated for the same reason the check was:
-    `~/.atmofab` ITSELF is left alone. `init_orchestration`'s operator-token writer has
-    created it best-effort since long before this change and does not force its mode
-    either, it is shared with `operator_tokens/` and `start_claims/`, and it is the one
-    level here that this code did not necessarily create. `docs/RUNBOOK.md` recommends
+    `~/.atmofab` ITSELF is left alone. The homes writer here and `tools/run_workflow.py`'s
+    start-claim writer both create it best-effort and neither forces its mode, it is
+    shared with `start_claims/`, and it is the one level here that this code did not
+    necessarily create. `docs/RUNBOOK.md` recommends
     `chmod 700` for it. `homes/` and `homes/<oid>/` are this code's own.
     """
     try:
@@ -16993,10 +16764,10 @@ def _create_workflow_backend_home(repo_root: Path, orchestration_id: str,
     # exist yet (a host that has never run `init_orchestration`).
     ancestors: list[tuple[Path, bool]] = []
     if override_used:
-        # Both conditions live in the shared helper, so the homes root and the token
-        # store refuse an unusable override on the same terms. The WORDING is per-caller:
-        # each names its own tree, because there are three relocatable ones and telling
-        # an operator the wrong one is worse than two copies of the sentence.
+        # The conditions live in a shared helper. The `subject` WORDING is per-caller so
+        # the refusal names the operator's own tree: it carries the backend label, and the
+        # helper served a second relocatable tree (the operator token store) until issue
+        # #176 deleted it.
         _require_usable_private_root_override(
             WORKFLOW_HOMES_ROOT_ENV, root, f"isolated {label} home root",
             repo_root=repo_root)
@@ -19856,16 +19627,6 @@ def init_orchestration(
             "init-orchestration: orchestration_id must be a plain [A-Za-z0-9_-] token "
             f"(got {orchestration_id!r})"
         )
-    # Resolve the operator token destination and refuse an unusable relocation BEFORE
-    # the first filesystem write. A refusal after `workspace/orchestrations/<oid>/` and
-    # the `running` meta are on disk leaves a run that looks started and has no token, so
-    # the operator cannot dismiss a violation in it — the failure has to arrive while
-    # nothing has been created.
-    operator_token_path = _operator_token_path(orchestration_id)
-    if os.environ.get(OPERATOR_TOKENS_ROOT_ENV, "").strip():
-        _require_usable_private_root_override(
-            OPERATOR_TOKENS_ROOT_ENV, operator_token_path.parent,
-            "operator token store", creator="the token store", repo_root=repo_root)
     root = _orchestration_root(repo_root, orchestration_id)
     root.mkdir(parents=True, exist_ok=True)
     (repo_root / "workspace" / "tmp").mkdir(parents=True, exist_ok=True)
@@ -19941,70 +19702,6 @@ def init_orchestration(
         )
     meta["orchestration_agent_run_id"] = orchestration_agent_run_id
     _write_json(meta_path, meta)
-    # Operator token: written once at init to `_operator_token_path()` — by default
-    # ~/.atmofab/operator_tokens/<oid>.txt, wherever `ATMOFAB_OPERATOR_TOKENS_ROOT` puts
-    # it otherwise — at mode 0o600, never overwritten on resume so the same token remains
-    # valid across restarts.  Stored OUTSIDE workspace/ so the orchestration agent's
-    # allowed_read_roots (which include workspace/) cannot reach it via the Read
-    # tool, and forbid_operator_secret_direct_read blocks a Bash read of the store
-    # wherever it is: the guard lists whatever the SAME resolver returns (issue #132).
-    # dismiss-violation requires this token to prevent agents from calling
-    # the function programmatically (e.g. from a tmp Python script) to self-approve
-    # their own unauthorized_write_violations.
-    # The path itself was resolved at the top of this function, before anything was
-    # created, so an unusable relocation is refused rather than half-applied.
-    if os.environ.get(OPERATOR_TOKENS_ROOT_ENV, "").strip():
-        # Only the store itself is created under an override; its parent was required to
-        # exist above, so a typo'd path does not silently grow a tree.
-        # NOT PINNED, and deliberately so: the parent-exists refusal makes the only input
-        # that distinguishes this from `parents=True` unreachable, so no test can tell
-        # them apart (round-2 census, proved by construction rather than by corpus). Kept
-        # as the redundant half of a pair — if the refusal is ever relaxed, this is what
-        # stops the relaxation from silently building a tree.
-        operator_token_path.parent.mkdir(exist_ok=True)
-    else:
-        operator_token_path.parent.mkdir(parents=True, exist_ok=True)
-    # Restrict the directory to the owner so other local users on a shared host
-    # cannot enumerate or read operator tokens.
-    try:
-        operator_token_path.parent.chmod(0o700)
-    except OSError:
-        pass
-    # Create the token atomically with mode 0o600.  Keep a VALID existing token
-    # unchanged (so the same token survives across resume), but REPAIR a 0-byte
-    # or whitespace-only file left by a crash mid-write — otherwise that broken
-    # token is permanent and (combined with the dismiss_violation guard) would
-    # be a self-approval hole.  temp-file + os.replace makes the write atomic:
-    # the file is either absent or fully populated, never a 0-byte window, and
-    # mode 0o600 avoids the umask-default (0o644) world-readable window that
-    # write_text()-then-chmod() would leave.
-    _existing_token = ""
-    if operator_token_path.exists():
-        try:
-            _existing_token = operator_token_path.read_text(encoding="utf-8").strip()
-        except OSError:
-            _existing_token = ""
-    if not _existing_token:
-        _tok_fd, _tok_tmp = tempfile.mkstemp(
-            dir=str(operator_token_path.parent), prefix=".operator_token."
-        )
-        try:
-            os.fchmod(_tok_fd, 0o600)
-            os.write(_tok_fd, str(uuid.uuid4()).encode("utf-8"))
-            os.close(_tok_fd)
-            os.replace(_tok_tmp, operator_token_path)
-        except OSError:
-            # Do not leave a .operator_token.* temp file (holding an unused UUID)
-            # littering the dir on failure between mkstemp and replace.
-            try:
-                os.close(_tok_fd)
-            except OSError:
-                pass
-            try:
-                os.unlink(_tok_tmp)
-            except OSError:
-                pass
-            raise
     _write_read_access_manifest(
         repo_root,
         orchestration_id=orchestration_id,
@@ -24147,43 +23844,6 @@ def main(argv: list[str] | None = None) -> int:
         help="Reason code for the tombstone (e.g. leaf_transport_error_orphan).",
     )
 
-    dismiss_viol_parser = subparsers.add_parser(
-        "dismiss-violation",
-        help=(
-            "Operator approval gate: mark an unauthorized_write_violation as "
-            "intentional / benign so record-agent-run can proceed past the "
-            "terminal validation guard on retry."
-        ),
-    )
-    dismiss_viol_parser.add_argument("--repo-root", required=True)
-    dismiss_viol_parser.add_argument("--orchestration-id", required=True)
-    dismiss_viol_parser.add_argument(
-        "--agent-run-id",
-        required=True,
-        help="agent_run_id of the failing run whose violation is to be dismissed",
-    )
-    dismiss_viol_parser.add_argument(
-        "--dismiss-reason",
-        required=True,
-        help="Free-form explanation stored in violation JSON (e.g. 'tools/__pycache__ is gitignored Python bytecode')",
-    )
-    dismiss_viol_parser.add_argument(
-        "--operator-token",
-        required=True,
-        help=(
-            "Content of ~/.atmofab/operator_tokens/<oid>.txt (or of the same file under "
-            "ATMOFAB_OPERATOR_TOKENS_ROOT, if the run was started with that set). "
-            "Read with: cat ~/.atmofab/operator_tokens/<oid>.txt"
-        ),
-    )
-    dismiss_viol_parser.add_argument(
-        "--paths",
-        nargs="+",
-        required=True,
-        metavar="PATH",
-        help="Repo-root-relative paths to dismiss (must be subset of violation's unauthorized_paths)",
-    )
-
     # The bookkeeping subcommands default to a terse result projection (see
     # _project_terse_result): the orchestration agent re-reads its whole
     # transcript every turn, so echoing the full payload (record-agent-run
@@ -24527,19 +24187,6 @@ def main(argv: list[str] | None = None) -> int:
             )
         except (ValueError, RuntimeError, OSError) as exc:
             print(f"add-superseded-runs: {exc}", file=sys.stderr)
-            return 1
-    elif args.command == "dismiss-violation":
-        try:
-            result = dismiss_violation(
-                repo_root,
-                args.orchestration_id,
-                agent_run_id=args.agent_run_id,
-                dismiss_reason=args.dismiss_reason,
-                paths=args.paths,
-                operator_token=args.operator_token,
-            )
-        except (ValueError, FileNotFoundError) as exc:
-            print(f"dismiss-violation: {exc}", file=sys.stderr)
             return 1
     elif args.command == "set-status":
         result = update_orchestration_status(

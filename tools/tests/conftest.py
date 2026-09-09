@@ -12,25 +12,24 @@ directories into the operator's real `~/.atmofab/homes` and leave them there —
 with the homes of real runs, where the prune tool would find them unverifiable (their
 "owner" checkouts are temporary directories that no longer exist).
 
-THREE SUBTREES, and the homes were only ever one of them (issue #133). This repository
-writes `homes/`, `operator_tokens/` and `start_claims/` under `~/.atmofab`, and until
-this file covered all three the other two went into the operator's real root on every
-run: measured at `e0bae3d`, `tools/tests/test_orchestration_runtime.py` alone left 249
-files in `~/.atmofab/operator_tokens/`, and `start_claims/` held 40. The guard built to
-stop exactly that covered the homes and nothing else — which is why the resolvers are
-named below rather than the trees.
+TWO SUBTREES, and the homes were only ever one of them (issue #133). This repository
+writes `homes/` and `start_claims/` under `~/.atmofab`, and until this file covered every
+one of them the others went into the operator's real root on every run: measured at
+`e0bae3d`, `tools/tests/test_orchestration_runtime.py` alone left 249 files in the
+`operator_tokens/` store (deleted with `dismiss-violation` by issue #176), and
+`start_claims/` held 40. The guard built to stop exactly that covered the homes and
+nothing else — which is why the resolvers are named below rather than the trees.
 
 TWO LAYERS, and the second is the one that actually holds:
 
-  1. REDIRECT. A function-scoped autouse fixture points `ATMOFAB_WORKFLOW_HOMES_ROOT`,
-     `ATMOFAB_OPERATOR_TOKENS_ROOT` and `ATMOFAB_START_CLAIM_ROOT` at a per-test
-     `tmp_path`, so all three land where pytest already cleans up. Per-TEST rather
+  1. REDIRECT. A function-scoped autouse fixture points `ATMOFAB_WORKFLOW_HOMES_ROOT`
+     and `ATMOFAB_START_CLAIM_ROOT` at a per-test
+     `tmp_path`, so both land where pytest already cleans up. Per-TEST rather
      than per-session on purpose: the home path is deterministic now, so two tests using
      the same fixed orchestration id would collide on the exclusive `os.mkdir` under a
      shared root.
-  2. ENFORCE, BEFORE THE FACT. A session-scoped guard wraps the three functions that
-     decide WHERE each tree goes — `orchestration_runtime._workflow_homes_root`,
-     `orchestration_runtime._operator_tokens_root` and
+  2. ENFORCE, BEFORE THE FACT. A session-scoped guard wraps the two functions that
+     decide WHERE each tree goes — `orchestration_runtime._workflow_homes_root` and
      `run_workflow._start_claims_root` — and raises if one is about to return something
      inside the operator's REAL `~/.atmofab`. The redirect is a default a test can undo
      (`patch.dict(os.environ, ..., clear=True)` without re-setting the name is one line
@@ -217,11 +216,11 @@ def pytest_unconfigure(config) -> None:
 def _redirect_operator_private_roots(tmp_path, monkeypatch):
     """Point every tree this test writes under `~/.atmofab` into `tmp_path`.
 
-    All THREE subtrees, not just the homes: the isolated backend homes, the operator
-    token store, and the start-claim locks. Only the first was redirected until issue
-    #133, and the other two were writing into the operator's real root the whole time
-    (measured at `e0bae3d`: `test_orchestration_runtime.py` alone left 249 files in
-    `~/.atmofab/operator_tokens/`, and `~/.atmofab/start_claims/` held 40).
+    Both subtrees, not just the homes: the isolated backend homes and the start-claim
+    locks. Only the first was redirected until issue #133, and the others were writing
+    into the operator's real root the whole time (measured at `e0bae3d`:
+    `test_orchestration_runtime.py` alone left 249 files in the `operator_tokens/` store
+    that issue #176 deleted, and `~/.atmofab/start_claims/` held 40).
 
     Per-TEST rather than per-session on purpose: the home path is deterministic now, so
     two tests using the same fixed orchestration id would collide on the exclusive
@@ -240,7 +239,7 @@ def _redirect_operator_private_roots(tmp_path, monkeypatch):
 
 @pytest.fixture(scope="session", autouse=True)
 def _forbid_anything_in_operator_secret_root():
-    """Fail any test about to resolve one of the three roots to the real `~/.atmofab`."""
+    """Fail any test about to resolve one of the private roots to the real `~/.atmofab`."""
     import tools.orchestration_runtime as runtime
     from tools import run_workflow
     from tools.hooks.common import operator_secret_root
@@ -266,7 +265,7 @@ def _forbid_anything_in_operator_secret_root():
             return root
 
         # Marked so a test can ask whether the guard is installed rather than inferring
-        # it from a function name. ONE spelling for all three, so a witness cannot ask
+        # it from a function name. ONE spelling for every root, so a witness cannot ask
         # about a marker that exists only on the resolver it happens to name. The
         # witnesses must SKIP when run outside pytest, where conftest is not loaded and
         # the thing they test does not exist.
@@ -276,8 +275,6 @@ def _forbid_anything_in_operator_secret_root():
     installed = [
         (runtime, "_workflow_homes_root", "isolated-homes root",
          runtime.WORKFLOW_HOMES_ROOT_ENV),
-        (runtime, "_operator_tokens_root", "operator token store",
-         runtime.OPERATOR_TOKENS_ROOT_ENV),
         (run_workflow, "_start_claims_root", "start-claim root",
          run_workflow.START_CLAIMS_ROOT_ENV),
     ]

@@ -1658,8 +1658,8 @@ def _start_claims_root() -> Path:
 def _claim_lock_path(repo_root: Path, kind: str, key: str) -> Path:
     """Where a per-(repo, kind, key) start claim lives.
 
-    Outside the repository, alongside the operator tokens, for the same reason those
-    are: a file under `workspace/` created while a leaf is running lands in that leaf's
+    Outside the repository, alongside the isolated backend homes, for the same reason
+    those are: a file under `workspace/` created while a leaf is running lands in that leaf's
     terminal write-diff and is misattributed as an unauthorized write. The
     write-snapshot exemptions are all keyed to a specific `orchestration_id`, which a
     per-SPEC claim taken BEFORE an id is minted cannot use.
@@ -4093,8 +4093,8 @@ def _run_node(
         # status is what routes `init --resume-from-checkpoint` through
         # `terminal_reset`, where the crash reconciliations live).
         # `init_committed` is set when the runtime call RETURNS, but the runtime writes
-        # the `running` meta well before that (an operator token, several more writes,
-        # and the subprocess round-trip all follow). A signal landing in that window
+        # the `running` meta well before that (several more writes and the subprocess
+        # round-trip all follow). A signal landing in that window
         # would leave exactly the stuck-`running` orchestration this clause exists to
         # prevent. So fall back to the durable evidence: a meta on disk whose `driver`
         # block names THIS process was necessarily written by this invocation's init,

@@ -2302,7 +2302,7 @@ class RunWorkflowTests(unittest.TestCase):
 
     def test_interrupt_during_init_terminalizes_a_meta_this_run_committed(self) -> None:
         # `init_committed` only flips when the runtime call RETURNS, but the runtime
-        # writes the `running` meta well before that (an operator token and ~130 more
+        # writes the `running` meta well before that (several more writes and ~130 more
         # lines follow, then the subprocess round-trip). A signal landing in that
         # window used to skip terminalization and leave the orchestration stuck at
         # `running` — the very state this whole change exists to prevent. The durable

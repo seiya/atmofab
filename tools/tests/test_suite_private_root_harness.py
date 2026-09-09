@@ -33,7 +33,7 @@ import tools.orchestration_runtime as ort
 from tools import run_workflow
 
 
-class SuiteHarnessCoversAllThreeRootsTests(unittest.TestCase):
+class SuiteHarnessCoversAllPrivateRootsTests(unittest.TestCase):
     """Both conftest layers, asserted directly and only where they exist."""
 
     def setUp(self) -> None:
@@ -43,7 +43,6 @@ class SuiteHarnessCoversAllThreeRootsTests(unittest.TestCase):
     def _resolvers(self):
         return (
             ("isolated-homes root", ort._workflow_homes_root),
-            ("operator token store", ort._operator_tokens_root),
             ("start-claim root", run_workflow._start_claims_root),
         )
 
