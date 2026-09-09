@@ -462,15 +462,21 @@ PINNED: dict[str, str] = {
     # `profile_selection`, and the profile-document heading says the selected component
     # set is already resolved.
     "pure-38": "3d0d113a217a555a254a9dfaea45053209c2b5d12933fbf8ecc012addf62417d",
-    # issue #175 Part B: the generate pair loses every `profile` clause (the cardinality
-    # ladder rung, the module-parameter and `public_api` carve-outs, the OpenMP floor's
-    # exemption) — a `profile` is host-resolved at Compile and can be neither a dependency
-    # node nor an optimization-unit member — and G2/H2's runtime-input minimum gains the
-    # scope of the `profile_selection` exclusion. The inert dependency-call rule is
-    # UNCHANGED from `pure-38`: an earlier revision of that branch deleted it and review
+    # issue #175 Part B: the generate pair loses every `profile` clause that named a
+    # `profile` NODE (the cardinality ladder rung, the module-parameter and `public_api`
+    # carve-outs, the OpenMP floor's exemption) — a `profile` is host-resolved at Compile
+    # and can be neither a dependency node nor an optimization-unit member. Two rules are
+    # UNCHANGED from `pure-38` and must not be read out of this entry as deletions. The
+    # inert dependency-call rule: an earlier revision of this branch deleted it, and review
     # measured that three deterministic gates force a leaf into exactly the shape it
-    # describes, so it was restored before merge. Do not read this entry as a deletion of it.
-    "pure-39": "3d970746845e3d4c90a4c56bf02b3996390d64e989bdc2cf38ccca7552f78d6a",}
+    # describes, so it was restored. G2/H2's runtime-input minimum, including the
+    # `profile`/`component` selection result: three successive revisions tried to except a
+    # two-key `inputs.profile_selection` from it, each on a premise measurement then
+    # falsified — the last of them by a certified `pass` bundle
+    # (`shallow_water2d_checks.f90`) that reads exactly those two keys as a per-case guard.
+    # The exception was abandoned rather than rewritten a fourth time; a `profile_selection`
+    # a runner ignores is a `fail` here, as it was before issue #175.
+    "pure-39": "6a73aa8bc9f2bc56c18d08d4160e335cecc38f2401e696cb11f343256cdb2a26",}
 
 
 def _contract_tuple() -> dict[str, object]:
