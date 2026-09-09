@@ -108,6 +108,9 @@ python3 .claude/skills/atmofab-review-loop/scripts/mutation_check.py \
 # to look at the whole branch at once (three-dot, like the review target: it excludes the
 # commits main gained after you branched)
 #   --range origin/main...HEAD
+# if you changed scripts/mutation_check.py itself, its tests live beside it;
+# `pytest tools/tests` does not collect them:
+#   python3 -m pytest .claude/skills/atmofab-review-loop/scripts/tests -q -p no:randomly
 ```
 
 **Pass `-x` — but only with a `--test-cmd` whose baseline is green** (see the handwritten-sweep

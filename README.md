@@ -146,6 +146,21 @@ python3 -m pytest tools/tests/ -q -m "not slow"
 opt-out because nothing else runs the full set: deselecting it by default would leave the
 leaf deadline / abandon / teardown guards executed by nobody.
 
+The two review instruments under `.claude/skills/` — `atmofab-review-loop/scripts/mutation_check.py`
+and `atmofab-enforcement-change/scripts/measure_claude_tool.py` — carry their tests beside them in
+`scripts/tests/`. Each instrument's own skill states the command that runs its tests
+(`.claude/skills/atmofab-review-loop/SKILL.md` and
+`.claude/skills/atmofab-enforcement-change/SKILL.md`), because no command in this section
+collects them — measured at `8b9e38a`: `pytest tools/tests/`, a bare `pytest` and `pytest .`
+each collect 6105, and the two directories hold 70 tests between them.
+
+**Those two commands get none of the guards `tools/tests/conftest.py` installs** for the suite's
+own directory: not the environment strip, not the private-root redirect, not
+the secret-root refusal, and `--keep-operator-env` is an unrecognized argument there. Nothing
+is known to bite — neither instrument test nor either script reads an `ATMOFAB_*` name,
+`CODEX_HOME` or `CLAUDE_CONFIG_DIR` — and no `conftest.py` is placed beside them, so an
+instrument test that ever does need a guard has to say so itself.
+
 **The suite ignores your `ATMOFAB_*`, `CODEX_HOME` and `CLAUDE_CONFIG_DIR` environment
 variables** (issue #84). They are per-run knobs that `tools/run_workflow.py` sets in every
 node's environment, so the shell most likely to have them exported is one used for this

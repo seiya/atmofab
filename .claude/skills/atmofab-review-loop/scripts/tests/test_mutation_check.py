@@ -76,8 +76,7 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-SCRIPT = (Path(__file__).resolve().parents[2]
-          / ".claude" / "skills" / "atmofab-review-loop" / "scripts" / "mutation_check.py")
+SCRIPT = Path(__file__).resolve().parents[1] / "mutation_check.py"
 
 #: Neutralise the operator's git configuration for every git this file runs, its own and the
 #: script's. Measured on one developer machine's plausible settings: `commit.gpgsign=true` fails
@@ -875,8 +874,10 @@ class DiffEntryPathTests(unittest.TestCase):
         spec = importlib.util.spec_from_file_location("mutation_check_under_test", SCRIPT)
         assert spec and spec.loader
         cls.module = importlib.util.module_from_spec(spec)
-        # Import without leaving a `__pycache__` beside the script: `.claude/` is not a place a
-        # test in this suite should write into, gitignored or not.
+        # Import without leaving a `__pycache__` beside the script: a stale `.pyc` there is the
+        # handwritten-sweep trap `.claude/skills/atmofab-review-loop/references/mutation-testing.md`
+        # records, where consecutive same-byte-length rewrites reuse cached bytecode. This file's
+        # own bytecode under `tests/__pycache__/` is gitignored and harmless.
         previous, sys.dont_write_bytecode = sys.dont_write_bytecode, True
         try:
             spec.loader.exec_module(cls.module)

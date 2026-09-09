@@ -34,16 +34,17 @@ import sys
 import unittest
 from pathlib import Path
 
-SCRIPT = (Path(__file__).resolve().parents[2]
-          / ".claude/skills/atmofab-enforcement-change/scripts/measure_claude_tool.py")
+SCRIPT = Path(__file__).resolve().parents[1] / "measure_claude_tool.py"
 
 
 def _load():
     spec = importlib.util.spec_from_file_location("measure_claude_tool_under_test", SCRIPT)
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
-    # Import without leaving a `__pycache__` beside the script: `.claude/` is not a place a
-    # test in this suite should write into, gitignored or not.
+    # Import without leaving a `__pycache__` beside the script: a stale `.pyc` there is the
+    # handwritten-sweep trap `.claude/skills/atmofab-review-loop/references/mutation-testing.md`
+    # records, where consecutive same-byte-length rewrites reuse cached bytecode. This file's
+    # own bytecode under `tests/__pycache__/` is gitignored and harmless.
     previous, sys.dont_write_bytecode = sys.dont_write_bytecode, True
     try:
         spec.loader.exec_module(module)

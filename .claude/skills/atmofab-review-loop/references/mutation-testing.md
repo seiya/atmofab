@@ -134,10 +134,11 @@ Measured rather than read from the source: create an untracked probe file under
 `tools/tests/` — any name the repository does not track — and point `--test-cmd` at it with
 `test -f <that path>`; the run stops at **BASELINE RED**, because the worktree does not have
 the file. (Written with the probe's path spelled out until 2026-09-03, which made it the
-repository's only standing suite failure: `test_skill_citations` reads a backticked
-repo-relative path in a skill file as a POINTER and requires it to be tracked, and the whole
+repository's only standing suite failure: `test_skill_citations` READ a backticked
+repo-relative path in a skill file as a POINTER and REQUIRED it to be tracked, and the whole
 point of this one is that it is not. The rule is right and the citation was the defect —
-name the shape, not a path a reader would try to open.)
+name the shape, not a path a reader would try to open. #183 retired that test, so nothing is
+red for this any more; `atmofab-enforcement-change/SKILL.md` states the manual check.)
 
 The behaviour is right and should not change: a sweep that mixed in uncommitted work would
 report about a tree no one can reproduce. What the rule has to say is the ORDER — commit the

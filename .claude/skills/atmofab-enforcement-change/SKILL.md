@@ -236,7 +236,7 @@ prompt assembled at runtime **that nothing renders under test**. For those the o
 remove the statement or to make it derived; say in the commit which sites you could not couple.
 **Check before assuming a site is out of reach** — an issue or PR body can be edited
 (`gh issue edit --body`), and `docs/examples/*.yaml` is coupled today by
-`tools/tests/test_llm_config.py` — as is THIS file: `tools/tests/test_skill_citations.py` reads every skill document out of the git index and requires each backticked repository path in it to be tracked, so a stale pointer written here is red. What stays uncoupled is the CLAIM a sentence makes, not the paths it cites. **A runtime-assembled prompt stops being out of reach the moment
+`tools/tests/test_llm_config.py`. THIS file is not: no test checks that a path cited in a skill document is tracked (#183 retired `test_skill_citations.py`), so check a cited path with `git ls-files --error-unmatch -- <path>` before you commit. **Resolve it against the right base or it reports a correct pointer as missing**, which is the failure that gets a check disregarded: a pointer starting `references/` or `scripts/` is skill-relative (the form a reader follows most often — the retired test resolved these); one starting with another skill's NAME, as `atmofab-review-loop/references/mutation-testing.md` does, resolves against `.claude/skills/` (the retired test emitted no target at all for these, so here the manual check is stricter than what it replaces); everything else is repository-root relative. Both non-root forms occur in this tree today. **And this check answers only half of what was retired**: `test_skill_citations.py` also refused a file under a skill that no `SKILL.md` reaches by any pointer, and no command finds an orphan — for that, walk the skill yourself when you add a `references/` file. What stays uncoupled is the CLAIM a sentence makes, not the paths it cites. **A runtime-assembled prompt stops being out of reach the moment
 you render it through the production entry point with a fixed payload**: issue #149's sweep drives
 `build_launch_request` -> `prepare_launch_request_payload` -> `render_launch_prompt_text` over every
 `(step, substep)` an LLM leaf runs, in every renderer shape, and scans the render minus the lines a
@@ -536,6 +536,8 @@ through a loopback stand-in, unbilled, in a saturated fixture, and exits non-zer
 row fails its declared expectation. Reach for it before writing "this spelling cannot
 reach outside" — that claim was written down wrong four times on issue #71, each time from
 a probe that measured something else. `references/verification.md` carries the details.
+Its own tests live beside it and `pytest tools/tests` does not collect them:
+`python3 -m pytest .claude/skills/atmofab-enforcement-change/scripts/tests -q -p no:randomly`.
 
 ### 6. Verify and record
 

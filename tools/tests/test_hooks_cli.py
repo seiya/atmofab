@@ -4313,7 +4313,7 @@ class GrepGlobReadGuardTests(unittest.TestCase):
         carries `~/…`, which cannot appear here because the hook refuses it. An earlier
         version of this docstring claimed the two lists were the same, and they differed in
         BOTH directions; the harness's own coverage is pinned by
-        `tools/tests/test_measure_claude_tool.py` instead of asserted here in prose.
+        `.claude/skills/atmofab-enforcement-change/scripts/tests/test_measure_claude_tool.py` instead of asserted here in prose.
         """
         manifest = {"allowed_read_roots": ["docs"]}
         for pattern in ("../secret/*", "../../secret/*", "../../../secret/*",
