@@ -141,10 +141,20 @@ jobs:
         # tests changes the count; a shell that swallows the failure does not change the report;
         # a step that never runs leaves no report at all.
         #
-        # WHAT THIS STILL CANNOT SEE, said rather than implied: a `conftest.py` edit, because both
-        # the reference and the run go through it; and a retry loop, because the report is the
-        # last invocation's. Nothing checks those two: `tools/tests/test_ci_workflow.py` used to,
-        # and #183 retired it as a pin on a process preference rather than on a product path.
+        # WHAT THIS STILL CANNOT SEE, said rather than implied: a `conftest.py` edit, because
+        # both the reference and the run go through it; a retry loop, because the report is the
+        # last invocation's; and a SKIP, because both sides count a skipped test — so a step this
+        # job stops taking (the `sysctl` one above) turns the sandbox tests into declared skips
+        # and the guard still says the suite ran all of it.
+        #
+        # AND NOTHING ELSE READS THIS FILE. `tools/tests/test_ci_workflow.py` used to check the
+        # decisions here — the retry loop above, the guard step's existence and `if: always()`,
+        # its reference being taken pristine, the `sysctl` step, the runner pin — and #183 retired
+        # it as a pin on a process preference rather than on a product path. It never covered the
+        # `conftest.py` case; its own docstring said so. The only thing still reading this file is
+        # `tools/tests/test_backend_boundary.py`'s technology-token scan, which reads the TEXT for
+        # backend tokens and nothing about what the job does — and whose growth half is frozen out
+        # of the suite (`AGENTS.md` §Backend boundary rules). Editing this file is on whoever does.
         run: |
           report="${{ runner.temp }}/pytest-report.xml"
           if [ ! -f "$report" ]; then
