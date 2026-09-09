@@ -4786,6 +4786,49 @@ class DependencyClosureTests(unittest.TestCase):
             self.assertEqual([n["spec_id"] for n in ordered], ["c", "b"])
             self.assertNotIn("profile", {n["spec_kind"] for n in ordered})
 
+    def test_a_dependency_that_adopts_a_profile_is_expanded_too(self) -> None:
+        """The expansion runs on EVERY visited spec, not only the target. Its twin in
+        `dependency_graph.visit` has a row; this one did not, and gating it on
+        `spec_ref == target_spec_ref` left the whole of `test_run_workflow.py` green — measured.
+
+        `ordered` is what the `--with-deps` driver schedules node by node, so a `profile/` entry
+        in it sends the driver at a node `resolve_node` refuses: a correct spec's closure aborts,
+        and if that backstop ever moved, four phases would run on a profile."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            # problem/a → component/b → profile/pr → component/c ; b, c, a → harness h.
+            # The profile is adopted by a DEPENDENCY, never by the target.
+            _write_catalog(repo_root, [
+                {"spec_kind": "problem", "spec_id": "a", "spec_version": "0.3.0",
+                 "deps_path": "spec/problem/a/deps.yaml"},
+                {"spec_kind": "component", "spec_id": "b", "spec_version": "0.1.0",
+                 "deps_path": "spec/component/b/deps.yaml"},
+                {"spec_kind": "profile", "spec_id": "pr", "spec_version": "0.1.0",
+                 "deps_path": "spec/profile/pr/deps.yaml"},
+                {"spec_kind": "component", "spec_id": "c", "spec_version": "0.1.0",
+                 "deps_path": "spec/component/c/deps.yaml"},
+                {"spec_kind": "infrastructure", "spec_id": "h", "spec_version": "0.1.0",
+                 "deps_path": "spec/infrastructure/h/deps.yaml"},
+            ])
+            _write_deps(repo_root, "spec/problem/a", "problem", "a",
+                        components=[("b", ">=0.1.0 <1.0.0")],
+                        infrastructure=[("h", ">=0.1.0 <1.0.0")])
+            _write_deps(repo_root, "spec/component/b", "component", "b",
+                        profiles=[("pr", ">=0.1.0 <1.0.0")],
+                        infrastructure=[("h", ">=0.1.0 <1.0.0")])
+            _write_deps(repo_root, "spec/profile/pr", "profile", "pr",
+                        components=[("c", ">=0.1.0 <1.0.0")], infrastructure=[])
+            _write_deps(repo_root, "spec/component/c", "component", "c",
+                        infrastructure=[("h", ">=0.1.0 <1.0.0")])
+            _write_deps(repo_root, "spec/infrastructure/h", "infrastructure", "h")
+            ordered, err = run_workflow._resolve_dependency_closure(
+                repo_root, "spec/problem/a")
+            self.assertIsNone(err)
+            self.assertNotIn("profile", {n["spec_kind"] for n in ordered})
+            # `c` is scheduled — reached ONLY through the profile the dependency adopts, so its
+            # presence is the expansion having run on a non-target node.
+            self.assertEqual([n["spec_id"] for n in ordered], ["h", "c", "b"])
+
     def test_a_profile_declaring_a_harness_fails_the_closure_closed(self) -> None:
         # A profile builds nothing, so a harness declared on it would enter the closure of the
         # ADOPTING node through an edge that node never wrote. Refused before any leaf launches.

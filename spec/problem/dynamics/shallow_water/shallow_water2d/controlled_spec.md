@@ -46,7 +46,7 @@ The domain is the orthogonal periodic domain $[0,L_x)\times[0,L_y)$. The grid is
 The boundary condition is fixed to periodic boundary on all boundaries. The default input used for verification is defined in `tests.md`.
 
 ## 4. Dependent `component` and adopted `profile`
-The adopted `profile` is `dynamics_shallow_water_profile_2d_rusanov_p0_ssprk2`, and it selects the following `component`, which are therefore this `spec`'s direct dependencies.
+The adopted `profile` is `dynamics_shallow_water_profile_2d_rusanov_p0_ssprk2`, and it selects the following `component`, each of which is therefore a direct dependency of this `spec`. They are not the whole of that set: the runner harness `deps.yaml` declares is one too, and `<ir_ref>/dependency_graph.json` is the only exhaustive statement of it.
 - `dynamics_shallow_water_flux_2d_rusanov_p0`
 - `dynamics_shallow_water_boundary_2d_periodic_copy`
 - `dynamics_shallow_water_time_update_2d_ssprk2`
@@ -139,7 +139,7 @@ so that the reconstructed interface depth satisfies $h^{*}>0$ in the initial sta
 Forbid non-periodic boundary, automatic switching of `topography_profile`, the introduction of a bottom-topography function or parameter other than the allowed values, the introduction of a forcing term other than the bottom-topography source term, and the runtime automatic switching of the discretization scheme. Forbid `clip` / `limiter` / `filter` on `h`. The $\max(0,\cdot)$ of the hydrostatic reconstruction of section 5 is applied to the reconstructed interface depth $h^{*}$, a derived quantity of the reconstruction of step 2, and never to the cell-centered state `h`; it is not a `clip` on `h`.
 
 ## 8. Traceability
-The resolution result is recorded by the host: `<ir_ref>/ir_meta.json` carries the node's own `spec_kind` / `spec_id` / `spec_version`, and `<ir_ref>/dependency_graph.json` carries the resolved closure — `all_nodes` as `<spec_kind>/<spec_id>@<version>` for every node of it (this `spec` itself, the `component`, and the runner harness alike), and `profiles[]` as the adopted `profile_id@version`, which is not a node.
+The resolution result is recorded by the host: `<ir_ref>/ir_meta.json` carries the node's own `spec_kind` / `spec_id` / `spec_version`, and `<ir_ref>/dependency_graph.json` carries the resolved closure — `all_nodes` as `<spec_kind>/<spec_id>@<version>` for every node of it (this `spec` itself, the `component`, and the runner harness alike), and `profiles[]` as the adopted `profile`, whose entry carries its own `node_key` for identity but is deliberately absent from `all_nodes`, because a `profile` is not a node.
 
 The reference basis is Williamson et al. (1992, JCP, DOI:10.1016/S0021-9991(05)80016-6), Audusse et al. (2004, SIAM J. Sci. Comput. 25(6), DOI:10.1137/S1064827503431090), LeVeque (2002), and Toro (2009).
 

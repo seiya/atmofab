@@ -17354,7 +17354,7 @@ class InfrastructureGeneratedSignatureGateTests(unittest.TestCase):
         for label, break_it in (
             ("IR missing", lambda ir: ir.unlink()),
             ("IR spec_kind drifted", lambda ir: ir.write_text(
-                json.dumps({"meta": {"spec_kind": "profile", "spec_id": "hx",
+                json.dumps({"meta": {"spec_kind": "problem", "spec_id": "hx",
                                      "source_refs": {"controlled_spec": "cs.md"}}}),
                 encoding="utf-8")),
         ):
@@ -17376,7 +17376,7 @@ class InfrastructureGeneratedSignatureGateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as t:
             tmp = Path(t)
             ex = self._seed(tmp, source=self._GOOD_SOURCE, spec_kind="component")
-            ex = vps.NodeExecution(node_key="profile/hx@0.1.0", node_dir=ex.node_dir,
+            ex = vps.NodeExecution(node_key="problem/hx@0.1.0", node_dir=ex.node_dir,
                                    exec_dir=ex.exec_dir, pipeline_dir=ex.pipeline_dir)
             (tmp / "workspace" / "ir" / "x" / "spec.ir.yaml").unlink()
             self.assertEqual(self._run(ex, tmp), [])
@@ -19933,10 +19933,13 @@ class ComponentDepOperationsGateTests(unittest.TestCase):
             self._run([{"node_key": "infrastructure/harness_fortran_cpu@0.2.0",
                         "kind": "infrastructure", "operations": []}]), [])
 
-    def test_profile_dep_ignored(self) -> None:
-        # profile/problem deps are not called through the `<dep>__*` operation surface.
+    def test_problem_dep_ignored(self) -> None:
+        # A `problem` dep is not called through the `<dep>__*` operation surface. The witness
+        # was a `profile/` entry until issue #175, which is why it is not one now: a `profile`
+        # can no longer appear in `direct_deps` at all — `_validate_compile_dependency_consistency`
+        # rejects that IR outright — so it could only guard a real rule with an unreal input.
         self.assertEqual(
-            self._run([{"node_key": "profile/some_profile@0.1.0", "operations": []}]), [])
+            self._run([{"node_key": "problem/some_problem@0.1.0", "operations": []}]), [])
 
     def test_malformed_direct_deps_no_crash_no_violation(self) -> None:
         self.assertEqual(self._run("not-a-list"), [])
@@ -20828,12 +20831,26 @@ class ComponentGeneratedSurfaceGateTests(unittest.TestCase):
         self.assertEqual(self._run(public_api=_OMIT, model_text=self._GOOD_MODEL), [])
 
     def test_non_component_inert(self) -> None:
-        # `problem`, not `profile`: since issue #175 no `profile` IR exists, so it cannot witness
-        # a kind outside this gate's set.
+        """The gate is a no-op off `component`. `problem`, not `profile`: since issue #175 no
+        `profile` IR exists, so it cannot witness a kind outside this gate's set.
+
+        The INPUT has to be one a live gate would flag, or the row observes nothing — measured:
+        with the previous input (a `public_api` matching `_GOOD_MODEL` exactly), widening the
+        gate's kind guard to cover `problem` left this row green, because an active gate returns
+        `[]` on a matching surface too. The extra subroutine below is what makes the assertion
+        about the KIND rather than about the surface."""
+        model = (
+            "module dep_base_model\ncontains\n"
+            "  subroutine dep_base__scale(x)\n  end subroutine\n"
+            "  subroutine dep_base__extra(y)\n  end subroutine\n"
+            "end module\n")
+        api = {"published_operations": [{"operation_id": "dep_base__scale"}]}
         self.assertEqual(
-            self._run(public_api={"published_operations": [
-                {"operation_id": "dep_base__scale"}]}, model_text=self._GOOD_MODEL,
-                spec_kind="problem", node_key="problem/dep_base@0.1.0"), [])
+            self._run(public_api=api, model_text=model,
+                      spec_kind="problem", node_key="problem/dep_base@0.1.0"), [])
+        # The control: the SAME input on the kind the gate does cover fires, so the `[]` above
+        # is the kind carve-out and not an input nothing objects to.
+        self.assertTrue(self._run(public_api=api, model_text=model))
 
     def test_cross_scanner_parity_with_runtime(self) -> None:
         # Drift guard: the validator's published-surface scanner must agree with
@@ -21383,12 +21400,6 @@ class OpenmpPresenceFloorGateTests(unittest.TestCase):
             f"    do i = 1, n\n      acc{k} = acc{k} + u(i)\n    end do\n" for k in range(20))
         self.assertEqual(
             self._run(self._model(body), node_key="infrastructure/harness_fortran_cpu@0.7.0"), [])
-
-    def test_profile_node_exempt(self) -> None:
-        # The real profile shape: trivial zero-fill init loops around a component composition.
-        self.assertEqual(self._run(self._model(
-            "    do i = 1, nx\n      u(i) = 0.0_dp\n    end do\n"),
-            node_key="profile/dep_base@0.1.0"), [])
 
     def test_unknown_node_kind_fails_open(self) -> None:
         self.assertEqual(self._run(self._COUNTED, node_key="harness/dep_base@0.1.0"), [])

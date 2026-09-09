@@ -25,7 +25,7 @@ The domain is the interval $[0,L)$. The grid is a uniform cell-centered grid, an
 The boundary condition is fixed to periodic boundary. The default input used for verification is defined in `tests.md`, and the whole of the user input is not fixed.
 
 ## 4. Dependent `component` and adopted `profile`
-The adopted `profile` is `dynamics_advdiff_profile_1d_upwind_center2_euler1`, and it selects the following `component`, which are therefore this `spec`'s direct dependencies.
+The adopted `profile` is `dynamics_advdiff_profile_1d_upwind_center2_euler1`, and it selects the following `component`, each of which is therefore a direct dependency of this `spec`. They are not the whole of that set: the runner harness `deps.yaml` declares is one too, and `<ir_ref>/dependency_graph.json` is the only exhaustive statement of it.
 - `dynamics_advdiff_flux_1d_upwind_center2`
 - `dynamics_advection_diffusion_boundary_1d_periodic_copy`
 - `dynamics_advection_diffusion_time_update_1d_euler1`
@@ -60,7 +60,7 @@ The runtime input requires the following.
 Forbid non-periodic boundary. Forbid the addition of `limiter` / `clip` / `filter`. Forbid the runtime automatic switching of the discretization scheme.
 
 ## 8. Traceability
-The resolution result is recorded by the host: `<ir_ref>/ir_meta.json` carries the node's own `spec_kind` / `spec_id` / `spec_version`, and `<ir_ref>/dependency_graph.json` carries the resolved closure — `all_nodes` as `<spec_kind>/<spec_id>@<version>` for every node of it (this `spec` itself, the `component`, and the runner harness alike), and `profiles[]` as the adopted `profile_id@version`, which is not a node.
+The resolution result is recorded by the host: `<ir_ref>/ir_meta.json` carries the node's own `spec_kind` / `spec_id` / `spec_version`, and `<ir_ref>/dependency_graph.json` carries the resolved closure — `all_nodes` as `<spec_kind>/<spec_id>@<version>` for every node of it (this `spec` itself, the `component`, and the runner harness alike), and `profiles[]` as the adopted `profile`, whose entry carries its own `node_key` for identity but is deliberately absent from `all_nodes`, because a `profile` is not a node.
 
 The reference basis is LeVeque (2002).
 

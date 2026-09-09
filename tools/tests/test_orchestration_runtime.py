@@ -21043,10 +21043,10 @@ class ResolveComponentDepSurfaceTests(unittest.TestCase):
                 public_api={"published_operations": [
                     {"operation_id": "dep_base__compute_flux"}], "published_types": []})
             graph = self._graph(
-                "profile/top@0.1.0",
-                [("profile/top@0.1.0", 1), ("component/dep_base@0.1.0", 0)])
+                "problem/top@0.1.0",
+                [("problem/top@0.1.0", 1), ("component/dep_base@0.1.0", 0)])
             surface = _resolve_component_dep_surface(
-                repo_root, "profile/top@0.1.0", graph)
+                repo_root, "problem/top@0.1.0", graph)
             self.assertEqual(len(surface), 1)
             self.assertEqual(surface[0]["node_key"], "component/dep_base@0.1.0")
             self.assertEqual(surface[0]["source"], "ir_public_api")
@@ -21063,10 +21063,10 @@ class ResolveComponentDepSurfaceTests(unittest.TestCase):
             self._write_dep_source(
                 repo_root, "component__dep_base__0.1.0", "dep_base", self._MODEL)
             graph = self._graph(
-                "profile/top@0.1.0",
-                [("profile/top@0.1.0", 1), ("component/dep_base@0.1.0", 0)])
+                "problem/top@0.1.0",
+                [("problem/top@0.1.0", 1), ("component/dep_base@0.1.0", 0)])
             surface = _resolve_component_dep_surface(
-                repo_root, "profile/top@0.1.0", graph)
+                repo_root, "problem/top@0.1.0", graph)
             self.assertEqual(surface[0]["source"], "certified_source")
             self.assertEqual(
                 surface[0]["published_operations"],
@@ -21084,10 +21084,10 @@ class ResolveComponentDepSurfaceTests(unittest.TestCase):
             self._write_dep_source(
                 repo_root, "component__dep_base__0.1.0", "dep_base", self._MODEL)
             graph = self._graph(
-                "profile/top@0.1.0",
-                [("profile/top@0.1.0", 1), ("component/dep_base@0.1.0", 0)])
+                "problem/top@0.1.0",
+                [("problem/top@0.1.0", 1), ("component/dep_base@0.1.0", 0)])
             surface = _resolve_component_dep_surface(
-                repo_root, "profile/top@0.1.0", graph)
+                repo_root, "problem/top@0.1.0", graph)
             self.assertEqual(surface[0]["source"], "ir_public_api")
             self.assertEqual(surface[0]["published_operations"], [])
 
@@ -21096,10 +21096,10 @@ class ResolveComponentDepSurfaceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             graph = self._graph(
-                "profile/top@0.1.0",
-                [("profile/top@0.1.0", 1), ("component/dep_base@0.1.0", 0)])
+                "problem/top@0.1.0",
+                [("problem/top@0.1.0", 1), ("component/dep_base@0.1.0", 0)])
             surface = _resolve_component_dep_surface(
-                repo_root, "profile/top@0.1.0", graph)
+                repo_root, "problem/top@0.1.0", graph)
             self.assertEqual(len(surface), 1)
             self.assertEqual(surface[0]["source"], "unresolved")
             self.assertEqual(surface[0]["published_operations"], [])
@@ -21116,14 +21116,14 @@ class ResolveComponentDepSurfaceTests(unittest.TestCase):
                     public_api={"published_operations": [
                         {"operation_id": f"{sid}__op"}]})
             graph = self._graph(
-                "profile/top@0.1.0",
-                [("profile/top@0.1.0", 2),
+                "problem/top@0.1.0",
+                [("problem/top@0.1.0", 2),
                  ("component/dep_direct@0.1.0", 1),
                  ("component/dep_trans@0.1.0", 0),
                  ("infrastructure/harness@0.2.0", 0)],
                 transitive=["component/dep_trans@0.1.0"])
             surface = _resolve_component_dep_surface(
-                repo_root, "profile/top@0.1.0", graph)
+                repo_root, "problem/top@0.1.0", graph)
             self.assertEqual(
                 [e["node_key"] for e in surface], ["component/dep_direct@0.1.0"])
 
@@ -21132,10 +21132,10 @@ class ResolveComponentDepSurfaceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self.assertEqual(
-                _resolve_component_dep_surface(repo_root, "profile/top@0.1.0", None), [])
+                _resolve_component_dep_surface(repo_root, "problem/top@0.1.0", None), [])
             self.assertEqual(
                 _resolve_component_dep_surface(
-                    repo_root, "profile/top@0.1.0", {"all_nodes": "nope"}), [])
+                    repo_root, "problem/top@0.1.0", {"all_nodes": "nope"}), [])
 
 
 class ListPrefixedSubroutinesTests(unittest.TestCase):
@@ -31060,7 +31060,15 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # (28850 first, from 28694 at the branch's first commit; re-measured at the round-3 HEAD
         # after Operations Rule 10 gained the note that `repair_target_sections[]` has no reader
         # in `tools/`, which the phase document had said and this file had not.)
-        "skills/workflow-compile-generate/SKILL.md": 29050,
+        # Bumped 29050->30031 (issue #175, round 4; measured 29881). This file is the
+        # AGENTIC compile producer's canonical procedure (`AGENTS.md` §Project Local Skills),
+        # and it ordered `direct_deps` to 'exactly match the directly-required set of
+        # `deps.yaml`' — which this branch made false for the two `problem` nodes whose
+        # `components` it emptied — while saying nothing about the `profile_selection` field
+        # the new gate requires on those same two nodes. A leaf on that path was handed the
+        # corrected phase document and this stale SKILL in one launch, with `AGENTS.md`
+        # making the SKILL canonical, and would have failed Compile on every attempt.
+        "skills/workflow-compile-generate/SKILL.md": 30031,
         # Bumped 11800->12100: G7 — compile.verify checks V4c only (operations ⊆ published); the
         # closure/topo consistency is conductor-authored + gate-checked, no longer LLM-verified (G7).
         # Bumped 12100->13100: R2 (G8) — compile.verify owns the SEMANTIC test_predicates fidelity
