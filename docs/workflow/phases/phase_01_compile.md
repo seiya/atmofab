@@ -175,7 +175,7 @@ io_contract:
   #   metrics: ["cfl.max", "metrics.mass_drift_rel", "errors.analytic_h.l2_rel_tend", "convergence.n32_to_n64.analytic_h_order"]
 
 dependency:
-  # LLM-authored: ONLY node_key + direct_deps (the directly-read edge + semantic `operations`).
+  # LLM-authored: ONLY node_key + direct_deps (the host's directly-required set + semantic `operations`).
   # Do NOT author all_nodes / transitive_deps — the conductor derives them (sidecar, below).
   node_key: "<spec_kind>/<spec_id>@<spec_version>"
   direct_deps:

@@ -17834,13 +17834,15 @@ class InfrastructureGeneratedSignatureGateTests(unittest.TestCase):
                     (kind, violations))
 
     def test_a_kind_outside_the_pinned_set_is_a_noop(self) -> None:
-        # A `profile` node's interface is derived post-hoc, so a garbage source must not fire the
+        # A `problem` node's interface is derived post-hoc, so a garbage source must not fire the
         # signature pin. `component` was this test's subject until issue #153 PR-2 moved it into
         # `_EXACT_PUBLISHED_SURFACE_KINDS`; the second half asserts the set is what decides, because
         # a no-op reached for the wrong reason (an unresolvable IR, say) looks identical here.
+        # The witness was `profile` until issue #175, which is why it is not one now: no `profile`
+        # IR is ever authored, so it could only guard a real rule with an unreal input.
         with tempfile.TemporaryDirectory() as t:
             tmp = Path(t)
-            ex = self._seed(tmp, source="module m\nend module m\n", spec_kind="profile")
+            ex = self._seed(tmp, source="module m\nend module m\n", spec_kind="problem")
             self.assertEqual(self._run(ex, tmp), [])
         with tempfile.TemporaryDirectory() as t:
             tmp = Path(t)
@@ -20826,10 +20828,12 @@ class ComponentGeneratedSurfaceGateTests(unittest.TestCase):
         self.assertEqual(self._run(public_api=_OMIT, model_text=self._GOOD_MODEL), [])
 
     def test_non_component_inert(self) -> None:
+        # `problem`, not `profile`: since issue #175 no `profile` IR exists, so it cannot witness
+        # a kind outside this gate's set.
         self.assertEqual(
             self._run(public_api={"published_operations": [
                 {"operation_id": "dep_base__scale"}]}, model_text=self._GOOD_MODEL,
-                spec_kind="profile", node_key="profile/dep_base@0.1.0"), [])
+                spec_kind="problem", node_key="problem/dep_base@0.1.0"), [])
 
     def test_cross_scanner_parity_with_runtime(self) -> None:
         # Drift guard: the validator's published-surface scanner must agree with
