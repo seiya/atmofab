@@ -1102,6 +1102,21 @@ that tells you how it closed.
   the assertion contradicted, and each round corrected the prose rather than asking why a
   measurement was stated twice. **This is not the "prose that enumerates entities" row**: that one
   says turn prose into a check, this one says the check is already there
+- **A sentence of yours explains WHY A TOOL BEHAVES as it does** → drive it or delete it; do not
+  correct it. The subject is a third party's behaviour — pytest's collection, a CLI's flag, git's
+  path resolution — so there is no assertion beside it (the row above) and nothing to turn it into
+  a check (the row below): the sentence is load-bearing and unwitnessed by construction.
+  **Criterion, one command: name the command whose output IS the sentence.** If you cannot, you
+  have written a guess with the grammar of a fact, and the fix is to state what you OBSERVED and
+  drop the "because". Issue #183 / PR #202 reached the five-round cap on one class, and it was
+  this one: five mechanism claims measured false, each written while correcting the previous, all
+  in a branch whose subject was retiring tests that pin prose. **Correcting them individually does
+  not close it** — round 4 switched to deleting the explanations wholesale and round 5 still
+  returned six. **And no instrument in this loop fires on it**: on a deletion / prose diff the
+  round-0 sweep has no revertible hunk, the census enumerates code and the mutation sweep mutates
+  code, so every one of those findings came from a reviewer reading a sentence and running it.
+  Budget for that: put "run every command and mechanism claim the prose asserts" in the launch
+  prompt from round 1, because nothing else will look
 - **A term you coined for a tool has appeared in a document as if the system used it** → check it
   against the vocabulary the repository already defines. On PR #100 a reporting script labelled any
   body it could not parse "body is not an event stream", and that phrase was then written into

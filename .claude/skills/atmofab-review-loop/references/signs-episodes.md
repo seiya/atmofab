@@ -413,3 +413,68 @@ clip it was supposed to exercise is 110 — the fixture had never been on the fa
 threshold it was measuring. The fix reserves the marker in the budget; the test asserts, in its
 own body, that its probe is longer than any clip.
 
+
+## "A sentence of yours explains WHY A TOOL BEHAVES as it does" (issue #183, PR #202)
+
+The branch retired three meta-tests that pinned documentation and process preferences, and moved
+two dev instruments' tests beside their scripts. It reached the five-round cap without converging.
+Real findings per round: **5, 4, 3, 6, 6** — no class descent — and all but one were the same
+thing: a sentence of mine asserting WHY a tool does what it does, written to explain a change I had
+measured only by its outcome.
+
+The five that were measured false, in the order they were written and caught:
+
+1. `README.md`: `pytest tools/tests` misses the relocated files "because `.claude/` is under
+   pytest's default `norecursedirs`". Removing `.*` from the list leaves that form at 6105 and the
+   bare form at 6105; only `pytest .` moves (6105 -> 6175). The property was real, the mechanism
+   named was not the one holding it, and the same clause went into a commit message.
+2. `.github/workflows/tests.yml`: dropping the `sysctl` step "turns the sandbox tests into declared
+   skips and the guard still says the suite ran all of it". Earlier in the same file, the comment
+   on that very step records the measurement: ten skips **and two failures**, which the guard's
+   `if failures:` arm catches. The general property (the guard is skip-blind) was true; the illustration was not an
+   instance in either recorded configuration.
+3. `.github/workflows/tests.yml`: the retired test "used to" check a `conftest.py` edit. Its own
+   module docstring said it could not ("which is Python and cannot be bounded by reading").
+4. `README.md`: `tools/tests/conftest.py` "is directory-scoped, so it is not loaded for a path
+   outside `tools/tests/`". `pytest .` descends into the directory and loads it as a non-initial
+   conftest, and strips — which `TODO.md:81` (e) already recorded, canonically, in as many words.
+5. `README.md`: a `conftest.py` beside the relocated tests "would put the default run back into
+   `.claude/`". A probe conftest with a `pytest_report_header` loads for the explicit instrument
+   command and for nothing else; all three default forms still collect 6105. The reasoning had been
+   transplanted from a sibling commit where it was true of a glob inside a test that RUNS in the
+   default suite, to a structure where it does not hold — and it foreclosed a cheap repair.
+
+**Correcting them one at a time did not close it.** Rounds 1 through 3 each corrected the previous
+round's sentence and each introduced the next. At round 4 the shape changed — `README.md` §Tests was
+rewritten to assert no mechanism at all, and the `TODO.md` residue entry was turned from a claim
+into a re-take PROCEDURE — and round 5 still returned six, three of them inside those two rewrites.
+That is the useful half of the record: the shape change was right and it was not sufficient, so the
+budget has to assume this class is found by reading, once per round, to the end.
+
+**Why it took five rounds: no instrument in the loop can see it.** The diff was three whole-file
+deletions (no revertible hunk, so `scripts/mutation_check.py` exits 1 and answers nothing), test-file
+hunks (excluded by default) and, measured over the finished branch at `a0c1a3f` with `git diff
+e7137ea...a0c1a3f` at git's default context width, eleven prose hunks across nine files. The witness census enumerates decisions in code;
+an independent mutation sweep mutates code. Every one of roughly twenty-four findings came from a
+reviewer reading a sentence and running the command it implied. So on a deletion or prose diff the
+launch prompt has to ask for that explicitly from round 1 — "run every command and every mechanism
+claim the prose asserts, and report the ones whose output is not what the sentence says".
+
+**What the loop's existing instructions DID catch, and when.** The disclosure brief's "a check that
+still RUNS and now covers LESS" is what the branch's only functional defect answers to: the move
+took 70 test names out of the glob `test_every_test_this_change_cites_by_name_exists` builds its
+vocabulary from, so a citation of any of them was reported as pointing at nothing — a false RED
+telling the author to delete a correct pointer. Worth noting **which** round found it: not round 3,
+the disclosure round, which was asked that question directly and returned a different (real) loss;
+round 5's blank-slate axis, which had the whole stack and no history. One reading is that the
+question needs the accumulated stack to be answerable; the other is that it wants the reviewer who
+was told nothing. Either way, do not treat one disclosure round as having settled it.
+
+Two smaller records from the same branch. A review worktree created with a RELATIVE path under
+`git -C <repo> worktree add` landed inside the checkout and `git add -A` committed it as a gitlink,
+taking the suite to `2 failed` — the accident this file's ground rules already tell reviewers to
+avoid, committed by the author who wrote the instruction into their prompts. And a delegated
+mechanical-recomputation subagent returned a closing message ("no new information, the final report
+stands as delivered") for a report that had never arrived; the full checklist came back only after
+being asked for it directly. **A subagent's completion notice is not its report** — if you cannot
+quote a finding from it, you have not received one.
