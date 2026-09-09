@@ -574,16 +574,18 @@ class PostJudgeReclassificationTests(_Fixture):
     _VIOLATION = ("workspace/pipelines/p/runs/r/n/semantic_review.json: review_method must be "
                   "the literal 'llm_semantic_review'")
 
-    def _disposition(self, config) -> str:
-        """Run the real `_post_judge_inproc` against a gate that fails with a violation naming
-        `semantic_review.json`, and return the disposition it recorded."""
+    def _disposition(self, config, violation: str | None = None) -> str:
+        """Run the real `_post_judge_inproc` against a gate that fails with `violation`
+        (default: one naming `semantic_review.json`), and return the disposition it recorded."""
         c = wc.Conductor(repo_root=self.repo, orchestration_id="o",
                          orchestration_agent_run_id="orch", llm_config=config, env={})
         c._author_derived_validate_artifacts = lambda refs: None  # type: ignore[assignment]
 
+        bullet = self._VIOLATION if violation is None else violation
+
         def _gate(cmd, **kwargs):
             return wc.subprocess.CompletedProcess(
-                cmd, 1, stdout=f"FAIL\n- {self._VIOLATION}\n", stderr="")
+                cmd, 1, stdout=f"FAIL\n- {bullet}\n", stderr="")
 
         with mock.patch.object(wc.subprocess, "run", _gate):
             c._post_judge_inproc(self.refs, "child-1", "tok")
@@ -594,6 +596,27 @@ class PostJudgeReclassificationTests(_Fixture):
         """The premise the reclassification acts on. Kept so a row below cannot go green
         because the CLASSIFIER changed — it must go green because the host reclassified."""
         self.assertEqual(wc.classify_post_judge_violations([self._VIOLATION]), "recoverable")
+
+    def test_an_unknown_violation_is_written_as_escalate(self) -> None:
+        """The OTHER value the fold writes, and the half nothing observed.
+
+        `disposition = "escalate" if severity == "unknown" else "fail_closed"` has two
+        outcomes and only one of them had a witness: every test of the `escalate` ROUTE seeds
+        `post_judge_meta.json` by hand, so collapsing this expression to a bare
+        `"fail_closed"` left the whole suite green — measured at c73376f, and measured green on
+        `origin/main` too for the equivalent narrowing, so the gap is older than the fold. It is
+        pinned here because the fold is where the expression now lives: without it, a change
+        that stops writing `escalate` silently sends a prod `unknown` to `fail_closed` instead
+        of to the escalate diagnostician.
+
+        The classifier's own verdict is asserted first, so this row cannot go green because
+        `classify_post_judge_violations` changed its mind about the probe.
+        """
+        unknown = "workspace/pipelines/p/runs/r/n/diagnostics.json: missing key"
+        self.assertEqual(wc.classify_post_judge_violations([unknown]), "unknown")
+        for label, config in (("pure", _cfg("claude")), ("agentic", _agentic_cfg("claude"))):
+            with self.subTest(transport=label):
+                self.assertEqual(self._disposition(config, violation=unknown), "escalate")
 
     def test_a_review_violation_terminalizes_on_either_transport(self) -> None:
         """`recoverable` used to mean "the judge wrote it wrong, so re-run the judge". That
