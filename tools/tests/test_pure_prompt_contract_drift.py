@@ -466,7 +466,7 @@ PINNED: dict[str, str] = {
     # `profile` clause (the cardinality ladder rung, the module-parameter and `public_api`
     # carve-outs, the OpenMP floor's exemption) — a `profile` is host-resolved at Compile
     # and can be neither a dependency node nor an optimization-unit member.
-    "pure-39": "7a7d4254bdde7124d95b53cabe8527b72435c7da9291b9cb16cd7ae4fe5ff187",}
+    "pure-39": "124d2bfd2990e28aeb618afe8b77508f9ada56e4e410a84436ee926071468a52",}
 
 
 def _contract_tuple() -> dict[str, object]:

@@ -31261,12 +31261,12 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # from the IR", so the cut stands; the reason was corrected in TODO.md at the time and
         # this copy — the one a reader of the ceiling actually reaches — was left stale for two
         # rounds, which a disclosure reviewer found. Measured 39623.
-        # Lowered 39700->37506 (issue #175 Part B; measured 37356). The inert dependency-call rule and
-        # every `profile` clause are gone — a `profile` is host-resolved at Compile, so it can
-        # be neither a dependency node nor an optimization-unit member and there is nothing for
-        # this file to say about one. Tightened to the new footprint rather than left wide: at
-        # 2.3 KB of slack the entry stops noticing a section, which is what it is for.
-        "skills/workflow-generate-generate/SKILL.md": 37506,
+        # Re-taken at 39726 (measured 39576) for issue #175 Part B. An earlier revision of that branch
+        # LOWERED this entry, having deleted the inert dependency-call rule; round 1 measured
+        # that the deletion opens a hole three deterministic gates force a leaf into, so the
+        # rule came back and the file is near its old size. What Part B removes here is the
+        # `profile` clauses only.
+        "skills/workflow-generate-generate/SKILL.md": 39726,
         # Bumped 21400->21700: the test/check target must invoke the runner with
         # `--cases $(SPEC) $(CASES)` (the runner aborts without it; make test must
         # match run_program's argv) after a validate.execute failure where a bare
@@ -31321,10 +31321,10 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # file's own words as grounds for failing a correct model. Refusing correct work is
         # the direction that costs a regenerate loop, so the replacement says both halves —
         # do not fail for it, and here is what the direct dependencies actually are.
-        # Lowered 28761->26428 (issue #175 Part B; measured 26278). Same deletion on the reviewer side:
-        # the inert-call classification and its carve-out from the additional-operation rule.
-        # Tightened to the new footprint for the same reason as its producer twin.
-        "skills/workflow-generate-verify/SKILL.md": 26428,
+        # Re-taken at 28765 (measured 28615) for issue #175 Part B — same history as its producer twin:
+        # lowered when the inert-call classification was deleted, restored when round 1
+        # measured that a compliant source can be failed without it.
+        "skills/workflow-generate-verify/SKILL.md": 28765,
         # Bumped 10000->10400: documented the verdict.json#per_test entry schema
         # (field name `status`/`outcome` + the pass/fail/xfail/skipped enum, with `blocked`
         # called out as conductor-derived not judge-written) so the judge leaf no longer

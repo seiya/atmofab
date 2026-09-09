@@ -806,6 +806,7 @@ class PureRenderTests(unittest.TestCase):
             "case default",           # fortitude C011
             "associate (unused_<name> => <name>)",  # the unused-dummy bind form
             "intent(out)",            # Generate.static dataflow
+            "INERT",                  # the inert dependency-call rule
             # Rule (7), the impl_defaults reflection obligation (issue #22). These three are
             # PROSE literals on purpose: the rendered prompt also inlines the IR and the target
             # profile, so `impl_defaults` / `backend_overrides` / `openmp` all appear here even
