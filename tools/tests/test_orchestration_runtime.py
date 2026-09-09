@@ -31316,7 +31316,14 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # file's own words as grounds for failing a correct model. Refusing correct work is
         # the direction that costs a regenerate loop, so the replacement says both halves —
         # do not fail for it, and here is what the direct dependencies actually are.
-        "skills/workflow-generate-verify/SKILL.md": 28761,
+        # Tightened 28761->28694 (issue #175 Part B, round 5; measured 28544). The G7 clause
+        # about an implementation contradicting a `profile` constraint is gone — no generate
+        # leaf is ever given a profile document, so it could not be checked — and the file
+        # shrank 67 bytes below what the ceiling above was set against, leaving 217 bytes of
+        # slack where the entry was written for 150. A ceiling that far above its file stops
+        # noticing a section, which is the argument this branch made for the ceilings it
+        # lowered, so it applies to the one it left alone.
+        "skills/workflow-generate-verify/SKILL.md": 28694,
         # Bumped 10000->10400: documented the verdict.json#per_test entry schema
         # (field name `status`/`outcome` + the pass/fail/xfail/skipped enum, with `blocked`
         # called out as conductor-derived not judge-written) so the judge leaf no longer

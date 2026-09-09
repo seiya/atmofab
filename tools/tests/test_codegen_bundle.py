@@ -1454,6 +1454,52 @@ class MultiNodeOptimizationUnitTest(unittest.TestCase):
              "kind": "operation", "node_key": profile, "defined_in": "adv1d_default_model.f90"})
         self.assertEqual(cb.validate_bundle(doc), expected)
 
+    def test_the_generate_prompt_quotes_a_refusal_the_code_actually_emits(self) -> None:
+        """The leaf-read template QUOTES this refusal, and nothing compared the two.
+
+        `tools/prompt_templates/pure_generate_generate.txt` tells the generate leaf which
+        string a profile member is REJECTED with. That is a second statement site for a rule
+        defined here, and it is the site read by a leaf that has no other document — which is
+        exactly how the PREVIOUS quote (`is a profile and publishes no operation`) survived on
+        `origin/main` after issue #175 changed the message underneath it.
+
+        The direction is the one `atmofab-enforcement-change` rule 3-a requires: the message is
+        defined once, in `codegen_bundle`, and the document is checked against what the code
+        EMITS when driven — never the reverse, and neither side spells it out independently."""
+        profile = "profile/adv1d_default@0.1.0"
+        doc = _multi_node_bundle()
+        doc["optimization_unit"]["members"] = [profile]
+        doc["target_lowering_plan"].pop("fusion", None)
+        doc["files"] = [
+            _file("adv1d_default_model.f90", "model", profile, modules=["adv1d_default_model"]),
+            _file("adv1d_default_checks.f90", "checks", profile, modules=["adv1d_default_checks"]),
+        ]
+        doc["entrypoints"] = [
+            {"symbol": "case_run", "module": "adv1d_default_checks", "kind": "checks_interface",
+             "node_key": profile, "defined_in": "adv1d_default_checks.f90"}]
+        doc["state_bindings"] = []
+        violations = cb.validate_bundle(doc)
+        self.assertEqual(len(violations), 1, violations)
+        emitted = violations[0]
+
+        template = Path(__file__).resolve().parents[2] / (
+            "tools/prompt_templates/pure_generate_generate.txt")
+        quoted = [q for q in re.findall(r"`([^`]+)`", template.read_text(encoding="utf-8"))
+                  if len(q) >= 30 and q in emitted]
+        self.assertTrue(
+            quoted,
+            "pure_generate_generate.txt no longer quotes any 30+ character span of the refusal "
+            f"codegen_bundle emits for a profile member. Emitted: {emitted!r}. Re-quote it from "
+            "the message, or drop the quote from the template — a leaf told a rejection string "
+            "that no code produces cannot recognise the refusal it receives.")
+
+        # Self-test the reader: it must be answering about THIS message, not about any long
+        # backticked span the template happens to carry. Perturb the message and the match goes.
+        perturbed = emitted.replace("profile", "prof1le")
+        self.assertFalse(
+            [q for q in quoted if q in perturbed],
+            "the quote matched a perturbed message too, so it pins nothing about the refusal.")
+
     def test_extra_checks_interface_entrypoints_are_allowed(self) -> None:
         # Only `operation` is one-per-member; the checks surface is a fixed ABI and may have
         # several checks_interface entrypoints.

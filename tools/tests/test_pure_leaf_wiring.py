@@ -819,7 +819,7 @@ class PureRenderTests(unittest.TestCase):
             # The floor's real scope, and the two traps a mandated directive introduces. Stating
             # the punishment without its exemptions asserted a rule that does not exist on the
             # node kinds where complying is itself the defect.
-            "It does NOT run on an `infrastructure` or `profile` node",
+            "It does NOT run on an `infrastructure` node",
             "the syntax gate passes `-fopenmp` on an openmp target",
         ):
             self.assertIn(token, prompt)

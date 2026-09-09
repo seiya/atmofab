@@ -13505,7 +13505,7 @@ end program shallow_water2d_runner
             # ... and the floor's SCOPE. This was the last place stating the punishment
             # unconditionally, and it is read by exactly the agentic leaves the floor exempts.
             "The floor runs only where the `abstract` knobs affirmatively claim OpenMP as the model",
-            "not on an `infrastructure`/`profile` node",
+            "not on an `infrastructure` node",   # issue #175: no `profile` IR exists to exempt
         ):
             self.assertIn(
                 rule, generate_skill,
