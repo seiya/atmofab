@@ -51,8 +51,6 @@ TIER_B_SUBCOMMANDS: frozenset[str] = frozenset({
     "record-timeout",
     "check-step-completed",
     "orchestration-read",
-    "repair-agent-runs",
-    "repair-step-result-executor",
     "reopen-phase",
     "add-superseded-runs",
     "dismiss-violation",
