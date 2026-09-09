@@ -57,6 +57,17 @@ a fail-open that way, on the strength of **one** compiler probe).
   you write it, execute one case from that spec and confirm.** What breaks these claims is always
   the language's **special form** (PEP 420 namespace packages, use association, implicit
   association rules). Any "impossible" about package structure, scope, or visibility gets one run
+- **MOVING a fact is deleting a defense you never classified**, and it is the one shape here that
+  reaches no classification at all, because nothing prompts you to make one: the check still
+  runs, still passes, and now covers less. Issue #175 moved the adopted `profile` out of the
+  sidecar's `all_nodes` into a key of its own, and `_closure_signature` — the R6-lite freshness
+  comparison — reads `all_nodes`; so bumping a profile's version left every adopter byte-identical
+  at the new HEAD and CHANGED it on `origin/main`, where the profile had been an ordinary node.
+  **Rule: before moving a fact between structures, list the readers of the OLD structure and say
+  for each what it sees now.** The tell is a diff that ADDS a key rather than changing a value —
+  nothing looks removed. Nothing in a review loop finds this except comparing the two revisions,
+  which is why it is `atmofab-review-loop`'s disclosure axis that caught it and not the sweep, the
+  census, or a blank-slate reviewer, all of which compare HEAD against itself
 
 **1-c. Severity is a classification too. Do not decide it from one reproduction.** Rule 1 says
 decide "does it happen" by execution; it says **nothing about how far it happens**. The procedure
@@ -150,7 +161,7 @@ operator does not lower the count — it decides which site you check first.
 **Reach for the pattern this repository already uses three times** (`_SCRATCH_SURFACES`,
 `_REDIRECT_RULE_SURFACES`, `_SURFACES` in `tools/tests/test_hooks_cli.py`) — but they are three
 DIFFERENT shapes and **they duplicate each other**, so read the one nearest your rule and treat
-copying as the starting point. The six traps, each of which cost a round (the count was wrong here — "four" over five bullets — until issue #143 added the sixth, which is this rule's own enumeration trap turned on itself):
+copying as the starting point. The ten traps, each of which cost a round (the count was wrong here — "four" over five bullets — until issue #143 added the sixth, which is this rule's own enumeration trap turned on itself; issue #175 added the last four, all of them found by a witness census run against a coupling check written the SAME DAY, three of them demonstrated by planting the defect the check was built to refuse):
 
 - **Anchor on text that PRECEDES the rule and is byte-identical in the wording you are refusing.**
   Anchoring on your own corrected sentence pins that the correction survived, not that the rule is
@@ -192,6 +203,26 @@ copying as the starting point. The six traps, each of which cost a round (the co
   surface list**: deleting a surface that happens to carry no exempt line is invisible, which was
   3 of 5 there, so derive the surfaces from the code that decides them
   (`leaf_contract_doc_refs`) and assert the coverage
+
+- **Read the STATEMENT, not the line — prose WRAPS.** A reader that tests one line at a time
+  misses a rule written across two, and hard-wrapped Markdown and prompt templates are what these
+  surfaces are made of: issue #175's census wrote the refused fact over two lines and the check
+  passed it. Span a bounded window of CONTINUATION lines — not across a bullet, heading or fence
+  boundary, or two adjacent items joined by chance become a statement nobody wrote — report the
+  innermost match so a one-line statement keeps a one-line key, and witness BOTH directions
+- **Key the allowlist by SURFACE and content, not content alone.** A digest-only key makes
+  copying an allowlisted sentence VERBATIM into another document free — which is precisely the
+  operation that produced the copies you are coupling against, so the check's whole purchase is
+  void for it (planted and green on issue #175). It also blinds the set comparison in the other
+  direction: with one line in two files, deleting it from one raises nothing
+- **The set comparison's DISAPPEARANCE half needs its own witness.** "Compared as a set" is a
+  claim about two directions, and only one of them is exercised by every run — replacing the
+  stale computation with `[]` stays green forever. Drive it with an entry that matches nothing
+- **Deriving the surfaces is not enough if the derivation SWALLOWS a miss.** A `.is_file()` guard
+  over a derived path turns a renamed or moved file into a SMALLER scan, silently — the census
+  renamed a `SKILL` and planted a false statement in the file the rename orphaned, and the check
+  passed. A surface the code NAMES but the tree does not carry is a failure of its own row, and
+  each group's expected count comes from the same source the group does
 
 **Before adding a check, ask whether the sites should exist.** The cheaper fix is this
 repository's ordinary practice — one canonical statement, everyone else cites it (`AGENTS.md`
@@ -364,6 +395,19 @@ recipes are in `references/input-surfaces.md`:
   **Nothing in this repository's review loop finds this except rendering the prompt** — the
   mutation sweep mutates code, the census enumerates code, a blank-slate reviewer reads code, and
   all three were green on it; see `atmofab-review-loop`'s "what does a LEAF see" clause.
+  **The MIRROR is the same surface and reads as an unrelated task: changing what a leaf is TOLD
+  without changing what it is GIVEN.** Issue #175 corrected the agentic compile producer's
+  `SKILL` to say the direct dependency set is read from `<ir_ref>/dependency_graph.json` — and
+  left `build_launch_request`'s must-read set as it stood, so the one leaf that reads exactly its
+  required set had no source anywhere in it for the fact its own canonical procedure named, and
+  would have failed the phase on every attempt. It stayed invisible for a whole round because
+  the PURE path inlines that same file as context: the contract was true, the delivery was not,
+  and both paths' tests were green. **Rule: when you change what a contract TELLS a leaf to read,
+  count how that thing reaches EACH transport that receives the contract — the must-read set, the
+  inlined context, the template's own words — and name the one for each.** The tell is a corrected
+  sentence that names a file, in a commit with no diff to the code that assembles what the leaf is
+  handed. Same question as the paragraph above, asked from the other end: there the transport
+  moved and the contract did not, here the contract moved and the transport did not.
 
 ### 2. Confirm the path production actually takes
 

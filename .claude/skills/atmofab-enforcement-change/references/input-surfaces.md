@@ -407,3 +407,38 @@ its own to become a registry refusal. And the prompt sentence introducing the ne
 the inlined document "is" the gate's rule set, which it was not: a rule that overclaims
 completeness sends the leaf away from the rest. **When you deliver a rule set to a leaf, state
 what it does NOT cover in the same sentence.**
+
+### The mirror: the contract moved and the transport did not (issue #175)
+
+The episode above is a transport change that cut a document. The mirror is a document change that
+outran the transport, and it looks nothing like a delivery problem while you are making it.
+
+Issue #175 moved a node's `direct_deps` out of the `deps.yaml` declaration and into the
+conductor-authored `<ir_ref>/dependency_graph.json`. Five review rounds swept the sentence stating
+that fact through the two compile prompt templates, the phase document, both problem
+`controlled_spec.md`, the glossary — and, in round 4, `skills/workflow-compile-generate/SKILL.md`,
+the AGENTIC producer's canonical procedure, which was corrected to say "read it THERE, not from
+`deps.yaml`".
+
+Round 5 measured what that leaf is actually handed. `build_launch_request`'s
+`skill_must_read_refs` for `(compile, generate)` was the `SKILL`, `docs/AGENT_CONTRACT.md`, the
+phase document and the spec's three files. **The sidecar was in none of them.** A leaf reading
+exactly its required set had no source for the direct dependency set OR for the per-case
+`profile_selection` the new gate requires — on the two nodes whose `deps.yaml#components` the same
+change had emptied to `[]` — and would have failed the phase on every attempt until its retries
+were spent.
+
+Why a whole round passed with it green:
+
+- The PURE path inlines the same file as `dependency_graph_document`, so the majority transport
+  was correct and every test that renders a prompt renders that one.
+- Nothing compares a `SKILL`'s instructions against the launch request's must-read set. The
+  contract was true; the delivery was not; there is no assertion whose subject is the pair.
+- The correction that created the gap was itself a FIX, applied in a round, to a real finding.
+  Nothing about it looked like a transport change.
+
+**The enumeration, and it is the same one as above run in the other direction:** for each
+document you correct, list the leaves that receive it, and for each leaf say by which of the three
+routes the thing the sentence names arrives — the must-read set, the host-inlined context, or the
+template's own words. A blank in that table is the defect. On a repository where one contract is
+read by two transports, expect exactly one of them to be wrong.

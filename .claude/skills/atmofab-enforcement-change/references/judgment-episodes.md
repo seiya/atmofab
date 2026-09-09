@@ -158,6 +158,28 @@ is the starting point and not the goal. The four traps, each of which cost a rou
   repair. This is the trap that is easiest to reintroduce, because pinning the spelling is
   three lines and pinning the members is fifteen
 
+**Issue #175 added four more traps, and how they were found is the point.** The rule fired for
+real: one fact — where a node's `direct_deps` comes from — was stated on ELEVEN lines across
+SEVEN files (of eight the scan covers; one carries none), six of the seven read by a compile
+leaf, and FIVE consecutive review rounds each found a
+different copy still stating the fact the change had reversed. Four of those copies were text a
+leaf acts on, each costing that leaf a `Compile fail` on every attempt. So a coupling check was
+written. **A witness census run against it the same day found four defects in it**, three of them
+by PLANTING the very defect the check exists to refuse and watching it pass:
+
+- a statement written across TWO LINES, which is what hard-wrapped Markdown and the prompt
+  templates are made of, and the reader was line-local;
+- an allowlisted line copied VERBATIM into a second surface, free because the key was the
+  digest alone — and the copy is exactly the operation that produced the eleven sites;
+- a false statement planted in a `SKILL` after renaming it, because the surface derivation
+  guarded with `.is_file()` and silently scanned one file fewer;
+- and the set comparison's STALE half, replaced with `[]` and still green, because only the
+  unread direction is exercised by an ordinary run.
+
+The lesson under the four is the one this whole section keeps restating: **the check you write to
+stop a class of defect is written by the same hand that produced the class**, so it needs the same
+treatment — plant the defect, not just the mutant. Every fix above is witnessed by planting.
+
 **Before adding a check, ask whether the sites should exist.** The cheaper fix is this
 repository's ordinary practice — one canonical statement, everyone else cites it (`AGENTS.md`
 §Dedicated rule documents) — and it cannot rot. Coupling is for the sites that must repeat the

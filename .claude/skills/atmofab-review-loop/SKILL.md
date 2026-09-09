@@ -960,6 +960,14 @@ could have: the sweep mutates what exists, the census enumerates what exists, an
 reviewer reads HEAD. **Everything else compares HEAD against itself.** The disclosure round is the
 one place a reviewer is pointed at the previous revision, so it is the only place a deleted
 guarantee is visible.
+**Read "deleted" widely: a guarantee is lost by RELOCATION as often as by deletion, and that
+form has no diff to point at.** On issue #175 a fact moved out of the structure an existing
+comparison reads — the adopted `profile` left the dependency sidecar's `all_nodes` for a key of
+its own, while the R6-lite freshness signature reads `all_nodes` — so the check still ran, still
+passed, and stopped seeing a whole class of change. Nothing was removed; a key was ADDED. Asking
+the axis for "a check that was narrowed away" would have missed it, so ask for **a check that
+still runs and now covers less**, and give the reviewer the old revision to run the old defect
+against: red-then-GREEN is the finding whether the cause was a narrowing, a deletion, or a move.
 
 **And "what does a LEAF see" means RENDER THE PROMPT, once per leaf that receives it — WHEN the
 branch changed text a leaf is handed.** That condition is the whole scope: a branch that touches
