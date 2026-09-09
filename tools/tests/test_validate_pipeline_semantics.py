@@ -16260,6 +16260,25 @@ class ProfileSelectionGateTests(unittest.TestCase):
         # ...and the absence of the field is equally fine there.
         self.assertEqual(self._run(selections=[_OMIT], profiles=[]), [])
 
+    def test_a_malformed_profiles_record_is_refused_rather_than_read_as_none(self) -> None:
+        # Round-2 finding: unpinned. Degrading an unusable `profiles` value to "adopts none"
+        # would turn this gate OFF for the node whose record is corrupt — the one direction
+        # that fails open, since a node with `profiles: []` is not gated at all.
+        for bad, marker in (
+            ("not-a-list", "must be a list"),
+            (7, "must be a list"),
+            ([{"profile_id": "pr", "profile_version": "0.1.1"}, "bare-string"],
+             "is not an object"),
+            ([{"profile_id": "pr"}], "missing profile_id / profile_version"),
+            ([{"profile_version": "0.1.1"}], "missing profile_id / profile_version"),
+            ([{"profile_id": "", "profile_version": "0.1.1"}],
+             "missing profile_id / profile_version"),
+        ):
+            with self.subTest(profiles=bad):
+                v = self._run(selections=[self._GOOD], profiles=bad)
+                self.assertEqual(len(v), 1, v)
+                self.assertIn(marker, v[0])
+
     def test_a_sidecar_without_the_profiles_key_is_refused(self) -> None:
         # Written by a builder that predates issue #175: whether this node adopts a profile
         # cannot be decided, so it fails closed with the re-run remedy rather than skipping.

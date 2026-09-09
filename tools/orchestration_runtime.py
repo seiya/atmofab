@@ -1338,10 +1338,21 @@ def _dependency_resolution_freshness(
         recorded_keys = [item[0] for item in recorded[0]]
         derived_keys = [item[0] for item in derived[0]]
         if recorded_keys == derived_keys:
-            # Same nodes, different SHAPE. Say WHICH part moved, or the message reads as though
-            # nothing changed — and there are two parts that can move without the node set: a
-            # node between direct and transitive, and (issue #175) the adopted `profile` set,
-            # which is never in `all_nodes` at all.
+            # Same node SET, so something else moved — and there are THREE candidates, because
+            # `recorded_keys` drops the `topo_level` the signature's first term carries: a node
+            # moved between direct and transitive; the heights moved with the node set intact;
+            # or (issue #175) the adopted `profile` set moved, which is never in `all_nodes` at
+            # all. Test each in turn and name the one that actually differs. An earlier version
+            # of this branch tested only `transitive` and let everything else fall through to
+            # the profile message, which printed two IDENTICAL profile lists for a
+            # height-only drift and named a cause the node may have nothing to do with.
+            if recorded[2] != derived[2]:
+                return (
+                    False,
+                    f"{node_key} was certified against the same dependency closure but a "
+                    f"different adopted profile set: profiles were {recorded[2]}, deps.yaml + "
+                    f"spec_catalog.yaml now derive {derived[2]}",
+                )
             if recorded[1] != derived[1]:
                 return (
                     False,
@@ -1351,9 +1362,9 @@ def _dependency_resolution_freshness(
                 )
             return (
                 False,
-                f"{node_key} was certified against the same dependency closure but a different "
-                f"adopted profile set: profiles were {recorded[2]}, deps.yaml + "
-                f"spec_catalog.yaml now derive {derived[2]}",
+                f"{node_key} was certified against a dependency closure with the same nodes and "
+                f"the same direct/transitive split but different topological levels: levels were "
+                f"{recorded[0]}, deps.yaml + spec_catalog.yaml now derive {derived[0]}",
             )
         return (
             False,

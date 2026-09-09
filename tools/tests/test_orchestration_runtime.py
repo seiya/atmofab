@@ -30943,7 +30943,16 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # comment ORDERING omission on a node with no adopted profile, which the harness
         # spec's own `tests.md` requires for an unrelated plumbing aspect. Both are now
         # per-path rather than absolute, and both cost words.
-        "docs/workflow/phases/phase_01_compile.md": 69051,
+        # Re-taken at the round-2 HEAD (69274, measured 69124) — the SEVENTH, and by
+        # now the entry's own comments have said three times that this happens by
+        # construction: the document is inlined verbatim into both compile prompts, so every
+        # round that corrects what a leaf is told grows it. Round 2's growth is one clause:
+        # §Verification tools still stated the `infrastructure` dep-count rule as applying to
+        # every non-`infrastructure` kind, which this branch made false for a `profile` — and
+        # `skills/spec-input-check/SKILL.md` names THIS document as the canonical source for
+        # exactly that rule, so the check corrected in round 1 and the document it cites had
+        # disagreed since.
+        "docs/workflow/phases/phase_01_compile.md": 69274,
         # Per-substep SKILLs — each force-read by its own LLM leaf.
         # Bumped 10800->11500: Compile.generate now authors the io_contract section (G2 /
         # docs/design/deterministic_followups.md) — it was moved here from Compile.verify so the
@@ -31290,7 +31299,15 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # saying "subroutine" would tell it to skip the procedures the gate just started covering,
         # which is the same fail-open shape as the bump above. Measured 28270; 28271 after the
         # `met-dsl` -> `atmofab` rename, which added one byte to this file (issue #127).
-        "skills/workflow-generate-verify/SKILL.md": 28500,
+        # Bumped 28500->28761 (issue #175, round 2; measured 28611). This file told the
+        # reviewer to `fail` a `problem` that does not reference its adopted `profile`'s
+        # selection result — a configuration that cannot exist any more, since the host
+        # resolves a profile at Compile and it never reaches `direct_deps`. Left as it was,
+        # an agentic reviewer reading the adopting spec's `deps.yaml#profiles` had this
+        # file's own words as grounds for failing a correct model. Refusing correct work is
+        # the direction that costs a regenerate loop, so the replacement says both halves —
+        # do not fail for it, and here is what the direct dependencies actually are.
+        "skills/workflow-generate-verify/SKILL.md": 28761,
         # Bumped 10000->10400: documented the verdict.json#per_test entry schema
         # (field name `status`/`outcome` + the pass/fail/xfail/skipped enum, with `blocked`
         # called out as conductor-derived not judge-written) so the judge leaf no longer
@@ -41273,6 +41290,94 @@ class ProfileExpansionTests(unittest.TestCase):
             self.assertIn("profile/pr@0.1.0", detail)
             self.assertIn("profile/pr@0.9.0", detail)
             self.assertNotIn("different shape", detail)
+
+    def test_a_same_node_set_drift_names_the_part_that_actually_moved(self) -> None:
+        """Three things can move with the node SET intact — the direct/transitive split, the
+        topological levels, and the adopted profile set — and `recorded_keys` drops the levels,
+        so a branch that tests only two of them prints two identical lists for the third.
+        Round-2 finding: the round-1 fix tested `transitive` and let a HEIGHT-only drift fall
+        through to the profile message, naming profiles on a node that adopts none."""
+        import tools.orchestration_runtime as ort
+        from tools.orchestration_runtime import _dependency_resolution_freshness
+
+        base = {
+            "node_key": "problem/t@1.0.0",
+            "all_nodes": [{"node_key": "component/x@1.0.0", "topo_level": 0},
+                          {"node_key": "component/y@1.0.0", "topo_level": 1},
+                          {"node_key": "problem/t@1.0.0", "topo_level": 2}],
+            "transitive_deps": [{"node_key": "component/x@1.0.0", "via": []}],
+            "profiles": [],
+        }
+
+        def _drive(recorded, derived, tmpdir):
+            ir_dir = Path(tmpdir) / "ir"
+            ir_dir.mkdir(parents=True, exist_ok=True)
+            (ir_dir / "dependency_graph.json").write_text(
+                json.dumps(recorded), encoding="utf-8")
+            with mock.patch.object(ort, "_spec_ref_candidates",
+                                   lambda *_a, **_k: {"spec/problem/t"}), \
+                 mock.patch.object(ort, "_certified_ir_dir", lambda *_a, **_k: ir_dir), \
+                 mock.patch("tools.dependency_graph.build_dependency_graph",
+                            lambda *_a, **_k: (derived, None)):
+                return _dependency_resolution_freshness(repo_root, "problem", "t", "1.0.0")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            # (a) heights moved, nothing else.
+            levels = json.loads(json.dumps(base))
+            levels["all_nodes"][1]["topo_level"] = 5
+            fresh, detail = _drive(base, levels, tmp)
+            self.assertFalse(fresh)
+            self.assertIn("different topological levels", detail)
+            self.assertNotIn("adopted profile set", detail)
+            # (b) the direct/transitive split moved.
+            split = json.loads(json.dumps(base))
+            split["transitive_deps"] = []
+            fresh, detail = _drive(base, split, tmp)
+            self.assertFalse(fresh)
+            self.assertIn("different shape", detail)
+            self.assertNotIn("adopted profile set", detail)
+            # (c) only the adopted profile set moved.
+            prof = json.loads(json.dumps(base))
+            prof["profiles"] = [{"node_key": "profile/pr@0.2.0"}]
+            fresh, detail = _drive(base, prof, tmp)
+            self.assertFalse(fresh)
+            self.assertIn("adopted profile set", detail)
+            self.assertIn("profile/pr@0.2.0", detail)
+            self.assertNotIn("different shape", detail)
+            # Control: identical graphs are fresh, so the three rows above are not passing on
+            # a comparison that always disagrees.
+            self.assertEqual(_drive(base, json.loads(json.dumps(base)), tmp), (True, None))
+
+    def test_the_profile_term_is_order_insensitive_and_shape_validated(self) -> None:
+        """Two rows the round-2 sweeps found unpinned, and they pull in opposite directions.
+
+        `profile_keys.sort()` — its two siblings `out.sort()` / `trans.sort()` each have a
+        pinning row; without it, reordering the `profiles:` entries of a node that adopts two
+        spuriously restales it.
+
+        The non-dict refusal — this is the ONE signature term whose corruption would read
+        FRESH rather than stale: on a node that adopts none, degrading an unusable `profiles`
+        value to "adopts none" makes it compare equal, where the identical checks on
+        `all_nodes` / `transitive_deps` report the sidecar unusable."""
+        from tools.orchestration_runtime import _closure_signature
+        two = {"node_key": "problem/t@1.0.0",
+               "all_nodes": [{"node_key": "problem/t@1.0.0", "topo_level": 0}],
+               "transitive_deps": [],
+               "profiles": [{"node_key": "profile/b@0.1.0"}, {"node_key": "profile/a@0.1.0"}]}
+        reordered = dict(two, profiles=list(reversed(two["profiles"])))
+        self.assertEqual(_closure_signature(two), _closure_signature(reordered))
+        self.assertEqual(_closure_signature(two)[2], ["profile/a@0.1.0", "profile/b@0.1.0"])
+        for unusable in ("not-a-list", 7, [{"node_key": "profile/a@0.1.0"}, "bare-string"],
+                         [{"node_key": ""}], [{"profile_id": "a"}]):
+            with self.subTest(profiles=unusable):
+                self.assertIsNone(
+                    _closure_signature(dict(two, profiles=unusable)))
+        # `None` and the absent key both mean "adopts none" — the normalization that keeps a
+        # pre-#175 sidecar from restaling the corpus.
+        self.assertEqual(_closure_signature(dict(two, profiles=None))[2], [])
+        self.assertEqual(
+            _closure_signature({k: v for k, v in two.items() if k != "profiles"})[2], [])
 
     def test_every_expansion_refusal_uses_a_declared_reason(self) -> None:
         """`_PROFILE_EXPANSION_REASONS` is what pins these reasons to the STALE side of the

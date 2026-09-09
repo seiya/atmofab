@@ -29,7 +29,7 @@ This skill does not restate the spec format. The judgment rules are owned by:
 - `docs/TESTS.md` — required meta, required sections, and coverage rules of `tests.md` per `spec_kind`.
 - `docs/SPEC.md` — `spec` hierarchy, naming rules (including the `spec_id` length bound), `deps.yaml` declaration rules, and registry consistency.
 - `docs/GLOSSARY.md` — the allowed `domain` / `family` classification vocabulary, and the `deps.yaml` declaration vocabulary (`component_id` / `profile_id` / `infrastructure_id`).
-- `docs/workflow/phases/phase_01_compile.md` — the node-**identity** preconditions `Compile` cannot repair by re-authoring, so they must be caught here: `spec_id` ≤ 55 characters, and **exactly one** `infrastructure` direct dependency. Also the `infrastructure` §5 / §5.1 public-API pin, and the rule that the runner emits every numeric judgment **already reduced to a field, so predicates do no arithmetic**.
+- `docs/workflow/phases/phase_01_compile.md` — the node-**identity** preconditions `Compile` cannot repair by re-authoring, so they must be caught here: `spec_id` ≤ 55 characters, and **exactly one** `infrastructure` direct dependency on every `spec` that builds (`infrastructure` declares none; a `profile` is bounded to zero and is checked at its adopter instead — check F.6). Also the `infrastructure` §5 / §5.1 public-API pin, and the rule that the runner emits every numeric judgment **already reduced to a field, so predicates do no arithmetic**.
 - `docs/workflow/RUNNER_OUTPUT_CONTRACT.md` — the `diagnostics.json` / `perf.json` / `raw/` shapes the runner emits, and the `raw/metrics_basis.json` per-(`test_id`, `case_id`) index.
 - `docs/workflow/CHECKS_MODULE_CONTRACT.md` — what a metric is (one dotted address carries one scalar), and the rule that a **cross-case reduction** (a convergence order, a symmetry residual) is emitted as a **per-case** metric of the case where it first becomes computable, the earlier cases omitting it.
 - `tools/verdict_evaluator.py` — the predicate DSL that decides each per-test verdict. This canonical source is **code, not prose**: it fixes how a predicate `ref` resolves (only the `checks` / `verdict` heads are nested paths; every other `ref` is a whole-string key of the case's flat `metrics` map) and which per-case container shapes are accepted.
@@ -54,17 +54,19 @@ Group findings by severity:
 ### B. Meta information
 1. `controlled_spec.md §0` states all of `spec_id`, `spec_version`, `status`, `spec_kind`, `domain`, `family`. A missing field is a `blocker`.
 2. `deps.yaml` states `spec_id` and `spec_kind`.
-3. `tests.md §0` states `test_profile_id`, `test_profile_version`, `status`, and the `spec_ref` fields (`spec_kind`, `spec_id`, `spec_version`, `controlled_spec_path`).
+3. `tests.md §0` states `test_profile_id`, `test_profile_version`, `status`, and the `spec_ref` fields (`spec_kind`, `spec_id`, `spec_version`, `controlled_spec_path`). **Skipped for a `profile`**, which has no `tests.md` (A.1).
 4. `spec_id` matches the form `^[a-z][a-z0-9_]{2,63}$` **and is at most 55 characters** (`docs/SPEC.md` req. 4). An over-length `spec_id` is a `blocker`, and one worth reporting first: the bound is enforced at spec-input, so the workflow rejects the target — and every member of a `--with-deps` closure — before any phase runs, and no re-authoring of the `IR` or the source can repair it. Only a rename can, which also touches the directory, `spec_catalog.yaml`, and every dependent's `deps.yaml`. For a `component` spec, also check the recommended form `<domain>_<family>_<operator>_<dim>d_<scheme>` (recommendation → `info`, not a `blocker`).
 5. `spec_kind` is one of `problem` / `component` / `profile` / `infrastructure` (`infrastructure` = the R1 harness node kind).
 6. `domain` / `family` match the classification vocabulary in `docs/GLOSSARY.md`.
 
 ### C. Cross-file consistency (contradictions)
-1. `spec_id` is identical across `controlled_spec.md §0`, `deps.yaml`, `tests.md` (`spec_ref.spec_id`).
-2. `spec_kind` is identical across the three files.
+**Every check in this group that reads `tests.md` is SKIPPED for a `profile`**, which has none (A.1) — C.1 and C.2 compare the two files it does have, C.3 and C.4 do not apply at all, and C.5 requires `tests_path` to be ABSENT from its catalog entry rather than to agree.
+
+1. `spec_id` is identical across `controlled_spec.md §0`, `deps.yaml`, and — on every kind but `profile` — `tests.md` (`spec_ref.spec_id`).
+2. `spec_kind` is identical across the three files (the two, for a `profile`).
 3. `tests.md spec_ref.spec_version` equals `controlled_spec.md §0 spec_version`. A mismatch is a `blocker` (the test profile targets a different spec version).
 4. `tests.md spec_ref.controlled_spec_path` resolves to the actual `controlled_spec.md` of this spec directory.
-5. `spec/registry/spec_catalog.yaml` registers this spec, and its `spec_kind` / `spec_version` / `domain` / `family` / `controlled_spec_path` / `tests_path` / `deps_path` agree with the files. An unregistered spec, or any field mismatch, is a `blocker` (`docs/SPEC.md`: unregistered dependencies are not allowed).
+5. `spec/registry/spec_catalog.yaml` registers this spec, and its `spec_kind` / `spec_version` / `domain` / `family` / `controlled_spec_path` / `tests_path` / `deps_path` agree with the files. An unregistered spec, or any field mismatch, is a `blocker` (`docs/SPEC.md`: unregistered dependencies are not allowed). For a `profile` the entry carries NO `tests_path`, and one present there is the mismatch.
 6. The directory path encodes the same `spec_kind` / `domain` / `family` / `spec_id` as the meta declares.
 
 ### D. controlled_spec.md required sections (per spec_kind)
@@ -84,6 +86,8 @@ The **section numbers are load-bearing for an `infrastructure` spec** — the `C
 - Section 2 states which record component carries the `case_id`, since the `metrics_basis.json` index is keyed by (`test_id`, `case_id`). Absence is a `warning`.
 
 ### E. tests.md required content (per spec_kind)
+**This whole group is SKIPPED for a `profile`**, which has no `tests.md` (A.1). Do not report its absence here — A.1 owns that, and reporting it twice sends the author looking for two defects.
+
 1. The required sections of `docs/TESTS.md §Description format` (0–8) exist; an unnecessary section states `N/A` with a reason rather than being omitted.
 2. At least one `L0` test is defined (`docs/SPEC.md` req. 13, `docs/TESTS.md`). Absence is a `blocker`.
 3. Each test's judgment condition is stated per `node_key` and does not implicitly reference a dependency `node`'s state.

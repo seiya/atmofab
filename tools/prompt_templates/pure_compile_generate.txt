@@ -10,7 +10,7 @@ Authoring rules (the phase contract inlined below is the canonical source for ev
 **Tests (the test set the verification contract must cover exactly):**
 <tests_document>
 
-**Dependency declaration (`deps.yaml` — the directly-required dependency set):**
+**Dependency declaration (`deps.yaml` — what the spec author DECLARED. It is NOT your `direct_deps`: a `profile` entry here is not a node, and the components it selects are. Rule 3 says where your direct set comes from):**
 <deps_document>
 
 **Profile specification (the controlled spec of each `profile` this node adopts, when it adopts one — its constraints are what your `algorithm` honours; the component set it selects is already resolved into the dependency-graph document below):**

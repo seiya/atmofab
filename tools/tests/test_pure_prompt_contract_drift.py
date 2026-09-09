@@ -461,7 +461,7 @@ PINNED: dict[str, str] = {
     # document (a `profile` entry in deps.yaml is not a node), rule 9 pins
     # `profile_selection`, and the profile-document heading says the selected component
     # set is already resolved.
-    "pure-38": "e1485da84d9b558087fd5250294e8a78242df84bbc71ca9addaa3dda2802af84",}
+    "pure-38": "f9b4b43005b6a1879fcf3be0aadb07bc80dca3969f6330014ff69766e9294d12",}
 
 
 def _contract_tuple() -> dict[str, object]:
