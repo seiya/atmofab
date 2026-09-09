@@ -591,8 +591,7 @@ Rule 1-b says a deletion needs an execution record; this is what makes that reco
 re-takeable by the next person instead of a sentence they have to trust.
 
 `scripts/tests/test_measure_claude_tool.py` beside it pins its case-list coverage, fixture
-saturation,
-result detector and verdict — a harness with no witness gets broken again, and this one had
-four faults in that layer found in a single review round.
-Run it with `python3 -m pytest .claude/skills/atmofab-enforcement-change/scripts/tests -q
--p no:randomly`; `pytest tools/tests` does not collect it.
+saturation, result detector and verdict — a harness with no witness gets broken again, and
+this one had four faults in that layer found in a single review round. `pytest tools/tests`
+does not collect it; run it with
+`python3 -m pytest .claude/skills/atmofab-enforcement-change/scripts/tests -q -p no:randomly`.

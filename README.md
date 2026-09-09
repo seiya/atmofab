@@ -148,8 +148,12 @@ leaf deadline / abandon / teardown guards executed by nobody.
 
 The two review instruments under `.claude/skills/` — `atmofab-review-loop/scripts/mutation_check.py`
 and `atmofab-enforcement-change/scripts/measure_claude_tool.py` — carry their tests beside them in
-`scripts/tests/`; each skill states the command that runs them, and `pytest tools/tests` does not
-collect them, because `.claude/` is under pytest's default `norecursedirs`.
+`scripts/tests/`, and neither command above collects them: `pytest tools/tests/` because they are
+not under `tools/tests/`, a bare `pytest` because `testpaths` points there. `pytest .` does not
+collect them either, and that one IS held by `norecursedirs`, whose default list contains `.*`.
+Each instrument's own skill states the command that runs its tests —
+`.claude/skills/atmofab-review-loop/SKILL.md` and
+`.claude/skills/atmofab-enforcement-change/SKILL.md`.
 
 **The suite ignores your `ATMOFAB_*`, `CODEX_HOME` and `CLAUDE_CONFIG_DIR` environment
 variables** (issue #84). They are per-run knobs that `tools/run_workflow.py` sets in every

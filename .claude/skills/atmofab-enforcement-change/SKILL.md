@@ -536,6 +536,8 @@ through a loopback stand-in, unbilled, in a saturated fixture, and exits non-zer
 row fails its declared expectation. Reach for it before writing "this spelling cannot
 reach outside" — that claim was written down wrong four times on issue #71, each time from
 a probe that measured something else. `references/verification.md` carries the details.
+Its own tests live beside it and `pytest tools/tests` does not collect them:
+`python3 -m pytest .claude/skills/atmofab-enforcement-change/scripts/tests -q -p no:randomly`.
 
 ### 6. Verify and record
 
