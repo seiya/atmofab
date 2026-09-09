@@ -41002,9 +41002,9 @@ class DirectDepsSourceStatementTests(unittest.TestCase):
     declaration and is now the host-derived set in `<ir_ref>/dependency_graph.json`
     (`all_nodes` minus self minus `transitive_deps`, which INCLUDES the runner harness), because
     a `profile` entry in `deps.yaml` is not a node and the `component` it selects are. The rule
-    is stated in eleven places across eight files, six of which a compile leaf receives
-    verbatim, and FIVE consecutive review rounds each found a different copy still stating the
-    old fact — four of them in text a leaf acts on, each costing that leaf a `Compile fail` on
+    is stated in eleven places across seven files — of the eight surfaces this class scans; the
+    verify `SKILL` carries none — six of the seven read by a compile leaf, and FIVE consecutive
+    review rounds each found a different copy still stating the old fact — four of them in text a leaf acts on, each costing that leaf a `Compile fail` on
     every attempt.
 
     That count is what `atmofab-enforcement-change` rule 3-a calls the point where sweeping has
