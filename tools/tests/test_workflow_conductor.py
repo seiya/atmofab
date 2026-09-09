@@ -165,7 +165,15 @@ def _refs_from_request(req: dict) -> wc.NodeRefs:
 
 
 class BuildLaunchRequestTest(unittest.TestCase):
-    """build_launch_request reproduces real request.json payloads exactly."""
+    """build_launch_request reproduces real request.json payloads exactly.
+
+    The fixtures under `data/conductor_launch_requests/` are CAPTURES of real runs, and that is
+    what makes this row evidence rather than a restatement of the builder. So a fixture is
+    edited only when the launch contract deliberately changes, and the edit is recorded:
+    `compile_generate.request.json` gained `<ir_ref>/dependency_graph.json` in its
+    `skill_must_read_refs` for issue #175, because the node's direct dependency set moved out of
+    `deps.yaml` and into that sidecar, and an agentic producer that reads only its required set
+    would otherwise have no source for it. Every other field of every fixture is as captured."""
 
     def test_reproduces_every_real_substep_payload(self) -> None:
         real = _load_real_requests()

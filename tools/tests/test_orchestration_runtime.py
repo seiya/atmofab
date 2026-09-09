@@ -41000,68 +41000,101 @@ class DirectDepsSourceStatementTests(unittest.TestCase):
 
     Issue #175 moved that fact: the direct dependency set used to BE the `deps.yaml`
     declaration and is now the host-derived set in `<ir_ref>/dependency_graph.json`
-    (`all_nodes` minus self minus `transitive_deps`), because a `profile` entry in `deps.yaml`
-    is not a node and the `component` it selects are. The rule is stated in 11 places across 8
-    files, six of which a compile leaf receives verbatim, and FOUR consecutive review rounds
-    each found a different copy still stating the old fact — three of them in text a leaf acts
-    on, each costing that leaf a `Compile fail` on every attempt.
+    (`all_nodes` minus self minus `transitive_deps`, which INCLUDES the runner harness), because
+    a `profile` entry in `deps.yaml` is not a node and the `component` it selects are. The rule
+    is stated in eleven places across eight files, six of which a compile leaf receives
+    verbatim, and FIVE consecutive review rounds each found a different copy still stating the
+    old fact — four of them in text a leaf acts on, each costing that leaf a `Compile fail` on
+    every attempt.
 
     That count is what `atmofab-enforcement-change` rule 3-a calls the point where sweeping has
     already lost, and its remedy is what this class is: the sites that must repeat the rule
     (a leaf-read contract has to be self-contained) are COUPLED to it by an allowlist, so a new
-    statement is refused until a person reads it and adds an entry. This is a review gate, not
-    a judgment: nothing here decides whether a sentence is TRUE, only that no sentence about
-    this fact appears without having been read.
+    statement is refused until a person reads it and adds an entry. This decides nothing about
+    whether a sentence is TRUE — only that no sentence about this fact appears without having
+    been read, which is a review gate rather than a judgment.
 
-    Four properties this class holds, each of them a trap rule 3-a names:
+    Five properties, each of them a trap rule 3-a names or a defect a round-5 census found in
+    the first version of this class, and each WITNESSED by a row below:
 
-    - The allowlist is keyed by a digest of the WHOLE line, not a prefix, so a new clause
-      appended to an allowlisted line is a new entry rather than riding on the old one.
-    - It is compared as a SET, so a line that DISAPPEARS is red too — an entry that no longer
-      matches anything is a stale exemption nobody would otherwise notice.
-    - The surfaces are DERIVED from the code that decides them (the launch-template map, the
-      phase-document map, the SKILL name builder, the catalog's `problem` entries), so a
-      surface added later is scanned automatically. Deriving them is the point: a hand-listed
-      surface set is the thing that produced this class's own history.
-    - The surface list and the co-occurrence reader are both SELF-TESTED below, because an
-      allowlist that matches nothing passes vacuously and a scan bounded to nothing is green.
+    - Keys are `<surface>:<digest of the whole stripped statement>`. Whole-line, so a clause
+      appended to an allowlisted line is a new entry; per-SURFACE, so copying an allowlisted
+      line verbatim into another file is a new entry too — the census planted exactly that copy
+      and the first version passed it, which made "no fifth copy ships unread" false for a copy.
+    - Compared as a SET, so a statement that DISAPPEARS is red: an entry matching nothing is how
+      you learn a sentence was edited or moved.
+    - The reader spans up to `_WINDOW` consecutive lines, because Markdown and the prompt
+      templates are hard-wrapped: the census wrote the wrong fact across two lines and the
+      first version, which read one line at a time, passed it. A window is reported only when no
+      shorter window inside it already matched, so a one-line statement keeps a one-line entry.
+    - The surfaces are DERIVED from the code that decides them, and a surface the code names but
+      the tree does not carry is a FAILURE rather than a silent drop — the census renamed a
+      SKILL and planted a false statement in the file the rename orphaned, and the first version
+      passed that too.
+    - The surface list and the reader are both SELF-TESTED, over the whole cross product of the
+      two term sets rather than one cell of it: the census showed two of the four alternations
+      were dead and the single hardcoded probe could not see it.
     """
 
     REPO_ROOT = Path(__file__).resolve().parents[2]
 
-    #: A line is a STATEMENT about this fact when it names a direct-dependency term and a
-    #: declaration-source term at once. Deliberately wide: the cost of a false positive is one
-    #: allowlist entry a person reads, and the cost of a false negative is this class's history.
-    _DEP_TERM = re.compile(r"direct[_ ]dep|directly[- ]required|direct dependenc", re.I)
-    _SOURCE_TERM = re.compile(r"deps\.yaml|dependency declaration", re.I)
+    #: A statement about this fact names a direct-dependency term and a declaration-source term
+    #: together. Deliberately wide: a false positive costs one allowlist entry a person reads,
+    #: and a false negative costs what five review rounds cost.
+    _DEP_TERMS = (r"direct[_ ]dep", r"directly[- ]required", r"direct dependenc")
+    _SOURCE_TERMS = (r"deps\.yaml", r"dependency declaration")
+    _DEP_TERM = re.compile("|".join(_DEP_TERMS), re.I)
+    _SOURCE_TERM = re.compile("|".join(_SOURCE_TERMS), re.I)
 
-    #: Each entry is `sha256(line.strip())[:16] -> a note saying who read it and what it says`.
-    #: To add one: read the line, satisfy yourself it states the CURRENT fact (or is legitimately
-    #: about something else), and record which. The failure message prints the digest and the
-    #: line for anything unlisted.
+    #: How many consecutive lines a statement may span. Two is what hard-wrapped prose needs;
+    #: three leaves room for a wrapped bullet without making the report unreadable.
+    _WINDOW = 3
+
+    #: A window may only grow across a CONTINUATION line. Joining two adjacent bullets is not a
+    #: wrapped statement, and treating it as one is a false positive that costs an allowlist
+    #: entry for a co-occurrence nobody wrote — measured on `workflow-compile-verify/SKILL.md`,
+    #: where one bullet names `direct_deps` and the next names `deps.yaml`.
+    _BLOCK_START = re.compile(r"^\s*(?:[-*+]\s|#{1,6}\s|\||\d+[.)]\s|```|\*\*)")
+
+    #: `"<surface>:<digest>" -> what the reader understood the statement to say`. To add one:
+    #: read the statement, satisfy yourself it states the CURRENT fact (or is legitimately about
+    #: something else), and record which. The failure message prints the key and the text.
     _READ: dict[str, str] = {
-        # tools/prompt_templates/pure_compile_generate.txt
-        "623d8311ce9f93f6": "rule 3: read the WHOLE derived set; deps.yaml alone is rejected",
-        "7deb92ccbdc3bee3": "deps block label: deps.yaml is what the author DECLARED, not the set",
-        # tools/prompt_templates/pure_compile_verify.txt
-        "8f3888c2abeb0882": "deps block label, reviewer side: not the set direct_deps must equal",
-        # docs/workflow/phases/phase_01_compile.md
-        "71c13f91279256f1": "§1-1: the HOST's directly-required set, read from the graph document",
-        "57f8c7b9ee3ab899": "§Verification tools: the infra dep-count rule, not the direct set",
-        # skills/workflow-compile-generate/SKILL.md (the AGENTIC producer's procedure)
-        "2269806c39f4fdbc": "the HOST's directly-required set, including the runner harness",
-        # spec/problem/**/controlled_spec.md §4
-        "436415413eda5c0e": "advdiff1d_linear: each selected component is A direct dep, not all",
-        "fa62fb936e108ecb": "shallow_water2d: the same sentence",
-        # docs/GLOSSARY.md
-        "cb366ac6efb20346": "spec.ir.yaml.dependency: the host's set, explicitly not deps.yaml",
-        "41add5d95394fae2": "dependency_graph.json: the sidecar's own definition of the set",
-        "7b5b1fe0a32f8922": "expected_node_set: the reconstruction reads each profile's deps.yaml",
+        "tools/prompt_templates/pure_compile_generate.txt:623d8311ce9f93f6":
+            "rule 3: read the WHOLE derived set; deps.yaml alone is rejected",
+        "tools/prompt_templates/pure_compile_generate.txt:7deb92ccbdc3bee3":
+            "deps block label: deps.yaml is what the author DECLARED, not the set",
+        "tools/prompt_templates/pure_compile_verify.txt:8f3888c2abeb0882":
+            "deps block label, reviewer side: not the set direct_deps must equal",
+        "docs/workflow/phases/phase_01_compile.md:71c13f91279256f1":
+            "§1-1: the HOST's directly-required set, read from the graph document",
+        "docs/workflow/phases/phase_01_compile.md:57f8c7b9ee3ab899":
+            "§Verification tools: the infra dep-count rule, not the direct set",
+        "skills/workflow-compile-generate/SKILL.md:2269806c39f4fdbc":
+            "the HOST's directly-required set, including the runner harness",
+        "spec/problem/dynamics/advection_diffusion/advdiff1d_linear/controlled_spec.md:"
+        "436415413eda5c0e":
+            "§4: each selected component is A direct dep, not the whole set",
+        "spec/problem/dynamics/shallow_water/shallow_water2d/controlled_spec.md:"
+        "fa62fb936e108ecb":
+            "§4: the same sentence",
+        "docs/GLOSSARY.md:cb366ac6efb20346":
+            "spec.ir.yaml.dependency: the host's set, explicitly not deps.yaml",
+        "docs/GLOSSARY.md:41add5d95394fae2":
+            "dependency_graph.json: the sidecar's own definition of the set",
+        "docs/GLOSSARY.md:7b5b1fe0a32f8922":
+            "expected_node_set: the reconstruction reads each profile's deps.yaml",
     }
 
     def _surfaces(self) -> list[str]:
         """The repo-relative files that state this rule, derived from the code that decides
-        which documents reach a compile leaf — never hand-listed."""
+        which documents reach a compile leaf — never hand-listed.
+
+        A surface the code NAMES but the tree does not carry is returned anyway, so the
+        existence row below fails on it. Dropping it silently is how a renamed SKILL takes its
+        statements out of the scan (measured: a round-5 census renamed one and planted a false
+        statement in the orphan).
+        """
         import tools.orchestration_runtime as ort
         import tools.workflow_conductor as wc
         import yaml as _yaml
@@ -41077,10 +41110,12 @@ class DirectDepsSourceStatementTests(unittest.TestCase):
                 out.append(f"tools/prompt_templates/{filename}")
         # (2) The phase document, inlined verbatim into both compile prompts.
         out.append(ort.WORKFLOW_PHASE_DOC_BY_STEP["compile"])
-        # (3) The agentic path's SKILL for each LLM substep of Compile, from the name builder.
+        # (3) The agentic path's SKILL for each substep of Compile that has one. `static` is
+        # deterministic and has none, which is why the membership test is against the SKILL
+        # NAMES the builder produces rather than against the filesystem.
         for substep in wc.SUBSTEPS["compile"]:
             skill = f"skills/{wc._skill_name('compile', substep)}/SKILL.md"
-            if (self.REPO_ROOT / skill).is_file():
+            if substep != "static":
                 out.append(skill)
         # (4) Every `problem` spec's controlled_spec.md — §4 states the rule in prose and the
         # host inlines the file as `controlled_spec_document`. From the catalog, so a `problem`
@@ -41090,7 +41125,7 @@ class DirectDepsSourceStatementTests(unittest.TestCase):
         for entry in catalog.get("specs") or []:
             if isinstance(entry, dict) and entry.get("spec_kind") == "problem":
                 path = str(entry.get("controlled_spec_path") or "")
-                if path and (self.REPO_ROOT / path).is_file():
+                if path:
                     out.append(path)
         # (5) The glossary. NOT leaf-read and NOT derivable — named here because it is the
         # repository's canonical vocabulary, a maintainer resolves the term against it, and it
@@ -41098,78 +41133,167 @@ class DirectDepsSourceStatementTests(unittest.TestCase):
         out.append("docs/GLOSSARY.md")
         return out
 
-    def _statement_lines(self) -> list[tuple[str, int, str]]:
-        found: list[tuple[str, int, str]] = []
+    @classmethod
+    def _statements_in(cls, text: str) -> list[tuple[int, str]]:
+        """Every `(line number, joined text)` window of 1..`_WINDOW` consecutive lines that
+        names both term families, minus any window that CONTAINS a shorter one already
+        reported. Reported innermost-first, so a one-line statement keeps a one-line key."""
+        lines = text.splitlines()
+
+        def _continues(index: int) -> bool:
+            return (0 <= index < len(lines) and bool(lines[index].strip())
+                    and not cls._BLOCK_START.match(lines[index]))
+
+        found: list[tuple[int, str]] = []
+        covered: set[int] = set()
+        for width in range(1, cls._WINDOW + 1):
+            for start in range(len(lines) - width + 1):
+                if any(n in covered for n in range(start, start + width)):
+                    continue
+                if not all(_continues(n) for n in range(start + 1, start + width)):
+                    continue
+                joined = " ".join(line.strip() for line in lines[start:start + width]).strip()
+                if not joined:
+                    continue
+                if cls._DEP_TERM.search(joined) and cls._SOURCE_TERM.search(joined):
+                    found.append((start + 1, joined))
+                    covered.update(range(start, start + width))
+        return sorted(found)
+
+    def _statement_keys(self) -> dict[str, tuple[str, int, str]]:
+        out: dict[str, tuple[str, int, str]] = {}
         for rel in self._surfaces():
-            text = (self.REPO_ROOT / rel).read_text(encoding="utf-8")
-            for number, line in enumerate(text.splitlines(), 1):
-                if self._DEP_TERM.search(line) and self._SOURCE_TERM.search(line):
-                    found.append((rel, number, line.strip()))
-        return found
+            path = self.REPO_ROOT / rel
+            if not path.is_file():
+                continue  # the existence row owns this; do not mask it with a crash
+            for number, joined in self._statements_in(path.read_text(encoding="utf-8")):
+                out[f"{rel}:{self._digest(joined)}"] = (rel, number, joined)
+        return out
 
     @staticmethod
-    def _digest(line: str) -> str:
-        return hashlib.sha256(line.encode("utf-8")).hexdigest()[:16]
+    def _digest(text: str) -> str:
+        return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
-    def test_the_surface_list_is_derived_and_non_degenerate(self) -> None:
-        # An emptiness assertion does not self-test its own surface list: deleting a surface
-        # that happens to carry no statement is invisible. So require each derived group to
-        # contribute, and require the files to exist.
-        surfaces = self._surfaces()
-        self.assertEqual(len(surfaces), len(set(surfaces)), surfaces)
-        for rel in surfaces:
-            self.assertTrue((self.REPO_ROOT / rel).is_file(), rel)
-        # Derived, not transcribed: one template per Compile substep that HAS one (`static` is
-        # deterministic and has none), so adding a substep with a template scans it.
+    def test_every_surface_the_code_names_exists(self) -> None:
+        # A surface that vanished (a renamed SKILL, a catalog entry pointing at nothing) must be
+        # a FAILURE, not a smaller scan. An emptiness assertion cannot self-test its own surface
+        # list, so this is the row that holds the list together.
+        missing = [rel for rel in self._surfaces() if not (self.REPO_ROOT / rel).is_file()]
+        self.assertEqual(
+            missing, [],
+            "these surfaces are named by the code that decides what a compile leaf reads, but "
+            "do not exist. Either the file moved (update the code that names it) or the scan "
+            "below has silently stopped covering it.")
+
+    def test_the_surface_list_is_derived_and_covers_every_group(self) -> None:
         import tools.orchestration_runtime as ort
         import tools.workflow_conductor as wc
+        import yaml as _yaml
+
+        surfaces = self._surfaces()
+        self.assertEqual(len(surfaces), len(set(surfaces)), surfaces)
+        # Every count is DERIVED from the same source the group is, so adding a Compile substep
+        # or a `problem` spec extends the scan without editing this row.
         expected_templates = sum(
             1 for sub in wc.SUBSTEPS["compile"]
             if ort._PROMPT_TEMPLATE_FILES.get(f"pure compile.{sub}"))
-        self.assertGreaterEqual(expected_templates, 2, "the template map answered for fewer "
-                                                       "than the two LLM compile substeps")
+        self.assertGreaterEqual(expected_templates, 2)
         self.assertEqual(
             sum(1 for s in surfaces if s.startswith("tools/prompt_templates/")),
             expected_templates, surfaces)
-        self.assertIn("docs/workflow/phases/phase_01_compile.md", surfaces)
-        self.assertTrue([s for s in surfaces if s.startswith("skills/workflow-compile-")],
-                        surfaces)
-        self.assertTrue([s for s in surfaces if s.startswith("spec/problem/")], surfaces)
+        expected_skills = sum(1 for sub in wc.SUBSTEPS["compile"] if sub != "static")
+        self.assertGreaterEqual(expected_skills, 2)
+        self.assertEqual(
+            sum(1 for s in surfaces if s.startswith("skills/")), expected_skills, surfaces)
+        catalog = _yaml.safe_load(
+            (self.REPO_ROOT / "spec/registry/spec_catalog.yaml").read_text(encoding="utf-8"))
+        expected_problems = sum(
+            1 for e in (catalog.get("specs") or [])
+            if isinstance(e, dict) and e.get("spec_kind") == "problem")
+        self.assertGreaterEqual(expected_problems, 1)
+        self.assertEqual(
+            sum(1 for s in surfaces if s.startswith("spec/problem/")), expected_problems,
+            surfaces)
+        self.assertIn(ort.WORKFLOW_PHASE_DOC_BY_STEP["compile"], surfaces)
+        self.assertIn("docs/GLOSSARY.md", surfaces)
 
-    def test_the_reader_finds_a_statement_and_ignores_a_neighbour(self) -> None:
-        # Self-test of the co-occurrence rule, both directions, so a reader narrowed to nothing
-        # cannot make the set comparison below pass vacuously.
-        hit = "`direct_deps` is exactly the directly-required set of `deps.yaml`"
-        self.assertTrue(self._DEP_TERM.search(hit) and self._SOURCE_TERM.search(hit))
+    def test_the_reader_spans_a_wrap_and_every_term_pairing(self) -> None:
+        # The whole cross product, because a single hardcoded probe pins one cell: a round-5
+        # census showed two of the four alternations matched nothing and the old self-test
+        # could not see it.
+        for dep in ("`direct_deps`", "the directly-required set", "its direct dependencies"):
+            for src in ("`deps.yaml`", "the dependency declaration"):
+                with self.subTest(dep=dep, src=src):
+                    self.assertEqual(
+                        [n for n, _ in self._statements_in(f"x\n{dep} is {src}\ny\n")], [2])
+        # Hard-wrapped across two and three lines — the shape Markdown and the templates use.
+        self.assertEqual(
+            [n for n, _ in self._statements_in(
+                "lead\nyour `direct_deps` is exactly what the author\ndeclared in `deps.yaml`\n")],
+            [2])
+        self.assertEqual(
+            [n for n, _ in self._statements_in(
+                "a\nthe directly-required\nset is the one\nin `deps.yaml`\n")], [2])
+        # A window is reported ONCE, innermost — a one-line statement does not also produce the
+        # two-line windows containing it.
+        self.assertEqual(
+            len(self._statements_in("pad\n`direct_deps` comes from `deps.yaml`\npad\n")), 1)
+        # ...and neither term alone is a statement.
         for miss in ("`deps.yaml` declares the runner harness this node builds against",
                      "`direct_deps[]` carries `kind` and the semantic `operations`"):
             with self.subTest(miss=miss):
-                self.assertFalse(
-                    self._DEP_TERM.search(miss) and self._SOURCE_TERM.search(miss), miss)
+                self.assertEqual(self._statements_in(f"{miss}\n"), [])
+
+    def test_the_allowlist_is_keyed_per_surface(self) -> None:
+        # The census planted an allowlisted line VERBATIM into a second surface and the first
+        # version of this class passed it, because the key was the digest alone. A statement is
+        # read once per place it is stated.
+        keys = list(self._READ)
+        self.assertTrue(keys)
+        for key in keys:
+            rel, _, digest = key.rpartition(":")
+            self.assertTrue(rel and len(digest) == 16, key)
+            self.assertIn(rel, self._surfaces(), key)
 
     def test_every_statement_of_where_direct_deps_comes_from_has_been_read(self) -> None:
-        found = self._statement_lines()
-        self.assertTrue(found, "the scan found no statement at all; the reader or the surface "
-                               "list has been narrowed to nothing")
-        seen = {self._digest(line): (rel, number, line) for rel, number, line in found}
+        seen = self._statement_keys()
+        self.assertTrue(seen, "the scan found no statement at all; the reader or the surface "
+                              "list has been narrowed to nothing")
         unread = sorted(set(seen) - set(self._READ))
         stale = sorted(set(self._READ) - set(seen))
         message = []
-        for digest in unread:
-            rel, number, line = seen[digest]
+        for key in unread:
+            rel, number, text = seen[key]
             message.append(
-                f"UNREAD {rel}:{number}\n  {line}\n  If it states the CURRENT fact — the direct "
+                f"UNREAD {rel}:{number}\n  {text}\n  If it states the CURRENT fact — the direct "
                 f"set is <ir_ref>/dependency_graph.json's all_nodes minus self minus "
                 f"transitive_deps, which INCLUDES the runner harness, and a `profile` entry in "
                 f"deps.yaml is not a node — or is legitimately about something else, add\n"
-                f'    "{digest}": "<what you read>",\n  to _READ. If it says the direct set IS '
-                f"the deps.yaml declaration, it is wrong: four review rounds of issue #175 each "
-                f"found one more copy saying that, three of them in text a leaf acts on.")
-        for digest in stale:
+                f'    "{key}": "<what you read>",\n  to _READ. If it says the direct set IS the '
+                f"deps.yaml declaration, it is wrong: five review rounds of issue #175 each "
+                f"found one more copy saying that, four of them in text a leaf acts on.")
+        for key in stale:
             message.append(
-                f"STALE allowlist entry {digest} ({self._READ[digest]}) matches no line; the "
-                f"statement was edited or removed, so re-read it and update the entry.")
+                f"STALE allowlist entry {key} ({self._READ[key]}) matches no statement; it was "
+                f"edited, moved to another surface, or removed. Re-read it and update the entry.")
         self.assertEqual(message, [], "\n\n".join(message))
+
+    def test_the_stale_half_is_not_decorative(self) -> None:
+        # The census found this direction unwitnessed: replacing the stale computation with `[]`
+        # left the class green, so a statement that DISAPPEARED was invisible. Drive the
+        # comparison directly with an entry that matches nothing.
+        seen = self._statement_keys()
+        self.assertEqual(sorted(set(self._READ) - set(seen)), [])
+        with mock.patch.dict(
+            type(self)._READ,
+            {"docs/GLOSSARY.md:0000000000000000": "a statement that is not there"},
+        ):
+            with self.assertRaises(AssertionError) as caught:
+                self.test_every_statement_of_where_direct_deps_comes_from_has_been_read()
+            self.assertIn("STALE", str(caught.exception))
+            self.assertIn("0000000000000000", str(caught.exception))
+
+
 
 class ProfileExpansionTests(unittest.TestCase):
     """`expand_profile_dependencies` (issue #175) and the four readiness consumers it feeds.

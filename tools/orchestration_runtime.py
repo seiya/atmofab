@@ -1177,6 +1177,15 @@ def _closure_signature(
     # `profile_selection` went on naming the retired version. Measured on this tree before the
     # fix: identical signature across a 0.1.1 -> 0.9.0 bump of the adopted profile.
     #
+    # ONE LEVEL, and only one: the sidecar records its own node's adoptions, so this term
+    # restales the ADOPTER and does not propagate to the adopter's dependents the way a change
+    # to `all_nodes` does. Before issue #175 it propagated, because the profile was an ordinary
+    # member of every ancestor's `all_nodes` — so this is a real asymmetry the change introduced,
+    # measured, and reachable only when a node that is itself a dependency adopts a profile. No
+    # `spec` here does (both adopters are `problem` specs, which nothing declares as a
+    # dependency), and `--with-deps` evaluates every closure node as a subject in its own right.
+    # `TODO.md` records what closing it would need.
+    #
     # A MISSING key normalizes to `[]` rather than to `None`, and that is load-bearing: every
     # sidecar written before issue #175 lacks it, and treating absence as a distinct value would
     # restale the whole certified corpus instead of only the nodes whose closure actually moved

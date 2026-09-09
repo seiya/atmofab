@@ -1567,8 +1567,24 @@ def build_launch_request(
         else:
             # generate/verify LLM substeps read the NL spec + tests + deps. spec.ir.yaml is a
             # must-read only for verify (generate authors it).
+            #
+            # `dependency_graph.json` is a must-read for GENERATE only, and it is not optional:
+            # since issue #175 the node's direct dependency set is the sidecar's
+            # `all_nodes − self − transitive_deps`, NOT the `deps.yaml` declaration (a `profile`
+            # entry there is not a node), and the per-case `inputs.profile_selection` is
+            # transcribed from the sidecar's `profiles[]`. Both problem specs in this tree now
+            # declare `components: []`, so an agentic producer handed only the four documents
+            # below has no source anywhere in its required set for either fact and fails
+            # `_validate_compile_dependency_consistency` / `_validate_profile_selection` on
+            # every attempt. The PURE producer is unaffected — the host inlines the same file
+            # as `dependency_graph_document` — which is exactly why the omission was invisible:
+            # the SKILL was corrected to say "read it THERE" without the launch being changed
+            # to deliver it (`atmofab-enforcement-change` surface 12, in reverse).
+            # Verify does NOT get it: `_build_pure_compile_verify_context` inlines no graph
+            # either, and the reviewer is told the dependency cross-check is the gate's.
             must_read += [
                 f"{refs.ir_ref}/spec.ir.yaml" if substep == "verify" else None,
+                f"{refs.ir_ref}/dependency_graph.json" if substep == "generate" else None,
                 f"{spec}/controlled_spec.md",
                 f"{spec}/tests.md",
                 f"{spec}/deps.yaml",

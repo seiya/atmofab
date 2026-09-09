@@ -370,6 +370,45 @@ class BuildDependencyGraphTests(unittest.TestCase):
             self.assertIsNone(graph)
             self.assertEqual(err["reason"], "profile_declares_infrastructure")
 
+    def test_an_unreadable_registry_at_the_expansion_is_not_a_profile_reason(self) -> None:
+        """The `SpecCatalogCorruption` guard the expansion call site carries. A round-5 census
+        found it unwitnessed, and swallowing it is not a crash but a MISCLASSIFICATION: the
+        expansion would then report `profile_unresolvable` — a `_PROFILE_EXPANSION_REASONS`
+        member, hence the STALE side of `_dependency_resolution_freshness` — for a node whose
+        registry could not be READ, which is the FRESH side. That is the one-keystroke class
+        `_profile_expansion_failure` exists to prevent, one frame outside the constructor it
+        guards, so `test_every_expansion_refusal_uses_a_declared_reason` cannot reach it."""
+        import tools.orchestration_runtime as ort
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            _write_catalog(repo, [
+                {"spec_kind": "problem", "spec_id": "p", "spec_version": "0.1.0",
+                 "deps_path": "spec/problem/p/deps.yaml"},
+                {"spec_kind": "profile", "spec_id": "pr", "spec_version": "0.1.0",
+                 "deps_path": "spec/profile/pr/deps.yaml"},
+            ])
+            _write_deps(repo, "spec/problem/p", "problem", "p", profiles=[("pr", ">=0.1.0")])
+            _write_deps(repo, "spec/profile/pr", "profile", "pr")
+            calls = {"n": 0}
+            real = ort._load_spec_catalog
+
+            def _corrupt_on_the_expansion_read(*args, **kwargs):
+                # The FIRST read is the expansion's; later ones belong to edge resolution.
+                calls["n"] += 1
+                if calls["n"] == 1:
+                    raise ort.SpecCatalogCorruption("spec_catalog.yaml is unreadable")
+                return real(*args, **kwargs)
+
+            with mock.patch.object(ort, "_load_spec_catalog", _corrupt_on_the_expansion_read):
+                graph, err = build_dependency_graph(
+                    repo, target_spec_ref="spec/problem/p",
+                    target_node_key="problem/p@0.1.0")
+            self.assertIsNone(graph)
+            self.assertEqual(err["reason"], "spec_catalog_corrupt")
+            self.assertNotIn(err["reason"], ort._PROFILE_EXPANSION_REASONS)
+            self.assertIn(err["reason"], ort._UNREADABLE_CLOSURE_REASONS)
+
     def test_an_unresolvable_profile_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)

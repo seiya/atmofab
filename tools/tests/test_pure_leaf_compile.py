@@ -530,6 +530,34 @@ class PureCompileProfileContextTests(_Fixture):
             c._build_pure_compile_context(self.refs)
         self.assertIn("pure_profile_spec_document_missing", str(caught.exception))
 
+    def test_the_absent_document_sentinel_is_what_the_launch_validator_requires(self) -> None:
+        """`profile_spec_document` is a DECLARED context key, and
+        `_validate_pure_launch_request_payload` refuses a declared key that is empty — inside
+        `record_launch`, from a call the pure loop does not guard, so the `ValueError` would
+        escape the loop's named `pure_context_assembly_failed` branch and abort the conductor.
+        The sentinel's non-emptiness is therefore the only thing between EVERY profile-less
+        node — every `component` and `infrastructure` spec in this tree, the majority path —
+        and that abort. A round-5 census found the property claimed as pinned in a comment and
+        pinned by nothing: emptying the sentinel left 2477 tests green."""
+        self.assertTrue(wc.Conductor._PURE_PROFILE_ABSENT_DOCUMENT.strip())
+        graph_path = self.repo / self.refs.ir_ref / "dependency_graph.json"
+        graph = json.loads(graph_path.read_text(encoding="utf-8"))
+        graph["profiles"] = []
+        graph_path.write_text(json.dumps(graph, indent=2), encoding="utf-8")
+        ctx = self.conductor()._build_pure_compile_context(self.refs)
+        self.assertEqual(ctx["profile_spec_document"],
+                         wc.Conductor._PURE_PROFILE_ABSENT_DOCUMENT)
+        # Driven through the real validator, not asserted about: this is the frame that refuses.
+        from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION
+        base = {"agent_role": "substep", "step": "compile", "substep": "generate",
+                "leaf_mode": ort.PURE_LEAF_MODE,
+                "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION}
+        ort._validate_pure_launch_request_payload({**base, "pure_context": ctx})
+        with self.assertRaises(ValueError) as caught:
+            ort._validate_pure_launch_request_payload(
+                {**base, "pure_context": {**ctx, "profile_spec_document": ""}})
+        self.assertIn("profile_spec_document", str(caught.exception))
+
     def test_an_unresolvable_profile_is_named_rather_than_failing_the_substep(self) -> None:
         (self.repo / "spec/profile/demo/demo_profile/controlled_spec.md").unlink()
         c = self.conductor()

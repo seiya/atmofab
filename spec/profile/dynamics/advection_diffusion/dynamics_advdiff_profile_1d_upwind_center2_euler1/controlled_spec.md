@@ -27,7 +27,7 @@ The discretization constraints are the following.
 - boundary condition: periodic mapping
 
 ## 4. Fallback rules
-When the compatibility condition of a target `component` is not satisfied, it is an error, and automatic switching to an alternative `profile` is forbidden. The host resolver enforces this: an unsatisfiable compatibility range refuses the run (`profile_unresolvable`), and two adopted `profile` requiring incompatible ranges of one `component` refuse it as well (`profile_component_conflict`). Neither degrades to a substitute.
+When the compatibility condition of a target `component` is not satisfied, it is an error, and automatic switching to an alternative `profile` is forbidden. The host resolver enforces this, and each shape is refused by its own name: a §1 compatibility range that matches no catalog version stops the run as `dependency_unresolvable` naming the `component`; an adopting `spec` whose own constraint on THIS `profile` matches no catalog version stops it as `profile_unresolvable`; and two adopted `profile` requiring incompatible ranges of one `component` stop it as `profile_component_conflict`. None degrades to a substitute.
 
 ## 5. Traceability
 The adoption is recorded by the host in the adopting `spec`'s `<ir_ref>/dependency_graph.json`: `profiles[]` names this `profile` and its resolved `version`, and the `component` it selects appear in `all_nodes` at their resolved `version`. Each case of the adopting `spec`'s `IR` records `inputs.profile_selection` as `{profile_id, profile_version}`, which a deterministic gate pins against that record.

@@ -4854,6 +4854,44 @@ class DependencyClosureTests(unittest.TestCase):
             self.assertEqual(ordered, [])
             self.assertEqual(err["reason"], "profile_declares_infrastructure")
 
+    def test_an_unreadable_registry_at_the_closure_expansion_is_not_a_profile_reason(self) -> None:
+        """The twin of the graph builder's guard, on the closure driver's own expansion call.
+        Swallowing it reports `profile_unresolvable` — a STALE-side reason — for a registry that
+        could not be READ, which belongs on the FRESH side. Round-5 census finding: unwitnessed
+        on both call sites, and the guard sits one frame outside `_profile_expansion_failure`,
+        so the constructor's own row cannot reach it."""
+        import tools.orchestration_runtime as ort
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            _write_catalog(repo_root, [
+                {"spec_kind": "problem", "spec_id": "a", "spec_version": "0.3.0",
+                 "deps_path": "spec/problem/a/deps.yaml"},
+                {"spec_kind": "profile", "spec_id": "pr", "spec_version": "0.1.0",
+                 "deps_path": "spec/profile/pr/deps.yaml"},
+                {"spec_kind": "infrastructure", "spec_id": "c", "spec_version": "0.1.0",
+                 "deps_path": "spec/component/c/deps.yaml"},
+            ])
+            _write_deps(repo_root, "spec/problem/a", "problem", "a",
+                        profiles=[("pr", ">=0.1.0 <1.0.0")],
+                        infrastructure=[("c", ">=0.1.0 <1.0.0")])
+            _write_deps(repo_root, "spec/profile/pr", "profile", "pr", infrastructure=[])
+            _write_deps(repo_root, "spec/component/c", "infrastructure", "c")
+            def _corrupt(*_args, **_kwargs):
+                raise ort.SpecCatalogCorruption("spec_catalog.yaml is unreadable")
+
+            # Raised on every read, because the closure driver memoizes the catalog: the
+            # expansion's own `_get_catalog()` only reaches the registry when the EARLIER read
+            # (`_kind_for_gate`'s) also failed, which is exactly the outage this guard is for.
+            # `_kind_for_gate` absorbs the first raise into a `_registry_defect` and the node's
+            # own infra count is legal, so the expansion is where the run stops.
+            with mock.patch.object(ort, "_load_spec_catalog", _corrupt):
+                ordered, err = run_workflow._resolve_dependency_closure(
+                    repo_root, "spec/problem/a")
+            self.assertEqual(ordered, [])
+            self.assertEqual(err["reason"], "spec_catalog_corrupt")
+            self.assertNotIn(err["reason"], ort._PROFILE_EXPANSION_REASONS)
+            self.assertIn(err["reason"], ort._UNREADABLE_CLOSURE_REASONS)
+
     def test_a_profile_target_is_refused_at_launch(self) -> None:
         """The launch-time half of the refusal (`resolve_node` keeps the backstop). Detected
         before anything is launched, like `REQUIRED_CLI_TOOLS`."""
