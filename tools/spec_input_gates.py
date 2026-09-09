@@ -73,8 +73,11 @@ def infra_dep_count_violation(spec_kind: Any, infra_dep_count: int) -> str | Non
     """Spec-input bound on the number of ``infrastructure`` direct dependencies.
 
     Returns an actionable violation message unless the node declares EXACTLY ONE
-    ``infrastructure`` (runner-harness) direct dependency, or is itself an ``infrastructure``
-    spec (the harness authors its own self-test runner, so it declares none). Sibling of
+    ``infrastructure`` (runner-harness) direct dependency, is itself an ``infrastructure``
+    spec (the harness authors its own self-test runner, so it declares none), or is a
+    ``profile`` — a compile-time component-selection policy the host resolves, which generates
+    no code and therefore has no runner to build against, so it must declare NONE (issue #175;
+    ``docs/SPEC.md`` req. 9). Sibling of
     ``spec_id_length_violation``: both are node-IDENTITY preconditions a Compile re-author
     cannot repair, so both are captured at spec-input rather than hoisted into the compile.static
     gate (routing an unrepairable defect to a warm-resume retry would only spin).
@@ -96,6 +99,22 @@ def infra_dep_count_violation(spec_kind: Any, infra_dep_count: int) -> str | Non
     kind = spec_kind.strip() if isinstance(spec_kind, str) else ""
     if kind == "infrastructure":
         return None
+    if kind == "profile":
+        # A profile selects components; it is never built, so there is no runner harness for it
+        # to declare. Unlike the `infrastructure` exemption above this is a BOUND, not an
+        # exemption: a profile declaring a harness dependency would put an `infrastructure`
+        # node into the closure of every node that adopts the profile, through an edge the
+        # adopting node never declared.
+        if infra_dep_count == 0:
+            return None
+        return (
+            f"a `profile` spec must declare no `infrastructure` (runner-harness) dependency "
+            f"in deps.yaml; found {infra_dep_count}. A profile is a compile-time "
+            f"component-selection policy the host resolves at Compile, not a certified code "
+            f"node (issue #175), so it builds nothing and has no harness to build against. "
+            f"Remove the `infrastructure` entry; the node that ADOPTS this profile declares "
+            f"the harness it builds against."
+        )
     if infra_dep_count == 1:
         return None
     remedy = (

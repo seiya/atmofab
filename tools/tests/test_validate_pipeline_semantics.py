@@ -148,15 +148,23 @@ _OMIT = object()
 
 
 def _write_dep_graph_sidecar(ir_dir: Path, *, node_key: str,
-                             all_nodes: list, transitive_deps: list) -> None:
+                             all_nodes: list, transitive_deps: list,
+                             profiles: object = ()) -> None:
     """Author a conductor-shaped dependency_graph.json sidecar (the derived closure/topo
-    graph the consumers read now; see workflow_conductor._write_dependency_graph)."""
-    _write_json(ir_dir / "dependency_graph.json", {
+    graph the consumers read now; see workflow_conductor._write_dependency_graph).
+
+    `profiles` defaults to the empty list — a node adopting no profile, which is what almost
+    every fixture here is. Pass `_OMIT` to reproduce a sidecar written before issue #175 (the
+    shape `_validate_profile_selection` refuses), or a list of adoption records to drive it."""
+    payload = {
         "node_key": node_key,
         "all_nodes": all_nodes,
         "transitive_deps": transitive_deps,
         "generated_by": "conductor",
-    })
+    }
+    if profiles is not _OMIT:
+        payload["profiles"] = list(profiles)
+    _write_json(ir_dir / "dependency_graph.json", payload)
 
 
 def _write_dep_graph_sidecar_from_resolved(ir_dir: Path, dependency_resolved: dict) -> None:
@@ -16072,6 +16080,45 @@ class CompileDependencyConsistencyTests(unittest.TestCase):
             self.assertTrue(any("direct_deps disagrees" in v for v in violations), violations)
             self.assertTrue(any("component/mid" in v for v in violations), violations)
 
+    def test_the_directly_required_set_is_the_expanded_one(self) -> None:
+        """Issue #175: the components an adopted profile selects ARE the node's direct deps,
+        and the profile itself is not a node. So the IR's `direct_deps` names the components —
+        naming the profile, or omitting a component because `deps.yaml` no longer lists it, is
+        the same V4 disagreement as any other."""
+        expanded = {
+            "node_key": "problem/p@0.1.0",
+            "all_nodes": [
+                {"node_key": "component/c1@0.2.0", "topo_level": 0},
+                {"node_key": "component/c2@0.3.0", "topo_level": 0},
+                {"node_key": "problem/p@0.1.0", "topo_level": 1}],
+            "transitive_deps": [],
+            "profiles": [{"node_key": "profile/pr@0.1.1", "profile_id": "pr",
+                          "profile_version": "0.1.1", "version_constraint": ">=0.1.0",
+                          "components": [{"component_id": "c1", "version_constraint": None},
+                                         {"component_id": "c2", "version_constraint": None}]}],
+            "generated_by": "conductor"}
+        with tempfile.TemporaryDirectory() as tmp:
+            ir_dir = Path(tmp)
+            self._seed(ir_dir, sidecar=expanded, ir_dependency={
+                "node_key": "problem/p@0.1.0",
+                "direct_deps": [{"node_key": "component/c1@0.2.0"},
+                                {"node_key": "component/c2@0.3.0"}]})
+            violations: list[str] = []
+            _validate_compile_dependency_consistency(Path(tmp), ir_dir, violations)
+            self.assertEqual(violations, [])
+        # A leaf that wrote `direct_deps` from `deps.yaml` alone — the profile named, the
+        # components it selects missing — is refused.
+        with tempfile.TemporaryDirectory() as tmp:
+            ir_dir = Path(tmp)
+            self._seed(ir_dir, sidecar=expanded, ir_dependency={
+                "node_key": "problem/p@0.1.0",
+                "direct_deps": [{"node_key": "profile/pr@0.1.1"}]})
+            violations = []
+            _validate_compile_dependency_consistency(Path(tmp), ir_dir, violations)
+            self.assertEqual(len(violations), 1, violations)
+            self.assertIn("component/c1", violations[0])
+            self.assertIn("profile/pr", violations[0])
+
     def test_version_drift_is_soft_not_flagged(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             ir_dir = Path(tmp)
@@ -16115,6 +16162,156 @@ class CompileDependencyConsistencyTests(unittest.TestCase):
             violations: list[str] = []
             _validate_compile_dependency_consistency(Path(tmp), ir_dir, violations)
             self.assertTrue(any("not present in all_nodes" in v for v in violations), violations)
+
+
+class ProfileSelectionGateTests(unittest.TestCase):
+    """`_validate_profile_selection`: each case's `inputs.profile_selection` is exactly
+    `{profile_id, profile_version}` and names a profile the HOST resolved (issue #175).
+
+    The set of adopted profiles comes from the conductor-authored sidecar, never from the IR:
+    a field the leaf authors must not decide whether the leaf is gated
+    (`atmofab-enforcement-change` surface 11)."""
+
+    _PROFILE = {"node_key": "profile/pr@0.1.1", "profile_id": "pr", "profile_version": "0.1.1",
+                "version_constraint": ">=0.1.0 <1.0.0",
+                "components": [{"component_id": "c1", "version_constraint": ">=0.2.0"}]}
+
+    def _run(self, *, selections: list[object], profiles: object = _OMIT) -> list[str]:
+        """`selections` is one value per case for `inputs.profile_selection` (`_OMIT` = the key
+        is absent). `profiles` is the sidecar's key (`_OMIT` = the key itself is absent)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            ir_dir = Path(tmp)
+            sidecar: dict = {"node_key": "problem/p@0.1.0",
+                             "all_nodes": [{"node_key": "problem/p@0.1.0", "topo_level": 0}],
+                             "transitive_deps": [], "generated_by": "conductor"}
+            if profiles is not _OMIT:
+                sidecar["profiles"] = profiles
+            _write_json(ir_dir / "dependency_graph.json", sidecar)
+            cases = []
+            for index, sel in enumerate(selections):
+                inputs: dict = {"grid": {}}
+                if sel is not _OMIT:
+                    inputs["profile_selection"] = sel
+                cases.append({"case_id": f"case{index}", "inputs": inputs})
+            _write_json(ir_dir / "spec.ir.yaml", {"case": {"test_case_set": cases}})
+            violations: list[str] = []
+            vps._validate_profile_selection(Path(tmp), ir_dir, violations)
+            return violations
+
+    _GOOD = {"profile_id": "pr", "profile_version": "0.1.1"}
+
+    def test_every_case_pointing_at_the_adopted_profile_passes(self) -> None:
+        self.assertEqual(
+            self._run(selections=[self._GOOD, dict(self._GOOD)], profiles=[self._PROFILE]), [])
+
+    def test_a_wrong_version_is_a_violation(self) -> None:
+        v = self._run(selections=[{"profile_id": "pr", "profile_version": "0.1.0"}],
+                      profiles=[self._PROFILE])
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("pr@0.1.0", v[0])
+        self.assertIn("not an adopted profile", v[0])
+
+    def test_a_wrong_id_is_a_violation(self) -> None:
+        v = self._run(selections=[{"profile_id": "other", "profile_version": "0.1.1"}],
+                      profiles=[self._PROFILE])
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("other@0.1.1", v[0])
+
+    def test_an_extra_key_is_a_violation(self) -> None:
+        # The leaf's own invention was a `components:` sub-map restating the component set —
+        # a second copy of what `all_nodes` already carries, which is the drift this refuses.
+        v = self._run(
+            selections=[{**self._GOOD, "components": {"flux": "c1"}}], profiles=[self._PROFILE])
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("components", v[0])
+        self.assertIn("exactly {profile_id, profile_version}", v[0])
+
+    def test_a_missing_field_is_a_violation_on_every_case_that_lacks_it(self) -> None:
+        v = self._run(selections=[self._GOOD, _OMIT, _OMIT], profiles=[self._PROFILE])
+        self.assertEqual(len(v), 2, v)
+        self.assertTrue(all("no `inputs.profile_selection`" in x for x in v), v)
+        self.assertIn("'case1'", v[0])
+        self.assertIn("'case2'", v[1])
+
+    def test_a_non_string_value_is_a_violation_and_not_a_crash(self) -> None:
+        # `profile_version: 0.1` is what a leaf writes when it treats a two-segment version as a
+        # number, and its reply is JSON, so it arrives as a float. Without this branch the next
+        # line's `.strip()` raises inside `Compile.static` — a validator crash instead of a
+        # repairable violation. Round-1 finding: the branch had no row.
+        for bad in (0.1, 1, None, ["0.1.1"], {"v": "0.1.1"}):
+            with self.subTest(profile_version=bad):
+                v = self._run(selections=[{"profile_id": "pr", "profile_version": bad}],
+                              profiles=[self._PROFILE])
+                self.assertEqual(len(v), 1, v)
+                self.assertIn("must be strings", v[0])
+        v = self._run(selections=[{"profile_id": 7, "profile_version": "0.1.1"}],
+                      profiles=[self._PROFILE])
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("must be strings", v[0])
+
+    def test_a_node_adopting_no_profile_is_not_gated_at_all(self) -> None:
+        # The `infrastructure` harness spec uses the same field name for an unrelated plumbing
+        # aspect. Refusing it here would re-certify the harness and, through the closure
+        # bindings, every consumer of it — for a field no code reads on that node.
+        self.assertEqual(
+            self._run(selections=[{"aspect": "state_io", "plumbing_operation": "write"}],
+                      profiles=[]),
+            [])
+        # ...and the absence of the field is equally fine there.
+        self.assertEqual(self._run(selections=[_OMIT], profiles=[]), [])
+
+    def test_a_malformed_profiles_record_is_refused_rather_than_read_as_none(self) -> None:
+        # Round-2 finding: unpinned. Degrading an unusable `profiles` value to "adopts none"
+        # would turn this gate OFF for the node whose record is corrupt — the one direction
+        # that fails open, since a node with `profiles: []` is not gated at all.
+        for bad, marker in (
+            ("not-a-list", "must be a list"),
+            (7, "must be a list"),
+            ([{"profile_id": "pr", "profile_version": "0.1.1"}, "bare-string"],
+             "is not an object"),
+            ([{"profile_id": "pr"}], "missing profile_id / profile_version"),
+            ([{"profile_version": "0.1.1"}], "missing profile_id / profile_version"),
+            ([{"profile_id": "", "profile_version": "0.1.1"}],
+             "missing profile_id / profile_version"),
+        ):
+            with self.subTest(profiles=bad):
+                v = self._run(selections=[self._GOOD], profiles=bad)
+                self.assertEqual(len(v), 1, v)
+                self.assertIn(marker, v[0])
+
+    def test_a_sidecar_without_the_profiles_key_is_refused(self) -> None:
+        # Written by a builder that predates issue #175: whether this node adopts a profile
+        # cannot be decided, so it fails closed with the re-run remedy rather than skipping.
+        v = self._run(selections=[self._GOOD])
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("carries no `profiles` key", v[0])
+        self.assertIn("Re-run Compile", v[0])
+
+    def test_a_missing_or_unparseable_sidecar_is_left_to_the_gate_that_owns_it(self) -> None:
+        # `_validate_compile_dependency_consistency` reports both, and two violations naming
+        # the same file would send the leaf looking for two defects.
+        with tempfile.TemporaryDirectory() as tmp:
+            ir_dir = Path(tmp)
+            _write_json(ir_dir / "spec.ir.yaml", {"case": {"test_case_set": []}})
+            violations: list[str] = []
+            vps._validate_profile_selection(Path(tmp), ir_dir, violations)
+            self.assertEqual(violations, [])
+            (ir_dir / "dependency_graph.json").write_text("{not json", encoding="utf-8")
+            vps._validate_profile_selection(Path(tmp), ir_dir, violations)
+            self.assertEqual(violations, [])
+            # Control: the same fixture with a well-formed sidecar that OMITS `profiles` does
+            # fire, so the two rows above are not passing on an inert reader.
+            _write_json(ir_dir / "dependency_graph.json", {"node_key": "problem/p@0.1.0"})
+            vps._validate_profile_selection(Path(tmp), ir_dir, violations)
+            self.assertEqual(len(violations), 1, violations)
+
+    def test_the_gate_runs_inside_the_compile_stage(self) -> None:
+        # Pinned at the handler, not at the helper: a call site deleted from
+        # `_validate_compile_stage_impl` leaves every row above green.
+        import inspect
+        source = inspect.getsource(vps._validate_compile_stage_impl)
+        self.assertIn("_validate_profile_selection(repo_root, ir_dir, violations)", source)
+
 
 
 class InfrastructurePublicApiGateTests(unittest.TestCase):
@@ -16354,11 +16551,14 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
                             violations)
 
     def test_a_kind_outside_the_pinned_set_is_a_noop(self) -> None:
-        # A `profile` / `problem` node's interface is legitimately derived post-hoc, so the gate must
+        # A `problem` node's interface is legitimately derived post-hoc, so the gate must
         # not fire even with no public_api present. `component` used to be this test's subject and is
         # NOT one any more: issue #153 PR-2 put it in `_EXACT_PUBLISHED_SURFACE_KINDS`, so asserting a
-        # no-op on it would now assert the absence of the pin the branch exists to add.
-        for kind in ("profile", "problem"):
+        # no-op on it would now assert the absence of the pin the branch exists to add. `profile`
+        # left this row for the opposite reason: issue #175 removed it from
+        # `_CANONICAL_SPEC_KINDS`, so an IR declaring it is now REFUSED as unrecognised (the
+        # row below), not carved out.
+        for kind in ("problem",):
             with tempfile.TemporaryDirectory() as tmp:
                 ir_dir = self._seed(Path(tmp), public_api=_OMIT, spec_kind=kind)
                 violations: list[str] = []
@@ -17154,7 +17354,7 @@ class InfrastructureGeneratedSignatureGateTests(unittest.TestCase):
         for label, break_it in (
             ("IR missing", lambda ir: ir.unlink()),
             ("IR spec_kind drifted", lambda ir: ir.write_text(
-                json.dumps({"meta": {"spec_kind": "profile", "spec_id": "hx",
+                json.dumps({"meta": {"spec_kind": "problem", "spec_id": "hx",
                                      "source_refs": {"controlled_spec": "cs.md"}}}),
                 encoding="utf-8")),
         ):
@@ -17176,7 +17376,7 @@ class InfrastructureGeneratedSignatureGateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as t:
             tmp = Path(t)
             ex = self._seed(tmp, source=self._GOOD_SOURCE, spec_kind="component")
-            ex = vps.NodeExecution(node_key="profile/hx@0.1.0", node_dir=ex.node_dir,
+            ex = vps.NodeExecution(node_key="problem/hx@0.1.0", node_dir=ex.node_dir,
                                    exec_dir=ex.exec_dir, pipeline_dir=ex.pipeline_dir)
             (tmp / "workspace" / "ir" / "x" / "spec.ir.yaml").unlink()
             self.assertEqual(self._run(ex, tmp), [])
@@ -17634,13 +17834,15 @@ class InfrastructureGeneratedSignatureGateTests(unittest.TestCase):
                     (kind, violations))
 
     def test_a_kind_outside_the_pinned_set_is_a_noop(self) -> None:
-        # A `profile` node's interface is derived post-hoc, so a garbage source must not fire the
+        # A `problem` node's interface is derived post-hoc, so a garbage source must not fire the
         # signature pin. `component` was this test's subject until issue #153 PR-2 moved it into
         # `_EXACT_PUBLISHED_SURFACE_KINDS`; the second half asserts the set is what decides, because
         # a no-op reached for the wrong reason (an unresolvable IR, say) looks identical here.
+        # The witness was `profile` until issue #175, which is why it is not one now: no `profile`
+        # IR is ever authored, so it could only guard a real rule with an unreal input.
         with tempfile.TemporaryDirectory() as t:
             tmp = Path(t)
-            ex = self._seed(tmp, source="module m\nend module m\n", spec_kind="profile")
+            ex = self._seed(tmp, source="module m\nend module m\n", spec_kind="problem")
             self.assertEqual(self._run(ex, tmp), [])
         with tempfile.TemporaryDirectory() as t:
             tmp = Path(t)
@@ -19731,10 +19933,13 @@ class ComponentDepOperationsGateTests(unittest.TestCase):
             self._run([{"node_key": "infrastructure/harness_fortran_cpu@0.2.0",
                         "kind": "infrastructure", "operations": []}]), [])
 
-    def test_profile_dep_ignored(self) -> None:
-        # profile/problem deps are not called through the `<dep>__*` operation surface.
+    def test_problem_dep_ignored(self) -> None:
+        # A `problem` dep is not called through the `<dep>__*` operation surface. The witness
+        # was a `profile/` entry until issue #175, which is why it is not one now: a `profile`
+        # can no longer appear in `direct_deps` at all — `_validate_compile_dependency_consistency`
+        # rejects that IR outright — so it could only guard a real rule with an unreal input.
         self.assertEqual(
-            self._run([{"node_key": "profile/some_profile@0.1.0", "operations": []}]), [])
+            self._run([{"node_key": "problem/some_problem@0.1.0", "operations": []}]), [])
 
     def test_malformed_direct_deps_no_crash_no_violation(self) -> None:
         self.assertEqual(self._run("not-a-list"), [])
@@ -20126,16 +20331,19 @@ class ComponentPublicApiGateTests(unittest.TestCase):
         that cannot edit the certified IR — so every retry failed identically until the budget was
         spent, and the operator paid a Generate loop for a defect authored at Compile.
 
-        The `profile` / `problem` rows are the control: those kinds legitimately publish no exact
-        surface, so they must still pass through untouched rather than being caught by a rule that
-        refuses everything it does not pin."""
+        The `problem` row is the control: that kind legitimately publishes no exact
+        surface, so it must still pass through untouched rather than being caught by a rule that
+        refuses everything it does not pin. `profile` used to sit beside it and has MOVED to the
+        refused side: issue #175 made a profile a host-resolved selection policy that no phase
+        runs, so no IR of that kind is authored and one claiming it is an unrecognised spelling
+        rather than a carve-out."""
         broken = {"published_operations": [{"operation_id": f"{self._SPEC_ID}__wrong"}],
                   "published_types": []}
-        for kind in ("Component", "COMPONENT", "Infrastructure", "compnent"):
+        for kind in ("Component", "COMPONENT", "Infrastructure", "compnent", "profile"):
             with self.subTest(unrecognised=kind):
                 v = self._run(public_api=broken, spec_kind=kind)
                 self.assertTrue(any("is not a known spec_kind" in x for x in v), (kind, v))
-        for kind in ("profile", "problem"):
+        for kind in ("problem",):
             with self.subTest(derived_post_hoc=kind):
                 self.assertEqual(self._run(public_api=broken, spec_kind=kind), [], kind)
         for kind in ("component", "infrastructure"):
@@ -20405,10 +20613,12 @@ class ComponentPublicApiGateTests(unittest.TestCase):
                          set(vps._EXACT_PUBLISHED_SURFACE_KINDS))
 
     def test_non_component_is_noop(self) -> None:
-        # A profile/problem node has no component-name pin — the gate no-ops (its public_api,
-        # if any, is not compared to §5 here).
+        # A problem node has no component-name pin — the gate no-ops (its public_api,
+        # if any, is not compared to §5 here). `profile` is no longer a usable subject: since
+        # issue #175 it is not a `_CANONICAL_SPEC_KINDS` member, so an IR declaring it is
+        # refused rather than no-op'd.
         self.assertEqual(
-            self._run(spec_kind="profile", public_api=_OMIT), [])
+            self._run(spec_kind="problem", public_api=_OMIT), [])
 
     def test_unresolvable_controlled_spec_fail_closed(self) -> None:
         v = self._run(public_api={"published_operations": [
@@ -20621,10 +20831,26 @@ class ComponentGeneratedSurfaceGateTests(unittest.TestCase):
         self.assertEqual(self._run(public_api=_OMIT, model_text=self._GOOD_MODEL), [])
 
     def test_non_component_inert(self) -> None:
+        """The gate is a no-op off `component`. `problem`, not `profile`: since issue #175 no
+        `profile` IR exists, so it cannot witness a kind outside this gate's set.
+
+        The INPUT has to be one a live gate would flag, or the row observes nothing — measured:
+        with the previous input (a `public_api` matching `_GOOD_MODEL` exactly), widening the
+        gate's kind guard to cover `problem` left this row green, because an active gate returns
+        `[]` on a matching surface too. The extra subroutine below is what makes the assertion
+        about the KIND rather than about the surface."""
+        model = (
+            "module dep_base_model\ncontains\n"
+            "  subroutine dep_base__scale(x)\n  end subroutine\n"
+            "  subroutine dep_base__extra(y)\n  end subroutine\n"
+            "end module\n")
+        api = {"published_operations": [{"operation_id": "dep_base__scale"}]}
         self.assertEqual(
-            self._run(public_api={"published_operations": [
-                {"operation_id": "dep_base__scale"}]}, model_text=self._GOOD_MODEL,
-                spec_kind="profile", node_key="profile/dep_base@0.1.0"), [])
+            self._run(public_api=api, model_text=model,
+                      spec_kind="problem", node_key="problem/dep_base@0.1.0"), [])
+        # The control: the SAME input on the kind the gate does cover fires, so the `[]` above
+        # is the kind carve-out and not an input nothing objects to.
+        self.assertTrue(self._run(public_api=api, model_text=model))
 
     def test_cross_scanner_parity_with_runtime(self) -> None:
         # Drift guard: the validator's published-surface scanner must agree with
@@ -21174,12 +21400,6 @@ class OpenmpPresenceFloorGateTests(unittest.TestCase):
             f"    do i = 1, n\n      acc{k} = acc{k} + u(i)\n    end do\n" for k in range(20))
         self.assertEqual(
             self._run(self._model(body), node_key="infrastructure/harness_fortran_cpu@0.7.0"), [])
-
-    def test_profile_node_exempt(self) -> None:
-        # The real profile shape: trivial zero-fill init loops around a component composition.
-        self.assertEqual(self._run(self._model(
-            "    do i = 1, nx\n      u(i) = 0.0_dp\n    end do\n"),
-            node_key="profile/dep_base@0.1.0"), [])
 
     def test_unknown_node_kind_fails_open(self) -> None:
         self.assertEqual(self._run(self._COUNTED, node_key="harness/dep_base@0.1.0"), [])

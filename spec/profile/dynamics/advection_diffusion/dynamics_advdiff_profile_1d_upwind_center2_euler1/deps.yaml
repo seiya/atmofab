@@ -9,9 +9,7 @@ dependencies:
     - component_id: dynamics_advection_diffusion_time_update_1d_euler1
       version_constraint: ">=0.2.0 <1.0.0"
   profiles: []
-  # R1/M3d follow-up (post-rename opt-in): the (fortran, cpu) runner harness. Promotes this
-  # to an M3c node — its runner is host-rendered glue over the certified harness plumbing +
-  # the leaf-authored <spec_id> checks module (Fortran realization: docs/workflow/CHECKS_MODULE_CONTRACT.md).
-  infrastructure:
-    - infrastructure_id: harness_fortran_cpu
-      version_constraint: ">=0.3.0 <1.0.0"
+  # No `infrastructure` entry, and none is allowed (issue #175): a profile is a
+  # compile-time component-selection policy the host resolves at Compile, not a
+  # certified code node. It builds nothing, so it has no runner harness to build
+  # against — the node that ADOPTS this profile declares the harness.

@@ -6,7 +6,7 @@
 - `test_profile_version`: `0.2.0`
 - `spec_ref.spec_kind`: `problem`
 - `spec_ref.spec_id`: `advdiff1d_linear`
-- `spec_ref.spec_version`: `0.3.0`
+- `spec_ref.spec_version`: `0.3.1`
 - `spec_ref.controlled_spec_path`: `spec/problem/dynamics/advection_diffusion/advdiff1d_linear/controlled_spec.md`
 
 ## 1. Test purpose

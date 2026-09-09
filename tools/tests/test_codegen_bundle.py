@@ -26,7 +26,6 @@ from tools.tests.llm_samples import sample_config_with as _cfg
 
 ADV = "problem/adv1d@0.1.0"
 FLUX = "component/adv_flux@0.1.0"
-PROFILE = "profile/adv1d_ref@0.1.0"
 HARNESS = "infrastructure/harness_fortran_cpu@0.7.0"
 
 
@@ -1424,10 +1423,14 @@ class MultiNodeOptimizationUnitTest(unittest.TestCase):
                 doc["state_bindings"] = []
                 self.assertEqual(cb.validate_bundle(doc), [])
 
-    def test_a_profile_member_publishes_no_operation(self) -> None:
-        # A profile is consumed through its selection result, not a call, so it publishes
-        # EXACTLY zero operations (phase_02_generate.md). Zero is valid; an operation entrypoint
-        # is an invented callable interface the Generate contract forbids.
+    def test_a_profile_member_is_refused_outright(self) -> None:
+        """Issue #175: a `profile` is a compile-time selection policy the host resolves, so no
+        phase runs on one and no optimization unit can legitimately name one.
+
+        The branch is unreachable today and is kept as a REFUSAL rather than deleted: deleting
+        it would route a profile member into the general operation-cardinality rule, where one
+        carrying an operation entrypoint would pass. So both shapes — with and without an
+        operation entrypoint — take the same single violation."""
         profile = "profile/adv1d_default@0.1.0"
         doc = _multi_node_bundle()
         doc["optimization_unit"]["members"] = [profile]
@@ -1440,15 +1443,16 @@ class MultiNodeOptimizationUnitTest(unittest.TestCase):
             {"symbol": "case_run", "module": "adv1d_default_checks", "kind": "checks_interface",
              "node_key": profile, "defined_in": "adv1d_default_checks.f90"}]  # no operation
         doc["state_bindings"] = []
-        self.assertEqual(cb.validate_bundle(doc), [])
-        # adding an operation is REJECTED (a profile publishes none)
+        expected = [f"optimization_unit member {profile!r} is a profile; a profile is a "
+                    f"compile-time selection policy resolved by the host and not a certified "
+                    f"node (issue #175)"]
+        self.assertEqual(cb.validate_bundle(doc), expected)
+        # ...and the shape that used to be the ONLY rejected one is not treated differently:
+        # one violation, the same one, so deleting the branch is red rather than green.
         doc["entrypoints"].append(
             {"symbol": "adv1d_default__select", "module": "adv1d_default_model",
              "kind": "operation", "node_key": profile, "defined_in": "adv1d_default_model.f90"})
-        self.assertIn(
-            f"optimization_unit member {profile!r} is a profile and publishes no operation, "
-            "but has 1 operation entrypoint(s)",
-            cb.validate_bundle(doc))
+        self.assertEqual(cb.validate_bundle(doc), expected)
 
     def test_extra_checks_interface_entrypoints_are_allowed(self) -> None:
         # Only `operation` is one-per-member; the checks surface is a fixed ABI and may have
@@ -2568,9 +2572,13 @@ class PromptContractedBundleShapesTest(unittest.TestCase):
 
     These pin the prompt<->gate coupling that E2E#7 exposed: every generate.generate node
     failed its first attempt on a `bundle_schema_violation` the prompt did not warn about
-    (empty `capability_requirements`, a missing residency value, or the profile-cardinality
+    (empty `capability_requirements`, a missing residency value, or the operation-cardinality
     ladder). A regression in either the gate OR the prompt's distilled rule surfaces here as
     a bundle the prompt tells the leaf to build but the gate rejects (or vice versa).
+
+    The ladder's `profile` rung is gone: issue #175 made a profile a host-resolved selection
+    policy, so `validate_bundle` refuses a profile member outright and no shape the prompt
+    describes can carry one.
     """
 
     @staticmethod
@@ -2613,55 +2621,11 @@ class PromptContractedBundleShapesTest(unittest.TestCase):
             "capability_requirements": ["sync_single_case@1"],
         }
 
-    @staticmethod
-    def _profile_bundle() -> dict:
-        # S3: a `profile` node publishes EXACTLY ZERO operation entrypoints (only a
-        # `checks_interface` ABI entry), yet STILL carries a role `model` file for its member.
-        return {
-            "bundle_schema_version": "1.0.0",
-            "optimization_unit": {"members": [PROFILE]},
-            "files": [
-                _file("adv1d_ref_model.f90", "model", PROFILE),
-                _file("adv1d_ref_checks.f90", "checks", PROFILE),
-            ],
-            "entrypoints": [
-                {"symbol": "checks_compute", "kind": "checks_interface", "node_key": PROFILE,
-                 "defined_in": "adv1d_ref_checks.f90", "module": "adv1d_ref_checks"},
-            ],
-            "target_lowering_plan": {"precision": {"real_kind": "real64"},
-                                     "state_residency": "host"},
-            "capability_requirements": ["sync_single_case@1"],
-        }
-
     def test_problem_shape_is_accepted(self) -> None:
         self.assertEqual(cb.validate_bundle(self._problem_bundle()), [])
 
     def test_component_shape_is_accepted(self) -> None:
         self.assertEqual(cb.validate_bundle(self._component_bundle()), [])
-
-    def test_profile_shape_is_accepted(self) -> None:
-        self.assertEqual(cb.validate_bundle(self._profile_bundle()), [])
-
-    def test_profile_with_operation_entrypoint_is_rejected(self) -> None:
-        # The E2E#7 attempt-2 defect: the leaf added an operation entrypoint to a profile.
-        doc = self._profile_bundle()
-        doc["entrypoints"].append(
-            {"symbol": "adv1d_ref__apply", "kind": "operation", "node_key": PROFILE,
-             "defined_in": "adv1d_ref_model.f90", "module": "adv1d_ref_model"})
-        self.assertEqual(
-            cb.validate_bundle(doc),
-            ["optimization_unit member 'profile/adv1d_ref@0.1.0' is a profile and publishes "
-             "no operation, but has 1 operation entrypoint(s)"])
-
-    def test_profile_repair_dropping_model_file_is_rejected(self) -> None:
-        # The E2E#7 attempt-3 over-correction: repairing the entrypoint violation by ALSO
-        # deleting the member's model file. S3 forbids this — the model file is always required.
-        doc = self._profile_bundle()
-        doc["files"] = [f for f in doc["files"] if f["role"] != "model"]
-        self.assertEqual(
-            cb.validate_bundle(doc),
-            ["optimization_unit member 'profile/adv1d_ref@0.1.0' has no files[] entry of "
-             "role model"])
 
 
 class PublishedOperationsFromIrTests(unittest.TestCase):
@@ -2782,13 +2746,21 @@ class PurePublishedSurfacePinTests(unittest.TestCase):
                          Conductor._PURE_IR_PUBLIC_API_KINDS)
 
     def test_non_pinned_node_kind_is_inert(self) -> None:
-        # A profile publishes zero operations; passing a pin must not trip the surface layer
-        # (its spec_kind is not in L1C_PUBLISHED_SURFACE_SPEC_KINDS).
-        nk = "profile/bx@0.1.0"
+        # A `problem` node's surface is derived post-hoc, not pinned against §5 here; passing a
+        # pin must not trip the surface layer (its spec_kind is not in
+        # L1C_PUBLISHED_SURFACE_SPEC_KINDS). `profile` used to be this row's subject and cannot
+        # be one any more — since issue #175 `validate_bundle` refuses a profile member.
+        nk = "problem/bx@0.1.0"
         doc = self._bundle(nk, [])
         doc["entrypoints"] = [
             {"symbol": "checks_compute", "kind": "checks_interface", "node_key": nk,
-             "defined_in": "bx_checks.f90", "module": "bx_checks"}]
+             "defined_in": "bx_checks.f90", "module": "bx_checks"},
+            # A `problem` publishes exactly one operation, and it is deliberately NOT the
+            # `bx__anything` the pin names: the surface layer must stay inert on this kind
+            # even when the published name disagrees.
+            {"symbol": "bx__advance", "kind": "operation", "node_key": nk,
+             "defined_in": "bx_model.f90", "module": "bx_model"}]
+        self.assertNotIn("problem", cb.L1C_PUBLISHED_SURFACE_SPEC_KINDS)
         self.assertIsNone(self._run(doc, nk, ["bx__anything"]))
 
 

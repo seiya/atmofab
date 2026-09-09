@@ -191,7 +191,7 @@ workspace/
 
 ##### `node_key` format
 - `node_key` is of the form `<spec_kind>/<spec_id>@<spec_version>`.
-  - `spec_kind`: the value of the `spec_kind` field of `deps.yaml` (e.g. `component`, `problem`, `profile`)
+  - `spec_kind`: the value of the `spec_kind` field of `deps.yaml` (e.g. `component`, `problem`, `infrastructure`; never `profile` — a `profile` is host-resolved and is not a `node`, issue #175)
   - `spec_id`: the value of the `spec_id` field of `deps.yaml`
   - `spec_version`: the value of the `spec_version` field of `controlled_spec.md`
 - `node_key_safe` is the storage notation of `node_key`, of the form `<spec_kind>__<spec_id>__<spec_version>`.
@@ -259,7 +259,7 @@ In this section, the input of each phase is described separately as `execution i
 ### 0. Spec (manual)
 - execution input: the requirements, physics requirements, and dependency-selection policy given outside the workflow
 - verification input: none
-- output: `spec/<spec_kind>/<domain>/<family>/<spec_id>/controlled_spec.md`, `spec/<spec_kind>/<domain>/<family>/<spec_id>/tests.md`, `spec/<spec_kind>/<domain>/<family>/<spec_id>/deps.yaml`
+- output: `spec/<spec_kind>/<domain>/<family>/<spec_id>/controlled_spec.md`, `spec/<spec_kind>/<domain>/<family>/<spec_id>/tests.md` (every `spec_kind` but `profile`), `spec/<spec_kind>/<domain>/<family>/<spec_id>/deps.yaml`
 
 ### 1. Compile
 - execution input: `controlled_spec.md`, `tests.md`, `deps.yaml`, `spec/registry/spec_catalog.yaml`

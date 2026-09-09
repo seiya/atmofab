@@ -10,7 +10,7 @@ Review checklist: apply EVERY verification item of the phase contract inlined be
 **Tests (the test set the IR's verification contract must cover exactly):**
 <tests_document>
 
-**Dependency declaration (`deps.yaml` — the directly-required dependency set the IR's dependency section must match):**
+**Dependency declaration (`deps.yaml` — what the spec author DECLARED; it is not the set the IR's `direct_deps` must equal, because a `profile` entry here is not a node and the components it selects are nodes. Whether the two agree is a deterministic gate's cross-check against the host-derived graph, which you are not shown and must not re-derive):**
 <deps_document>
 
 **IR under review (the producer's output — judge it, do not re-author it):**

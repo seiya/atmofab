@@ -13,12 +13,12 @@ This project divides the specification into the following 2 layers.
 - The `Controlled Spec` has a `spec_kind` and is classified into the 4 kinds `problem` / `component` / `profile` / `infrastructure`.
 - `problem` defines the equation system to be integrated and the runtime input contract, and references the dependent `component` and adopted `profile`.
 - `component` defines the input/output contract of a reusable physics operation and the published `operation`.
-- `profile` defines the selection rules and parameter constraints for a `component`.
+- `profile` defines the selection rules and parameter constraints for a `component`. The selection is resolved at Compile time, by the host, for the `node` that adopts the profile; a `profile` is not a certified code `node` (`docs/SPEC.md` §Design Policy, issue #175), so nothing is generated or executed for it.
 - `infrastructure` (R1 harness) defines the shared runner plumbing (argv/case parsing, case-loop driver, JSON/snapshot/perf emission) as a certified node per `(language, hardware)` target, carrying no physics.
 
 2. `tests` (`tests.md`)
 - It describes the input conditions used in verification (initial conditions, execution conditions, case expansion) and the judgment thresholds.
-- `tests` applies to all of `problem` / `component` / `profile` / `infrastructure`.
+- `tests` applies to `problem` / `component` / `infrastructure`. A `profile` has none: nothing runs for it, so there is nothing for a test to be about (`docs/SPEC.md` requirement 5).
 - The description discipline uses `TESTS.md` as the canonical source and is defined natural-language-first.
 
 Note:
@@ -59,7 +59,8 @@ Place **0. Meta information** at the top. The subsequent sections are fixed per 
 - Required statement: state that at verification time `tests` provides a partial profile of the runtime input.
 
 4. **Dependent `component` and adopted `profile`**
-- Required statement: state the referenced `component_id` and `profile_id`, the application order, and the compatibility constraints.
+- Required statement: state the adopted `profile_id` and the `component_id` it selects, the application order, and the compatibility constraints.
+- Required statement: for a `component` this `spec` declares DIRECTLY (one no adopted `profile` selects), state its compatibility constraint here as well. A `component` an adopted `profile` selects is not declared again in this `spec`'s own `deps.yaml` — it has exactly one source.
 
 5. **Integration algorithm**
 - Required statement: state the `component` call order, data passing, and time-update order.
@@ -111,23 +112,22 @@ Place **0. Meta information** at the top. The subsequent sections are fixed per 
 - Required statement: state the non-differentiable operations, gradient-excluded operations, and branching rules.
 
 ### Required sections of a `profile spec`
-1. **Target `component` and compatibility range**
-- Required statement: state the target `component_id`, the target `operation_id`, and the applicable `major` range.
+A `profile spec` has FIVE sections and no `tests.md`: nothing is generated or executed for it (issue #175).
 
-2. **Selection rules**
-- Required statement: state the application conditions, priority, and exclusion conditions.
+1. **Target `component` and compatibility range**
+- Required statement: state the target `component_id`, the target `operation_id`, and the applicable `major` range. This section is the prose mirror of the `profile`'s own `deps.yaml#components`.
+
+2. **Application conditions**
+- Required statement: state the application conditions and the exclusion conditions. Adoption is EXPLICIT — an adopting `spec` names this `profile` in its own `deps.yaml`, and no automatic selection exists — so this section says when adopting is correct, not how a selection is made.
 
 3. **Parameter constraints**
 - Required statement: state the default values, allowed ranges, units, and derivation rules.
 
 4. **Fallback rules**
-- Required statement: state the alternative selection when a condition is not met, the prohibition conditions, and the error conditions.
+- Required statement: state that a `component` outside the compatibility range is an error and that automatic switching to an alternative `profile` is forbidden. The host resolver enforces it and names its refusals.
 
 5. **Traceability**
-- Required statement: state the correspondence rule for the keys and values fixed into the `case` section of `spec.ir.yaml`.
-
-6. **tests reference**
-- Required statement: state the reference path of the corresponding `tests.md` and the `test_profile_version`.
+- Required statement: state that the adoption and the resolved `component` versions are recorded in the adopting `spec`'s `<ir_ref>/dependency_graph.json` (`profiles[]` and `all_nodes`), and that each case of its `IR` records `inputs.profile_selection`.
 
 ### Required sections of an `infrastructure spec` (R1 harness)
 An `infrastructure spec` takes the `component spec` section shape **minus section 9 (AD preparation information)** — a harness carries no physics, so it has nothing to differentiate. The **section numbers are load-bearing**: the deterministic `Compile` gate reads the published surface out of `## 5.` and its `### 5.1` subsection by number (`docs/workflow/phases/phase_01_compile.md`), so a harness that renumbers its sections fails to certify.
@@ -185,5 +185,5 @@ An `infrastructure spec` takes the `component spec` section shape **minus sectio
 - For a `problem spec`, the dependent `component` and adopted `profile` are stated.
 - For a `component spec`, the published `operation` and failure conditions are stated.
 - For a `profile spec`, the application conditions and exclusion conditions are stated.
-- For each `spec`, the `tests.md` reference is stated and can be reconciled with `spec_ref`.
+- For each `spec` other than a `profile`, the `tests.md` reference is stated and can be reconciled with `spec_ref`. A `profile spec` has no `tests.md` and no tests-reference section.
 - There are no undefined parameters, missing units, or missing thresholds.

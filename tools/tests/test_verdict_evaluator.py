@@ -694,6 +694,11 @@ class TwelveSpecExpressibilityTest(unittest.TestCase):
         self.assertEqual(evaluate_predicate(pred, diag)[0], "xfail")
 
     def test_profile_per_case_membership(self) -> None:
+        # The two `test_id`s below were copied from a `profile` spec's `tests.md`, which issue
+        # #175 deleted along with the idea that a `profile` is executed at all. They are kept
+        # verbatim rather than renamed because what this row is ABOUT is the evaluator's
+        # per-case membership rule, which is kind-blind — but read them as arbitrary ids, not
+        # as a `spec` this tree still carries.
         # profile: per-case checks + guard membership on component_compatibility.
         diag = {"cases": {
             "profile_select_default": {"checks": {"profile_selected": True},

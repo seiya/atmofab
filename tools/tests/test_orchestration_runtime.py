@@ -7,6 +7,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -21043,10 +21044,10 @@ class ResolveComponentDepSurfaceTests(unittest.TestCase):
                 public_api={"published_operations": [
                     {"operation_id": "dep_base__compute_flux"}], "published_types": []})
             graph = self._graph(
-                "profile/top@0.1.0",
-                [("profile/top@0.1.0", 1), ("component/dep_base@0.1.0", 0)])
+                "problem/top@0.1.0",
+                [("problem/top@0.1.0", 1), ("component/dep_base@0.1.0", 0)])
             surface = _resolve_component_dep_surface(
-                repo_root, "profile/top@0.1.0", graph)
+                repo_root, "problem/top@0.1.0", graph)
             self.assertEqual(len(surface), 1)
             self.assertEqual(surface[0]["node_key"], "component/dep_base@0.1.0")
             self.assertEqual(surface[0]["source"], "ir_public_api")
@@ -21063,10 +21064,10 @@ class ResolveComponentDepSurfaceTests(unittest.TestCase):
             self._write_dep_source(
                 repo_root, "component__dep_base__0.1.0", "dep_base", self._MODEL)
             graph = self._graph(
-                "profile/top@0.1.0",
-                [("profile/top@0.1.0", 1), ("component/dep_base@0.1.0", 0)])
+                "problem/top@0.1.0",
+                [("problem/top@0.1.0", 1), ("component/dep_base@0.1.0", 0)])
             surface = _resolve_component_dep_surface(
-                repo_root, "profile/top@0.1.0", graph)
+                repo_root, "problem/top@0.1.0", graph)
             self.assertEqual(surface[0]["source"], "certified_source")
             self.assertEqual(
                 surface[0]["published_operations"],
@@ -21084,10 +21085,10 @@ class ResolveComponentDepSurfaceTests(unittest.TestCase):
             self._write_dep_source(
                 repo_root, "component__dep_base__0.1.0", "dep_base", self._MODEL)
             graph = self._graph(
-                "profile/top@0.1.0",
-                [("profile/top@0.1.0", 1), ("component/dep_base@0.1.0", 0)])
+                "problem/top@0.1.0",
+                [("problem/top@0.1.0", 1), ("component/dep_base@0.1.0", 0)])
             surface = _resolve_component_dep_surface(
-                repo_root, "profile/top@0.1.0", graph)
+                repo_root, "problem/top@0.1.0", graph)
             self.assertEqual(surface[0]["source"], "ir_public_api")
             self.assertEqual(surface[0]["published_operations"], [])
 
@@ -21096,10 +21097,10 @@ class ResolveComponentDepSurfaceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             graph = self._graph(
-                "profile/top@0.1.0",
-                [("profile/top@0.1.0", 1), ("component/dep_base@0.1.0", 0)])
+                "problem/top@0.1.0",
+                [("problem/top@0.1.0", 1), ("component/dep_base@0.1.0", 0)])
             surface = _resolve_component_dep_surface(
-                repo_root, "profile/top@0.1.0", graph)
+                repo_root, "problem/top@0.1.0", graph)
             self.assertEqual(len(surface), 1)
             self.assertEqual(surface[0]["source"], "unresolved")
             self.assertEqual(surface[0]["published_operations"], [])
@@ -21116,14 +21117,14 @@ class ResolveComponentDepSurfaceTests(unittest.TestCase):
                     public_api={"published_operations": [
                         {"operation_id": f"{sid}__op"}]})
             graph = self._graph(
-                "profile/top@0.1.0",
-                [("profile/top@0.1.0", 2),
+                "problem/top@0.1.0",
+                [("problem/top@0.1.0", 2),
                  ("component/dep_direct@0.1.0", 1),
                  ("component/dep_trans@0.1.0", 0),
                  ("infrastructure/harness@0.2.0", 0)],
                 transitive=["component/dep_trans@0.1.0"])
             surface = _resolve_component_dep_surface(
-                repo_root, "profile/top@0.1.0", graph)
+                repo_root, "problem/top@0.1.0", graph)
             self.assertEqual(
                 [e["node_key"] for e in surface], ["component/dep_direct@0.1.0"])
 
@@ -21132,10 +21133,10 @@ class ResolveComponentDepSurfaceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self.assertEqual(
-                _resolve_component_dep_surface(repo_root, "profile/top@0.1.0", None), [])
+                _resolve_component_dep_surface(repo_root, "problem/top@0.1.0", None), [])
             self.assertEqual(
                 _resolve_component_dep_surface(
-                    repo_root, "profile/top@0.1.0", {"all_nodes": "nope"}), [])
+                    repo_root, "problem/top@0.1.0", {"all_nodes": "nope"}), [])
 
 
 class ListPrefixedSubroutinesTests(unittest.TestCase):
@@ -30925,7 +30926,34 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # round N+1 by construction. Round 5's own edit states the reviewer's scope ONCE, in the
         # section that defines it, because the document had been stating it four ways and the
         # narrowest reading dropped the one invariant family no gate re-checks.)
-        "docs/workflow/phases/phase_01_compile.md": 66780,
+        # Bumped 66780->68623 (issue #175) — measured 68473 with `wc -c` in
+        # /home/seiya/atmofab at the commit that takes this bump, plus this entry's ~150 B
+        # slack rule. The growth is one rule and one sidecar key a compile leaf cannot get
+        # right without being told: `<ir_ref>/dependency_graph.json` now carries `profiles`,
+        # `direct_deps` is sourced from the graph rather than from `deps.yaml` (an adopted
+        # `profile` is not a node and the components it selects are the direct set), and
+        # `inputs.profile_selection` is a two-key pointer a new deterministic gate pins.
+        # A leaf told none of this writes `direct_deps` from the dependency declaration it
+        # is also handed and fails the V4 gate on every retry.
+        # Re-taken at the round-1 HEAD (69051, measured 68901) — the SIXTH re-take, for
+        # the reason the round-5 note above gives: round 1 rendered the real prompt and read it
+        # as the leaf, and found this document's §1-1 still telling the producer that
+        # `direct_deps` is 'the directly-read dependencies from deps.yaml' — false since this
+        # branch, and landing 700 lines AFTER the template rule that contradicts it, under a
+        # preamble naming this document canonical. It also found the `profile_selection`
+        # comment ORDERING omission on a node with no adopted profile, which the harness
+        # spec's own `tests.md` requires for an unrelated plumbing aspect. Both are now
+        # per-path rather than absolute, and both cost words.
+        # Re-taken at the round-2 HEAD (69274, measured 69124) — the SEVENTH, and by
+        # now the entry's own comments have said three times that this happens by
+        # construction: the document is inlined verbatim into both compile prompts, so every
+        # round that corrects what a leaf is told grows it. Round 2's growth is one clause:
+        # §Verification tools still stated the `infrastructure` dep-count rule as applying to
+        # every non-`infrastructure` kind, which this branch made false for a `profile` — and
+        # `skills/spec-input-check/SKILL.md` names THIS document as the canonical source for
+        # exactly that rule, so the check corrected in round 1 and the document it cites had
+        # disagreed since.
+        "docs/workflow/phases/phase_01_compile.md": 69274,
         # Per-substep SKILLs — each force-read by its own LLM leaf.
         # Bumped 10800->11500: Compile.generate now authors the io_contract section (G2 /
         # docs/design/deterministic_followups.md) — it was moved here from Compile.verify so the
@@ -31033,7 +31061,15 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # (28850 first, from 28694 at the branch's first commit; re-measured at the round-3 HEAD
         # after Operations Rule 10 gained the note that `repair_target_sections[]` has no reader
         # in `tools/`, which the phase document had said and this file had not.)
-        "skills/workflow-compile-generate/SKILL.md": 29050,
+        # Bumped 29050->30031 (issue #175, round 4; measured 29881). This file is the
+        # AGENTIC compile producer's canonical procedure (`AGENTS.md` §Project Local Skills),
+        # and it ordered `direct_deps` to 'exactly match the directly-required set of
+        # `deps.yaml`' — which this branch made false for the two `problem` nodes whose
+        # `components` it emptied — while saying nothing about the `profile_selection` field
+        # the new gate requires on those same two nodes. A leaf on that path was handed the
+        # corrected phase document and this stale SKILL in one launch, with `AGENTS.md`
+        # making the SKILL canonical, and would have failed Compile on every attempt.
+        "skills/workflow-compile-generate/SKILL.md": 30031,
         # Bumped 11800->12100: G7 — compile.verify checks V4c only (operations ⊆ published); the
         # closure/topo consistency is conductor-authored + gate-checked, no longer LLM-verified (G7).
         # Bumped 12100->13100: R2 (G8) — compile.verify owns the SEMANTIC test_predicates fidelity
@@ -31272,7 +31308,15 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # saying "subroutine" would tell it to skip the procedures the gate just started covering,
         # which is the same fail-open shape as the bump above. Measured 28270; 28271 after the
         # `met-dsl` -> `atmofab` rename, which added one byte to this file (issue #127).
-        "skills/workflow-generate-verify/SKILL.md": 28500,
+        # Bumped 28500->28761 (issue #175, round 2; measured 28611). This file told the
+        # reviewer to `fail` a `problem` that does not reference its adopted `profile`'s
+        # selection result — a configuration that cannot exist any more, since the host
+        # resolves a profile at Compile and it never reaches `direct_deps`. Left as it was,
+        # an agentic reviewer reading the adopting spec's `deps.yaml#profiles` had this
+        # file's own words as grounds for failing a correct model. Refusing correct work is
+        # the direction that costs a regenerate loop, so the replacement says both halves —
+        # do not fail for it, and here is what the direct dependencies actually are.
+        "skills/workflow-generate-verify/SKILL.md": 28761,
         # Bumped 10000->10400: documented the verdict.json#per_test entry schema
         # (field name `status`/`outcome` + the pass/fail/xfail/skipped enum, with `blocked`
         # called out as conductor-derived not judge-written) so the judge leaf no longer
@@ -40949,3 +40993,835 @@ class DevVerifyResumeDirectiveTests(unittest.TestCase):
                 meta.get("resume_directive"),
                 "no directive was derived for an `_ir` attribution either, so the negative "
                 "assertion above observes nothing about the dev_verify reasons")
+
+
+class DirectDepsSourceStatementTests(unittest.TestCase):
+    """Every statement of WHERE `direct_deps` comes from is read before it is allowed to exist.
+
+    Issue #175 moved that fact: the direct dependency set used to BE the `deps.yaml`
+    declaration and is now the host-derived set in `<ir_ref>/dependency_graph.json`
+    (`all_nodes` minus self minus `transitive_deps`, which INCLUDES the runner harness), because
+    a `profile` entry in `deps.yaml` is not a node and the `component` it selects are. The rule
+    is stated in eleven places across eight files, six of which a compile leaf receives
+    verbatim, and FIVE consecutive review rounds each found a different copy still stating the
+    old fact — four of them in text a leaf acts on, each costing that leaf a `Compile fail` on
+    every attempt.
+
+    That count is what `atmofab-enforcement-change` rule 3-a calls the point where sweeping has
+    already lost, and its remedy is what this class is: the sites that must repeat the rule
+    (a leaf-read contract has to be self-contained) are COUPLED to it by an allowlist, so a new
+    statement is refused until a person reads it and adds an entry. This decides nothing about
+    whether a sentence is TRUE — only that no sentence about this fact appears without having
+    been read, which is a review gate rather than a judgment.
+
+    Five properties, each of them a trap rule 3-a names or a defect a round-5 census found in
+    the first version of this class, and each WITNESSED by a row below:
+
+    - Keys are `<surface>:<digest of the whole stripped statement>`. Whole-line, so a clause
+      appended to an allowlisted line is a new entry; per-SURFACE, so copying an allowlisted
+      line verbatim into another file is a new entry too — the census planted exactly that copy
+      and the first version passed it, which made "no fifth copy ships unread" false for a copy.
+    - Compared as a SET, so a statement that DISAPPEARS is red: an entry matching nothing is how
+      you learn a sentence was edited or moved.
+    - The reader spans up to `_WINDOW` consecutive lines, because Markdown and the prompt
+      templates are hard-wrapped: the census wrote the wrong fact across two lines and the
+      first version, which read one line at a time, passed it. A window is reported only when no
+      shorter window inside it already matched, so a one-line statement keeps a one-line entry.
+    - The surfaces are DERIVED from the code that decides them, and a surface the code names but
+      the tree does not carry is a FAILURE rather than a silent drop — the census renamed a
+      SKILL and planted a false statement in the file the rename orphaned, and the first version
+      passed that too.
+    - The surface list and the reader are both SELF-TESTED, over the whole cross product of the
+      two term sets rather than one cell of it: the census showed two of the four alternations
+      were dead and the single hardcoded probe could not see it.
+    """
+
+    REPO_ROOT = Path(__file__).resolve().parents[2]
+
+    #: A statement about this fact names a direct-dependency term and a declaration-source term
+    #: together. Deliberately wide: a false positive costs one allowlist entry a person reads,
+    #: and a false negative costs what five review rounds cost.
+    _DEP_TERMS = (r"direct[_ ]dep", r"directly[- ]required", r"direct dependenc")
+    _SOURCE_TERMS = (r"deps\.yaml", r"dependency declaration")
+    _DEP_TERM = re.compile("|".join(_DEP_TERMS), re.I)
+    _SOURCE_TERM = re.compile("|".join(_SOURCE_TERMS), re.I)
+
+    #: How many consecutive lines a statement may span. Two is what hard-wrapped prose needs;
+    #: three leaves room for a wrapped bullet without making the report unreadable.
+    _WINDOW = 3
+
+    #: A window may only grow across a CONTINUATION line. Joining two adjacent bullets is not a
+    #: wrapped statement, and treating it as one is a false positive that costs an allowlist
+    #: entry for a co-occurrence nobody wrote — measured on `workflow-compile-verify/SKILL.md`,
+    #: where one bullet names `direct_deps` and the next names `deps.yaml`.
+    _BLOCK_START = re.compile(r"^\s*(?:[-*+]\s|#{1,6}\s|\||\d+[.)]\s|```|\*\*)")
+
+    #: `"<surface>:<digest>" -> what the reader understood the statement to say`. To add one:
+    #: read the statement, satisfy yourself it states the CURRENT fact (or is legitimately about
+    #: something else), and record which. The failure message prints the key and the text.
+    _READ: dict[str, str] = {
+        "tools/prompt_templates/pure_compile_generate.txt:623d8311ce9f93f6":
+            "rule 3: read the WHOLE derived set; deps.yaml alone is rejected",
+        "tools/prompt_templates/pure_compile_generate.txt:7deb92ccbdc3bee3":
+            "deps block label: deps.yaml is what the author DECLARED, not the set",
+        "tools/prompt_templates/pure_compile_verify.txt:8f3888c2abeb0882":
+            "deps block label, reviewer side: not the set direct_deps must equal",
+        "docs/workflow/phases/phase_01_compile.md:71c13f91279256f1":
+            "§1-1: the HOST's directly-required set, read from the graph document",
+        "docs/workflow/phases/phase_01_compile.md:57f8c7b9ee3ab899":
+            "§Verification tools: the infra dep-count rule, not the direct set",
+        "skills/workflow-compile-generate/SKILL.md:2269806c39f4fdbc":
+            "the HOST's directly-required set, including the runner harness",
+        "spec/problem/dynamics/advection_diffusion/advdiff1d_linear/controlled_spec.md:"
+        "436415413eda5c0e":
+            "§4: each selected component is A direct dep, not the whole set",
+        "spec/problem/dynamics/shallow_water/shallow_water2d/controlled_spec.md:"
+        "fa62fb936e108ecb":
+            "§4: the same sentence",
+        "docs/GLOSSARY.md:cb366ac6efb20346":
+            "spec.ir.yaml.dependency: the host's set, explicitly not deps.yaml",
+        "docs/GLOSSARY.md:41add5d95394fae2":
+            "dependency_graph.json: the sidecar's own definition of the set",
+        "docs/GLOSSARY.md:7b5b1fe0a32f8922":
+            "expected_node_set: the reconstruction reads each profile's deps.yaml",
+    }
+
+    def _surfaces(self) -> list[str]:
+        """The repo-relative files that state this rule, derived from the code that decides
+        which documents reach a compile leaf — never hand-listed.
+
+        A surface the code NAMES but the tree does not carry is returned anyway, so the
+        existence row below fails on it. Dropping it silently is how a renamed SKILL takes its
+        statements out of the scan (measured: a round-5 census renamed one and planted a false
+        statement in the orphan).
+        """
+        import tools.orchestration_runtime as ort
+        import tools.workflow_conductor as wc
+        import yaml as _yaml
+
+        out: list[str] = []
+        # (1) One launch template per LLM substep of Compile, keyed the way the renderer keys
+        # them. Deliberately NOT `startswith("pure compile.")`: the escalate diagnostician has a
+        # `pure compile.diagnose` key too, and it reads a diagnosis document rather than any
+        # dependency declaration.
+        for substep in wc.SUBSTEPS["compile"]:
+            filename = ort._PROMPT_TEMPLATE_FILES.get(f"pure compile.{substep}")
+            if filename:
+                out.append(f"tools/prompt_templates/{filename}")
+        # (2) The phase document, inlined verbatim into both compile prompts.
+        out.append(ort.WORKFLOW_PHASE_DOC_BY_STEP["compile"])
+        # (3) The agentic path's SKILL for each substep of Compile that has one. `static` is
+        # deterministic and has none, which is why the membership test is against the SKILL
+        # NAMES the builder produces rather than against the filesystem.
+        for substep in wc.SUBSTEPS["compile"]:
+            skill = f"skills/{wc._skill_name('compile', substep)}/SKILL.md"
+            if substep != "static":
+                out.append(skill)
+        # (4) Every `problem` spec's controlled_spec.md — §4 states the rule in prose and the
+        # host inlines the file as `controlled_spec_document`. From the catalog, so a `problem`
+        # added later is scanned without editing this test.
+        catalog = _yaml.safe_load(
+            (self.REPO_ROOT / "spec/registry/spec_catalog.yaml").read_text(encoding="utf-8"))
+        for entry in catalog.get("specs") or []:
+            if isinstance(entry, dict) and entry.get("spec_kind") == "problem":
+                path = str(entry.get("controlled_spec_path") or "")
+                if path:
+                    out.append(path)
+        # (5) The glossary. NOT leaf-read and NOT derivable — named here because it is the
+        # repository's canonical vocabulary, a maintainer resolves the term against it, and it
+        # carried a false copy of this rule that round 1 had to correct.
+        out.append("docs/GLOSSARY.md")
+        return out
+
+    @classmethod
+    def _statements_in(cls, text: str) -> list[tuple[int, str]]:
+        """Every `(line number, joined text)` window of 1..`_WINDOW` consecutive lines that
+        names both term families, minus any window that CONTAINS a shorter one already
+        reported. Reported innermost-first, so a one-line statement keeps a one-line key."""
+        lines = text.splitlines()
+
+        def _continues(index: int) -> bool:
+            return (0 <= index < len(lines) and bool(lines[index].strip())
+                    and not cls._BLOCK_START.match(lines[index]))
+
+        found: list[tuple[int, str]] = []
+        covered: set[int] = set()
+        for width in range(1, cls._WINDOW + 1):
+            for start in range(len(lines) - width + 1):
+                if any(n in covered for n in range(start, start + width)):
+                    continue
+                if not all(_continues(n) for n in range(start + 1, start + width)):
+                    continue
+                joined = " ".join(line.strip() for line in lines[start:start + width]).strip()
+                if not joined:
+                    continue
+                if cls._DEP_TERM.search(joined) and cls._SOURCE_TERM.search(joined):
+                    found.append((start + 1, joined))
+                    covered.update(range(start, start + width))
+        return sorted(found)
+
+    def _statement_keys(self) -> dict[str, tuple[str, int, str]]:
+        out: dict[str, tuple[str, int, str]] = {}
+        for rel in self._surfaces():
+            path = self.REPO_ROOT / rel
+            if not path.is_file():
+                continue  # the existence row owns this; do not mask it with a crash
+            for number, joined in self._statements_in(path.read_text(encoding="utf-8")):
+                out[f"{rel}:{self._digest(joined)}"] = (rel, number, joined)
+        return out
+
+    @staticmethod
+    def _digest(text: str) -> str:
+        return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+    def test_every_surface_the_code_names_exists(self) -> None:
+        # A surface that vanished (a renamed SKILL, a catalog entry pointing at nothing) must be
+        # a FAILURE, not a smaller scan. An emptiness assertion cannot self-test its own surface
+        # list, so this is the row that holds the list together.
+        missing = [rel for rel in self._surfaces() if not (self.REPO_ROOT / rel).is_file()]
+        self.assertEqual(
+            missing, [],
+            "these surfaces are named by the code that decides what a compile leaf reads, but "
+            "do not exist. Either the file moved (update the code that names it) or the scan "
+            "below has silently stopped covering it.")
+
+    def test_the_surface_list_is_derived_and_covers_every_group(self) -> None:
+        import tools.orchestration_runtime as ort
+        import tools.workflow_conductor as wc
+        import yaml as _yaml
+
+        surfaces = self._surfaces()
+        self.assertEqual(len(surfaces), len(set(surfaces)), surfaces)
+        # Every count is DERIVED from the same source the group is, so adding a Compile substep
+        # or a `problem` spec extends the scan without editing this row.
+        expected_templates = sum(
+            1 for sub in wc.SUBSTEPS["compile"]
+            if ort._PROMPT_TEMPLATE_FILES.get(f"pure compile.{sub}"))
+        self.assertGreaterEqual(expected_templates, 2)
+        self.assertEqual(
+            sum(1 for s in surfaces if s.startswith("tools/prompt_templates/")),
+            expected_templates, surfaces)
+        expected_skills = sum(1 for sub in wc.SUBSTEPS["compile"] if sub != "static")
+        self.assertGreaterEqual(expected_skills, 2)
+        self.assertEqual(
+            sum(1 for s in surfaces if s.startswith("skills/")), expected_skills, surfaces)
+        catalog = _yaml.safe_load(
+            (self.REPO_ROOT / "spec/registry/spec_catalog.yaml").read_text(encoding="utf-8"))
+        expected_problems = sum(
+            1 for e in (catalog.get("specs") or [])
+            if isinstance(e, dict) and e.get("spec_kind") == "problem")
+        self.assertGreaterEqual(expected_problems, 1)
+        self.assertEqual(
+            sum(1 for s in surfaces if s.startswith("spec/problem/")), expected_problems,
+            surfaces)
+        self.assertIn(ort.WORKFLOW_PHASE_DOC_BY_STEP["compile"], surfaces)
+        self.assertIn("docs/GLOSSARY.md", surfaces)
+
+    def test_the_reader_spans_a_wrap_and_every_term_pairing(self) -> None:
+        # The whole cross product, because a single hardcoded probe pins one cell: a round-5
+        # census showed two of the four alternations matched nothing and the old self-test
+        # could not see it.
+        for dep in ("`direct_deps`", "the directly-required set", "its direct dependencies"):
+            for src in ("`deps.yaml`", "the dependency declaration"):
+                with self.subTest(dep=dep, src=src):
+                    self.assertEqual(
+                        [n for n, _ in self._statements_in(f"x\n{dep} is {src}\ny\n")], [2])
+        # Hard-wrapped across two and three lines — the shape Markdown and the templates use.
+        self.assertEqual(
+            [n for n, _ in self._statements_in(
+                "lead\nyour `direct_deps` is exactly what the author\ndeclared in `deps.yaml`\n")],
+            [2])
+        self.assertEqual(
+            [n for n, _ in self._statements_in(
+                "a\nthe directly-required\nset is the one\nin `deps.yaml`\n")], [2])
+        # A window is reported ONCE, innermost — a one-line statement does not also produce the
+        # two-line windows containing it.
+        self.assertEqual(
+            len(self._statements_in("pad\n`direct_deps` comes from `deps.yaml`\npad\n")), 1)
+        # ...and neither term alone is a statement.
+        for miss in ("`deps.yaml` declares the runner harness this node builds against",
+                     "`direct_deps[]` carries `kind` and the semantic `operations`"):
+            with self.subTest(miss=miss):
+                self.assertEqual(self._statements_in(f"{miss}\n"), [])
+
+    def test_the_allowlist_is_keyed_per_surface(self) -> None:
+        # The census planted an allowlisted line VERBATIM into a second surface and the first
+        # version of this class passed it, because the key was the digest alone. A statement is
+        # read once per place it is stated.
+        keys = list(self._READ)
+        self.assertTrue(keys)
+        for key in keys:
+            rel, _, digest = key.rpartition(":")
+            self.assertTrue(rel and len(digest) == 16, key)
+            self.assertIn(rel, self._surfaces(), key)
+
+    def test_every_statement_of_where_direct_deps_comes_from_has_been_read(self) -> None:
+        seen = self._statement_keys()
+        self.assertTrue(seen, "the scan found no statement at all; the reader or the surface "
+                              "list has been narrowed to nothing")
+        unread = sorted(set(seen) - set(self._READ))
+        stale = sorted(set(self._READ) - set(seen))
+        message = []
+        for key in unread:
+            rel, number, text = seen[key]
+            message.append(
+                f"UNREAD {rel}:{number}\n  {text}\n  If it states the CURRENT fact — the direct "
+                f"set is <ir_ref>/dependency_graph.json's all_nodes minus self minus "
+                f"transitive_deps, which INCLUDES the runner harness, and a `profile` entry in "
+                f"deps.yaml is not a node — or is legitimately about something else, add\n"
+                f'    "{key}": "<what you read>",\n  to _READ. If it says the direct set IS the '
+                f"deps.yaml declaration, it is wrong: five review rounds of issue #175 each "
+                f"found one more copy saying that, four of them in text a leaf acts on.")
+        for key in stale:
+            message.append(
+                f"STALE allowlist entry {key} ({self._READ[key]}) matches no statement; it was "
+                f"edited, moved to another surface, or removed. Re-read it and update the entry.")
+        self.assertEqual(message, [], "\n\n".join(message))
+
+    def test_the_stale_half_is_not_decorative(self) -> None:
+        # The census found this direction unwitnessed: replacing the stale computation with `[]`
+        # left the class green, so a statement that DISAPPEARED was invisible. Drive the
+        # comparison directly with an entry that matches nothing.
+        seen = self._statement_keys()
+        self.assertEqual(sorted(set(self._READ) - set(seen)), [])
+        with mock.patch.dict(
+            type(self)._READ,
+            {"docs/GLOSSARY.md:0000000000000000": "a statement that is not there"},
+        ):
+            with self.assertRaises(AssertionError) as caught:
+                self.test_every_statement_of_where_direct_deps_comes_from_has_been_read()
+            self.assertIn("STALE", str(caught.exception))
+            self.assertIn("0000000000000000", str(caught.exception))
+
+
+
+class ProfileExpansionTests(unittest.TestCase):
+    """`expand_profile_dependencies` (issue #175) and the four readiness consumers it feeds.
+
+    The primitive's REFUSALS are pinned in `tools/tests/test_dependency_graph.py` (the graph
+    builder is the other caller and drives every reason). What is pinned HERE is the
+    contract the four `orchestration_runtime` consumers depend on: the expanded entry list, the
+    record shape, and — for each consumer — that a `profile` never reaches the layer that asks
+    for a node's artifacts, while the components it selects do."""
+
+    HARNESS = "h"
+
+    def setUp(self) -> None:
+        from tools.orchestration_runtime import _load_spec_catalog
+        _load_spec_catalog.cache_clear()
+
+    def tearDown(self) -> None:
+        from tools.orchestration_runtime import _load_spec_catalog
+        _load_spec_catalog.cache_clear()
+
+    def _write_deps(self, repo: Path, spec_ref: str, kind: str, spec_id: str, *,
+                    components: list[tuple[str, str | None]] | None = None,
+                    profiles: list[tuple[str, str | None]] | None = None,
+                    infrastructure: list[tuple[str, str | None]] | None = None) -> None:
+        d = repo / spec_ref
+        d.mkdir(parents=True, exist_ok=True)
+        lines = [f"spec_id: {spec_id}", f"spec_kind: {kind}", "dependencies:"]
+        for key, field, items in (("components", "component_id", components),
+                                  ("profiles", "profile_id", profiles),
+                                  ("infrastructure", "infrastructure_id", infrastructure)):
+            if items is None:
+                if key != "infrastructure":
+                    lines.append(f"  {key}: []")
+                continue
+            if not items:
+                lines.append(f"  {key}: []")
+                continue
+            lines.append(f"  {key}:")
+            for sid, con in items:
+                lines.append(f"    - {field}: {sid}")
+                if con is not None:
+                    lines.append(f"      version_constraint: \"{con}\"")
+        (d / "deps.yaml").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    def _seed(self, repo: Path, *, profile_infra: bool = False) -> None:
+        """problem/a adopts profile/pr (which selects component/c1 and component/c2), declares
+        component/own directly, and declares the harness `h` itself."""
+        entries = [
+            ("problem", "a", "0.1.0", "spec/problem/a"),
+            ("profile", "pr", "0.1.0", "spec/profile/pr"),
+            ("component", "c1", "0.2.0", "spec/component/c1"),
+            ("component", "c2", "0.3.0", "spec/component/c2"),
+            ("component", "own", "0.1.0", "spec/component/own"),
+            ("infrastructure", self.HARNESS, "0.1.0", f"spec/infrastructure/{self.HARNESS}"),
+        ]
+        lines = ["catalog_version: 0.2.0", "updated_at: 2026-09-08", "specs:"]
+        for kind, sid, ver, ref in entries:
+            lines += [f"  - spec_kind: {kind}", f"    spec_id: {sid}",
+                      f"    spec_version: \"{ver}\"", f"    deps_path: {ref}/deps.yaml"]
+        (repo / "spec" / "registry").mkdir(parents=True, exist_ok=True)
+        (repo / "spec" / "registry" / "spec_catalog.yaml").write_text(
+            "\n".join(lines) + "\n", encoding="utf-8")
+        self._write_deps(repo, "spec/problem/a", "problem", "a",
+                         components=[("own", ">=0.1.0")], profiles=[("pr", ">=0.1.0")],
+                         infrastructure=[(self.HARNESS, ">=0.1.0")])
+        self._write_deps(repo, "spec/profile/pr", "profile", "pr",
+                         components=[("c1", ">=0.2.0"), ("c2", ">=0.3.0")],
+                         infrastructure=([(self.HARNESS, ">=0.1.0")] if profile_infra
+                                         else None))
+        for cid in ("c1", "c2", "own"):
+            self._write_deps(repo, f"spec/component/{cid}", "component", cid,
+                             infrastructure=[(self.HARNESS, ">=0.1.0")])
+        self._write_deps(repo, f"spec/infrastructure/{self.HARNESS}", "infrastructure",
+                         self.HARNESS)
+        from tools.orchestration_runtime import _load_spec_catalog
+        _load_spec_catalog.cache_clear()
+
+    def _entries(self, repo: Path, spec_ref: str):
+        from tools.orchestration_runtime import (
+            _load_spec_catalog, _parse_dep_entries, _read_deps_yaml)
+        entries, well_formed = _parse_dep_entries(_read_deps_yaml(repo, spec_ref))
+        self.assertTrue(well_formed)
+        return entries, _load_spec_catalog(str(repo.resolve()))
+
+    def test_the_expansion_replaces_the_profile_with_what_it_selects(self) -> None:
+        from tools.orchestration_runtime import expand_profile_dependencies
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._seed(repo)
+            entries, catalog = self._entries(repo, "spec/problem/a")
+            self.assertIn(("profile", "pr", ">=0.1.0"), entries)
+            expanded, record, err = expand_profile_dependencies(
+                repo, "spec/problem/a", entries, catalog)
+            self.assertIsNone(err)
+            self.assertEqual(sorted(expanded), sorted([
+                ("component", "own", ">=0.1.0"),
+                ("infrastructure", self.HARNESS, ">=0.1.0"),
+                ("component", "c1", ">=0.2.0"),
+                ("component", "c2", ">=0.3.0"),
+            ]))
+            self.assertNotIn("profile", {kind for kind, _s, _c in expanded})
+            self.assertEqual(record, [{
+                "node_key": "profile/pr@0.1.0",
+                "profile_id": "pr",
+                "profile_version": "0.1.0",
+                "version_constraint": ">=0.1.0",
+                "components": [
+                    {"component_id": "c1", "version_constraint": ">=0.2.0"},
+                    {"component_id": "c2", "version_constraint": ">=0.3.0"},
+                ],
+            }])
+
+    def test_a_node_with_no_profile_entry_is_returned_unchanged(self) -> None:
+        from tools.orchestration_runtime import expand_profile_dependencies
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._seed(repo)
+            entries, catalog = self._entries(repo, "spec/component/c1")
+            expanded, record, err = expand_profile_dependencies(
+                repo, "spec/component/c1", entries, catalog)
+            self.assertIsNone(err)
+            self.assertEqual(expanded, entries)
+            self.assertEqual(record, [])
+
+    def test_the_record_carries_no_resolved_component_version(self) -> None:
+        # The version a component resolves to is decided by the graph builder intersecting
+        # every requiring edge. Writing it into the record too would make it a fact two layers
+        # read, and they would drift the first time a second edge narrowed the range.
+        from tools.orchestration_runtime import expand_profile_dependencies
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._seed(repo)
+            entries, catalog = self._entries(repo, "spec/problem/a")
+            _expanded, record, _err = expand_profile_dependencies(
+                repo, "spec/problem/a", entries, catalog)
+            for component in record[0]["components"]:
+                self.assertEqual(set(component), {"component_id", "version_constraint"})
+
+    def test_readiness_asks_about_the_selected_components_and_never_the_profile(self) -> None:
+        from tools.orchestration_runtime import _verify_dependency_readiness
+        import tools.orchestration_runtime as ort
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._seed(repo)
+            asked: list[tuple[str, str]] = []
+
+            def _spy(_repo, kind, spec_id, _v, _stage):
+                asked.append((kind, spec_id))
+                return False
+
+            with mock.patch.object(ort, "_verify_dep_stage", _spy):
+                result = _verify_dependency_readiness(repo, "spec/problem/a")
+            self.assertEqual(result, {f"{s}_verified": False
+                                      for s in ort._DEPENDENCY_READINESS_STAGES})
+            self.assertEqual({sid for _k, sid in asked}, {"own", "c1", "c2", self.HARNESS})
+            self.assertNotIn("profile", {kind for kind, _sid in asked})
+
+    def test_readiness_fails_closed_when_the_expansion_does(self) -> None:
+        # Same class as a malformed schema: the declared dependency set does not resolve, so
+        # readiness must not degrade to vacuous true.
+        from tools.orchestration_runtime import _verify_dependency_readiness
+        import tools.orchestration_runtime as ort
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._seed(repo, profile_infra=True)
+            self.assertEqual(
+                _verify_dependency_readiness(repo, "spec/problem/a"),
+                {f"{s}_verified": False for s in ort._DEPENDENCY_READINESS_STAGES})
+
+    def test_the_catalog_subset_covers_the_profile_and_what_it_selects(self) -> None:
+        from tools.orchestration_runtime import _relevant_catalog_subset_bytes
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._seed(repo)
+            payload = json.loads(_relevant_catalog_subset_bytes(repo, "spec/problem/a"))
+            pairs = {(kind, sid) for kind, sid, _versions in payload}
+            # The components the profile selects contribute as themselves, and the profile
+            # contributes as itself — so a catalog edit to EITHER resets the readiness flags.
+            self.assertEqual(pairs, {
+                ("component", "own"), ("component", "c1"), ("component", "c2"),
+                ("infrastructure", self.HARNESS), ("profile", "pr")})
+
+    def test_the_catalog_subset_is_empty_when_the_expansion_fails(self) -> None:
+        from tools.orchestration_runtime import _relevant_catalog_subset_bytes
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._seed(repo, profile_infra=True)
+            self.assertEqual(_relevant_catalog_subset_bytes(repo, "spec/problem/a"), b"")
+
+    def test_the_launch_gate_snapshot_fails_closed_when_the_expansion_does(self) -> None:
+        from tools.orchestration_runtime import _certify_and_collect_dep_artifacts
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._seed(repo, profile_infra=True)
+            snap = _certify_and_collect_dep_artifacts(repo, "spec/problem/a")
+            self.assertTrue(snap["deps_doc_valid"])
+            self.assertFalse(snap["entries_well_formed"])
+            self.assertEqual(snap["certified_entries"], [])
+
+    def test_stale_details_names_the_profile_rather_than_going_silent(self) -> None:
+        # Readiness itself fails closed on an expansion error; this line is what turns the
+        # opaque `direct_dependency_*_readiness_not_pass` into a message naming the profile.
+        from tools.orchestration_runtime import _stale_dependency_details
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._seed(repo, profile_infra=True)
+            details = _stale_dependency_details(repo, "spec/problem/a")
+            self.assertEqual(len(details), 1, details)
+            self.assertIn("profile_declares_infrastructure", details[0])
+            self.assertIn("profile/pr", details[0])
+
+    def test_a_profile_version_bump_moves_the_closure_signature(self) -> None:
+        """R6-lite restales a node when a dependency it was certified against moves. An adopted
+        `profile` is such a dependency — its §3 parameter and compatibility constraints are what
+        the adopter's `algorithm` is written to honour — and it is the ONE part of the resolution
+        that never appears in `all_nodes`, because it is not a node. Round-1 finding: without
+        the `profiles` term the signature was byte-identical across a profile version bump, so
+        every adopter stayed fresh against a policy that had changed, while its IR's
+        `profile_selection` went on naming the retired version."""
+        from tools.dependency_graph import build_dependency_graph
+        from tools.orchestration_runtime import _closure_signature, _load_spec_catalog
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._seed(repo)
+            args = dict(target_spec_ref="spec/problem/a", target_node_key="problem/a@0.1.0",
+                        include_via=False)
+            before, err = build_dependency_graph(repo, **args)
+            self.assertIsNone(err)
+            catalog = repo / "spec" / "registry" / "spec_catalog.yaml"
+            catalog.write_text(
+                catalog.read_text(encoding="utf-8").replace(
+                    "spec_id: pr\n    spec_version: \"0.1.0\"",
+                    "spec_id: pr\n    spec_version: \"0.9.0\""),
+                encoding="utf-8")
+            _load_spec_catalog.cache_clear()
+            after, err = build_dependency_graph(repo, **args)
+            self.assertIsNone(err)
+            # Nothing else moved: the component set the profile selects is untouched, so the
+            # node set is identical and `all_nodes` alone could not have seen this.
+            self.assertEqual([n["node_key"] for n in before["all_nodes"]],
+                             [n["node_key"] for n in after["all_nodes"]])
+            self.assertEqual(before["transitive_deps"], after["transitive_deps"])
+            self.assertNotEqual(_closure_signature(before), _closure_signature(after))
+
+    def test_a_sidecar_predating_the_profiles_key_is_not_restaled_by_it(self) -> None:
+        # The other direction, and the reason a missing key normalizes to `[]`: every sidecar
+        # written before issue #175 lacks it, and treating absence as a distinct value would
+        # restale the whole certified corpus rather than only the nodes whose closure moved.
+        from tools.dependency_graph import build_dependency_graph
+        from tools.orchestration_runtime import _closure_signature
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._seed(repo)
+            graph, err = build_dependency_graph(
+                repo, target_spec_ref="spec/component/c1",
+                target_node_key="component/c1@0.2.0", include_via=False)
+            self.assertIsNone(err)
+            self.assertEqual(graph["profiles"], [])
+            legacy = {k: v for k, v in graph.items() if k != "profiles"}
+            self.assertEqual(_closure_signature(graph), _closure_signature(legacy))
+            # ...and a node that DOES adopt one is not silently equal to its own legacy sidecar.
+            adopter, err = build_dependency_graph(
+                repo, target_spec_ref="spec/problem/a",
+                target_node_key="problem/a@0.1.0", include_via=False)
+            self.assertIsNone(err)
+            self.assertNotEqual(
+                _closure_signature(adopter),
+                _closure_signature({k: v for k, v in adopter.items() if k != "profiles"}))
+
+    def test_a_profile_only_drift_is_reported_as_a_profile_drift(self) -> None:
+        # The message has to name the part that moved. A profile-only drift has an identical
+        # node set AND identical transitive deps, so the "same nodes, different shape" branch
+        # would print two identical transitive lists and read as though nothing had changed.
+        from tools.dependency_graph import build_dependency_graph
+        from tools.orchestration_runtime import (
+            _dependency_resolution_freshness, _load_spec_catalog, _node_key_to_safe)
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._seed(repo)
+            recorded, err = build_dependency_graph(
+                repo, target_spec_ref="spec/problem/a",
+                target_node_key="problem/a@0.1.0", include_via=False)
+            self.assertIsNone(err)
+            ir_dir = (repo / "workspace" / "ir" / _node_key_to_safe("problem/a@0.1.0")
+                      / "a_20260101_001")
+            ir_dir.mkdir(parents=True)
+            (ir_dir / "dependency_graph.json").write_text(
+                json.dumps(recorded), encoding="utf-8")
+            (ir_dir / "ir_meta.json").write_text(
+                json.dumps({"verification_status": "pass"}), encoding="utf-8")
+            fresh, detail = _dependency_resolution_freshness(repo, "problem", "a", "0.1.0")
+            self.assertTrue(fresh, detail)
+            catalog = repo / "spec" / "registry" / "spec_catalog.yaml"
+            catalog.write_text(
+                catalog.read_text(encoding="utf-8").replace(
+                    "spec_id: pr\n    spec_version: \"0.1.0\"",
+                    "spec_id: pr\n    spec_version: \"0.9.0\""),
+                encoding="utf-8")
+            _load_spec_catalog.cache_clear()
+            fresh, detail = _dependency_resolution_freshness(repo, "problem", "a", "0.1.0")
+            self.assertFalse(fresh)
+            self.assertIn("adopted profile set", detail)
+            self.assertIn("profile/pr@0.1.0", detail)
+            self.assertIn("profile/pr@0.9.0", detail)
+            self.assertNotIn("different shape", detail)
+
+    def test_a_same_node_set_drift_names_the_part_that_actually_moved(self) -> None:
+        """Three things can move with the node SET intact — the direct/transitive split, the
+        topological levels, and the adopted profile set — and `recorded_keys` drops the levels,
+        so a branch that tests only two of them prints two identical lists for the third.
+        Round-2 finding: the round-1 fix tested `transitive` and let a HEIGHT-only drift fall
+        through to the profile message, naming profiles on a node that adopts none."""
+        import tools.orchestration_runtime as ort
+        from tools.orchestration_runtime import _dependency_resolution_freshness
+
+        base = {
+            "node_key": "problem/t@1.0.0",
+            "all_nodes": [{"node_key": "component/x@1.0.0", "topo_level": 0},
+                          {"node_key": "component/y@1.0.0", "topo_level": 1},
+                          {"node_key": "problem/t@1.0.0", "topo_level": 2}],
+            "transitive_deps": [{"node_key": "component/x@1.0.0", "via": []}],
+            "profiles": [],
+        }
+
+        def _drive(recorded, derived, tmpdir):
+            ir_dir = Path(tmpdir) / "ir"
+            ir_dir.mkdir(parents=True, exist_ok=True)
+            (ir_dir / "dependency_graph.json").write_text(
+                json.dumps(recorded), encoding="utf-8")
+            with mock.patch.object(ort, "_spec_ref_candidates",
+                                   lambda *_a, **_k: {"spec/problem/t"}), \
+                 mock.patch.object(ort, "_certified_ir_dir", lambda *_a, **_k: ir_dir), \
+                 mock.patch("tools.dependency_graph.build_dependency_graph",
+                            lambda *_a, **_k: (derived, None)):
+                return _dependency_resolution_freshness(repo_root, "problem", "t", "1.0.0")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            # (a) heights moved, nothing else.
+            levels = json.loads(json.dumps(base))
+            levels["all_nodes"][1]["topo_level"] = 5
+            fresh, detail = _drive(base, levels, tmp)
+            self.assertFalse(fresh)
+            self.assertIn("different topological levels", detail)
+            self.assertNotIn("adopted profile set", detail)
+            # (b) the direct/transitive split moved.
+            split = json.loads(json.dumps(base))
+            split["transitive_deps"] = []
+            fresh, detail = _drive(base, split, tmp)
+            self.assertFalse(fresh)
+            self.assertIn("different shape", detail)
+            self.assertNotIn("adopted profile set", detail)
+            # (c) only the adopted profile set moved.
+            prof = json.loads(json.dumps(base))
+            prof["profiles"] = [{"node_key": "profile/pr@0.2.0"}]
+            fresh, detail = _drive(base, prof, tmp)
+            self.assertFalse(fresh)
+            self.assertIn("adopted profile set", detail)
+            self.assertIn("profile/pr@0.2.0", detail)
+            self.assertNotIn("different shape", detail)
+            # Control: identical graphs are fresh, so the three rows above are not passing on
+            # a comparison that always disagrees.
+            self.assertEqual(_drive(base, json.loads(json.dumps(base)), tmp), (True, None))
+
+    def test_the_profile_term_is_order_insensitive_and_shape_validated(self) -> None:
+        """Two rows the round-2 sweeps found unpinned, and they pull in opposite directions.
+
+        `profile_keys.sort()` — its two siblings `out.sort()` / `trans.sort()` each have a
+        pinning row; without it, reordering the `profiles:` entries of a node that adopts two
+        spuriously restales it.
+
+        The non-dict refusal — this is the ONE signature term whose corruption would read
+        FRESH rather than stale: on a node that adopts none, degrading an unusable `profiles`
+        value to "adopts none" makes it compare equal, where the identical checks on
+        `all_nodes` / `transitive_deps` report the sidecar unusable."""
+        from tools.orchestration_runtime import _closure_signature
+        two = {"node_key": "problem/t@1.0.0",
+               "all_nodes": [{"node_key": "problem/t@1.0.0", "topo_level": 0}],
+               "transitive_deps": [],
+               "profiles": [{"node_key": "profile/b@0.1.0"}, {"node_key": "profile/a@0.1.0"}]}
+        reordered = dict(two, profiles=list(reversed(two["profiles"])))
+        self.assertEqual(_closure_signature(two), _closure_signature(reordered))
+        self.assertEqual(_closure_signature(two)[2], ["profile/a@0.1.0", "profile/b@0.1.0"])
+        for unusable in ("not-a-list", 7, [{"node_key": "profile/a@0.1.0"}, "bare-string"],
+                         [{"node_key": ""}], [{"profile_id": "a"}]):
+            with self.subTest(profiles=unusable):
+                self.assertIsNone(
+                    _closure_signature(dict(two, profiles=unusable)))
+        # `None` and the absent key both mean "adopts none" — the normalization that keeps a
+        # pre-#175 sidecar from restaling the corpus.
+        self.assertEqual(_closure_signature(dict(two, profiles=None))[2], [])
+        self.assertEqual(
+            _closure_signature({k: v for k, v in two.items() if k != "profiles"})[2], [])
+
+    def test_every_expansion_refusal_uses_a_declared_reason(self) -> None:
+        """`_PROFILE_EXPANSION_REASONS` is what pins these reasons to the STALE side of the
+        freshness taxonomy, so it has to be the source of the emitted strings rather than a
+        list beside them. Round-1 finding: it was a documentation constant nothing emitted
+        from, so renaming a reason to a `_UNREADABLE_CLOSURE_REASONS` member — which flips the
+        disposition from stale to fresh — changed no test.
+
+        The WIRING is what this row observes, not the shape of the result: asserting only that
+        the reason is a member passes just as well when the refusal bypasses the guard and the
+        literals happen to be right today, which is the mutant that survived round 1's own
+        sweep of this fix."""
+        import tools.orchestration_runtime as ort
+        from tools.orchestration_runtime import (
+            _PROFILE_EXPANSION_REASONS, expand_profile_dependencies)
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._seed(repo, profile_infra=True)
+            entries, catalog = self._entries(repo, "spec/problem/a")
+            seen: list[str] = []
+            real = ort._profile_expansion_failure
+
+            def _spy(reason, detail):
+                seen.append(reason)
+                return real(reason, detail)
+
+            with mock.patch.object(ort, "_profile_expansion_failure", _spy):
+                _e, _r, err = expand_profile_dependencies(
+                    repo, "spec/problem/a", entries, catalog)
+            self.assertEqual(seen, ["profile_declares_infrastructure"])
+            self.assertIn(err["reason"], _PROFILE_EXPANSION_REASONS)
+        # The guard fires on an UNDECLARED reason rather than being satisfied by the one
+        # refusal this fixture happens to reach.
+        with self.assertRaises(AssertionError):
+            ort._profile_expansion_failure("not_a_declared_reason", "x")
+
+    def test_a_registry_outage_inside_the_expansion_is_not_a_profile_reason(self) -> None:
+        """`spec_catalog_corrupt` is the ONE error the expansion can return that belongs to
+        `_UNREADABLE_CLOSURE_REASONS` — the registry could not be READ, so no comparison is
+        possible and the freshness disposition is the opposite of every `profile_*` reason.
+        It therefore must NOT go through `_profile_expansion_failure`, which would raise on it;
+        round 1's sweep showed that routing it back through the guard changed no test."""
+        import tools.orchestration_runtime as ort
+        from tools.orchestration_runtime import (
+            SpecCatalogCorruption, _UNREADABLE_CLOSURE_REASONS, expand_profile_dependencies)
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._seed(repo)
+            entries, catalog = self._entries(repo, "spec/problem/a")
+
+            def _boom(*_a, **_k):
+                raise SpecCatalogCorruption("spec_catalog.yaml is unreadable")
+
+            with mock.patch.object(ort, "resolve_spec_ref_for", _boom):
+                expanded, record, err = expand_profile_dependencies(
+                    repo, "spec/problem/a", entries, catalog)
+            self.assertEqual(err["reason"], "spec_catalog_corrupt")
+            self.assertIn("spec_catalog_corrupt", _UNREADABLE_CLOSURE_REASONS)
+            self.assertNotIn("spec_catalog_corrupt", ort._PROFILE_EXPANSION_REASONS)
+            self.assertEqual((expanded, record), ([], []))
+
+    def test_an_unresolvable_profile_directory_fails_closed(self) -> None:
+        """`profile_spec_ref_unresolved`: the catalog names the profile but resolves it to no
+        unique directory (a path-less entry, or two entries pointing at different ones). Round-1
+        finding: this class had no test, and turning its refusal into a `continue` — which
+        DROPS the adopted profile and certifies the adopter with an empty component set —
+        survived the whole suite."""
+        from tools.orchestration_runtime import (
+            _load_spec_catalog, expand_profile_dependencies)
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._seed(repo)
+            catalog = repo / "spec" / "registry" / "spec_catalog.yaml"
+            # A second entry for the same (profile, pr) resolving to a DIFFERENT directory:
+            # `resolve_spec_ref_for` fail-closes on the ambiguity rather than choosing.
+            catalog.write_text(
+                catalog.read_text(encoding="utf-8")
+                + "  - spec_kind: profile\n    spec_id: pr\n    spec_version: \"0.1.0\"\n"
+                  "    deps_path: spec/profile/pr_elsewhere/deps.yaml\n",
+                encoding="utf-8")
+            _load_spec_catalog.cache_clear()
+            entries, cat = self._entries(repo, "spec/problem/a")
+            expanded, record, err = expand_profile_dependencies(
+                repo, "spec/problem/a", entries, cat)
+            self.assertEqual(err["reason"], "profile_spec_ref_unresolved")
+            self.assertIn("profile/pr", err["detail"])
+            # Fail-closed with NO partial expansion: the caller must not be handed an entry
+            # list that silently lost the adopted profile's components.
+            self.assertEqual(expanded, [])
+            self.assertEqual(record, [])
+
+    def test_the_adopted_profile_version_is_the_descending_head(self) -> None:
+        # The same rule the graph builder pins a NODE by. Taking any other member would make
+        # `profiles[].profile_version` — which `_validate_profile_selection` pins into every
+        # case of the IR — name a version the node was not built against.
+        from tools.orchestration_runtime import (
+            _load_spec_catalog, expand_profile_dependencies)
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._seed(repo)
+            catalog = repo / "spec" / "registry" / "spec_catalog.yaml"
+            catalog.write_text(
+                catalog.read_text(encoding="utf-8")
+                + "  - spec_kind: profile\n    spec_id: pr\n    spec_version: \"0.4.0\"\n"
+                  "    deps_path: spec/profile/pr/deps.yaml\n",
+                encoding="utf-8")
+            _load_spec_catalog.cache_clear()
+            entries, cat = self._entries(repo, "spec/problem/a")
+            _expanded, record, err = expand_profile_dependencies(
+                repo, "spec/problem/a", entries, cat)
+            self.assertIsNone(err)
+            # Both 0.1.0 and 0.4.0 satisfy the adopting node's `>=0.1.0`; the head is taken.
+            self.assertEqual(record[0]["profile_version"], "0.4.0")
+            self.assertEqual(record[0]["node_key"], "profile/pr@0.4.0")
+
+    def test_a_profile_expansion_failure_is_classified_stale_not_fresh(self) -> None:
+        """The R6-lite freshness reader splits builder errors into "the registry could not be
+        READ" (no comparison possible → fresh) and everything else (the recorded resolution
+        provably cannot be reproduced → stale). Every `profile_*` reason belongs to the second
+        set: the registry WAS read, and the declared closure does not resolve."""
+        from tools.orchestration_runtime import (
+            _PROFILE_EXPANSION_REASONS, _UNREADABLE_CLOSURE_REASONS,
+            _dependency_resolution_freshness)
+        self.assertEqual(_PROFILE_EXPANSION_REASONS & _UNREADABLE_CLOSURE_REASONS, frozenset())
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._seed(repo, profile_infra=True)
+            fresh, detail = _dependency_resolution_freshness(repo, "problem", "a", "0.1.0")
+            self.assertFalse(fresh)
+            self.assertIn("no longer resolves", detail)
+            self.assertIn("profile_declares_infrastructure", detail)
+            # ...and with a well-formed profile the same node no longer takes this branch at
+            # all (it is judged on the recorded-vs-derived COMPARISON, which this fixture seeds
+            # no artifacts for), so the assertion above could have come out the other way.
+            self._seed(repo, profile_infra=False)
+            _fresh_ok, detail_ok = _dependency_resolution_freshness(
+                repo, "problem", "a", "0.1.0")
+            self.assertNotIn("no longer resolves", detail_ok or "")

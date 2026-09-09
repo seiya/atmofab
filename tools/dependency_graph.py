@@ -21,6 +21,14 @@ The builder deliberately does NOT carry ``direct_deps[].operations`` (a semantic
 field with no host data source — it stays LLM-authored in the IR) and does NOT
 apply the Build/Model-B ``L6`` diamond guard (a staging/Makefile concern
 unrelated to graph structure; see ``workflow_conductor._dependency_closure_nodes``).
+
+A ``profile`` dependency is NOT a node of this graph (issue #175). It names a
+compile-time component-selection policy the host resolves, so every visited node's
+``profile`` entries are expanded into the components they select
+(``orchestration_runtime.expand_profile_dependencies``) before any edge is recorded.
+``all_nodes`` therefore contains only certified nodes, and the adopted policies of the
+TARGET are recorded separately in the ``profiles`` key — the pointer the IR's
+``profile_selection`` is pinned against.
 """
 
 from __future__ import annotations
@@ -47,7 +55,10 @@ def build_dependency_graph(
 
     Returns ``(graph, error)``:
       - ``graph``: on success, the sidecar dict
-        ``{node_key, all_nodes:[{node_key, topo_level}], transitive_deps:[{node_key, via:[...]}], generated_by}``.
+        ``{node_key, all_nodes:[{node_key, topo_level}], transitive_deps:[{node_key, via:[...]}], profiles:[...], generated_by}``.
+        ``profiles`` is the target's adopted-profile record (``[]`` when it adopts none) —
+        see ``expand_profile_dependencies`` for its shape. The components a profile selects
+        are ordinary members of ``all_nodes``; the profile itself never is.
         ``all_nodes`` includes the target itself (``topo_level`` = height = the
         longest downward path to a leaf; a leaf is ``0``). ``transitive_deps`` is
         ``all_nodes − {self} − direct`` — the host directly-required set is
@@ -60,7 +71,8 @@ def build_dependency_graph(
         / ``dependency_unresolvable`` / ``dependency_version_conflict`` /
         ``dependency_identity_conflict`` / ``dependency_deps_unreadable`` /
         ``dependency_deps_malformed`` / ``dependency_spec_ref_unresolved`` /
-        ``spec_catalog_corrupt``). That closure additionally applies the spec-input
+        ``spec_catalog_corrupt``), plus the ``profile_*`` reasons
+        ``expand_profile_dependencies`` returns. That closure additionally applies the spec-input
         identity gates (``spec_id_too_long`` / ``infra_dep_count_invalid``), which this
         builder deliberately does not: it derives a graph, it does not gate a run.
 
@@ -77,6 +89,7 @@ def build_dependency_graph(
         _matching_dep_versions,
         _parse_dep_entries,
         _read_deps_yaml,
+        expand_profile_dependencies,
         resolve_spec_ref_for,
     )
 
@@ -100,9 +113,13 @@ def build_dependency_graph(
     done: list[str] = []
     done_set: set[str] = set()
     error: dict[str, str] | None = None
+    # The adopted-profile record of the TARGET node (issue #175). Every visited node has its
+    # `profile` entries expanded, but only the target's record reaches the sidecar — a
+    # dependency's own adopted profiles are its own sidecar's business.
+    target_profiles: list[dict[str, Any]] = []
 
     def visit(spec_ref: str) -> None:
-        nonlocal error
+        nonlocal error, target_profiles
         if error is not None or spec_ref in done_set:
             return
         if spec_ref in visiting:
@@ -127,6 +144,26 @@ def build_dependency_graph(
                 "detail": f"{spec_ref}/deps.yaml has a malformed dependency schema",
             }
             return
+        # Issue #175: a `profile` entry names a compile-time component-selection policy, not a
+        # closure node. Expand it into the components it selects HERE, so every layer below —
+        # `all_nodes`, the staged sources, the Makefile objects, the closure bindings, the
+        # pre_judge DAG gate — sees only certified nodes without a kind test of its own. The
+        # expansion runs on EVERY visited node, not just the target: a component that adopts a
+        # profile would otherwise keep it as a node.
+        if any(kind == "profile" for kind, _sid, _c in entries):
+            try:
+                catalog = _get_catalog()
+            except SpecCatalogCorruption as exc:
+                error = {"reason": "spec_catalog_corrupt", "detail": str(exc)}
+                return
+            entries, profiles_record, expand_error = expand_profile_dependencies(
+                repo_root, spec_ref, entries, catalog
+            )
+            if expand_error is not None:
+                error = expand_error
+                return
+            if spec_ref == target_spec_ref:
+                target_profiles = profiles_record
         for kind, sid, constraint in entries:
             try:
                 matched = _matching_dep_versions(_get_catalog(), kind, sid, constraint)
@@ -274,6 +311,7 @@ def build_dependency_graph(
         "node_key": target_node_key,
         "all_nodes": all_nodes,
         "transitive_deps": transitive,
+        "profiles": target_profiles,
         "generated_by": "conductor",
     }
     return graph, None

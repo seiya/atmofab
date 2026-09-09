@@ -289,7 +289,7 @@ Optional flows:
 
 When a `node` is fail-closed with `dependency_not_ready` (`direct_dependency_compile_readiness_not_pass` / `..._execution_readiness_not_pass`) because its dependency nodes have not been compiled/built/validated yet, there are two ways forward:
 
-1. Run the core workflow for each dependency node manually (bottom-up: components → profile → problem), then run the target.
+1. Run the core workflow for each dependency node manually (bottom-up: components → problem), then run the target. A `profile` is not a node and is never run (issue #175).
 2. Run the target with `--with-deps`, which resolves the target's transitive dependency closure (`deps.yaml` + `spec_catalog.yaml`) and runs each not-yet-ready dependency node bottom-up (one orchestration per node) before the target.
 
 ```bash
@@ -320,7 +320,7 @@ Without `--with-deps` a single-node run stops at `workflow-launch-check` with `d
 
 **Resolution** staleness is detected at version granularity: an edit to a `spec` that does not move `spec_version` does not move any node_key, which is why the respec discipline is "content change ⇒ `spec_version` bump". **Closure-source** staleness is detected at content granularity, and covers the case the version rule cannot: a dependency REGENERATED under an unchanged `spec_version` (a Generate retry, a re-certification, an interface that moved between two passing runs). Each certified binary records the `sha256` of every dependency source it was compiled against (`binary_meta.json#dependency_check.closure_bindings[]`), and readiness compares those against what a build would stage now — so a consumer linked to a source that no longer exists is stale and gets re-run instead of being skipped and then failing closed inside its own gates (`docs/ORCHESTRATION.md` §13b).
 
-**One-time cost when this landed.** A binary certified before the binding was recorded carries no `closure_bindings` key, and fails closed when it has a non-empty closure — there is no record of what it linked. On a reused `workspace/`, the first `--with-deps` run after this change therefore re-runs **every non-leaf node of the closure** (for `advdiff1d_linear`: the three components, the profile, and the target), and skips only the closure's leaf, the harness node. That is the intended behaviour, not a defect: the alternative is to assume an unrecorded linkage was correct, which is exactly the wrong certification the mechanism exists to prevent. A fresh workspace pays nothing.
+**One-time cost when this landed.** A binary certified before the binding was recorded carries no `closure_bindings` key, and fails closed when it has a non-empty closure — there is no record of what it linked. On a reused `workspace/`, the first `--with-deps` run after this change therefore re-runs **every non-leaf node of the closure** (for `advdiff1d_linear` as its closure stood then: the three components, the profile, and the target), and skips only the closure's leaf, the harness node. That closure is smaller since issue #175 — the profile left it — but this paragraph records what happened when the binding landed, so its figures are not restated. That is the intended behaviour, not a defect: the alternative is to assume an unrecorded linkage was correct, which is exactly the wrong certification the mechanism exists to prevent. A fresh workspace pays nothing.
 
 ## 3-1. Resuming a failed workflow (`--resume`)
 

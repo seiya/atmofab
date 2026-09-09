@@ -378,6 +378,55 @@ def _canonicalize_spec_ref(repo_root: Path, spec_ref: str) -> str:
         return str(resolved)
 
 
+def _refuse_non_certifiable_target(repo_root: Path, spec_ref: str) -> None:
+    """Refuse a target the workflow certifies nothing for, at LAUNCH.
+
+    Today that is exactly one kind: a ``profile`` is a compile-time component-selection policy
+    the host resolves at Compile (issue #175), so it generates no code, no closure schedules it
+    and no verdict can be reached for it. Without this the four phases would run on it and
+    produce a certified artifact nothing consumes — billed work in the wrong direction.
+
+    Captured HERE and not only in the conductor's ``resolve_node`` for the same reason
+    ``REQUIRED_CLI_TOOLS`` is: what can be detected before anything is launched is detected
+    before anything is launched. ``resolve_node`` keeps the same refusal as the fail-closed
+    backstop for every path that does not come through this entry point.
+
+    The kind is read from ``spec_catalog.yaml`` — the registry, never the spec's own
+    ``deps.yaml``, whose top-level ``spec_kind`` carries no schema and would let a spec declare
+    its way past the gate that decides whether it is gated.
+    """
+    from tools.workflow_conductor import _SPEC_REF_FILE_NAMES
+
+    # The same normalization `resolve_node` applies, and imported from it rather than
+    # respelled: a spec_ref may name the directory OR one of the three files under it, and a
+    # launch check that only understood the directory form would let
+    # `spec/profile/<id>/deps.yaml` past — leaving the refusal to the conductor's backstop,
+    # which is the later moment this check exists to beat.
+    ref = Path(spec_ref.strip().rstrip("/"))
+    spec_id = (ref.parent if ref.name in _SPEC_REF_FILE_NAMES else ref).name
+    catalog_path = repo_root / "spec" / "registry" / "spec_catalog.yaml"
+    import yaml as _yaml
+
+    try:
+        catalog = _yaml.safe_load(catalog_path.read_text(encoding="utf-8")) or {}
+    except (OSError, UnicodeError, _yaml.YAMLError):
+        # An unreadable/unparseable registry is a repository-wide outage with its own gates
+        # (`_load_spec_catalog` raises `SpecCatalogCorruption`); reporting it here as "your
+        # target is wrong" would send the operator to the wrong file.
+        return
+    for entry in (catalog.get("specs") or []) if isinstance(catalog, dict) else []:
+        if not isinstance(entry, dict) or entry.get("spec_id") != spec_id:
+            continue
+        if str(entry.get("spec_kind") or "").strip() == "profile":
+            raise ValueError(
+                f"spec_kind_not_certifiable: {spec_id} is a `profile`, a compile-time "
+                f"component-selection policy the host resolves at Compile (issue #175), not a "
+                f"certified code node. It generates no code and no dependency closure "
+                f"schedules it. Run the node that ADOPTS it instead."
+            )
+        return
+
+
 def _validate_source_dependency_ref(source_dependency_ref: str) -> str:
     normalized = source_dependency_ref.strip().replace("\\", "/").strip("/")
     if not normalized:
@@ -2894,6 +2943,7 @@ def _run_main(
         if not spec_ref_in:
             raise ValueError("spec_ref is required unless --resume is set")
         spec_ref = _canonicalize_spec_ref(repo_root, spec_ref_in)
+        _refuse_non_certifiable_target(repo_root, spec_ref)
         # Reuse the recovered dependency ref when the spec is unchanged (compared
         # canonically, so restating the same spec still counts as unchanged).
         # Format-validate only — no existence check — so resume stays stable even if
@@ -4214,7 +4264,9 @@ def _resolve_dependency_closure(
 
     Edges come from `<spec_ref>/deps.yaml` resolved against `spec_catalog.yaml`
     via the canonical runtime helpers (`_parse_dep_entries`,
-    `_matching_dep_versions`, `resolve_spec_ref_for`). Post-order DFS yields the
+    `expand_profile_dependencies`, `_matching_dep_versions`, `resolve_spec_ref_for`). A
+    `profile` dependency is resolved as DATA, never scheduled: it expands into the components
+    it selects, so no `profile` node appears in `ordered` (issue #175). Post-order DFS yields the
     topological order; a node already on the DFS stack is a cycle.
     """
     from tools.orchestration_runtime import (
@@ -4223,6 +4275,7 @@ def _resolve_dependency_closure(
         _matching_dep_versions,
         _parse_dep_entries,
         _read_deps_yaml,
+        expand_profile_dependencies,
         resolve_spec_ref_for,
     )
     from tools.spec_input_gates import infra_dep_count_violation, spec_id_length_violation
@@ -4393,6 +4446,24 @@ def _resolve_dependency_closure(
                 "detail": f"{spec_ref}: {_infra_violation}",
             }
             return
+        # Issue #175: a `profile` entry is a compile-time component-selection policy, not a
+        # closure node. Expanding it here — on EVERY visited spec, not only the target — is
+        # what keeps `ordered` (the `--with-deps` schedule) free of profile nodes: no profile
+        # leaf is ever launched and no `workspace/pipelines/profile__*` is created. Running it
+        # after this node's OWN identity gates means a node's own defect is still reported
+        # before a defect in the profile it adopts.
+        if any(kind == "profile" for kind, _sid, _c in entries):
+            try:
+                _catalog = _get_catalog()
+            except SpecCatalogCorruption as exc:
+                error = {"reason": "spec_catalog_corrupt", "detail": str(exc)}
+                return
+            entries, _profiles_record, _expand_error = expand_profile_dependencies(
+                repo_root, spec_ref, entries, _catalog
+            )
+            if _expand_error is not None:
+                error = _expand_error
+                return
         for kind, sid, constraint in entries:
             try:
                 matched = _matching_dep_versions(_get_catalog(), kind, sid, constraint)

@@ -153,10 +153,10 @@ same member (an entrypoint attributed to another member's file would satisfy the
 leaving the member unaddressable). Operation **cardinality is by node kind**: a `problem` node
 publishes **exactly one** operation (its single integration update path — the contract carries
 no operation selector, so two would leave the host unable to pick it); a `component` or
-`infrastructure` node publishes an API of one or more operations (the harness ABI is many); and
-a `profile` publishes **exactly zero** operations (it is consumed through its selection result,
-not a call — `phase_02_generate.md`), so an `operation` entrypoint on a profile member is an
-invented callable interface and is rejected.
+`infrastructure` node publishes an API of one or more operations (the harness ABI is many). A
+`profile` member is **rejected outright** whatever it publishes: since issue #175 a `profile` is a
+compile-time selection policy the host resolves, so no phase runs on one and no optimization unit
+can name one.
 
 ## Files
 
@@ -285,9 +285,9 @@ declares it.
   same name in the same module is an unlinkable duplicate.
 - **Coverage invariant**: every unit member owns at least one `model` file and an
   `operation` entrypoint count set by its kind (see "Optimization unit"): a `problem` member
-  **exactly one**, a `component` / `infrastructure` member **at least one**, a `profile` member
-  **exactly zero**. A member may have any number of `checks_interface` entrypoints — the checks
-  surface is a fixed ABI.
+  **exactly one**, a `component` / `infrastructure` member **at least one**; a `profile` member is
+  rejected rather than counted (issue #175). A member may have any number of `checks_interface`
+  entrypoints — the checks surface is a fixed ABI.
 - **Published-surface invariant (L1c, `component` members)**: when the member's certified IR
   pins its published operation names in `public_api.published_operations`, that member's
   `operation` entrypoint `symbol` set must equal that name set (casefold) — a member with a

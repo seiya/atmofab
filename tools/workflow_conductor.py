@@ -1567,8 +1567,24 @@ def build_launch_request(
         else:
             # generate/verify LLM substeps read the NL spec + tests + deps. spec.ir.yaml is a
             # must-read only for verify (generate authors it).
+            #
+            # `dependency_graph.json` is a must-read for GENERATE only, and it is not optional:
+            # since issue #175 the node's direct dependency set is the sidecar's
+            # `all_nodes − self − transitive_deps`, NOT the `deps.yaml` declaration (a `profile`
+            # entry there is not a node), and the per-case `inputs.profile_selection` is
+            # transcribed from the sidecar's `profiles[]`. Both problem specs in this tree now
+            # declare `components: []`, so an agentic producer handed only the four documents
+            # below has no source anywhere in its required set for either fact and fails
+            # `_validate_compile_dependency_consistency` / `_validate_profile_selection` on
+            # every attempt. The PURE producer is unaffected — the host inlines the same file
+            # as `dependency_graph_document` — which is exactly why the omission was invisible:
+            # the SKILL was corrected to say "read it THERE" without the launch being changed
+            # to deliver it (`atmofab-enforcement-change` surface 12, in reverse).
+            # Verify does NOT get it: `_build_pure_compile_verify_context` inlines no graph
+            # either, and the reviewer is told the dependency cross-check is the gate's.
             must_read += [
                 f"{refs.ir_ref}/spec.ir.yaml" if substep == "verify" else None,
+                f"{refs.ir_ref}/dependency_graph.json" if substep == "generate" else None,
                 f"{spec}/controlled_spec.md",
                 f"{spec}/tests.md",
                 f"{spec}/deps.yaml",
@@ -7188,8 +7204,12 @@ clean:
     # (which already routes its own violations back to `(compile, reuse)`), so nothing here
     # re-runs `--stage compile`.
 
+    # The sentinel's WORDING is not pinned, deliberately: the test that observes it compares
+    # against this constant rather than transcribing it, so a reworded sentence is not a
+    # behaviour change. What IS pinned is that the value is non-empty (the launch validator
+    # refuses an empty declared key) and that it is what a node adopting no profile receives.
     _PURE_PROFILE_ABSENT_DOCUMENT = (
-        "No profile dependency is declared in deps.yaml.")
+        "This node adopts no profile.")
 
     def _pure_node_document(self, rel: str, name: str) -> str:
         """A NODE artifact of the compile context, or RAISE.
@@ -7246,41 +7266,59 @@ clean:
                 f"(under {Path(rel).parent}/): {type(exc).__name__}") from exc
 
     def _pure_profile_spec_document(self, refs: NodeRefs) -> str:
-        """The controlled spec of each `profile` dependency this node declares, resolved through
-        the catalog, or the host's fixed sentence when it declares none.
+        """The controlled spec of each `profile` this node ADOPTS, or the host's fixed sentence
+        when it adopts none.
 
-        The profile carries the component-set selection a node's algorithm is written against, and
-        the agentic leaf reads it today. Resolution is best-effort per entry (an entry the catalog
-        does not carry contributes a named line rather than failing the substep): the deterministic
-        gates already own dependency resolvability, and a profile that cannot be resolved is their
-        finding, not a reason to refuse to launch. The sentinel keeps the value a NON-EMPTY string,
-        which the launch validator requires of every declared key."""
-        deps = _read_yaml(self.repo_root / refs.spec_path / "deps.yaml") or {}
-        dependencies = deps.get("dependencies") if isinstance(deps, dict) else None
-        entries = (dependencies or {}).get("profiles") if isinstance(dependencies, dict) else None
+        The profile carries the parameter and compatibility constraints a node's algorithm is
+        written to honour (§3). What it SELECTS does not travel here: since issue #175 the host
+        resolves the selection and the components are ordinary members of the
+        dependency-graph document's `all_nodes`.
+
+        WHICH profiles, and at WHICH version, is read from `<ir_ref>/dependency_graph.json`
+        (written by `_write_dependency_graph` at phase start, so it is always present by the
+        time a producer launches) rather than re-derived from `deps.yaml` + the catalog. The
+        old derivation looked each `profile_id` up by BARE id, first-wins, with no version
+        constraint applied, so it could inline a different catalog entry than the one the
+        sidecar pinned — the same fact resolved twice, by two rules.
+
+        Resolution of the DIRECTORY is still best-effort per entry (an entry whose
+        `controlled_spec.md` cannot be read contributes a named line rather than failing the
+        substep): a profile the registry cannot resolve at all never reaches here, because
+        `_write_dependency_graph` fail-closes the phase on it first. The sentinel keeps the
+        value a NON-EMPTY string, which the launch validator requires of every declared key.
+
+        A missing/unreadable sidecar RAISES, like `_pure_repo_document` — the same disposition
+        for the same reason, and the same recoverable `pure_context_assembly_failed`."""
+        from tools.orchestration_runtime import resolve_spec_ref_for
+
+        graph = _read_json(self.repo_root / refs.ir_ref / "dependency_graph.json")
+        if not isinstance(graph, dict) or not isinstance(graph.get("profiles"), list):
+            raise RuntimeError(
+                "pure_profile_spec_document_missing: dependency_graph.json "
+                f"(under {refs.ir_ref}/): no readable `profiles` record")
         profile_ids: list[str] = []
-        for entry in entries or []:
-            pid = entry.get("profile_id") if isinstance(entry, dict) else entry
+        for entry in graph["profiles"]:
+            pid = entry.get("profile_id") if isinstance(entry, dict) else None
             if isinstance(pid, str) and pid.strip():
                 profile_ids.append(pid.strip())
         if not profile_ids:
             return self._PURE_PROFILE_ABSENT_DOCUMENT
-        catalog = _read_yaml(self.repo_root / "spec" / "registry" / "spec_catalog.yaml") or {}
-        by_id = {e.get("spec_id"): e for e in (catalog.get("specs") or [])
-                 if isinstance(e, dict)}
         sections: list[str] = []
         for pid in profile_ids:
-            entry = by_id.get(pid) or {}
-            rel = entry.get("controlled_spec_path")
             text = ""
-            if isinstance(rel, str) and rel.strip():
+            try:
+                spec_ref = resolve_spec_ref_for(self.repo_root, "profile", pid)
+            except Exception:  # noqa: BLE001 — a registry outage is the graph builder's finding
+                spec_ref = None
+            if spec_ref:
                 try:
-                    text = (self.repo_root / rel).read_text(encoding="utf-8")
+                    text = (self.repo_root / spec_ref / "controlled_spec.md").read_text(
+                        encoding="utf-8")
                 except (OSError, UnicodeError):
                     text = ""
             sections.append(f"# profile: {pid}\n\n"
                             + (text if text.strip()
-                               else "(this profile is declared in deps.yaml but the registry "
+                               else "(this profile is adopted by this node but the registry "
                                     "does not resolve it to a controlled spec)"))
         return "\n\n".join(sections)
 
@@ -7356,9 +7394,12 @@ clean:
                 f"{refs.spec_path}/tests.md", "tests"),
             "deps_document": self._pure_node_document(
                 f"{refs.spec_path}/deps.yaml", "deps"),
-            "profile_spec_document": self._pure_profile_spec_document(refs),
+            # Ordered before `profile_spec_document`, which READS the same sidecar: a missing
+            # or unreadable file is then reported as the document it is, rather than as the
+            # profile record it also happens to carry.
             "dependency_graph_document": self._pure_repo_document(
                 f"{refs.ir_ref}/dependency_graph.json", "dependency_graph"),
+            "profile_spec_document": self._pure_profile_spec_document(refs),
             "phase_contract_document": self._pure_repo_document(
                 WORKFLOW_PHASE_DOC_BY_STEP["compile"], "phase_contract"),
             "ir_algorithm_example_document": self._pure_repo_document(
@@ -14667,6 +14708,9 @@ def resolve_node(repo_root: Path, spec_ref: str) -> tuple[str, str]:
     Accepts the same spec_ref forms as run_workflow: a spec directory OR a
     file-style ref (controlled_spec.md / tests.md / deps.yaml) under it — the
     latter is normalized to its parent directory before the catalog lookup.
+
+    Raises ``ValueError`` when the catalog resolves the ref to a ``profile``: a profile is
+    resolved as data at Compile and is not a node any phase runs (issue #175).
     """
     ref = Path(spec_ref.strip().rstrip("/"))
     spec_dir = ref.parent if ref.name in _SPEC_REF_FILE_NAMES else ref
@@ -14697,6 +14741,22 @@ def resolve_node(repo_root: Path, spec_ref: str) -> tuple[str, str]:
             kind = entry["spec_kind"]
             version = entry["spec_version"]
             spec_path = str(Path(entry["controlled_spec_path"]).parent)
+            # (3) A `profile` is not a certifiable node (issue #175). It is a compile-time
+            # component-selection policy the host resolves at Compile
+            # (`orchestration_runtime.expand_profile_dependencies`), so it has no code to
+            # generate, no runner to build and no verdict to reach. The kind is read from the
+            # CATALOG — never from the spec's own `deps.yaml`, which carries no schema for it —
+            # so a spec cannot self-declare its way past this. Without this the four phases
+            # would still run on a profile target and produce a certified artifact for
+            # something no closure consumes: a fail-open in the direction of doing billed work
+            # that nothing reads.
+            if str(kind).strip() == "profile":
+                raise ValueError(
+                    f"spec-input rejected: spec_kind_not_certifiable: {spec_id} is a `profile`, "
+                    f"a compile-time component-selection policy the host resolves at Compile "
+                    f"(issue #175), not a certified code node. It generates no code and no "
+                    f"closure schedules it. Run the node that ADOPTS it instead "
+                    f"(from spec_ref {spec_ref})")
             _infra_count = _direct_infra_dep_count(repo_root, spec_path)
             if _infra_count is None:
                 # `.strip()` and nothing else — the SAME spelling rule as

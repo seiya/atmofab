@@ -31,7 +31,8 @@ def _write_catalog(repo_root: Path, entries: list[dict]) -> None:
 
 def _write_deps(repo_root: Path, spec_ref: str, spec_kind: str, spec_id: str,
                 components: list[tuple[str, str]] | None = None,
-                profiles: list[tuple[str, str]] | None = None) -> None:
+                profiles: list[tuple[str, str]] | None = None,
+                infrastructure: list[tuple[str, str]] | None = None) -> None:
     d = repo_root / spec_ref
     d.mkdir(parents=True, exist_ok=True)
     lines = [f"spec_id: {spec_id}", f"spec_kind: {spec_kind}", "dependencies:"]
@@ -47,6 +48,13 @@ def _write_deps(repo_root: Path, spec_ref: str, spec_kind: str, spec_id: str,
         lines.append(f"      version_constraint: \"{c}\"")
     if not profiles:
         lines[-1] = "  profiles: []"
+    if infrastructure is not None:
+        lines.append("  infrastructure:")
+        for iid, c in infrastructure:
+            lines.append(f"    - infrastructure_id: {iid}")
+            lines.append(f"      version_constraint: \"{c}\"")
+        if not infrastructure:
+            lines[-1] = "  infrastructure: []"
     (d / "deps.yaml").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -154,6 +162,9 @@ class BuildDependencyGraphTests(unittest.TestCase):
             ])
 
     def test_profile_and_component_mixed(self) -> None:
+        """Issue #175: an adopted `profile` is DATA, not a node. It never enters `all_nodes`;
+        the components it selects become the adopting node's own direct dependencies, and the
+        adoption is recorded in the separate `profiles` key."""
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             _write_catalog(repo, [
@@ -163,19 +174,299 @@ class BuildDependencyGraphTests(unittest.TestCase):
                  "deps_path": "spec/profile/pr/deps.yaml"},
                 {"spec_kind": "component", "spec_id": "co", "spec_version": "0.1.0",
                  "deps_path": "spec/component/co/deps.yaml"},
+                {"spec_kind": "component", "spec_id": "own", "spec_version": "0.1.0",
+                 "deps_path": "spec/component/own/deps.yaml"},
             ])
             _write_deps(repo, "spec/problem/p", "problem", "p",
-                        components=[("co", ">=0.1.0")], profiles=[("pr", ">=0.2.0")])
-            _write_deps(repo, "spec/profile/pr", "profile", "pr")
+                        components=[("own", ">=0.1.0")], profiles=[("pr", ">=0.2.0")])
+            _write_deps(repo, "spec/profile/pr", "profile", "pr",
+                        components=[("co", ">=0.1.0")])
             _write_deps(repo, "spec/component/co", "component", "co")
+            _write_deps(repo, "spec/component/own", "component", "own")
             graph, err = build_dependency_graph(
                 repo, target_spec_ref="spec/problem/p",
                 target_node_key="problem/p@0.1.0")
             self.assertIsNone(err)
             self.assertEqual({n["node_key"] for n in graph["all_nodes"]},
-                             {"problem/p@0.1.0", "profile/pr@0.2.0", "component/co@0.1.0"})
-            # both direct -> no transitive
+                             {"problem/p@0.1.0", "component/own@0.1.0",
+                              "component/co@0.1.0"})
+            # The profile-selected component is DIRECT, not transitive: the host directly-
+            # required set is `all_nodes - self - transitive_deps`, and it must contain `co`.
             self.assertEqual(graph["transitive_deps"], [])
+            self.assertEqual(graph["profiles"], [{
+                "node_key": "profile/pr@0.2.0",
+                "profile_id": "pr",
+                "profile_version": "0.2.0",
+                "version_constraint": ">=0.2.0",
+                "components": [
+                    {"component_id": "co", "version_constraint": ">=0.1.0"},
+                ],
+            }])
+
+    def test_a_node_adopting_no_profile_records_an_empty_profiles_key(self) -> None:
+        # The key is always present, so `_validate_profile_selection` can tell "adopts none"
+        # from "sidecar predates the key" (which it refuses).
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._seed_chain(repo)
+            graph, err = build_dependency_graph(
+                repo, target_spec_ref="spec/component/top",
+                target_node_key="component/top@0.1.0")
+            self.assertIsNone(err)
+            self.assertEqual(graph["profiles"], [])
+
+    def test_a_component_adopting_a_profile_is_expanded_too(self) -> None:
+        """The expansion runs on EVERY visited node, not just the target. Applying it only to
+        the target would leave a profile node in the closure of any dependency that adopts
+        one — a fail-open the target's own sidecar would then record."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            _write_catalog(repo, [
+                {"spec_kind": "problem", "spec_id": "p", "spec_version": "0.1.0",
+                 "deps_path": "spec/problem/p/deps.yaml"},
+                {"spec_kind": "component", "spec_id": "mid", "spec_version": "0.1.0",
+                 "deps_path": "spec/component/mid/deps.yaml"},
+                {"spec_kind": "profile", "spec_id": "pr", "spec_version": "0.2.0",
+                 "deps_path": "spec/profile/pr/deps.yaml"},
+                {"spec_kind": "component", "spec_id": "base", "spec_version": "0.1.0",
+                 "deps_path": "spec/component/base/deps.yaml"},
+            ])
+            _write_deps(repo, "spec/problem/p", "problem", "p",
+                        components=[("mid", ">=0.1.0")])
+            _write_deps(repo, "spec/component/mid", "component", "mid",
+                        profiles=[("pr", ">=0.2.0")])
+            _write_deps(repo, "spec/profile/pr", "profile", "pr",
+                        components=[("base", ">=0.1.0")])
+            _write_deps(repo, "spec/component/base", "component", "base")
+            graph, err = build_dependency_graph(
+                repo, target_spec_ref="spec/problem/p",
+                target_node_key="problem/p@0.1.0")
+            self.assertIsNone(err)
+            self.assertEqual({n["node_key"] for n in graph["all_nodes"]},
+                             {"problem/p@0.1.0", "component/mid@0.1.0",
+                              "component/base@0.1.0"})
+            # `base` reaches the target THROUGH mid, so it is transitive — the profile is not
+            # on the path because it is not a node at all.
+            self.assertEqual(graph["transitive_deps"], [
+                {"node_key": "component/base@0.1.0", "via": ["component/mid@0.1.0"]},
+            ])
+            # Only the TARGET's adoptions reach the sidecar; mid's are mid's own business.
+            self.assertEqual(graph["profiles"], [])
+
+    def _seed_two_profiles(self, repo: Path, con_a: str, con_b: str) -> None:
+        _write_catalog(repo, [
+            {"spec_kind": "problem", "spec_id": "p", "spec_version": "0.1.0",
+             "deps_path": "spec/problem/p/deps.yaml"},
+            {"spec_kind": "profile", "spec_id": "pa", "spec_version": "0.1.0",
+             "deps_path": "spec/profile/pa/deps.yaml"},
+            {"spec_kind": "profile", "spec_id": "pb", "spec_version": "0.1.0",
+             "deps_path": "spec/profile/pb/deps.yaml"},
+            {"spec_kind": "component", "spec_id": "co", "spec_version": "0.2.0",
+             "deps_path": "spec/component/co/deps.yaml"},
+            {"spec_kind": "component", "spec_id": "co", "spec_version": "0.5.0",
+             "deps_path": "spec/component/co/deps.yaml"},
+        ])
+        _write_deps(repo, "spec/problem/p", "problem", "p",
+                    profiles=[("pa", ">=0.1.0"), ("pb", ">=0.1.0")])
+        _write_deps(repo, "spec/profile/pa", "profile", "pa", components=[("co", con_a)])
+        _write_deps(repo, "spec/profile/pb", "profile", "pb", components=[("co", con_b)])
+        _write_deps(repo, "spec/component/co", "component", "co")
+
+    def test_two_profiles_selecting_one_component_intersect_to_one_node(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            # `<0.5.0` and `>=0.1.0` both admit 0.2.0 — one node, pinned to the intersection's
+            # highest member (NOT the catalog's highest, 0.5.0, which pa excludes).
+            self._seed_two_profiles(repo, "<0.5.0", ">=0.1.0")
+            graph, err = build_dependency_graph(
+                repo, target_spec_ref="spec/problem/p",
+                target_node_key="problem/p@0.1.0")
+            self.assertIsNone(err)
+            self.assertEqual({n["node_key"] for n in graph["all_nodes"]},
+                             {"problem/p@0.1.0", "component/co@0.2.0"})
+            self.assertEqual([r["profile_id"] for r in graph["profiles"]], ["pa", "pb"])
+
+    def test_two_profiles_disagreeing_on_a_component_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._seed_two_profiles(repo, "<0.5.0", ">=0.5.0")
+            graph, err = build_dependency_graph(
+                repo, target_spec_ref="spec/problem/p",
+                target_node_key="problem/p@0.1.0")
+            self.assertIsNone(graph)
+            self.assertEqual(err["reason"], "profile_component_conflict")
+            self.assertIn("component/co", err["detail"])
+
+    def test_declaring_a_profile_selected_component_directly_is_refused(self) -> None:
+        """Issue #175 D5: a component has exactly ONE source. Declaring it both directly and
+        through an adopted profile is the drift this refusal exists to prevent."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            _write_catalog(repo, [
+                {"spec_kind": "problem", "spec_id": "p", "spec_version": "0.1.0",
+                 "deps_path": "spec/problem/p/deps.yaml"},
+                {"spec_kind": "profile", "spec_id": "pr", "spec_version": "0.1.0",
+                 "deps_path": "spec/profile/pr/deps.yaml"},
+                {"spec_kind": "component", "spec_id": "co", "spec_version": "0.1.0",
+                 "deps_path": "spec/component/co/deps.yaml"},
+            ])
+            _write_deps(repo, "spec/problem/p", "problem", "p",
+                        components=[("co", ">=0.1.0")], profiles=[("pr", ">=0.1.0")])
+            _write_deps(repo, "spec/profile/pr", "profile", "pr",
+                        components=[("co", ">=0.1.0")])
+            _write_deps(repo, "spec/component/co", "component", "co")
+            graph, err = build_dependency_graph(
+                repo, target_spec_ref="spec/problem/p",
+                target_node_key="problem/p@0.1.0")
+            self.assertIsNone(graph)
+            self.assertEqual(err["reason"], "profile_component_declared_twice")
+            self.assertIn("component/co", err["detail"])
+            self.assertIn("profile/pr", err["detail"])
+
+    def test_a_profile_adopting_a_profile_is_refused_by_name(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            _write_catalog(repo, [
+                {"spec_kind": "problem", "spec_id": "p", "spec_version": "0.1.0",
+                 "deps_path": "spec/problem/p/deps.yaml"},
+                {"spec_kind": "profile", "spec_id": "outer", "spec_version": "0.1.0",
+                 "deps_path": "spec/profile/outer/deps.yaml"},
+                {"spec_kind": "profile", "spec_id": "inner", "spec_version": "0.1.0",
+                 "deps_path": "spec/profile/inner/deps.yaml"},
+            ])
+            _write_deps(repo, "spec/problem/p", "problem", "p",
+                        profiles=[("outer", ">=0.1.0")])
+            _write_deps(repo, "spec/profile/outer", "profile", "outer",
+                        profiles=[("inner", ">=0.1.0")])
+            _write_deps(repo, "spec/profile/inner", "profile", "inner")
+            graph, err = build_dependency_graph(
+                repo, target_spec_ref="spec/problem/p",
+                target_node_key="problem/p@0.1.0")
+            self.assertIsNone(graph)
+            self.assertEqual(err["reason"], "profile_nesting_unsupported")
+            self.assertIn("inner", err["detail"])
+
+    def test_a_profile_declaring_a_harness_is_refused(self) -> None:
+        """A profile builds nothing. A harness declared on it would enter the closure of every
+        ADOPTING node through an edge that node never wrote."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            _write_catalog(repo, [
+                {"spec_kind": "problem", "spec_id": "p", "spec_version": "0.1.0",
+                 "deps_path": "spec/problem/p/deps.yaml"},
+                {"spec_kind": "profile", "spec_id": "pr", "spec_version": "0.1.0",
+                 "deps_path": "spec/profile/pr/deps.yaml"},
+                {"spec_kind": "infrastructure", "spec_id": "h", "spec_version": "0.1.0",
+                 "deps_path": "spec/infrastructure/h/deps.yaml"},
+            ])
+            _write_deps(repo, "spec/problem/p", "problem", "p",
+                        profiles=[("pr", ">=0.1.0")])
+            _write_deps(repo, "spec/profile/pr", "profile", "pr",
+                        infrastructure=[("h", ">=0.1.0")])
+            _write_deps(repo, "spec/infrastructure/h", "infrastructure", "h")
+            graph, err = build_dependency_graph(
+                repo, target_spec_ref="spec/problem/p",
+                target_node_key="problem/p@0.1.0")
+            self.assertIsNone(graph)
+            self.assertEqual(err["reason"], "profile_declares_infrastructure")
+
+    def test_an_unreadable_registry_at_the_expansion_is_not_a_profile_reason(self) -> None:
+        """The `SpecCatalogCorruption` guard the expansion call site carries. A round-5 census
+        found it unwitnessed, and swallowing it is not a crash but a MISCLASSIFICATION: the
+        expansion would then report `profile_unresolvable` — a `_PROFILE_EXPANSION_REASONS`
+        member, hence the STALE side of `_dependency_resolution_freshness` — for a node whose
+        registry could not be READ, which is the FRESH side. That is the one-keystroke class
+        `_profile_expansion_failure` exists to prevent, one frame outside the constructor it
+        guards, so `test_every_expansion_refusal_uses_a_declared_reason` cannot reach it."""
+        import tools.orchestration_runtime as ort
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            _write_catalog(repo, [
+                {"spec_kind": "problem", "spec_id": "p", "spec_version": "0.1.0",
+                 "deps_path": "spec/problem/p/deps.yaml"},
+                {"spec_kind": "profile", "spec_id": "pr", "spec_version": "0.1.0",
+                 "deps_path": "spec/profile/pr/deps.yaml"},
+            ])
+            _write_deps(repo, "spec/problem/p", "problem", "p", profiles=[("pr", ">=0.1.0")])
+            _write_deps(repo, "spec/profile/pr", "profile", "pr")
+            calls = {"n": 0}
+            real = ort._load_spec_catalog
+
+            def _corrupt_on_the_expansion_read(*args, **kwargs):
+                # The FIRST read is the expansion's; later ones belong to edge resolution.
+                calls["n"] += 1
+                if calls["n"] == 1:
+                    raise ort.SpecCatalogCorruption("spec_catalog.yaml is unreadable")
+                return real(*args, **kwargs)
+
+            with mock.patch.object(ort, "_load_spec_catalog", _corrupt_on_the_expansion_read):
+                graph, err = build_dependency_graph(
+                    repo, target_spec_ref="spec/problem/p",
+                    target_node_key="problem/p@0.1.0")
+            self.assertIsNone(graph)
+            self.assertEqual(err["reason"], "spec_catalog_corrupt")
+            self.assertNotIn(err["reason"], ort._PROFILE_EXPANSION_REASONS)
+            self.assertIn(err["reason"], ort._UNREADABLE_CLOSURE_REASONS)
+
+    def test_an_unresolvable_profile_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            _write_catalog(repo, [
+                {"spec_kind": "problem", "spec_id": "p", "spec_version": "0.1.0",
+                 "deps_path": "spec/problem/p/deps.yaml"},
+                {"spec_kind": "profile", "spec_id": "pr", "spec_version": "0.1.0",
+                 "deps_path": "spec/profile/pr/deps.yaml"},
+            ])
+            _write_deps(repo, "spec/problem/p", "problem", "p",
+                        profiles=[("pr", ">=9.0.0")])
+            _write_deps(repo, "spec/profile/pr", "profile", "pr")
+            graph, err = build_dependency_graph(
+                repo, target_spec_ref="spec/problem/p",
+                target_node_key="problem/p@0.1.0")
+            self.assertIsNone(graph)
+            self.assertEqual(err["reason"], "profile_unresolvable")
+
+    def test_a_profile_with_an_unreadable_deps_file_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            _write_catalog(repo, [
+                {"spec_kind": "problem", "spec_id": "p", "spec_version": "0.1.0",
+                 "deps_path": "spec/problem/p/deps.yaml"},
+                {"spec_kind": "profile", "spec_id": "pr", "spec_version": "0.1.0",
+                 "deps_path": "spec/profile/pr/deps.yaml"},
+            ])
+            _write_deps(repo, "spec/problem/p", "problem", "p",
+                        profiles=[("pr", ">=0.1.0")])
+            # The catalog entry resolves the directory, but no deps.yaml is written there.
+            (repo / "spec" / "profile" / "pr").mkdir(parents=True, exist_ok=True)
+            graph, err = build_dependency_graph(
+                repo, target_spec_ref="spec/problem/p",
+                target_node_key="problem/p@0.1.0")
+            self.assertIsNone(graph)
+            self.assertEqual(err["reason"], "profile_deps_unreadable")
+
+    def test_a_profile_with_a_malformed_deps_schema_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            _write_catalog(repo, [
+                {"spec_kind": "problem", "spec_id": "p", "spec_version": "0.1.0",
+                 "deps_path": "spec/problem/p/deps.yaml"},
+                {"spec_kind": "profile", "spec_id": "pr", "spec_version": "0.1.0",
+                 "deps_path": "spec/profile/pr/deps.yaml"},
+            ])
+            _write_deps(repo, "spec/problem/p", "problem", "p",
+                        profiles=[("pr", ">=0.1.0")])
+            (repo / "spec" / "profile" / "pr").mkdir(parents=True, exist_ok=True)
+            # `profiles:` missing -> `_parse_dep_entries` marks it malformed.
+            (repo / "spec" / "profile" / "pr" / "deps.yaml").write_text(
+                "spec_id: pr\nspec_kind: profile\ndependencies:\n  components: []\n",
+                encoding="utf-8")
+            graph, err = build_dependency_graph(
+                repo, target_spec_ref="spec/problem/p",
+                target_node_key="problem/p@0.1.0")
+            self.assertIsNone(graph)
+            self.assertEqual(err["reason"], "profile_deps_malformed")
 
     def test_version_pins_highest_matching(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -298,8 +589,11 @@ class BuildDependencyGraphTests(unittest.TestCase):
     def test_identity_conflict_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
-            # top -> component/shared and mid -> profile/shared, both resolving to the SAME
-            # spec dir (deps_path) but different (kind, id): an identity conflict.
+            # top requires `mid` as BOTH a component and an infrastructure, and the catalog
+            # resolves both to the SAME spec dir (deps_path): an identity conflict. The rule
+            # is "one directory required under two kinds", so it is stated with two kinds that
+            # are both closure NODES — a `profile` is expanded away before an edge is recorded
+            # and so can no longer witness it (issue #175).
             (repo / "spec" / "registry").mkdir(parents=True, exist_ok=True)
             (repo / "spec" / "registry" / "spec_catalog.yaml").write_text(
                 "catalog_version: 0.2.0\nupdated_at: 2026-06-18\nspecs:\n"
@@ -307,11 +601,12 @@ class BuildDependencyGraphTests(unittest.TestCase):
                 "    deps_path: spec/component/top/deps.yaml\n"
                 "  - spec_kind: component\n    spec_id: mid\n    spec_version: \"0.1.0\"\n"
                 "    deps_path: spec/shared/deps.yaml\n"
-                "  - spec_kind: profile\n    spec_id: mid\n    spec_version: \"0.1.0\"\n"
+                "  - spec_kind: infrastructure\n    spec_id: mid\n    spec_version: \"0.1.0\"\n"
                 "    deps_path: spec/shared/deps.yaml\n",
                 encoding="utf-8")
             _write_deps(repo, "spec/component/top", "component", "top",
-                        components=[("mid", ">=0.1.0")], profiles=[("mid", ">=0.1.0")])
+                        components=[("mid", ">=0.1.0")],
+                        infrastructure=[("mid", ">=0.1.0")])
             _write_deps(repo, "spec/shared", "component", "mid")
             graph, err = build_dependency_graph(
                 repo, target_spec_ref="spec/component/top",

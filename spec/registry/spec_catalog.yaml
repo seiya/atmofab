@@ -1,9 +1,9 @@
 catalog_version: 0.2.0
-updated_at: 2026-03-03
+updated_at: 2026-09-09
 specs:
   - spec_kind: problem
     spec_id: advdiff1d_linear
-    spec_version: 0.3.0
+    spec_version: 0.3.1
     status: controlled_draft
     domain: dynamics
     family: advection_diffusion
@@ -14,7 +14,7 @@ specs:
 
   - spec_kind: problem
     spec_id: shallow_water2d
-    spec_version: 0.4.0
+    spec_version: 0.4.1
     status: controlled_draft
     domain: dynamics
     family: shallow_water
@@ -58,12 +58,11 @@ specs:
 
   - spec_kind: profile
     spec_id: dynamics_advdiff_profile_1d_upwind_center2_euler1
-    spec_version: 0.1.0
+    spec_version: 0.1.1
     status: controlled_draft
     domain: dynamics
     family: advection_diffusion
     controlled_spec_path: spec/profile/dynamics/advection_diffusion/dynamics_advdiff_profile_1d_upwind_center2_euler1/controlled_spec.md
-    tests_path: spec/profile/dynamics/advection_diffusion/dynamics_advdiff_profile_1d_upwind_center2_euler1/tests.md
     deps_path: spec/profile/dynamics/advection_diffusion/dynamics_advdiff_profile_1d_upwind_center2_euler1/deps.yaml
     official_releases: []
 
@@ -102,12 +101,11 @@ specs:
 
   - spec_kind: profile
     spec_id: dynamics_shallow_water_profile_2d_rusanov_p0_ssprk2
-    spec_version: 0.1.0
+    spec_version: 0.1.1
     status: controlled_draft
     domain: dynamics
     family: shallow_water
     controlled_spec_path: spec/profile/dynamics/shallow_water/dynamics_shallow_water_profile_2d_rusanov_p0_ssprk2/controlled_spec.md
-    tests_path: spec/profile/dynamics/shallow_water/dynamics_shallow_water_profile_2d_rusanov_p0_ssprk2/tests.md
     deps_path: spec/profile/dynamics/shallow_water/dynamics_shallow_water_profile_2d_rusanov_p0_ssprk2/deps.yaml
     official_releases: []
 

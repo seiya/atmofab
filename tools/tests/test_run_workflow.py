@@ -908,6 +908,56 @@ class RunWorkflowTests(unittest.TestCase):
             # never a pinned version id
             self.assertNotRegex(recorded, r"-\d+-\d+$")
 
+    def test_a_profile_target_stops_before_anything_is_launched(self) -> None:
+        """Issue #175: pinned at the HANDLER, not at the helper. `_run_main` is where the
+        refusal has to sit for it to beat the conductor's backstop, and a call site deleted
+        from there leaves every helper-level row green.
+
+        Both spec_ref spellings are driven: the directory and the file-style ref, which
+        `resolve_node` normalizes and which this check therefore has to normalize too."""
+        for ref in ("spec/profile/demo/pr", "spec/profile/demo/pr/deps.yaml"):
+            with self.subTest(spec_ref=ref), tempfile.TemporaryDirectory() as tmp:
+                repo_root = Path(tmp)
+                self._seed_spec_tree(repo_root)
+                prof = repo_root / "spec" / "profile" / "demo" / "pr"
+                prof.mkdir(parents=True)
+                (prof / "controlled_spec.md").write_text("# pr\n", encoding="utf-8")
+                (prof / "deps.yaml").write_text(
+                    "spec_id: pr\nspec_kind: profile\ndependencies:\n"
+                    "  components: []\n  profiles: []\n", encoding="utf-8")
+                reg = repo_root / "spec" / "registry"
+                reg.mkdir(parents=True, exist_ok=True)
+                (reg / "spec_catalog.yaml").write_text(
+                    "catalog_version: 0.2.0\nspecs:\n"
+                    "  - spec_kind: profile\n    spec_id: pr\n    spec_version: \"0.1.0\"\n"
+                    "    controlled_spec_path: spec/profile/demo/pr/controlled_spec.md\n"
+                    "    deps_path: spec/profile/demo/pr/deps.yaml\n", encoding="utf-8")
+                code, out, calls = self._run_main_with_fake_runtime(
+                    [ref, "validate", "--repo-root", str(repo_root), "--no-run-conductor"])
+                self.assertEqual(code, 2, out)
+                self.assertEqual(out["reason"], "invalid_startup_input")
+                self.assertIn("spec_kind_not_certifiable", out["detail"])
+                # Nothing was launched, and no orchestration state was created.
+                self.assertEqual(calls, [])
+
+    def test_a_non_profile_target_is_not_stopped_by_that_check(self) -> None:
+        # The control for the row above: the same fixture with a `problem` catalog entry runs.
+        # Without it, a check that refused everything would look identical.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed_spec_tree(repo_root)
+            reg = repo_root / "spec" / "registry"
+            reg.mkdir(parents=True, exist_ok=True)
+            (reg / "spec_catalog.yaml").write_text(
+                "catalog_version: 0.2.0\nspecs:\n"
+                "  - spec_kind: problem\n    spec_id: test.md\n    spec_version: \"0.1.0\"\n"
+                "    controlled_spec_path: spec/problem/test.md\n"
+                "    deps_path: spec/problem/deps.yaml\n", encoding="utf-8")
+            code, out, _calls = self._run_main_with_fake_runtime(
+                ["spec/problem/test.md", "compile",
+                 "--repo-root", str(repo_root), "--no-run-conductor"])
+            self.assertEqual(code, 0, out)
+
     def test_a_codex_configuration_without_a_slug_stops_before_launching(self) -> None:
         """Codex has no alias to resolve at runtime, and the run-wide flag that used to
         supply one is gone — so the configuration file is the only place a slug can come
@@ -4703,6 +4753,163 @@ class DependencyClosureTests(unittest.TestCase):
             # target 'a' excluded; c precedes b (b depends on c).
             self.assertEqual(refs, ["c", "b"])
             self.assertTrue(all(n["spec_versions"] == ["0.1.0"] for n in ordered))
+
+    def test_an_adopted_profile_is_expanded_and_never_scheduled(self) -> None:
+        """Issue #175: `--with-deps` must launch no leaf for a `profile` and create no
+        `workspace/pipelines/profile__*`. The closure driver schedules exactly `ordered`, so
+        the property is that no profile node reaches it — the components the profile selects
+        do, as the adopting node's own direct dependencies."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            # problem/a → profile/pr → component/b ; b + a → harness c.
+            _write_catalog(repo_root, [
+                {"spec_kind": "problem", "spec_id": "a", "spec_version": "0.3.0",
+                 "deps_path": "spec/problem/a/deps.yaml"},
+                {"spec_kind": "profile", "spec_id": "pr", "spec_version": "0.1.0",
+                 "deps_path": "spec/profile/pr/deps.yaml"},
+                {"spec_kind": "component", "spec_id": "b", "spec_version": "0.1.0",
+                 "deps_path": "spec/component/b/deps.yaml"},
+                {"spec_kind": "infrastructure", "spec_id": "c", "spec_version": "0.1.0",
+                 "deps_path": "spec/component/c/deps.yaml"},
+            ])
+            _write_deps(repo_root, "spec/problem/a", "problem", "a",
+                        profiles=[("pr", ">=0.1.0 <1.0.0")],
+                        infrastructure=[("c", ">=0.1.0 <1.0.0")])
+            _write_deps(repo_root, "spec/profile/pr", "profile", "pr",
+                        components=[("b", ">=0.1.0 <1.0.0")], infrastructure=[])
+            _write_deps(repo_root, "spec/component/b", "component", "b",
+                        infrastructure=[("c", ">=0.1.0 <1.0.0")])
+            _write_deps(repo_root, "spec/component/c", "infrastructure", "c")
+            ordered, err = run_workflow._resolve_dependency_closure(
+                repo_root, "spec/problem/a")
+            self.assertIsNone(err)
+            self.assertEqual([n["spec_id"] for n in ordered], ["c", "b"])
+            self.assertNotIn("profile", {n["spec_kind"] for n in ordered})
+
+    def test_a_dependency_that_adopts_a_profile_is_expanded_too(self) -> None:
+        """The expansion runs on EVERY visited spec, not only the target. Its twin in
+        `dependency_graph.visit` has a row; this one did not, and gating it on
+        `spec_ref == target_spec_ref` left the whole of `test_run_workflow.py` green — measured.
+
+        `ordered` is what the `--with-deps` driver schedules node by node, so a `profile/` entry
+        in it sends the driver at a node `resolve_node` refuses: a correct spec's closure aborts,
+        and if that backstop ever moved, four phases would run on a profile."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            # problem/a → component/b → profile/pr → component/c ; b, c, a → harness h.
+            # The profile is adopted by a DEPENDENCY, never by the target.
+            _write_catalog(repo_root, [
+                {"spec_kind": "problem", "spec_id": "a", "spec_version": "0.3.0",
+                 "deps_path": "spec/problem/a/deps.yaml"},
+                {"spec_kind": "component", "spec_id": "b", "spec_version": "0.1.0",
+                 "deps_path": "spec/component/b/deps.yaml"},
+                {"spec_kind": "profile", "spec_id": "pr", "spec_version": "0.1.0",
+                 "deps_path": "spec/profile/pr/deps.yaml"},
+                {"spec_kind": "component", "spec_id": "c", "spec_version": "0.1.0",
+                 "deps_path": "spec/component/c/deps.yaml"},
+                {"spec_kind": "infrastructure", "spec_id": "h", "spec_version": "0.1.0",
+                 "deps_path": "spec/infrastructure/h/deps.yaml"},
+            ])
+            _write_deps(repo_root, "spec/problem/a", "problem", "a",
+                        components=[("b", ">=0.1.0 <1.0.0")],
+                        infrastructure=[("h", ">=0.1.0 <1.0.0")])
+            _write_deps(repo_root, "spec/component/b", "component", "b",
+                        profiles=[("pr", ">=0.1.0 <1.0.0")],
+                        infrastructure=[("h", ">=0.1.0 <1.0.0")])
+            _write_deps(repo_root, "spec/profile/pr", "profile", "pr",
+                        components=[("c", ">=0.1.0 <1.0.0")], infrastructure=[])
+            _write_deps(repo_root, "spec/component/c", "component", "c",
+                        infrastructure=[("h", ">=0.1.0 <1.0.0")])
+            _write_deps(repo_root, "spec/infrastructure/h", "infrastructure", "h")
+            ordered, err = run_workflow._resolve_dependency_closure(
+                repo_root, "spec/problem/a")
+            self.assertIsNone(err)
+            self.assertNotIn("profile", {n["spec_kind"] for n in ordered})
+            # `c` is scheduled — reached ONLY through the profile the dependency adopts, so its
+            # presence is the expansion having run on a non-target node.
+            self.assertEqual([n["spec_id"] for n in ordered], ["h", "c", "b"])
+
+    def test_a_profile_declaring_a_harness_fails_the_closure_closed(self) -> None:
+        # A profile builds nothing, so a harness declared on it would enter the closure of the
+        # ADOPTING node through an edge that node never wrote. Refused before any leaf launches.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            _write_catalog(repo_root, [
+                {"spec_kind": "problem", "spec_id": "a", "spec_version": "0.3.0",
+                 "deps_path": "spec/problem/a/deps.yaml"},
+                {"spec_kind": "profile", "spec_id": "pr", "spec_version": "0.1.0",
+                 "deps_path": "spec/profile/pr/deps.yaml"},
+                {"spec_kind": "infrastructure", "spec_id": "c", "spec_version": "0.1.0",
+                 "deps_path": "spec/component/c/deps.yaml"},
+            ])
+            _write_deps(repo_root, "spec/problem/a", "problem", "a",
+                        profiles=[("pr", ">=0.1.0 <1.0.0")],
+                        infrastructure=[("c", ">=0.1.0 <1.0.0")])
+            # `infrastructure=None` gives the profile the default harness edge — the shape the
+            # in-tree profile specs carried before issue #175.
+            _write_deps(repo_root, "spec/profile/pr", "profile", "pr")
+            _write_deps(repo_root, "spec/component/c", "infrastructure", "c")
+            ordered, err = run_workflow._resolve_dependency_closure(
+                repo_root, "spec/problem/a")
+            self.assertEqual(ordered, [])
+            self.assertEqual(err["reason"], "profile_declares_infrastructure")
+
+    def test_an_unreadable_registry_at_the_closure_expansion_is_not_a_profile_reason(self) -> None:
+        """The twin of the graph builder's guard, on the closure driver's own expansion call.
+        Swallowing it reports `profile_unresolvable` — a STALE-side reason — for a registry that
+        could not be READ, which belongs on the FRESH side. Round-5 census finding: unwitnessed
+        on both call sites, and the guard sits one frame outside `_profile_expansion_failure`,
+        so the constructor's own row cannot reach it."""
+        import tools.orchestration_runtime as ort
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            _write_catalog(repo_root, [
+                {"spec_kind": "problem", "spec_id": "a", "spec_version": "0.3.0",
+                 "deps_path": "spec/problem/a/deps.yaml"},
+                {"spec_kind": "profile", "spec_id": "pr", "spec_version": "0.1.0",
+                 "deps_path": "spec/profile/pr/deps.yaml"},
+                {"spec_kind": "infrastructure", "spec_id": "c", "spec_version": "0.1.0",
+                 "deps_path": "spec/component/c/deps.yaml"},
+            ])
+            _write_deps(repo_root, "spec/problem/a", "problem", "a",
+                        profiles=[("pr", ">=0.1.0 <1.0.0")],
+                        infrastructure=[("c", ">=0.1.0 <1.0.0")])
+            _write_deps(repo_root, "spec/profile/pr", "profile", "pr", infrastructure=[])
+            _write_deps(repo_root, "spec/component/c", "infrastructure", "c")
+            def _corrupt(*_args, **_kwargs):
+                raise ort.SpecCatalogCorruption("spec_catalog.yaml is unreadable")
+
+            # Raised on every read, because the closure driver memoizes the catalog: the
+            # expansion's own `_get_catalog()` only reaches the registry when the EARLIER read
+            # (`_kind_for_gate`'s) also failed, which is exactly the outage this guard is for.
+            # `_kind_for_gate` absorbs the first raise into a `_registry_defect` and the node's
+            # own infra count is legal, so the expansion is where the run stops.
+            with mock.patch.object(ort, "_load_spec_catalog", _corrupt):
+                ordered, err = run_workflow._resolve_dependency_closure(
+                    repo_root, "spec/problem/a")
+            self.assertEqual(ordered, [])
+            self.assertEqual(err["reason"], "spec_catalog_corrupt")
+            self.assertNotIn(err["reason"], ort._PROFILE_EXPANSION_REASONS)
+            self.assertIn(err["reason"], ort._UNREADABLE_CLOSURE_REASONS)
+
+    def test_a_profile_target_is_refused_at_launch(self) -> None:
+        """The launch-time half of the refusal (`resolve_node` keeps the backstop). Detected
+        before anything is launched, like `REQUIRED_CLI_TOOLS`."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            _write_catalog(repo_root, [
+                {"spec_kind": "profile", "spec_id": "pr", "spec_version": "0.1.0",
+                 "deps_path": "spec/profile/pr/deps.yaml"},
+                {"spec_kind": "problem", "spec_id": "a", "spec_version": "0.3.0",
+                 "deps_path": "spec/problem/a/deps.yaml"},
+            ])
+            with self.assertRaises(ValueError) as caught:
+                run_workflow._refuse_non_certifiable_target(repo_root, "spec/profile/pr")
+            self.assertIn("spec_kind_not_certifiable", str(caught.exception))
+            self.assertIn("Run the node that ADOPTS it", str(caught.exception))
+            # Every other kind, and an unregistered ref, pass through untouched.
+            run_workflow._refuse_non_certifiable_target(repo_root, "spec/problem/a")
+            run_workflow._refuse_non_certifiable_target(repo_root, "spec/component/nope")
 
     def test_cycle_detection_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

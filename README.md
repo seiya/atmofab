@@ -17,7 +17,7 @@ The core workflow is five phases. Each phase produces exactly one kind of primar
 
 | # | phase | role | primary artifact |
 |---|-------|------|------------------|
-| 0 | Spec | manual authoring of the natural-language specification | `controlled_spec.md` / `tests.md` / `deps.yaml` |
+| 0 | Spec | manual authoring of the natural-language specification | `controlled_spec.md` / `tests.md` / `deps.yaml` (a `profile` has no `tests.md`) |
 | 1 | Compile | natural-language specification → structured IR | `spec.ir.yaml` |
 | 2 | Generate | IR → source code | `source/<source_id>/` |
 | 3 | Build | source → binary (deterministic) | `binary/<binary_id>/bin/` |

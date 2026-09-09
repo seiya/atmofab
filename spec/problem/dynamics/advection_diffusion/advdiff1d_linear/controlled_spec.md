@@ -2,7 +2,7 @@
 
 ## 0. Meta information
 - `spec_id`: `advdiff1d_linear`
-- `spec_version`: `0.3.0`
+- `spec_version`: `0.3.1`
 - `status`: `controlled_draft`
 - `spec_kind`: `problem`
 - `domain`: `dynamics`
@@ -25,12 +25,12 @@ The domain is the interval $[0,L)$. The grid is a uniform cell-centered grid, an
 The boundary condition is fixed to periodic boundary. The default input used for verification is defined in `tests.md`, and the whole of the user input is not fixed.
 
 ## 4. Dependent `component` and adopted `profile`
-This `problem spec` references the following `component`.
+The adopted `profile` is `dynamics_advdiff_profile_1d_upwind_center2_euler1`, and it selects the following `component`, each of which is therefore a direct dependency of this `spec`. They are not the whole of that set: the runner harness `deps.yaml` declares is one too, and `<ir_ref>/dependency_graph.json` is the only exhaustive statement of it.
 - `dynamics_advdiff_flux_1d_upwind_center2`
 - `dynamics_advection_diffusion_boundary_1d_periodic_copy`
 - `dynamics_advection_diffusion_time_update_1d_euler1`
 
-The adopted `profile` is `dynamics_advdiff_profile_1d_upwind_center2_euler1`.
+No `component` is declared directly here: a `component` has exactly one source, so a `component` an adopted `profile` selects is not declared again in this `spec`'s own `deps.yaml`. A `component` no adopted `profile` selects would be declared there directly, together with its compatibility constraint.
 
 ## 5. Integration algorithm
 The update step is fixed to the following order.
@@ -60,7 +60,7 @@ The runtime input requires the following.
 Forbid non-periodic boundary. Forbid the addition of `limiter` / `clip` / `filter`. Forbid the runtime automatic switching of the discretization scheme.
 
 ## 8. Traceability
-`case.resolved.yaml` requires recording the resolution result of `spec_kind`, `spec_id`, `spec_version`, `component_id@version`, and `profile_id@version`.
+The resolution result is recorded by the host: `<ir_ref>/ir_meta.json` carries the node's own `spec_kind` / `spec_id` / `spec_version`, and `<ir_ref>/dependency_graph.json` carries the resolved closure — `all_nodes` as `<spec_kind>/<spec_id>@<version>` for every node of it (this `spec` itself, the `component`, and the runner harness alike), and `profiles[]` as the adopted `profile`, whose entry carries its own `node_key` for identity but is deliberately absent from `all_nodes`, because a `profile` is not a node.
 
 The reference basis is LeVeque (2002).
 

@@ -626,6 +626,10 @@ def _resolve_dep_version(
 _DEPS_YAML_REQUIRED_KEYS: frozenset[str] = frozenset({"components", "profiles"})
 _DEPS_YAML_ALLOWED_KEYS: frozenset[str] = frozenset({"components", "profiles", "infrastructure"})
 # (deps key, per-item id field). `kind = key.rstrip("s")` yields component/profile/infrastructure.
+# A `profile` entry is expanded into the components it selects by
+# `expand_profile_dependencies` and never becomes a node of any closure (issue #175); the two
+# readers that deliberately see the RAW declaration are `_dependency_readiness_state`'s
+# trivial-leaf test and `workflow_conductor._direct_infra_dep_count`.
 _DEPS_KEY_KIND_FIELDS: tuple[tuple[str, str], ...] = (
     ("components", "component_id"),
     ("profiles", "profile_id"),
@@ -724,6 +728,196 @@ def _parse_dep_entries(
             c = constraint.strip() if isinstance(constraint, str) and constraint.strip() else None
             entries.append((kind, sid_token, c))
     return entries, well_formed
+
+
+# The named `{reason}` values `expand_profile_dependencies` can return. Every one of them means
+# the registry WAS read and the declared closure does not resolve — a spec-author defect no leaf
+# can repair — so none of them belongs in `_UNREADABLE_CLOSURE_REASONS` (the reasons that mean
+# "no comparison was possible"). `spec_catalog_corrupt`, which the expansion can also surface, is
+# the registry-read failure and IS in that set.
+_PROFILE_EXPANSION_REASONS: frozenset[str] = frozenset({
+    "profile_unresolvable",
+    "profile_spec_ref_unresolved",
+    "profile_deps_unreadable",
+    "profile_deps_malformed",
+    "profile_nesting_unsupported",
+    "profile_declares_infrastructure",
+    "profile_component_declared_twice",
+    "profile_component_conflict",
+})
+
+
+def _profile_expansion_failure(reason: str, detail: str) -> dict[str, str]:
+    """The ONLY constructor of an `expand_profile_dependencies` error, so that
+    `_PROFILE_EXPANSION_REASONS` is the source of these strings rather than a list beside them.
+
+    That membership is not decoration: `_dependency_resolution_freshness` splits builder errors
+    into "the registry could not be READ" (`_UNREADABLE_CLOSURE_REASONS` -> fresh) and everything
+    else (-> stale), and every reason here belongs to the second set. Renaming one to a member of
+    the first — `dependency_spec_ref_unresolved` is one keystroke from
+    `profile_spec_ref_unresolved` — would silently flip a stale node to fresh, and before this
+    helper existed that rename changed no test. Raising on an undeclared reason can only ever fire
+    on a coding error, never on spec input.
+    """
+    if reason not in _PROFILE_EXPANSION_REASONS:
+        raise AssertionError(
+            f"{reason!r} is not a declared profile-expansion reason; add it to "
+            f"_PROFILE_EXPANSION_REASONS (and confirm it belongs on the STALE side of "
+            f"_dependency_resolution_freshness) before emitting it")
+    return {"reason": reason, "detail": detail}
+
+
+def expand_profile_dependencies(
+    repo_root: Path,
+    spec_ref: Any,
+    entries: list[tuple[str, str, str | None]],
+    catalog: dict[tuple[str, str], tuple[str, ...]],
+) -> tuple[list[tuple[str, str, str | None]], list[dict[str, Any]], dict[str, str] | None]:
+    """Resolve every `profile` dependency entry into the `component` entries it SELECTS.
+
+    A `profile` is a compile-time component-selection policy resolved by the host, not a
+    certified code node (issue #175; `docs/SPEC.md` / `docs/GLOSSARY.md`). It therefore must
+    never appear as a node in any dependency closure: not in `all_nodes`, not in the
+    `--with-deps` schedule, not in the staged sources, the Makefile objects, the closure
+    bindings, or the pre_judge DAG gate. Every one of those layers walks the closure
+    kind-blind, so the single place that decides it is HERE — the moment `_parse_dep_entries`
+    has produced the raw declaration and before any consumer treats an entry as a node.
+
+    Takes `_parse_dep_entries`'s output and returns
+    `(expanded_entries, profiles_record, error)`:
+
+    - `expanded_entries`: the same list with each `("profile", id, constraint)` triple replaced
+      by the `("component", …)` triples that profile's own `deps.yaml` declares. Non-profile
+      entries keep their order and their constraints.
+    - `profiles_record`: one dict per adopted profile, in declaration order —
+      `{node_key, profile_id, profile_version, version_constraint, components:[{component_id,
+      version_constraint}]}`. The adopted profile's own version is pinned here by the SAME rule
+      the graph builder uses for a node (`_matching_dep_versions`' descending head). The
+      components carry only the constraint the profile declares, never a resolved version: the
+      version each component resolves to is decided by the graph builder intersecting every
+      requiring edge, and writing it here too would make it a fact two layers read.
+    - `error`: `None`, or `{reason, detail}`. Fail-closed with NO partial expansion — a caller
+      that receives an error must not use `expanded_entries`.
+
+    The reasons are `_PROFILE_EXPANSION_REASONS` plus `spec_catalog_corrupt`. Nesting (a profile
+    adopting a profile) is refused by name rather than recursed: no spec needs it today, and a
+    named refusal is one line to relax if one ever does.
+
+    A component may be selected by two adopted profiles: the two constraints are AND-joined
+    (the same whitespace-joined grammar `_matches_version_constraint` evaluates), which is the
+    edge-intersection rule `build_dependency_graph` applies between requiring edges. When the
+    join matches no catalog version the two profiles disagree — `profile_component_conflict`.
+    A component declared BOTH directly by the adopting node and by one of its profiles is
+    `profile_component_declared_twice`: the component set has exactly one source per component
+    (issue #175 D5), so the adopting node declares only what no profile selects for it.
+    """
+    # Imported lazily, like every other `tools.*` import in this module: it also runs as a
+    # SCRIPT (`python3 tools/orchestration_runtime.py`), where the repository root is not on
+    # `sys.path` and a top-level `from tools...` import aborts the CLI at load.
+    from tools.spec_input_gates import infra_dep_count_violation
+
+    expanded: list[tuple[str, str, str | None]] = []
+    profiles_record: list[dict[str, Any]] = []
+    own_component_ids = {sid for kind, sid, _c in entries if kind == "component"}
+    # component_id -> index into `expanded`, for the two-profile merge.
+    profile_component_slot: dict[str, int] = {}
+
+    def _fail(reason: str, detail: str) -> tuple[list, list, dict[str, str]]:
+        return [], [], _profile_expansion_failure(reason, detail)
+
+    for kind, sid, constraint in entries:
+        if kind != "profile":
+            expanded.append((kind, sid, constraint))
+            continue
+        matched = _matching_dep_versions(catalog, "profile", sid, constraint)
+        if not matched:
+            return _fail(
+                "profile_unresolvable",
+                f"{spec_ref}: profile/{sid} constraint {constraint!r} has no matching "
+                f"catalog version",
+            )
+        profile_version = matched[0]
+        try:
+            profile_ref = resolve_spec_ref_for(repo_root, "profile", sid)
+        except SpecCatalogCorruption as exc:
+            # NOT a `_PROFILE_EXPANSION_REASONS` member on purpose: this one IS the
+            # registry-read failure, so it belongs to `_UNREADABLE_CLOSURE_REASONS` and its
+            # freshness disposition is the opposite of every reason above.
+            return [], [], {"reason": "spec_catalog_corrupt", "detail": str(exc)}
+        if not profile_ref:
+            return _fail(
+                "profile_spec_ref_unresolved",
+                f"{spec_ref}: no unique spec directory in catalog for profile/{sid}",
+            )
+        profile_deps = _read_deps_yaml(repo_root, profile_ref)
+        if not isinstance(profile_deps, dict):
+            return _fail(
+                "profile_deps_unreadable",
+                f"{spec_ref}: {profile_ref}/deps.yaml (profile/{sid}) is missing or unparseable",
+            )
+        p_entries, p_well_formed = _parse_dep_entries(profile_deps)
+        if not p_well_formed:
+            return _fail(
+                "profile_deps_malformed",
+                f"{spec_ref}: {profile_ref}/deps.yaml (profile/{sid}) has a malformed "
+                f"dependency schema",
+            )
+        nested = [s for k, s, _c in p_entries if k == "profile"]
+        if nested:
+            return _fail(
+                "profile_nesting_unsupported",
+                f"{spec_ref}: profile/{sid} adopts profile(s) {sorted(nested)}; a profile "
+                f"selects components only, and profile nesting is not supported",
+            )
+        infra_count = sum(1 for k, _s, _c in p_entries if k == "infrastructure")
+        infra_violation = infra_dep_count_violation("profile", infra_count)
+        if infra_violation:
+            return _fail(
+                "profile_declares_infrastructure",
+                f"{spec_ref}: profile/{sid}: {infra_violation}",
+            )
+        record_components: list[dict[str, Any]] = []
+        for p_kind, cid, c_constraint in p_entries:
+            if p_kind != "component":
+                continue
+            record_components.append(
+                {"component_id": cid, "version_constraint": c_constraint}
+            )
+            if cid in own_component_ids:
+                return _fail(
+                    "profile_component_declared_twice",
+                    f"{spec_ref}: component/{cid} is declared directly AND selected by "
+                    f"profile/{sid}. A component has exactly one source: declare it directly "
+                    f"only when no adopted profile selects it (issue #175).",
+                )
+            slot = profile_component_slot.get(cid)
+            if slot is None:
+                profile_component_slot[cid] = len(expanded)
+                expanded.append(("component", cid, c_constraint))
+                continue
+            # Selected by an earlier profile too — AND-join the two constraints, which is the
+            # same intersection `build_dependency_graph` performs between requiring edges.
+            _k, _cid, prior_constraint = expanded[slot]
+            terms = [t for t in (prior_constraint, c_constraint) if t]
+            merged = " ".join(terms) if terms else None
+            if not _matching_dep_versions(catalog, "component", cid, merged):
+                return _fail(
+                    "profile_component_conflict",
+                    f"{spec_ref}: component/{cid} is selected by more than one adopted "
+                    f"profile with incompatible constraints ({prior_constraint!r} vs "
+                    f"{c_constraint!r}); no catalog version satisfies both",
+                )
+            expanded[slot] = ("component", cid, merged)
+        profiles_record.append(
+            {
+                "node_key": f"profile/{sid}@{profile_version}",
+                "profile_id": sid,
+                "profile_version": profile_version,
+                "version_constraint": constraint,
+                "components": record_components,
+            }
+        )
+    return expanded, profiles_record, None
 
 
 # Codex round 31 F2: the freshness reader MUST share the same canonical
@@ -918,10 +1112,12 @@ def _dep_ir_meta_passes(repo_root: Path, kind: str, spec_id: str, version: str) 
     )
 
 
-def _closure_signature(graph: Any) -> tuple[list[list[Any]], list[str]] | None:
+def _closure_signature(
+    graph: Any,
+) -> tuple[list[list[Any]], list[str], list[str]] | None:
     """Canonical comparable form of a dependency graph: the sorted `all_nodes`
-    `[[node_key, topo_level], ...]` PLUS the sorted `transitive_deps` node_key list.
-    `None` when the graph is unusable.
+    `[[node_key, topo_level], ...]`, the sorted `transitive_deps` node_key list, AND the
+    sorted `profiles[].node_key` list. `None` when the graph is unusable.
 
     `all_nodes` alone is NOT a faithful signature. `topo_level` is a node's height, so two
     genuinely different closures can share every `(node_key, topo_level)` pair: with nodes
@@ -972,15 +1168,54 @@ def _closure_signature(graph: Any) -> tuple[list[list[Any]], list[str]] | None:
             return None
         trans.append(node_key.strip())
     trans.sort()
-    return (out, trans)
+    # Issue #175: the adopted `profile` set is part of the resolution, and it is the ONLY part
+    # that does not show up in `all_nodes` — the profile is not a node. Without it, bumping a
+    # profile's `spec_version` (its §3 parameter/compatibility constraints are what an adopter's
+    # `algorithm` is written to honour, and what `_pure_profile_spec_document` inlines) left
+    # every adopter's signature byte-identical, so R6-lite called it fresh and `--with-deps`
+    # reused a node certified against a policy that had since changed — while its IR's
+    # `profile_selection` went on naming the retired version. Measured on this tree before the
+    # fix: identical signature across a 0.1.1 -> 0.9.0 bump of the adopted profile.
+    #
+    # ONE LEVEL, and only one: the sidecar records its own node's adoptions, so this term
+    # restales the ADOPTER and does not propagate to the adopter's dependents the way a change
+    # to `all_nodes` does. Before issue #175 it propagated, because the profile was an ordinary
+    # member of every ancestor's `all_nodes` — so this is a real asymmetry the change introduced,
+    # measured, and reachable only when a node that is itself a dependency adopts a profile. No
+    # `spec` here does (both adopters are `problem` specs, which nothing declares as a
+    # dependency), and `--with-deps` evaluates every closure node as a subject in its own right.
+    # `TODO.md` records what closing it would need.
+    #
+    # A MISSING key normalizes to `[]` rather than to `None`, and that is load-bearing: every
+    # sidecar written before issue #175 lacks it, and treating absence as a distinct value would
+    # restale the whole certified corpus instead of only the nodes whose closure actually moved
+    # (the two adopters, which are stale on `all_nodes` alone anyway). A node adopting no
+    # profile derives `[]` and matches its own older sidecar exactly.
+    profiles = graph.get("profiles")
+    profile_keys: list[str] = []
+    if profiles is not None:
+        if not isinstance(profiles, list):
+            return None
+        for entry in profiles:
+            if not isinstance(entry, dict):
+                return None
+            node_key = entry.get("node_key")
+            if not isinstance(node_key, str) or not node_key.strip():
+                return None
+            profile_keys.append(node_key.strip())
+        profile_keys.sort()
+    return (out, trans, profile_keys)
 
 
 # `build_dependency_graph` error reasons that mean "the registry could not be READ" — they carry
 # no information about the recorded dependency resolution, so they are not evidence of staleness
 # (the gates that surface the read failure own them). Every OTHER reason the builder returns
 # (`dependency_unresolvable` / `dependency_version_conflict` / `dependency_identity_conflict` /
-# `dependency_cycle`) means the registry WAS read and yields no valid closure — the recorded
-# resolution provably cannot be reproduced today, which is exactly staleness.
+# `dependency_cycle`, and every `_PROFILE_EXPANSION_REASONS` member — issue #175) means the
+# registry WAS read and yields no valid closure — the recorded resolution provably cannot be
+# reproduced today, which is exactly staleness. The profile reasons reach the default branch
+# rather than being enumerated here; `ProfileExpansionTests` pins that classification, so a
+# later reader that reads this set as the whole taxonomy is red rather than silently wrong.
 _UNREADABLE_CLOSURE_REASONS: frozenset[str] = frozenset({
     "dependency_deps_unreadable",
     "dependency_deps_malformed",
@@ -1112,13 +1347,33 @@ def _dependency_resolution_freshness(
         recorded_keys = [item[0] for item in recorded[0]]
         derived_keys = [item[0] for item in derived[0]]
         if recorded_keys == derived_keys:
-            # Same nodes, different SHAPE (a node moved between direct and transitive). Say so,
-            # or the message reads as though nothing changed.
+            # Same node SET, so something else moved — and there are THREE candidates, because
+            # `recorded_keys` drops the `topo_level` the signature's first term carries: a node
+            # moved between direct and transitive; the heights moved with the node set intact;
+            # or (issue #175) the adopted `profile` set moved, which is never in `all_nodes` at
+            # all. Test each in turn and name the one that actually differs. An earlier version
+            # of this branch tested only `transitive` and let everything else fall through to
+            # the profile message, which printed two IDENTICAL profile lists for a
+            # height-only drift and named a cause the node may have nothing to do with.
+            if recorded[2] != derived[2]:
+                return (
+                    False,
+                    f"{node_key} was certified against the same dependency closure but a "
+                    f"different adopted profile set: profiles were {recorded[2]}, deps.yaml + "
+                    f"spec_catalog.yaml now derive {derived[2]}",
+                )
+            if recorded[1] != derived[1]:
+                return (
+                    False,
+                    f"{node_key} was certified against a dependency closure with the same nodes "
+                    f"but a different shape: transitive deps were {recorded[1]}, deps.yaml + "
+                    f"spec_catalog.yaml now derive {derived[1]}",
+                )
             return (
                 False,
-                f"{node_key} was certified against a dependency closure with the same nodes but "
-                f"a different shape: transitive deps were {recorded[1]}, deps.yaml + "
-                f"spec_catalog.yaml now derive {derived[1]}",
+                f"{node_key} was certified against a dependency closure with the same nodes and "
+                f"the same direct/transitive split but different topological levels: levels were "
+                f"{recorded[0]}, deps.yaml + spec_catalog.yaml now derive {derived[0]}",
             )
         return (
             False,
@@ -1313,6 +1568,16 @@ def _stale_dependency_details(repo_root: Path, spec_ref: Any) -> list[str]:
         catalog = _load_spec_catalog(str(repo_root.resolve()))
     except SpecCatalogCorruption:
         return []
+    # Issue #175: `profile` entries are policies, not dependency nodes — expand them into the
+    # components they select so the staleness report is about the nodes readiness actually
+    # verifies. An expansion failure is reported as a detail rather than dropped: readiness
+    # itself fails closed on it, and this line is what names the offending profile to the
+    # operator instead of an opaque `direct_dependency_*_readiness_not_pass`.
+    entries, _profiles_record, expand_error = expand_profile_dependencies(
+        repo_root, spec_ref, entries, catalog
+    )
+    if expand_error is not None:
+        return [f"{spec_ref}: {expand_error['reason']}: {expand_error['detail']}"]
     details: list[str] = []
     for kind, spec_id, constraint in entries:
         for version in _matching_dep_versions(catalog, kind, spec_id, constraint):
@@ -2140,9 +2405,9 @@ def _resolve_dependency_facts(repo_root: Path, ir_ref: Any) -> list[dict[str, An
     authoring wobble the ``_validate_component_dep_operations`` compile gate is meant to
     catch, but which a resume can still step over on an already-certified IR — the
     interfaces of ALL ``<dep_spec_id>__``-prefixed public subroutines in the certified
-    source are surfaced instead. Scoped to ``component/`` deps: a ``profile``/``problem`` dep
-    authors ``operations: []`` legitimately and must not be called, so its prefixed
-    subroutines are never surfaced (matching the ``_validate_component_dep_operations`` scope). Without this, the ``use``/``call`` the generate-side gate
+    source are surfaced instead. Scoped to ``component/`` deps: a ``problem`` dep authors
+    ``operations: []`` legitimately and must not be called, so its prefixed subroutines are
+    never surfaced (matching the ``_validate_component_dep_operations`` scope). Without this, the ``use``/``call`` the generate-side gate
     unconditionally requires for a component dep has no facts to build against, and the
     pure closed-context leaf must invent symbol names / argument orders that ``Generate.gate``
     rejects every retry — the closure fail_closed this fallback closes. The empty-list
@@ -2280,7 +2545,7 @@ def _resolve_dependency_facts(repo_root: Path, ir_ref: Any) -> list[dict[str, An
                                 # against. Scoped to `component/` deps because the empty-ops
                                 # fail_closed loop this closes is driven by the component-only
                                 # generate gate (`_validate_dependency_operation_on_model_files`); a
-                                # profile/problem dep authors `operations: []` legitimately and must
+                                # problem dep authors `operations: []` legitimately and must
                                 # NOT be called (the validator + docs exempt it), so surfacing its
                                 # prefixed subroutines would tempt Generate into an undeclared call.
                                 # See `_validate_component_dep_operations`.
@@ -2361,7 +2626,7 @@ def _resolve_component_dep_surface(
     not-yet-existing consumer IR (this is the L2 correction: ``_resolve_dependency_facts`` is
     keyed on the consumer IR's ``direct_deps`` and cannot run before compile authors it).
 
-    Only ``component/`` deps are surfaced — a ``profile``/``problem`` dep is not
+    Only ``component/`` deps are surfaced — a ``problem`` dep is not
     operation-enumerated by the consumer's ``public_api`` gate, and an ``infrastructure`` dep
     is never called (the runner harness is host-rendered). Each entry is ``{node_key,
     published_operations: [op_name, ...], source}`` where ``source`` is:
@@ -2917,6 +3182,15 @@ def _certify_and_collect_dep_artifacts(
         return snap
     snap["has_entries"] = True
     catalog = _load_spec_catalog(str(repo_root.resolve()))
+    # Issue #175: expand `profile` entries into the components they select. A failure is the
+    # same class as a malformed schema — the declared dependency set does not resolve — so it
+    # takes the same fail-closed snapshot rather than a vacuous one.
+    entries, _profiles_record, expand_error = expand_profile_dependencies(
+        repo_root, spec_ref, entries, catalog
+    )
+    if expand_error is not None:
+        snap["entries_well_formed"] = False
+        return snap
     for kind, spec_id, constraint in entries:
         matched = _matching_dep_versions(catalog, kind, spec_id, constraint)
         if not matched:
@@ -3058,6 +3332,17 @@ def _relevant_catalog_subset_bytes(repo_root: Path, spec_ref: Any) -> bytes:
     if not well_formed or not entries:
         return b""
     catalog = _load_spec_catalog(str(repo_root.resolve()))
+    # Issue #175: fingerprint the (kind, spec_id) pairs AFTER profile expansion — the adopted
+    # profile's own catalog entry contributes through the pair it is expanded from, and the
+    # components it selects contribute as themselves, so a catalog edit to either invalidates
+    # readiness. An expansion failure yields the same empty-bytes value a malformed schema
+    # does; the gates that own that failure report it.
+    entries, profiles_record, expand_error = expand_profile_dependencies(
+        repo_root, spec_ref, entries, catalog
+    )
+    if expand_error is not None:
+        return b""
+    entries = entries + [("profile", rec["profile_id"], None) for rec in profiles_record]
     seen: set[tuple[str, str]] = set()
     items: list[tuple[str, str, list[str]]] = []
     for kind, spec_id, _constraint in entries:
@@ -3184,6 +3469,15 @@ def _verify_dependency_readiness(
     if not entries:
         return {f"{stage}_verified": True for stage in _DEPENDENCY_READINESS_STAGES}
     catalog = _load_spec_catalog(str(repo_root.resolve()))
+    # Issue #175: a `profile` has no artifacts of its own — it is expanded into the components
+    # it selects, and THOSE are what readiness verifies. An expansion failure is the same class
+    # as a malformed schema (the declared dependency set does not resolve) and takes the same
+    # all-stages-false answer rather than degrading to vacuous true.
+    entries, _profiles_record, expand_error = expand_profile_dependencies(
+        repo_root, spec_ref, entries, catalog
+    )
+    if expand_error is not None:
+        return {f"{stage}_verified": False for stage in _DEPENDENCY_READINESS_STAGES}
     results: dict[str, bool] = {f"{s}_verified": True for s in _DEPENDENCY_READINESS_STAGES}
     for kind, spec_id, constraint in entries:
         # Codex round 13 F1 + round 14 F1 (same-version coherence):
@@ -3277,9 +3571,12 @@ def _compute_initial_dependency_readiness(
     - If `spec_ref` is missing or the target `deps.yaml` cannot be parsed, return
       a fail-closed payload (all flags false) so the gate refuses to launch until
       a real verifier writes verified state.
-    - If `deps.yaml` lists no `components` and no `profiles`, dependency readiness
+    - If `deps.yaml` declares no dependency entry at all, dependency readiness
       is vacuously satisfied — return all flags true (matches the audit's empty-
-      dependency case where launches should proceed).
+      dependency case where launches should proceed). This reader looks at the RAW
+      declaration, before `expand_profile_dependencies`: a node declaring only a
+      `profile` is not a trivial leaf, and expanding here would be the one place that
+      turned a declared dependency into none.
     - Otherwise, return fail-closed. A future readiness builder must explicitly
       flip these flags after verifying each direct dependency's `ir_meta.json` /
       `pipeline_meta.json` / `aggregate_verdict`. The fail-closed default ensures
