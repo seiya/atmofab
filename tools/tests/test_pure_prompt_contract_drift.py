@@ -461,7 +461,12 @@ PINNED: dict[str, str] = {
     # document (a `profile` entry in deps.yaml is not a node), rule 9 pins
     # `profile_selection`, and the profile-document heading says the selected component
     # set is already resolved.
-    "pure-38": "3d0d113a217a555a254a9dfaea45053209c2b5d12933fbf8ecc012addf62417d",}
+    "pure-38": "3d0d113a217a555a254a9dfaea45053209c2b5d12933fbf8ecc012addf62417d",
+    # issue #175 Part B: the generate pair loses the inert dependency-call rule and every
+    # `profile` clause (the cardinality ladder rung, the module-parameter and `public_api`
+    # carve-outs, the OpenMP floor's exemption) — a `profile` is host-resolved at Compile
+    # and can be neither a dependency node nor an optimization-unit member.
+    "pure-39": "7a7d4254bdde7124d95b53cabe8527b72435c7da9291b9cb16cd7ae4fe5ff187",}
 
 
 def _contract_tuple() -> dict[str, object]:
