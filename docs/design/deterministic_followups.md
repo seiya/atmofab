@@ -591,7 +591,9 @@ re-run confirming Build passes on attempt 1 (operator-gated).
     answer it with.
     Canonical: `docs/ORCHESTRATION.md` "leaf transient retry"; operator guidance:
     `docs/RUNBOOK.md`.
-  - **The manual-`--resume` fallback is also substep-granular now (default-on, C).** The wait above
+  - **The manual-`--resume` fallback was also made substep-granular (default-on, C) — DELETED by
+    issue #176, which measured 0 run_logs as ever having taken it; a `--resume` after a transport
+    death re-runs the phase whole. What follows records C as it landed.** The wait above
     only helps while the run is still alive; the flag-off / unknown-epoch / over-cap / `llm_client_error`
     / exhausted-flake cases still terminalize `fail_closed`, and the same advdiff closure showed the
     plain `--resume` re-paying the passed `compile.generate` producer (690s → a fresh 491s) because the
@@ -606,8 +608,9 @@ re-run confirming Build passes on attempt 1 (operator-gated).
     means a pre-C `leaf_transport_error` run only resumes on its exact original checkout (obtaining the C
     code advances/dirties `HEAD`, so it declines). That gate and every other precondition miss decline to
     the prior full-phase re-run (`transport_resume_declined`), so no new failure mode. The resumed `step_result` re-vouches the superseded run-1 producer, which the
-    completion check permits (superseded rows are vouch-exempt). Canonical: `docs/ORCHESTRATION.md`
-    item 51; operator guidance: `docs/RUNBOOK.md` §3-1.
+    completion check permits (superseded rows are vouch-exempt). Canonical was
+    `docs/ORCHESTRATION.md` item 51, removed with the mechanism by issue #176; operator guidance:
+    `docs/RUNBOOK.md` §3-1.
 - **L6 — GUARDED (2026-06-25).** The dependency build (Model B) keys staged source filenames and
   Makefile object rules on the bare `spec_id_of(node_key)` (`_dependency_closure` /
   `_stage_dependency_sources`), dropping `kind` and `@version`. A closure containing two deps that
@@ -1099,6 +1102,13 @@ leaf-authored conformance error was **unrecoverable**: the pre_judge gate has no
 **Change.** Promote G3's two conductor-owned gates into explicit deterministic substeps so the
 validate phase is `("pre_judge", "execute", "judge", "post_judge")`, then classify post_judge
 violations by severity and warm-resume the judge for the recoverable class:
+
+> **Superseded in part by issue #176.** The judge warm-resume mini-loop
+> (`Conductor._maybe_warm_resume_post_judge`) and the `warm_resume` disposition it consumed are
+> DELETED: no run ever reached the loop, and `_post_judge_inproc` now writes `escalate` for
+> `unknown` and `fail_closed` for both graded classes. The substep promotion, the severity
+> classifier (`classify_post_judge_violations`) and G5's `escalate` fork are unchanged. Read the
+> `warm_resume` mentions below as the record of what G4/G5 landed, not as current behaviour.
 - `pre_judge` (`Conductor._pre_judge_inproc`, index 0): the pre-spawn dependency-DAG readiness check
   (was a run_phase pre-loop branch), authoring `pre_judge_meta.json`. A not-ready closure fails
   `fail_closed` (integrity blocker; never warm-resumed — no judge has run).

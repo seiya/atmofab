@@ -5301,7 +5301,7 @@ class LeafTransientRetryTest(unittest.TestCase):
 
     def test_leaf_timeout_fails_the_phase_closed_under_the_transport_prefix(self) -> None:
         """The phase-level shape: `leaf_transport_error:` is reused deliberately, so the tag
-        inherits set_status's `leaf_transport_error` reason_code and the substep-granular
+        inherits set_status's `leaf_transport_error` reason_code and its phase-granular
         `--resume` unchanged — no new reason code, no new tombstone prefix."""
         marker = wc._leaf_timeout_marker(7200, 7203.0)
         c = self._conductor([wc.ProcResult(-9, "", "<partial>\n" + marker, timed_out=True)])
@@ -18481,7 +18481,7 @@ class PostJudgeClassifierTest(unittest.TestCase):
                     [f"workspace/pipelines/x/runs/r/n/{base}: counts must equal per_test aggregate"]),
                 "unrecoverable", base)
         # Execute-authored evidence is NOT judge-fixable -> unknown (fail_closed), no wasted
-        # warm-resume: the judge re-run cannot rewrite diagnostics/perf/trial_meta.
+        # by a judge re-run: it cannot rewrite diagnostics/perf/trial_meta.
         for base in ("perf.json", "diagnostics.json", "trial_meta.json"):
             self.assertEqual(
                 wc.classify_post_judge_violations(
@@ -18871,9 +18871,9 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
 
     def test_post_judge_terminal_exit_codes_fail_closed_before_bullet_classification(self) -> None:
         # The severity rules classify a violation by its artifact PATH, and here every bullet
-        # names `semantic_review.json` — the recoverable shape that warm-resumes the judge. Left
+        # names `semantic_review.json` — the recoverable shape, i.e. the judge's own artifact. Left
         # to the bullet path, an uninstalled front end or a stale certified IR would spend the
-        # judge's warm-resume budget re-authoring a review that cannot fix either. The exit code
+        # phase's attempt budget re-authoring a review that cannot fix either. The exit code
         # is read first, so the recoverable-looking bullet cannot reach the classifier.
         import tempfile
         from tools.validate_pipeline_semantics import (
