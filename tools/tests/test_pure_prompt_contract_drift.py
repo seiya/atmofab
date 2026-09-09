@@ -470,7 +470,7 @@ PINNED: dict[str, str] = {
     # UNCHANGED from `pure-38`: an earlier revision of that branch deleted it and review
     # measured that three deterministic gates force a leaf into exactly the shape it
     # describes, so it was restored before merge. Do not read this entry as a deletion of it.
-    "pure-39": "15d1109ee623364c3ea6b4d85aaea0f77012d2bfa1857f14ab76d75ab4b6ae43",}
+    "pure-39": "3d970746845e3d4c90a4c56bf02b3996390d64e989bdc2cf38ccca7552f78d6a",}
 
 
 def _contract_tuple() -> dict[str, object]:
