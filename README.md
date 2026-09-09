@@ -153,7 +153,13 @@ not under `tools/tests/`, a bare `pytest` because `testpaths` points there. `pyt
 collect them either, and that one IS held by `norecursedirs`, whose default list contains `.*`.
 Each instrument's own skill states the command that runs its tests —
 `.claude/skills/atmofab-review-loop/SKILL.md` and
-`.claude/skills/atmofab-enforcement-change/SKILL.md`.
+`.claude/skills/atmofab-enforcement-change/SKILL.md`. **Those two commands do not get the
+environment guard described next**: `tools/tests/conftest.py` is directory-scoped, so it is
+not loaded for a path outside `tools/tests/`, and `--keep-operator-env` is an unrecognized
+argument there. Neither instrument test reads an `ATMOFAB_*` name, `CODEX_HOME` or
+`CLAUDE_CONFIG_DIR`, so nothing is known to bite; a `conftest.py` beside them is deliberately
+not added, because it would put the default run back into `.claude/` — the thing moving them
+out was for.
 
 **The suite ignores your `ATMOFAB_*`, `CODEX_HOME` and `CLAUDE_CONFIG_DIR` environment
 variables** (issue #84). They are per-run knobs that `tools/run_workflow.py` sets in every
