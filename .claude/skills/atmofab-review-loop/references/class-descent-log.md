@@ -516,3 +516,41 @@ repository exists to do, and no finding-defined condition can see that.
 finding already on the table at round 5 is fixed before the branch moves, and the fix commit
 answering it is not a sixth round. A budget that let a known `leaf shortcut` ship would be a
 fail-open dressed as a process rule.
+
+## PR #202 / issue #183 — five rounds, no descent, and the class was PROSE
+
+Real findings per round: **5, 4, 3, 6, 6**. The loop ran to the cap and stopped there without
+meeting a stopping condition; the disclosure went into the pull request body, which is the
+convention for a remainder.
+
+**Read this one for the shape, because the shape is the surprise.** The change was a deletion —
+three meta-tests retired, two moved — so almost no code moved, and every instrument this loop
+carries answers about code. What did not descend was a single prose class: a sentence explaining
+WHY a tool behaves as it does, written from a measured OUTCOME rather than from a run of the
+mechanism. `signs-episodes.md` §"A sentence of yours explains WHY A TOOL BEHAVES as it does" holds
+the five instances, the sixth that got into the record of the class itself, and the criterion.
+
+Two things this history is evidence for, and one it is not.
+
+- **It is evidence that a shape change is not a substitute for the audit.** Round 4 stopped
+  correcting the sentences and deleted the explanations wholesale, which was the right move by the
+  "rewritten the same string three times" row. Round 5 still returned six, four of them inside
+  round 4's own fixes and two inside the two rewrites themselves.
+- **It is evidence for where the budget should have gone.** All ~24 findings came from a reviewer
+  reading a sentence and running the command it implied — a round-1 launch-prompt line, not a
+  round of its own. `SKILL.md`'s own taxonomy puts this text in the second category, which never
+  advances or resets a stopping condition, so a loop that reaches the cap on it has been spending
+  rounds on something the file already says not to spend rounds on. **The cap was reached
+  legitimately and the rounds were not the right instrument.**
+- **It is NOT evidence that five rounds were needed to find one functional defect.** There was
+  exactly one — the move narrowed a citation check into refusing correct pointers — and the rule
+  that names its shape is the sibling skill's rule 1-b (list the readers of the OLD structure
+  before moving a fact between structures), which costs one enumeration and no round at all. The
+  branch applied it three times and missed the fourth reader.
+
+**What ended it**: the cap, not a condition. Class descent was not met; the "blank-slate reviewer
+returns zero functional defects" proxy was not met either, since round 5's blank-slate axis is
+where that defect came from. No Codex launch was spent — a prose/doc-centred diff is one of the
+cases `SKILL.md` names for a blank-slate subagent instead — so this loop is also a data point that
+the default of round 0 plus three is set by where the Codex launch lands, and a loop that does not
+spend it has no reason to reach five.

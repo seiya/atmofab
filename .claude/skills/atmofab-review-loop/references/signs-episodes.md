@@ -417,10 +417,12 @@ own body, that its probe is longer than any clip.
 ## "A sentence of yours explains WHY A TOOL BEHAVES as it does" (issue #183, PR #202)
 
 The branch retired three meta-tests that pinned documentation and process preferences, and moved
-two dev instruments' tests beside their scripts. It reached the five-round cap without converging.
-Real findings per round: **5, 4, 3, 6, 6** — no class descent — and all but one were the same
-thing: a sentence of mine asserting WHY a tool does what it does, written to explain a change I had
-measured only by its outcome.
+two dev instruments' tests beside their scripts. It reached the five-round cap without converging;
+the stopping history is in `class-descent-log.md`. The class that did not descend was this one:
+a sentence asserting WHY a tool does what it does, written from an outcome I had measured rather
+than from a run of the mechanism. It was the majority of the findings, not all of them — a
+subject-verb slip, a pointer true of one skill and not the other, and a record that named half of
+what a retired test held are three that belong to other rows in `SKILL.md`.
 
 The five that were measured false, in the order they were written and caught:
 
@@ -431,8 +433,8 @@ The five that were measured false, in the order they were written and caught:
 2. `.github/workflows/tests.yml`: dropping the `sysctl` step "turns the sandbox tests into declared
    skips and the guard still says the suite ran all of it". Earlier in the same file, the comment
    on that very step records the measurement: ten skips **and two failures**, which the guard's
-   `if failures:` arm catches. The general property (the guard is skip-blind) was true; the illustration was not an
-   instance in either recorded configuration.
+   `if failures:` arm catches. The general property (the guard is skip-blind) was true; the
+   illustration was not an instance in either recorded configuration.
 3. `.github/workflows/tests.yml`: the retired test "used to" check a `conftest.py` edit. Its own
    module docstring said it could not ("which is Python and cannot be bounded by reading").
 4. `README.md`: `tools/tests/conftest.py` "is directory-scoped, so it is not loaded for a path
@@ -444,37 +446,59 @@ The five that were measured false, in the order they were written and caught:
    transplanted from a sibling commit where it was true of a glob inside a test that RUNS in the
    default suite, to a structure where it does not hold — and it foreclosed a cheap repair.
 
+**And a sixth, which is the reason this section is worth its length: it went into the first version
+of this very entry.** Both #202's body and the first draft here said the loop could not use its own
+round-0 sweep, "three whole-file deletions (no revertible hunk, so `scripts/mutation_check.py`
+exits 1 and answers nothing)". Driven on the range it is about, all three halves are false: a
+whole-file deletion produces an ordinary revertible hunk (the run reports ten and drops them by the
+TEST-FILE filter, which is a different mechanism); with `--paths tools mcp_servers` the run prints
+`no hunks in range` and exits **0**; and with `--paths .` it enumerates the eleven prose hunks and
+exits 1 on the survivors, which is exactly the measurement `SKILL.md` §"Before you hand it over"
+already prescribes for a documentation-only diff. The claim contradicted two rules in the same
+file, it was transcribed from the pull request rather than driven, and it shipped in a commit whose
+message asserted every claim in it had been driven. **Nothing here is safe from the class,
+including the record of the class** — which is why the criterion in `SKILL.md` asks for the run and
+not for a plausible mechanism.
+
 **Correcting them one at a time did not close it.** Rounds 1 through 3 each corrected the previous
 round's sentence and each introduced the next. At round 4 the shape changed — `README.md` §Tests was
 rewritten to assert no mechanism at all, and the `TODO.md` residue entry was turned from a claim
-into a re-take PROCEDURE — and round 5 still returned six, three of them inside those two rewrites.
-That is the useful half of the record: the shape change was right and it was not sufficient, so the
-budget has to assume this class is found by reading, once per round, to the end.
+into a re-take PROCEDURE — and round 5 still returned six: four of them inside round 4's own fixes,
+two of those inside the two rewrites themselves. That is the useful half of the record: the shape
+change was right and it was not sufficient, so the audit has to run once per round rather than be
+designed away.
 
-**Why it took five rounds: no instrument in the loop can see it.** The diff was three whole-file
-deletions (no revertible hunk, so `scripts/mutation_check.py` exits 1 and answers nothing), test-file
-hunks (excluded by default) and, measured over the finished branch at `a0c1a3f` with `git diff
-e7137ea...a0c1a3f` at git's default context width, eleven prose hunks across nine files. The witness census enumerates decisions in code;
-an independent mutation sweep mutates code. Every one of roughly twenty-four findings came from a
-reviewer reading a sentence and running the command it implied. So on a deletion or prose diff the
-launch prompt has to ask for that explicitly from round 1 — "run every command and every mechanism
-claim the prose asserts, and report the ones whose output is not what the sentence says".
+**Why it stayed uncaught: the loop's instruments answer about code, and one of them was mis-read.**
+The witness census enumerates decisions in code and a mutation sweep mutates code, so neither speaks
+to a prose claim. The round-0 sweep is NOT inapplicable — see the sixth item above — but on this
+diff it reports every prose hunk as SURVIVED, which `SKILL.md` says to read as a measurement and
+split, not as a verdict. What actually found all of these was a reviewer reading a sentence and
+running the command it implied, so on a deletion or prose diff that has to be asked for from round
+1: "run every command and every mechanism claim the prose asserts, and report the ones whose output
+is not what the sentence says".
 
-**What the loop's existing instructions DID catch, and when.** The disclosure brief's "a check that
-still RUNS and now covers LESS" is what the branch's only functional defect answers to: the move
-took 70 test names out of the glob `test_every_test_this_change_cites_by_name_exists` builds its
-vocabulary from, so a citation of any of them was reported as pointing at nothing — a false RED
-telling the author to delete a correct pointer. Worth noting **which** round found it: not round 3,
-the disclosure round, which was asked that question directly and returned a different (real) loss;
-round 5's blank-slate axis, which had the whole stack and no history. One reading is that the
-question needs the accumulated stack to be answerable; the other is that it wants the reviewer who
-was told nothing. Either way, do not treat one disclosure round as having settled it.
+**The one functional defect on the branch, and which rule names it.** The move took 70 test names
+out of the glob `test_every_test_this_change_cites_by_name_exists` builds its vocabulary from, so a
+citation of any of them was reported as pointing at nothing — a false RED telling the author to
+delete a correct pointer. The rule that names this is the sibling skill's rule 1-b, "MOVING a fact
+is deleting a defense you never classified … before moving a fact between structures, list the
+readers of the OLD structure and say for each what it sees now"; the branch listed three such
+readers across three commits and missed the fourth. **The disclosure brief in `SKILL.md` does not
+cover it**, and the tell is in the brief's own words: it asks for a check that "still runs and now
+covers less" and says **red-then-GREEN is the finding**. This defect is the other direction —
+green-then-RED, an over-refusal — so a reviewer following that brief literally discards the
+reproduction. Which rounds found the class, on this branch: round 2's fix-focused axis (the
+shadowed-method scan's docstring), round 5's blank-slate axis (this one). Round 3, the disclosure
+round, was asked the question directly and returned a different real loss. Note that rule 1-b's own
+text says a blank-slate reviewer cannot see this shape because it compares HEAD against itself;
+round 5's did, by running the old defect against both revisions. **One of the two sentences is
+wrong and this record does not settle which** — read them together before citing either.
 
 Two smaller records from the same branch. A review worktree created with a RELATIVE path under
-`git -C <repo> worktree add` landed inside the checkout and `git add -A` committed it as a gitlink,
-taking the suite to `2 failed` — the accident this file's ground rules already tell reviewers to
-avoid, committed by the author who wrote the instruction into their prompts. And a delegated
-mechanical-recomputation subagent returned a closing message ("no new information, the final report
-stands as delivered") for a report that had never arrived; the full checklist came back only after
-being asked for it directly. **A subagent's completion notice is not its report** — if you cannot
-quote a finding from it, you have not received one.
+`git -C <repo> worktree add` landed inside the checkout and `git add -A` committed it as a gitlink
+— the accident this file's ground rules already tell reviewers to avoid, committed by the author
+who wrote the instruction into their prompts. And a delegated mechanical-recomputation subagent
+returned a closing message ("no new information, the final report stands as delivered") for a
+report that had never arrived; the full checklist came back only after being asked for it directly.
+**A subagent's completion notice is not its report** — if you cannot quote a finding from it, you
+have not received one.

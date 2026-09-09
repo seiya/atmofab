@@ -1103,20 +1103,22 @@ that tells you how it closed.
   measurement was stated twice. **This is not the "prose that enumerates entities" row**: that one
   says turn prose into a check, this one says the check is already there
 - **A sentence of yours explains WHY A TOOL BEHAVES as it does** → drive it or delete it; do not
-  correct it. The subject is a third party's behaviour — pytest's collection, a CLI's flag, git's
-  path resolution — so there is no assertion beside it (the row above) and nothing to turn it into
-  a check (the row below): the sentence is load-bearing and unwitnessed by construction.
-  **Criterion, one command: name the command whose output IS the sentence.** If you cannot, you
-  have written a guess with the grammar of a fact, and the fix is to state what you OBSERVED and
-  drop the "because". Issue #183 / PR #202 reached the five-round cap on one class, and it was
-  this one: five mechanism claims measured false, each written while correcting the previous, all
-  in a branch whose subject was retiring tests that pin prose. **Correcting them individually does
-  not close it** — round 4 switched to deleting the explanations wholesale and round 5 still
-  returned six. **And no instrument in this loop fires on it**: on a deletion / prose diff the
-  round-0 sweep has no revertible hunk, the census enumerates code and the mutation sweep mutates
-  code, so every one of those findings came from a reviewer reading a sentence and running it.
-  Budget for that: put "run every command and mechanism claim the prose asserts" in the launch
-  prompt from round 1, because nothing else will look
+  correct it. Its subject is a third party's behaviour — pytest's collection, a CLI's flag, git's
+  path resolution — so there is no assertion beside the sentence and nothing to turn it into a
+  check; you have to go and make the check. **Criterion: name the run whose output the sentence is
+  a reading of, and say which reading it is.** One command is the common case; a DIFFERENTIAL (the
+  same command with the property and without it) and a cited upstream default plus one run both
+  qualify. What does not is a mechanism inferred from an outcome — you measured that the count did
+  not change and wrote down WHY it did not. **The fix is not to delete the "because"**: a
+  justification is what stops the next person removing the line, and this repository's own
+  `pytest.ini` and `tests.yml` comments are correct examples. State the observation, name its run,
+  and mark a generalization as one. **Nearest neighbour: "The fix was to a RECORD, so you verified
+  it by reading" above** — same criterion, different subject, and it is the row to read first.
+  **These are second-category text** by the taxonomy under "Stopping conditions", so correct one in
+  the commit that notices it and do not spend a round on it: put "run every command and every
+  mechanism claim the prose asserts, and report the ones whose output is not what the sentence
+  says" in the round-1 launch prompt instead. Issue #183 / PR #202 paid five rounds for not having
+  done that; `references/signs-episodes.md` has what it cost and what did not close it
 - **A term you coined for a tool has appeared in a document as if the system used it** → check it
   against the vocabulary the repository already defines. On PR #100 a reporting script labelled any
   body it could not parse "body is not an event stream", and that phrase was then written into
