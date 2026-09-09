@@ -3,8 +3,8 @@
 
 Covers the host side of the pure `generate.verify` channel added in
 `tools/workflow_conductor.py` (the reviewer loop, verdict validation, the source_meta.json
-projection, verdict_meta, the classify_failure verdict route, the `_maybe_warm_resume_verify_meta`
-pure early-return) and the `tools/run_workflow.py` gate removal. Mirrors the producer suite
+projection, verdict_meta, the classify_failure verdict route) and the `tools/run_workflow.py`
+gate removal. Mirrors the producer suite
 (`test_pure_leaf_producer.py`), whose fixtures it reuses.
 """
 
@@ -580,21 +580,18 @@ class PureVerifySubstepTests(unittest.TestCase):
         settles it: a `time.time()` reading is a different number, the two clocks differing by
         up to one timer tick.
 
-        What this pins is PROVENANCE, not a decision: a review round established that this
-        loop's `SubstepOutcome.launched_at` reaches no comparison today. Its only production
-        consumer is `_maybe_warm_resume_verify_meta`, which returns before reading it whenever the
-        substep is pure (`if self._pure_leaf_substep(refs, phase, "verify"): return outcomes`),
-        and this loop runs only when that predicate is true. An earlier version of this docstring
-        claimed the opposite and was false. The value is taken from the one resolver anyway so
-        that the field means the same thing at all three sites — the alternative, a `time.time()`
-        here and a filesystem stamp elsewhere, is the state that produced #113.
+        What this pins is PROVENANCE, not a decision. `SubstepOutcome.launched_at` was deleted
+        by issue #176 with the mini-loop that was its only production consumer, so what the
+        resolver leaves on this path is the PROBE ITSELF — an operator's record of when this
+        attempt started, under the arid of the row it belongs to. This is that probe's only
+        witness on the pure verify loop: without it, a mutation dropping the
+        `_launch_instant` call from `_spawn_pure_turn` is silent.
         """
         c, _refs, oc = self._run([_envelope(_verdict("pass"))])
         self.assertEqual(oc.status, "pass")
         probe = (c.repo_root / "workspace" / "orchestrations" / c.orchestration_id
                  / "agents" / oc.agent_run_id / wc.LAUNCH_INSTANT_PROBE_BASENAME)
         self.assertTrue(probe.exists(), probe)
-        self.assertEqual(oc.launched_at, probe.stat().st_mtime)
         self.assertEqual(json.loads(probe.read_text())["agent_run_id"], oc.agent_run_id)
 
     def test_pure_pass_finalize_payload_satisfies_the_real_summary_validator(self) -> None:
@@ -1055,31 +1052,6 @@ class PureVerifyColdFallbackSurrogateTests(unittest.TestCase):
             vmeta = json.loads((c.repo_root / refs.source_dir() / "verdict_meta.json").read_text())
             self.assertEqual(vmeta["failure_category"], "verdict_schema_violation")
             self.assertEqual(oc.leaf_returncode, 0)   # NOT a host-write fail_close
-
-
-# ======================================================================================
-# _maybe_warm_resume_verify_meta early-return for pure
-# ======================================================================================
-class PureVerifyMetaWarmResumeTests(unittest.TestCase):
-    def test_pure_verify_skips_legacy_meta_warm_resume(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            refs = _verify_node(repo)
-            c = _conductor(repo)
-            # A failed verify outcome list (verify is the last generate substep, index 2).
-            outcomes = [wc.SubstepOutcome("a", "pass", [])] * 2 + [
-                wc.SubstepOutcome("v", "fail", [])]
-            # Would otherwise inspect/repair the meta; for pure it must return unchanged, untouched.
-            called = {"stage_meta": False}
-            orig = c._stage_meta_contract_findings
-
-            def _spy(*a, **k):
-                called["stage_meta"] = True
-                return orig(*a, **k)
-            c._stage_meta_contract_findings = _spy  # type: ignore[assignment]
-            out = c._maybe_warm_resume_verify_meta(refs, "generate", list(outcomes), ())
-            self.assertEqual([o.agent_run_id for o in out], [o.agent_run_id for o in outcomes])
-            self.assertFalse(called["stage_meta"])   # the legacy loop body never ran
 
 
 # ======================================================================================

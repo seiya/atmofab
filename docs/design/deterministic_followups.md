@@ -3263,8 +3263,7 @@ choice*, not the *agentic leaf loop*. A node the pure producer cannot express �
 host-rendered (harness self-test, c/cpp/mixed, a physics node with no infra dep) — runs the
 shared agentic leaf loop as before. Its invocation still stamps `generate_executor=pure` (a provenance stamp, since the
 leaf-mode is decided by node shape, not the executor), so it is NOT rejected on resume. Also retained: `_write_makefile`
-(the live Makefile author for Model B dependency closures and non-`M3c` leaves), the verify-meta warm-resume loop,
-Codex's structured pure approximation (`--output-schema` plus the read-only sandbox), the two `Generate` SKILLs
+(the live Makefile author for Model B dependency closures and non-`M3c` leaves), Codex's structured pure approximation (`--output-schema` plus the read-only sandbox), the two `Generate` SKILLs
 (`skills/workflow-generate-generate|verify/`, consumed by the residual agentic leaves), and `audit_orchestration.py`'s
 `_KNOWN_GENERATE_EXECUTORS=("legacy","pure")` (so historical `legacy` records stay readable — the audit reports the
 recorded value, it does not validate it).
