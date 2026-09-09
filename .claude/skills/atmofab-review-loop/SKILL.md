@@ -1102,6 +1102,23 @@ that tells you how it closed.
   the assertion contradicted, and each round corrected the prose rather than asking why a
   measurement was stated twice. **This is not the "prose that enumerates entities" row**: that one
   says turn prose into a check, this one says the check is already there
+- **A sentence of yours explains WHY A TOOL BEHAVES as it does** → drive it or delete it; do not
+  correct it. Its subject is a third party's behaviour — pytest's collection, a CLI's flag, git's
+  path resolution — so there is no assertion beside the sentence and nothing to turn it into a
+  check; you have to go and make the check. **Criterion: name the run whose output the sentence is
+  a reading of, and say which reading it is.** One command is the common case; a DIFFERENTIAL (the
+  same command with the property and without it) and a cited upstream default plus one run both
+  qualify. What does not is a mechanism inferred from an outcome — you measured that the count did
+  not change and wrote down WHY it did not. **The fix is not to delete the "because"**: a
+  justification is what stops the next person removing the line, and this repository's own
+  `pytest.ini` and `tests.yml` comments are correct examples. State the observation, name its run,
+  and mark a generalization as one. **Nearest neighbour: "The fix was to a RECORD, so you verified
+  it by reading" above** — same criterion, different subject, and it is the row to read first.
+  **These are second-category text** by the taxonomy under "Stopping conditions", so correct one in
+  the commit that notices it and do not spend a round on it: put "run every command and every
+  mechanism claim the prose asserts, and report the ones whose output is not what the sentence
+  says" in the round-1 launch prompt instead. Issue #183 / PR #202 paid five rounds for not having
+  done that; `references/signs-episodes.md` has what it cost and what did not close it
 - **A term you coined for a tool has appeared in a document as if the system used it** → check it
   against the vocabulary the repository already defines. On PR #100 a reporting script labelled any
   body it could not parse "body is not an event stream", and that phrase was then written into
