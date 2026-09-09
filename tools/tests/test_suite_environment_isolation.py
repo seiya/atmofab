@@ -690,14 +690,33 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
                 (name, rel) for name in re.findall(r"`(test_[A-Za-z0-9_]+)`", text))
         self.assertTrue(cited_names, "no citations found — the reader is broken")
 
+        # WHERE THE TESTS ARE, not where the suite runs them from. Issue #183 moved the
+        # two review instruments' tests to `.claude/skills/<skill>/scripts/tests/`, and a
+        # `defined` set built from `tools/tests/` alone then reports a citation of one of
+        # those 70 names as pointing at nothing — a false RED on a correct pointer, whose
+        # cheapest answer is to delete the pointer. Reading their NAMES is not the
+        # coupling that move undid: the suite still does not RUN them, and the vocabulary
+        # scan below already walks the whole tree including `.claude/`.
+        test_roots = [(_REPO_ROOT / "tools" / "tests").glob("test_*.py")]
+        test_roots.extend(
+            d.glob("test_*.py")
+            for d in sorted((_REPO_ROOT / ".claude" / "skills").glob("*/scripts/tests")))
+        test_files = sorted({p for group in test_roots for p in group})
+
         defined = set()
-        for path in (_REPO_ROOT / "tools" / "tests").glob("test_*.py"):
+        for path in test_files:
             for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
                 if (isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
                         and node.name.startswith("test_")):
                     defined.add(node.name)
         self.assertIn("test_every_test_this_change_cites_by_name_exists", defined,
                       "the definition reader is broken — it cannot see this test")
+        # Self-test for the clause above: a name that exists ONLY in a relocated file. If
+        # this is red, the reader has narrowed back to `tools/tests/` and the false red is
+        # back with it.
+        self.assertIn("test_a_crlf_file_is_measured_rather_than_skipped", defined,
+                      "the definition reader no longer sees the relocated instrument "
+                      "tests, so citing one of them by name would be reported as dangling")
 
         # A citation is DANGLING only if the name is not a test, not a test module, and
         # not part of this tree's vocabulary. That last clause is what stops the check
@@ -709,7 +728,7 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
         # (a module) passes, and the two test names this branch actually deleted are
         # still reported. The cost is a false NEGATIVE for a deleted test whose name
         # survives elsewhere in the tree; that is the safe direction for a ratchet.
-        stems = {p.stem for p in (_REPO_ROOT / "tools" / "tests").glob("test_*.py")}
+        stems = {p.stem for p in test_files}
         vocabulary = collections.Counter()
         for path in _REPO_ROOT.rglob("*"):
             if path.suffix not in (".py", ".md", ".yaml", ".json", ".ini"):
