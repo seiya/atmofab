@@ -146,6 +146,11 @@ python3 -m pytest tools/tests/ -q -m "not slow"
 opt-out because nothing else runs the full set: deselecting it by default would leave the
 leaf deadline / abandon / teardown guards executed by nobody.
 
+The two review instruments under `.claude/skills/` — `atmofab-review-loop/scripts/mutation_check.py`
+and `atmofab-enforcement-change/scripts/measure_claude_tool.py` — carry their tests beside them in
+`scripts/tests/`; each skill states the command that runs them, and `pytest tools/tests` does not
+collect them, because `.claude/` is under pytest's default `norecursedirs`.
+
 **The suite ignores your `ATMOFAB_*`, `CODEX_HOME` and `CLAUDE_CONFIG_DIR` environment
 variables** (issue #84). They are per-run knobs that `tools/run_workflow.py` sets in every
 node's environment, so the shell most likely to have them exported is one used for this
