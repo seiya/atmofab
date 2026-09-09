@@ -466,10 +466,12 @@ PINNED: dict[str, str] = {
     # `profile` NODE (the cardinality ladder rung, the module-parameter and `public_api`
     # carve-outs, the OpenMP floor's exemption) — a `profile` is host-resolved at Compile
     # and can be neither a dependency node nor an optimization-unit member. Two rules are
-    # UNCHANGED from `pure-38` and must not be read out of this entry as deletions. The
-    # inert dependency-call rule: an earlier revision of this branch deleted it, and review
-    # measured that three deterministic gates force a leaf into exactly the shape it
-    # describes, so it was restored. G2/H2's runtime-input minimum, including the
+    # UNCHANGED from `pure-38` and must not be read out of this entry as deletions. (Unchanged
+    # ON THE PINNED SURFACE, which is what this entry can speak for: the prose statements of the
+    # first rule that live OUTSIDE the contract tuple — the glossary entry and the two generate
+    # SKILLs — did change their worked example, twice.) The inert dependency-call rule: an
+    # earlier revision of this branch deleted it, and review measured that three deterministic
+    # gates force a leaf into exactly the shape it describes, so it was restored. G2/H2's runtime-input minimum, including the
     # `profile`/`component` selection result: three successive revisions tried to except a
     # two-key `inputs.profile_selection` from it, each on a premise measurement then
     # falsified — the last of them by a certified `pass` bundle
