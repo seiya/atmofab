@@ -7,6 +7,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -40993,6 +40994,182 @@ class DevVerifyResumeDirectiveTests(unittest.TestCase):
                 "no directive was derived for an `_ir` attribution either, so the negative "
                 "assertion above observes nothing about the dev_verify reasons")
 
+
+class DirectDepsSourceStatementTests(unittest.TestCase):
+    """Every statement of WHERE `direct_deps` comes from is read before it is allowed to exist.
+
+    Issue #175 moved that fact: the direct dependency set used to BE the `deps.yaml`
+    declaration and is now the host-derived set in `<ir_ref>/dependency_graph.json`
+    (`all_nodes` minus self minus `transitive_deps`), because a `profile` entry in `deps.yaml`
+    is not a node and the `component` it selects are. The rule is stated in 11 places across 8
+    files, six of which a compile leaf receives verbatim, and FOUR consecutive review rounds
+    each found a different copy still stating the old fact — three of them in text a leaf acts
+    on, each costing that leaf a `Compile fail` on every attempt.
+
+    That count is what `atmofab-enforcement-change` rule 3-a calls the point where sweeping has
+    already lost, and its remedy is what this class is: the sites that must repeat the rule
+    (a leaf-read contract has to be self-contained) are COUPLED to it by an allowlist, so a new
+    statement is refused until a person reads it and adds an entry. This is a review gate, not
+    a judgment: nothing here decides whether a sentence is TRUE, only that no sentence about
+    this fact appears without having been read.
+
+    Four properties this class holds, each of them a trap rule 3-a names:
+
+    - The allowlist is keyed by a digest of the WHOLE line, not a prefix, so a new clause
+      appended to an allowlisted line is a new entry rather than riding on the old one.
+    - It is compared as a SET, so a line that DISAPPEARS is red too — an entry that no longer
+      matches anything is a stale exemption nobody would otherwise notice.
+    - The surfaces are DERIVED from the code that decides them (the launch-template map, the
+      phase-document map, the SKILL name builder, the catalog's `problem` entries), so a
+      surface added later is scanned automatically. Deriving them is the point: a hand-listed
+      surface set is the thing that produced this class's own history.
+    - The surface list and the co-occurrence reader are both SELF-TESTED below, because an
+      allowlist that matches nothing passes vacuously and a scan bounded to nothing is green.
+    """
+
+    REPO_ROOT = Path(__file__).resolve().parents[2]
+
+    #: A line is a STATEMENT about this fact when it names a direct-dependency term and a
+    #: declaration-source term at once. Deliberately wide: the cost of a false positive is one
+    #: allowlist entry a person reads, and the cost of a false negative is this class's history.
+    _DEP_TERM = re.compile(r"direct[_ ]dep|directly[- ]required|direct dependenc", re.I)
+    _SOURCE_TERM = re.compile(r"deps\.yaml|dependency declaration", re.I)
+
+    #: Each entry is `sha256(line.strip())[:16] -> a note saying who read it and what it says`.
+    #: To add one: read the line, satisfy yourself it states the CURRENT fact (or is legitimately
+    #: about something else), and record which. The failure message prints the digest and the
+    #: line for anything unlisted.
+    _READ: dict[str, str] = {
+        # tools/prompt_templates/pure_compile_generate.txt
+        "623d8311ce9f93f6": "rule 3: read the WHOLE derived set; deps.yaml alone is rejected",
+        "7deb92ccbdc3bee3": "deps block label: deps.yaml is what the author DECLARED, not the set",
+        # tools/prompt_templates/pure_compile_verify.txt
+        "8f3888c2abeb0882": "deps block label, reviewer side: not the set direct_deps must equal",
+        # docs/workflow/phases/phase_01_compile.md
+        "71c13f91279256f1": "§1-1: the HOST's directly-required set, read from the graph document",
+        "57f8c7b9ee3ab899": "§Verification tools: the infra dep-count rule, not the direct set",
+        # skills/workflow-compile-generate/SKILL.md (the AGENTIC producer's procedure)
+        "2269806c39f4fdbc": "the HOST's directly-required set, including the runner harness",
+        # spec/problem/**/controlled_spec.md §4
+        "436415413eda5c0e": "advdiff1d_linear: each selected component is A direct dep, not all",
+        "fa62fb936e108ecb": "shallow_water2d: the same sentence",
+        # docs/GLOSSARY.md
+        "cb366ac6efb20346": "spec.ir.yaml.dependency: the host's set, explicitly not deps.yaml",
+        "41add5d95394fae2": "dependency_graph.json: the sidecar's own definition of the set",
+        "7b5b1fe0a32f8922": "expected_node_set: the reconstruction reads each profile's deps.yaml",
+    }
+
+    def _surfaces(self) -> list[str]:
+        """The repo-relative files that state this rule, derived from the code that decides
+        which documents reach a compile leaf — never hand-listed."""
+        import tools.orchestration_runtime as ort
+        import tools.workflow_conductor as wc
+        import yaml as _yaml
+
+        out: list[str] = []
+        # (1) One launch template per LLM substep of Compile, keyed the way the renderer keys
+        # them. Deliberately NOT `startswith("pure compile.")`: the escalate diagnostician has a
+        # `pure compile.diagnose` key too, and it reads a diagnosis document rather than any
+        # dependency declaration.
+        for substep in wc.SUBSTEPS["compile"]:
+            filename = ort._PROMPT_TEMPLATE_FILES.get(f"pure compile.{substep}")
+            if filename:
+                out.append(f"tools/prompt_templates/{filename}")
+        # (2) The phase document, inlined verbatim into both compile prompts.
+        out.append(ort.WORKFLOW_PHASE_DOC_BY_STEP["compile"])
+        # (3) The agentic path's SKILL for each LLM substep of Compile, from the name builder.
+        for substep in wc.SUBSTEPS["compile"]:
+            skill = f"skills/{wc._skill_name('compile', substep)}/SKILL.md"
+            if (self.REPO_ROOT / skill).is_file():
+                out.append(skill)
+        # (4) Every `problem` spec's controlled_spec.md — §4 states the rule in prose and the
+        # host inlines the file as `controlled_spec_document`. From the catalog, so a `problem`
+        # added later is scanned without editing this test.
+        catalog = _yaml.safe_load(
+            (self.REPO_ROOT / "spec/registry/spec_catalog.yaml").read_text(encoding="utf-8"))
+        for entry in catalog.get("specs") or []:
+            if isinstance(entry, dict) and entry.get("spec_kind") == "problem":
+                path = str(entry.get("controlled_spec_path") or "")
+                if path and (self.REPO_ROOT / path).is_file():
+                    out.append(path)
+        # (5) The glossary. NOT leaf-read and NOT derivable — named here because it is the
+        # repository's canonical vocabulary, a maintainer resolves the term against it, and it
+        # carried a false copy of this rule that round 1 had to correct.
+        out.append("docs/GLOSSARY.md")
+        return out
+
+    def _statement_lines(self) -> list[tuple[str, int, str]]:
+        found: list[tuple[str, int, str]] = []
+        for rel in self._surfaces():
+            text = (self.REPO_ROOT / rel).read_text(encoding="utf-8")
+            for number, line in enumerate(text.splitlines(), 1):
+                if self._DEP_TERM.search(line) and self._SOURCE_TERM.search(line):
+                    found.append((rel, number, line.strip()))
+        return found
+
+    @staticmethod
+    def _digest(line: str) -> str:
+        return hashlib.sha256(line.encode("utf-8")).hexdigest()[:16]
+
+    def test_the_surface_list_is_derived_and_non_degenerate(self) -> None:
+        # An emptiness assertion does not self-test its own surface list: deleting a surface
+        # that happens to carry no statement is invisible. So require each derived group to
+        # contribute, and require the files to exist.
+        surfaces = self._surfaces()
+        self.assertEqual(len(surfaces), len(set(surfaces)), surfaces)
+        for rel in surfaces:
+            self.assertTrue((self.REPO_ROOT / rel).is_file(), rel)
+        # Derived, not transcribed: one template per Compile substep that HAS one (`static` is
+        # deterministic and has none), so adding a substep with a template scans it.
+        import tools.orchestration_runtime as ort
+        import tools.workflow_conductor as wc
+        expected_templates = sum(
+            1 for sub in wc.SUBSTEPS["compile"]
+            if ort._PROMPT_TEMPLATE_FILES.get(f"pure compile.{sub}"))
+        self.assertGreaterEqual(expected_templates, 2, "the template map answered for fewer "
+                                                       "than the two LLM compile substeps")
+        self.assertEqual(
+            sum(1 for s in surfaces if s.startswith("tools/prompt_templates/")),
+            expected_templates, surfaces)
+        self.assertIn("docs/workflow/phases/phase_01_compile.md", surfaces)
+        self.assertTrue([s for s in surfaces if s.startswith("skills/workflow-compile-")],
+                        surfaces)
+        self.assertTrue([s for s in surfaces if s.startswith("spec/problem/")], surfaces)
+
+    def test_the_reader_finds_a_statement_and_ignores_a_neighbour(self) -> None:
+        # Self-test of the co-occurrence rule, both directions, so a reader narrowed to nothing
+        # cannot make the set comparison below pass vacuously.
+        hit = "`direct_deps` is exactly the directly-required set of `deps.yaml`"
+        self.assertTrue(self._DEP_TERM.search(hit) and self._SOURCE_TERM.search(hit))
+        for miss in ("`deps.yaml` declares the runner harness this node builds against",
+                     "`direct_deps[]` carries `kind` and the semantic `operations`"):
+            with self.subTest(miss=miss):
+                self.assertFalse(
+                    self._DEP_TERM.search(miss) and self._SOURCE_TERM.search(miss), miss)
+
+    def test_every_statement_of_where_direct_deps_comes_from_has_been_read(self) -> None:
+        found = self._statement_lines()
+        self.assertTrue(found, "the scan found no statement at all; the reader or the surface "
+                               "list has been narrowed to nothing")
+        seen = {self._digest(line): (rel, number, line) for rel, number, line in found}
+        unread = sorted(set(seen) - set(self._READ))
+        stale = sorted(set(self._READ) - set(seen))
+        message = []
+        for digest in unread:
+            rel, number, line = seen[digest]
+            message.append(
+                f"UNREAD {rel}:{number}\n  {line}\n  If it states the CURRENT fact — the direct "
+                f"set is <ir_ref>/dependency_graph.json's all_nodes minus self minus "
+                f"transitive_deps, which INCLUDES the runner harness, and a `profile` entry in "
+                f"deps.yaml is not a node — or is legitimately about something else, add\n"
+                f'    "{digest}": "<what you read>",\n  to _READ. If it says the direct set IS '
+                f"the deps.yaml declaration, it is wrong: four review rounds of issue #175 each "
+                f"found one more copy saying that, three of them in text a leaf acts on.")
+        for digest in stale:
+            message.append(
+                f"STALE allowlist entry {digest} ({self._READ[digest]}) matches no line; the "
+                f"statement was edited or removed, so re-read it and update the entry.")
+        self.assertEqual(message, [], "\n\n".join(message))
 
 class ProfileExpansionTests(unittest.TestCase):
     """`expand_profile_dependencies` (issue #175) and the four readiness consumers it feeds.
