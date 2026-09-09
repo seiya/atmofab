@@ -143,18 +143,30 @@ jobs:
         #
         # WHAT THIS STILL CANNOT SEE, said rather than implied: a `conftest.py` edit, because
         # both the reference and the run go through it; a retry loop, because the report is the
-        # last invocation's; and a SKIP, because both sides count a skipped test — so a step this
-        # job stops taking (the `sysctl` one above) turns the sandbox tests into declared skips
-        # and the guard still says the suite ran all of it.
+        # last invocation's; and a SKIP, because a skipped test emits a `<testcase>` and so is
+        # counted on BOTH sides — anything that turns a test into a declared skip on the runner
+        # passes this guard. The `sysctl` step above is NOT an instance of that, and the mistake
+        # is worth naming because it is the obvious one to reach for: what its own comment
+        # records is that losing it produced ten skips AND failed two tests, and the `if failures`
+        # arm below reddens the job on those. An instance would be a skip with no failure beside
+        # it, and this job has no measured one.
         #
         # AND NOTHING ELSE READS THIS FILE. `tools/tests/test_ci_workflow.py` used to check the
-        # decisions here — the retry loop above, the guard step's existence and `if: always()`,
-        # its reference being taken pristine, the `sysctl` step, the runner pin — and #183 retired
-        # it as a pin on a process preference rather than on a product path. It never covered the
-        # `conftest.py` case; its own docstring said so. The only thing still reading this file is
-        # `tools/tests/test_backend_boundary.py`'s technology-token scan, which reads the TEXT for
-        # backend tokens and nothing about what the job does — and whose growth half is frozen out
-        # of the suite (`AGENTS.md` §Backend boundary rules). Editing this file is on whoever does.
+        # decisions here — the suite command, the guard step's existence and `if: always()`, its
+        # reference being taken pristine, the run step's ability to fail the job, the `slow`
+        # marker not being deselected, the retry loop above, the job timeout, the triggers and
+        # concurrency, the runner pin, the second-interpreter ban, the `sysctl` step and the
+        # dependency declaration — and #183 retired it as a pin on a process preference rather
+        # than on a product path. It never covered the `conftest.py` case; its own docstring said
+        # so. It also held the half that has no other home: it coupled this file to
+        # `docs/DEVELOPMENT.md`'s CI paragraph, so the image, the interpreter, the quoted command
+        # and the sandbox claim could not drift from the job in either direction. That coupling
+        # is gone and nothing replaces it; `TODO.md` records it as an accepted residue. The only
+        # thing still reading this file is `tools/tests/test_backend_boundary.py`'s
+        # technology-token scan, which reads the TEXT for backend tokens and nothing about what
+        # the job does — and whose growth half is frozen out of the suite (`AGENTS.md` §Backend
+        # boundary rules). Editing this file, and the paragraph that describes it, is on whoever
+        # does.
         run: |
           report="${{ runner.temp }}/pytest-report.xml"
           if [ ! -f "$report" ]; then
