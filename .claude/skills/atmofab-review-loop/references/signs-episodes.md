@@ -43,8 +43,9 @@ the case history that tells you how it closed.
     which is the site the rule most often gets skipped on because nothing there is red.
   A fifth, hit while WRITING this entry, which is the reason the sign is worth its lines: the
   citation fix below was verified by re-running `test_skill_citations` against an unstaged edit.
-  That check reads the INDEX (`git show :<path>`, deliberately — a tree whose index and worktree
-  disagree otherwise kills it with `FileNotFoundError` instead of reporting), so it was reading
+  That check READ the INDEX (`git show :<path>`, deliberately — a tree whose index and worktree
+  disagree otherwise kill it with `FileNotFoundError` instead of reporting; #183 has since
+  retired the check, and the lesson below is what survives it), so it was reading
   the text that was still wrong and stayed red; staging it turned it green. **Re-running the
   check is not enough if the check does not read what you edited** — ask what source it reads
   before believing either colour.
