@@ -31261,12 +31261,7 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # from the IR", so the cut stands; the reason was corrected in TODO.md at the time and
         # this copy — the one a reader of the ceiling actually reaches — was left stale for two
         # rounds, which a disclosure reviewer found. Measured 39623.
-        # Re-taken at 39726 (measured 39576) for issue #175 Part B. An earlier revision of that branch
-        # LOWERED this entry, having deleted the inert dependency-call rule; round 1 measured
-        # that the deletion opens a hole three deterministic gates force a leaf into, so the
-        # rule came back and the file is near its old size. What Part B removes here is the
-        # `profile` clauses only.
-        "skills/workflow-generate-generate/SKILL.md": 39726,
+        "skills/workflow-generate-generate/SKILL.md": 39700,
         # Bumped 21400->21700: the test/check target must invoke the runner with
         # `--cases $(SPEC) $(CASES)` (the runner aborts without it; make test must
         # match run_program's argv) after a validate.execute failure where a bare
@@ -31321,10 +31316,7 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # file's own words as grounds for failing a correct model. Refusing correct work is
         # the direction that costs a regenerate loop, so the replacement says both halves —
         # do not fail for it, and here is what the direct dependencies actually are.
-        # Re-taken at 28765 (measured 28615) for issue #175 Part B — same history as its producer twin:
-        # lowered when the inert-call classification was deleted, restored when round 1
-        # measured that a compliant source can be failed without it.
-        "skills/workflow-generate-verify/SKILL.md": 28765,
+        "skills/workflow-generate-verify/SKILL.md": 28761,
         # Bumped 10000->10400: documented the verdict.json#per_test entry schema
         # (field name `status`/`outcome` + the pass/fail/xfail/skipped enum, with `blocked`
         # called out as conductor-derived not judge-written) so the judge leaf no longer

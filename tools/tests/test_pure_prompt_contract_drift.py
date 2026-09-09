@@ -462,11 +462,15 @@ PINNED: dict[str, str] = {
     # `profile_selection`, and the profile-document heading says the selected component
     # set is already resolved.
     "pure-38": "3d0d113a217a555a254a9dfaea45053209c2b5d12933fbf8ecc012addf62417d",
-    # issue #175 Part B: the generate pair loses the inert dependency-call rule and every
-    # `profile` clause (the cardinality ladder rung, the module-parameter and `public_api`
-    # carve-outs, the OpenMP floor's exemption) — a `profile` is host-resolved at Compile
-    # and can be neither a dependency node nor an optimization-unit member.
-    "pure-39": "124d2bfd2990e28aeb618afe8b77508f9ada56e4e410a84436ee926071468a52",}
+    # issue #175 Part B: the generate pair loses every `profile` clause (the cardinality
+    # ladder rung, the module-parameter and `public_api` carve-outs, the OpenMP floor's
+    # exemption) — a `profile` is host-resolved at Compile and can be neither a dependency
+    # node nor an optimization-unit member — and G2/H2's runtime-input minimum gains the
+    # scope of the `profile_selection` exclusion. The inert dependency-call rule is
+    # UNCHANGED from `pure-38`: an earlier revision of that branch deleted it and review
+    # measured that three deterministic gates force a leaf into exactly the shape it
+    # describes, so it was restored before merge. Do not read this entry as a deletion of it.
+    "pure-39": "15d1109ee623364c3ea6b4d85aaea0f77012d2bfa1857f14ab76d75ab4b6ae43",}
 
 
 def _contract_tuple() -> dict[str, object]:
