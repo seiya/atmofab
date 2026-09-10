@@ -1637,7 +1637,7 @@ def _start_claims_root() -> Path:
     leaves it unset: one file per orchestration and per spec, which the OS releases
     on process death, is the point.
 
-    `expanduser` before `absolute`, matching the two resolvers in
+    `expanduser` before `absolute`, matching `workflow_homes_root` in
     `tools/hooks/common.py`. It is a behaviour CHANGE: a quoted
     `ATMOFAB_START_CLAIM_ROOT='~/claims'` used to become a literal `~` directory under
     the caller's working directory, because the shell does not expand inside quotes.
@@ -1646,7 +1646,7 @@ def _start_claims_root() -> Path:
     "proceed" by design, so there is no failing closed to do. That is a statement about
     the CALLER: `expanduser()` itself raises `RuntimeError` for a `~account` naming no
     account, and `_exclusive_claim` catches it to keep the promise. This resolver is not
-    total either (`TODO.md` carries the item for all three of them); what makes the
+    total either (`TODO.md` carries the item for both of them); what makes the
     consequence different here is that the claim has a caller allowed to shrug.
     """
     override = os.environ.get(START_CLAIMS_ROOT_ENV, "").strip()
@@ -1658,8 +1658,8 @@ def _start_claims_root() -> Path:
 def _claim_lock_path(repo_root: Path, kind: str, key: str) -> Path:
     """Where a per-(repo, kind, key) start claim lives.
 
-    Outside the repository, alongside the operator tokens, for the same reason those
-    are: a file under `workspace/` created while a leaf is running lands in that leaf's
+    Outside the repository, alongside the isolated backend homes, for the same reason
+    those are: a file under `workspace/` created while a leaf is running lands in that leaf's
     terminal write-diff and is misattributed as an unauthorized write. The
     write-snapshot exemptions are all keyed to a specific `orchestration_id`, which a
     per-SPEC claim taken BEFORE an id is minted cannot use.
@@ -4093,8 +4093,8 @@ def _run_node(
         # status is what routes `init --resume-from-checkpoint` through
         # `terminal_reset`, where the crash reconciliations live).
         # `init_committed` is set when the runtime call RETURNS, but the runtime writes
-        # the `running` meta well before that (an operator token, several more writes,
-        # and the subprocess round-trip all follow). A signal landing in that window
+        # the `running` meta well before that (several more writes and the subprocess
+        # round-trip all follow). A signal landing in that window
         # would leave exactly the stuck-`running` orchestration this clause exists to
         # prevent. So fall back to the durable evidence: a meta on disk whose `driver`
         # block names THIS process was necessarily written by this invocation's init,

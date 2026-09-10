@@ -53,7 +53,6 @@ TIER_B_SUBCOMMANDS: frozenset[str] = frozenset({
     "orchestration-read",
     "reopen-phase",
     "add-superseded-runs",
-    "dismiss-violation",
 })
 
 REPO_ROOT = Path(__file__).resolve().parents[2]

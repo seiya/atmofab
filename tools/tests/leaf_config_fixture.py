@@ -70,12 +70,13 @@ def seed_codex_hooks(repo_root: Path) -> Path:
 # --------------------------------------------------------------------------------------
 # Operator-private-root redirect for test MODULES, not only for pytest.
 #
-# THREE subtrees of `~/.atmofab` are written by this repository, each behind one
-# environment name, and all three are redirected together here — issue #133 is what
+# TWO subtrees of `~/.atmofab` are written by this repository, each behind one
+# environment name, and both are redirected together here — issue #133 is what
 # happened while only the first was: a suite run deposited a few hundred operator tokens
 # into the operator's real store (measured at `e0bae3d`: 249 files from
-# `test_orchestration_runtime.py` alone), and the guard built to stop exactly that
-# covered the homes and nothing else.
+# `test_orchestration_runtime.py` alone; that store went away with `dismiss-violation` in
+# issue #176), and the guard built to stop exactly that covered the homes and nothing
+# else.
 #
 # `tools/tests/conftest.py` points these names at each test's `tmp_path` and raises if a
 # resolver is about to return the operator's real `~/.atmofab`. Neither half is loaded by
@@ -109,14 +110,10 @@ def _private_root_redirects() -> tuple[tuple[str, str], ...]:
     Imported lazily: `tools.run_workflow` pulls in the llm-config layer, and this module
     is imported by fixtures that have no other reason to.
     """
-    from tools.orchestration_runtime import (
-        OPERATOR_TOKENS_ROOT_ENV,
-        WORKFLOW_HOMES_ROOT_ENV,
-    )
+    from tools.orchestration_runtime import WORKFLOW_HOMES_ROOT_ENV
     from tools.run_workflow import START_CLAIMS_ROOT_ENV
     return (
         (WORKFLOW_HOMES_ROOT_ENV, "homes"),
-        (OPERATOR_TOKENS_ROOT_ENV, "operator_tokens"),
         (START_CLAIMS_ROOT_ENV, "start_claims"),
     )
 
@@ -141,7 +138,9 @@ def isolated_homes_per_test_suite(tests):
     Its LEAK coverage is redundant and no test observes it: the round-2 census narrowed
     this loop to the homes name alone, ran a dependent module under plain `unittest` with
     all three variables unset and a fake `$HOME`, and found the home still empty — the
-    module-level redirect had already covered the other two. What this wrapper is FOR is
+    module-level redirect had already covered the other two. (Three was the count then;
+    issue #176 deleted the operator token store, so it is two now. The measurement stands
+    as history.) What this wrapper is FOR is
     the collision above, which the paragraph before this one measures; the leak is the
     module redirect's job. Recorded so the survivor does not read as a gap.
     """
