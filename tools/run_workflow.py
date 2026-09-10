@@ -3318,24 +3318,6 @@ def _format_event_human(payload: dict[str, Any], *, elide_detail: bool = True) -
         return (f"    [warn   ] usage limit in {phase}.{substep} [wait {attempt}]{origin}: "
                 f"waiting {wait}s for the reset, then re-launching")
 
-    if status == "info" and event == "transport_substep_resume":
-        step = payload.get("step", "?")
-        substep = payload.get("resume_substep", "?")
-        producer = payload.get("producer_arid", "?")
-        artifact = payload.get("artifact_id", "?")
-        return (f"    [resume ] {step} resumes at {substep} — producer {producer} / "
-                f"{artifact} reused")
-
-    if status == "info" and event == "substep_resumed":
-        phase = payload.get("phase", "?")
-        substep = payload.get("substep") or "step"
-        return f"    [substep] {phase}.{substep} reused (resumed)"
-
-    if status == "info" and event == "transport_resume_declined":
-        reason = payload.get("reason", "?")
-        return (f"    [warn   ] transport substep resume declined: {reason} "
-                f"— full phase re-run")
-
     if status == "info" and event == "prior_incomplete_orchestration":
         orch = payload.get("orchestration_id", "?")
         liveness = payload.get("liveness", "?")
@@ -3736,12 +3718,6 @@ def _run_node(
                 "--source-dependency-ref",
                 source_dependency_ref,
             ]
-            # Forward the RECORDED orchestration-agent model to the resume repair (it
-            # overrides repair-agent-runs' sibling derivation, e.g. for a `needs_manual` row).
-            # Do NOT apply the claude default here: with nothing recorded, sibling_uniform
-            # derives the run's actual model, which is more accurate than a default.
-            if agent_model:
-                init_args += ["--agent-model", agent_model]
             # Refresh this node's persisted closure end-phase to the effective closure
             # until_phase, so an operator phase override survives on the dependency
             # nodes themselves (durable even if the target orchestration never starts).
@@ -3780,8 +3756,7 @@ def _run_node(
             # cost-attribution blind spot. Default to the operator's configured (unpinned)
             # claude alias ONLY for the claude backend running the UNMODIFIED default command —
             # a configured `command:` (e.g. a wrapper selecting a different model) could launch
-            # a different model, so we must not assert the alias there; leave it for sibling
-            # backfill on resume instead.
+            # a different model, so we must not assert the alias there; leave it unset.
             orchestration_model = agent_model
             if (
                 not orchestration_model

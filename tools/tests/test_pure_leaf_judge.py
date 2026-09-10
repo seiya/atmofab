@@ -520,7 +520,8 @@ class PureJudgeLoopTests(_Fixture):
     def test_an_exhausted_budget_writes_no_review(self) -> None:
         """The signal `run_phase` routes on: no `semantic_review.json`, so
         `_judge_semantic_decision` reads nothing and the existing conformance branch fires —
-        the same terminus the agentic judge's exhausted warm-resume budget reached."""
+        `validate_judge_conformance_violation`, the reason that already existed for this class —
+        NOT the `validate_pre_judge_violation` a post_judge conformance violation takes."""
         bad = _envelope(json.dumps({"decision": "maybe", "findings": []}))
         c = self.conductor(bad, bad, bad, bad)
         outcome = c.run_substep(self.refs, "validate", "judge")
@@ -557,26 +558,35 @@ class PureJudgeLoopTests(_Fixture):
 class PostJudgeReclassificationTests(_Fixture):
     """The disposition `_post_judge_inproc` WRITES, driven end to end.
 
-    An earlier version of this class asserted the reclassification's two INPUTS —
-    `classify_post_judge_violations(...) == "recoverable"` and `_pure_leaf_substep(...) is
+    An earlier version of this class asserted the two INPUTS of the pure-judge reclassification
+    — `classify_post_judge_violations(...) == "recoverable"` and `_pure_leaf_substep(...) is
     True` — and never called `_post_judge_inproc`. Three independent review axes reported the
     same thing: deleting the reclassification left the whole suite green. Asserting the inputs
     of a branch is not asserting the branch, so these rows read `post_judge_meta.json`.
+
+    Issue #176 removed the reclassification itself, as DEAD rather than as wrong: with the
+    warm-resume mini-loop gone, `recoverable` and `unrecoverable` both write `fail_closed`, so
+    upgrading one to the other changed nothing. The rows below therefore assert the same
+    disposition on BOTH transports — the pure judge's reason (the host authored the file, so a
+    re-run emits the identical one) is unchanged, and the agentic judge now terminalizes for
+    the separate reason that nothing consumes a `warm_resume`.
     """
 
     _VIOLATION = ("workspace/pipelines/p/runs/r/n/semantic_review.json: review_method must be "
                   "the literal 'llm_semantic_review'")
 
-    def _disposition(self, config) -> str:
-        """Run the real `_post_judge_inproc` against a gate that fails with a violation naming
-        `semantic_review.json`, and return the disposition it recorded."""
+    def _disposition(self, config, violation: str | None = None) -> str:
+        """Run the real `_post_judge_inproc` against a gate that fails with `violation`
+        (default: one naming `semantic_review.json`), and return the disposition it recorded."""
         c = wc.Conductor(repo_root=self.repo, orchestration_id="o",
                          orchestration_agent_run_id="orch", llm_config=config, env={})
         c._author_derived_validate_artifacts = lambda refs: None  # type: ignore[assignment]
 
+        bullet = self._VIOLATION if violation is None else violation
+
         def _gate(cmd, **kwargs):
             return wc.subprocess.CompletedProcess(
-                cmd, 1, stdout=f"FAIL\n- {self._VIOLATION}\n", stderr="")
+                cmd, 1, stdout=f"FAIL\n- {bullet}\n", stderr="")
 
         with mock.patch.object(wc.subprocess, "run", _gate):
             c._post_judge_inproc(self.refs, "child-1", "tok")
@@ -588,51 +598,35 @@ class PostJudgeReclassificationTests(_Fixture):
         because the CLASSIFIER changed — it must go green because the host reclassified."""
         self.assertEqual(wc.classify_post_judge_violations([self._VIOLATION]), "recoverable")
 
-    def test_a_pure_judges_review_violation_terminalizes(self) -> None:
-        """`recoverable` means "the judge wrote it wrong, so re-run the judge", and that premise
-        is false when the HOST wrote the file: the re-run emits the identical one, so the
-        warm-resume cannot converge and burns the phase's attempt budget."""
+    def test_an_unknown_violation_is_written_as_escalate(self) -> None:
+        """The OTHER value the fold writes, and the half nothing observed.
+
+        `disposition = "escalate" if severity == "unknown" else "fail_closed"` has two
+        outcomes and only one of them had a witness: every test of the `escalate` ROUTE seeds
+        `post_judge_meta.json` by hand, so collapsing this expression to a bare
+        `"fail_closed"` left the whole suite green — measured at c73376f, and measured green on
+        `origin/main` too for the equivalent narrowing, so the gap is older than the fold. It is
+        pinned here because the fold is where the expression now lives: without it, a change
+        that stops writing `escalate` silently sends a prod `unknown` to `fail_closed` instead
+        of to the escalate diagnostician.
+
+        The classifier's own verdict is asserted first, so this row cannot go green because
+        `classify_post_judge_violations` changed its mind about the probe.
+        """
+        unknown = "workspace/pipelines/p/runs/r/n/diagnostics.json: missing key"
+        self.assertEqual(wc.classify_post_judge_violations([unknown]), "unknown")
+        for label, config in (("pure", _cfg("claude")), ("agentic", _agentic_cfg("claude"))):
+            with self.subTest(transport=label):
+                self.assertEqual(self._disposition(config, violation=unknown), "escalate")
+
+    def test_a_review_violation_terminalizes_on_either_transport(self) -> None:
+        """`recoverable` used to mean "the judge wrote it wrong, so re-run the judge". That
+        premise was already false for a PURE judge — the HOST wrote the file, so the re-run
+        emits the identical one — and since issue #176 nothing re-runs either transport's
+        judge, so both record `fail_closed`. Two configs, one expectation: a reclassification
+        reintroduced on one side only would separate them again."""
         self.assertEqual(self._disposition(_cfg("claude")), "fail_closed")
-
-    def test_the_agentic_judge_keeps_the_warm_resume_disposition(self) -> None:
-        """The other direction, and what stops the fix from being "always terminalize": an
-        agentic judge DID author the file and can re-author it."""
-        self.assertEqual(self._disposition(_agentic_cfg("claude")), "warm_resume")
-
-    def _warm_resume_outcomes(self) -> list:
-        """A phase state that WOULD warm-resume: post_judge is the failed last substep and its
-        meta says `warm_resume`. Without this the guard under test is unreachable — every later
-        guard returns `outcomes` unchanged too, so the assertion would hold with the guard
-        deleted, which is how the first version of this row passed for the wrong reason."""
-        self.run_node("post_judge_meta.json").write_text(json.dumps({
-            "status": "fail", "disposition": "warm_resume",
-            "failure_excerpt": "review_method must be the literal"}), encoding="utf-8")
-        return [wc.SubstepOutcome("a1", "pass", []), wc.SubstepOutcome("a2", "pass", []),
-                wc.SubstepOutcome("a3", "pass", []), wc.SubstepOutcome("a4", "fail", [])]
-
-    def test_the_warm_resume_entry_point_refuses_a_pure_judge_too(self) -> None:
-        """Defence in depth (added in review): the reclassification is one line in a DIFFERENT
-        function from the one that acts on it, so `_maybe_warm_resume_post_judge` carries the
-        same guard its sibling `_maybe_warm_resume_verify_meta` has always carried."""
-        c = wc.Conductor(repo_root=self.repo, orchestration_id="o",
-                         orchestration_agent_run_id="orch", llm_config=_cfg("claude"), env={})
-        outcomes = self._warm_resume_outcomes()
-        self.assertIs(c._maybe_warm_resume_post_judge(self.refs, outcomes, ()), outcomes)
-
-    def test_the_fixture_really_would_warm_resume_an_agentic_judge(self) -> None:
-        """The self-test for the row above: same state, agentic config, and the loop must
-        actually ENTER (it emits `post_judge_warm_resume`). Without this, the guard's test is
-        satisfied by any of the three later early returns."""
-        c = wc.Conductor(repo_root=self.repo, orchestration_id="o",
-                         orchestration_agent_run_id="orch",
-                         llm_config=_agentic_cfg("claude"), env={})
-        events: list[str] = []
-        c.emit = lambda name, **kw: events.append(name)  # type: ignore[assignment]
-        c._add_superseded_run_ids = lambda *a, **k: None  # type: ignore[assignment]
-        c.run_substep = lambda *a, **k: wc.SubstepOutcome(  # type: ignore[assignment]
-            "a5", "fail", [], 1)
-        c._maybe_warm_resume_post_judge(self.refs, self._warm_resume_outcomes(), ())
-        self.assertIn("post_judge_warm_resume", events)
+        self.assertEqual(self._disposition(_agentic_cfg("claude")), "fail_closed")
 
 
 class PureJudgeFreshnessTests(_Fixture):

@@ -918,17 +918,12 @@ class PureProducerSubstepTests(unittest.TestCase):
     def test_the_producer_loop_takes_its_launch_instant_from_the_filesystem(self) -> None:
         """Issue #113's resolver is used by THIS loop too, not only by `run_substep`.
 
-        `SubstepOutcome.launched_at` is a stamp of the clock that writes deliverable mtimes,
-        and this loop has to produce the same kind of value as the other two sites. Pinned as an
-        identity against the probe `Conductor._launch_instant` leaves for this attempt's arid: a
-        `time.time()` reading is a different number (a different clock, the two differing by up
-        to one timer tick), so this fails the moment the loop stops using the resolver.
-
-        PROVENANCE, not a decision — a review round established that a pure loop's `launched_at`
-        reaches no comparison today (`_maybe_warm_resume_verify_meta` returns before reading it for a
-        pure substep). It comes from the one resolver so the field means the same thing at every
-        site; a `time.time()` here and a filesystem stamp elsewhere is the state that produced
-        #113.
+        PROVENANCE, not a decision. `SubstepOutcome.launched_at` was deleted by issue #176 with
+        the mini-loop that was its only production consumer, so what the resolver leaves on this
+        path is the PROBE ITSELF — an operator's record, under the arid of the row it belongs
+        to, of the instant the attempt started. This is that probe's only witness on the pure
+        producer loop: without it, a mutation dropping the `_launch_instant` call from
+        `_spawn_pure_turn` is silent.
 
         Round 0's hunk mutation found this loop unwitnessed while its sibling
         `_run_pure_verify_substep` was covered — the two took the instant on lines that read
@@ -939,7 +934,6 @@ class PureProducerSubstepTests(unittest.TestCase):
         probe = (c.repo_root / "workspace" / "orchestrations" / c.orchestration_id
                  / "agents" / oc.agent_run_id / wc.LAUNCH_INSTANT_PROBE_BASENAME)
         self.assertTrue(probe.exists(), probe)
-        self.assertEqual(oc.launched_at, probe.stat().st_mtime)
         self.assertEqual(json.loads(probe.read_text())["agent_run_id"], oc.agent_run_id)
 
     def test_pure_pass_finalize_payload_satisfies_the_real_summary_validator(self) -> None:

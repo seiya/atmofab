@@ -850,8 +850,8 @@ class _FakeConductor(wc.Conductor):
         return wc.ProcResult(0, "", "")
 
     # Configurable meta payloads the fake writes for the deterministic validate gate substeps
-    # (pre_judge / post_judge), so run_phase's gate-fail branch + the warm-resume mini-loop
-    # read realistic metas without spawning the real subprocess bodies. Default None -> no
+    # (pre_judge / post_judge), so run_phase's gate-fail branch reads realistic metas
+    # without spawning the real subprocess bodies. Default None -> no
     # write (the stubbed determine_substep_status/status_fn drives the outcome). The real
     # bodies are exercised by the dedicated Validate gate tests.
     pre_judge_meta_fn = None   # (n) -> dict
@@ -860,7 +860,7 @@ class _FakeConductor(wc.Conductor):
     def _run_deterministic_substep(self, refs, phase, substep, child_arid, request):  # type: ignore[override]
         # Build / Validate.{pre_judge,execute,post_judge} run in-process; the fake body is a
         # clean success. When a *_meta_fn is configured, author the corresponding gate meta so
-        # run_phase's gate-fail branch + mini-loop see it.
+        # run_phase's gate-fail branch sees it.
         self._detn = getattr(self, "_detn", 0) + 1
         if phase == "validate" and substep == "pre_judge" and self.pre_judge_meta_fn:
             self._write_run_node_meta(refs, "pre_judge_meta.json",
@@ -2681,7 +2681,7 @@ class TransportFailureTest(unittest.TestCase):
             (rn / "aggregate_verdict.json").write_text(
                 json.dumps({"aggregate_verdict": "pass"}), encoding="utf-8")
             # post_judge substep authors a FAIL post_judge_meta with an UNRECOVERABLE
-            # disposition; the mini-loop skips it and run_phase terminalizes fail_closed.
+            # disposition; run_phase terminalizes fail_closed.
             c.post_judge_meta_fn = lambda n: {
                 "status": "fail", "failure_category": "pre_judge_violation",
                 "failure_excerpt": "record-integrity boom",
@@ -2698,108 +2698,6 @@ class TransportFailureTest(unittest.TestCase):
             sup = [cap for s, cap in c.calls if s == "add-superseded-runs"]
             self.assertEqual(len(sup), 1)
             self.assertIn("validate_gate_fail_orphan", sup[0]["--reason"])
-
-    def test_post_gate_recoverable_violation_warm_resumes_judge_to_pass(self) -> None:
-        # G4: a RECOVERABLE post_judge conformance violation (disposition warm_resume) is NOT
-        # terminal — the mini-loop warm-resumes the judge, which re-authors semantic_review, and
-        # the re-run post_judge passes -> the phase certifies PASS (write-step-result, advance).
-        import tempfile
-        with tempfile.TemporaryDirectory() as td:
-            repo, refs = Path(td), self._refs()
-
-            class _C(_FakeConductor):
-                def _write_lineage(self, r):  # type: ignore[override]
-                    return []
-                def _ensure_fresh_producer_id(self, r, phase):  # type: ignore[override]
-                    return None
-
-            c = _C(repo_root=repo, orchestration_id="orch_x",
-                   orchestration_agent_run_id="ORCH", llm_config=_agentic_cfg("claude"), env={})
-            c.calls = []
-            rn = repo / refs.run_node_dir()
-            rn.mkdir(parents=True, exist_ok=True)
-            (rn / "aggregate_verdict.json").write_text(
-                json.dumps({"aggregate_verdict": "pass"}), encoding="utf-8")
-            # post_judge fails RECOVERABLE on the first attempt (detn 1..3 == pre_judge/execute/
-            # post_judge of the first pass), then passes on the mini-loop's re-run.
-            state = {"post_attempts": 0}
-            def _post_meta(n):
-                state["post_attempts"] += 1
-                if state["post_attempts"] == 1:
-                    return {"status": "fail", "failure_category": "pre_judge_violation",
-                            "failure_excerpt": "semantic_review.json: review_method must be "
-                                               "llm_semantic_review",
-                            "violations": ["workspace/.../semantic_review.json: review_method "
-                                           "must be llm_semantic_review"],
-                            "disposition": "warm_resume"}
-                return {"status": "pass", "failure_category": None, "failure_excerpt": None,
-                        "violations": [], "disposition": None}
-            c.post_judge_meta_fn = _post_meta
-            # First pass: post_judge fails. Mini-loop re-runs judge (pass) + post_judge (pass).
-            calls = {"n": 0}
-            def _status(phase, substep, n):
-                if phase == "validate" and substep == "post_judge":
-                    calls["n"] += 1
-                    return "fail" if calls["n"] == 1 else "pass"
-                return "pass"
-            c.status_fn = _status
-            oc = c.run_phase(refs, "validate")
-            self.assertEqual(oc.status, "pass")
-            self.assertEqual(oc.decision.action, "advance")
-            subs = [s for s, _ in c.calls]
-            self.assertIn("write-step-result", subs)
-            # the superseded (first) judge + post_judge arids were tombstoned by the mini-loop
-            sup = [cap for s, cap in c.calls if s == "add-superseded-runs"]
-            self.assertEqual(len(sup), 1)
-            self.assertIn("validate_post_judge_warm_resume_orphan", sup[0]["--reason"])
-
-    def test_warm_resumed_judge_physics_fail_routes_not_fail_closed(self) -> None:
-        # Subtle: after a warm-resume attempt the ON-DISK post_judge_meta is STALE (status fail
-        # from the superseded attempt). If the warm-resumed judge itself physics-fails, run_phase
-        # must route via classify_failure (judge physics) — NOT fail_closed on the stale meta.
-        # The fail_closed branch is gated on the ACTUALLY-failed substep (judge here), not the
-        # meta file, so the stale post_judge_meta is ignored.
-        import tempfile
-        with tempfile.TemporaryDirectory() as td:
-            repo, refs = Path(td), self._refs()
-
-            class _C(_FakeConductor):
-                def _write_lineage(self, r):  # type: ignore[override]
-                    return []
-                def _ensure_fresh_producer_id(self, r, phase):  # type: ignore[override]
-                    return None
-
-            c = _C(repo_root=repo, orchestration_id="orch_x",
-                   orchestration_agent_run_id="ORCH", llm_config=_agentic_cfg("claude"), env={})
-            c.calls = []
-            rn = repo / refs.run_node_dir()
-            rn.mkdir(parents=True, exist_ok=True)
-            (rn / "aggregate_verdict.json").write_text(
-                json.dumps({"aggregate_verdict": "pass"}), encoding="utf-8")
-            # First post_judge run fails RECOVERABLE (warm_resume). On the mini-loop's re-run the
-            # judge physics-fails, so post_judge never runs a second time and its meta stays stale.
-            c.post_judge_meta_fn = lambda n: {
-                "status": "fail", "failure_category": "pre_judge_violation",
-                "failure_excerpt": "semantic_review.json: review_method must be llm_semantic_review",
-                "violations": ["workspace/runs/n/semantic_review.json: review_method must be "
-                               "llm_semantic_review"],
-                "disposition": "warm_resume"}
-            judge_runs = {"n": 0}
-            def _status(phase, substep, n):
-                if phase == "validate" and substep == "judge":
-                    judge_runs["n"] += 1
-                    return "pass" if judge_runs["n"] == 1 else "fail"  # re-run judge fails
-                if phase == "validate" and substep == "post_judge":
-                    return "fail"  # first post_judge fails (warm_resume)
-                return "pass"
-            c.status_fn = _status
-            c.decision_fn = lambda phase, outcomes: wc.RouteDecision(
-                "retry", target_phase="generate", repair_strategy="reuse", reason="judge_physics")
-            oc = c.run_phase(refs, "validate")
-            self.assertEqual(oc.status, "fail")
-            self.assertEqual(oc.decision.action, "retry")  # routed, NOT fail_closed
-            self.assertEqual(oc.decision.target_phase, "generate")
-            self.assertIn("write-step-result", [s for s, _ in c.calls])
 
     def _post_judge_unknown_conductor(self, repo, mode):
         class _C(_FakeConductor):
@@ -3346,10 +3244,10 @@ class ValidateGateReasonFromMetaTest(unittest.TestCase):
                 self.assertEqual(oc.decision.reason, "validate_pre_judge_dag_incomplete", substep)
 
     def test_a_non_dict_gate_meta_terminalizes_instead_of_crashing(self) -> None:
-        # Round 1, both axes: the classifier's own `isinstance` guard was unreachable for
-        # `post_judge`, because `_maybe_warm_resume_post_judge` reads the same file first with
-        # `or {}` — which passes a truthy non-dict straight through to `.get`. Driven through
-        # run_phase (NOT the helper), which is the only place that ordering is visible.
+        # Round 1, both axes: the classifier's own `isinstance` guard was once unreachable for
+        # `post_judge`, because the warm-resume mini-loop (deleted by issue #176) read the same
+        # file first with `or {}` — which passed a truthy non-dict straight through to `.get`.
+        # Driven through run_phase (NOT the helper), which is where the reader order is visible.
         # The three payloads are INTERCHANGEABLE, not three witnesses: each serializes to a
         # non-object JSON value and takes the identical path through `_read_gate_meta`. They are
         # kept because the reason the guard exists is "whatever a corrupt file parses to", and
@@ -5403,7 +5301,7 @@ class LeafTransientRetryTest(unittest.TestCase):
 
     def test_leaf_timeout_fails_the_phase_closed_under_the_transport_prefix(self) -> None:
         """The phase-level shape: `leaf_transport_error:` is reused deliberately, so the tag
-        inherits set_status's `leaf_transport_error` reason_code and the substep-granular
+        inherits set_status's `leaf_transport_error` reason_code and its phase-granular
         `--resume` unchanged — no new reason code, no new tombstone prefix."""
         marker = wc._leaf_timeout_marker(7200, 7203.0)
         c = self._conductor([wc.ProcResult(-9, "", "<partial>\n" + marker, timed_out=True)])
@@ -6193,8 +6091,7 @@ class LeafTransientRetryTest(unittest.TestCase):
         with redirect_stdout(io.StringIO()):
             oc = c.run_substep(self._refs(), "compile", "verify")
         self.assertEqual(len(seen), 2)
-        self.assertGreater(seen[1], seen[0])       # the retry's window starts strictly later...
-        self.assertEqual(oc.launched_at, seen[1])  # ...and the outcome carries the LIVE one
+        self.assertGreater(seen[1], seen[0])       # the retry's window starts strictly later
         # ...and each attempt really did re-take it from its OWN probe. Addressed by arid rather
         # than globbed: the class shares one repo_root, so the agents/ dir also holds probes
         # other tests wrote.
@@ -6516,7 +6413,8 @@ class TransientRetryWallClockBudgetTest(LeafTransientRetryTest):
         run for a second of it. Charged as elapsed, an hour-long lid-close during a three-second
         leaf refuses the retry that would have recovered the run. This repository has been bitten
         by reading a wall clock as elapsed time before, so the accumulator reads `time.monotonic`
-        while `launched_at` stays wall-clock for the mtime comparisons that need it."""
+        while the freshness gate's `min_mtime` stays wall-clock for the mtime comparisons that
+        need it."""
         c = self._conductor([self._flake(), wc.ProcResult(0, "done", "")])
         jumped = [1_000_000.0]
 
@@ -6543,269 +6441,6 @@ class TransientRetryWallClockBudgetTest(LeafTransientRetryTest):
                 infra_error=("llm_client_error", "API Error: 400 invalid_request_error"),
                 child_arid="child-1", retries_done=0, elapsed_s=650.0, spent_s=0.0))
         self.assertEqual([e["event"] for e in events].count("leaf_transient_retry_declined"), 0)
-
-
-class TransportSubstepResumeTest(unittest.TestCase):
-    """Item C2: a transport-substep resume preseats the surviving producer as outcomes[0] and
-    relaunches only the deterministic mids + verify — instead of re-paying the billed producer
-    leaf. The consumer arms it defensively (any precondition miss declines to a full re-run)."""
-
-    NODE_KEY = "component/spec_x@0.1.0"
-
-    class _C(_FakeConductor):
-        procs: list = []
-        spawns: list = []
-
-        def _write_lineage(self, refs):  # type: ignore[override]
-            return []
-
-        def _write_dependency_graph(self, refs):  # type: ignore[override]
-            return None
-
-        def spawn_leaf(self, prompt_text, child_env, entry=None, **kwargs):  # type: ignore[override]
-            self.spawns.append(dict(kwargs))
-            idx = len(self.spawns) - 1
-            return self.procs[min(idx, len(self.procs) - 1)]
-
-    def _conductor(self, procs: list, repo: Path, **kw) -> "_C":
-        c = self._C(repo_root=repo, orchestration_id="orch_x",
-                    orchestration_agent_run_id="ORCH", llm_config=_agentic_cfg("claude"), env={}, **kw)
-        c.calls, c.procs, c.spawns = [], procs, []
-        return c
-
-    def _refs(self) -> wc.NodeRefs:
-        return wc.NodeRefs(
-            node_key=self.NODE_KEY, spec_path="spec/component/spec_x",
-            ir_id="x_1_001", pipeline_id="x_1_001", source_id="src_1_001",
-            binary_id="bin_1_001", run_id="run_1_001", source_binary_id="bin_1_001")
-
-    def _seed_row(self, repo: Path, arid: str, step: str, substep: str,
-                  status: str = "pass", **extra) -> None:
-        root = repo / "workspace" / "orchestrations" / "orch_x"
-        root.mkdir(parents=True, exist_ok=True)
-        with (root / "agent_runs.jsonl").open("a", encoding="utf-8") as f:
-            f.write(json.dumps({
-                "agent_run_id": arid, "agent_role": "substep", "step": step,
-                "substep": substep, "status": status, "node_key": self.NODE_KEY, **extra,
-            }) + "\n")
-
-    def _capture_events(self, c) -> list:
-        events: list = []
-        c.emit = lambda ev, **f: events.append((ev, f))  # type: ignore[assignment]
-        return events
-
-    def test_transport_resume_preseats_producer_and_skips_relaunch(self) -> None:
-        with tempfile.TemporaryDirectory() as td:
-            repo = Path(td)
-            # The surviving ir dir exists → a normal run would ROTATE the producer id
-            # (_ensure_fresh_producer_id calls reserve-phase-root); preseat suppresses that.
-            ir_dir = repo / "workspace" / "ir" / wc.node_key_safe(self.NODE_KEY) / "x_1_001"
-            ir_dir.mkdir(parents=True, exist_ok=True)
-            (ir_dir / "spec.ir.yaml").write_text("case: {}\n", encoding="utf-8")
-            c = self._conductor([wc.ProcResult(0, "ok", "")], repo=repo)
-            c._substep_resume = {"compile": {"producer_arid": "run1-producer",
-                                             "artifact_id": "x_1_001"}}
-            refs = self._refs()
-            events = self._capture_events(c)
-            oc = c.run_phase(refs, "compile")
-
-            self.assertEqual(oc.status, "pass")
-            self.assertEqual(oc.decision.action, "advance")
-            self.assertEqual(refs.ir_id, "x_1_001")  # NOT rotated
-            self.assertNotIn("reserve-phase-root", [s for s, _ in c.calls])  # rotation suppressed
-            # The producer leaf is NOT relaunched: record-launch fires only for the deterministic
-            # static substep and the verify leaf; only verify actually spawns a `claude -p`.
-            launched = [cap["--request-json"]["agent_run_id"]
-                        for s, cap in c.calls if s == "record-launch"]
-            self.assertEqual(launched, ["child-1", "child-2"])
-            self.assertEqual(len(c.spawns), 1)
-            sr = next(cap["--result-json"] for s, cap in c.calls if s == "write-step-result")
-            # step_result spans run-1 producer + the run-2 mids/verify (validator-clean:
-            # the superseded producer is vouch-exempt, the fresh rows satisfy the replacement rule).
-            self.assertEqual(sr["substep_agent_run_ids"],
-                             ["run1-producer", "child-1", "child-2"])
-            self.assertEqual(c._producer_arid["compile"], "run1-producer")
-            resumed = [f for e, f in events if e == "substep_resumed"]
-            self.assertEqual(len(resumed), 1)
-            self.assertEqual(resumed[0]["agent_run_id"], "run1-producer")
-
-    def test_consumer_then_run_phase_end_to_end_skips_producer(self) -> None:
-        """The full seam: arm the preseat through the REAL consumer (from an agent_runs producer
-        pass row + surviving ir dir), then run the phase — the producer is not relaunched and the
-        step_result vouches the run-1 producer + the fresh re-run substeps."""
-        with tempfile.TemporaryDirectory() as td:
-            repo = Path(td)
-            self._seed_row(repo, "cmp-prod", "compile", "generate")
-            ir_dir = repo / "workspace" / "ir" / wc.node_key_safe(self.NODE_KEY) / "x_1_001"
-            ir_dir.mkdir(parents=True, exist_ok=True)
-            (ir_dir / "spec.ir.yaml").write_text("case: {}\n", encoding="utf-8")
-            c = self._conductor([wc.ProcResult(0, "ok", "")], repo=repo)
-            refs = self._refs()
-            with redirect_stdout(io.StringIO()):
-                c._consume_transport_resume_directive(
-                    refs, ["compile", "generate", "build", "validate"], self._directive())
-                self.assertEqual(c._substep_resume["compile"],
-                                 {"producer_arid": "cmp-prod", "artifact_id": "x_1_001"})
-                oc = c.run_phase(refs, "compile")
-            self.assertEqual(oc.status, "pass")
-            launched = [cap["--request-json"]["agent_run_id"]
-                        for s, cap in c.calls if s == "record-launch"]
-            self.assertEqual(launched, ["child-1", "child-2"])  # producer NOT relaunched
-            sr = next(cap["--result-json"] for s, cap in c.calls if s == "write-step-result")
-            self.assertEqual(sr["substep_agent_run_ids"],
-                             ["cmp-prod", "child-1", "child-2"])
-            self.assertEqual(c._producer_arid["compile"], "cmp-prod")
-
-    def test_transport_resume_consumer_repoints_generate_source_id(self) -> None:
-        with tempfile.TemporaryDirectory() as td:
-            repo = Path(td)
-            c = self._conductor([], repo=repo)
-            self._seed_row(repo, "gen-prod", "generate", "generate")
-            refs = self._refs()
-            (repo / refs.source_dir("src_recovered") / "src").mkdir(parents=True, exist_ok=True)
-            events = self._capture_events(c)
-            c._consume_transport_resume_directive(
-                refs, ["compile", "generate", "build", "validate"], {
-                    "source": wc_runtime.LEAF_TRANSPORT_RESUME_SOURCE, "node_key": self.NODE_KEY,
-                    "step": "generate", "resume_substep": "verify",
-                    "producer_agent_run_id": "gen-prod", "producer_artifact_id": "src_recovered"})
-            self.assertEqual(refs.source_id, "src_recovered")  # day-boundary default corrected
-            self.assertEqual(c._substep_resume["generate"],
-                             {"producer_arid": "gen-prod", "artifact_id": "src_recovered"})
-            self.assertIn("transport_substep_resume", [e for e, _ in events])
-
-    def _directive(self, **over) -> dict:
-        d = {"source": wc_runtime.LEAF_TRANSPORT_RESUME_SOURCE, "node_key": self.NODE_KEY,
-             "step": "compile", "resume_substep": "verify",
-             "producer_agent_run_id": "cmp-prod", "producer_artifact_id": "x_1_001"}
-        d.update(over)
-        return d
-
-    def test_transport_resume_consumer_declines_gracefully(self) -> None:
-        phases = ["compile", "generate", "build", "validate"]
-        # (setup, directive-overrides, expected decline reason)
-        cases = [
-            ("node_mismatch", {"node_key": "component/other@0.1.0"}, "node_key_mismatch"),
-            ("bad_step", {"step": "validate"}, "step_out_of_scope"),
-            ("not_verify", {"resume_substep": "static"}, "not_verify_resume"),
-            ("incomplete", {"producer_agent_run_id": ""}, "incomplete_directive"),
-            ("no_producer_row", {}, "producer_row_absent"),
-        ]
-        for label, over, reason in cases:
-            with tempfile.TemporaryDirectory() as td:
-                repo = Path(td)
-                c = self._conductor([], repo=repo)
-                refs = self._refs()
-                if label != "no_producer_row":
-                    # a valid producer row + artifact so ONLY the intended check fails
-                    self._seed_row(repo, "cmp-prod", "compile", "generate")
-                    ir = repo / "workspace" / "ir" / wc.node_key_safe(self.NODE_KEY) / "x_1_001"
-                    ir.mkdir(parents=True, exist_ok=True)
-                    (ir / "spec.ir.yaml").write_text("case: {}\n", encoding="utf-8")
-                events = self._capture_events(c)
-                c._consume_transport_resume_directive(refs, phases, self._directive(**over))
-                self.assertFalse(getattr(c, "_substep_resume", {}), f"{label} must not arm")
-                declines = [f["reason"] for e, f in events if e == "transport_resume_declined"]
-                self.assertEqual(declines, [reason], f"{label}")
-
-    def test_transport_resume_consumer_requires_pure_bundle(self) -> None:
-        """A PURE generate.verify reviewer's input is the producer's codegen_bundle.json; reusing a
-        source dir whose bundle is gone would certify blind (empty bundle_document + the re-run
-        post_generate gate skips a missing bundle). The consumer must decline when only src/ survives
-        and arm once the bundle is present."""
-        directive = {"source": wc_runtime.LEAF_TRANSPORT_RESUME_SOURCE, "node_key": self.NODE_KEY,
-                     "step": "generate", "resume_substep": "verify",
-                     "producer_agent_run_id": "gen-prod", "producer_artifact_id": "src_x"}
-        with tempfile.TemporaryDirectory() as td:
-            repo = Path(td)
-            c = self._conductor([], repo=repo)
-            c._pure_leaf_substep = lambda refs, phase, substep: True  # force the pure branch
-            self._seed_row(repo, "gen-prod", "generate", "generate")
-            refs = self._refs()
-            src_root = repo / refs.source_dir("src_x")
-            (src_root / "src").mkdir(parents=True, exist_ok=True)  # src/ present, bundle absent
-            events = self._capture_events(c)
-            c._consume_transport_resume_directive(refs, ["compile", "generate"], directive)
-            self.assertFalse(getattr(c, "_substep_resume", {}))
-            self.assertEqual([f["reason"] for e, f in events
-                              if e == "transport_resume_declined"], ["artifact_dir_missing"])
-            self.assertEqual(refs.source_id, "src_1_001")  # ref NOT mutated on decline
-            # With the canonical bundle present, the same directive arms.
-            (src_root / "codegen_bundle.json").write_text("{}", encoding="utf-8")
-            self._capture_events(c)
-            c._consume_transport_resume_directive(refs, ["compile", "generate"], directive)
-            self.assertEqual(c._substep_resume["generate"],
-                             {"producer_arid": "gen-prod", "artifact_id": "src_x"})
-
-    def test_transport_resume_consumer_declines_when_phase_already_complete(self) -> None:
-        """A phase already checkpointed complete is skipped by run_phase, so preseating it would be
-        wrong — the consumer declines when check_step_completed reports it done."""
-        with tempfile.TemporaryDirectory() as td:
-            repo = Path(td)
-            c = self._conductor([], repo=repo)
-            self._seed_row(repo, "cmp-prod", "compile", "generate")
-            ir = repo / "workspace" / "ir" / wc.node_key_safe(self.NODE_KEY) / "x_1_001"
-            ir.mkdir(parents=True, exist_ok=True)
-            (ir / "spec.ir.yaml").write_text("case: {}\n", encoding="utf-8")
-            c.check_step_completed = lambda nk, st: {"integrity": "ok"}  # type: ignore[assignment]
-            refs = self._refs()
-            events = self._capture_events(c)
-            c._consume_transport_resume_directive(
-                refs, ["compile", "generate"], self._directive())
-            self.assertFalse(getattr(c, "_substep_resume", {}))
-            self.assertEqual([f["reason"] for e, f in events
-                              if e == "transport_resume_declined"], ["phase_already_complete"])
-
-    def test_transport_resume_consumer_declines_when_artifact_dir_missing(self) -> None:
-        with tempfile.TemporaryDirectory() as td:
-            repo = Path(td)
-            c = self._conductor([], repo=repo)
-            self._seed_row(repo, "cmp-prod", "compile", "generate")  # row exists, no ir dir
-            refs = self._refs()
-            events = self._capture_events(c)
-            c._consume_transport_resume_directive(
-                refs, ["compile", "generate"], self._directive())
-            self.assertFalse(getattr(c, "_substep_resume", {}))
-            self.assertEqual([f["reason"] for e, f in events
-                              if e == "transport_resume_declined"], ["artifact_dir_missing"])
-
-    def test_second_transport_death_after_preseat_retombstones_idempotently(self) -> None:
-        """A C-resumed verify that transport-dies AGAIN: run_phase's transport branch supersedes
-        every outcome arid — including the already-superseded run-1 producer — which is a no-op
-        set-union, not an error, and the next derive re-fires."""
-        with tempfile.TemporaryDirectory() as td:
-            repo = Path(td)
-            ir_dir = repo / "workspace" / "ir" / wc.node_key_safe(self.NODE_KEY) / "x_1_001"
-            ir_dir.mkdir(parents=True, exist_ok=True)
-            (ir_dir / "spec.ir.yaml").write_text("case: {}\n", encoding="utf-8")
-            # verify leaf dies of transport (nonzero exit) — static passed in-process first.
-            c = self._conductor([wc.ProcResult(1, "", "Claude AI usage limit reached")], repo=repo)
-            c._substep_resume = {"compile": {"producer_arid": "run1-producer",
-                                             "artifact_id": "x_1_001"}}
-            with redirect_stdout(io.StringIO()):
-                oc = c.run_phase(self._refs(), "compile")
-            self.assertEqual(oc.decision.action, "fail_closed")
-            self.assertTrue(oc.decision.reason.startswith("leaf_transport_error"))
-            tombstoned = [rid for s, cap in c.calls if s == "add-superseded-runs"
-                          for rid in cap["--run-ids"]]
-            # the preseated run-1 producer is re-superseded alongside the fresh static+verify.
-            self.assertIn("run1-producer", tombstoned)
-            self.assertNotIn("write-step-result", [s for s, _ in c.calls])
-
-    def test_transport_resume_is_mode_independent(self) -> None:
-        for mode in ("dev", "prod"):
-            with tempfile.TemporaryDirectory() as td:
-                repo = Path(td)
-                c = self._conductor([], repo=repo, workflow_mode=mode)
-                self._seed_row(repo, "cmp-prod", "compile", "generate")
-                ir = repo / "workspace" / "ir" / wc.node_key_safe(self.NODE_KEY) / "x_1_001"
-                ir.mkdir(parents=True, exist_ok=True)
-                (ir / "spec.ir.yaml").write_text("case: {}\n", encoding="utf-8")
-                refs = self._refs()
-                with redirect_stdout(io.StringIO()):
-                    c._consume_transport_resume_directive(
-                        refs, ["compile", "generate"], self._directive())
-                self.assertIn("compile", getattr(c, "_substep_resume", {}), mode)
 
 
 class NodeAllocationTest(unittest.TestCase):
@@ -18845,8 +18480,8 @@ class PostJudgeClassifierTest(unittest.TestCase):
                 wc.classify_post_judge_violations(
                     [f"workspace/pipelines/x/runs/r/n/{base}: counts must equal per_test aggregate"]),
                 "unrecoverable", base)
-        # Execute-authored evidence is NOT judge-fixable -> unknown (fail_closed), no wasted
-        # warm-resume: the judge re-run cannot rewrite diagnostics/perf/trial_meta.
+        # Execute-authored evidence is NOT judge-fixable -> unknown, whose disposition is
+        # `escalate`: a judge re-run cannot rewrite diagnostics/perf/trial_meta.
         for base in ("perf.json", "diagnostics.json", "trial_meta.json"):
             self.assertEqual(
                 wc.classify_post_judge_violations(
@@ -18887,12 +18522,12 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
     severity classifier) authoring post_judge_meta.json.
 
     The judge here is the RESIDUAL AGENTIC one, by an explicitly narrowed config. Z3 (issue
-    #169) made the judge pure by default, and two of this class's subjects only exist on the
-    agentic path: the `recoverable` -> `warm_resume` disposition (a pure judge's
-    `semantic_review.json` is host-authored, so a violation naming it is the host's defect and
-    terminalizes), and `determine_substep_status` reading the review alone (the pure branch
-    also requires `judge_meta.json`). Their pure counterparts live in
-    `tools/tests/test_pure_leaf_judge.py`."""
+    #169) made the judge pure by default, and one of this class's subjects only exists on the
+    agentic path: `determine_substep_status` reading the review alone (the pure branch also
+    requires `judge_meta.json`). Its pure counterpart lives in
+    `tools/tests/test_pure_leaf_judge.py`. The `recoverable` class no longer has a disposition
+    of its own — issue #176 deleted the warm-resume mini-loop that consumed `warm_resume`, so
+    both graded classes write `fail_closed` on either path."""
 
     def _conductor(self, repo: Path) -> "wc.Conductor":
         return wc.Conductor(repo_root=repo, orchestration_id="t",
@@ -19183,7 +18818,7 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
             self.assertEqual(meta["status"], "pass")
             self.assertIsNone(meta["disposition"])
 
-    def test_post_judge_recoverable_violation_sets_warm_resume(self) -> None:
+    def test_post_judge_recoverable_violation_sets_fail_closed(self) -> None:
         import tempfile
         with tempfile.TemporaryDirectory() as td:
             repo, refs = Path(td), self._refs()
@@ -19198,7 +18833,9 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
             meta = json.loads((repo / refs.run_node_dir() / "post_judge_meta.json").read_text())
             self.assertEqual(meta["status"], "fail")
             self.assertEqual(meta["failure_category"], "pre_judge_violation")
-            self.assertEqual(meta["disposition"], "warm_resume")
+            # `recoverable`, but since issue #176 nothing warm-resumes it: writing
+            # `warm_resume` here would record a follow-up that never happens.
+            self.assertEqual(meta["disposition"], "fail_closed")
             self.assertTrue(any("review_method" in v for v in meta["violations"]))
 
     def test_post_judge_unrecoverable_violation_sets_fail_closed(self) -> None:
@@ -19234,9 +18871,12 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
 
     def test_post_judge_terminal_exit_codes_fail_closed_before_bullet_classification(self) -> None:
         # The severity rules classify a violation by its artifact PATH, and here every bullet
-        # names `semantic_review.json` — the recoverable shape that warm-resumes the judge. Left
+        # names `semantic_review.json` — the recoverable shape, i.e. the judge's own artifact. Left
         # to the bullet path, an uninstalled front end or a stale certified IR would spend the
-        # judge's warm-resume budget re-authoring a review that cannot fix either. The exit code
+        # operator a terminal reason naming a conformance finding instead of the machine or IR
+        # condition that actually stopped the run. (Before issue #176 it ALSO cost the judge's
+        # warm-resume budget; no budget is spent now — the graded classes terminalize at once.)
+        # The exit code
         # is read first, so the recoverable-looking bullet cannot reach the classifier.
         import tempfile
         from tools.validate_pipeline_semantics import (
@@ -19275,7 +18915,9 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
         # actually repair. The marker rides in the MESSAGE rather than in the path, because the
         # severity rules key on the artifact path prefix: a forged FILENAME lands the bullet in
         # `unknown` (disposition `escalate`) for that reason alone, which would make this row
-        # green without saying anything about a text scan.
+        # green without saying anything about a text scan. `fail_closed` here is the
+        # `recoverable` classification's disposition since issue #176; `escalate` is still what
+        # the forged filename would produce, so the row still separates the two.
         import tempfile
         from tools.validate_pipeline_semantics import STALE_DEPENDENCY_IR_MARKER
         for marker in (STALE_DEPENDENCY_IR_MARKER, "[fortran-structure-unavailable]"):
@@ -19292,7 +18934,7 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
                 meta = json.loads(
                     (repo / refs.run_node_dir() / "post_judge_meta.json").read_text())
             self.assertEqual(meta["failure_category"], "pre_judge_violation", marker)
-            self.assertEqual(meta["disposition"], "warm_resume", marker)
+            self.assertEqual(meta["disposition"], "fail_closed", marker)
 
     def test_post_judge_emits_scoped_args_with_both_in_flight(self) -> None:
         # post_judge runs --stage pre_judge scoped to its own run, declaring BOTH the judge and
@@ -19749,12 +19391,16 @@ _INCIDENT_DICT_REASON = {
 }
 
 
-class VerifyMetaSchemaWarmResumeTests(unittest.TestCase):
+class VerifyMetaSchemaGateTests(unittest.TestCase):
     """A verify leaf that authors a CONTRACT-VIOLATING stage meta (canonically:
     last_fail_reason as a structured dict instead of one plain string) must be caught at the
-    write point and warm-resumed to re-author it. The runtime's write gate only checks PASS
-    step_results, and a Generate reopen rotates a fresh source dir without deleting anything,
-    so a violation that survives the phase is IMMUTABLE and unrepairable (E2E #4)."""
+    write point: its verify substep FAILS, and `classify_failure` escalates the phase as
+    `{phase}_fail_meta_schema` without consulting the meta's own (untrustworthy) severity.
+
+    The warm-resume mini-loop that used to re-author the meta in place was deleted by issue
+    #176 — no run ever reached it (0 `verify_meta_schema_warm_resume` events in any run_log
+    since it landed at `e75db4e`), and the pure-leaf transition made it structurally
+    unreachable besides. The gate itself is what remains, and it is what these pin."""
 
     def _refs(self) -> wc.NodeRefs:
         return wc.NodeRefs(
@@ -19765,8 +19411,9 @@ class VerifyMetaSchemaWarmResumeTests(unittest.TestCase):
         )
 
     def _repair_requests(self, c: _FakeConductor) -> list[dict]:
-        """The launch requests that carried a repair (the mini-loop's re-run turns). A
-        non-repair launch still carries the literal `repair_reason: "none"` the templates use."""
+        """The launch requests that carried a repair. Nothing under this class may produce one
+        any more; a non-repair launch still carries the literal `repair_reason: "none"` the
+        templates use."""
         return [
             cap["--request-json"]
             for sub, cap in c.calls
@@ -19786,11 +19433,10 @@ class VerifyMetaSchemaWarmResumeTests(unittest.TestCase):
         return path
 
     def _conductor(self, repo: Path, refs: wc.NodeRefs, phase: str,
-                   metas_by_verify_attempt: list[dict]) -> _FakeConductor:
-        """A fake whose verify leaf authors `metas_by_verify_attempt[n-1]` on its n-th run (an
-        empty list models a leaf that writes NOTHING), and whose verify gate mirrors the real
-        one (status + freshness + stage-meta contract). Every other substep passes unless
-        `status_fn` says otherwise."""
+                   verify_meta: dict | None) -> _FakeConductor:
+        """A fake whose verify leaf authors `verify_meta` on every run (None models a leaf that
+        writes NOTHING), and whose verify gate mirrors the real one (status + freshness +
+        stage-meta contract). Every other substep passes unless `status_fn` says otherwise."""
         meta_path = self._meta_path(repo, refs, phase)
         state = {"verify_runs": 0}
 
@@ -19803,22 +19449,13 @@ class VerifyMetaSchemaWarmResumeTests(unittest.TestCase):
             def _ensure_fresh_producer_id(self, r, p):  # type: ignore[override]
                 return None
 
-            # The real precondition (a claude session transcript on disk for the failed verify
-            # leaf) cannot hold for a fake arid; the loop's resumability guard is pinned
-            # separately by test_no_warm_session_skips_loop_and_escalates.
-            def _verify_session_resumable(self, verify_arid, phase="generate", **kw):  # type: ignore[override]
-                return True
-
             def spawn_leaf(self, prompt_text, child_env, entry=None, **kwargs):  # type: ignore[override]
                 if self._current_substep != "verify":
                     return wc.ProcResult(0, "", "")
-                n = state["verify_runs"]
                 state["verify_runs"] += 1
-                if metas_by_verify_attempt:
-                    meta = metas_by_verify_attempt[
-                        min(n, len(metas_by_verify_attempt) - 1)]
+                if verify_meta is not None:
                     meta_path.parent.mkdir(parents=True, exist_ok=True)
-                    meta_path.write_text(json.dumps(meta), encoding="utf-8")
+                    meta_path.write_text(json.dumps(verify_meta), encoding="utf-8")
                 return wc.ProcResult(self.verify_leaf_returncode, "", "")
 
             def run_substep(self, r, p, substep, **kwargs):  # type: ignore[override]
@@ -19878,8 +19515,8 @@ class VerifyMetaSchemaWarmResumeTests(unittest.TestCase):
 
     def test_pass_status_meta_missing_key_fails_verify_instead_of_crashing(self) -> None:
         # A pass-status meta with a MISSING required key used to reach write_step_result and
-        # raise ValueError there (crashing the conductor). It now fails the verify gate, which
-        # routes it into the warm-retry loop instead.
+        # raise ValueError there (crashing the conductor). It now fails the verify gate, and
+        # `classify_failure` escalates the phase as `generate_fail_meta_schema`.
         with tempfile.TemporaryDirectory() as td:
             repo, refs = Path(td), self._refs()
             meta = _conformant_stage_meta("pass")
@@ -19897,7 +19534,7 @@ class VerifyMetaSchemaWarmResumeTests(unittest.TestCase):
 
     def test_contract_findings_empty_when_meta_absent(self) -> None:
         # An absent meta is an ordinary verify failure (the leaf wrote nothing), NOT this
-        # class — the mini-loop must not fire and consume budget on it.
+        # class — the meta-schema escalation must not claim it.
         with tempfile.TemporaryDirectory() as td:
             repo, refs = Path(td), self._refs()
             c = wc.Conductor(repo_root=repo, orchestration_id="o",
@@ -19905,112 +19542,60 @@ class VerifyMetaSchemaWarmResumeTests(unittest.TestCase):
             self.assertEqual(c._stage_meta_contract_findings(refs, "generate"), [])
             self.assertEqual(c._stage_meta_contract_findings(refs, "build"), [])
 
-    # -- 3c: the warm-resume mini-loop -------------------------------------------------
+    # -- 3c: the escalation the violation earns ----------------------------------------
 
-    def test_verify_meta_schema_warm_resumes_to_pass(self) -> None:
-        # The violating meta is re-authored by the SAME (warm-resumed) verify leaf, and the
-        # phase certifies pass. Assert the repair payload is the slim reuse shape and that the
-        # findings name the actual violation.
-        for phase in ("generate", "compile"):
-            with self.subTest(phase=phase), tempfile.TemporaryDirectory() as td:
-                repo, refs = Path(td), self._refs()
-                bad = _conformant_stage_meta("fail", last_fail_reason=_INCIDENT_DICT_REASON)
-                good = _conformant_stage_meta("pass")
-                self._write_meta(repo, refs, phase, bad)
-                c = self._conductor(repo, refs, phase, [bad, good])
-                oc = c.run_phase(refs, phase)
+    def test_a_transport_failed_verify_fail_closes_before_the_meta_schema_gate(self) -> None:
+        """The ORDER of two terminal branches, which nothing else observes.
 
-                self.assertEqual(oc.status, "pass")
-                self.assertEqual(oc.decision.action, "advance")
-                self.assertEqual(c.verify_runs["verify_runs"], 2)  # original + one repair
-                # The superseded verify attempt was tombstoned so a later --resume can pass.
-                sup = [cap for s, cap in c.calls if s == "add-superseded-runs"]
-                self.assertEqual(len(sup), 1)
-                self.assertIn(f"{phase}_verify_meta_schema_warm_resume_orphan",
-                              sup[0]["--reason"])
-                # The repair is a reuse turn aimed at the VERIFY leaf itself (not the producer),
-                # so a resumable session inherits its context.
-                repairs = self._repair_requests(c)
-                self.assertEqual(len(repairs), 1)
-                self.assertEqual(repairs[0]["repair_reason"], "verify_meta_schema")
-                self.assertEqual(repairs[0]["repair_strategy"], "reuse")
-                self.assertEqual(repairs[0]["issue_severity"], "major")
-                # The repair targets the verify leaf's own arid (the last substep of the phase).
-                self.assertEqual(repairs[0]["repair_target_agent_run_id"],
-                                 f"child-{len(wc.SUBSTEPS[phase])}")
-                self.assertEqual(repairs[0]["substep"], "verify")
+        `run_phase`'s transport branch (a verify leaf with a nonzero returncode) must return
+        BEFORE `classify_failure` reaches its `{phase}_fail_meta_schema` escalate. The two
+        disagree about what happened and about where the attempt goes: `fail_closed` is
+        terminal, while `escalate` hands the attempt to the diagnostician, which may route it
+        back to a retry or a reuse — so a leaf that died of a transport error and authored
+        nothing would be treated as one that authored a bad meta.
 
-    def test_verify_meta_schema_findings_name_the_violation(self) -> None:
+        Restored in round 3 of issue #176's review. The class this row lives in used to carry
+        `test_transport_failed_verify_is_not_repaired`, whose subject was the mini-loop, and
+        deleting the loop took the ORDER's only witness with it: a mutant that lets the
+        meta-schema branch win (`if transport is not None and not
+        self._stage_meta_contract_findings(...)`) is red on `origin/main` and GREEN at the
+        commit that deleted it. The fixture's `verify_leaf_returncode` hook survived the
+        rewrite unused; this is the row that uses it.
+        """
         with tempfile.TemporaryDirectory() as td:
             repo, refs = Path(td), self._refs()
             bad = _conformant_stage_meta("fail", last_fail_reason=_INCIDENT_DICT_REASON)
             self._write_meta(repo, refs, "generate", bad)
-            c = self._conductor(repo, refs, "generate", [bad, _conformant_stage_meta("pass")])
-            c.run_phase(refs, "generate")
-
-            repairs = self._repair_requests(c)
-            self.assertEqual(len(repairs), 1)
-            # The findings are PURE gate output — the slim renderer fences them as untrusted
-            # data the leaf is told not to obey, so an instruction smuggled in here would be
-            # both ignored and self-contradictory.
-            self.assertEqual(
-                repairs[0]["repair_findings"],
-                "source_meta.json last_fail_reason must be string or null")
-            # "Re-author only the meta" is imposed STRUCTURALLY instead: the repair turn's
-            # writable set is the meta alone, so the producer sources (which generate.verify's
-            # normal allowed_output_paths also lists) are not writable on this turn.
-            self.assertEqual(repairs[0]["allowed_output_paths"],
-                             [f"{refs.source_dir()}/source_meta.json"])
-
-    def test_verify_meta_schema_repair_then_normal_severity_routing(self) -> None:
-        # The repaired meta records a GENUINE fail (with a readable string reason). The
-        # mini-loop exits after one turn and the ordinary verify-severity gate routes it —
-        # repairing the schema must not swallow the real finding.
-        with tempfile.TemporaryDirectory() as td:
-            repo, refs = Path(td), self._refs()
-            bad = _conformant_stage_meta("fail", last_fail_reason=_INCIDENT_DICT_REASON)
-            repaired = _conformant_stage_meta(
-                "fail", last_fail_reason="model.f90: z_b associate directive missing",
-                last_fail_severity="minor")
-            self._write_meta(repo, refs, "generate", bad)
-            c = self._conductor(repo, refs, "generate", [bad, repaired])
+            c = self._conductor(repo, refs, "generate", bad)
+            # The verify leaf exits nonzero (transport), leaving a contract-violating meta on
+            # disk — the exact state in which the two branches disagree.
+            c.verify_leaf_returncode = 1
             oc = c.run_phase(refs, "generate")
 
             self.assertEqual(oc.status, "fail")
-            self.assertEqual(c.verify_runs["verify_runs"], 2)  # exactly one repair turn
-            self.assertNotEqual(oc.decision.reason, "generate_fail_meta_schema")
-            self.assertEqual(oc.decision.action, "retry")  # verify_minor -> same-phase repair
+            self.assertEqual(oc.decision.action, "fail_closed")
+            self.assertIn("leaf_transport_error", oc.decision.reason)
+            self.assertEqual(c.verify_runs["verify_runs"], 1)
+            self.assertEqual(self._repair_requests(c), [])
 
-    def test_verify_meta_schema_budget_exhaustion_escalates(self) -> None:
-        # A leaf that keeps writing the violating meta exhausts MAX_ATTEMPTS_PER_PHASE and
-        # terminalizes as `{phase}_fail_meta_schema` — bounded, never an infinite loop, and
-        # never routed by the (untrustworthy) severity field.
+    def test_schema_violating_meta_escalates_without_a_repair_turn(self) -> None:
+        # The behaviour change of issue #176, witnessed: a leaf that writes the violating meta
+        # terminalizes on its FIRST verify run as `{phase}_fail_meta_schema`. Before the
+        # deletion this same fixture spent `1 + MAX_ATTEMPTS_PER_PHASE` verify runs on repair
+        # turns first. The terminal decision is unchanged; only the turns spent reaching it are.
         with tempfile.TemporaryDirectory() as td:
             repo, refs = Path(td), self._refs()
             bad = _conformant_stage_meta(
                 "fail", last_fail_reason=_INCIDENT_DICT_REASON, last_fail_severity="minor")
             self._write_meta(repo, refs, "generate", bad)
-            c = self._conductor(repo, refs, "generate", [bad])
+            c = self._conductor(repo, refs, "generate", bad)
             oc = c.run_phase(refs, "generate")
 
             self.assertEqual(oc.status, "fail")
-            self.assertEqual(oc.decision.action, "escalate")
-            self.assertEqual(oc.decision.reason, "generate_fail_meta_schema")
-            # original + MAX_ATTEMPTS_PER_PHASE repair turns, then stop.
-            self.assertEqual(c.verify_runs["verify_runs"], 1 + wc.MAX_ATTEMPTS_PER_PHASE)
-
-    def test_mini_loop_does_not_fire_on_a_conformant_failing_verify(self) -> None:
-        # An ordinary semantic verify fail (conformant meta) must not spawn any repair turn
-        # here — that is the severity gate's job.
-        with tempfile.TemporaryDirectory() as td:
-            repo, refs = Path(td), self._refs()
-            meta = _conformant_stage_meta("fail", last_fail_reason="physics mismatch",
-                                          last_fail_severity="minor")
-            self._write_meta(repo, refs, "generate", meta)
-            c = self._conductor(repo, refs, "generate", [meta])
-            oc = c.run_phase(refs, "generate")
-            self.assertEqual(oc.status, "fail")
-            self.assertEqual(c.verify_runs["verify_runs"], 1)  # no repair turn
+            self.assertEqual((oc.decision.action, oc.decision.reason),
+                             ("escalate", "generate_fail_meta_schema"))
+            self.assertEqual(c.verify_runs["verify_runs"], 1)
+            self.assertEqual(self._repair_requests(c), [])
             self.assertEqual([cap for s, cap in c.calls if s == "add-superseded-runs"], [])
 
     # -- 3d / 3e: routing guard + findings recomputation --------------------------------
@@ -20044,166 +19629,6 @@ class VerifyMetaSchemaWarmResumeTests(unittest.TestCase):
             self.assertIsNone(c._read_repair_findings(refs, "verify_minor", "generate"))
 
     # -- loop preconditions: only repair a meta THIS verify leaf authored -----------------
-
-    def test_transport_failed_verify_is_not_repaired(self) -> None:
-        # A leaf that died of an infra/transport error (usage limit, OOM) authored nothing. If
-        # the loop repaired it, `outcomes[-1] = oc` would erase the nonzero returncode that
-        # run_phase's transport branch fail_closes on — silently certifying a phase whose verify
-        # leaf never ran to completion.
-        with tempfile.TemporaryDirectory() as td:
-            repo, refs = Path(td), self._refs()
-            bad = _conformant_stage_meta("fail", last_fail_reason=_INCIDENT_DICT_REASON)
-            self._write_meta(repo, refs, "generate", bad)
-            c = self._conductor(repo, refs, "generate", [bad, _conformant_stage_meta("pass")])
-            # The verify leaf exits nonzero (transport), leaving the producer's dirty meta.
-            c.verify_leaf_returncode = 1
-            oc = c.run_phase(refs, "generate")
-
-            self.assertEqual(oc.status, "fail")
-            self.assertEqual(oc.decision.action, "fail_closed")
-            self.assertIn("leaf_transport_error", oc.decision.reason)
-            self.assertEqual(c.verify_runs["verify_runs"], 1)  # the dead leaf only
-            self.assertEqual(self._repair_requests(c), [])  # no repair turn
-            # run_phase's own transport branch tombstones; the mini-loop's must not fire.
-            self.assertEqual(
-                [cap for s, cap in c.calls if s == "add-superseded-runs"
-                 and "meta_schema" in cap["--reason"]], [])
-
-    def test_producer_authored_dirty_meta_is_not_attributed_to_a_no_op_verify(self) -> None:
-        # The freshness clause exists to reject an inspect-only verify that writes NOTHING. If
-        # the loop fired on a meta the PRODUCER left dirty, it would hand that no-op verify a
-        # "just fix the meta" turn whose rewrite also satisfies the freshness gate — letting it
-        # certify `pass` without doing the verification it skipped. So the loop must only claim
-        # a meta whose mtime proves THIS verify leaf wrote it.
-        with tempfile.TemporaryDirectory() as td:
-            repo, refs = Path(td), self._refs()
-            bad = _conformant_stage_meta("pass", last_fail_reason=_INCIDENT_DICT_REASON)
-            meta_path = self._write_meta(repo, refs, "generate", bad)
-            os.utime(meta_path, (1_000.0, 1_000.0))  # authored long before the verify launch
-            c = self._conductor(repo, refs, "generate", [])  # verify leaf writes nothing
-            oc = c.run_phase(refs, "generate")
-
-            self.assertEqual(oc.status, "fail")
-            self.assertEqual(c.verify_runs["verify_runs"], 1)  # original verify, no repair turn
-            self.assertEqual(self._repair_requests(c), [])
-            # Routed as the meta-schema class (escalate), NOT silently passed.
-            self.assertEqual((oc.decision.action, oc.decision.reason),
-                             ("escalate", "generate_fail_meta_schema"))
-
-    def test_no_warm_session_skips_loop_and_escalates(self) -> None:
-        # Without a resumable session the launch degrades to a COLD full prompt, which carries
-        # no findings at all — the leaf would re-verify blind, 3x, then escalate anyway. Skip
-        # straight to the escalate instead of burning the budget.
-        with tempfile.TemporaryDirectory() as td:
-            repo, refs = Path(td), self._refs()
-            bad = _conformant_stage_meta("fail", last_fail_reason=_INCIDENT_DICT_REASON)
-            self._write_meta(repo, refs, "generate", bad)
-            c = self._conductor(repo, refs, "generate", [bad, _conformant_stage_meta("pass")])
-            c._verify_session_resumable = lambda arid, phase="generate", **kw: False  # type: ignore[assignment]
-            oc = c.run_phase(refs, "generate")
-
-            self.assertEqual(c.verify_runs["verify_runs"], 1)  # the original verify only
-            self.assertEqual(self._repair_requests(c), [])
-            self.assertEqual((oc.decision.action, oc.decision.reason),
-                             ("escalate", "generate_fail_meta_schema"))
-
-    def test_session_lost_mid_loop_stops_instead_of_degrading_to_cold(self) -> None:
-        # Resumability is re-checked EVERY iteration: each repair turn is a new session that may
-        # itself not be resumable. Without the re-check, iteration 2 would silently launch a COLD
-        # full prompt — which carries no findings at all — and re-verify blind.
-        with tempfile.TemporaryDirectory() as td:
-            repo, refs = Path(td), self._refs()
-            bad = _conformant_stage_meta("fail", last_fail_reason=_INCIDENT_DICT_REASON)
-            self._write_meta(repo, refs, "generate", bad)
-            c = self._conductor(repo, refs, "generate", [bad])  # leaf keeps writing the dict
-            # Only the ORIGINAL verify leaf's session survives; the repair turn's does not.
-            original_verify_arid = f"child-{len(wc.SUBSTEPS['generate'])}"
-            c._verify_session_resumable = (  # type: ignore[assignment]
-                lambda arid, phase="generate", **kw: arid == original_verify_arid)
-            oc = c.run_phase(refs, "generate")
-
-            self.assertEqual(len(self._repair_requests(c)), 1)  # one turn, then stop
-            self.assertEqual(c.verify_runs["verify_runs"], 2)
-            self.assertEqual((oc.decision.action, oc.decision.reason),
-                             ("escalate", "generate_fail_meta_schema"))
-
-    def test_producer_substep_failure_does_not_trigger_the_verify_loop(self) -> None:
-        # The loop is scoped to a failed VERIFY substep. Without that scoping a producer failure
-        # (index 0) with a dirty meta on disk would spawn 3 spurious verify turns AND overwrite
-        # outcomes[-1] — dropping the actually-failing producer from step_result.
-        # substep_agent_run_ids and pointing _producer_arid at a verify leaf.
-        with tempfile.TemporaryDirectory() as td:
-            repo, refs = Path(td), self._refs()
-            self._write_meta(repo, refs, "generate", _conformant_stage_meta(
-                "fail", last_fail_reason=_INCIDENT_DICT_REASON))
-            c = self._conductor(repo, refs, "generate", [])
-            c.status_fn = lambda phase, substep, n: (
-                "fail" if substep == "generate" else "pass")
-            oc = c.run_phase(refs, "generate")
-
-            self.assertEqual(oc.status, "fail")
-            self.assertEqual(c.verify_runs["verify_runs"], 0)  # verify never launched
-            self.assertEqual(self._repair_requests(c), [])
-            self.assertEqual([cap for s, cap in c.calls if s == "add-superseded-runs"], [])
-            # The failed producer is still the recorded outcome.
-            self.assertEqual(oc.substep_arids, ["child-1"])
-            self.assertEqual(c._producer_arid["generate"], "child-1")
-
-    def test_build_launch_request_slim_for_verify_meta_repair(self) -> None:
-        # The verify repair renders the findings-only SLIM prompt (warm resume), and that
-        # prompt satisfies the launch-integrity marker set for a slim request.
-        from tools.orchestration_runtime import (
-            _render_slim_repair_launch_prompt,
-            _required_launch_prompt_markers,
-        )
-        refs = self._refs()
-        repair = {
-            "issue_severity": "major", "repair_strategy": "reuse",
-            "repair_target_agent_run_id": "child-1", "repair_reason": "verify_meta_schema",
-            "repair_findings": "source_meta.json last_fail_reason must be string or null",
-        }
-        req = wc.build_launch_request(
-            refs, step="generate", substep="verify", orchestration_id="orch_x",
-            orchestration_agent_run_id="parent", child_agent_run_id="child-2",
-            agent_model="m", workflow_mode="dev", repair=repair, warm_resume=True)
-        self.assertTrue(req.get("warm_resume"))
-        self.assertEqual(req["skill_must_read_refs"], "")
-        # generate.verify's output set is source_meta.json on ALL turns (it never rewrites the
-        # producer sources), so the meta-schema repair turn is no different — no special case.
-        self.assertEqual(req["allowed_output_paths"],
-                         [f"{refs.source_dir()}/source_meta.json"])
-
-        prompt = _render_slim_repair_launch_prompt(req)
-        for marker in _required_launch_prompt_markers(req):
-            self.assertIn(marker, prompt)
-        # The resumed leaf is the VERIFY leaf; the prompt must not tell it it is the producer.
-        self.assertIn("generate.verify", prompt)
-        self.assertIn(repair["repair_findings"], prompt)
-        # The prompt's TRUSTED deliverable list names only the meta, so "re-write your
-        # deliverables" cannot be read as license to touch the sources.
-        self.assertNotIn("_model.f90", prompt)
-
-    def test_verify_session_resumable_predicate(self) -> None:
-        # The mini-loop tests stub this predicate (a fake arid can have no real session
-        # transcript), so its BODY needs its own coverage: warm resume requires the claude
-        # backend AND a surviving session for the failed verify leaf.
-        with tempfile.TemporaryDirectory() as td:
-            repo = Path(td)
-
-            def _conductor(backend: str) -> wc.Conductor:
-                return wc.Conductor(repo_root=repo, orchestration_id="o",
-                                    orchestration_agent_run_id="ORCH",
-                                    llm_config=_cfg(backend), env={})
-
-            claude = _conductor("claude")
-            claude._claude_session_resumable = lambda arid, **kw: arid == "live-arid"  # type: ignore[assignment]
-            self.assertTrue(claude._verify_session_resumable("live-arid"))
-            self.assertFalse(claude._verify_session_resumable("gc-ed-arid"))
-
-            # codex has no session-resume primitive at all -> never warm.
-            codex = _conductor("codex")
-            codex._claude_session_resumable = lambda arid, **kw: True  # type: ignore[assignment]
-            self.assertFalse(codex._verify_session_resumable("live-arid"))
 
     def test_build_launch_request_narrows_a_normal_verify_launch_too(self) -> None:
         # generate.verify's output set is source_meta.json on EVERY turn (not just a meta-schema
@@ -20400,7 +19825,6 @@ class LeafEntryThreadingTests(unittest.TestCase):
         repair = {"repair_strategy": "reuse", "repair_target_agent_run_id": "prior-arid"}
         self.assertIsNone(c._resolve_reuse_resume(repair, "generate", "generate"))
         self.assertEqual([e["event"] for e in emitted], ["resume_session_unavailable"])
-        self.assertFalse(c._verify_session_resumable("prior-arid"))
 
     def test_pure_dispatch_follows_the_pure_capability(self) -> None:
         # The narrowing is on the LEAF, not on `defaults`: `defaults` also runs the escalate
@@ -20915,19 +20339,6 @@ class LeafEntryThreadingTests(unittest.TestCase):
         self.assertEqual(row["agent_session_id"], "thread-abc")
         self.assertEqual(row["context_id"], "ctx-abc")
         self.assertEqual(row["agent_model"], "gpt-5.6-sol")
-
-    def test_verify_session_resumability_is_asked_of_the_right_phase(self) -> None:
-        """Its caller runs for compile AND generate; hardcoding generate would refuse a
-        compile repair the session can serve."""
-        c = wc.Conductor(
-            repo_root=Path("/tmp/repo"), orchestration_id="o", orchestration_agent_run_id="O",
-            env={}, llm_config=self._config_text(
-                "defaults:\n  provider: claude_cli\n  model: opus\n"
-                "phases:\n  generate:\n    substeps:\n      verify:\n"
-                "        capabilities: [agentic, pure]\n"))
-        c._claude_session_resumable = lambda arid, **kw: True   # type: ignore[assignment]
-        self.assertTrue(c._verify_session_resumable("arid", "compile"))
-        self.assertFalse(c._verify_session_resumable("arid", "generate"))
 
     # --- the guard that keeps the conversion honest --------------------------------------
 

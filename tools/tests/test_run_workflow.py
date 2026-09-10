@@ -822,28 +822,6 @@ class RunWorkflowTests(unittest.TestCase):
             init_calls = [c for c in calls if c and c[0] == "init"]
             self.assertNotIn("--wait-usage-reset", init_calls[0])
 
-    def test_resume_forwards_the_recorded_orchestration_agent_model(self) -> None:
-        """The orchestration AGENT's own recorded model reaches the resume init (and thus
-        repair-agent-runs), so its agent_runs row keeps the attribution the original run had.
-        There is no flag to override it any more: the record is the only source."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._seed_spec_tree(repo_root)
-            self._seed_resumable_orchestration(
-                repo_root, "orch_20260101T000000Z_aaaaaaaa",
-                spec_ref="spec/problem/test.md", until_phase="Build",
-                mode="dev", backend="claude",
-                invocation={"agent_model": "claude-opus-4-8"},
-            )
-            code, out, calls = self._run_main_with_fake_runtime(
-                ["--resume", "--repo-root", str(repo_root), "--no-run-conductor"]
-            )
-            self.assertEqual(code, 0, out)
-            init_calls = [c for c in calls if c and c[0] == "init"]
-            self.assertIn("--resume-from-checkpoint", init_calls[0])
-            idx = init_calls[0].index("--agent-model")
-            self.assertEqual(init_calls[0][idx + 1], "claude-opus-4-8")
-
     def test_a_resume_survives_a_missing_preflight_json(self) -> None:
         """A run killed between `init` and `write_preflight` leaves no `preflight.json`. Its
         backend comes from the RECORDED leaf-LLM configuration, so nothing about it is
@@ -995,7 +973,11 @@ class RunWorkflowTests(unittest.TestCase):
             # claude backend on its unmodified command has an alias worth recording.
             self.assertNotIn("--agent-model", init_call)
 
-    def test_resume_codex_restores_recorded_agent_model(self) -> None:
+    def test_a_codex_resume_derives_the_backend_from_the_record(self) -> None:
+        """The resumed run's backend comes from the RECORDED pin, not from the shared
+        `./llm.yaml`. The orchestration agent's recorded model is NOT forwarded to the
+        resume init any more: its only consumer was `repair-agent-runs`' sibling
+        derivation, deleted by issue #176, and `enable_checkpoint_resume` never took it."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._seed_spec_tree(repo_root)
@@ -1009,9 +991,9 @@ class RunWorkflowTests(unittest.TestCase):
             )
             self.assertEqual(code, 0, out)
             init_call = next(c for c in calls if c and c[0] == "init")
-            idx = init_call.index("--agent-model")
-            self.assertEqual(init_call[idx + 1], "gpt-5.3-codex")
-            # ...and this is genuinely a CODEX resume. Without this the test passed identically
+            self.assertIn("--resume-from-checkpoint", init_call)
+            self.assertNotIn("--agent-model", init_call)
+            # This is genuinely a CODEX resume. Without this the test passed identically
             # against a claude configuration: the backend comes from the recorded pin, so a
             # fixture that pinned the shared `./llm.yaml` made `backend="codex"` reach nothing.
             self.assertEqual(out["llm"], "codex")
@@ -6692,26 +6674,6 @@ class StdoutFormatTests(unittest.TestCase):
                "window": "session", "dead_agent_run_id": "ar_dead", "orchestration_id": "o"}),
             "    [warn   ] usage limit in generate.generate [wait 1] (source=probe/session): "
             "waiting 420.0s for the reset, then re-launching",
-        )
-        # Item C: a transport-substep resume announces the producer reuse, the skipped producer
-        # substep, and (when it declines) the fallback to a full phase re-run.
-        self.assertEqual(
-            f({"status": "info", "event": "transport_substep_resume", "node_key": "n",
-               "step": "compile", "resume_substep": "verify", "producer_arid": "ar_prod",
-               "artifact_id": "ir_x_001", "orchestration_id": "o"}),
-            "    [resume ] compile resumes at verify — producer ar_prod / ir_x_001 reused",
-        )
-        self.assertEqual(
-            f({"status": "info", "event": "substep_resumed", "node_key": "n",
-               "phase": "compile", "substep": "generate", "agent_run_id": "ar_prod",
-               "orchestration_id": "o"}),
-            "    [substep] compile.generate reused (resumed)",
-        )
-        self.assertEqual(
-            f({"status": "info", "event": "transport_resume_declined", "node_key": "n",
-               "reason": "artifact_dir_missing", "orchestration_id": "o"}),
-            "    [warn   ] transport substep resume declined: artifact_dir_missing "
-            "— full phase re-run",
         )
         # Driver-liveness gates. These four are the operator-visible output of the
         # issue-#11 recovery path, and `human` is the default stdout format, so they

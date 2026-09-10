@@ -188,7 +188,7 @@ SUBSTEPS: dict[str, tuple[str | None, ...]] = {
     #   - pre_judge  (Conductor._pre_judge_inproc):  the pre-spawn dependency-DAG readiness
     #     check (a --with-deps closure not built+validated in its own pipeline). Runs BEFORE
     #     execute so a cold judge is never spawned for an incomplete closure. A failure is a
-    #     non-physics integrity blocker -> fail_closed (never warm-resumed; no judge has run).
+    #     non-physics integrity blocker -> fail_closed (no judge has run).
     #   - execute    (Conductor._execute_inproc):    unchanged binary run + evidence capture.
     #   - judge      (LLM leaf):                      a semantic pass holding neither a gate
     #     nor an MCP grant (ALLOWED_VALIDATE_PIPELINE_STAGES[(validate,judge)] == frozenset()).
@@ -197,9 +197,9 @@ SUBSTEPS: dict[str, tuple[str | None, ...]] = {
     #     used to make, and the reason that older phrase is gone from these three lines.
     #   - post_judge (Conductor._post_judge_inproc):  runs `validate_pipeline_semantics
     #     --stage pre_judge` (the gate the judge leaf used to own) and CLASSIFIES the
-    #     violation severity. A recoverable (leaf/judge-authored conformance) violation
-    #     warm-resumes the judge in place; an orchestration-record/DAG integrity violation
-    #     (or an unknown one) is fail_closed. NOTE the naming: the substep is `post_judge`
+    #     violation severity. Both graded classes — leaf/judge-authored conformance and
+    #     orchestration-record/DAG integrity — are fail_closed; an unknown one escalates.
+    #     (Until issue #176 a conformance violation warm-resumed the judge in place.) NOTE the naming: the substep is `post_judge`
     #     (it runs AFTER the judge) but the validator STAGE it invokes is literally named
     #     `pre_judge` ("before pass-certification") — do not confuse the two.
     "validate": ("pre_judge", "execute", "judge", "post_judge"),
@@ -572,8 +572,12 @@ GENERATE_VERDICT_FAILURE_ROUTING: dict[str, tuple[str, str]] = {
 # repaired in the same bounded warm loop the other reviewers use, under this category.
 # There is deliberately NO routing table beside it: when the budget IS exhausted the host has
 # written no `semantic_review.json`, so `_judge_semantic_decision` reads `""` and `run_phase`'s
-# existing `judge_conformance_block` raises `validate_judge_conformance_violation` — the very
-# terminus the agentic judge's exhausted warm-resume budget reached. One routing story, not two.
+# existing `judge_conformance_block` raises `validate_judge_conformance_violation`, so the
+# document-violation class needs no routing table of its own. It is NOT the same terminus a
+# post_judge conformance violation reaches: that one is `validate_pre_judge_violation` and
+# fail_closed (`classify_validate_gate_failure`), while this one is
+# `validate_judge_conformance_violation` and escalates in prod. Two reasons, one of which
+# already existed — which is the point: no third one was added.
 SEMANTIC_REVIEW_DOCUMENT_VIOLATION = "semantic_review_document_violation"
 JUDGE_DOCUMENT_FAILURE_CATEGORIES: tuple[str, ...] = (
     "pure_response_unparseable",
@@ -653,16 +657,20 @@ VALIDATE_JUDGE_ROUTING: dict[tuple[str, str], tuple[str, str | None]] = {
 # violation strings (no structured category), each prefixed with the offending artifact
 # path, so the classifier keys on that leading path token.
 #
-#   - recoverable   : the violation is judge-fixable by re-running the judge (warm resume).
+#   - recoverable   : the violation names an artifact the judge itself authored, so re-running
+#                     the judge COULD in principle fix it. Nothing does: issue #176 deleted the
+#                     warm-resume mini-loop, and both graded classes now write `fail_closed`.
+#                     The name is kept because it still says WHOSE artifact failed.
 #                     As of R2 this is scoped to the judge's ONLY deliverable —
 #                     semantic_review.json (incl. the review_method literal). NOTHING else is
 #                     judge-fixable: verdict.json is HOST-authored at execute, and the derived
 #                     aggregate_verdict.json / summary.json / validate_meta.json are HOST-authored
 #                     at post_judge (correct-by-construction from the host verdict.json). A
-#                     warm-resume re-runs the judge but NOT execute, and re-derives the artifacts
+#                     a judge re-run would not re-run execute, and would re-derive the artifacts
 #                     from the SAME verdict.json, so a violation naming any of them would repeat
-#                     identically until the budget is exhausted — a conductor/derivation defect,
-#                     not a judge one, so it must terminalize instead of wasting judge spawns.
+#                     identically — a conductor/derivation defect, not a judge one. That is why
+#                     the classifier puts them in the other class, and it held when the
+#                     warm-resume loop still existed to waste spawns on them.
 #   - unrecoverable : orchestration-record / cross-pipeline dependency-DAG integrity, OR a
 #                     host-authored artifact defect (verdict.json / the post_judge-derived
 #                     aggregate_verdict.json / summary.json / validate_meta.json). Re-running the
@@ -670,8 +678,11 @@ VALIDATE_JUDGE_ROUTING: dict[tuple[str, str], tuple[str, str | None]] = {
 #                     (agent_graph.json / step_result.json / an orchestrations/ root), the
 #                     cross-pipeline DAG check (lineage.json / the literal DAG messages), and the
 #                     host-authored verdict/derived artifacts.
-#   - unknown       : anything else (incl. execute-authored evidence) -> conservatively terminal
-#                     (fail_closed) for now; a future escalate-LLM adjudicator would decide here.
+#   - unknown       : anything else (incl. execute-authored evidence) -> `escalate`. G5 wired the
+#                     adjudicator this bullet once called a future follow-up: in prod `run_phase`
+#                     turns the disposition into an escalate RouteDecision and the diagnostician
+#                     decides; dev keeps fail_closed (no billed escalate leaf). Pinned by
+#                     `test_an_unknown_violation_is_written_as_escalate`.
 _POST_JUDGE_RECOVERABLE_BASENAMES: frozenset[str] = frozenset({
     "semantic_review.json",
 })
@@ -719,14 +730,6 @@ def classify_post_judge_violations(violations: list[str]) -> str:
 # Bound the deterministic retry/reopen loop so a persistently-failing node cannot
 # spin forever; matches the operator-observed ceiling of ~3 reopens.
 MAX_ATTEMPTS_PER_PHASE = 3
-
-# The repair_reason that marks a verify re-run whose SOLE task is to re-author its own
-# stage meta (`_maybe_warm_resume_verify_meta`). build_launch_request keys on it to narrow
-# allowed_output_paths to the meta alone, so "re-author only the meta" is carried by the leaf's
-# TRUSTED deliverable list and the file-tool write guard (see the narrowing block there for what
-# does and does not enforce it) rather than by prose the leaf is told to distrust — the findings
-# text sits inside the slim prompt's untrusted-data fence.
-VERIFY_META_SCHEMA_REPAIR_REASON = "verify_meta_schema"
 
 # C2 backstop: after this many consecutive execute (no-verdict) failures on a node, a
 # Generate restart is deemed unable to fix the (IR-rooted) structural mismatch, so the
@@ -3280,9 +3283,9 @@ _LEAF_INFRA_ERROR_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
 #     cost is bounded from BELOW by the cap itself: a re-launch stakes another FULL cap (2h by
 #     default) of wall-clock on a leaf that already proved it can wedge, and the budget allows
 #     three of them — a 6-hour silent block in place of the 99-minute one the cap exists to stop.
-#     Fail_closed costs the operator one `--resume` instead, and that resume is substep-granular
-#     wherever item 51's preconditions hold (a `verify` death in Compile/Generate on an unmoved
-#     repo revision); elsewhere it re-runs the phase, which is still bounded work.
+#     Fail_closed costs the operator one `--resume` instead, which re-runs the phase — bounded
+#     work, and one billed producer leaf. (Until issue #176 that resume was substep-granular
+#     for a `verify` death in Compile/Generate on an unmoved repo revision.)
 #   - an UNCLASSIFIABLE nonzero exit (crash, OOM, hook denial) is deterministic: retrying it just
 #     hides the same failure behind 3x the wall-clock.
 _RETRYABLE_LEAF_INFRA_TAGS = frozenset({
@@ -7926,9 +7929,10 @@ clean:
         envelope: Any
         model: str | None
         usage: dict[str, Any] | None
-        #: The FILESYSTEM wall clock at launch (`determine_substep_status` compares it
-        #: against file mtimes), and a monotonic reading used only for durations.
-        launched_at: float
+        #: A monotonic reading used only for durations. There is no wall-clock twin: the
+        #: pure path has no freshness gate, and the only reader the instant ever had on this
+        #: path was `SubstepOutcome.launched_at`, deleted by issue #176. `_launch_instant` is
+        #: still CALLED below, for the durable per-attempt probe it writes.
         launched_monotonic: float
 
     def _spawn_pure_turn(self, request: dict[str, Any], entry: Any, *, child_arid: str,
@@ -7957,11 +7961,11 @@ clean:
             self.emit("resume_session_unavailable", phase=phase, substep=substep or "",
                       target=resume_session_id or "", reason="codex_home_generation_rotated")
             return None
-        launched_at = self._launch_instant(child_arid)
-        # A SECOND reading, monotonic, purely for measuring how long this attempt
-        # ran: `launched_at` must stay the FILESYSTEM's wall clock because
-        # `determine_substep_status` compares it against file mtimes, and a wall clock is
-        # not a duration.
+        # Called for the per-attempt launch-instant probe it writes beside the child's
+        # bookkeeping (an operator's record of when this attempt started). Its RETURN is
+        # unused on the pure path — there is no freshness gate here.
+        self._launch_instant(child_arid)
+        # A monotonic reading, purely for measuring how long this attempt ran.
         launched_monotonic = time.monotonic()
         proc = self.spawn_leaf(
             rec["launch_prompt_text"], self._child_env(child_arid, entry), entry,
@@ -7989,8 +7993,7 @@ clean:
         usage = _leaf_usage_row(
             proc, entry,
             envelope=envelope if entry.provider == "claude_cli" else None)
-        return self._PureTurn(proc, token, envelope, model, usage,
-                              launched_at, launched_monotonic)
+        return self._PureTurn(proc, token, envelope, model, usage, launched_monotonic)
 
     def _run_pure_generate_substep(self, refs: NodeRefs, phase: str, substep: str | None,
                                    repair: dict[str, str] | None,
@@ -8143,8 +8146,7 @@ clean:
                       detail=str(exc)[:_PURE_ASSEMBLY_EVENT_DETAIL_MAX_CHARS])
             return SubstepOutcome(
                 self.new_agent_run_id(), "fail", [], 1,
-                ("pure_context_assembly_failed", _pure_assembly_detail(exc)),
-                time.time(), 1)
+                ("pure_context_assembly_failed", _pure_assembly_detail(exc)), 1)
         # The launch request's host-authorship stamp is the NODE's, resolved once here. It is
         # read back by `_payload_is_m3c_physics`, so a phase whose pure path also serves a node
         # the host authors nothing for must not stamp a constant.
@@ -8250,7 +8252,7 @@ clean:
                 continue
             proc, token, envelope = turn.proc, turn.token, turn.envelope
             model, usage = turn.model, turn.usage
-            launched_at, launched_monotonic = turn.launched_at, turn.launched_monotonic
+            launched_monotonic = turn.launched_monotonic
             attempt_record: dict[str, Any] = {
                 "agent_run_id": child_arid, "model": model, "usage": usage}
             per_attempt.append(attempt_record)
@@ -8418,14 +8420,14 @@ clean:
                     return SubstepOutcome(
                         child_arid, "fail", [], 1,
                         (spec.host_write_failed_reason, f"{type(exc).__name__}: {exc}"),
-                        launched_at, len(per_attempt))
+                        len(per_attempt))
                 if attempt > 0:
                     self._add_superseded_run_ids(
                         [a["agent_run_id"] for a in per_attempt[:-1]],
                         reason=f"{spec.summary_prefix}_declared_fail_superseded: "
                                f"attempts={len(per_attempt)}")
                 return SubstepOutcome(child_arid, "fail", [], proc.returncode,
-                                      None, launched_at, len(per_attempt))
+                                      None, len(per_attempt))
 
             if status == "pass":
                 assert accepted_doc is not None
@@ -8453,7 +8455,7 @@ clean:
                     return SubstepOutcome(
                         child_arid, "fail", [], 1,
                         (spec.host_write_failed_reason, f"{type(exc).__name__}: {exc}"),
-                        launched_at, len(per_attempt))
+                        len(per_attempt))
                 # Tombstone the superseded producer attempts of a repaired pass: each earlier
                 # attempt was finalized as a terminal `substep` row, but only THIS (passing)
                 # arid goes into the step_result's substep_agent_run_ids, so the earlier arids
@@ -8465,7 +8467,7 @@ clean:
                         reason=f"{spec.repair_reason}_superseded_pass: "
                                f"attempts={len(per_attempt)}")
                 return SubstepOutcome(child_arid, "pass", [], proc.returncode,
-                                      None, launched_at, len(per_attempt))
+                                      None, len(per_attempt))
 
             # --wait-usage-reset (opt-in): a transport death carrying a resolvable usage-limit
             # reset (in practice the CLI's TZ-anchored human form) is waited out in place and the
@@ -8510,8 +8512,6 @@ clean:
                 # rule. MONOTONIC, not `time.time()`: a suspended host or an NTP step would
                 # otherwise be billed to the budget as time the model spent working, and this
                 # repository has already been bitten once by reading a wall clock as elapsed
-                # time. `launched_at` stays the FILESYSTEM's wall clock because it is compared
-                # against file mtimes (`Conductor._launch_instant`).
                 elapsed_s = max(0.0, time.monotonic() - launched_monotonic)
                 spent_before = transient_spent
                 # Accumulated whether the retry is granted or refused: a refused attempt ran too.
@@ -8556,13 +8556,13 @@ clean:
                     return SubstepOutcome(
                         child_arid, "fail", [], 1,
                         (spec.host_write_failed_reason, f"{type(exc).__name__}: {exc}"),
-                        launched_at, len(per_attempt))
+                        len(per_attempt))
                 if attempt > 0:
                     self._add_superseded_run_ids(
                         [a["agent_run_id"] for a in per_attempt[:-1]],
                         reason=f"{spec.repair_reason}_superseded: {category}")
                 return SubstepOutcome(child_arid, "fail", [], proc.returncode,
-                                      infra_error, launched_at, len(per_attempt))
+                                      infra_error, len(per_attempt))
             # Set up the next (repair) turn: resume this attempt's session.
             resume_session_id = self._session_id_for_child(child_arid, entry)
             cold_repair_target = None
@@ -9018,8 +9018,7 @@ clean:
                       detail=str(exc)[:_PURE_ASSEMBLY_EVENT_DETAIL_MAX_CHARS])
             return SubstepOutcome(
                 self.new_agent_run_id(), "fail", [], 1,
-                ("pure_context_assembly_failed", _pure_assembly_detail(exc)),
-                time.time(), 1)
+                ("pure_context_assembly_failed", _pure_assembly_detail(exc)), 1)
         # The launch request's host-authorship stamp is the NODE's, resolved once here. It is
         # read back by `_payload_is_m3c_physics`, so a phase whose pure path also serves a node
         # the host authors nothing for must not stamp a constant.
@@ -9082,7 +9081,7 @@ clean:
                 continue
             proc, token, envelope = turn.proc, turn.token, turn.envelope
             model, usage = turn.model, turn.usage
-            launched_at, launched_monotonic = turn.launched_at, turn.launched_monotonic
+            launched_monotonic = turn.launched_monotonic
             attempt_record: dict[str, Any] = {
                 "agent_run_id": child_arid, "model": model, "usage": usage}
             per_attempt.append(attempt_record)
@@ -9182,7 +9181,7 @@ clean:
                     return SubstepOutcome(
                         child_arid, "fail", [], 1,
                         (spec.host_write_failed_reason, f"{type(exc).__name__}: {exc}"),
-                        launched_at, len(per_attempt))
+                        len(per_attempt))
                 # Tombstone superseded reviewer attempts of a repaired verdict (each earlier attempt
                 # was finalized as a terminal `substep` row, but only THIS arid is vouched).
                 if attempt > 0:
@@ -9191,7 +9190,7 @@ clean:
                         reason=f"{spec.superseded_prefix}_superseded: "
                                f"{spec.superseded_detail(accepted_verdict)}")
                 return SubstepOutcome(child_arid, verify_status, [], proc.returncode,
-                                      None, launched_at, len(per_attempt))
+                                      None, len(per_attempt))
 
             # A malformed / transport reply. Record the terminal record fields and carry the prior
             # document into a cold-fallback repair (re-serialize the parsed verdict if any, else the
@@ -9282,8 +9281,6 @@ clean:
                 # rule. MONOTONIC, not `time.time()`: a suspended host or an NTP step would
                 # otherwise be billed to the budget as time the model spent working, and this
                 # repository has already been bitten once by reading a wall clock as elapsed
-                # time. `launched_at` stays the FILESYSTEM's wall clock because it is compared
-                # against file mtimes (`Conductor._launch_instant`).
                 elapsed_s = max(0.0, time.monotonic() - launched_monotonic)
                 spent_before = transient_spent
                 # Accumulated whether the retry is granted or refused: a refused attempt ran too.
@@ -9327,13 +9324,13 @@ clean:
                     return SubstepOutcome(
                         child_arid, "fail", [], 1,
                         (spec.host_write_failed_reason, f"{type(exc).__name__}: {exc}"),
-                        launched_at, len(per_attempt))
+                        len(per_attempt))
                 if attempt > 0:
                     self._add_superseded_run_ids(
                         [a["agent_run_id"] for a in per_attempt[:-1]],
                         reason=f"{spec.superseded_prefix}_superseded: {category}")
                 return SubstepOutcome(child_arid, "fail", [], proc.returncode,
-                                      infra_error, launched_at, len(per_attempt))
+                                      infra_error, len(per_attempt))
             # Set up the next (repair) turn: resume this attempt's OWN reviewer session (persona
             # separation — never an external/producer arid).
             resume_session_id = self._session_id_for_child(child_arid, entry)
@@ -9626,9 +9623,8 @@ clean:
     def _launch_instant(self, child_arid: str) -> float:
         """The freshness gate's reference instant, read from the clock that STAMPS FILES.
 
-        Every consumer of this value (`determine_substep_status`'s `min_mtime`,
-        `_stage_meta_authored_since`) compares it against a deliverable's `st_mtime`, so it has
-        to come from the same clock those stamps do. `time.time()` does not: Linux stamps an
+        Its consumer (`determine_substep_status`'s `min_mtime`) compares it against a
+        deliverable's `st_mtime`, so it has to come from the same clock those stamps do. `time.time()` does not: Linux stamps an
         inode from a coarse clock that only advances on a timer tick, so a file written
         immediately after a `time.time()` read records an mtime BELOW it. The PROPERTY, which is
         what holds: that shortfall is bounded by one tick plus however long the write itself
@@ -9743,40 +9739,6 @@ clean:
                 self.emit("launch_instant_tick_wait_timeout", agent_run_id=child_arid,
                           waited_seconds=LAUNCH_INSTANT_TICK_WAIT_SECONDS, instant=instant)
                 return instant
-
-    def _stage_meta_path(self, refs: NodeRefs, phase: str) -> Path | None:
-        """Absolute path of the phase's verify meta, or None for a phase that has none."""
-        from tools.meta_contracts import STAGE_META_FILENAME_BY_STEP
-
-        if phase not in STAGE_META_FILENAME_BY_STEP:
-            return None
-        meta_dir = refs.ir_ref if phase == "compile" else refs.source_dir()
-        return self.repo_root / meta_dir / STAGE_META_FILENAME_BY_STEP[phase]
-
-    def _stage_meta_authored_since(self, refs: NodeRefs, phase: str, min_mtime: float) -> bool:
-        """True if the phase's verify meta was (re)written at/after `min_mtime` — i.e. by the
-        substep launched then. Same mtime test the freshness clause of determine_substep_status
-        uses, so "the leaf wrote it" means the same thing in both places."""
-        path = self._stage_meta_path(refs, phase)
-        if path is None:
-            return False
-        try:
-            return path.stat().st_mtime >= min_mtime
-        except OSError:
-            return False
-
-    def _verify_session_resumable(self, verify_arid: str, phase: str = "generate",
-                                  pure: bool = False) -> bool:
-        """True if the failed verify leaf's session can actually be warm-resumed. Mirrors the
-        preconditions `_resolve_reuse_resume` applies at launch (a warm-resumable claude
-        provider + a surviving session transcript), consulted BEFORE the repair turn so the
-        loop never spawns a cold leaf that cannot see its findings."""
-        # `phase` matters: the caller runs for BOTH compile and generate, and under a
-        # per-substep configuration `compile.verify` and `generate.verify` need not share a
-        # provider — consulting the wrong one would refuse a repair the session can serve.
-        entry = self.entry_for(phase, "verify")
-        return (entry.supports(CAP_WARM_RESUME) and entry.provider == "claude_cli"
-                and self._claude_session_resumable(verify_arid, pure=pure))
 
     def determine_substep_status(self, refs: NodeRefs, phase: str, substep: str | None,
                                  allowed_output_paths: list[str],
@@ -9934,7 +9896,7 @@ clean:
             # Deterministic post-return gate: the conductor-authored post_judge_meta records
             # the `--stage pre_judge` verdict (orchestration-record + cross-pipeline DAG
             # integrity). A violation is status=fail with rc 0; run_phase reads its
-            # `disposition` to decide warm-resume-judge vs fail_closed. This is where the old
+            # `disposition` to decide escalate vs fail_closed. This is where the old
             # judge-gate AND now lives (a certified-pass node must clear this gate).
             meta = _read_gate_meta(self.repo_root / refs.run_node_dir() / "post_judge_meta.json") or {}
             status = "pass" if (meta.get("status") == "pass"
@@ -11921,7 +11883,7 @@ clean:
                       phase=phase, substep=substep or "", provider=entry.provider)
             return SubstepOutcome(
                 self.new_agent_run_id(), "fail", [], 1,
-                ("pure_only_provider_on_agentic_path", detail), time.time(), 1)
+                ("pure_only_provider_on_agentic_path", detail), 1)
         self._ensure_codex_feature_cache(entry)
         # A pure-function leaf: its OWN spawn/validate/repair/finalize/write loop (empty write
         # authority; the host writes the artifacts after the child window closes), not the generic
@@ -12199,7 +12161,7 @@ clean:
                 # `attempts` counts EVERY launch (transient retries + usage waits + this one), so a
                 # fail_closed after a wait still reports the honest launch count in `[attempts=N]`.
                 return SubstepOutcome(child_arid, status, output_refs, proc.returncode,
-                                      infra_error, launched_at, attempt + usage_waits + 1)
+                                      infra_error, attempt + usage_waits + 1)
             tag = infra_error[0]
             max_attempts = MAX_LEAF_TRANSIENT_RETRIES + 1
             # A dead attempt is never vouched by a step_result (only the surviving attempt's arid
@@ -12739,8 +12701,8 @@ clean:
     #     own pipeline (via `_judge_pre_spawn_dag_block`). A failure is fail_closed.
     #   - post_judge (`_post_judge_inproc`, index 3): after the judge returns its verdict, run
     #     `--stage pre_judge` and record `post_judge_meta.json` with a severity `disposition`;
-    #     a recoverable (leaf/judge-authored) violation warm-resumes the judge, an integrity
-    #     violation is fail_closed.
+    #     both graded classes (leaf/judge-authored conformance, and integrity) are
+    #     fail_closed; an unknown one escalates.
     # The judge leaf itself invokes no validator gate (ALLOWED_VALIDATE_PIPELINE_STAGES for
     # all three of pre_judge/judge/post_judge == frozenset()), so it holds no gate at all.
 
@@ -12841,8 +12803,8 @@ clean:
         correct-by-construction (closing the previously un-gated aggregate/`blocked`-DAG
         composition hole) instead of the LLM. Called at the TOP of `_post_judge_inproc`,
         before the `--stage pre_judge` gate re-validates `summary.counts` vs
-        `verdict.per_test` (`_validate_tests_verdict_summary_consistency`). Idempotent on a
-        warm-resume re-run (re-derived from the execute-authored `verdict.json`). As of R2 the
+        `verdict.per_test` (`_validate_tests_verdict_summary_consistency`). Idempotent on any
+        re-run that reaches it (re-derived from the execute-authored `verdict.json`). As of R2 the
         judge authors only `semantic_review.json`; `verdict.json` is host-authored at execute."""
         from tools.orchestration_runtime import _resolve_dependency_facts
 
@@ -13026,8 +12988,12 @@ clean:
         self._write_run_node_meta(refs, "summary.json", summary_doc)
 
         # validate_meta.json bookkeeping (not gate-validated; keys per phase_04 §"required
-        # keys"). last_fail_reason reads the PRIOR post_judge_meta (present only on a
-        # warm-resume re-run; None on the first pass).
+        # keys"). last_fail_reason reads a PRIOR post_judge_meta in this run-node dir, and since
+        # issue #176 there can never be one: the warm-resume mini-loop was the only thing that
+        # re-ran post_judge inside one `run_id`, and a phase RETRY rotates `refs.run_id`
+        # (`_ensure_fresh_producer_id`), so the prior attempt's meta is in a different directory.
+        # The field is therefore `None` in every run today. The read is kept as the defensive
+        # one it always was, not because anything fills it.
         prior_post = _read_gate_meta(node_dir / "post_judge_meta.json") or {}
         last_fail_reason = prior_post.get("failure_excerpt") or None
         attempt_count = getattr(self, "_judge_attempt_count", {}).get(refs.node_key, 1)
@@ -13062,17 +13028,17 @@ clean:
         declared too (harmless: it is already recorded, so it is a no-op that documents the
         live judge region).
 
-        disposition: recoverable (leaf/judge-authored conformance violation) -> warm_resume
-        (run_phase warm-resumes the judge in place); unrecoverable (orchestration-record /
-        cross-pipeline DAG integrity) -> fail_closed; unknown -> fail_closed (conservative;
-        an escalate-LLM adjudicator is a deferred follow-up).
+        disposition: recoverable and unrecoverable alike -> fail_closed; unknown -> escalate
+        (run_phase turns it into an escalate RouteDecision in prod; dev keeps fail_closed).
+        `recoverable` used to warm-resume the judge in place; that mini-loop was deleted by
+        issue #176 (no run ever reached it), so both graded classes terminalize.
 
         Two exit codes are answered BEFORE the bullets are read at all, because they say the
         gate never reached a verdict about this run's conformance: rc 3 (the structure front end
         is not installed) and rc 4 (a stale certified IR). Their bullets describe a
         machine or IR condition, and the severity rules classify by artifact PATH — so left to
-        the bullet path they would be classified as if they were conformance findings and could
-        warm-resume a judge that cannot converge. Both write `disposition: "fail_closed"` with
+        the bullet path they would be classified as if they were conformance findings. Both
+        write `disposition: "fail_closed"` with
         their own `failure_category`, the same shape as the OSError launch-failure branch."""
         # G6: the conductor authors the deterministically-derivable artifacts (aggregate_verdict
         # / summary / validate_meta) from the judge's verdict.json + the dependency set BEFORE
@@ -13113,13 +13079,14 @@ clean:
         violations = [ln[2:] for ln in combined.splitlines() if ln.startswith("- ")]
         # TERMINAL EXIT CODES FIRST, and on the CODE rather than on any bullet: the bullets carry
         # leaf-chosen paths, and the severity rules below classify by path prefix, so a bullet
-        # naming a repairable-looking artifact would warm-resume the judge over a machine problem
-        # or a stale certified IR — neither of which any re-authored semantic_review.json
-        # touches. The violations are still recorded, for observation only.
+        # naming a judge-authored artifact would be graded `recoverable` — a judge-authored
+        # conformance finding — over what is really a machine problem or a stale certified IR.
+        # Neither is anything a re-authored semantic_review.json touches. The violations are still recorded, for observation only.
         #
         # rc 4 and rc 5 are UNREACHABLE from this stage today (both have a single emit /
         # construction site, reached only from post_generate); they are wired so that the day a
-        # pre_judge gate reports one, it fails closed rather than warm-resuming. rc 3 IS
+        # pre_judge gate reports one, it fails closed rather than being graded by the bullet
+        # rules. rc 3 IS
         # reachable: `--stage pre_judge` runs gates that read source through the front end.
         from tools.validate_pipeline_semantics import (
             FORTRAN_STRUCTURE_UNAVAILABLE_EXIT_CODE,
@@ -13143,28 +13110,18 @@ clean:
             return {"returncode": 0, "stdout": "",
                     "stderr": "[post_judge gate fail]\n" + combined}
         severity = classify_post_judge_violations(violations)
-        # Z3 (issue #169): `recoverable` means "the JUDGE wrote it wrong, so re-run the judge",
-        # and that premise is false when the judge was PURE. There the leaf returned a
-        # judgement, the loop validated its shape before accepting it, and `semantic_review.json`
-        # was written by `_write_semantic_review` — so a `--stage pre_judge` violation naming
-        # that file is a defect in the HOST's own artifact, exactly like one naming
-        # `verdict.json`, and re-running the leaf would produce the identical file. Reclassified
-        # here rather than in `classify_post_judge_violations`, which is a pure function of the
-        # violation text and cannot know which transport ran; `_maybe_warm_resume_post_judge`
-        # then early-returns on the non-`warm_resume` disposition and stays for the residual
-        # agentic judge.
-        if severity == "recoverable" and self._pure_leaf_substep(refs, "validate", "judge"):
-            severity = "unrecoverable"
         # G5: an `unknown` violation (unclassifiable by the deterministic path-prefix rules) is
-        # no longer a blind fail_closed — it routes to the unified escalate LLM. `recoverable`
-        # (judge-authored) still warm-resumes deterministically; `unrecoverable` (integrity)
-        # still fail_closes. run_phase turns the `escalate` disposition into an escalate
-        # RouteDecision in prod (dev keeps fail_closed — no billed escalate leaf).
-        disposition = {
-            "recoverable": "warm_resume",
-            "unrecoverable": "fail_closed",
-            "unknown": "escalate",
-        }[severity]
+        # not a blind fail_closed — it routes to the unified escalate LLM. run_phase turns the
+        # `escalate` disposition into an escalate RouteDecision in prod (dev keeps fail_closed —
+        # no billed escalate leaf). Both GRADED classes terminalize: `unrecoverable` (integrity)
+        # always did, and `recoverable` (judge-authored) does since issue #176 deleted the
+        # warm-resume mini-loop that was its only consumer. Writing `warm_resume` here would
+        # record a follow-up that nothing performs. The severity classification itself
+        # (`classify_post_judge_violations`) is unchanged — it still names the class, and a
+        # `recoverable` under a PURE judge was never re-runnable anyway (the leaf returned a
+        # judgement whose shape the loop validated, and `_write_semantic_review` wrote the file
+        # the violation names, so a re-run reproduces it byte for byte).
+        disposition = "escalate" if severity == "unknown" else "fail_closed"
         self._write_run_node_meta(refs, "post_judge_meta.json", {
             "run_id": refs.run_id, "node_key": refs.node_key,
             "pipeline_id": refs.pipeline_id, "status": "fail",
@@ -13174,188 +13131,6 @@ clean:
             "violations": violations, "disposition": disposition,
         })
         return {"returncode": 0, "stdout": "", "stderr": "[post_judge gate fail]\n" + combined}
-
-    def _maybe_warm_resume_post_judge(
-            self, refs: NodeRefs, outcomes: list["SubstepOutcome"],
-            dep_facts: tuple[dict[str, str], ...]) -> list["SubstepOutcome"]:
-        """Recover a RECOVERABLE post_judge conformance violation in place instead of
-        terminalizing fail_closed. When the failed substep is `post_judge` with
-        disposition=="warm_resume" (a leaf/judge-authored violation like a wrong
-        semantic_review.review_method literal), warm-resume the judge — re-authoring its
-        semantic_review.json with context intact via the slim findings-only prompt — then
-        re-run the deterministic post_judge gate. Bounded by MAX_ATTEMPTS_PER_PHASE.
-
-        Self-contained by design (does NOT go through conduct/reopen_phase): reopen_phase
-        re-runs the whole phase from index 0, passes repair only to index 0, refuses a
-        passing pipeline, and crashes for a validate trigger. This loop drives the warm-resume
-        primitives (`_resolve_reuse_resume`, the slim prompt) directly on the judge substep,
-        so the "repair only to index 0" rule is never consulted and the judge's index is
-        irrelevant. An unrecoverable/unknown disposition, or a judge re-run that itself fails,
-        falls through unchanged to run_phase's fail_closed posture.
-
-        DEFENCE IN DEPTH for the pure judge (issue #169, added in review). `semantic_review.json`
-        is HOST-authored there, so warm-resuming the judge to re-author it cannot converge — it
-        would re-emit the identical file. `_post_judge_inproc` already prevents that by
-        reclassifying the disposition, but that left the whole defence on one line in another
-        function; this early return is the second, and it mirrors `_maybe_warm_resume_verify_meta`,
-        which opens with exactly this guard for the same reason."""
-        # Trigger only when the LAST (failed) substep is post_judge with a warm_resume verdict.
-        # These guards touch no filesystem so a passing phase returns before reading anything.
-        if not outcomes or outcomes[-1].status == "pass":
-            return outcomes
-        if self._pure_leaf_substep(refs, "validate", "judge"):
-            return outcomes
-        if SUBSTEPS["validate"][len(outcomes) - 1] != "post_judge":
-            return outcomes
-        node_dir = self.repo_root / refs.run_node_dir()
-        meta = _read_gate_meta(node_dir / "post_judge_meta.json") or {}
-        if meta.get("disposition") != "warm_resume":
-            return outcomes
-
-        for attempt in range(MAX_ATTEMPTS_PER_PHASE):
-            self.emit("post_judge_warm_resume", node_key=refs.node_key, attempt=attempt + 1)
-            judge_arid = getattr(self, "_pending_judge_arid", {}).get(refs.node_key, "")
-            findings = meta.get("failure_excerpt") or "post_judge conformance violation"
-            # Tombstone the superseded judge + post_judge attempt (outcomes[-2] is always the
-            # judge here: a post_judge failure implies the judge passed and both ran).
-            self._add_superseded_run_ids(
-                [outcomes[-2].agent_run_id, outcomes[-1].agent_run_id],
-                reason="validate_post_judge_warm_resume_orphan")
-            repair = {
-                "issue_severity": "major",
-                "repair_strategy": "reuse",
-                "repair_target_agent_run_id": judge_arid,
-                "repair_reason": "post_judge_conformance",
-                "repair_findings": findings,
-            }
-            judge_oc = self.run_substep(refs, "validate", "judge", repair=repair,
-                                        resolved_dependencies=dep_facts)
-            outcomes[-2] = judge_oc
-            if judge_oc.status != "pass":
-                # The warm-resumed judge failed (a fresh non-pass verdict or a transport
-                # error). Drop the stale post_judge so the failed judge is the terminal
-                # outcome; run_phase's transport branch / classify_validate_judge takes over.
-                return outcomes[:-1]
-            self._pending_judge_arid[refs.node_key] = judge_oc.agent_run_id
-            if not hasattr(self, "_judge_attempt_count"):
-                self._judge_attempt_count = {}
-            self._judge_attempt_count[refs.node_key] = (
-                self._judge_attempt_count.get(refs.node_key, 0) + 1)
-            post_oc = self.run_substep(refs, "validate", "post_judge",
-                                       resolved_dependencies=dep_facts)
-            outcomes[-1] = post_oc
-            if post_oc.status == "pass":
-                return outcomes  # recovered: 4 passing substeps -> phase pass
-            meta = _read_gate_meta(node_dir / "post_judge_meta.json") or {}
-            if meta.get("disposition") != "warm_resume":
-                break  # became unrecoverable/unknown -> fail_closed
-        return outcomes
-
-    def _maybe_warm_resume_verify_meta(
-            self, refs: NodeRefs, phase: str, outcomes: list["SubstepOutcome"],
-            dep_facts: tuple[dict[str, str], ...]) -> list["SubstepOutcome"]:
-        """Recover a verify leaf that authored a CONTRACT-VIOLATING stage meta by warm-resuming
-        that same leaf to re-author it, instead of letting the violation persist.
-
-        The violating meta (canonically: a `last_fail_reason` written as a structured incident
-        dict rather than one plain string) is the unrepairable class from E2E #4 — a Generate
-        reopen rotates a FRESH source dir and deletes nothing, so the bad meta stays readable
-        forever and every later gate re-trips on it. The fix must therefore land while the
-        AUTHORING leaf is still resumable: re-run that same verify substep with the contract
-        findings as slim repair findings, and it rewrites its own meta with context intact.
-
-        Self-contained by design, exactly like `_maybe_warm_resume_post_judge` (see its
-        docstring): conduct/reopen_phase re-runs the whole phase from index 0, hands repair
-        only to index 0 (the producer), and rotates a fresh producer dir — all three are wrong
-        for a verify-authored meta defect. `verify` is the LAST substep of both compile and
-        generate, so a recovered pass needs no downstream re-run.
-
-        Bounded by MAX_ATTEMPTS_PER_PHASE. On budget exhaustion the outcome stays fail and
-        classify_failure's meta-schema guard terminalizes it as `{phase}_fail_meta_schema`
-        rather than routing a garbage meta through the severity table.
-
-        The repair carries ONLY the violation clauses as findings — no instructions. The slim
-        renderer wraps `repair_findings` in an UNTRUSTED-data fence that tells the leaf not to
-        obey anything inside it, so a constraint smuggled in there is both ignored and
-        self-contradictory. The constraint is imposed structurally instead: the repair narrows
-        `allowed_output_paths` to the meta alone (see build_launch_request), which the leaf sees
-        as its trusted deliverable list and the file-tool write guard holds it to.
-        """
-        # Guards touch no filesystem beyond the meta read, so a healthy phase returns fast.
-        if not outcomes or outcomes[-1].status == "pass":
-            return outcomes
-        if SUBSTEPS[phase][len(outcomes) - 1] != "verify":
-            return outcomes
-        # Z2 pure reviewer (M-D): the pure `generate.verify` OWNS its in-conversation verdict
-        # repair (bounded warm-resume of its own session inside `_run_pure_verify_substep`) and
-        # the host authors source_meta.json from the returned verdict — there is no leaf-authored
-        # meta to re-author here. A schema-exhausted pure verify is routed by classify_failure's
-        # verdict table (a cold generate restart), not by this agentic meta warm-resume loop. Both
-        # `verify` substeps can be pure since Z1 (issue #168), so this loop now fires only where
-        # the configured entry keeps a `verify` leaf on the agentic path — the guard below is
-        # what decides it, and it was already asking the right question.
-        if self._pure_leaf_substep(refs, phase, "verify"):
-            return outcomes
-        failed = outcomes[-1]
-        # A leaf that died of an infra/transport error (usage limit, OOM) did not "author a bad
-        # meta" — it authored nothing. Repairing here would overwrite outcomes[-1] and erase the
-        # nonzero returncode that run_phase's transport branch fail_closes on, silently turning
-        # a dead leaf into a certified phase.
-        if failed.leaf_returncode != 0:
-            return outcomes
-        # Attribution: repair only a meta THIS verify leaf actually (re)wrote. A meta whose
-        # mtime predates this substep's launch was left by the PRODUCER, and the verify failed
-        # for some other reason — canonically the freshness clause ("an inspect-only verify that
-        # writes nothing cannot terminate pass"). Handing such a leaf a "just fix the meta" turn
-        # would let it satisfy the freshness gate without doing the verification it skipped.
-        # Not this loop's class: classify_failure escalates it as `{phase}_fail_meta_schema`.
-        if not self._stage_meta_authored_since(refs, phase, failed.launched_at):
-            return outcomes
-        findings = self._stage_meta_contract_findings(refs, phase)
-        if not findings:
-            return outcomes
-        for attempt in range(MAX_ATTEMPTS_PER_PHASE):
-            verify_arid = outcomes[-1].agent_run_id
-            # Warm resume is the whole mechanism: the leaf fixes its own meta with its context
-            # (and its semantic verdict) intact, from a findings-only slim turn. Without a
-            # resumable session the launch silently degrades to a COLD full prompt, which
-            # carries NO findings (the full template has no findings placeholder) — the leaf
-            # would re-verify blind and escalate anyway. Re-checked every iteration, not just on
-            # entry: each repair turn is a new session that may itself not be resumable.
-            # `pure=False`: a pure verify has already returned through
-            # `_run_pure_verify_substep` above, so `_pure_leaf_substep` here could
-            # only ever answer False. Calling it would present a decision that is
-            # none — a mutation constant-folding it survived, which is what showed
-            # the two are the same.
-            if not self._verify_session_resumable(verify_arid, phase, pure=False):
-                self.emit("verify_meta_schema_no_warm_session", node_key=refs.node_key,
-                          phase=phase, attempt=attempt + 1,
-                          detail="; ".join(findings)[:200])
-                return outcomes
-            self.emit("verify_meta_schema_warm_resume", node_key=refs.node_key, phase=phase,
-                      attempt=attempt + 1, detail="; ".join(findings)[:200])
-            # Tombstone the superseded verify attempt so a later --resume can still reach pass
-            # (same contract as the post_judge warm-resume).
-            self._add_superseded_run_ids(
-                [verify_arid], reason=f"{phase}_verify_meta_schema_warm_resume_orphan")
-            repair = {
-                "issue_severity": "major",
-                "repair_strategy": "reuse",
-                "repair_target_agent_run_id": verify_arid,
-                "repair_reason": VERIFY_META_SCHEMA_REPAIR_REASON,
-                "repair_findings": "\n".join(findings),
-            }
-            oc = self.run_substep(refs, phase, "verify", repair=repair,
-                                  resolved_dependencies=dep_facts)
-            outcomes[-1] = oc
-            if oc.leaf_returncode != 0:
-                return outcomes  # transport error -> run_phase's fail_closed posture
-            findings = self._stage_meta_contract_findings(refs, phase)
-            if not findings:
-                # Schema repaired. A pass status now passes the phase; a legitimately recorded
-                # fail carries a READABLE last_fail_reason into the normal severity gate.
-                return outcomes
-        return outcomes
 
     def run_phase(self, refs: NodeRefs, phase: str,
                   repair: dict[str, str] | None = None) -> PhaseOutcome:
@@ -13380,12 +13155,6 @@ clean:
                 self._producer_arid[phase] = producer
             return PhaseOutcome(phase, "pass", decision=RouteDecision("advance"),
                                 skipped=True)
-        # Item C: a transport-substep resume (armed by _consume_transport_resume_directive) preseats
-        # the surviving producer as outcomes[0] and relaunches only the deterministic mids + verify.
-        # Popped so it fires once; a normal run leaves it None. When set, the producer-id rotation is
-        # SUPPRESSED (refs already point at the surviving artifact) — otherwise _ensure_fresh_producer_id
-        # would allocate a new id and orphan the artifact we mean to reuse.
-        preseat = getattr(self, "_substep_resume", {}).pop(phase, None)
         # Validate dependency-DAG readiness is checked HERE, before the generic launch gate.
         # This is load-bearing: workflow_launch_check (and EVERY substep's own record-launch,
         # including pre_judge's) is itself dependency-gated (`_dependency_ready`), so a
@@ -13410,8 +13179,7 @@ clean:
         # `preflight.json#providers`.
         self.workflow_launch_check(node_key, phase, child_agent_role(phase),
                                    self.entry_for(None, None))
-        if preseat is None:
-            self._ensure_fresh_producer_id(refs, phase)
+        self._ensure_fresh_producer_id(refs, phase)
         # Author/refresh the pipeline lineage.json host-side BEFORE the substeps run:
         # generate.gate's static (post_generate) checker requires it, and the sandboxed leaf cannot
         # write it (pipeline-root file; see _write_lineage). Pipeline phases only —
@@ -13471,22 +13239,7 @@ clean:
             dep_surface = tuple(self._write_dependency_surface(refs))
 
         outcomes: list[SubstepOutcome] = []
-        if preseat is not None:
-            # Seed the surviving run-1 producer as a synthetic pass at index 0 and start the loop at
-            # index 1. The producer arid is superseded (transport-tombstoned) but is re-vouched by
-            # this run's step_result — the completion check `continue`s superseded rows, and the
-            # re-run mids/verify supply the fresh non-superseded rows the fresh-replacement rule needs.
-            outcomes.append(SubstepOutcome(
-                preseat["producer_arid"], "pass", [], 0, None, 0.0, 1))
-            self.emit("substep_resumed", node_key=refs.node_key, phase=phase,
-                      substep=SUBSTEPS[phase][0] or "step",
-                      agent_run_id=preseat["producer_arid"])
         for i, substep in enumerate(SUBSTEPS[phase]):
-            # A preseated producer occupies outcomes[0]; skip the already-satisfied indices so the
-            # producer leaf is not re-spawned (repair=repair if i==0 is dead under preseat — index 0
-            # is skipped and a transport resume carries no pending_repair).
-            if i < len(outcomes):
-                continue
             # Surface substep activity on the host stdout event stream so an
             # operator sees per-substep progress (the phase-level emits alone
             # leave a long gap during multi-substep phases like generate). The
@@ -13511,24 +13264,14 @@ clean:
                     self._pending_judge_arid: dict[str, str] = {}
                 self._pending_judge_arid[refs.node_key] = oc.agent_run_id
                 # G6: track judge attempts for validate_meta.attempt_count (best-effort; not
-                # gate-validated). Incremented again per warm-resume judge re-run.
+                # gate-validated). One judge launch per phase attempt; nothing re-runs it
+                # within the attempt since issue #176.
                 if not hasattr(self, "_judge_attempt_count"):
                     self._judge_attempt_count: dict[str, int] = {}
                 self._judge_attempt_count[refs.node_key] = (
                     self._judge_attempt_count.get(refs.node_key, 0) + 1)
             if oc.status != "pass":
                 break
-        # Warm-resume mini-loop: a RECOVERABLE post_judge conformance violation (e.g. a wrong
-        # semantic_review.review_method literal) warm-resumes the judge in place and re-runs
-        # the deterministic post_judge gate, instead of terminalizing fail_closed.
-        if phase == "validate":
-            outcomes = self._maybe_warm_resume_post_judge(refs, outcomes, dep_facts)
-        # Warm-resume mini-loop: a verify leaf that authored a contract-violating stage meta
-        # (e.g. last_fail_reason as a dict) re-authors it in place. The violating meta is
-        # immutable once the phase moves on — a reopen rotates a fresh source dir and deletes
-        # nothing — so it must be repaired while its authoring leaf is still resumable.
-        if phase in ("compile", "generate"):
-            outcomes = self._maybe_warm_resume_verify_meta(refs, phase, outcomes, dep_facts)
         self._producer_arid[phase] = outcomes[0].agent_run_id
 
         if phase in SUBSTEP_AWARE_PHASES:
@@ -13636,15 +13379,19 @@ clean:
         # G4: the deterministic validate gate substeps (pre_judge / post_judge) fail the phase
         # as non-physics INTEGRITY blockers, terminalized fail_closed WITHOUT a routeable
         # step_result (skip-write + tombstone, matching the transport branch shape). Gate on the
-        # ACTUALLY-failed substep (index len-1), NOT a meta status on disk: a warm-resumed judge
-        # that physics-fails leaves a STALE post_judge_meta from a superseded attempt, and must
-        # route via classify_failure (judge physics), not fail_closed on the stale meta. Cases:
+        # ACTUALLY-failed substep (index len-1), NOT a meta status on disk: the index is the
+        # authoritative account of what failed in THIS attempt, while a meta on disk can be a
+        # leftover. Issue #176 removed the one producer of such a leftover within an attempt (a
+        # warm-resumed judge that then physics-failed left a superseded attempt's
+        # post_judge_meta behind), so the shape is no longer reachable; the gate still keys on
+        # the index, which is the reading that does not depend on that. Cases:
         #   - pre_judge (index 0): a --with-deps closure not built+validated. No judge ran, so
         #     this preserves the historic pre-spawn terminal behavior (no step_result written).
-        #   - post_judge (index 3): the `--stage pre_judge` gate failed with a terminal
-        #     disposition (an integrity violation, or a recoverable one whose warm-resume budget
-        #     was exhausted). The judge passed physics; the pre_phase_complete hook forbids a
-        #     `fail` step_result atop a `pass` semantic_review, so the write is skipped.
+        #   - post_judge (index 3): the `--stage pre_judge` gate failed with a `fail_closed`
+        #     disposition — either graded class, integrity or judge-authored conformance, since
+        #     issue #176. (An `escalate` disposition does NOT reach here; the `is_escalate`
+        #     branch below returns first.) The judge passed physics; the pre_phase_complete hook
+        #     forbids a `fail` step_result atop a `pass` semantic_review, so the write is skipped.
         #   - judge (index 2) with semantic_review.decision != "fail" (pass, or missing/empty):
         #     a judge deliverable inconsistency the hook cannot express — either verdict.json is
         #     malformed (per_test uses a wrong field name / non-certifying value) while decision
@@ -13694,8 +13441,8 @@ clean:
                 if is_escalate and self.workflow_mode != "dev":
                     decision = RouteDecision("escalate", reason=escalate_reason)
                     return PhaseOutcome(phase, status, substep_arids, failed, decision)
-                # Terminal fail_closed cases (pre_judge / integrity / dev escalate / warm-resume
-                # budget exhausted): skip-write + tombstone the orphan arids (they have no
+                # Terminal fail_closed cases (pre_judge / integrity / dev escalate):
+                # skip-write + tombstone the orphan arids (they have no
                 # step_result home, and no reopen will consume them as a trigger).
                 orphan_arids = [oc.agent_run_id for oc in outcomes]
                 if orphan_arids:
@@ -14037,8 +13784,7 @@ clean:
                 return classify_compile_static_failure(meta.get("failure_category"))
         if phase == "validate" and outcomes:
             # SUBSTEPS["validate"] == ("pre_judge","execute","judge","post_judge") and run_phase
-            # breaks on first failure (a recovered post_judge warm-resume passes and never
-            # reaches here), so the failed substep is index len-1.
+            # breaks on first failure, so the failed substep is index len-1.
             failed_substep = SUBSTEPS["validate"][len(outcomes) - 1]
             if failed_substep in ("pre_judge", "post_judge"):
                 # Both deterministic gate substeps are terminalized fail_closed by run_phase's
@@ -14185,10 +13931,11 @@ clean:
         #
         # A meta that violates the stage-meta contract is read FIRST and never routed by
         # severity: its fields are not trustworthy inputs to a decision table (the same posture
-        # as `{phase}_fail_unclassified`). Reaching here means the warm-resume mini-loop
-        # already spent its budget trying to get the leaf to re-author it, so this is the
-        # terminal edge of that class — and it also covers a malformed meta left by the
-        # PRODUCING substep, which the mini-loop (verify-scoped) does not touch.
+        # as `{phase}_fail_unclassified`). Reaching here is the FIRST response to the
+        # violation: issue #176 deleted the mini-loop that used to spend a repair budget ahead
+        # of it, so a contract-violating meta escalates on the attempt that authored it
+        # (`test_schema_violating_meta_escalates_without_a_repair_turn`). It covers a malformed
+        # meta from the PRODUCING substep as well as from `verify`.
         if self._stage_meta_contract_findings(refs, phase):
             return RouteDecision("escalate", reason=f"{phase}_fail_meta_schema")
         meta_path = (refs.ir_ref + "/ir_meta.json") if phase == "compile" else (refs.source_dir() + "/source_meta.json")
@@ -14217,8 +13964,7 @@ clean:
         it is read from. A reopen failure degrades to a plain resume (no repair seeded) rather
         than crashing the run; the phases then simply re-run cold from Generate.
         """
-        from tools.orchestration_runtime import (
-            DEV_VALIDATE_EXECUTE_RESUME_SOURCE, LEAF_TRANSPORT_RESUME_SOURCE)
+        from tools.orchestration_runtime import DEV_VALIDATE_EXECUTE_RESUME_SOURCE
 
         meta = _read_json(self.repo_root / "workspace" / "orchestrations"
                           / self.orchestration_id / "orchestration_meta.json") or {}
@@ -14226,12 +13972,6 @@ clean:
         if not isinstance(directive, dict):
             return {}
         source = directive.get("source")
-        # Item C: a transport-substep resume arms preseat state that run_phase consumes; it seeds
-        # NO pending_repair (a transport death has nothing to repair — the producer passed), so it
-        # returns {} either way and never routes through reopen_phase.
-        if source == LEAF_TRANSPORT_RESUME_SOURCE:
-            self._consume_transport_resume_directive(refs, phases, directive)
-            return {}
         if source != DEV_VALIDATE_EXECUTE_RESUME_SOURCE:
             return {}
         if str(directive.get("node_key") or "").strip() != refs.node_key:
@@ -14274,74 +14014,6 @@ clean:
                   failure_category=str(directive.get("failure_category") or ""),
                   findings=bool(payload.get("repair_findings")))
         return {"generate": payload}
-
-    def _consume_transport_resume_directive(
-            self, refs: NodeRefs, phases: list[str], directive: dict[str, Any]) -> None:
-        """Arm substep-granular preseat for a compile/generate phase that fail_closed on a leaf
-        transport error whose verify substep died (`_derive_leaf_transport_resume_directive`).
-        `run_phase` then seeds outcomes[0] with the surviving producer and relaunches only the
-        deterministic mids + verify — instead of re-paying the billed producer leaf.
-
-        Every check is defensive: any miss emits `transport_resume_declined` and returns, leaving
-        the plain full-phase resume untouched (a decline is exactly today's behavior — no new
-        failure mode, and no ref is mutated until every precondition holds)."""
-        def _decline(reason: str) -> None:
-            self.emit("transport_resume_declined", node_key=refs.node_key, reason=reason)
-
-        if str(directive.get("node_key") or "").strip() != refs.node_key:
-            return _decline("node_key_mismatch")
-        step = str(directive.get("step") or "").strip().lower()
-        if step not in ("compile", "generate") or step not in phases:
-            return _decline("step_out_of_scope")
-        if str(directive.get("resume_substep") or "").strip().lower() != "verify":
-            return _decline("not_verify_resume")
-        producer_arid = str(directive.get("producer_agent_run_id") or "").strip()
-        artifact_id = str(directive.get("producer_artifact_id") or "").strip()
-        if not producer_arid or not artifact_id:
-            return _decline("incomplete_directive")
-        # A phase already checkpointed complete is skipped by run_phase — nothing to preseat.
-        if self.check_step_completed(refs.node_key, step) is not None:
-            return _decline("phase_already_complete")
-        # The producer must be a real pass row of THIS orchestration.
-        from tools.orchestration_runtime import _load_run_records, _orchestration_root
-        runs = _load_run_records(_orchestration_root(self.repo_root, self.orchestration_id))
-        prod = runs.get(producer_arid)
-        if not (isinstance(prod, dict)
-                and str(prod.get("status") or "").strip().lower() == "pass"):
-            return _decline("producer_row_absent")
-        # Confirm the surviving artifact still exists BEFORE mutating any ref (so a decline leaves
-        # the plain-resume refs intact). compile → reserved ir dir + spec.ir.yaml; generate → the
-        # deliverable the reused verify substep actually consumes.
-        if step == "compile":
-            deliverable = (self.repo_root / "workspace" / "ir" / refs.safe
-                           / artifact_id / "spec.ir.yaml")
-        else:
-            src_root = self.repo_root / refs.source_dir(artifact_id)
-            # A PURE `generate.verify` reviewer's input is the producer's `codegen_bundle.json`, and
-            # an absent file is NOT caught downstream: `_build_pure_verify_context` supplies an EMPTY
-            # `bundle_document`, and the re-run `post_generate` gate (`_validate_post_generate_bundle`)
-            # SKIPS bundle re-validation when the file is missing. Reusing a source dir without it
-            # would let the reviewer certify blind, so require it — the mid re-run of post_generate
-            # then re-validates the whole bundle (incl. every `files[]` entry byte-for-byte), so this
-            # one check backstops the reuse. An agentic node has no bundle, so require `src/` as before.
-            deliverable = (src_root / "codegen_bundle.json"
-                           if self._pure_leaf_substep(refs, "generate", "verify")
-                           else src_root / "src")
-        if not deliverable.exists():
-            return _decline("artifact_dir_missing")
-        # All checks passed: re-point refs at the surviving artifact (compile is normally a no-op —
-        # the reservation already yields it; generate corrects the day-boundary source_id default)
-        # and arm the preseat run_phase reads.
-        if step == "compile":
-            refs.ir_id = artifact_id
-        else:
-            refs.source_id = artifact_id
-        if not hasattr(self, "_substep_resume"):
-            self._substep_resume: dict[str, dict[str, str]] = {}
-        self._substep_resume[step] = {
-            "producer_arid": producer_arid, "artifact_id": artifact_id}
-        self.emit("transport_substep_resume", node_key=refs.node_key, step=step,
-                  resume_substep="verify", producer_arid=producer_arid, artifact_id=artifact_id)
 
     def conduct(self, refs: NodeRefs, until_phase: str) -> str:
         """Drive the phases, acting on each phase's cross-phase routing decision:
@@ -14617,28 +14289,6 @@ class SubstepOutcome:
     # re-deriving it there from the already-truncated result_summary would silently lose the tag
     # whenever the marker sat past the truncation point.
     infra_error: tuple[str, str] | None = None
-    # Instant this substep's leaf was launched (== the `min_mtime` its
-    # determine_substep_status freshness check used). Carried so a later attribution check can
-    # ask "did THIS leaf author that artifact?" — an mtime older than this belongs to an
-    # earlier substep, not to the one that just failed. Read from the FILESYSTEM's clock
-    # (`Conductor._launch_instant`), not from `time.time()`, so the comparison is between two
-    # stamps of one clock — issue #113.
-    #
-    # THREE construction sites pass a plain `time.time()` instead, and deliberately: the two
-    # `pure_context_assembly_failed` early returns (the producer's and the verify reviewer's) and
-    # `pure_only_provider_on_agentic_path`,
-    # which fail BEFORE any launch, so there is no launch instant to read and no artifact for
-    # it to judge. All three are unreachable by the only consumer today
-    # (`_maybe_warm_resume_verify_meta`), but by three DIFFERENT guards, and naming only the last
-    # was wrong: the producer site returns at `SUBSTEPS[phase][...] != "verify"`, the pure verify
-    # site at the `_pure_leaf_substep` guard (unconditional for every node that can reach
-    # `_run_pure_verify_substep`), and only `pure_only_provider_on_agentic_path` — which can land
-    # on an AGENTIC verify substep — reaches the `leaf_returncode != 0` guard that
-    # `test_transport_failed_verify_is_not_repaired` pins. `0.0` would be the wrong filler if
-    # that ever changed — every mtime is at or above it, so the attribution check would answer
-    # YES to everything; a wall clock errs toward answering NO, which is the safe direction for
-    # a substep that launched nothing.
-    launched_at: float = 0.0
     # How many times run_substep launched this substep, counting the surviving/last attempt
     # (1 = no retry). >1 means a transient LLM-infrastructure failure was retried in place; the
     # dead attempts are tombstoned and not carried here.

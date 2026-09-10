@@ -24,7 +24,7 @@ Independent, can land now:
 | issue | subject |
 |---|---|
 | #175 | `profile` becomes a host-resolved compile-time selection policy; no longer certified as code (premise 4) |
-| #176 | delete the recovery paths no record has reached (legacy record repair, step-executor repair, dismiss-violation, `--backfill`, the checkpoint read subcommands, two warm-resume mini-loops, the transport resume directive) |
+| #176 | delete the recovery paths no record has reached (legacy record repair, step-executor repair, dismiss-violation, the checkpoint read subcommands, two warm-resume mini-loops, the transport resume directive). **`--backfill` was on this list and was removed from it during implementation — see §Rejected.** |
 | #178 | one dependency-readiness primitive; the launch gate routes through it |
 | #179 | one workflow-audit skill that calls `tools/audit_orchestration.py`; the pre-#47 transcript usage path removed |
 | #180 | retire `tools/check_artifact_syntax.py` (subsumed at both conductor gates); delete the retired and phantom meta names (`tune_meta` stays, premise 3) |
@@ -42,6 +42,7 @@ Sequenced (the pure-leaf migration and what it makes dead):
 
 ## Rejected
 
+- Deleting `write-step-result --backfill` (part of #176, reverted during implementation on 2026-09-10): the survey's premise for it — that no record had reached it — was FALSE, and the way it was measured could not have detected the thing it counted. `--backfill` writes an ordinary `step_result.json` with no marker, so a census over those files returns 0 whether or not it ran. Scanning the command strings the workspace keeps instead (`hooks/native_hook_events.jsonl`, `run_logs/*.jsonl`) finds 7 invocations, all allowed, in `orch_20260619T113225Z_f48fe14b`, writing 4 `step_result.json` files, in an orchestration that reached `pass`; a fourth orchestration's `failure_analysis.json` carries the flag's own origin proposal. `.claude/skills/atmofab-enforcement-change` rule 1-b admits a deletion on an execution record of an attempt that FAILED; what exists is a record of it succeeding. **The general lesson, which applies to every remaining item on this list**: before claiming "no record has reached it", name what one run of the mechanism leaves behind — an `emit()` literal, a file, a field — and if the answer is "nothing", say only what is provable (no in-tree caller) rather than that it was never reached.
 - Deleting the `codex_cli` leaf provider (#172): premise 2.
 - Deleting the Tune / Promote surface (#174): premise 3.
 - Deleting the lint presets and build systems no in-tree node can select today (#173): premise 2, target-stack half; the targets that use them are planned.
