@@ -4,7 +4,8 @@
 `tools/tests/conftest.py` has two layers over `~/.atmofab` (issues #132 / #133): a
 per-test REDIRECT of every relocator environment name, and a session GUARD wrapping every
 resolver. (There were three of each until issue #176 deleted the operator token store; the
-count is deliberately not written here — `_private_root_redirects` is where it lives.) Nothing under pytest observed either until this file existed, and the first
+count is deliberately not written here — `_private_root_redirects` is where it lives.) Nothing
+under pytest observed either until this file existed, and the first
 attempt to fix that observed only half:
 
   * the two guard WITNESSES elsewhere SKIP when the marker is absent. They have to — under

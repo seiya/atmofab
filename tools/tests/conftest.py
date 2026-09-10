@@ -14,7 +14,7 @@ with the homes of real runs, where the prune tool would find them unverifiable (
 
 TWO SUBTREES, and the homes were only ever one of them (issue #133). This repository
 writes `homes/` and `start_claims/` under `~/.atmofab`, and until this file covered every
-one of them the others went into the operator's real root on every run: measured at
+one of them the rest went into the operator's real root on every run: measured at
 `e0bae3d`, `tools/tests/test_orchestration_runtime.py` alone left 249 files in the
 `operator_tokens/` store (deleted with `dismiss-violation` by issue #176), and
 `start_claims/` held 40. The guard built to stop exactly that covered the homes and
@@ -217,7 +217,7 @@ def _redirect_operator_private_roots(tmp_path, monkeypatch):
     """Point every tree this test writes under `~/.atmofab` into `tmp_path`.
 
     Both subtrees, not just the homes: the isolated backend homes and the start-claim
-    locks. Only the first was redirected until issue #133, and the others were writing
+    locks. Only the first was redirected until issue #133, and the rest were writing
     into the operator's real root the whole time (measured at `e0bae3d`:
     `test_orchestration_runtime.py` alone left 249 files in the `operator_tokens/` store
     that issue #176 deleted, and `~/.atmofab/start_claims/` held 40).
