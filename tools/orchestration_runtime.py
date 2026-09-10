@@ -12963,10 +12963,15 @@ def _render_pure_repair_prompt(request_payload: dict[str, Any]) -> str:
         "findings": _fence_pure_doc(findings),
         # Rendered only for a verdict-bearing pair; empty for the producer, whose document
         # carries no conclusion and whose repair legitimately changes what the document says.
+        # `.strip().lower()` for the reason `_pure_launch_template_name` normalizes the same two
+        # fields: a spelling this membership test does not recognize renders the slot EMPTY while
+        # the template still resolves, so the omission would be silent. Only host constants reach
+        # these fields today, which is what keeps it a fail-open by omission rather than a hole.
         "repair_scope": (
             PURE_REPAIR_SCOPE_PARAGRAPH
-            if (str(request_payload.get("step", "")),
-                str(request_payload.get("substep", ""))) in PURE_VERDICT_PAIRS else ""),
+            if (str(request_payload.get("step", "")).strip().lower(),
+                str(request_payload.get("substep", "")).strip().lower())
+            in PURE_VERDICT_PAIRS else ""),
     }
     if not request_payload.get("warm_resume"):
         subs["output_contract"] = _pure_output_contract_text(request_payload)

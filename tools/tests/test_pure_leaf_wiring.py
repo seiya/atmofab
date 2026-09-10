@@ -3116,6 +3116,16 @@ class PureRepairScopeSentenceTests(unittest.TestCase):
         self.assertIn(self._FORBIDS_DROPPING, text)
         self.assertIn(self._FORBIDS_INVENTING, text)
 
+    def test_the_pair_is_matched_the_way_the_template_dispatch_matches_it(self) -> None:
+        """A spelling the membership test does not recognize renders the slot EMPTY while the
+        template still resolves — a silent omission, not a visible failure. Normalized like
+        `_pure_launch_template_name`, which reads the same two fields. Only host constants reach
+        them today; this keeps the two readers from disagreeing if that stops being true."""
+        for step, substep in (("Generate", "Verify"), (" generate", "verify "),
+                              ("GENERATE", "verify")):
+            with self.subTest(pair=f"{step}.{substep}"):
+                self.assertIn(ort.PURE_REPAIR_SCOPE_PARAGRAPH, self._render(step, substep))
+
     def test_a_producer_repair_does_not_render_it(self) -> None:
         """The producer's document carries no conclusion, and its repair — an outer reopen with a
         deterministic gate's finding — legitimately changes what the document says. The paragraph
