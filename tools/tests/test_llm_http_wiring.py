@@ -783,6 +783,49 @@ class ColdOuterReopenTests(_HttpServeMixin, unittest.TestCase):
         self.assertNotIn("prior_document", c.requests[0])
         self.assertIsNone(self._event("pure_reopen_cold"))
 
+    def test_an_unparseable_prior_ir_degrades_instead_of_raising(self) -> None:
+        """`_pure_ir_prior_document` promises it NEVER raises, and the seed that calls it runs
+        OUTSIDE the loop's context-assembly guard — so a raise there does not fail the substep
+        closed, it takes the conductor down mid-run with no `step_result.json` and nothing for a
+        `--resume` to pick up. The docstring names the reachable cause itself: an IR written by an
+        AGENTIC leaf (`llm.yaml` changed across a `--resume`) carries no round-trip guarantee.
+
+        The probe is invalid YAML rather than a missing file, because a missing file is already
+        covered above and exercises only the `record is None` arm.
+        """
+        from tools.tests.test_pure_leaf_compile import _doc
+        refs = self._compile_fixture()
+        prior_ref = f"{refs.ir_ref.rsplit('/', 1)[0]}/advdiff-uc2_20260101_000"
+        (self.repo / prior_ref / "spec.ir.yaml").write_text(
+            "meta:\n\tspec_id: tab-indented, which YAML refuses\n", encoding="utf-8")
+        sent = self._serve([json.dumps(_doc())])
+        c = self._conductor(_COMPILE_HTTP_CONFIG)
+        outcome = c.run_substep(refs, "compile", "generate", repair=self._repair())
+        self.assertEqual(outcome.status, "pass")
+        # The findings still ride; only the document is lost.
+        self.assertIn(_EXCERPT, sent[0]["messages"][-1]["content"])
+        self.assertNotIn("prior_document", c.requests[0])
+        self.assertEqual(self._event("pure_reopen_cold")["prior_document_carried"], False)
+
+    def test_an_undecodable_prior_bundle_degrades_instead_of_raising(self) -> None:
+        """The bundle half of the row above. `codegen_bundle.json` is host-written as UTF-8, so
+        undecodable bytes mean a truncated or externally-damaged file — and `UnicodeError` is not
+        an `OSError`, which is exactly the narrowing that would turn this into a crash."""
+        refs = _write_node(self.repo)
+        prior_dir = self.repo / refs.source_dir("s_20260101_000")
+        prior_dir.mkdir(parents=True, exist_ok=True)
+        (prior_dir / "codegen_bundle.json").write_bytes(b'{"files": "\xff\xfe not utf-8"}')
+        self._write_launch_record({"ir_ref": refs.ir_ref, "pipeline_ref": refs.pipeline_ref,
+                                   "source_id": "s_20260101_000",
+                                   "agent_run_id": _PRIOR_ARID})
+        sent = self._serve([json.dumps(_valid_bundle())])
+        c = self._conductor(_MIXED_CONFIG)
+        outcome = c.run_substep(refs, "generate", "generate", repair=self._repair())
+        self.assertEqual(outcome.status, "pass")
+        self.assertIn(_EXCERPT, sent[0]["messages"][-1]["content"])
+        self.assertNotIn("prior_document", c.requests[0])
+        self.assertEqual(self._event("pure_reopen_cold")["prior_document_carried"], False)
+
     # --- generate: the bundle half ----------------------------------------------------
 
     def test_an_outer_reuse_reopen_on_an_http_generate_entry_carries_the_prior_bundle(
