@@ -10393,9 +10393,168 @@ shell_tool                       stable             true
                 "started_at": "2026-03-11T00:00:20Z",
                 "finished_at": "2026-03-11T00:01:10Z",
                 "output_refs": output_refs,
-                "result_summary": f"build {status} fixture",
+                "result_summary": f"build {status} fixture for backfill test",
             },
         )
+
+    def test_write_step_result_backfill_writes_without_advancing_phase(self) -> None:
+        """Backfill writes a step_result for a stranded terminal build agent while the
+        phase is NOT child_finished, and leaves the phase state unchanged."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._setup_preflight_and_orch_agent(repo_root)
+            self._record_terminal_build_agent(
+                repo_root, agent_run_id="step_run_build_fail_001", status="fail"
+            )
+            # Simulate the post-resume strand: phase reset out of child_finished.
+            self._reset_build_phase_state(repo_root, state="not_started")
+            write_step_result(
+                repo_root=repo_root,
+                orchestration_id="orch_001",
+                node_key="problem/shallow_water2d@0.3.0",
+                step="build",
+                agent_run_id="step_run_build_fail_001",
+                payload={
+                    "status": "fail",
+                    "validation_stage": "post_build",
+                    "required_outputs": [],
+                    "failed_substeps": [],
+                    "substep_agent_run_ids": [],
+                },
+                backfill=True,
+            )
+            result_path = (
+                repo_root
+                / "workspace/orchestrations/orch_001/steps"
+                / "problem__shallow_water2d__0.3.0/build/step_run_build_fail_001/step_result.json"
+            )
+            self.assertTrue(result_path.is_file())
+            phase_state = json.loads(
+                (repo_root / "workspace/orchestrations/orch_001/phase_state.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(
+                phase_state["node_states"]["problem__shallow_water2d__0.3.0"]["build"],
+                "not_started",
+            )
+
+    def test_write_step_result_backfill_recovers_stranded_pass(self) -> None:
+        """A build child can record terminal `pass` yet lose its `child_finished`
+        before write-step-result ran. Backfill must recover it (status matches the
+        record), otherwise the relaunch guard wedges with no recovery path."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._setup_preflight_and_orch_agent(repo_root)
+            self._record_terminal_build_agent(
+                repo_root, agent_run_id="step_run_build_pass_001", status="pass"
+            )
+            self._reset_build_phase_state(repo_root, state="not_started")
+            write_step_result(
+                repo_root=repo_root,
+                orchestration_id="orch_001",
+                node_key="problem/shallow_water2d@0.3.0",
+                step="build",
+                agent_run_id="step_run_build_pass_001",
+                payload={
+                    "status": "pass",
+                    "validation_stage": "post_build",
+                    "required_outputs": [
+                        "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/binary/bin_20260101_001/bin/simulate"
+                    ],
+                    "failed_substeps": [],
+                    "substep_agent_run_ids": [],
+                },
+                backfill=True,
+            )
+            result_path = (
+                repo_root
+                / "workspace/orchestrations/orch_001/steps"
+                / "problem__shallow_water2d__0.3.0/build/step_run_build_pass_001/step_result.json"
+            )
+            self.assertTrue(result_path.is_file())
+
+    def test_write_step_result_backfill_refuses_overwrite(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._setup_preflight_and_orch_agent(repo_root)
+            self._record_terminal_build_agent(
+                repo_root, agent_run_id="step_run_build_fail_001", status="fail"
+            )
+            self._reset_build_phase_state(repo_root, state="not_started")
+            payload = {
+                "status": "fail",
+                "validation_stage": "post_build",
+                "required_outputs": [],
+                "failed_substeps": [],
+                "substep_agent_run_ids": [],
+            }
+            write_step_result(
+                repo_root=repo_root,
+                orchestration_id="orch_001",
+                node_key="problem/shallow_water2d@0.3.0",
+                step="build",
+                agent_run_id="step_run_build_fail_001",
+                payload=dict(payload),
+                backfill=True,
+            )
+            with self.assertRaisesRegex(RuntimeError, "already exists"):
+                write_step_result(
+                    repo_root=repo_root,
+                    orchestration_id="orch_001",
+                    node_key="problem/shallow_water2d@0.3.0",
+                    step="build",
+                    agent_run_id="step_run_build_fail_001",
+                    payload=dict(payload),
+                    backfill=True,
+                )
+
+    def test_write_step_result_backfill_requires_known_terminal_agent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._setup_preflight_and_orch_agent(repo_root)
+            self._reset_build_phase_state(repo_root, state="not_started")
+            with self.assertRaisesRegex(RuntimeError, "no agent_runs.jsonl record"):
+                write_step_result(
+                    repo_root=repo_root,
+                    orchestration_id="orch_001",
+                    node_key="problem/shallow_water2d@0.3.0",
+                    step="build",
+                    agent_run_id="step_run_unknown_999",
+                    payload={
+                        "status": "fail",
+                        "validation_stage": "post_build",
+                        "required_outputs": [],
+                        "failed_substeps": [],
+                        "substep_agent_run_ids": [],
+                    },
+                    backfill=True,
+                )
+
+    def test_write_step_result_backfill_rejects_status_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._setup_preflight_and_orch_agent(repo_root)
+            self._record_terminal_build_agent(
+                repo_root, agent_run_id="step_run_build_fail_001", status="fail"
+            )
+            self._reset_build_phase_state(repo_root, state="not_started")
+            with self.assertRaisesRegex(RuntimeError, "must match the .*recorded run status"):
+                write_step_result(
+                    repo_root=repo_root,
+                    orchestration_id="orch_001",
+                    node_key="problem/shallow_water2d@0.3.0",
+                    step="build",
+                    agent_run_id="step_run_build_fail_001",
+                    payload={
+                        "status": "timeout",
+                        "validation_stage": "post_build",
+                        "required_outputs": [],
+                        "failed_substeps": [],
+                        "substep_agent_run_ids": [],
+                    },
+                    backfill=True,
+                )
 
     def test_record_launch_build_rejected_when_prior_step_result_missing(self) -> None:
         """Recurrence guard: a build cannot relaunch while a prior terminal build
@@ -10483,17 +10642,16 @@ shell_tool                       stable             true
     def test_record_launch_build_allowed_when_stale_child_finished(self) -> None:
         """A crash between write-step-result writing the result file and advancing
         the phase leaves a stale `child_finished`; because the prior result is
-        present, the guard must NOT block recovery (it would otherwise wedge: the
-        write path refuses to overwrite the existing result)."""
+        present, the guard must NOT block recovery (it would otherwise wedge: both
+        write paths refuse to overwrite the existing result)."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._setup_preflight_and_orch_agent(repo_root)
             self._record_terminal_build_agent(
                 repo_root, agent_run_id="step_run_build_fail_001", status="fail"
             )
-            # Write the result through the ordinary path (the helper leaves the phase at
-            # `child_finished`, which that path requires), then put the phase back — the
-            # crash this test reproduces is between the result write and the transition.
+            # Result file present, but phase still child_finished (interrupted transition).
+            self._reset_build_phase_state(repo_root, state="not_started")
             write_step_result(
                 repo_root=repo_root,
                 orchestration_id="orch_001",
@@ -10507,6 +10665,7 @@ shell_tool                       stable             true
                     "failed_substeps": [],
                     "substep_agent_run_ids": [],
                 },
+                backfill=True,
             )
             self._reset_build_phase_state(repo_root, state="child_finished")
             # Satisfy the downstream build-launch gate (a real recovery has a passing
@@ -10536,6 +10695,57 @@ shell_tool                       stable             true
                 / "workspace/orchestrations/orch_001/launches/step_run_build_002.prompt.txt"
             )
             self.assertTrue(prompt_path.is_file())
+
+    def test_write_step_result_backfill_rejects_step_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._setup_preflight_and_orch_agent(repo_root)
+            self._record_terminal_build_agent(
+                repo_root, agent_run_id="step_run_build_fail_001", status="fail"
+            )
+            self._reset_build_phase_state(repo_root, state="not_started")
+            # Caller mistypes --step: the run is a build agent, not compile.
+            with self.assertRaisesRegex(RuntimeError, "step mismatch"):
+                write_step_result(
+                    repo_root=repo_root,
+                    orchestration_id="orch_001",
+                    node_key="problem/shallow_water2d@0.3.0",
+                    step="compile",
+                    agent_run_id="step_run_build_fail_001",
+                    payload={
+                        "status": "fail",
+                        "validation_stage": "compile",
+                        "required_outputs": [],
+                        "failed_substeps": [],
+                        "substep_agent_run_ids": [],
+                    },
+                    backfill=True,
+                )
+
+    def test_write_step_result_backfill_rejects_node_key_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._setup_preflight_and_orch_agent(repo_root)
+            self._record_terminal_build_agent(
+                repo_root, agent_run_id="step_run_build_fail_001", status="fail"
+            )
+            self._reset_build_phase_state(repo_root, state="not_started")
+            with self.assertRaisesRegex(RuntimeError, "node_key mismatch"):
+                write_step_result(
+                    repo_root=repo_root,
+                    orchestration_id="orch_001",
+                    node_key="problem/other_node@0.1.0",
+                    step="build",
+                    agent_run_id="step_run_build_fail_001",
+                    payload={
+                        "status": "fail",
+                        "validation_stage": "post_build",
+                        "required_outputs": [],
+                        "failed_substeps": [],
+                        "substep_agent_run_ids": [],
+                    },
+                    backfill=True,
+                )
 
     def test_record_launch_build_allowed_after_step_result_written(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

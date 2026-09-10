@@ -628,6 +628,7 @@ class PostJudgeReclassificationTests(_Fixture):
         self.assertEqual(self._disposition(_cfg("claude")), "fail_closed")
         self.assertEqual(self._disposition(_agentic_cfg("claude")), "fail_closed")
 
+
 class PureJudgeFreshnessTests(_Fixture):
     """The defensive branch of `determine_substep_status`. Unreachable through the live path —
     the pure substep computes its own status and returns early — and it must not be left to

@@ -19544,6 +19544,40 @@ class VerifyMetaSchemaGateTests(unittest.TestCase):
 
     # -- 3c: the escalation the violation earns ----------------------------------------
 
+    def test_a_transport_failed_verify_fail_closes_before_the_meta_schema_gate(self) -> None:
+        """The ORDER of two terminal branches, which nothing else observes.
+
+        `run_phase`'s transport branch (a verify leaf with a nonzero returncode) must return
+        BEFORE `classify_failure` reaches its `{phase}_fail_meta_schema` escalate. The two
+        disagree about what happened and about where the attempt goes: `fail_closed` is
+        terminal, while `escalate` hands the attempt to the diagnostician, which may route it
+        back to a retry or a reuse — so a leaf that died of a transport error and authored
+        nothing would be treated as one that authored a bad meta.
+
+        Restored in round 3 of issue #176's review. The class this row lives in used to carry
+        `test_transport_failed_verify_is_not_repaired`, whose subject was the mini-loop, and
+        deleting the loop took the ORDER's only witness with it: a mutant that lets the
+        meta-schema branch win (`if transport is not None and not
+        self._stage_meta_contract_findings(...)`) is red on `origin/main` and GREEN at the
+        commit that deleted it. The fixture's `verify_leaf_returncode` hook survived the
+        rewrite unused; this is the row that uses it.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            repo, refs = Path(td), self._refs()
+            bad = _conformant_stage_meta("fail", last_fail_reason=_INCIDENT_DICT_REASON)
+            self._write_meta(repo, refs, "generate", bad)
+            c = self._conductor(repo, refs, "generate", bad)
+            # The verify leaf exits nonzero (transport), leaving a contract-violating meta on
+            # disk — the exact state in which the two branches disagree.
+            c.verify_leaf_returncode = 1
+            oc = c.run_phase(refs, "generate")
+
+            self.assertEqual(oc.status, "fail")
+            self.assertEqual(oc.decision.action, "fail_closed")
+            self.assertIn("leaf_transport_error", oc.decision.reason)
+            self.assertEqual(c.verify_runs["verify_runs"], 1)
+            self.assertEqual(self._repair_requests(c), [])
+
     def test_schema_violating_meta_escalates_without_a_repair_turn(self) -> None:
         # The behaviour change of issue #176, witnessed: a leaf that writes the violating meta
         # terminalizes on its FIRST verify run as `{phase}_fail_meta_schema`. Before the
