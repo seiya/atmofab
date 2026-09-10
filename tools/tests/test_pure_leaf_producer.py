@@ -1903,8 +1903,9 @@ class PureProducerExemplarTests(unittest.TestCase):
         drops the session, keeps the semantic carriers, and retries the turn COLD. That is why the
         seed resolves `prior_document` on the warm branch too — a warm seed can become a cold
         repair before its first leaf ever runs. A round-1 reviewer measured that suppressing the
-        warm-branch resolution left 311 tests green, because nothing in the repository drove the
-        `turn is None` path at all.
+        warm-branch resolution left the pure test files green, because nothing in the repository
+        drove the `turn is None` path at all (re-measured at 648ba90e^ by raising from inside that
+        branch: eight pure/conductor files stayed green).
 
         The rotation is faked rather than produced by rotating a real codex home: what is under
         test is the LOOP's fallback, and the rotation detection itself is

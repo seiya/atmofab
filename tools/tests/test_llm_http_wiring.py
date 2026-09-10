@@ -884,7 +884,9 @@ class ColdOuterReopenTests(_HttpServeMixin, unittest.TestCase):
         under the gate-allowlist scan, which carves out fenced regions only.
 
         Round-1 security axis: removing the `_fence_pure_doc` call around `prior_document`
-        survived seven test files. Asserted here on the rendered prompt, at the position, rather
+        survived every test file that names `pure_context` (nine of them, measured at 2e7e870a^;
+        the scope is stated because the count alone cannot be re-derived). Asserted here on the
+        rendered prompt, at the position, rather
         than on the presence of the fence markers anywhere in it — the prompt fences several other
         documents, so a bare `assertIn` on the markers is green with this one unfenced.
         """
