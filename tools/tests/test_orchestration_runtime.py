@@ -4117,8 +4117,8 @@ shell_tool                       stable             true
         WHAT THIS DOES AND DOES NOT COVER, stated because issue #180's round 1 measured the
         wider version FALSE. It is true of the generate contracts only. Two sibling contracts
         in `_matches_phase_contract` would accept a retired per-checker name: `validate.execute`
-        admits anything under `raw/` (`orchestration_runtime.py:7876`) and `tune` admits any
-        `*_meta.json` basename (`:7934-7936`). So the enumeration issue #180 deleted from
+        admits anything under `raw/` (`orchestration_runtime.py:7856`) and `tune` admits any
+        `*_meta.json` basename (`:7934`). So the enumeration issue #180 deleted from
         `_allowed_file_tool_paths_for_launch` was NOT redundant with this layer everywhere — it
         was redundant here, and unreached everywhere, because no request in this tree sets
         `allowed_file_tool_paths` and nothing reads the three names. That is the evidence the

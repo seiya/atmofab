@@ -17591,9 +17591,13 @@ class DeterministicSyntaxTest(unittest.TestCase):
                     c._gate_syntax_check(refs, "child-1", "captok")
             self.assertIn(self.DEP_REF, str(ctx.exception))
             self.assertIn("Unused dummy argument", str(ctx.exception))
-            # NO deliverable assertion here, deliberately. `_gate_syntax_check` writes nothing
-            # but a temp-dir canary source: `gate_meta.json` is authored by `_gate_inproc`, one
-            # frame up. So `assertFalse(<any name>.exists())` in THIS row is unfalsifiable by
+            # NO deliverable assertion here, deliberately. `_gate_syntax_check` authors no
+            # GATE VERDICT: `gate_meta.json` is written by `_gate_inproc`, one frame up. (It
+            # does write two other things — a temp-dir canary source, and the persistent
+            # host-authored `syntax_evidence/<source_id>.json` certificate via
+            # `write_syntax_evidence` — but both sit BELOW the raise on this path, so neither
+            # exists when this row observes the tree.) So `assertFalse(<any name>.exists())`
+            # naming a verdict file in THIS row is unfalsifiable by
             # any change to the method under test — which is what it was until issue #180 (it
             # named `syntax_meta.json`) and would still have been had it merely been respelled.
             # "no content-fail deliverable on a transport fail_closed" is pinned where the

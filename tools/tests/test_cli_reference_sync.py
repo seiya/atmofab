@@ -282,11 +282,18 @@ class ValidatePipelineStageSetIsStatedOnceTests(unittest.TestCase):
     def test_the_cli_reference_row_names_exactly_the_declared_stages(self) -> None:
         declared = self._declared_stages()
         text = DOC_TIER_A.read_text(encoding="utf-8")
-        match = re.search(r"\| `validate_pipeline_semantics` \| `\{\"stage\": \"([^\"]+)\"",
-                          text)
+        # Anchor on the gate NAME and tolerate table whitespace: a markdown table row is
+        # routinely re-aligned, and a check that goes red on a cosmetic space refuses correct
+        # work — over-refusal, which is this repository's recorded default error direction.
+        # Issue #180's round 2 caught exactly that here: the first version hard-coded one space
+        # on each side of the pipe.
+        match = re.search(
+            r"\|\s*`validate_pipeline_semantics`\s*\|\s*`\{\"stage\":\s*\"([^\"]+)\"", text)
         self.assertIsNotNone(
             match, "the --args-json schema table's validate_pipeline_semantics row no longer "
-                   "states a stage set in the shape this check reads")
+                   "states a stage set in the shape this check reads. If the row is correct and "
+                   "only its FORMATTING changed, re-point this regex; if the row is gone, "
+                   "restore it — the stage set must be stated where an operator reads it.")
         stated = match.group(1).split("|")
         self.assertEqual(
             sorted(stated), sorted(declared),

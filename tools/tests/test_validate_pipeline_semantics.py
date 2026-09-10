@@ -24482,10 +24482,22 @@ class WellFormednessSubsumesTheRetiredArtifactSyntaxGateTests(unittest.TestCase)
     because both stages already report the same shapes; this class is the enumeration behind
     that claim, taken through the real `validate_compile_stage` / `validate` entrypoints.
 
-    THE GRID IS 5 FILES x 3 FAILURE MODES (missing / unparsable / not the expected top-level
-    type) = 15, AND THERE ARE 14 ROWS. The three run artifacts share ONE `missing` row (the
-    stage reports all three from the same required-set check), which is -2; and one extra row
-    pins the empty-IR violation COUNT, which is +1. Nothing in the grid is unrepresented.
+    THE GRID IS 5 FILES x 3 OF THE TOOL'S 4 FAILURE MODES (missing / unparsable / not the
+    expected top-level type) = 15, AND THERE ARE 14 ROWS. The three run artifacts share ONE
+    `missing` row (the stage reports all three from the same required-set check), which is -2;
+    and one extra row pins the empty-IR violation COUNT, which is +1. Nothing in those 15 is
+    unrepresented.
+
+    THE FOURTH MODE IS NOT COVERED HERE, AND IS NOT SUBSUMED. The retired tool also reported
+    `<path>: not a file` and, from `except (OSError, ...)`, an unreadable file — for any of the
+    five. `--stage compile` / `--stage post_execute` let the `OSError` escape instead
+    (`IsADirectoryError`, `PermissionError`), and `_main_dispatch` catches only
+    `FortranStructureUnavailableError` / `RuntimeError`, so the leaf receives a traceback where
+    every mode above gives it a repairable violation. rc is 1 either way and the routing is
+    unchanged, which is why issue #180 classified it OUT OF SCOPE rather than fixing it: a leaf
+    is no closer to a verdict for having made `perf.json` a directory, and at
+    `validate.execute` `_promote_run_evidence`'s `shutil.copy2` fails first. It is recorded as
+    GAP 2 in the pull request, for all five files.
 
     What is PINNED here: that each shape produces a violation rather than an exception. What is
     SAMPLED: the exact violation wording, which several loaders spell differently for the same
