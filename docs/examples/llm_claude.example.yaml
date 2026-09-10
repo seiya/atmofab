@@ -81,6 +81,13 @@
 # refuse one on the judge (`llm_config_capability_insufficient_for_substep`) is unchanged and
 # now has no LLM leaf to refuse on. `llm_openai_compatible.example.yaml` and
 # `llm_anthropic_api.example.yaml` in this directory are worked examples of each.
+#
+# To put ONE migrated leaf back on the agentic path, add `capabilities: [agentic]` to its
+# block. The key is RESTRICT-ONLY — it may name a subset of what the provider has
+# (`claude_cli`: agentic, pure, warm_resume, mcp_tools, usage_probe) and never more, or the
+# load is refused with `llm_config_capability_exceeds_provider`. Dropping `pure` is what
+# selects the agentic loop; no sample sets the key, because the pure path is the default
+# for every leaf and this is a diagnostic detour, not a configuration to keep.
 defaults:
   provider: claude_cli
   model: opus

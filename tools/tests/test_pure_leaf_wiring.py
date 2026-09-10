@@ -1489,10 +1489,21 @@ class PureRenderTests(unittest.TestCase):
         # The RUNBOOK digest changed again in issue #176: the deleted transport deriver left
         # this routing sentence naming three derivers instead of four. It still routes on
         # `dev_verify_major` / `dev_verify_critical` and assigns nothing.
+        # And again in issue #168, READ before re-taking: the bullet gained a paragraph naming
+        # the pure `compile.generate` producer's declaration exit as a SECOND source of this
+        # reason_detail on `Compile` — what the HOST writes to `ir_meta.json`, and that
+        # `classify_failure` declines the document routing table for `compile_declared_fail`
+        # and falls through to the same severity gate. That is routing prose about the
+        # conductor, and no verify leaf is told to grade anything by it. The first draft of
+        # that paragraph DID spell `issue_severity: "major"`, which this gate caught: the
+        # value the host writes is now stated as "the grade the phase rubric gives a finding
+        # whose subject is an input", with `docs/ORCHESTRATION.md` cited for the write, so the
+        # paragraph adds no severity literal to a surface an agentic `generate.verify` leaf
+        # force-reads. The line still matches the pattern through the mentions it already had.
         "docs/AGENT_CONTRACT.md: - A verify-family finding always sets `verification_status=f"
         " #12a92add46ae",
         "docs/RUNBOOK.md: - Recovery from a **`conductor_phase_fail_closed` whose `rea"
-        " #39f57d810497",
+        " #384d158170ca",
         "skills/workflow-generate-verify/SKILL.md: - A finding always sets "
         "`verification_status=fail` (record ` #4a2a99cfe8e9",
         # Issue #148: the `Compile.verify` mirror of the line above. It routes and points; it
