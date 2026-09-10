@@ -187,9 +187,11 @@ class SampleConfigTests(unittest.TestCase):
         naming the key has lost the thing it was added for.
 
         READ THE ENUMERATION, NOT THE HEADER, and this is the round-1 correction: the first
-        version asked `assertIn(cap, header)`, and `agentic` occurs 7 times and `pure` 6 times
-        elsewhere in that header, so those two were satisfied by unrelated prose — dropping
-        either from the enumeration left the row green (measured). The parenthetical is located
+        version asked `assertIn(cap, header)`, and `agentic` occurs 6 further times and `pure` 5
+        further times in that header outside the enumeration line, so those two were satisfied by
+        unrelated prose — dropping either from the enumeration left the row green (measured).
+        (7 and 6 counting the enumeration itself; an earlier version of this sentence gave those
+        figures under the word "elsewhere", which is the wrong denominator for what it claims.) The parenthetical is located
         by a marker asserted UNIQUE, its contents are parsed into a set, and the comparison is
         set IDENTITY rather than membership: a capability the code drops but the comment keeps
         naming is as wrong for the operator as one it omits."""

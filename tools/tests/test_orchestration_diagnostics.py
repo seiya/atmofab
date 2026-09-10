@@ -1344,7 +1344,10 @@ class PureLeafMetaPhaseTests(unittest.TestCase):
                     any(cell.endswith("/" + name) for cell in table_first_cells),
                     f"docs/WORKSPACE_LAYOUT.md: no phase-artifact row whose path ends in "
                     f"`{name}`. Naming it inside another row's prose does not count -- the "
-                    f"table is where its writer and its readers are stated.")
+                    f"table is where its writer and its readers are stated. The reader takes "
+                    f"the row's FIRST cell and requires it to end in the basename, so a row "
+                    f"written with the `<ir_ref>/` shorthand rather than this table's "
+                    f"`workspace/`-rooted convention is refused here too.")
 
         # SHRINK half, AFTER the per-record loop above and not before it: a declared record
         # the document omits fails both, and the loop's message is the one that says what to
@@ -1366,7 +1369,7 @@ class PureLeafMetaPhaseTests(unittest.TestCase):
             f"docs/WORKSPACE_LAYOUT.md: the rows marked {pure_marker} are not the records "
             f"`PURE_LEAF_META_FILES` declares. A name here that the code no longer declares is a "
             f"stale row a reader would look for on disk and not find; a declared name missing "
-            f"here is covered by the per-record checks below, which say what to add. If a row's "
+            f"here is covered by the per-record checks ABOVE, which say what to add. If a row's "
             f"phase cell was legitimately reworded away from {pure_marker}, this marker is what "
             f"the check reads and it has to be restored or this comparison rewritten.")
 
