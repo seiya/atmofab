@@ -15,6 +15,8 @@ from unittest import mock
 from tools import orchestration_diagnostics as diag
 from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
 ORCH_ID = "orch_test"
 CHILD_ARID = "f00d83b5-bfbf-4c0b-8e78-95da6bf6ba5e"
 
@@ -1262,6 +1264,54 @@ class PureLeafMetaPhaseTests(unittest.TestCase):
             {(phase, substep)
              for phase, files in diag.PURE_LEAF_META_FILES.items() for substep in files},
             set(lc.PURE_CAPABLE_SUBSTEPS))
+
+    def test_the_workspace_layout_document_carries_every_record_in_the_table(self) -> None:
+        """`docs/WORKSPACE_LAYOUT.md` is the canonical map of what lands where, and until issue
+        #168 it named NONE of these five files — `judge_meta.json` was in its tree and in neither
+        table, and the other four were in neither. The two rows above make a pure pair added to
+        `llm_config` redden `PURE_LEAF_META_FILES`; this makes it redden the DOCUMENT too, so the
+        map cannot silently fall behind the table again.
+
+        Coupled ELEMENT BY ELEMENT AT ITS STATEMENT POSITION rather than by "the name occurs
+        somewhere in the file" (`atmofab-enforcement-change` rule 3-a): a basename that appears
+        only inside another row's prose — `compile_generate_meta.json` is named in
+        `bundle_meta.json`'s own row, as its `compile` twin — must not satisfy the requirement
+        for itself. Measured: with that row's own entry deleted the document still holds two
+        occurrences of the name and this row is red. So the tree is read as a line whose entry is
+        the name, and the table as a row whose FIRST cell ends in it. The expected set is derived from `PURE_LEAF_META_FILES`, never listed
+        here, so this asserts the document against the code and not the code against a second
+        hand-written list."""
+        doc = (REPO_ROOT / "docs" / "WORKSPACE_LAYOUT.md").read_text(encoding="utf-8")
+        expected = {name for files in diag.PURE_LEAF_META_FILES.values()
+                    for name in files.values()}
+        self.assertEqual(len(expected), 5,
+                         "the derivation collapsed: two phases share a record basename, and the "
+                         "per-position reads below would then answer for the wrong one")
+        tree_entries, table_first_cells = set(), set()
+        for line in doc.splitlines():
+            stripped = line.strip()
+            for marker in ("\u251c\u2500\u2500 ", "\u2514\u2500\u2500 "):
+                if marker in stripped:
+                    tree_entries.add(stripped.split(marker, 1)[1].split()[0])
+            if stripped.startswith("| `workspace/") and "` |" in stripped:
+                table_first_cells.add(stripped.split("` |", 1)[0].removeprefix("| `"))
+        # Self-test the two readers: a bound that reads nothing would make every requirement
+        # below vacuously... unsatisfiable is the wrong direction, so assert they see the
+        # document's OTHER, long-standing entries before requiring these five.
+        self.assertIn("ir_meta.json", tree_entries)
+        self.assertTrue(any(c.endswith("/compile_static_meta.json") for c in table_first_cells))
+        for name in sorted(expected):
+            with self.subTest(record=name):
+                self.assertIn(
+                    name, tree_entries,
+                    f"docs/WORKSPACE_LAYOUT.md: no tree entry for `{name}`. It is a record "
+                    f"`PURE_LEAF_META_FILES` declares, so the workspace map has to show where "
+                    f"it lands.")
+                self.assertTrue(
+                    any(cell.endswith("/" + name) for cell in table_first_cells),
+                    f"docs/WORKSPACE_LAYOUT.md: no phase-artifact row whose path ends in "
+                    f"`{name}`. Naming it inside another row's prose does not count -- the "
+                    f"table is where its writer and its readers are stated.")
 
 
 if __name__ == "__main__":

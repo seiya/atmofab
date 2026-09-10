@@ -174,6 +174,30 @@ class SampleConfigTests(unittest.TestCase):
                     continue
                 self.assertEqual(entry.model, top.model, msg=where)
 
+    def test_the_claude_sample_states_the_capability_surface_the_code_declares(self) -> None:
+        """Issue #168 put the `capabilities:` spelling into the claude sample's header, as a
+        COMMENT rather than a key: placing the key would change the leaf set the sample rows
+        above read. A comment is exactly the form that rots, so the two facts it states are
+        derived from the code here.
+
+        The comment names the provider's whole capability set and the refusal a superset raises.
+        Both are enumerations `llm_config` owns, so this asserts the DOCUMENT against the code —
+        the set is never spelled in this test. `capabilities: [agentic]` is required literally
+        because that is the operator instruction the comment exists to give; a sample that stops
+        naming the key has lost the thing it was added for."""
+        text = (SAMPLE_DIR / "llm_claude.example.yaml").read_text(encoding="utf-8")
+        header = text.split("defaults:", 1)[0]
+        self.assertIn("capabilities: [agentic]", header)
+        self.assertIn("llm_config_capability_exceeds_provider", header)
+        for cap in sorted(lc.PROVIDER_CAPABILITIES["claude_cli"]):
+            with self.subTest(capability=cap):
+                self.assertIn(
+                    cap, header,
+                    f"llm_claude.example.yaml's header enumerates what `capabilities:` may "
+                    f"restrict and omits `{cap}`, which `PROVIDER_CAPABILITIES['claude_cli']` "
+                    f"declares. An operator reading a short list would think naming the missing "
+                    f"one is the superset the refusal above rejects.")
+
     def test_the_http_samples_put_the_http_provider_on_exactly_the_pure_leaves(self) -> None:
         """The scope rule the HTTP samples exist to demonstrate. An HTTP provider anywhere else
         does not load at all (`llm_config_capability_insufficient_for_substep`, covered by
