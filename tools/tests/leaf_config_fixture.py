@@ -138,7 +138,9 @@ def isolated_homes_per_test_suite(tests):
     Its LEAK coverage is redundant and no test observes it: the round-2 census narrowed
     this loop to the homes name alone, ran a dependent module under plain `unittest` with
     all three variables unset and a fake `$HOME`, and found the home still empty — the
-    module-level redirect had already covered the other two. What this wrapper is FOR is
+    module-level redirect had already covered the other two. (Three was the count then;
+    issue #176 deleted the operator token store, so it is two now. The measurement stands
+    as history.) What this wrapper is FOR is
     the collision above, which the paragraph before this one measures; the leak is the
     module redirect's job. Recorded so the survivor does not read as a gap.
     """

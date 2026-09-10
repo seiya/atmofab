@@ -38711,12 +38711,20 @@ class DurableWorkflowHomesTests(unittest.TestCase):
         state `docs/workflow/WORKFLOW_CORE.md` forbids because it shortens the route to
         reporting a substep done.
 
-        Both directions of the containment are NOT symmetric and only one is refused: a
-        root that CONTAINS the checkout keeps the token/home files outside the repository,
-        where a repo-relative manifest cannot name them, and its cost — every recursive
-        in-repo read failing closed — is stated in `docs/RUNBOOK.md` rather than refused.
-        The symlink case is included because the check resolves: laundering the path
-        through a link is the evasion that would otherwise be free.
+        Both directions of the containment ARE refused, for different reasons, and the
+        other one has its own row (`WorkflowHomesRootOverrideTests::
+        test_a_homes_root_containing_the_checkout_is_refused`). The symlink case is
+        included because the check resolves: laundering the path through a link is the
+        evasion that would otherwise be free.
+
+        The THIRD spelling is the checkout root ITSELF, and it exercises a separate clause
+        of the condition — `root_resolved == repo_resolved`, which `repo_resolved in
+        root_resolved.parents` does not cover — plus the "IS the repository root" half of
+        the message. It lived on the token-store twin until issue #176 deleted that, and
+        the port kept only the first two spellings: a mutant narrowing the condition to
+        `in .parents` was `1 failed` on `origin/main` and GREEN on the branch until this
+        row was added, as was one flattening the message to the unconditional
+        "is under {repo}". Found by a disclosure-axis reviewer with that transcript.
         """
         from tools.orchestration_runtime import (
             WORKFLOW_HOMES_ROOT_ENV, _create_workflow_backend_home)
@@ -38727,15 +38735,22 @@ class DurableWorkflowHomesTests(unittest.TestCase):
             inside = repo / "spec" / "homes"
             link = Path(outside) / "link_homes"
             link.symlink_to(inside.parent, target_is_directory=True)
-            for label, override in (("plain", inside), ("symlinked", link / "homes")):
+            for label, override in (("plain", inside), ("symlinked", link / "homes"),
+                                    ("the checkout root itself", repo)):
                 with self.subTest(spelling=label):
                     with mock.patch.dict(
                             os.environ, {WORKFLOW_HOMES_ROOT_ENV: str(override)},
                             clear=False):
-                        with self.assertRaisesRegex(
-                                ValueError, "must not be inside the repository"):
+                        with self.assertRaises(ValueError) as ctx:
                             _create_workflow_backend_home(repo, "orch_d", "claude",
                                                           "Claude")
+                    message = str(ctx.exception)
+                    self.assertIn("must not be inside the repository", message)
+                    self.assertIn(WORKFLOW_HOMES_ROOT_ENV, message)
+                    # The message says WHICH of the two shapes it is.
+                    self.assertIn(
+                        "IS the repository root" if override == repo
+                        else f"is under {repo.resolve()}", message)
                     self.assertFalse(inside.exists(),
                                      "the refusal must arrive before anything is made")
 

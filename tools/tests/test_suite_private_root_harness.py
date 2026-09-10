@@ -2,8 +2,9 @@
 """The suite's own operator-private-root layers, observed from OUTSIDE them.
 
 `tools/tests/conftest.py` has two layers over `~/.atmofab` (issues #132 / #133): a
-per-test REDIRECT of the three environment names, and a session GUARD wrapping the three
-resolvers. Nothing under pytest observed either until this file existed, and the first
+per-test REDIRECT of every relocator environment name, and a session GUARD wrapping every
+resolver. (There were three of each until issue #176 deleted the operator token store; the
+count is deliberately not written here — `_private_root_redirects` is where it lives.) Nothing under pytest observed either until this file existed, and the first
 attempt to fix that observed only half:
 
   * the two guard WITNESSES elsewhere SKIP when the marker is absent. They have to — under
@@ -74,8 +75,9 @@ class SuiteHarnessCoversAllPrivateRootsTests(unittest.TestCase):
 
         The assertion above is satisfied by anything that keeps the resolvers out of the
         real root — including a resolver that has stopped reading its override at all. This
-        one names the three environment variables, so narrowing conftest's fixture to a
-        subset fails HERE with the missing name rather than somewhere downstream.
+        one names every environment variable `_private_root_redirects` returns, so narrowing
+        conftest's fixture to a subset fails HERE with the missing name rather than somewhere
+        downstream.
         """
         from tools.tests.leaf_config_fixture import _private_root_redirects
 

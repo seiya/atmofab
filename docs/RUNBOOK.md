@@ -451,9 +451,10 @@ python3 tools/run_workflow.py --resume build
 
 ## The operator-private root (`~/.atmofab`) {#operator-private-root}
 
-Two things live outside the repository, under the operator's own home. Both are
-per-operator and per-host; neither is ever committed. This is the inventory of what
-the CODE writes there. An `ls` on a long-lived host may show more: `cold_start_locks/` and `escape.txt` have
+Two things live outside the repository, under the operator's own home — the start claims
+and the isolated backend homes. Both are per-operator and per-host; neither is ever
+committed. This is the inventory of what the CODE writes there, plus one row for a tree it
+no longer writes and an operator's machine may still carry. An `ls` on a long-lived host may show more: `cold_start_locks/` and `escape.txt` have
 been seen in this operator's root, and neither has a producer anywhere in this
 repository's history (`git log --all -S` finds none), so they are residue from something
 outside it or from a version that predates the history. Nothing writes them, nothing
@@ -462,6 +463,7 @@ read as a third thing the workflow maintains.
 
 | Path | Written by | Read by | Retention |
 |---|---|---|---|
+| `~/.atmofab/operator_tokens/` | nothing, since issue #176 | nothing | **orphaned.** The `dismiss-violation` token store; its writer and its reader are gone. Nothing creates, reads or prunes it, and `tools/prune_workflow_homes.py` covers `homes/` only. Remove it by hand once: `rm -r ~/.atmofab/operator_tokens`. Listed so a machine that still has it does not read as a third live tree. |
 | `~/.atmofab/start_claims/` (relocatable with `ATMOFAB_START_CLAIM_ROOT`) | `run_workflow.py`'s cold-start guard | itself | advisory `flock` files; the OS releases the lock when the driver dies |
 | `~/.atmofab/homes/<orchestration_id>/{claude,codex}/` (relocatable with `ATMOFAB_WORKFLOW_HOMES_ROOT`) | the leaf launcher, per orchestration and backend | `--resume` (warm session lookup), `audit_orchestration.py`, the three audit skills | **indefinite. Nothing deletes these automatically. See below.** |
 
