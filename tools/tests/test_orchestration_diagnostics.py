@@ -1280,7 +1280,22 @@ class PureLeafMetaPhaseTests(unittest.TestCase):
         occurrences of the name and this row is red. So the tree is read as a line whose entry is
         the name, and the table as a row whose FIRST cell ends in it. The expected set is derived from `PURE_LEAF_META_FILES`, never listed
         here, so this asserts the document against the code and not the code against a second
-        hand-written list."""
+        hand-written list.
+
+        WHAT THIS PINS AND WHAT IT ONLY SAMPLES, because the difference was measured rather than
+        reasoned. PINNED: that each declared record has a tree entry of its own and a table row
+        of its own, and that a rename in `PURE_LEAF_META_FILES` reddens the document. NOT
+        pinned: everything else in the row. Two mutants of the document, both GREEN at round 1 --
+        rewriting `compile_generate_meta.json`'s row path from `workspace/ir/.../<ir_id>/` to
+        `workspace/pipelines/.../WRONG/DIR/`, and rewriting every `conductor
+        (`_write_pure_attempt_meta`)` writer cell to `LEAF (the leaf writes it itself)`, which
+        inverts the row's own load-bearing sentence about the leaf holding no write authority.
+
+        Those two are left uncovered deliberately. Coupling the DIRECTORY would need a
+        phase-to-`NodeRefs`-accessor mapping written out here, which is the second hand-written
+        list this row exists to avoid, and coupling the writer and reader columns would need the
+        prose to be generated rather than written. They are verified by reading when the rows
+        change; this row is the growth bound, not the whole review."""
         doc = (REPO_ROOT / "docs" / "WORKSPACE_LAYOUT.md").read_text(encoding="utf-8")
         expected = {name for files in diag.PURE_LEAF_META_FILES.values()
                     for name in files.values()}
