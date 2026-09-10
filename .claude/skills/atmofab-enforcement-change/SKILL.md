@@ -151,7 +151,13 @@ contaminated** — a compiler writes artifacts beside its input and reads them b
 be answered by what the PREVIOUS shape left, and a cleanup line between two probes makes one
 recorded row into two environments (issue #153 recorded a `gfortran` rc=0 that holds only with a
 stale `.smod` present, beside a rc=1 taken after the `rm`; `references/verification.md`
-§"Verification steps that silently do not run" carries the reproduction); and **the flip side of rule 3 is that prose you newly write in the same commit is
+§"Verification steps that silently do not run" carries the reproduction). **The contaminant need
+not be the probe's own history: a suite running CONCURRENTLY can be swapping the file the probe
+reads** — issue #180 ran `test_backend_boundary --check-baseline` while the suite was in flight
+and read the one-entry baseline `test_write_baseline_actually_writes_the_measurement` installs
+at the REAL path for the length of one `try`, getting every scanned file reported as growth from
+zero, with `git status` clean throughout because the test restores the bytes in its `finally`. **Run the verification set with nothing
+else in flight, and say so beside the number.** And **the flip side of rule 3 is that prose you newly write in the same commit is
 unverified until you run it** (L128 got four freshly written measurements or citations wrong
 inside the fix itself). **Do not write someone else's measurement as your own** — cite the source
 explicitly, or re-measure before writing. **The place this fires that you will not expect is a
@@ -176,7 +182,7 @@ operator does not lower the count — it decides which site you check first.
 **Reach for the pattern this repository already uses three times** (`_SCRATCH_SURFACES`,
 `_REDIRECT_RULE_SURFACES`, `_SURFACES` in `tools/tests/test_hooks_cli.py`) — but they are three
 DIFFERENT shapes and **they duplicate each other**, so read the one nearest your rule and treat
-copying as the starting point. The ten traps, each of which cost a round (the count was wrong here — "four" over five bullets — until issue #143 added the sixth, which is this rule's own enumeration trap turned on itself; issue #175 added the last four, all of them found by a witness census run against a coupling check written the SAME DAY, three of them demonstrated by planting the defect the check was built to refuse):
+copying as the starting point. The eleven traps, each of which cost a round (the count has now been wrong here TWICE, both times by addition and both times caught late: "four" over five bullets until issue #143 added the sixth, which is this rule's own enumeration trap turned on itself; then "ten" over eleven, when issue #180 added the STATEMENTS-per-site bullet and did not re-count — the same trap, a third time, in the same sentence. Issue #175 added four of them, all found by a witness census run against a coupling check written the SAME DAY, three demonstrated by planting the defect the check was built to refuse. **Re-count this sentence whenever you add a bullet; nothing compares it to the list.**):
 
 - **Anchor on text that PRECEDES the rule and is byte-identical in the wording you are refusing.**
   Anchoring on your own corrected sentence pins that the correction survived, not that the rule is
@@ -201,6 +207,22 @@ copying as the starting point. The ten traps, each of which cost a round (the co
   requiring each element to OPEN its own bullet there. The count is the other half: a document
   that says "three channels" and lists two is only wrong if something compares the two, and the
   number belongs to the code
+- **Count the STATEMENTS per site, not the sites — one rule is routinely stated twice in one
+  place, in two different FORMS, and coupling either one leaves the other free.** The bullet
+  above is about the ELEMENTS of an enumeration; this is about the same rule said a second way
+  beside the first, which does not look like a second site at all. Issue #180 coupled
+  `validate_pipeline_semantics`'s `--stage` set to the validator's argparse `choices` at both of
+  its restatements — and each restatement says the set TWICE: as the alternation
+  `'stage': 'a|b|c'`, and as a prose qualifier naming which stage takes `ir_ref`
+  (`(compile stage)`). The check read the alternation only, so setting BOTH qualifiers to
+  `(plan stage)` — `plan` being the non-existent stage whose appearance in that help was the
+  finding the check was written for — left the file green. **The fix is not a wider regex: it is
+  to find the CODE that answers the second form too** (there, driving each declared stage and
+  reading which one's violation says `requires non-empty --ir-ref`) and couple it separately,
+  self-testing the derivation so a reworded answer fails the row instead of silently answering a
+  different question. **The tell**: a restatement that reads as a sentence rather than a list —
+  the qualifier, the "(defaults to …)", the "…, which is what the gate runs" — sitting inside the
+  same cell as the machine-shaped form you coupled
 - **An EXEMPTION is a rule too, and it gets broken from both sides.** When the check must let
   something through — a routing sentence that legitimately names the thing you are refusing —
   do not decide the exemption by pattern. Issue #143 tried "the line cites the phase doc", then

@@ -91,6 +91,41 @@ hand-typed count, rotting inside the commit that wrote it, in the file that tell
 hand-type counts. The fix then was to stop counting them here; the fix now is to stop attributing
 them to one issue.)
 
+**A PROBE THAT READS A FILE THE SUITE MUTATES MEASURES WHATEVER THE SUITE HAPPENED TO BE DOING.**
+The stateful-compiler entry below is one mechanism; this is a second, and it needs no state of
+its own — the contaminant is another process running concurrently in the same checkout.
+`python3 -m tools.tests.test_backend_boundary --check-baseline` reads
+`tools/tests/data/backend_boundary_baseline.json`, and two rows in that same module write THE
+REAL PATH and restore it in a `finally` — `test_write_baseline_actually_writes_the_measurement`
+installs `{"token_counts": {"docs/sentinel.md": {"fortran": 1}}}` there to witness that
+`_write_baseline` writes a fresh measurement rather than blessing what it found, and
+`test_write_baseline_does_not_touch_the_pinned_file` writes a sentinel to the ALLOWLIST beside
+it for the converse check. (This sentence named a third test that does not exist until the name
+was resolved against `grep -n "def test_"` — the second misattribution in one entry, which is
+why the parenthesis below is stated as a class rather than as one slip.)
+Run the check inside that window and it compares the tree against a one-entry baseline. Issue
+#180 did, and got every scanned file reported as growth from zero plus a `docs/sentinel.md:
+recorded, now absent` line — output so obviously wrong that it read as a catastrophic finding
+rather than as a bad measurement. `git status` was clean and `git diff` on the file was empty
+throughout, because the restore had already happened; the only tell was the file's mtime.
+
+(**This entry named the wrong test TWICE while being written** — first `ScannedSetTests`, which
+builds its synthetic tree and baseline in a `tempfile` directory and never touches the real
+path, then a `test_the_command_writes_only_the_baseline` that does not exist at all. Both were
+written from the shape of the output and from memory of the surrounding prose, in the file that
+says executing it is not enough. The cure is mechanical and takes one command: **resolve every
+test name you write against `grep -n "def test_"` before committing it**, the same way this
+skill already tells you to resolve a cited PATH with `git ls-files --error-unmatch`. The
+mechanism itself was re-derived by running the named row alone and watching the real file's
+mtime change while its bytes came back identical.)
+
+**The rule**: before running a verification step by hand, ask what ELSE writes the inputs it
+reads, and check nothing is in flight. Backgrounding a long suite and continuing to work is the
+setup that produces this, and it is a normal thing to do. **Two cheap habits close it**: run the
+verification set with nothing else in flight and say so beside the number, and treat an
+implausibly large finding as a suspected bad measurement before treating it as a finding — the
+same reflex as reading WHY a mutant died.
+
 **A COMPILER PROBE IS STATEFUL IN ITS WORKING DIRECTORY, and the artifact the PREVIOUS shape left
 can supply exactly what the next one is missing.** `gfortran` writes `.mod` / `.smod` beside the
 source and reads them back on the next invocation, so probing shape B where shape A just ran is not

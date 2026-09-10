@@ -251,6 +251,15 @@ when a rule does not obviously apply:
     the fixture that could produce the expected violation is removed, it does not pin its name
   - **a negative assertion is green when the detector breaks — self-test the detector**
   - **when a mutant dies, read why**: a kill from a setup error is worth exactly as much as green
+  - **a witness for an ABSENCE assertion must mutate the WRITER, not the function you are
+    calling.** Making the unit under test create file X reddens ANY `assertFalse(X.exists())`,
+    including one naming a file no code writes — so it distinguishes spellings, not coverage.
+    Issue #180 banked exactly that as the witness for a vacuity fix, and the assertion was
+    still unfalsifiable: the method it drove authors no verdict, and the real writer was one
+    frame up. **Ask whether the mutation would also have reddened an assertion about
+    something the unit under test cannot produce**; if the answer is yes it measured the
+    assertion's syntax. The parent rule above did not fire because the kill did not LOOK
+    like a setup error — it looked like the mutation working
   - **when you rewrite a test, diff what the old version observed**
   - **a test that reproduces the wiring does not observe the wiring** — and that shape lies in its
     docstring easily; grep the body for the function names the docstring claims to drive
@@ -606,6 +615,15 @@ the first in round 2, on the fix commit's own tests — four uncommitted test ed
 from context, an hour lost — with the rule sitting in this file in those words. `cp` the file to a
 scratch path first and restore from that, or mutate in a worktree; the discipline is the same at
 every point in the loop, not just at round 0.
+
+**A THIRD one, and it is the mid-loop mutation's own shape rather than a round-0 rule read late:
+the hand mutation you take to CONFIRM A FIX is the one nobody checks.** A round-0 mutant is
+scored by a script that reports survivors; a mid-loop mutant is scored by you, on a fix you
+already believe in, and a red result is what you were hoping for. Issue #180 banked one — the
+absence-assertion witness above — and it took the next round to find that the red came from the
+mutation reaching the assertion rather than the mechanism. **Before writing "witnessed" into a
+commit message, name what the mutation would ALSO have reddened.** If that list includes an
+assertion you would call vacuous, the witness is not one.
 
 **Reproduce a finding yourself before classifying it.** Real / false positive / residual /
 **real but out of scope** (below) are decided only with a record of a reproduction you ran. **The
