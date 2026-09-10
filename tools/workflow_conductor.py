@@ -8231,8 +8231,9 @@ clean:
         # everything from pure_context — the M-C carry-forward contract. When there is no session
         # to resume (a provider without CAP_WARM_RESUME, a GC'd claude transcript, a rotated codex
         # home), the first attempt is instead a COLD repair on the same repair template: it
-        # carries the findings and the prior document, and re-sends pure_context. Only a reopen
-        # with NO findings excerpt renders the full launch prompt (issue #209).
+        # carries the findings and the prior document, and re-sends pure_context. Two reopens still
+        # render the full launch prompt, and only two: one with NO findings excerpt, and one whose
+        # target the launch validator would refuse (`usable`, below) (issue #209).
         if repair and str(repair.get("repair_strategy", "")).strip() == "reuse":
             target = self._resolve_reuse_resume(repair, phase, substep, pure=True)
             # The outer-reopen excerpt is threaded into the first repair turn's
