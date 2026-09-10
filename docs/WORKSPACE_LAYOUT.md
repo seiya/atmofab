@@ -231,7 +231,7 @@ The conductor writes this from the leaf's own output (`workflow_conductor._leaf_
 | `workspace/pipelines/.../<pipeline_id>/runs/<run_id>/<node_key_safe>/verdict.json` | Validate/judge | substep agent (Edit/Write) | runtime / validator / upper node | |
 | `workspace/pipelines/.../<pipeline_id>/lineage.json` | added by each phase | (via write-step-result) | runtime / validator | the phase id lineage |
 
-> `lint_meta.json` / `syntax_meta.json` / `static_meta.json` were retired on 2026-07-23 (`59a89fd`) in favour of the single `gate_meta.json`; no code writes or reads them, and nothing but a test comment recording this retirement names them. A workspace snapshot from before that date may still contain them as **inert** history.
+> `lint_meta.json` / `syntax_meta.json` / `static_meta.json` were retired on 2026-07-23 (`59a89fd`) in favour of the single `gate_meta.json`; no code writes or reads them, and nothing but two test comments recording this retirement name them. A workspace snapshot from before that date may still contain them as **inert** history.
 
 ## Generation rule of node_key_safe
 
