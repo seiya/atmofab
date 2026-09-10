@@ -18305,9 +18305,11 @@ class DeterministicCompileStaticTest(unittest.TestCase):
     validate_pipeline_semantics --stage compile and authors compile_static_meta.json under the
     IR dir; a violation is a content failure routed to compile.generate (warm resume).
 
-    TWO gates, and the count is pinned: `_fake_run`'s trailing `raise AssertionError` fails
-    the row for any third gate spawned here (issue #180 removed one, on the grounds that
-    `--stage compile` reports the well-formedness shapes itself)."""
+    TWO gates, and the COUNT and ORDER are pinned by `_fake_run`'s recorded call sequence
+    (issue #180 removed a third, on the grounds that `--stage compile` reports the
+    well-formedness shapes itself). Its trailing `raise AssertionError` is a weaker,
+    separate guard: it catches an unrecognized script only, so it would not see a duplicate
+    call to one of the two."""
 
     def _conductor(self, repo: Path) -> "wc.Conductor":
         return wc.Conductor(repo_root=repo, orchestration_id="t",
@@ -18326,9 +18328,18 @@ class DeterministicCompileStaticTest(unittest.TestCase):
         return mock.patch.object(wc.subprocess, "run", fn)
 
     @staticmethod
-    def _fake_run(ws_rc: int, compile_rc: int):
+    def _fake_run(ws_rc: int, compile_rc: int, seen: list[str] | None = None):
+        """Stub the gate subprocesses, recording the script of each call in `seen`.
+
+        The recording is what pins the gate COUNT and ORDER. The trailing
+        `raise AssertionError` alone does not: it fires only on an UNRECOGNIZED script
+        name, so a second call to one of the two known scripts would be invisible to it
+        — which is what C5's commit message claimed it caught, wrongly.
+        """
         def run(cmd, **kwargs):
             script = next((c for c in cmd if c.endswith(".py")), "")
+            if seen is not None:
+                seen.append(Path(script).name)
             if script.endswith("validate_workspace_root.py"):
                 return wc.subprocess.CompletedProcess(cmd, ws_rc, "ws-out", "ws-err")
             if script.endswith("validate_pipeline_semantics.py"):
@@ -18346,8 +18357,13 @@ class DeterministicCompileStaticTest(unittest.TestCase):
             refs = self._refs()
             self._seed(repo, refs)
             c = self._conductor(repo)
-            with self._patch_run(self._fake_run(0, 0)):
+            seen: list[str] = []
+            with self._patch_run(self._fake_run(0, 0, seen)):
                 out = c._compile_static_inproc(refs, "child-1", "captok")
+            # TWO gates, in this order, each run once. Issue #180 removed a third that used
+            # to sit between them; a re-added or duplicated gate is red here.
+            self.assertEqual(
+                seen, ["validate_workspace_root.py", "validate_pipeline_semantics.py"])
             self.assertEqual(out["returncode"], 0)
             meta = self._meta(repo, refs)
             self.assertEqual(meta["status"], "pass")
@@ -18376,8 +18392,10 @@ class DeterministicCompileStaticTest(unittest.TestCase):
             self._seed(repo, refs)
             c = self._conductor(repo)
             # workspace_root fails first; --stage compile must NOT run.
-            with self._patch_run(self._fake_run(1, 1)):
+            seen: list[str] = []
+            with self._patch_run(self._fake_run(1, 1, seen)):
                 out = c._compile_static_inproc(refs, "child-1", "captok")
+            self.assertEqual(seen, ["validate_workspace_root.py"])
             self.assertEqual(out["returncode"], 0)
             meta = self._meta(repo, refs)
             self.assertEqual(meta["status"], "fail")
@@ -21217,6 +21235,10 @@ class RealValidatorAtTheRetiredArtifactSyntaxGateSitesTests(unittest.TestCase):
         self.assertTrue(
             out["stderr"].startswith("[compile compile_stage gate fail]"), out["stderr"][:200])
         # The excerpt is the last 50 lines, so assert the violation on the full block.
+        # `must be mapping` can only come from the list-valued `spec.ir.yaml`; `must be json
+        # object` is emitted for BOTH seeded breakages, so it alone would not tell this row's
+        # named subject (the non-mapping IR) from the `ir_meta.json` one.
+        self.assertIn("must be mapping", out["stderr"])
         self.assertIn("must be json object", out["stderr"])
         self.assertNotIn("Traceback", out["stderr"])
         self.assertNotIn("Traceback", meta["failure_excerpt"])
