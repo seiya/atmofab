@@ -858,6 +858,12 @@ non-scalar `time_shape_expr`, undefined `steps[]` token binding, null knob, malf
 tripped the gate at completion — wasted tokens with zero accuracy benefit. This is exactly the
 generate.verify→generate.gate situation (G1), one phase up.
 
+> **STATUS NOTE (2026-09-10, issue #180).** `Compile.static` now runs TWO gates, not the three
+> named below: the `check_artifact_syntax` run was retired because `--stage compile` reports the
+> same well-formedness shapes itself (`invalid yaml` / `invalid json` / `must be mapping` /
+> `ir_meta.json: must be json object`). Nothing else in this section changed — same order, same
+> `compile_static_violation` category, same routing. History kept as written.
+
 **Decision — new `static` substep.** `SUBSTEPS["compile"]` becomes `("generate", "static", "verify")`.
 The conductor's `Compile.static` (`_compile_static_inproc`) runs the three gates the old
 `compile.verify` runbook emitted — `validate_workspace_root`, `check_artifact_syntax` on
