@@ -1284,7 +1284,13 @@ class PureLeafMetaPhaseTests(unittest.TestCase):
         doc = (REPO_ROOT / "docs" / "WORKSPACE_LAYOUT.md").read_text(encoding="utf-8")
         expected = {name for files in diag.PURE_LEAF_META_FILES.values()
                     for name in files.values()}
-        self.assertEqual(len(expected), 5,
+        # The guard is against a BASENAME COLLISION, which would make the per-position reads
+        # below answer for the wrong record. Round 1 caught it hardcoding the cardinality (5)
+        # instead: a sixth pure record — the exact growth this coupling exists to catch — failed
+        # HERE, with a message naming a collision that does not exist, and before the document
+        # requirement could say what to add. The count now comes from the table.
+        self.assertEqual(len(expected),
+                         sum(len(files) for files in diag.PURE_LEAF_META_FILES.values()),
                          "the derivation collapsed: two phases share a record basename, and the "
                          "per-position reads below would then answer for the wrong one")
         tree_entries, table_first_cells = set(), set()
@@ -1302,8 +1308,10 @@ class PureLeafMetaPhaseTests(unittest.TestCase):
         self.assertTrue(any(c.endswith("/compile_static_meta.json") for c in table_first_cells))
         for name in sorted(expected):
             with self.subTest(record=name):
-                self.assertIn(
-                    name, tree_entries,
+                # `assertTrue`, not `assertIn`: the container is every entry in the document's
+                # trees, and dumping it buries the one sentence that says what to do.
+                self.assertTrue(
+                    name in tree_entries,
                     f"docs/WORKSPACE_LAYOUT.md: no tree entry for `{name}`. It is a record "
                     f"`PURE_LEAF_META_FILES` declares, so the workspace map has to show where "
                     f"it lands.")
