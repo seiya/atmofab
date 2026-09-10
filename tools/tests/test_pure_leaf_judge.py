@@ -520,7 +520,8 @@ class PureJudgeLoopTests(_Fixture):
     def test_an_exhausted_budget_writes_no_review(self) -> None:
         """The signal `run_phase` routes on: no `semantic_review.json`, so
         `_judge_semantic_decision` reads nothing and the existing conformance branch fires —
-        the same terminus a conformance violation reaches on either transport."""
+        `validate_judge_conformance_violation`, the reason that already existed for this class —
+        NOT the `validate_pre_judge_violation` a post_judge conformance violation takes."""
         bad = _envelope(json.dumps({"decision": "maybe", "findings": []}))
         c = self.conductor(bad, bad, bad, bad)
         outcome = c.run_substep(self.refs, "validate", "judge")

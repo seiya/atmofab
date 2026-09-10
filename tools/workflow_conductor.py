@@ -572,8 +572,12 @@ GENERATE_VERDICT_FAILURE_ROUTING: dict[str, tuple[str, str]] = {
 # repaired in the same bounded warm loop the other reviewers use, under this category.
 # There is deliberately NO routing table beside it: when the budget IS exhausted the host has
 # written no `semantic_review.json`, so `_judge_semantic_decision` reads `""` and `run_phase`'s
-# existing `judge_conformance_block` raises `validate_judge_conformance_violation` — the same
-# terminus a conformance violation reaches on either transport. One routing story, not two.
+# existing `judge_conformance_block` raises `validate_judge_conformance_violation`, so the
+# document-violation class needs no routing table of its own. It is NOT the same terminus a
+# post_judge conformance violation reaches: that one is `validate_pre_judge_violation` and
+# fail_closed (`classify_validate_gate_failure`), while this one is
+# `validate_judge_conformance_violation` and escalates in prod. Two reasons, one of which
+# already existed — which is the point: no third one was added.
 SEMANTIC_REVIEW_DOCUMENT_VIOLATION = "semantic_review_document_violation"
 JUDGE_DOCUMENT_FAILURE_CATEGORIES: tuple[str, ...] = (
     "pure_response_unparseable",
@@ -674,8 +678,11 @@ VALIDATE_JUDGE_ROUTING: dict[tuple[str, str], tuple[str, str | None]] = {
 #                     (agent_graph.json / step_result.json / an orchestrations/ root), the
 #                     cross-pipeline DAG check (lineage.json / the literal DAG messages), and the
 #                     host-authored verdict/derived artifacts.
-#   - unknown       : anything else (incl. execute-authored evidence) -> conservatively terminal
-#                     (fail_closed) for now; a future escalate-LLM adjudicator would decide here.
+#   - unknown       : anything else (incl. execute-authored evidence) -> `escalate`. G5 wired the
+#                     adjudicator this bullet once called a future follow-up: in prod `run_phase`
+#                     turns the disposition into an escalate RouteDecision and the diagnostician
+#                     decides; dev keeps fail_closed (no billed escalate leaf). Pinned by
+#                     `test_an_unknown_violation_is_written_as_escalate`.
 _POST_JUDGE_RECOVERABLE_BASENAMES: frozenset[str] = frozenset({
     "semantic_review.json",
 })
@@ -12796,8 +12803,8 @@ clean:
         correct-by-construction (closing the previously un-gated aggregate/`blocked`-DAG
         composition hole) instead of the LLM. Called at the TOP of `_post_judge_inproc`,
         before the `--stage pre_judge` gate re-validates `summary.counts` vs
-        `verdict.per_test` (`_validate_tests_verdict_summary_consistency`). Idempotent on a
-        warm-resume re-run (re-derived from the execute-authored `verdict.json`). As of R2 the
+        `verdict.per_test` (`_validate_tests_verdict_summary_consistency`). Idempotent on any
+        re-run that reaches it (re-derived from the execute-authored `verdict.json`). As of R2 the
         judge authors only `semantic_review.json`; `verdict.json` is host-authored at execute."""
         from tools.orchestration_runtime import _resolve_dependency_facts
 
@@ -12981,8 +12988,12 @@ clean:
         self._write_run_node_meta(refs, "summary.json", summary_doc)
 
         # validate_meta.json bookkeeping (not gate-validated; keys per phase_04 §"required
-        # keys"). last_fail_reason reads the PRIOR post_judge_meta (present only on a
-        # warm-resume re-run; None on the first pass).
+        # keys"). last_fail_reason reads a PRIOR post_judge_meta in this run-node dir, and since
+        # issue #176 there can never be one: the warm-resume mini-loop was the only thing that
+        # re-ran post_judge inside one `run_id`, and a phase RETRY rotates `refs.run_id`
+        # (`_ensure_fresh_producer_id`), so the prior attempt's meta is in a different directory.
+        # The field is therefore `None` in every run today. The read is kept as the defensive
+        # one it always was, not because anything fills it.
         prior_post = _read_gate_meta(node_dir / "post_judge_meta.json") or {}
         last_fail_reason = prior_post.get("failure_excerpt") or None
         attempt_count = getattr(self, "_judge_attempt_count", {}).get(refs.node_key, 1)
@@ -13376,10 +13387,11 @@ clean:
         # the index, which is the reading that does not depend on that. Cases:
         #   - pre_judge (index 0): a --with-deps closure not built+validated. No judge ran, so
         #     this preserves the historic pre-spawn terminal behavior (no step_result written).
-        #   - post_judge (index 3): the `--stage pre_judge` gate failed with a terminal
-        #     disposition (an integrity violation, or a recoverable one whose warm-resume budget
-        #     was exhausted). The judge passed physics; the pre_phase_complete hook forbids a
-        #     `fail` step_result atop a `pass` semantic_review, so the write is skipped.
+        #   - post_judge (index 3): the `--stage pre_judge` gate failed with a `fail_closed`
+        #     disposition — either graded class, integrity or judge-authored conformance, since
+        #     issue #176. (An `escalate` disposition does NOT reach here; the `is_escalate`
+        #     branch below returns first.) The judge passed physics; the pre_phase_complete hook
+        #     forbids a `fail` step_result atop a `pass` semantic_review, so the write is skipped.
         #   - judge (index 2) with semantic_review.decision != "fail" (pass, or missing/empty):
         #     a judge deliverable inconsistency the hook cannot express — either verdict.json is
         #     malformed (per_test uses a wrong field name / non-certifying value) while decision

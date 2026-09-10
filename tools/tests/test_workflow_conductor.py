@@ -18480,8 +18480,8 @@ class PostJudgeClassifierTest(unittest.TestCase):
                 wc.classify_post_judge_violations(
                     [f"workspace/pipelines/x/runs/r/n/{base}: counts must equal per_test aggregate"]),
                 "unrecoverable", base)
-        # Execute-authored evidence is NOT judge-fixable -> unknown (fail_closed), no wasted
-        # by a judge re-run: it cannot rewrite diagnostics/perf/trial_meta.
+        # Execute-authored evidence is NOT judge-fixable -> unknown, whose disposition is
+        # `escalate`: a judge re-run cannot rewrite diagnostics/perf/trial_meta.
         for base in ("perf.json", "diagnostics.json", "trial_meta.json"):
             self.assertEqual(
                 wc.classify_post_judge_violations(
@@ -18873,7 +18873,10 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
         # The severity rules classify a violation by its artifact PATH, and here every bullet
         # names `semantic_review.json` — the recoverable shape, i.e. the judge's own artifact. Left
         # to the bullet path, an uninstalled front end or a stale certified IR would spend the
-        # phase's attempt budget re-authoring a review that cannot fix either. The exit code
+        # operator a terminal reason naming a conformance finding instead of the machine or IR
+        # condition that actually stopped the run. (Before issue #176 it ALSO cost the judge's
+        # warm-resume budget; no budget is spent now — the graded classes terminalize at once.)
+        # The exit code
         # is read first, so the recoverable-looking bullet cannot reach the classifier.
         import tempfile
         from tools.validate_pipeline_semantics import (
