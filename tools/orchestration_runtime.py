@@ -12904,13 +12904,17 @@ def _render_pure_repair_prompt(request_payload: dict[str, Any]) -> str:
     single scan carve-out covers it. On a WARM repair the resumed session already holds the
     output-contract schema, the authoring rules, the prior document under repair, and the full
     context, so `<output_contract>`, `<authoring_rules>`, `<prior_document>`, and
-    `<pure_context>` are all empty. On the COLD fallback (`_claude_session_resumable` returned
-    false — no `warm_resume`) the session has no prior turn, so the repair re-states the
+    `<pure_context>` are all empty. On the COLD fallback there is no prior turn at all — the
+    session was GC'd, the codex home rotated under it, or (since issue #209) the provider never
+    had one to resume and this is the FIRST turn of an outer `reuse` reopen — so the repair
+    re-states the
     output-contract SCHEMA and the AUTHORING RULES (both lifted from the launch template — a
     re-authored bundle still has to clear the deterministic gates), re-inlines the model's PRIOR
     document under repair (`prior_document`, threaded by
-    the producer repair loop — the parsed bundle re-serialized, or the raw unparseable reply
-    text), re-inlines the input context documents (`pure_context`), AND re-inlines the
+    the producer repair loop — the parsed bundle re-serialized, the raw unparseable reply text,
+    or, when the cold turn is the reopen's first, the failed attempt's own artifact read back
+    from disk by the loop's seed), re-inlines the input context documents (`pure_context`), AND
+    re-inlines the
     host-resolved `dependency_facts` (the published-operation interfaces of the node's component
     dependencies — the initial launch injects them, so a cold repair that dropped them could
     re-author code that calls a dependency without its API). This is the M-C cold-repair contract
