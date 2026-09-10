@@ -12828,6 +12828,37 @@ def _pure_output_contract_text(request_payload: dict[str, Any]) -> str:
 # Issue #143 added the severity-rubric label for the same reason once more: `pure_context`
 # re-inlines the rubric into a cold repair, and without its label paragraph the reviewer holds the
 # rubric text with no statement that `issue_severity` is chosen BY it.
+# The pure pairs whose leaf returns a VERDICT — a conclusion about someone else's artifact —
+# rather than the artifact itself. Only these render `<repair_scope>` (issue #209 round 5).
+#
+# Why the paragraph is conditional rather than shared: for these three, EVERY repairable class is
+# a violation of the verdict document's SHAPE, and the schema's joint invariant couples the
+# conclusion to the evidence (`verification_status` / `decision` against findings, severity and
+# reason). That makes "flip the conclusion" a one-token correction of a shape violation, and an
+# accepted one — a `leaf shortcut` whose outcome is a wrong certification. The PRODUCER's repair
+# is about content (an outer reopen carries a deterministic gate's finding about the document
+# itself), so the same paragraph would be false for it: a producer IS being told to change what
+# its document says. A first attempt at one persona-neutral sentence was measured to make two
+# reviewer routes WORSE than saying nothing, which is why this is a slot.
+PURE_VERDICT_PAIRS: frozenset[tuple[str, str]] = frozenset({
+    ("generate", "verify"), ("compile", "verify"), ("validate", "judge"),
+})
+
+#: The `<repair_scope>` text. States the invariant in BOTH directions, because either side of it
+#: can be the half that is wrong and only the leaf knows which: a `fail` that lost its evidence is
+#: repaired by supplying the evidence, and a `pass` that carries a finding is repaired by becoming
+#: a `fail`. What is forbidden is neither edit but the DISHONEST one — dropping a finding that was
+#: made, or recording a conclusion that was not reached.
+PURE_REPAIR_SCOPE_PARAGRAPH = (
+    "These violations are about the SHAPE of your verdict document, not about your review. "
+    "Repair it so that it states COMPLETELY what your review actually found: a `fail` carries its "
+    "findings, its severity and its reason; a `pass` carries none of them. Either half may be the "
+    "one to change — supply the evidence a `fail` is missing, or record the `fail` that the "
+    "evidence you already listed calls for. What you must NEVER do is take whichever edit is "
+    "smaller: do not drop a finding you made, and do not record a conclusion you did not reach."
+)
+
+
 PURE_REPAIR_STATIC_PARAGRAPH_PREFIXES: tuple[str, ...] = (
     "Authoring rules",
     "Review checklist",
@@ -12930,6 +12961,12 @@ def _render_pure_repair_prompt(request_payload: dict[str, Any]) -> str:
         "agent_run_id": str(request_payload.get("agent_run_id", "")),
         "prompt_contract_version": str(request_payload.get("prompt_contract_version", "")),
         "findings": _fence_pure_doc(findings),
+        # Rendered only for a verdict-bearing pair; empty for the producer, whose document
+        # carries no conclusion and whose repair legitimately changes what the document says.
+        "repair_scope": (
+            PURE_REPAIR_SCOPE_PARAGRAPH
+            if (str(request_payload.get("step", "")),
+                str(request_payload.get("substep", ""))) in PURE_VERDICT_PAIRS else ""),
     }
     if not request_payload.get("warm_resume"):
         subs["output_contract"] = _pure_output_contract_text(request_payload)

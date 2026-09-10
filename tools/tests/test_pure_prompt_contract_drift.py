@@ -494,7 +494,17 @@ PINNED: dict[str, str] = {
     # `"pass"` — accepted by the host, and a wrong certification. Measured on `origin/main` too,
     # so the template now states that a conclusion the document already carries is not repaired by
     # being reversed. Nothing else on the pinned surface moved.
-    "pure-41": "92b95726a9116fa537a1a9d820668bb82b76299fda9a5671aa2078d3eb72989e",}
+    "pure-41": "92b95726a9116fa537a1a9d820668bb82b76299fda9a5671aa2078d3eb72989e",
+    # issue #209 round 5: `pure-41`'s paragraph was ONE sentence for all three personas, and a
+    # round-4 reviewer measured it making two reviewer routes WORSE than silence. It named
+    # `severity` immutable, while the correct repair of `fail` + `issue_severity: "none"` is
+    # exactly to change the severity; and its topic sentence ("Correct the document, not your
+    # conclusion") forbade the one correct repair of a `pass` carrying findings, which is
+    # `pass -> fail`, leaving "delete the findings" as the only permitted path. The paragraph is
+    # now a `<repair_scope>` SLOT, rendered only for `PURE_VERDICT_PAIRS`, and states the
+    # invariant in both directions: either half may be the one to change, and what is forbidden
+    # is the dishonest edit rather than a particular field.
+    "pure-42": "602fa500871274d19ea2704e6a6083530f15b576b4f155d6d0afd6361b047c80",}
 
 
 def _contract_tuple() -> dict[str, object]:
