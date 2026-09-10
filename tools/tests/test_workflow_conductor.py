@@ -17591,11 +17591,17 @@ class DeterministicSyntaxTest(unittest.TestCase):
                     c._gate_syntax_check(refs, "child-1", "captok")
             self.assertIn(self.DEP_REF, str(ctx.exception))
             self.assertIn("Unused dummy argument", str(ctx.exception))
-            # no content-fail deliverable is authored on a transport fail_closed. The
-            # deliverable `_gate_syntax_check` writes on a CONTENT failure is `gate_meta.json`
-            # (workflow_conductor._gate_syntax_check); asserting a name it never writes — which
-            # is what this row did until issue #180, with `syntax_meta.json` — pins nothing.
-            self.assertFalse((repo / refs.source_dir() / "gate_meta.json").exists())
+            # NO deliverable assertion here, deliberately. `_gate_syntax_check` writes nothing
+            # but a temp-dir canary source: `gate_meta.json` is authored by `_gate_inproc`, one
+            # frame up. So `assertFalse(<any name>.exists())` in THIS row is unfalsifiable by
+            # any change to the method under test — which is what it was until issue #180 (it
+            # named `syntax_meta.json`) and would still have been had it merely been respelled.
+            # "no content-fail deliverable on a transport fail_closed" is pinned where the
+            # writer is: `DeterministicGateTest.test_static_checker_exception_is_transport_fail_
+            # not_content_pass` and `..._syntax_runtimeerror_suppresses_gate_meta_and_is_
+            # transport_fail`, which drive `_run_deterministic_substep` -> `_gate_inproc`.
+            # Witnessed: with `_gate_inproc` made to write `gate_meta.json` unconditionally,
+            # exactly those two rows go red and this class stays green.
 
     def test_gate_syntax_check_node_source_finding_with_deps_staged_still_content_fail(self) -> None:
         # The mirror of the test above: with a dependency staged, a finding in the NODE's own
