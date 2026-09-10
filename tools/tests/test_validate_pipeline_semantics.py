@@ -24480,8 +24480,12 @@ class WellFormednessSubsumesTheRetiredArtifactSyntaxGateTests(unittest.TestCase)
     of the validator, at `compile.static` (`spec.ir.yaml` + `ir_meta.json`) and at
     `validate.execute` (`diagnostics.json` / `perf.json` / `quality_check.json`). It was retired
     because both stages already report the same shapes; this class is the enumeration behind
-    that claim, one row per failure mode (missing / unparsable / not the expected top-level
-    type), taken through the real `validate_compile_stage` / `validate` entrypoints.
+    that claim, taken through the real `validate_compile_stage` / `validate` entrypoints.
+
+    THE GRID IS 5 FILES x 3 FAILURE MODES (missing / unparsable / not the expected top-level
+    type) = 15, AND THERE ARE 14 ROWS. The three run artifacts share ONE `missing` row (the
+    stage reports all three from the same required-set check), which is -2; and one extra row
+    pins the empty-IR violation COUNT, which is +1. Nothing in the grid is unrepresented.
 
     What is PINNED here: that each shape produces a violation rather than an exception. What is
     SAMPLED: the exact violation wording, which several loaders spell differently for the same
@@ -24609,10 +24613,20 @@ class WellFormednessSubsumesTheRetiredArtifactSyntaxGateTests(unittest.TestCase)
             path, violations = self._post_execute(tmp, "diagnostics.json", "[]")
         self.assertIn(f"{path}: must be json object", violations)
 
+    def test_post_execute_reports_an_unparsable_diagnostics(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path, violations = self._post_execute(tmp, "diagnostics.json", "not json")
+        self.assertIn(f"{path}: invalid json", violations)
+
     def test_post_execute_reports_a_non_object_perf(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path, violations = self._post_execute(tmp, "perf.json", "[]")
         self.assertIn(f"{path}: must be json object", violations)
+
+    def test_post_execute_reports_an_unparsable_perf(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path, violations = self._post_execute(tmp, "perf.json", "not json")
+        self.assertIn(f"{path}: invalid json", violations)
 
     def test_post_execute_reports_an_unparsable_quality_check(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
