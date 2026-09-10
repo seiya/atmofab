@@ -4265,7 +4265,9 @@ class Conductor:
         entry = self.entry_for(phase, substep)
         if not entry.supports(CAP_WARM_RESUME):
             # No session to reopen on this provider (an HTTP leaf holds no session at all).
-            # Same outcome as a GC'd transcript: cold launch, carrying the findings.
+            # Same outcome as a GC'd transcript: the caller falls back to a cold turn — for the
+            # pure PRODUCER loop a cold REPAIR, carrying the findings and the prior document
+            # (issue #209); for the agentic path a cold launch.
             self.emit("resume_session_unavailable", phase=phase, substep=substep or "",
                       target=target)
             return None
@@ -7175,6 +7177,31 @@ clean:
         makefile.write_text(self._render_pure_makefile_from_graph(refs, graph), encoding="utf-8")
         return written
 
+    def _pure_bundle_prior_document(self, record: dict[str, Any]) -> str | None:
+        """The bundle the repair target's attempt returned, read back from the artifact
+        `_write_pure_bundle_artifacts` wrote for it, as the cold repair turn's `prior_document`.
+
+        `record` is that attempt's own launch request (`launches/<arid>.request.json`), which is
+        the only non-heuristic way to name the directory it wrote into: `_ensure_fresh_producer_id`
+        has since rotated `refs.source_id` to a fresh empty one, so `refs` no longer points at it.
+        The file already holds the accepted document in the serialization the loop's own
+        carry-forward uses, so it is passed through as text rather than re-serialized.
+
+        NEVER raises: the seed that calls it runs outside the loop's context-assembly guard, and a
+        missing or unreadable prior artifact is a degradation (the repair turn then carries the
+        findings alone), not a phase failure. Absent for the routes that reopen WITHOUT an accepted
+        artifact (bundle-repair exhaustion)."""
+        pipeline_ref = str(record.get("pipeline_ref") or "").strip()
+        source_id = str(record.get("source_id") or "").strip()
+        if not pipeline_ref or not source_id:
+            return None
+        try:
+            path = self.repo_root / pipeline_ref / "source" / source_id / "codegen_bundle.json"
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError, ValueError):
+            return None
+        return text.strip() or None
+
     def _write_bundle_meta(self, refs: NodeRefs, *, result: str,
                            failure_category: str | None, failure_excerpt: str | None,
                            attempts: int, per_attempt: list[dict[str, Any]]) -> None:
@@ -7579,6 +7606,39 @@ clean:
         self._write_ir_meta(refs, verification_status="pending", last_fail_reason=None,
                             issue_severity=None, attempts=attempts)
 
+    def _pure_ir_prior_document(self, record: dict[str, Any]) -> str | None:
+        """The IR document the repair target's attempt returned, read back from the
+        `spec.ir.yaml` `_write_pure_ir_artifacts` wrote for it, as the cold repair turn's
+        `prior_document`.
+
+        `record` is that attempt's own launch request (`launches/<arid>.request.json`): the
+        directory it wrote into is named there and nowhere else once `_ensure_fresh_producer_id`
+        has rotated `refs.ir_ref` to a fresh empty one. The producer's document is
+        `{ir, last_fail_reason}` (`_pure_ir_document_violations`) and only the `ir` half is
+        persisted, so the other half is reconstructed: an accepted IR has no declared failure, so
+        `last_fail_reason` is null. `_pure_ir_yaml`'s round trip is probed before any document is
+        accepted, so re-reading it reproduces the object the leaf returned. The serialization is
+        the loop's own (`json.dumps(..., indent=2, ensure_ascii=False)`).
+
+        NEVER raises — see `_pure_bundle_prior_document`. `TypeError` / `ValueError` cover an IR
+        an AGENTIC leaf wrote (reachable only when `llm.yaml` changed across a `--resume`), which
+        carries no round-trip guarantee and may hold values `json.dumps` refuses."""
+        ir_ref = str(record.get("ir_ref") or "").strip()
+        if not ir_ref:
+            return None
+        try:
+            ir = yaml.safe_load((self.repo_root / ir_ref / "spec.ir.yaml")
+                                .read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, ValueError, yaml.YAMLError):
+            return None
+        if not isinstance(ir, dict):
+            return None
+        try:
+            return json.dumps({"ir": ir, "last_fail_reason": None}, indent=2,
+                              ensure_ascii=False)
+        except (TypeError, ValueError):
+            return None
+
     def _write_declared_compile_fail(self, refs: NodeRefs, reason: str, *,
                                      attempts: int) -> None:
         """Project a producer's `Compile fail` declaration onto `ir_meta.json`, and write NO
@@ -7871,6 +7931,11 @@ clean:
         #: The request's stamp is read back by `_payload_is_m3c_physics`, so it must carry the
         #: node's real values, not the shape the phase happened to have when it went pure.
         host_authored_flags: Callable[[NodeRefs], tuple[bool, bool]]
+        #: (launch record of the repair target) -> the document that producer attempt returned,
+        #: re-serialized as the loop's `prior_document`, or None when the artifact is absent or
+        #: unreadable. NEVER raises. The loop names neither the artifact nor its location; the
+        #: phase half does.
+        prior_document: Callable[[dict[str, Any]], str | None]
         #: The `pure_shape` the launch request carries, or "" for the default (shape-less)
         #: template and required-key table. Only the non-default shapes name themselves.
         pure_shape: str = ""
@@ -8034,6 +8099,7 @@ clean:
                 host_write_failed_reason="pure_compile_host_write_failed",
                 wants_exemplar=False,
                 host_authored_flags=_host_authored_m3c,
+                prior_document=self._pure_ir_prior_document,
                 declared_fail=self._pure_ir_declared_fail,
                 write_declared_fail=self._write_declared_compile_fail,
                 declared_fail_category=COMPILE_DECLARED_FAIL,
@@ -8062,6 +8128,7 @@ clean:
                 host_write_failed_reason="pure_host_write_failed",
                 wants_exemplar=False,
                 host_authored_flags=self._node_host_authored_flags,
+                prior_document=self._pure_bundle_prior_document,
                 pure_shape="harness",
             )
         return self._PureProducerSpec(
@@ -8082,6 +8149,7 @@ clean:
             host_write_failed_reason="pure_host_write_failed",
             wants_exemplar=True,
             host_authored_flags=_host_authored_m3c,
+            prior_document=self._pure_bundle_prior_document,
         )
 
     def _write_pure_bundle_artifacts_from_doc(self, refs: NodeRefs, doc: dict[str, Any], *,
@@ -8160,21 +8228,52 @@ clean:
         # (generate, reuse)) threads the prior producer's arid + its bundle_meta findings excerpt
         # here. Seed the loop so the FIRST attempt warm-resumes that session (when still
         # resumable) and carries the diagnosis, rather than cold-restarting and re-deriving
-        # everything from pure_context — the M-C carry-forward contract. When the session is gone,
-        # resume_session_id stays None and the first attempt is a cold launch (findings dropped,
-        # the safe degradation the pure launch template has no slot for).
+        # everything from pure_context — the M-C carry-forward contract. When there is no session
+        # to resume (a provider without CAP_WARM_RESUME, a GC'd claude transcript, a rotated codex
+        # home), the first attempt is instead a COLD repair on the same repair template: it
+        # carries the findings and the prior document, and re-sends pure_context. Only a reopen
+        # with NO findings excerpt renders the full launch prompt (issue #209).
         if repair and str(repair.get("repair_strategy", "")).strip() == "reuse":
             target = self._resolve_reuse_resume(repair, phase, substep, pure=True)
+            # The outer-reopen excerpt is threaded into the first repair turn's
+            # `repair_findings` (a UTF-8-persisted prompt). Its writers under the pure executor
+            # (bundle_meta / source_meta) are already surrogate-safe, so this is safe by that
+            # invariant today; normalize at capture anyway so the seed is safe by construction
+            # (identity on clean text) rather than relying on every upstream writer staying so.
+            seed = str(repair.get("repair_findings", "")).strip() or None
+            if seed is not None:
+                last_excerpt = seed.encode("utf-8", "backslashreplace").decode("utf-8")
+                # The document that attempt returned, read back from the artifact the host wrote
+                # for it — its location is named by the target's OWN launch record, because
+                # `_ensure_fresh_producer_id` has already rotated `refs` to a fresh empty
+                # directory. Resolved for BOTH branches: a warm turn does not send it, but the
+                # codex home-rotation fallback below (`turn is None`) turns a warm seed cold.
+                from tools.orchestration_runtime import _read_launch_request_payload
+                record = _read_launch_request_payload(
+                    self.repo_root, self.orchestration_id,
+                    agent_run_id=str(repair.get("repair_target_agent_run_id") or ""))
+                prior = spec.prior_document(record) if record is not None else None
+                prior_document = (prior.encode("utf-8", "backslashreplace").decode("utf-8")
+                                  if prior is not None else None)
             if target and self._pure_session_resumable(target, entry, phase, substep):
                 resume_session_id = target
-                # The outer-reopen excerpt is threaded into the first repair turn's
-                # `repair_findings` (a UTF-8-persisted prompt). Its writers under the pure executor
-                # (bundle_meta / source_meta) are already surrogate-safe, so this is safe by that
-                # invariant today; normalize at capture anyway so the seed is safe by construction
-                # (identity on clean text) rather than relying on every upstream writer staying so.
-                seed = str(repair.get("repair_findings", "")).strip() or None
-                last_excerpt = (seed.encode("utf-8", "backslashreplace").decode("utf-8")
-                                if seed is not None else None)
+            elif seed is not None:
+                # No session, but a diagnosis to carry: make the first attempt a cold repair.
+                # `_validate_launch_request_payload` refuses a reuse repair whose target is empty
+                # or `"none"`, so an unnamed target keeps today's cold launch (findings dropped) —
+                # the one remaining route that cannot carry them.
+                cold_target = str(repair.get("repair_target_agent_run_id") or "").strip()
+                if cold_target and cold_target != "none":
+                    cold_repair_target = cold_target
+                else:
+                    # Nothing will render a repair turn, so drop the document the seed resolved:
+                    # a carrier no request reads would make the event below claim a carry that
+                    # did not happen.
+                    prior_document = None
+                self.emit("pure_reopen_cold", node_key=refs.node_key, substep=substep or "",
+                          target=cold_target,
+                          findings_carried=cold_repair_target is not None,
+                          prior_document_carried=prior_document is not None)
         # R5: resolve the certified sibling exemplar ONCE, above the loop — it is
         # attempt-invariant (the selector never raises; a failure just omits it), mirroring the
         # agentic path. It is attached per-attempt only when that attempt renders the LAUNCH
