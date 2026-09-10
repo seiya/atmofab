@@ -430,6 +430,49 @@ whether `--resume` works, the matcher semantics, and what gets written into the 
   bwrap profile and swap the leaf command for `/usr/bin/env` (that is a witness, not a capture,
   and it is free)
 
+## Establishing that a mechanism was never reached
+
+The evidence half of judgment rule 1-b. Issue #176 deleted eight recovery mechanisms on
+censuses of this shape and **one of the censuses could not see its own subject**:
+`write-step-result --backfill` was deleted on "0 backfill traces across 626
+`step_result.json`", and `--backfill` writes an ORDINARY `step_result.json` with no marker,
+so that count is 0 whether or not it ever ran. It had run 7 times, written 4 of those files,
+and carried `orch_20260619T113225Z_f48fe14b` to `pass`. The deletion was reverted.
+
+**Name the trace before you count anything.** Read `origin/main` and say what one run leaves:
+the `emit()` literal, the file, the field. Where the answer is "nothing", the claim you may
+make is "no in-tree caller", not "never reached".
+
+| artifact | what it proves | trap |
+|---|---|---|
+| `workspace*/orchestrations/*/run_logs/*.jsonl` | **strongest.** One append-only line per `Conductor.emit()` firing | copy the literal from the `self.emit("…")` CALL SITE. Searching a constant's NAME finds the definition, not the firing |
+| `workspace*/orchestrations/*/hooks/native_hook_events.jsonl` | **the only trace a CLI subcommand leaves at all** — every Bash command an agent ran, with the hook's allow/block verdict | a read-only subcommand appears nowhere else. If you skip this file you cannot say anything about a subcommand's use |
+| a field or file the mechanism itself writes (`dismissed_at`, `record_repairs.jsonl`, `post_judge_meta.disposition`) | that an EFFECTIVE run happened | blind to a no-op. `repair_legacy_agent_runs` appends inside `if changed:`, and the resume path ran it to a recorded no-op that the census cannot see |
+| `run_write_baseline.json`, `launches/*.request.json`, `*.prompt.txt` | **nothing** | they carry path names and SKILL prose, so they mass-produce false positives: 2198 hits for `record_repairs` against 1 real file, 260 for `warm_resume` against 0 real firings |
+| a string match inside the artifact the mechanism writes | **nothing, if the mechanism does not mark it** | the `--backfill` false negative above |
+
+Three follow-through traps, each of which cost a correction on issue #176:
+
+- **Read the WHOLE command line before classifying a hook hit.** `--help`, an unrelated
+  `grep` on the same line, and a `--reason-detail` that quotes the string are not
+  invocations — and the converse happened too: a line that looked like a bare `grep`
+  mentioning the name was running `repair-agent-runs --help` in its second half. A
+  correction written from the matched substring alone turned a reviewer's true report into
+  a false one.
+- **Resolve WHO called it.** Match `payload_summary.session_id` against
+  `orchestration_meta.host_session_id` and against `agent_runs.jsonl`. Before `c3585f0`
+  (2026-08-26) the dev and leaf layers shared one `tools/hooks/cli.py`, so a hook-log entry
+  is not by itself evidence of a leaf. And check the field EXISTS before claiming a match:
+  two of the five orchestrations in that census record no session id at all.
+- **State each artifact's coverage window against the mechanism's landing date.** In this
+  corpus `run_logs/` exist only for orchestrations from 2026-06-23 (48 of 202 have none), so
+  a 0 there says nothing about a mechanism that was live before it.
+
+**Enumerate with `find` / `os.walk`, never `grep`.** In an agent session `grep` may be a
+shell function over `ugrep --ignore-files`, which respects `.gitignore` — and
+`workspace*/` IS the corpus. Check with `type grep`; use `command grep` if you want the
+binary.
+
 ## Sweeping the prose (whenever you change a rule)
 
 Look for sentences that **cite the rule as grounds**. They are scattered across docstrings,

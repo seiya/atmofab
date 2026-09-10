@@ -331,6 +331,15 @@ when a rule does not obviously apply:
    - **Write every measurement as a HISTORICAL RECORD naming the commit it was taken at** ("at
      `7c6d187`: 17 hunks, 10 killed …"). A record cannot go stale; a claim about the present can,
      and will, once per round
+   - **A REBASE invalidates every figure in the rebased commits' messages, and the rule above does
+     not save you** — it says to name the commit, and a rebase makes the commit a different one
+     with the same message. It fires on a stacked branch every time the lower PR gains a commit:
+     issue #176 rebased the upper branch five times, and three bodies kept a suite count measured
+     before the lower branch grew a revert that restores 8 tests, so the branch reads as jumping
+     +8 at a commit whose diff adds no test. **Re-measure after the FINAL rebase, or write the
+     figure as measured at a named pre-rebase SHA.** The same rebase orphans any SHA a body
+     CITES — three there, two of them different SHAs for one commit — and those resolve from
+     loose objects on the author's machine while resolving nowhere else. `references/measurement-records.md`
    - **State the PROPERTY the count stands for, next to the count** ("every behavioural hunk is
      pinned") — that is what the reader needs and what survives when the number is obsolete
    - **A count with no unit is not reproducible** — "14 hunks" came back as 19 and 16 because the

@@ -53,6 +53,21 @@ a fail-open that way, on the strength of **one** compiler probe).
 - This repo pushes the other way too ("delete dead defenses"). **How the tug-of-war settles**:
   you may delete only when there is **an execution record of an attempt to reach it that
   failed**. "No caller exists" (dead code) counts; "the language spec makes it impossible" does not
+- **Before claiming "no record has reached it", name what ONE RUN of the mechanism LEAVES
+  BEHIND.** The bullet above says what evidence counts and says nothing about how you obtain it,
+  and that gap is what issue #176 fell through: a census over the artifacts a mechanism writes
+  returned 0, and the mechanism does not mark them, so it would have returned 0 either way. It
+  was incapable of detecting its own subject, and the deletion shipped on it —
+  `write-step-result --backfill` had in fact run 7 times and carried an orchestration to `pass`.
+  Read `origin/main` and name the trace concretely: the `self.emit("<literal>")` event name, the
+  file that gets created, the field that gets set. **If the answer is "nothing", stop and claim
+  only what is provable** — "no in-tree caller" — rather than "it was never reached". A pure
+  reader leaves nothing; so does a writer whose write sits inside `if changed:`, which sees
+  effective runs and is blind to the no-op the resume path actually took. **Write "unreachable"
+  and "ineffective" as the different claims they are.** Which artifacts are and are not evidence,
+  and the three follow-through traps (read the whole command line before classifying a hook hit;
+  resolve WHO called it; state each artifact's coverage window):
+  `references/verification.md` §"Establishing that a mechanism was never reached"
 - **The moment you write "the language spec makes this impossible" is the most dangerous one. If
   you write it, execute one case from that spec and confirm.** What breaks these claims is always
   the language's **special form** (PEP 420 namespace packages, use association, implicit
