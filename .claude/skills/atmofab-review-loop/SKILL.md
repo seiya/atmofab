@@ -464,7 +464,11 @@ nor resets the two-consecutive-clean-security-rounds condition.**
 - **Hand over this environment's trap**: in an agent session `grep` may be shadowed — a shell
   function execing `ugrep --ignore-files`, so it **respects `.gitignore`** (check with `type
   grep`). Have corpus measurements enumerate with `find` / `os.walk` (1 of 365 files was visible
-  once, and I nearly designed on "`interface` occurs 0 times")
+  once, and I nearly designed on "`interface` occurs 0 times"). **Handing it over is not enough,
+  and this one has now been measured from both ends**: on issue #168 a reviewer that had this
+  warning in its own prompt still returned "cited by no `SKILL`" for a document two `SKILL`s cite.
+  The reader-side rule is under "Verify a reviewer's negative claims" below — the writer-side
+  instruction does not close it
 - Write "report only what you ran. Give reproduction steps and file:line. **State explicitly if
   you found nothing**" — this prevents filler
 - **What you may hand over to reduce duplication is the axis, not the list.** "Hunk mutation over
@@ -639,6 +643,18 @@ trigger, not a second statement of the rule.)
 ratchet kills this hunk"; a test in another file caught it correctly and was simply outside the
 sweep's gate. **When told "only X caught it", check whether the files holding the other guards
 were inside that reviewer's test command.** If not, it is a report about the measurement scope.
+
+**An ABSENCE is a negative claim, and it is the one that arrives looking like a fact.** "X occurs
+nowhere", "no `SKILL` cites it", "no caller exists" reads as a measurement rather than as a
+conclusion, so it goes unchecked — and on this machine the default enumerator is wrong for it
+(`grep` shadowed by `ugrep --ignore-files`, which honours `.gitignore`). **Criterion: an absence
+claim is worth nothing until the reviewer names the ENUMERATOR.** `find` / `os.walk` counts; a
+bare `grep` does not, and neither does reading. Issue #168: one round-2 reviewer reported
+`docs/WORKSPACE_LAYOUT.md` as cited by no `SKILL` — `skills/workflow-generate-generate/SKILL.md`
+cites it, and a round-1 reviewer had already said so, so the two reports contradicted each other
+and only re-running it settled which was right. **Two reviewers disagreeing is the cheap case;
+the expensive one is a single absence claim nobody contradicts.** Ask for the command, or take
+the count yourself — it is one loop.
 
 **And verify a reviewer's POSITIVE claims by asking what it EXECUTED.** A "verified true" is
 worth exactly the run behind it, and a reviewer that traces a code path instead of driving it
@@ -1105,6 +1121,18 @@ that tells you how it closed.
   it rather than correct it; and **nothing in this loop catches these except the rendered prompt**
   — the sweep mutates code, the census enumerates code, a blank-slate reviewer reads code, and the
   suite stays green with the sentence inverted (measured, all three rounds)
+- **You DELETED a summary that kept coming out wrong and stated the mechanism instead** → right
+  move, and it has a price: stating a mechanism invites POINTERS, and a pointer onto a guarded
+  surface walks past the guard, because every guard here reads for a token and a `file:line`
+  contains none. `atmofab-enforcement-change` surface 13 owns the rule and the repair; the sign is
+  here because the trigger is a review-loop move — the same rewrite this file's "rewritten the
+  same string three times" row tells you to make. **Criterion: for each pointer the rewrite adds,
+  name what its TARGET holds that this surface forbids.** Issue #168 added four `tools/*.py:<line>`
+  citations plus "read them" to a document both verify `SKILL`s name in a list that forbids reading
+  `tools/`, and the severity allowlist stayed green because no severity VALUE was added. **Nothing
+  in this loop compares the branch to anything but itself, so nothing sees it**: what found it, in
+  round 3, was a corpus count of the citation FORM on the guarded surfaces at both revisions —
+  0 before, 4 after
 - **You have rewritten the same string three times** → the problem is not the rule but the prose
   citing it. Switch to the grep sweep
   (`.claude/skills/atmofab-enforcement-change/references/verification.md`). **Rewriting one

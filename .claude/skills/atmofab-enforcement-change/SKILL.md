@@ -307,7 +307,7 @@ When a rule derives its safety from an enumeration, **write a test that kills ea
 enumeration by mutation** (round 0 in `atmofab-review-loop`). A missing element shows up in no
 other test.
 
-The eight surfaces that are none of exec / env / argv / FS / evidence paths and none of the
+The nine surfaces that are none of exec / env / argv / FS / evidence paths and none of the
 spelling variation. Each is one question; the episodes, the version tables and the measurement
 recipes are in `references/input-surfaces.md`:
 
@@ -445,6 +445,29 @@ recipes are in `references/input-surfaces.md`:
   sentence that names a file, in a commit with no diff to the code that assembles what the leaf is
   handed. Same question as the paragraph above, asked from the other end: there the transport
   moved and the contract did not, here the contract moved and the transport did not.
+- **Surface 13 — a gate that refuses a SPELLING does not refuse a POINTER to where that spelling
+  lives.** Every guard in this repository that protects a leaf-read surface decides by reading the
+  text for a token: the severity allowlist refuses a severity VALUE, the restatement scans refuse a
+  known sentence. A `file:line` citation contains none of those tokens and passes, while telling
+  the reader exactly where to find them — so the guarded fact reaches the leaf anyway, by
+  reference. Issue #168: a `docs/RUNBOOK.md` bullet was rewritten to name the constants behind a
+  cost claim, with four `tools/*.py:<line>` citations and the sentence "Read the four constants for
+  the run you are looking at". `docs/RUNBOOK.md` sits in the CLOSED judgment-rule list of both
+  verify `SKILL`s, whose closing sentence forbids reading `tools/` for judgment rules, and the
+  cited module holds `classify_verify_severity` — which says that in `dev` a `major` fail-closes
+  the run while a `minor` buys a warm same-phase repair turn. A leaf that follows the instruction
+  learns which grade is the cheap exit: the hand-assignment the allowlist exists to prevent,
+  delivered by a pointer the allowlist cannot see. **Rule: when you add a REFERENCE to a surface
+  some check guards, ask what the TARGET contains that the check forbids HERE — the check cannot
+  ask it for you. Prefer naming the fact, or the canonical document that owns it, over naming the
+  file and the line.** **The tell is a diff that adds no token any guard looks for**, which is why
+  no gate, no mutation sweep and no census sees it; what found it was a CORPUS DELTA on the
+  citation FORM — `os.walk` for `tools/*.py:<line>` over the leaf-read documents, zero before the
+  branch and four after, and the guarded document was the only one in the tree carrying any. Take
+  that count on every surface a check guards, not just the file you edited. Distinct from surface 5,
+  where caller-controlled data pollutes a classification the host computes: nothing here is
+  caller-controlled, and the guard is simply answering "does this text CONTAIN the thing" when the
+  question is "does this text DELIVER the thing".
 
 ### 2. Confirm the path production actually takes
 

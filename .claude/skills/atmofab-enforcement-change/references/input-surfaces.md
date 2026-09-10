@@ -444,3 +444,71 @@ document you correct, list the leaves that receive it, and for each leaf say by 
 routes the thing the sentence names arrives — the must-read set, the host-inlined context, or the
 template's own words. A blank in that table is the defect. On a repository where one contract is
 read by two transports, expect exactly one of them to be wrong.
+
+## Surface 13 — the guard reads for a spelling; a pointer walks past it (issue #168)
+
+**What happened.** A `docs/RUNBOOK.md` bullet quoted a wrong number for what a blind `--resume`
+costs. It was corrected twice and was still wrong the third time, so the summary was deleted and
+replaced by the mechanism: the three independent budgets, each named with its constant and its
+`file:line`, closing with "Read the four constants for the run you are looking at."
+
+That document is in the CLOSED judgment-rule list of `skills/workflow-compile-verify/SKILL.md:25`
+and `skills/workflow-generate-verify/SKILL.md:18`. Both lists end: "The implementation under
+`tools/` ... must not be read to extract requirements or judgment rules." The cited module holds
+`classify_verify_severity`, which states that in `dev` a `major` or `critical` fail-closes the run
+while a `minor` buys a warm same-phase repair turn — so a verify leaf that follows the instruction
+learns that grading its finding `minor` is the cheap route to reporting its `substep` done.
+
+`tools/tests/test_pure_leaf_wiring.py`'s `_SEVERITY_ROUTING_ALLOWLIST` exists to keep exactly that
+off exactly these surfaces. It stayed green throughout: it refuses a severity VALUE, and the
+rewrite added none. The correction to the previous round's defect introduced a worse one, on the
+surface the previous round had been about.
+
+**Why nothing else caught it either.** The mutation sweep mutates what exists; the witness census
+enumerates what exists; a blank-slate reviewer reads HEAD. All three compare the branch against
+itself, and against itself the bullet is accurate prose citing real lines. It took a corpus DELTA
+on the citation form to see it:
+
+```
+# on each revision, over the documents a SKILL names or a leaf force-reads
+python3 - <<'PY'
+import os, re
+PAT = re.compile(r"tools/[a-z_]+\.py:[0-9-]+")
+for root, dirs, files in os.walk("."):
+    dirs[:] = [d for d in dirs if d not in (".git", "workspace")]
+    for f in files:
+        if not f.endswith(".md"):
+            continue
+        p = os.path.join(root, f)
+        n = len(PAT.findall(open(p, encoding="utf-8", errors="replace").read()))
+        if n:
+            print(n, p)
+PY
+```
+
+Measured: `docs/RUNBOOK.md` held 0 on `origin/main` and 4 on the branch, and it was the ONLY
+leaf-read document in the tree holding any. Re-taken after the repair, at the merge commit: two
+documents hold the form, `docs/design/deterministic_followups.md` (5) and `TODO.md` (3), and no
+`SKILL` cites either — both are dev records no leaf reaches. (An earlier version of this paragraph
+named only the first, copied from the reviewer's report rather than measured; the rule against
+writing someone else's measurement as your own applies to the write-up of the episode too.) A
+count that comes out 0 on one side and non-zero on the other, on a surface a check guards, is the
+whole finding.
+
+**Use `os.walk`, not `grep`.** In an agent session on this machine `grep` is a shell function
+execing `ugrep --ignore-files`, so it honours `.gitignore` and a corpus count taken with it is not
+a corpus count. A reviewer that had been handed that warning still returned a wrong "cited by no
+`SKILL`" conclusion on this same branch.
+
+**The repair.** Names, not locations. The constants keep their names — the surrounding prose
+already named the functions, so names were the status quo and the line numbers plus the imperative
+were what was new — and the third budget cites `docs/ORCHESTRATION.md` §leaf transient retry, the
+canonical document, which this file already cited in that form at two other bullets. Citing the
+canonical DOCUMENT rather than the implementation is the general form: it survives a refactor, it
+is what `AGENTS.md` §"Dedicated rule documents" already prescribes, and it is not an instruction
+to open a tree the reader has been told not to read.
+
+**The generalization worth carrying.** Deleting a summary because it keeps coming out wrong is the
+right move (`atmofab-review-loop`'s "a summary of a spread is a claim with no witness"). What that
+move costs is that the mechanism has to be stated instead, and stating a mechanism invites
+pointers. On a guarded surface, decide where each pointer LANDS before you write it.
