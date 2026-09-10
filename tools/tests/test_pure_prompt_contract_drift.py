@@ -478,7 +478,14 @@ PINNED: dict[str, str] = {
     # (`shallow_water2d_checks.f90`) that reads exactly those two keys as a per-case guard.
     # The exception was abandoned rather than rewritten a fourth time; a `profile_selection`
     # a runner ignores is a `fail` here, as it was before issue #175.
-    "pure-39": "6a73aa8bc9f2bc56c18d08d4160e335cecc38f2401e696cb11f343256cdb2a26",}
+    "pure-39": "6a73aa8bc9f2bc56c18d08d4160e335cecc38f2401e696cb11f343256cdb2a26",
+    # issue #209: `pure_bundle_repair.txt` line 0 said "Your prior reply in this resumed session",
+    # which was false on every COLD repair turn — the codex home-rotation fallback and the
+    # usage-wait retry already reached it, and issue #209 makes it the FIRST turn of an outer
+    # `reuse` reopen on a provider without warm resume. The line now names the repair without
+    # claiming a resumed session, and holds for warm, cold-with-prior-document and
+    # cold-without-one alike. Nothing else on the pinned surface moved.
+    "pure-40": "e8b555541fec980f75b023dcbe231cde96381c7f3bccc7e6c6e03621a81d8eba",}
 
 
 def _contract_tuple() -> dict[str, object]:
