@@ -192,6 +192,45 @@ your own; issue #153 above says re-measure at the commit you are about to name. 
 danger is a figure you did not produce. This one I produced myself, from a command I ran, on a log I
 opened — and running the command is not what makes the reading a measurement.
 
+## Issue #176 — five rebases, and the figures that described a commit that no longer existed
+
+`chore/176-delete-dismiss-violation` was stacked on `chore/176-delete-unreached-recovery-surface`
+and rebased onto it after every review round — five times. The lower branch kept gaining commits,
+one of them a revert that restores 8 test functions. Each rebase rewrote the upper branch's
+commits; none of them rewrote the numbers in those commits' messages.
+
+Measured with `--collect-only` at each commit, in a worktree, after the last rebase:
+
+| commit | message says | actually collects |
+|---|---|---|
+| the deletion | 6002 passed / 6002 collected | **6011** |
+| round 1 fix | 6003 passed | **6011** |
+| round 2 fix | 6003 passed | **6011** |
+| round 3 fix | 6011 passed | 6011 ✓ |
+| round 4 fix | 6011 passed | 6011 ✓ |
+
+The subtest halves were right throughout, and every figure was correct WHEN WRITTEN. What a
+reader sees is the branch jumping 6003 → 6011 at the round-3 commit, whose diff adds no test
+function and accounts for none of it.
+
+**Why the standing rule did not catch it.** "Write every measurement as a historical record
+naming the commit it was taken at" is satisfied by a body that states a figure for the commit it
+sits in — and a rebase replaces that commit with a new one carrying the same body. The record is
+not stale in the way the rule anticipates (a later change making it wrong); the commit it
+describes stopped existing.
+
+**The same rebase orphaned three cited SHAs.** Bodies on that branch cite `36de87d`, `9bdc0f4`
+and `b7130e1`, all pre-rebase versions of two commits — and two of them are different SHAs for
+the SAME commit, used in one body. They resolve today only from the author's loose objects; on a
+fresh clone, or after `gc`, three commit bodies cite commits that do not exist. `c3585f0` and
+`8892217`, which are real history, resolve normally. The tell that they were not real history was
+`git merge-base --is-ancestor <sha> HEAD` returning no.
+
+A second, smaller thing that rebase did on the same branch: `git rebase --continue` after a
+manually resolved conflict **dropped a commit's SUBJECT line**, leaving its first paragraph as
+the subject. It was unpushed, so it was fixed by rewording that commit and replaying the four
+above it — and the fix was recorded in the later commit rather than left to look like history.
+
 ## The published instrument went stale beside the number it produced (issue #181, PR #191)
 
 The pull request published its verification script — the thing that produced `0 non-verbatim units`
