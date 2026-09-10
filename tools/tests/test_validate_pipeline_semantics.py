@@ -24472,5 +24472,161 @@ class StaleDependencyIRExitCodeTests(unittest.TestCase):
                          f"two exit-code constants share a value: {sorted(named.items())}")
 
 
+class WellFormednessSubsumesTheRetiredArtifactSyntaxGateTests(unittest.TestCase):
+    """The shapes `tools/check_artifact_syntax.py` used to refuse, asserted against the validator
+    that now answers for them alone.
+
+    That tool parsed a named JSON / YAML file and checked its top-level type, and the conductor
+    ran it in front of `--stage compile` (on `spec.ir.yaml` + `ir_meta.json`) and in front of
+    `--stage post_execute` (on `diagnostics.json` / `perf.json` / `quality_check.json`). Issue
+    #180 retires it because both stages already report the same shapes. This class is the
+    enumeration behind that claim, one row per failure mode the tool had (missing / unparsable /
+    not the expected top-level type), taken through the real `validate_compile_stage` /
+    `validate` entrypoints.
+
+    What is PINNED here: that each shape produces a violation rather than an exception. What is
+    SAMPLED: the exact violation wording, which several loaders spell differently for the same
+    file (`invalid json` from the io-contract reader and `invalid yaml` from the algorithm-contract
+    reader both land on `spec.ir.yaml`).
+
+    `quality_check.json` holding valid JSON that is not an object is the one shape the stage did
+    NOT cover before issue #180 — `_validate_raw_evidence` called `.get` on it and raised
+    `AttributeError`, which `main()` does not catch, so the leaf received a traceback. The row is
+    red on `origin/main` and green with the guard.
+    """
+
+    _IR_DIR = str(Path(_FIXTURE_IR_REL).parent)
+
+    def _tree(self, tmp: str) -> Path:
+        repo_root = Path(tmp)
+        _seed_shape_expr_schema_into(repo_root)
+        _create_minimal_execution_tree(
+            repo_root,
+            dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
+            model_text="module m\nimplicit none\nend module m\n",
+            runner_text="program r\nimplicit none\nend program r\n",
+            run_command=["./simulate", "workspace/spec.ir.yaml", "workspace/outdir"],
+        )
+        return repo_root
+
+    def _compile(self, repo_root: Path) -> list[str]:
+        return validate_compile_stage(repo_root, "workspace", self._IR_DIR)
+
+    def _node_dir(self, repo_root: Path) -> Path:
+        return (
+            repo_root
+            / "workspace/pipelines/problem__shallow_water2d__0.3.0"
+            / "shallow-water2d_20260415_001/runs/run_test_001"
+            / "problem__shallow_water2d__0.3.0"
+        )
+
+    # --- compile stage: spec.ir.yaml + ir_meta.json -------------------------------------
+
+    def test_compile_stage_reports_a_missing_ir(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = self._tree(tmp)
+            (repo_root / _FIXTURE_IR_REL).unlink()
+            violations = self._compile(repo_root)
+        self.assertTrue([v for v in violations if v.endswith("spec.ir.yaml: missing")], violations)
+
+    def test_compile_stage_reports_a_non_mapping_ir(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = self._tree(tmp)
+            (repo_root / _FIXTURE_IR_REL).write_text("- a\n- b\n", encoding="utf-8")
+            violations = self._compile(repo_root)  # must not raise
+        self.assertTrue([v for v in violations if v.endswith(": must be json object")], violations)
+        self.assertTrue([v for v in violations if v.endswith(": must be mapping")], violations)
+
+    def test_compile_stage_reports_an_unparsable_ir(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = self._tree(tmp)
+            (repo_root / _FIXTURE_IR_REL).write_text("a: [unclosed\n", encoding="utf-8")
+            violations = self._compile(repo_root)  # must not raise
+        self.assertTrue([v for v in violations if v.endswith(": invalid yaml")], violations)
+
+    def test_compile_stage_reports_an_empty_ir_once(self) -> None:
+        """`_try_load_optional_plan_yaml` is the only loader that distinguishes an EMPTY document
+        from a non-mapping one, and issue #180 folded the three identical calls that used to make
+        this violation appear three times. The count is the pin: a re-duplicated call is red."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = self._tree(tmp)
+            ir_path = repo_root / _FIXTURE_IR_REL
+            ir_path.write_text("", encoding="utf-8")
+            violations = self._compile(repo_root)
+        self.assertEqual(
+            violations.count(f"{ir_path}: must be non-null yaml document"), 1, violations
+        )
+
+    def test_compile_stage_reports_a_missing_ir_meta(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = self._tree(tmp)
+            (repo_root / _FIXTURE_IR_REL).parent.joinpath("ir_meta.json").unlink()
+            violations = self._compile(repo_root)
+        self.assertTrue([v for v in violations if v.endswith("ir_meta.json: missing")], violations)
+
+    def test_compile_stage_reports_an_unparsable_ir_meta(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = self._tree(tmp)
+            (repo_root / _FIXTURE_IR_REL).parent.joinpath("ir_meta.json").write_text(
+                "{bad", encoding="utf-8")
+            violations = self._compile(repo_root)  # must not raise
+        self.assertTrue(
+            [v for v in violations if v.endswith("ir_meta.json: invalid json")], violations
+        )
+
+    def test_compile_stage_reports_a_non_object_ir_meta(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = self._tree(tmp)
+            (repo_root / _FIXTURE_IR_REL).parent.joinpath("ir_meta.json").write_text(
+                "[]", encoding="utf-8")
+            violations = self._compile(repo_root)  # must not raise
+        self.assertTrue(
+            [v for v in violations if v.endswith("ir_meta.json: must be json object")], violations
+        )
+
+    # --- post_execute: diagnostics.json / perf.json / quality_check.json -----------------
+
+    def _post_execute(self, tmp: str, name: str, body: str) -> tuple[Path, list[str]]:
+        repo_root = self._tree(tmp)
+        path = self._node_dir(repo_root) / name
+        self.assertTrue(path.is_file(), f"the shared fixture must carry {name}")
+        path.write_text(body, encoding="utf-8")
+        return path, validate(repo_root=repo_root, workspace_root="workspace")
+
+    def test_post_execute_reports_the_three_run_artifacts_as_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = self._tree(tmp)
+            node_dir = self._node_dir(repo_root)
+            for name in ("diagnostics.json", "perf.json", "quality_check.json"):
+                (node_dir / name).unlink()
+            violations = validate(repo_root=repo_root, workspace_root="workspace")
+        for name in ("diagnostics.json", "perf.json", "quality_check.json"):
+            self.assertTrue(
+                [v for v in violations if v.endswith(f"{name}: missing")], (name, violations)
+            )
+
+    def test_post_execute_reports_a_non_object_diagnostics(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path, violations = self._post_execute(tmp, "diagnostics.json", "[]")
+        self.assertIn(f"{path}: must be json object", violations)
+
+    def test_post_execute_reports_a_non_object_perf(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path, violations = self._post_execute(tmp, "perf.json", "[]")
+        self.assertIn(f"{path}: must be json object", violations)
+
+    def test_post_execute_reports_an_unparsable_quality_check(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path, violations = self._post_execute(tmp, "quality_check.json", "not json")
+        self.assertIn(f"{path}: invalid json", violations)
+
+    def test_post_execute_reports_a_non_object_quality_check(self) -> None:
+        """GAP 1. Red on `origin/main`: `AttributeError: 'list' object has no attribute 'get'`
+        escaping `_validate_raw_evidence`, because `main()` catches only
+        `FortranStructureUnavailableError` / `RuntimeError`."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path, violations = self._post_execute(tmp, "quality_check.json", "[]")  # must not raise
+        self.assertIn(f"{path}: must be json object", violations)
+
 if __name__ == "__main__":
     unittest.main()

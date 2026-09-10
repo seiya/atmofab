@@ -4532,6 +4532,14 @@ def _validate_raw_evidence(
         except json.JSONDecodeError:
             violations.append(f"{quality_path}: invalid json")
             return
+        if not isinstance(quality, dict):
+            # Same guard as `diagnostics.json` / `perf.json` in
+            # `_validate_execution_json_outputs`. Without it a valid-JSON non-object raised
+            # `AttributeError` out of `quality.get` below, and `main()` catches only
+            # `FortranStructureUnavailableError` / `RuntimeError` — so the leaf received a
+            # traceback where every sibling shape gets a violation it can repair.
+            violations.append(f"{quality_path}: must be json object")
+            return
         checks = quality.get("checks", {})
         if not isinstance(checks, dict):
             violations.append(f"{quality_path}:checks must be object")
@@ -11181,8 +11189,7 @@ def _validate_compile_stage_impl(
             direct_spec_vars=direct_spec_vars,
         )
 
-    for optional in ("spec.ir.yaml", "spec.ir.yaml", "spec.ir.yaml"):
-        _try_load_optional_plan_yaml(ir_dir, optional, violations)
+    _try_load_optional_plan_yaml(ir_dir, "spec.ir.yaml", violations)
     _validate_ir_source_refs_tests(repo_root, ir_dir, violations)
     _validate_ir_meta_json(ir_dir, violations)
     _validate_compile_dependency_consistency(repo_root, ir_dir, violations)
@@ -11284,7 +11291,7 @@ def _validate_impl_defaults_knobs(
     try:
         ir = _read_yaml(ir_path)
     except yaml.YAMLError:
-        return  # malformed YAML is reported by the syntax gate
+        return  # malformed YAML is reported by _validate_algorithm_contract_file
     if not isinstance(ir, dict):
         return
     impl = ir.get("impl_defaults")
