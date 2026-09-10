@@ -588,3 +588,46 @@ needs a non-iterable member. Read the clause and name what would observe it.**
 SKILL.md, whose check (a) is "name a member for which the measurement could have failed". Asked of
 these three families, (a) answers immediately — and nobody asked it, three times, because a family of
 malformed values LOOKS like a family that could fail.
+
+## A witness for an ABSENCE assertion, mutated on the wrong side (issue #180, 2026-09-10)
+
+`test_gate_syntax_check_dependency_source_finding_fails_closed_not_loops` drives
+`Conductor._gate_syntax_check` and asserts that no content-fail deliverable was authored on a
+transport `fail_closed`. It did that as `assertFalse((repo / refs.source_dir() /
+"syntax_meta.json").exists())` — a name `_gate_syntax_check` never writes. A review round found
+the vacuity, and the fix respelled it to `gate_meta.json`, the deliverable a content failure
+actually authors.
+
+**The witness recorded for that fix was invalid, and it read exactly like a good one.** The
+commit said: with `_gate_syntax_check` made to write `gate_meta.json` unconditionally, the
+rewritten row is RED where the old spelling stayed green. Both halves are true and the
+inference is not. Making the UNIT UNDER TEST create file *X* turns **any** `assertFalse(X.exists())`
+red, including one naming a file no code anywhere writes; mutating it to write `syntax_meta.json`
+instead would have reddened the OLD spelling just as readily. The mutation distinguished the two
+SPELLINGS. It said nothing about whether either spelling observes the subject.
+
+**What the subject actually was.** `_gate_syntax_check` authors no verdict at all — its only
+writes are a temp-dir canary source and, further down, the persistent `syntax_evidence/<id>.json`
+certificate, both below the raise on that path. `gate_meta.json` is written by `_gate_inproc`,
+one frame up. So the respelled assertion was as unfalsifiable as the one it replaced. Mutating
+the REAL writer — `_gate_inproc` made to write `gate_meta.json` unconditionally — reddens exactly
+two rows in `DeterministicGateTest`, neither of them this one, which is where the property was
+pinned all along.
+
+**What it cost**: a round. The next round's correctness axis found it, and the fix was to DELETE
+the assertion rather than re-point it (a third copy of a property two rows already carry), and to
+say in the comment where the property lives and what witnesses it.
+
+**The tell, and it generalises past absences.** The mutation reached the assertion through the
+FILESYSTEM rather than through the mechanism the test names. Ask, before banking a red: *would
+this mutation have reddened an assertion about something the unit under test cannot produce?* If
+yes, it measured the assertion's syntax. For an absence assertion specifically: **mutate the
+writer you claim would violate it, not the function you happen to be calling** — and if the
+function you are calling cannot write the file under any input, there is nothing to witness,
+because the assertion is vacuous whatever it names.
+
+**Cross-reference.** SKILL.md's "when a mutant dies, read why: a kill from a setup error is worth
+exactly as much as green" is this rule's parent, and it did not fire, because the kill did not
+look like a setup error — it looked like the mutation working. The trigger point is narrower than
+the parent suggests: it is not only round 0's sweep but every hand mutation taken mid-loop to
+confirm a fix.

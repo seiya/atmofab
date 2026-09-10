@@ -252,3 +252,44 @@ Moved from `SKILL.md` §4 "Tests pin properties", which keeps the rule and the d
     `origin/main`'s wording and see it actually fail — "I asserted the new wording, so it is
     pinned" is inference
 
+## Rule 3-a: one rule, two forms, one cell — and the count wrong for the third time (issue #180, 2026-09-10)
+
+Issue #180 retired a gate and, in doing so, hand-edited the row of `docs/CLI_REFERENCE.md` and
+the `run-gate` help string that both restate `validate_pipeline_semantics`'s `--stage` set. A
+review round found the help teaching `plan`, a stage argparse rejects, while the document had it
+right — two restatements that had drifted apart from each other with nothing comparing them.
+Three statement sites is rule 3-a's trigger, so the fix coupled both restatements to the
+validator's argparse `choices`, read by driving the CLI with a value it must reject.
+
+**The coupling covered half the rule.** Each restatement says the set TWICE:
+
+    'stage': 'compile|post_generate|post_build|post_execute|pre_judge|full'   <- the alternation
+    'ir_ref': 'workspace/ir/...'(compile stage)                              <- the qualifier
+
+The check read the alternation. A later round set BOTH qualifiers to `(plan stage)` — the exact
+defect the class exists for, `plan` and all — and the file stayed at `6 passed`. The second
+statement was never coupled, and it does not read as a second SITE: it sits in the same cell,
+one clause along.
+
+**What closed it**: finding the code that answers the second form, rather than widening the
+regex. The validator itself says which stage takes `--ir-ref` — run each declared stage bare and
+exactly one violation reads `requires non-empty --ir-ref` — so the qualifier is compared against
+a derived value, with the derivation self-tested (exactly one stage must match, or the row fails
+naming the reworded violation as the cause). Witnessed with the round's own attack: both
+qualifiers set to `plan` redden both rows here and leave the old form green on the same tree.
+
+**Cost**: one round, on a check written to prevent exactly this, three commits earlier.
+
+**And the same round broke the rule a second way, in the sentence that counts these traps.**
+Adding the bullet made eleven; the prose still said "ten", exactly as it had said "four" over
+five bullets before issue #143. That sentence has now been wrong twice, both times by ADDITION,
+both times caught by a reviewer rather than by the author who added the bullet — which is why it
+now carries an instruction to re-count, and why the honest description of rule 3-a's own
+enumeration trap is that it has fired ON ITSELF three times. Nothing compares the number to the
+list; a check that did would be four lines, and the reason there is not one is that this file is
+prose a person reads, not a surface a leaf acts on.
+
+**The generalisable tell**: a restatement that reads as a SENTENCE rather than a list — a
+qualifier, a "(defaults to …)", a "…, which is what the gate runs" — sitting beside the
+machine-shaped form you coupled. The machine-shaped form is the one you notice; the sentence is
+the one that stays free.
