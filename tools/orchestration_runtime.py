@@ -12828,6 +12828,37 @@ def _pure_output_contract_text(request_payload: dict[str, Any]) -> str:
 # Issue #143 added the severity-rubric label for the same reason once more: `pure_context`
 # re-inlines the rubric into a cold repair, and without its label paragraph the reviewer holds the
 # rubric text with no statement that `issue_severity` is chosen BY it.
+# The pure pairs whose leaf returns a VERDICT — a conclusion about someone else's artifact —
+# rather than the artifact itself. Only these render `<repair_scope>` (issue #209 round 5).
+#
+# Why the paragraph is conditional rather than shared: for these three, EVERY repairable class is
+# a violation of the verdict document's SHAPE, and the schema's joint invariant couples the
+# conclusion to the evidence (`verification_status` / `decision` against findings, severity and
+# reason). That makes "flip the conclusion" a one-token correction of a shape violation, and an
+# accepted one — a `leaf shortcut` whose outcome is a wrong certification. The PRODUCER's repair
+# is about content (an outer reopen carries a deterministic gate's finding about the document
+# itself), so the same paragraph would be false for it: a producer IS being told to change what
+# its document says. A first attempt at one persona-neutral sentence was measured to make two
+# reviewer routes WORSE than saying nothing, which is why this is a slot.
+PURE_VERDICT_PAIRS: frozenset[tuple[str, str]] = frozenset({
+    ("generate", "verify"), ("compile", "verify"), ("validate", "judge"),
+})
+
+#: The `<repair_scope>` text. States the invariant in BOTH directions, because either side of it
+#: can be the half that is wrong and only the leaf knows which: a `fail` that lost its evidence is
+#: repaired by supplying the evidence, and a `pass` that carries a finding is repaired by becoming
+#: a `fail`. What is forbidden is neither edit but the DISHONEST one — dropping a finding that was
+#: made, or recording a conclusion that was not reached.
+PURE_REPAIR_SCOPE_PARAGRAPH = (
+    "These violations are about the SHAPE of your verdict document, not about your review. "
+    "Repair it so that it states COMPLETELY what your review actually found: a `fail` carries its "
+    "findings, its severity and its reason; a `pass` carries none of them. Either half may be the "
+    "one to change — supply the evidence a `fail` is missing, or record the `fail` that the "
+    "evidence you already listed calls for. What you must NEVER do is take whichever edit is "
+    "smaller: do not drop a finding you made, and do not record a conclusion you did not reach."
+)
+
+
 PURE_REPAIR_STATIC_PARAGRAPH_PREFIXES: tuple[str, ...] = (
     "Authoring rules",
     "Review checklist",
@@ -12904,13 +12935,17 @@ def _render_pure_repair_prompt(request_payload: dict[str, Any]) -> str:
     single scan carve-out covers it. On a WARM repair the resumed session already holds the
     output-contract schema, the authoring rules, the prior document under repair, and the full
     context, so `<output_contract>`, `<authoring_rules>`, `<prior_document>`, and
-    `<pure_context>` are all empty. On the COLD fallback (`_claude_session_resumable` returned
-    false — no `warm_resume`) the session has no prior turn, so the repair re-states the
+    `<pure_context>` are all empty. On the COLD fallback there is no prior turn at all — the
+    session was GC'd, the codex home rotated under it, or (since issue #209) the provider never
+    had one to resume and this is the FIRST turn of an outer `reuse` reopen — so the repair
+    re-states the
     output-contract SCHEMA and the AUTHORING RULES (both lifted from the launch template — a
     re-authored bundle still has to clear the deterministic gates), re-inlines the model's PRIOR
     document under repair (`prior_document`, threaded by
-    the producer repair loop — the parsed bundle re-serialized, or the raw unparseable reply
-    text), re-inlines the input context documents (`pure_context`), AND re-inlines the
+    the producer repair loop — the parsed bundle re-serialized, the raw unparseable reply text,
+    or, when the cold turn is the reopen's first, the failed attempt's own artifact read back
+    from disk by the loop's seed), re-inlines the input context documents (`pure_context`), AND
+    re-inlines the
     host-resolved `dependency_facts` (the published-operation interfaces of the node's component
     dependencies — the initial launch injects them, so a cold repair that dropped them could
     re-author code that calls a dependency without its API). This is the M-C cold-repair contract
@@ -12926,6 +12961,17 @@ def _render_pure_repair_prompt(request_payload: dict[str, Any]) -> str:
         "agent_run_id": str(request_payload.get("agent_run_id", "")),
         "prompt_contract_version": str(request_payload.get("prompt_contract_version", "")),
         "findings": _fence_pure_doc(findings),
+        # Rendered only for a verdict-bearing pair; empty for the producer, whose document
+        # carries no conclusion and whose repair legitimately changes what the document says.
+        # `.strip().lower()` for the reason `_pure_launch_template_name` normalizes the same two
+        # fields: a spelling this membership test does not recognize renders the slot EMPTY while
+        # the template still resolves, so the omission would be silent. Only host constants reach
+        # these fields today, which is what keeps it a fail-open by omission rather than a hole.
+        "repair_scope": (
+            PURE_REPAIR_SCOPE_PARAGRAPH
+            if (str(request_payload.get("step", "")).strip().lower(),
+                str(request_payload.get("substep", "")).strip().lower())
+            in PURE_VERDICT_PAIRS else ""),
     }
     if not request_payload.get("warm_resume"):
         subs["output_contract"] = _pure_output_contract_text(request_payload)
@@ -15556,7 +15602,14 @@ def _read_launch_request_payload(
     agent_run_id: str,
 ) -> dict[str, Any] | None:
     """Return the parsed `launches/<arid>.request.json` payload, or None
-    when absent / malformed."""
+    when absent / malformed.
+
+    `ValueError` rather than `json.JSONDecodeError` for the reason `_read_json_or_none` states
+    beside it: `ValueError` covers BOTH malformed JSON and `UnicodeDecodeError` (a damaged file
+    `read_text` chokes on), so no decode failure escapes. It was the narrower spelling until
+    issue #209 gave this helper its first caller in a frame that must not raise — the pure
+    producer loop's reopen seed, which runs outside the loop's context-assembly guard, so a
+    raise here takes the conductor down mid-run instead of failing the substep closed."""
     request_path = (
         _orchestration_root(repo_root, orchestration_id)
         / "launches"
@@ -15566,7 +15619,7 @@ def _read_launch_request_payload(
         return None
     try:
         payload = _read_json(request_path)
-    except (OSError, json.JSONDecodeError):
+    except (OSError, ValueError):
         return None
     if not isinstance(payload, dict):
         return None

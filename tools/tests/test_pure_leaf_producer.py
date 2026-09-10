@@ -1851,6 +1851,132 @@ class PureProducerExemplarTests(unittest.TestCase):
         self.assertNotIn("exemplar", c.requests[1])
         self.assertNotIn("Certified exemplar", c.prompts[1])
 
+    def test_outer_reopen_with_a_lost_claude_session_carries_findings_cold(self) -> None:
+        """The CLI half of issue #209: the provider HAS `warm_resume`, but this transcript is
+        gone (a `~/.claude` GC). The reopen must still be a repair turn — the findings and the
+        prior document, on a cold prompt — rather than a launch that re-derives the substep.
+        """
+        excerpt = "gate_lint: E501 line too long at model.f90:12"
+        prior = _valid_bundle()
+        prior["files"][0]["content"] = prior["files"][0]["content"] + "\n! prior_bundle_209\n"
+        self._tmp = tempfile.TemporaryDirectory()
+        repo = Path(self._tmp.name)
+        refs = _write_node(repo)
+        launches = repo / "workspace" / "orchestrations" / "o" / "launches"
+        launches.mkdir(parents=True, exist_ok=True)
+        prior_dir = repo / refs.source_dir("s_20260101_000")
+        prior_dir.mkdir(parents=True, exist_ok=True)
+        (prior_dir / "codegen_bundle.json").write_text(
+            json.dumps(prior, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        (launches / "prior-arid.request.json").write_text(json.dumps(
+            {"ir_ref": refs.ir_ref, "pipeline_ref": refs.pipeline_ref,
+             "source_id": "s_20260101_000", "agent_run_id": "prior-arid"}), encoding="utf-8")
+        c = _RenderingFakeConductor(
+            repo_root=repo, orchestration_id="o", orchestration_agent_run_id="orch",
+            llm_config=_cfg("claude"), env={})
+        c.exemplar_value = self._EXEMPLAR
+        c.envelopes = [_envelope(_valid_bundle())]
+        # The transcript this reopen names is gone. Overridden on the CONDUCTOR (the fake's
+        # default answers True for every id) so the seed takes the branch a real GC produces.
+        c._claude_session_resumable = lambda arid, **kw: False  # type: ignore[assignment]
+        oc = c._run_pure_generate_substep(
+            refs, "generate", "generate",
+            {"issue_severity": "major", "repair_strategy": "reuse",
+             "repair_target_agent_run_id": "prior-arid",
+             "repair_reason": "gate_lint", "repair_findings": excerpt}, ())
+        self.assertEqual(oc.status, "pass")
+        self.assertIn(excerpt, c.prompts[0])
+        self.assertIn("Your prior document under repair", c.prompts[0])
+        self.assertIn("prior_bundle_209", c.prompts[0])
+        # The new line 0: true on a cold turn, where the old one claimed a resumed session.
+        self.assertIn("The document you returned for this substep did not pass",
+                      c.prompts[0].splitlines()[0])
+        self.assertFalse(c.requests[0].get("warm_resume"))
+        self.assertEqual(c.requests[0]["repair_strategy"], "reuse")
+        self.assertNotIn("exemplar", c.requests[0])
+
+    def test_a_home_rotation_on_a_warm_seed_falls_back_carrying_the_prior_document(self) -> None:
+        """The consumer of the seed's WARM-branch prior document, which had no test anywhere.
+
+        `_spawn_pure_turn` returns None when a warm resume's codex home generation has rotated:
+        the launch was recorded against a session the transport can no longer resume, so the loop
+        drops the session, keeps the semantic carriers, and retries the turn COLD. That is why the
+        seed resolves `prior_document` on the warm branch too — a warm seed can become a cold
+        repair before its first leaf ever runs. A round-1 reviewer measured that suppressing the
+        warm-branch resolution left the pure test files green, because nothing in the repository
+        drove the `turn is None` path at all (re-measured at 648ba90e^ by raising from inside that
+        branch: eight pure/conductor files stayed green).
+
+        The rotation is faked rather than produced by rotating a real codex home: what is under
+        test is the LOOP's fallback, and the rotation detection itself is
+        `_prepare_codex_workflow_home`'s, pinned separately. For the same reason this row runs on
+        the CLAUDE fake, where a session id IS the child's arid — so what it does NOT observe is
+        the fallback's `cold_repair_target = resume_session_id`, which on codex records a THREAD
+        id in a field named `repair_target_agent_run_id`. That conflation is `origin/main`'s and
+        is not this row's subject.
+        """
+        excerpt = "gate_static: the bundle declares no capability_requirements"
+        prior = _valid_bundle()
+        prior["files"][0]["content"] += "\n! rotated_prior_209\n"
+        self._tmp = tempfile.TemporaryDirectory()
+        repo = Path(self._tmp.name)
+        refs = _write_node(repo)
+        launches = repo / "workspace" / "orchestrations" / "o" / "launches"
+        launches.mkdir(parents=True, exist_ok=True)
+        prior_dir = repo / refs.source_dir("s_20260101_000")
+        prior_dir.mkdir(parents=True, exist_ok=True)
+        (prior_dir / "codegen_bundle.json").write_text(
+            json.dumps(prior, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        (launches / "prior-arid.request.json").write_text(json.dumps(
+            {"ir_ref": refs.ir_ref, "pipeline_ref": refs.pipeline_ref,
+             "source_id": "s_20260101_000", "agent_run_id": "prior-arid"}), encoding="utf-8")
+        c = _RenderingFakeConductor(
+            repo_root=repo, orchestration_id="o", orchestration_agent_run_id="orch",
+            llm_config=_cfg("claude"), env={})
+        c.exemplar_value = self._EXEMPLAR
+        c.envelopes = [_envelope(_valid_bundle())]
+        # The session IS resumable, so the seed takes the WARM branch — and then the launch finds
+        # the home rotated underneath it. Faked where PRODUCTION detects it: `record_launch`'s
+        # `codex_home_generation_mismatch`, which is read AFTER the launch is recorded and BEFORE
+        # any leaf is spawned. Stubbing `_spawn_pure_turn` itself would skip the recorded launch
+        # and leave nothing to assert the warm turn's shape on.
+        real_record = c.record_launch
+        rotated: list[bool] = []
+
+        def _rotate_once(*args, **kwargs):
+            rec = real_record(*args, **kwargs)
+            if not rotated:
+                rotated.append(True)
+                return {**rec, "codex_home_generation_mismatch": True}
+            return rec
+
+        c.record_launch = _rotate_once  # type: ignore[assignment]
+        events: list[tuple[str, dict]] = []
+        c.emit = lambda ev, **f: events.append((ev, f))  # type: ignore[assignment]
+        oc = c._run_pure_generate_substep(
+            refs, "generate", "generate",
+            {"issue_severity": "major", "repair_strategy": "reuse",
+             "repair_target_agent_run_id": "prior-arid",
+             "repair_reason": "gate_static", "repair_findings": excerpt}, ())
+        self.assertEqual(oc.status, "pass")
+        self.assertEqual(rotated, [True])
+        # Two requests: the warm one that died to the rotation, then the cold repair.
+        self.assertTrue(c.requests[0].get("warm_resume"))
+        self.assertNotIn("prior_document", c.requests[0])   # warm turns do not send it
+        self.assertFalse(c.requests[1].get("warm_resume"))
+        self.assertEqual(c.requests[1]["repair_strategy"], "reuse")
+        self.assertEqual(c.requests[1]["repair_findings"], excerpt)
+        self.assertIn("rotated_prior_209", c.requests[1]["prior_document"])
+        self.assertTrue(c.requests[1].get("pure_context"))
+        # ... and the leaf that actually ran was handed it.
+        self.assertIn("rotated_prior_209", c.prompts[-1])
+        self.assertIn(excerpt, c.prompts[-1])
+        # The loop named the rotation rather than degrading silently.
+        self.assertTrue(any(
+            ev == "resume_session_unavailable"
+            and f.get("reason") == "codex_home_generation_rotated"
+            for ev, f in events), events)
+
     def test_outer_reopen_without_findings_renders_launch_prompt_with_exemplar(self) -> None:
         """The ONE case where the attach predicate differs from the legacy `not warm_resume`.
 

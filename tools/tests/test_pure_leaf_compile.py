@@ -558,6 +558,34 @@ class PureCompileProfileContextTests(_Fixture):
                 {**base, "pure_context": {**ctx, "profile_spec_document": ""}})
         self.assertIn("profile_spec_document", str(caught.exception))
 
+    def test_only_a_WARM_reuse_repair_is_exempt_from_carrying_pure_context(self) -> None:
+        """The exemption is a THREE-term conjunction (`warm and reuse and findings`), and issue
+        #209 makes `(cold, reuse, findings)` a production shape for the first time: an outer
+        reopen on a provider with no warm resume now renders a repair turn that MUST re-inline
+        the context, because nothing holds it. A round-1 security axis relaxed the conjunction to
+        `not (reuse and findings)` and every test file naming `pure_context` stayed green (nine,
+        enumerated with `git ls-files`, measured at 1ad8e3b4^) — so the term that keeps a
+        cold repair from shipping an empty `<pure_context>` was pinned by nothing.
+
+        Driven through the validator on all three shapes, so the exemption is measured at the
+        frame that grants it rather than asserted about.
+        """
+        from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION
+        ctx = self.conductor()._build_pure_compile_context(self.refs)
+        base = {"agent_role": "substep", "step": "compile", "substep": "generate",
+                "leaf_mode": ort.PURE_LEAF_MODE,
+                "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
+                "repair_strategy": "reuse", "repair_findings": "a static gate finding"}
+        # Warm: the resumed session holds the context, so omitting it is accepted.
+        ort._validate_pure_launch_request_payload({**base, "warm_resume": True})
+        # Cold, same reuse repair with the same findings: refused. This is #209's own shape.
+        with self.assertRaises(ValueError) as caught:
+            ort._validate_pure_launch_request_payload({**base, "warm_resume": False})
+        self.assertIn("pure_context", str(caught.exception))
+        # ... and accepted once the context rides along, which is what the loop sends.
+        ort._validate_pure_launch_request_payload(
+            {**base, "warm_resume": False, "pure_context": ctx})
+
     def test_an_unresolvable_profile_is_named_rather_than_failing_the_substep(self) -> None:
         (self.repo / "spec/profile/demo/demo_profile/controlled_spec.md").unlink()
         c = self.conductor()

@@ -3049,5 +3049,110 @@ class PureValidatePipelineTests(unittest.TestCase):
             self.assertTrue(line0.startswith(PURE_PROMPT_SENTINEL), (fname, line0))
 
 
+# ======================================================================================
+# The repair turn's scope sentence (issue #209 round 4)
+# ======================================================================================
+class PureRepairScopeSentenceTests(unittest.TestCase):
+    """`pure_bundle_repair.txt` is ONE repair template for three pure personas, and only the two
+    reviewer pairs plus the judge return a VERDICT.
+
+    For those three every repairable class is a violation of the verdict document's SHAPE, and the
+    schema's joint invariant couples the conclusion to the evidence — so "flip the conclusion" is a
+    one-token correction of a shape violation, and an ACCEPTED one: a `leaf shortcut` whose outcome
+    is a wrong certification. `<repair_scope>` is the paragraph that closes it, and it is a SLOT
+    rather than a shared sentence because the producer's repair is legitimately about content.
+
+    **Both directions are asserted, and that is the point of this class.** `pure-41` shipped one
+    persona-neutral sentence and a round-4 reviewer measured it making two routes worse: it named
+    `severity` immutable while the correct repair of `fail` + `issue_severity: "none"` is to change
+    the severity, and its frame forbade `pass -> fail`, which is the only correct repair of a `pass`
+    carrying findings. A row that only checked "the leaf is told not to flip to pass" would have
+    passed against that text. So the rows below require the paragraph to PERMIT the repair each
+    direction needs, not merely to forbid the cheap one.
+    """
+
+    _FORBIDS_DROPPING = "do not drop a finding you made"
+    _FORBIDS_INVENTING = "do not record a conclusion you did not reach"
+    _PERMITS_BOTH = "Either half may be the one to change"
+    _SUPPLY_DIRECTION = "supply the evidence a `fail` is missing"
+    _FLIP_DIRECTION = "record the `fail` that the evidence you already listed calls for"
+
+    @staticmethod
+    def _render(step: str, substep: str) -> str:
+        from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION
+        return ort._render_pure_repair_prompt({
+            "node_key": "component/x@1.0.0", "step": step, "substep": substep,
+            "orchestration_id": "o", "agent_run_id": "child-1",
+            "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
+            "warm_resume": True, "repair_strategy": "reuse",
+            "repair_findings": "verification_status 'fail' requires at least one finding",
+        })
+
+    def test_every_verdict_bearing_pair_renders_the_scope_paragraph(self) -> None:
+        """Set identity against the declared table, so a pair added later is not silently left
+        without it."""
+        self.assertEqual(
+            ort.PURE_VERDICT_PAIRS,
+            frozenset({("generate", "verify"), ("compile", "verify"), ("validate", "judge")}))
+        for step, substep in sorted(ort.PURE_VERDICT_PAIRS):
+            with self.subTest(pair=f"{step}.{substep}"):
+                self.assertIn(ort.PURE_REPAIR_SCOPE_PARAGRAPH, self._render(step, substep))
+
+    def test_the_paragraph_permits_the_repair_EACH_direction_needs(self) -> None:
+        """The half `pure-41` got wrong. A `fail` that lost its evidence is repaired by SUPPLYING
+        the evidence; a `pass` that carries a finding is repaired by BECOMING a `fail`. A
+        paragraph that forbade either edit would send the leaf to the dishonest repair instead —
+        which is what the previous version did, in both directions."""
+        text = self._render("generate", "verify")
+        self.assertIn(self._PERMITS_BOTH, text)
+        self.assertIn(self._SUPPLY_DIRECTION, text)
+        self.assertIn(self._FLIP_DIRECTION, text)
+        # And it must not freeze a FIELD: the correct repair of `fail` + severity `none` changes
+        # the severity, so no sentence may name severity as immutable.
+        self.assertNotIn("severity your document already carries", text)
+
+    def test_the_paragraph_forbids_only_the_dishonest_edits(self) -> None:
+        text = self._render("validate", "judge")
+        self.assertIn(self._FORBIDS_DROPPING, text)
+        self.assertIn(self._FORBIDS_INVENTING, text)
+
+    def test_the_pair_is_matched_the_way_the_template_dispatch_matches_it(self) -> None:
+        """A spelling the membership test does not recognize renders the slot EMPTY while the
+        template still resolves — a silent omission, not a visible failure. Normalized like
+        `_pure_launch_template_name`, which reads the same two fields. Only host constants reach
+        them today; this keeps the two readers from disagreeing if that stops being true."""
+        for step, substep in (("Generate", "Verify"), (" generate", "verify "),
+                              ("GENERATE", "verify")):
+            with self.subTest(pair=f"{step}.{substep}"):
+                self.assertIn(ort.PURE_REPAIR_SCOPE_PARAGRAPH, self._render(step, substep))
+
+    def test_a_producer_repair_does_not_render_it(self) -> None:
+        """The producer's document carries no conclusion, and its repair — an outer reopen with a
+        deterministic gate's finding — legitimately changes what the document says. The paragraph
+        would be FALSE for it, which is why this is a slot and not a shared sentence."""
+        for step, substep in (("generate", "generate"), ("compile", "generate")):
+            with self.subTest(pair=f"{step}.{substep}"):
+                text = self._render(step, substep)
+                self.assertNotIn(ort.PURE_REPAIR_SCOPE_PARAGRAPH, text)
+                self.assertNotIn(self._FORBIDS_DROPPING, text)
+                # The slot left no placeholder behind.
+                self.assertNotIn("<repair_scope>", text)
+
+    def test_the_paragraph_precedes_the_findings_it_governs(self) -> None:
+        """It has to be read before the violation text, not after it: the findings block is what
+        offers the cheap correction."""
+        from tools.pure_leaf import PURE_DOC_FENCE_BEGIN
+        text = self._render("validate", "judge")
+        self.assertLess(text.index(self._FORBIDS_DROPPING), text.index(PURE_DOC_FENCE_BEGIN))
+
+    def test_the_paragraph_is_outside_the_untrusted_fence(self) -> None:
+        """A host instruction inside the data fence is one the leaf is told to ignore."""
+        from tools.pure_leaf import PURE_DOC_FENCE_BEGIN, PURE_DOC_FENCE_END
+        text = self._render("generate", "verify")
+        before = text[:text.index(self._FORBIDS_DROPPING)]
+        self.assertEqual(before.count(PURE_DOC_FENCE_BEGIN), before.count(PURE_DOC_FENCE_END))
+
+
+
 if __name__ == "__main__":
     unittest.main()
