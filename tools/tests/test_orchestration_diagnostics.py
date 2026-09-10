@@ -1282,10 +1282,20 @@ class PureLeafMetaPhaseTests(unittest.TestCase):
         here, so this asserts the document against the code and not the code against a second
         hand-written list.
 
+        BOTH DIRECTIONS, and the second is round 2's. The per-record requirement below is a
+        GROWTH bound: it catches a record the code declares and the document omits. It said
+        nothing about SHRINK — retiring a record from `PURE_LEAF_META_FILES` while its row and
+        tree entry stay left this row GREEN (measured; the file went red only because the
+        neighbouring rows react to the code change, which is not the same thing and disappears
+        once the retirement is coordinated). The set-identity assertion over the table's
+        ``(`pure` only)`` rows closes it: a document row still claiming to be a pure per-attempt
+        record for a name the code no longer declares is an extra, and an extra now fails.
+
         WHAT THIS PINS AND WHAT IT ONLY SAMPLES, because the difference was measured rather than
         reasoned. PINNED: that each declared record has a tree entry of its own and a table row
-        of its own, and that a rename in `PURE_LEAF_META_FILES` reddens the document. NOT
-        pinned: everything else in the row. Two mutants of the document, both GREEN at round 1 --
+        of its own, that the set of ``(`pure` only)`` rows is exactly the declared set, and that
+        a rename in `PURE_LEAF_META_FILES` reddens the document. NOT pinned: everything else in
+        the row. Two mutants of the document, both GREEN at round 1 --
         rewriting `compile_generate_meta.json`'s row path from `workspace/ir/.../<ir_id>/` to
         `workspace/pipelines/.../WRONG/DIR/`, and rewriting every `conductor
         (`_write_pure_attempt_meta`)` writer cell to `LEAF (the leaf writes it itself)`, which
@@ -1335,6 +1345,30 @@ class PureLeafMetaPhaseTests(unittest.TestCase):
                     f"docs/WORKSPACE_LAYOUT.md: no phase-artifact row whose path ends in "
                     f"`{name}`. Naming it inside another row's prose does not count -- the "
                     f"table is where its writer and its readers are stated.")
+
+        # SHRINK half, AFTER the per-record loop above and not before it: a declared record
+        # the document omits fails both, and the loop's message is the one that says what to
+        # add. Ordering it first made growth report a bare set difference instead.
+        # The second cell of every row this branch added ends in ``(`pure` only)``
+        # and no other row in the table carries it, so it is the document's own statement of
+        # which rows claim to be pure per-attempt records. Compared as a SET against the code.
+        pure_marker = "(`pure` only)"
+        claimed = set()
+        for line in doc.splitlines():
+            stripped = line.strip()
+            if not (stripped.startswith("| `workspace/") and pure_marker in stripped):
+                continue
+            cells = stripped.split(" | ")
+            if len(cells) > 1 and cells[1].rstrip().endswith(pure_marker):
+                claimed.add(cells[0].removeprefix("| `").rstrip("`").rsplit("/", 1)[-1])
+        self.assertEqual(
+            claimed, expected,
+            f"docs/WORKSPACE_LAYOUT.md: the rows marked {pure_marker} are not the records "
+            f"`PURE_LEAF_META_FILES` declares. A name here that the code no longer declares is a "
+            f"stale row a reader would look for on disk and not find; a declared name missing "
+            f"here is covered by the per-record checks below, which say what to add. If a row's "
+            f"phase cell was legitimately reworded away from {pure_marker}, this marker is what "
+            f"the check reads and it has to be restored or this comparison rewritten.")
 
 
 if __name__ == "__main__":
