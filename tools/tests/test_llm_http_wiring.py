@@ -744,7 +744,15 @@ class ColdOuterReopenTests(_HttpServeMixin, unittest.TestCase):
 
     def test_a_cold_outer_reopen_with_an_unusable_target_renders_the_launch_prompt(self) -> None:
         """`_validate_launch_request_payload` refuses a reuse repair whose target is `"none"`, so
-        that reopen keeps today's cold LAUNCH. The one route the findings still cannot ride."""
+        that reopen keeps today's cold LAUNCH. The one route the findings still cannot ride.
+
+        The prior IR is staged and its launch record written, but under the arid `prior-arid`
+        while the reopen names `"none"` — which is the production shape: a target spelled `"none"`
+        is the payload-absent spelling and no launch is ever recorded under it. So the seed's
+        `usable` guard is what stops the carry, and NOTHING is resolved to be dropped later. An
+        earlier version of this docstring claimed the opposite ("the prior artifact IS on disk
+        here"), and the dead branch it justified is gone.
+        """
         from tools.tests.test_pure_leaf_compile import _doc
         refs = self._compile_fixture()
         sent = self._serve([json.dumps(_doc())])
@@ -756,7 +764,8 @@ class ColdOuterReopenTests(_HttpServeMixin, unittest.TestCase):
         # The request carries the payload-absent spelling (`"none"`), not a reuse repair.
         self.assertEqual(c.requests[0]["repair_strategy"], "none")
         self.assertNotIn("prior_document", c.requests[0])
-        # The prior artifact IS on disk here; the event must not claim a carry no turn made.
+        # Both carries are false, and the event must say so rather than reporting the artifact
+        # that happens to sit on disk under a different arid.
         self.assertEqual(self._event("pure_reopen_cold"),
                          {"event": "pure_reopen_cold", "node_key": refs.node_key,
                           "substep": "generate", "target": "none",

@@ -8241,17 +8241,25 @@ clean:
             # invariant today; normalize at capture anyway so the seed is safe by construction
             # (identity on clean text) rather than relying on every upstream writer staying so.
             seed = str(repair.get("repair_findings", "")).strip() or None
+            # The arid of the attempt being repaired. `_validate_launch_request_payload` refuses a
+            # reuse repair whose target is empty or `"none"`, so a target spelled either way names
+            # no repair turn at all: nothing would render a prior document, and the reopen keeps
+            # today's cold LAUNCH with the findings dropped — the one route that still cannot
+            # carry them. One guard, consulted by both readers below, so the two cannot disagree
+            # about which targets are usable.
+            target_arid = str(repair.get("repair_target_agent_run_id") or "").strip()
+            usable = bool(target_arid) and target_arid != "none"
             if seed is not None:
                 last_excerpt = seed.encode("utf-8", "backslashreplace").decode("utf-8")
+            if seed is not None and usable:
                 # The document that attempt returned, read back from the artifact the host wrote
                 # for it — its location is named by the target's OWN launch record, because
                 # `_ensure_fresh_producer_id` has already rotated `refs` to a fresh empty
-                # directory. Resolved for BOTH branches: a warm turn does not send it, but the
-                # codex home-rotation fallback below (`turn is None`) turns a warm seed cold.
+                # directory. Resolved for BOTH branches below: a warm turn does not send it, but
+                # the codex home-rotation fallback (`turn is None`) turns a warm seed cold.
                 from tools.orchestration_runtime import _read_launch_request_payload
                 record = _read_launch_request_payload(
-                    self.repo_root, self.orchestration_id,
-                    agent_run_id=str(repair.get("repair_target_agent_run_id") or ""))
+                    self.repo_root, self.orchestration_id, agent_run_id=target_arid)
                 prior = spec.prior_document(record) if record is not None else None
                 prior_document = (prior.encode("utf-8", "backslashreplace").decode("utf-8")
                                   if prior is not None else None)
@@ -8259,19 +8267,10 @@ clean:
                 resume_session_id = target
             elif seed is not None:
                 # No session, but a diagnosis to carry: make the first attempt a cold repair.
-                # `_validate_launch_request_payload` refuses a reuse repair whose target is empty
-                # or `"none"`, so an unnamed target keeps today's cold launch (findings dropped) —
-                # the one remaining route that cannot carry them.
-                cold_target = str(repair.get("repair_target_agent_run_id") or "").strip()
-                if cold_target and cold_target != "none":
-                    cold_repair_target = cold_target
-                else:
-                    # Nothing will render a repair turn, so drop the document the seed resolved:
-                    # a carrier no request reads would make the event below claim a carry that
-                    # did not happen.
-                    prior_document = None
+                if usable:
+                    cold_repair_target = target_arid
                 self.emit("pure_reopen_cold", node_key=refs.node_key, substep=substep or "",
-                          target=cold_target,
+                          target=target_arid,
                           findings_carried=cold_repair_target is not None,
                           prior_document_carried=prior_document is not None)
         # R5: resolve the certified sibling exemplar ONCE, above the loop — it is
