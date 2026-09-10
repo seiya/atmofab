@@ -3388,8 +3388,10 @@ class WriteToolExtensionPolicyTests(unittest.TestCase):
         `leaf_config/claude/settings.json`, not `.claude/settings.json`: since issue
         #63's final form that is the only permission layer a leaf loads, and this
         pin followed the layer. Left pointing at the dev file, stripping all sixteen
-        `Bash(...)` entries from the leaf file left the entire suite green — the very
-        defect this test was written to prevent, one file over.
+        `Bash(...)` entries the leaf file held AT THAT TIME left the entire suite green —
+        the very defect this test was written to prevent, one file over. (The count is
+        fifteen since issue #180 removed one; the episode is left at the figure it was
+        measured on.)
 
         A `*` is a wildcard wherever it appears, not only at the end: an earlier
         version stripped a trailing `*` and prefix-matched the rest, which made
@@ -3609,17 +3611,17 @@ class WriteToolExtensionPolicyTests(unittest.TestCase):
         Since issue #63's final form the committed `leaf_config/claude/settings.json`
         is an agentic leaf's whole permission layer, so an entry deleted or misspelled costs every leaf an
         interactive approval that cannot be answered — the workflow stalls. Nothing
-        read that file after the redirect admission was removed: measured, stripping
-        all sixteen `Bash(...)` entries left the entire suite green.
+        read that file after the redirect admission was removed: measured at the time,
+        stripping all sixteen `Bash(...)` entries left the entire suite green.
 
         The gate commands are taken from the RENDERED runbook rather than restated
         here, so a new gate command is covered the day it is emitted. The three
         contract-named routes no runbook renders are listed below, each with the
         document that instructs it.
 
-        SCOPE, measured by deleting each entry in turn: of the sixteen committed
-        `Bash(...)` entries this reaches SIX. Three come from the runbook
-        (`python3 tools/orchestration_runtime.py *`, `python3 tools/check_artifact_syntax.py *`,
+        SCOPE, re-measured for issue #180 by deleting each entry in turn and running
+        this test: of the fifteen committed `Bash(...)` entries this reaches FIVE. Two
+        come from the runbook (`python3 tools/orchestration_runtime.py *`,
         `python3 tools/validate_workspace_root.py *`) — and only from two of the
         eleven (step, substep) pairs, since the other nine render no runbook at all,
         so "covered the day it is emitted" holds for those two. Three come from the

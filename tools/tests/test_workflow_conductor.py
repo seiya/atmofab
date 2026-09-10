@@ -13062,9 +13062,6 @@ class BuildLaunchRequestResolvedDependenciesTest(unittest.TestCase):
         self.assertTrue(any(p.endswith("/src/command_log.jsonl") for p in outs))
         # gate does not author model/runner sources
         self.assertFalse(any(p.endswith("_model.f90") for p in outs))
-        # no retired per-checker meta names are emitted
-        self.assertFalse(any(p.endswith(("/lint_meta.json", "/syntax_meta.json",
-                                         "/static_meta.json")) for p in outs))
 
     def test_omitted_for_compile(self) -> None:
         self.assertNotIn(
@@ -15995,16 +15992,13 @@ class DeterministicBuildTest(unittest.TestCase):
 
     def _b1_execute(self, repo: Path, ir_yaml: str, *, gate_result: tuple[int, str],
                     matching_diagnostics: bool,
-                    diagnostics: dict | None = None,
-                    syn_result: tuple[int, str] | None = None) -> tuple[dict, dict]:
-        """Drive _execute_inproc with the two gate subprocesses stubbed to `gate_result`
+                    diagnostics: dict | None = None) -> tuple[dict, dict]:
+        """Drive _execute_inproc with the post_execute gate subprocess stubbed to `gate_result`
         (returncode, stdout) and the runner/make-test diagnostics seeded so the quality_check
         passes (matching_diagnostics) or fails. Returns (result, trial_meta-or-{}).
 
-        `syn_result` gives `check_artifact_syntax.py` its own (returncode, stdout) when a test
-        needs the two gates to disagree — the post_execute validator's exit code is the one that
-        classifies, and only a differing pair shows that. It defaults to `gate_result`, which is
-        what every caller predating the exit-code channel passes."""
+        ONE gate (issue #180), so the stub is exhaustive: any other subprocess is an error
+        rather than a silent `gate_result`."""
         import sys
         import subprocess as _sp
         from unittest import mock
@@ -16032,13 +16026,11 @@ class DeterministicBuildTest(unittest.TestCase):
 
         rc, out = gate_result
 
-        syn_rc, syn_out = syn_result if syn_result is not None else gate_result
-
         def fake_subprocess_run(argv, **kwargs):
-            # Only the two gates (check_artifact_syntax / validate_pipeline_semantics) run here.
+            # Only the post_execute gate runs here.
             script = next((x for x in argv if isinstance(x, str) and x.endswith(".py")), "")
-            if script.endswith("check_artifact_syntax.py"):
-                return _sp.CompletedProcess(argv, syn_rc, stdout=syn_out, stderr="")
+            if not script.endswith("validate_pipeline_semantics.py"):
+                raise AssertionError(f"unexpected subprocess: {argv}")
             return _sp.CompletedProcess(argv, rc, stdout=out, stderr="")
 
         with mock.patch.object(build_runtime_server, "tool_run_program",
@@ -16094,18 +16086,19 @@ class DeterministicBuildTest(unittest.TestCase):
                 out, meta = self._b1_execute(
                     Path(td), self._B1_IR_MINIMAL,
                     gate_result=(rc, "pipeline semantic validation: FAIL\n- boom"),
-                    syn_result=(0, ""), matching_diagnostics=True)
+                    matching_diagnostics=True)
             self.assertEqual(out["returncode"], 0, rc)
             self.assertEqual(meta["failure_category"], expected, rc)
             self.assertIn(expected, wc.VALIDATE_EXECUTE_FAILURE_TERMINAL)
             self.assertNotIn(expected, wc.VALIDATE_EXECUTE_FAILURE_ROUTING)
 
     def test_execute_inproc_terminal_exit_code_dominates_a_cooccurring_symptom(self) -> None:
-        # Order, not merely membership. An uninstalled front end also makes the artifact-syntax
-        # gate and the quality_check fail; if the terminal branches sat BELOW `syn.returncode !=
-        # 0`, the same run would be classified `post_execute_violation` and routed warm — the
-        # leaf re-authoring source over a machine problem. Both co-occurring symptoms are seeded
-        # at once here (syn non-zero AND a failing quality_check).
+        # Order, not merely membership. An uninstalled front end also makes the quality_check
+        # fail; if the terminal branches sat BELOW `gate.returncode != 0`, the same run would be
+        # classified `post_execute_violation` and routed warm — the leaf re-authoring source
+        # over a machine problem. The co-occurring symptom is seeded here (a failing
+        # quality_check). Issue #180 removed the second symptom this row used to seed, a
+        # non-zero artifact-syntax gate, along with that gate.
         import tempfile
         from tools.validate_pipeline_semantics import FORTRAN_STRUCTURE_UNAVAILABLE_EXIT_CODE
         with tempfile.TemporaryDirectory() as td:
@@ -16113,7 +16106,7 @@ class DeterministicBuildTest(unittest.TestCase):
                 Path(td), self._B1_IR_MINIMAL,
                 gate_result=(FORTRAN_STRUCTURE_UNAVAILABLE_EXIT_CODE,
                              "pipeline semantic validation: FAIL\n- boom"),
-                syn_result=(1, "artifact syntax: FAIL"), matching_diagnostics=False)
+                matching_diagnostics=False)
         self.assertEqual(meta["failure_category"], "static_frontend_unavailable", meta)
 
     def test_execute_inproc_forged_marker_at_rc_1_stays_a_warm_violation(self) -> None:
@@ -16132,7 +16125,7 @@ class DeterministicBuildTest(unittest.TestCase):
             with tempfile.TemporaryDirectory() as td:
                 _out, meta = self._b1_execute(
                     Path(td), self._B1_IR_MINIMAL, gate_result=(1, payload),
-                    syn_result=(0, ""), matching_diagnostics=True)
+                    matching_diagnostics=True)
             self.assertEqual(meta["failure_category"], "post_execute_violation", payload)
             self.assertIn(meta["failure_category"], wc.VALIDATE_EXECUTE_FAILURE_ROUTING, payload)
 
@@ -17598,8 +17591,21 @@ class DeterministicSyntaxTest(unittest.TestCase):
                     c._gate_syntax_check(refs, "child-1", "captok")
             self.assertIn(self.DEP_REF, str(ctx.exception))
             self.assertIn("Unused dummy argument", str(ctx.exception))
-            # no content-fail deliverable is authored on a transport fail_closed
-            self.assertFalse((repo / refs.source_dir() / "syntax_meta.json").exists())
+            # NO deliverable assertion here, deliberately. `_gate_syntax_check` authors no
+            # GATE VERDICT: `gate_meta.json` is written by `_gate_inproc`, one frame up. (It
+            # does write two other things — a temp-dir canary source, and the persistent
+            # host-authored `syntax_evidence/<source_id>.json` certificate via
+            # `write_syntax_evidence` — but both sit BELOW the raise on this path, so neither
+            # exists when this row observes the tree.) So `assertFalse(<any name>.exists())`
+            # naming a verdict file in THIS row is unfalsifiable by
+            # any change to the method under test — which is what it was until issue #180 (it
+            # named `syntax_meta.json`) and would still have been had it merely been respelled.
+            # "no content-fail deliverable on a transport fail_closed" is pinned where the
+            # writer is: `DeterministicGateTest.test_static_checker_exception_is_transport_fail_
+            # not_content_pass` and `..._syntax_runtimeerror_suppresses_gate_meta_and_is_
+            # transport_fail`, which drive `_run_deterministic_substep` -> `_gate_inproc`.
+            # Witnessed: with `_gate_inproc` made to write `gate_meta.json` unconditionally,
+            # exactly those two rows go red and this class stays green.
 
     def test_gate_syntax_check_node_source_finding_with_deps_staged_still_content_fail(self) -> None:
         # The mirror of the test above: with a dependency staged, a finding in the NODE's own
@@ -18300,9 +18306,14 @@ class DeterministicGateTest(unittest.TestCase):
 
 class DeterministicCompileStaticTest(unittest.TestCase):
     """compile.static runs in-process (no leaf): the conductor runs validate_workspace_root +
-    check_artifact_syntax + validate_pipeline_semantics --stage compile and authors
-    compile_static_meta.json under the IR dir; a violation is a content failure routed to
-    compile.generate (warm resume)."""
+    validate_pipeline_semantics --stage compile and authors compile_static_meta.json under the
+    IR dir; a violation is a content failure routed to compile.generate (warm resume).
+
+    TWO gates, and the COUNT and ORDER are pinned by `_fake_run`'s recorded call sequence
+    (issue #180 removed a third, on the grounds that `--stage compile` reports the
+    well-formedness shapes itself). Its trailing `raise AssertionError` is a weaker,
+    separate guard: it catches an unrecognized script only, so it would not see a duplicate
+    call to one of the two."""
 
     def _conductor(self, repo: Path) -> "wc.Conductor":
         return wc.Conductor(repo_root=repo, orchestration_id="t",
@@ -18321,13 +18332,20 @@ class DeterministicCompileStaticTest(unittest.TestCase):
         return mock.patch.object(wc.subprocess, "run", fn)
 
     @staticmethod
-    def _fake_run(ws_rc: int, syntax_rc: int, compile_rc: int):
+    def _fake_run(ws_rc: int, compile_rc: int, seen: list[str] | None = None):
+        """Stub the gate subprocesses, recording the script of each call in `seen`.
+
+        The recording is what pins the gate COUNT and ORDER. The trailing
+        `raise AssertionError` alone does not: it fires only on an UNRECOGNIZED script
+        name, so a second call to one of the two known scripts would be invisible to it
+        — which is what C5's commit message claimed it caught, wrongly.
+        """
         def run(cmd, **kwargs):
             script = next((c for c in cmd if c.endswith(".py")), "")
+            if seen is not None:
+                seen.append(Path(script).name)
             if script.endswith("validate_workspace_root.py"):
                 return wc.subprocess.CompletedProcess(cmd, ws_rc, "ws-out", "ws-err")
-            if script.endswith("check_artifact_syntax.py"):
-                return wc.subprocess.CompletedProcess(cmd, syntax_rc, "syn-out", "syn-err")
             if script.endswith("validate_pipeline_semantics.py"):
                 return wc.subprocess.CompletedProcess(cmd, compile_rc, "cmp-out", "cmp-err")
             raise AssertionError(f"unexpected subprocess: {cmd}")
@@ -18343,8 +18361,13 @@ class DeterministicCompileStaticTest(unittest.TestCase):
             refs = self._refs()
             self._seed(repo, refs)
             c = self._conductor(repo)
-            with self._patch_run(self._fake_run(0, 0, 0)):
+            seen: list[str] = []
+            with self._patch_run(self._fake_run(0, 0, seen)):
                 out = c._compile_static_inproc(refs, "child-1", "captok")
+            # TWO gates, in this order, each run once. Issue #180 removed a third that used
+            # to sit between them; a re-added or duplicated gate is red here.
+            self.assertEqual(
+                seen, ["validate_workspace_root.py", "validate_pipeline_semantics.py"])
             self.assertEqual(out["returncode"], 0)
             meta = self._meta(repo, refs)
             self.assertEqual(meta["status"], "pass")
@@ -18357,7 +18380,7 @@ class DeterministicCompileStaticTest(unittest.TestCase):
             refs = self._refs()
             self._seed(repo, refs)
             c = self._conductor(repo)
-            with self._patch_run(self._fake_run(0, 0, 1)):
+            with self._patch_run(self._fake_run(0, 1)):
                 out = c._compile_static_inproc(refs, "child-1", "captok")
             self.assertEqual(out["returncode"], 0)  # content fail, not transport
             meta = self._meta(repo, refs)
@@ -18372,9 +18395,11 @@ class DeterministicCompileStaticTest(unittest.TestCase):
             refs = self._refs()
             self._seed(repo, refs)
             c = self._conductor(repo)
-            # workspace_root fails first; syntax + --stage compile must NOT run.
-            with self._patch_run(self._fake_run(1, 1, 1)):
+            # workspace_root fails first; --stage compile must NOT run.
+            seen: list[str] = []
+            with self._patch_run(self._fake_run(1, 1, seen)):
                 out = c._compile_static_inproc(refs, "child-1", "captok")
+            self.assertEqual(seen, ["validate_workspace_root.py"])
             self.assertEqual(out["returncode"], 0)
             meta = self._meta(repo, refs)
             self.assertEqual(meta["status"], "fail")
@@ -21124,6 +21149,169 @@ class LeafUsageRecordingTests(unittest.TestCase):
         for row in rows:
             self.assertIn("usage", row, msg=row.get("step"))
 
+
+class RealValidatorAtTheRetiredArtifactSyntaxGateSitesTests(unittest.TestCase):
+    """The two conductor gate sites, driven from the production entry point with the REAL
+    `validate_pipeline_semantics.py` in the subprocess.
+
+    Issue #180 removed a well-formedness gate that used to precede the validator at each of
+    them, on the grounds that the validator reports the same shapes itself. Every other
+    conductor gate test in this file stubs `subprocess.run`, so none of them can see whether
+    the surviving validator actually receives the conductor's argv, reaches the broken file,
+    and hands the leaf a violation rather than a traceback. These two rows do: only
+    `validate_workspace_root.py` is stubbed, and any other subprocess is an error — which is
+    also what makes them RED at this branch's C1 commit, where the removed gate is still
+    spawned and the shim names its argv.
+
+    The shim rewrites the script path and adds `--repo-root`: the conductor invokes
+    `python3 tools/<script>` with `cwd=<tmp repo>`, which has no `tools/`, so the real script is
+    run out of THIS checkout against the temporary tree.
+    """
+
+    def _shim(self, repo: Path):
+        import subprocess as _sp
+        real = _sp.run
+        repo_root_of_checkout = Path(__file__).resolve().parents[2]
+
+        def run(argv, **kwargs):
+            script = next((x for x in argv if isinstance(x, str) and x.endswith(".py")), "")
+            if script.endswith("validate_workspace_root.py"):
+                return _sp.CompletedProcess(argv, 0, "", "")
+            if script.endswith("validate_pipeline_semantics.py"):
+                return real(
+                    [sys.executable, str(repo_root_of_checkout / script), *argv[2:],
+                     "--repo-root", str(repo)],
+                    cwd=str(repo_root_of_checkout), env=os.environ.copy(), text=True,
+                    capture_output=True, check=False)
+            raise AssertionError(f"unexpected subprocess: {argv}")
+
+        return run
+
+    # --- site A: compile.static -----------------------------------------------------------
+
+    def test_compile_static_inproc_real_stage_compile_refuses_a_non_mapping_ir(self) -> None:
+        from unittest import mock
+
+        from tools.tests.test_validate_pipeline_semantics import (
+            _FIXTURE_IR_REL,
+            _create_minimal_execution_tree,
+            _seed_shape_expr_schema_into,
+        )
+
+        refs = wc.NodeRefs(
+            node_key="problem/shallow_water2d@0.3.0",
+            spec_path="spec/problem/mock_domain/mock_family/mock_spec",
+            ir_id="shallow-water2d_20260415_001",
+            pipeline_id="shallow-water2d_20260415_001",
+            source_id="src_20260415_001",
+        )
+        self.assertEqual(
+            refs.ir_ref, str(Path(_FIXTURE_IR_REL).parent),
+            "the NodeRefs must resolve to the shared validator fixture's IR directory, or the "
+            "gate would run against an empty tree and this row would pass for the wrong reason",
+        )
+
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            _seed_shape_expr_schema_into(repo)
+            _create_minimal_execution_tree(
+                repo,
+                dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
+                model_text="module m\nimplicit none\nend module m\n",
+                runner_text="program r\nimplicit none\nend program r\n",
+                run_command=["./simulate", "workspace/spec.ir.yaml", "workspace/outdir"],
+            )
+            (repo / _FIXTURE_IR_REL).write_text("- a\n- b\n", encoding="utf-8")
+            (repo / refs.ir_ref / "ir_meta.json").write_text("[]", encoding="utf-8")
+
+            c = wc.Conductor(repo_root=repo, orchestration_id="t",
+                             orchestration_agent_run_id="x", llm_config=_cfg("claude"), env={})
+            with mock.patch.object(wc.subprocess, "run", self._shim(repo)):
+                out = c._compile_static_inproc(refs, "child-1", "captok")
+
+            meta = json.loads(
+                (repo / refs.ir_ref / "compile_static_meta.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(out["returncode"], 0)  # content failure, not transport fail_closed
+        self.assertEqual(meta["status"], "fail")
+        self.assertEqual(meta["failure_category"], "compile_static_violation")
+        self.assertIn(meta["failure_category"], wc.COMPILE_STATIC_FAILURE_ROUTING)
+        self.assertTrue(
+            out["stderr"].startswith("[compile compile_stage gate fail]"), out["stderr"][:200])
+        # The excerpt is the last 50 lines, so assert the violation on the full block.
+        # `must be mapping` can only come from the list-valued `spec.ir.yaml`; `must be json
+        # object` is emitted for BOTH seeded breakages, so it alone would not tell this row's
+        # named subject (the non-mapping IR) from the `ir_meta.json` one.
+        self.assertIn("must be mapping", out["stderr"])
+        self.assertIn("must be json object", out["stderr"])
+        self.assertNotIn("Traceback", out["stderr"])
+        self.assertNotIn("Traceback", meta["failure_excerpt"])
+
+    # --- site B: validate.execute ---------------------------------------------------------
+
+    def _execute_with_real_gate(self, repo: Path, perf_body: bytes) -> tuple[dict, dict]:
+        from unittest import mock
+
+        sys.path.insert(0, str(Path("mcp_servers").resolve()))
+        import build_runtime_server  # type: ignore
+
+        refs = wc.NodeRefs(
+            node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
+            ir_id="x_1", pipeline_id="x_1", source_id="src_1", binary_id="bin_1",
+            run_id="run_1", source_binary_id="bin_1")
+        c = wc.Conductor(repo_root=repo, orchestration_id="t", orchestration_agent_run_id="x",
+                         llm_config=_cfg("claude"), env={})
+        (repo / refs.ir_ref).mkdir(parents=True, exist_ok=True)
+        (repo / refs.ir_ref / "spec.ir.yaml").write_text(
+            "impl_defaults:\n  toolchain:\n    language: fortran\n"
+            "    build_system: make\n  target:\n    class: cpu\n", encoding="utf-8")
+        (repo / refs.source_dir() / "src").mkdir(parents=True, exist_ok=True)
+
+        run_tmp = repo / "workspace" / "tmp" / "child-1" / "run"
+        qc_tmp = repo / "workspace" / "tmp" / "child-1" / "qc_run"
+        run_tmp.mkdir(parents=True, exist_ok=True)
+        qc_tmp.mkdir(parents=True, exist_ok=True)
+        diag = {"checks": {"k": {"status": "pass"}}, "verdict": {"overall": "pass"}}
+        (run_tmp / "diagnostics.json").write_text(json.dumps(diag), encoding="utf-8")
+        (qc_tmp / "diagnostics.json").write_text(json.dumps(diag), encoding="utf-8")
+        # perf.json is written by the leaf-authored runner and promoted verbatim by
+        # `_promote_run_evidence`, so a malformed one is leaf-reachable. Written as BYTES
+        # because one of the shapes is not valid UTF-8, which a leaf-authored Fortran runner
+        # can emit and `write_text` cannot express.
+        (run_tmp / "perf.json").write_bytes(perf_body)
+
+        with mock.patch.object(build_runtime_server, "tool_run_program",
+                               lambda a: {"ok": True, "command_id": "R"}), \
+             mock.patch.object(build_runtime_server, "tool_run_quality_checks",
+                               lambda a: {"ok": True, "command_id": "Q"}), \
+             mock.patch.object(wc.subprocess, "run", self._shim(repo)):
+            result = c._execute_inproc(refs, "child-1", "captok")
+
+        meta_path = repo / refs.run_node_dir() / "trial_meta.json"
+        meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
+        return result, meta
+
+    def test_execute_inproc_real_post_execute_refuses_a_non_object_perf_json(self) -> None:
+        """The third shape is issue #180's round-2 Codex finding, which was a FALSE POSITIVE
+        and is pinned here anyway because nothing at the conductor frame covered it.
+
+        Codex read `_read_json` as a plain `json.load` and reported that a non-UTF-8 `perf.json`
+        would raise `UnicodeDecodeError` past `_validate_execution_json_outputs` and `main()`,
+        reaching the leaf as a traceback. It does not: `_read_json` translates a decode failure
+        into `json.JSONDecodeError` (hardened earlier, pinned by
+        `test_non_utf8_json_evidence_is_a_violation_not_a_traceback`), so the existing handler
+        catches it and the leaf gets `perf.json: invalid json`. Measured through the real
+        `--stage post_execute` for all three run artifacts, no exception in any."""
+        for perf_body, expected in ((b"[1, 2]", "perf.json: must be json object"),
+                                    (b"not json", "perf.json: invalid json"),
+                                    (b"\xff\xfe{}", "perf.json: invalid json")):
+            with self.subTest(perf=perf_body), tempfile.TemporaryDirectory() as td:
+                result, meta = self._execute_with_real_gate(Path(td), perf_body)
+                self.assertEqual(result["returncode"], 0)
+                self.assertEqual(meta["failure_category"], "post_execute_violation")
+                self.assertIn(meta["failure_category"], wc.VALIDATE_EXECUTE_FAILURE_ROUTING)
+                self.assertIn(expected, result["stderr"])
+                self.assertNotIn("Traceback", result["stderr"])
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

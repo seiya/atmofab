@@ -444,7 +444,7 @@ Run a validator gate across the capability_token. The canonical path in a contex
 |---|---|---|
 | `--repo-root` | yes | |
 | `--orchestration-id` | yes | |
-| `--gate` | yes | `validate_pipeline_semantics` / `check_artifact_syntax` / `validate_workspace_root` / `orchestration_read` |
+| `--gate` | yes | `validate_pipeline_semantics` / `validate_workspace_root` / `orchestration_read` (the accepted set is `DEFAULT_ALLOWED_GATE_SERVICES` in `tools/orchestration_runtime.py`, which the `--gate` help is derived from) |
 | `--agent-run-id` | yes | the child agent's UUID |
 | `--args-json` | yes | per-gate schema (below) |
 | `--capability-token` | yes | `capabilities/<agent_run_id>.json#capability_token` |
@@ -454,8 +454,7 @@ Run a validator gate across the capability_token. The canonical path in a contex
 | gate | schema |
 |---|---|
 | `orchestration_read` | `{"read_path": "docs/..."}` |
-| `validate_workspace_root` | `{"paths": ["workspace"]}` (optional, defaults to repo workspace) |
-| `check_artifact_syntax` | `{"expect_top": "object", "paths": ["workspace/.../file.yaml", ...]}` |
+| `validate_workspace_root` | `{}` (defaults to the repo workspace) or `{"workspace_root": "workspace"}` |
 | `validate_pipeline_semantics` | `{"stage": "compile|post_generate|post_build|post_execute|pre_judge|full", "ir_ref": "workspace/ir/..." (compile stage), "pipeline_root": "workspace/pipelines/..." or a list, "source_id": "<id>" (optional)}` |
 
 The keys are converted into CLI flags (`pipeline_root` → `--pipeline-root`).

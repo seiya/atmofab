@@ -850,6 +850,12 @@ prompt unchanged. The warm/cold selection itself stays driven by `repair_strateg
 
 ## G2 — deterministic `Compile.static` substep: hoist `--stage compile` out of the LLM `Compile.verify` leaf (IMPLEMENTED 2026-06-30)
 
+> **STATUS NOTE (2026-09-10, issue #180).** `Compile.static` now runs TWO gates, not the three
+> named below: the `check_artifact_syntax` run was retired because `--stage compile` reports the
+> same well-formedness shapes itself (`invalid yaml` / `invalid json` / `must be mapping` /
+> `ir_meta.json: must be json object`). Nothing else in this section changed — same order, same
+> `compile_static_violation` category, same routing. History kept as written.
+
 **Problem (the G1 pattern, one phase up).** The purely-static IR gate
 (`validate_pipeline_semantics --stage compile` + `check_artifact_syntax` + `validate_workspace_root`)
 ran *inside* the LLM `Compile.verify` leaf. A full, cold, separate-persona verify pass ran first and

@@ -4024,27 +4024,6 @@ shell_tool                       stable             true
                         request_payload=req,
                         write_roots=[f"{_FIX_PIPE_REF}/source/"],
                     )
-        # The retired lint/syntax/static_meta names are rejected for EVERY generate substep
-        # (incl. the gate substep) — a leaf can never mint a forged verdict under a stale name.
-        for substep in ("gate", "generate", "verify"):
-            for retired in ("lint_meta.json", "syntax_meta.json", "static_meta.json"):
-                retired_path = f"{_FIX_PIPE_REF}/source/{src_id}/{retired}"
-                req = {
-                    "agent_role": "substep",
-                    "node_key": "problem/shallow_water2d@0.3.0",
-                    "step": "generate",
-                    "substep": substep,
-                    "ir_ref": _FIX_IR_REF,
-                    "pipeline_ref": _FIX_PIPE_REF,
-                    "source_id": src_id,
-                    "allowed_output_paths": [retired_path],
-                }
-                with self.subTest(substep=substep, retired=retired):
-                    with self.assertRaisesRegex(ValueError, "outside phase contract outputs"):
-                        _allowed_output_paths_for_launch(
-                            request_payload=req,
-                            write_roots=[f"{_FIX_PIPE_REF}/source/"],
-                        )
 
     def test_compile_static_launch_accepts_compile_static_meta_json(self) -> None:
         """The deterministic Compile.static substep declares
@@ -4130,18 +4109,27 @@ shell_tool                       stable             true
                         write_roots=[f"{_FIX_IR_REF}/"],
                     )
 
-    def test_generate_leaf_launch_rejects_retired_lint_meta_json(self) -> None:
-        """The retired lint_meta.json (superseded by gate_meta.json) is accepted for NO substep
-        — a Generate.generate / Generate.verify leaf launch (real leaf with Edit/Write) listing
-        it as an output is rejected by the generate phase contract, so a leaf can never mint a
-        forged verdict under the stale name. (Only gate_meta.json is accepted, for Generate.gate.)
+    def test_generate_leaf_launch_rejects_unlisted_source_root_json(self) -> None:
+        """The GENERATE phase contract is a MEMBERSHIP test on source-root JSON: a name it does
+        not list is refused whatever it is called, for every generate substep. `gate_meta.json`
+        is the one accepted name, and only for Generate.gate (the row above).
+
+        WHAT THIS DOES AND DOES NOT COVER, stated because issue #180's round 1 measured the
+        wider version FALSE. It is true of the generate contracts only. Two sibling contracts
+        in `_matches_phase_contract` would accept a retired per-checker name: `validate.execute`
+        admits anything under `raw/` (`orchestration_runtime.py:7856`) and `tune` admits any
+        `*_meta.json` basename (`:7934`). So the enumeration issue #180 deleted from
+        `_allowed_file_tool_paths_for_launch` was NOT redundant with this layer everywhere — it
+        was redundant here, and unreached everywhere, because no request in this tree sets
+        `allowed_file_tool_paths` and nothing reads the three names. That is the evidence the
+        deletion rests on; this row is not it.
         """
         from tools.orchestration_runtime import _allowed_output_paths_for_launch
 
-        src_id = "src_lint_meta_002"
-        lint_meta = f"{_FIX_PIPE_REF}/source/{src_id}/lint_meta.json"
+        src_id = "src_unlisted_meta_002"
+        unlisted = f"{_FIX_PIPE_REF}/source/{src_id}/extra_meta.json"
         model_src = f"{_FIX_PIPE_REF}/source/{src_id}/src/m_model.f90"
-        for substep in ("generate", "verify"):
+        for substep in ("generate", "verify", "gate"):
             with self.subTest(substep=substep):
                 req = {
                     "agent_role": "substep",
@@ -4151,7 +4139,7 @@ shell_tool                       stable             true
                     "ir_ref": _FIX_IR_REF,
                     "pipeline_ref": _FIX_PIPE_REF,
                     "source_id": src_id,
-                    "allowed_output_paths": [model_src, lint_meta],
+                    "allowed_output_paths": [model_src, unlisted],
                 }
                 with self.assertRaisesRegex(
                     ValueError, "outside phase contract outputs"
@@ -4164,8 +4152,7 @@ shell_tool                       stable             true
     def test_gate_meta_json_not_file_tool_writable(self) -> None:
         """Even for the Generate.gate substep, gate_meta.json must stay out of the
         auto-derived allowed_file_tool_paths set (no leaf may Edit/Write it; the
-        conductor writes it in-process). An explicit request listing it — or any retired
-        per-checker meta name — is rejected.
+        conductor writes it in-process). An explicit request listing it is rejected.
         """
         from tools.orchestration_runtime import _allowed_file_tool_paths_for_launch
 
@@ -4196,16 +4183,6 @@ shell_tool                       stable             true
                 request_payload=req_explicit,
                 allowed_output_paths=[gate_meta, model_src, command_log],
             )
-        # The retired per-checker meta names are also rejected in an explicit list.
-        for retired in ("lint_meta.json", "syntax_meta.json", "static_meta.json"):
-            retired_path = f"{_FIX_PIPE_REF}/source/{src_id}/{retired}"
-            req_retired = {**req, "allowed_file_tool_paths": [model_src, retired_path]}
-            with self.subTest(retired=retired):
-                with self.assertRaisesRegex(ValueError, "retired per-checker deliverable"):
-                    _allowed_file_tool_paths_for_launch(
-                        request_payload=req_retired,
-                        allowed_output_paths=[retired_path, model_src, command_log],
-                    )
 
     def test_dependency_graph_sidecar_not_file_tool_writable(self) -> None:
         """The conductor-authored dependency-graph sidecar <ir_ref>/dependency_graph.json
@@ -4249,20 +4226,24 @@ shell_tool                       stable             true
             request_payload=gen_req, allowed_output_paths=[src_named])
         self.assertIn(src_named, gen_derived)
 
-    def test_src_tree_file_named_lint_meta_stays_writable(self) -> None:
+    def test_src_tree_file_named_gate_meta_stays_writable(self) -> None:
         """The conductor-owned deliverable is ONLY the source-ROOT
-        source/<source_id>/lint_meta.json. A legitimately generated source-tree
-        file that happens to be named lint_meta.json (under .../src/) is an
+        source/<source_id>/gate_meta.json. A legitimately generated source-tree
+        file that happens to be named gate_meta.json (under .../src/) is an
         ordinary leaf output: the phase contract accepts it via the /src/ rule and
         it must stay Edit/Write-eligible (not excluded by the source-root guard).
+
+        This row is the `/src/` carve-out's ONLY pin. It used to probe `lint_meta.json`, whose
+        guard issue #180 deleted, so the carve-out it was checking was the retired rule's and
+        the surviving `gate_meta.json` one had none.
         """
         from tools.orchestration_runtime import (
             _allowed_file_tool_paths_for_launch,
             _allowed_output_paths_for_launch,
         )
 
-        src_id = "src_lint_meta_004"
-        src_tree_file = f"{_FIX_PIPE_REF}/source/{src_id}/src/lint_meta.json"
+        src_id = "src_gate_meta_004"
+        src_tree_file = f"{_FIX_PIPE_REF}/source/{src_id}/src/gate_meta.json"
         req = {
             "agent_role": "substep",
             "node_key": "problem/shallow_water2d@0.3.0",
@@ -14549,7 +14530,6 @@ class TestPhase1RuleSourceAudit(unittest.TestCase):
                 policy.get("allowed_gate_services"),
                 [
                     "validate_pipeline_semantics",
-                    "check_artifact_syntax",
                     "validate_workspace_root",
                     "orchestration_read",
                 ],
@@ -16775,9 +16755,9 @@ class TestPhase3RunGate(unittest.TestCase):
             out = run_gate(
                 repo_root,
                 orchestration_id="rg1",
-                gate_name="check_artifact_syntax",
+                gate_name="validate_workspace_root",
                 agent_run_id="build_child_rg1",
-                args_json={"paths": ["workspace/probe.json"]},
+                args_json={},
                 capability_token=token,
             )
             self.assertEqual(list(out.keys()), ["violations", "gate_result_ref"])
@@ -16785,15 +16765,14 @@ class TestPhase3RunGate(unittest.TestCase):
             gate_ref = out["gate_result_ref"]
             self.assertEqual(
                 gate_ref,
-                "workspace/orchestrations/rg1/gates/build_child_rg1/check_artifact_syntax.json",
+                "workspace/orchestrations/rg1/gates/build_child_rg1/validate_workspace_root.json",
             )
             gate_path = repo_root / gate_ref
             self.assertTrue(gate_path.exists())
             gate_doc = json.loads(gate_path.read_text(encoding="utf-8"))
-            self.assertEqual(gate_doc.get("gate"), "check_artifact_syntax")
+            self.assertEqual(gate_doc.get("gate"), "validate_workspace_root")
             self.assertEqual(gate_doc.get("status"), "pass")
             self.assertEqual(gate_doc.get("violations"), [])
-            self.assertNotIn("arg_validation_error", gate_doc)
 
             buf = io.StringIO()
             rc = None
@@ -16806,11 +16785,11 @@ class TestPhase3RunGate(unittest.TestCase):
                         "--orchestration-id",
                         "rg1",
                         "--gate",
-                        "check_artifact_syntax",
+                        "validate_workspace_root",
                         "--agent-run-id",
                         "build_child_rg1",
                         "--args-json",
-                        json.dumps({"paths": ["workspace/probe.json"]}),
+                        json.dumps({}),
                         "--capability-token",
                         token,
                     ]
@@ -16840,9 +16819,9 @@ class TestPhase3RunGate(unittest.TestCase):
         """
         kwargs = {
             "orchestration_id": "rg1",
-            "gate_name": "check_artifact_syntax",
+            "gate_name": "validate_workspace_root",
             "agent_run_id": "build_child_rg1",
-            "args_json": {"paths": ["workspace/probe.json"]},
+            "args_json": {},
             "capability_token": token,
         }
         kwargs.update(over)
@@ -16856,20 +16835,18 @@ class TestPhase3RunGate(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             token = self._setup_run_gate_fixture(repo_root)
-            # A second probe that is NOT valid JSON gives the failing case; the gate
-            # is otherwise identical, so status is the only thing that differs.
-            (repo_root / "workspace" / "broken.json").write_text("not json\n", encoding="utf-8")
-
-            for label, paths, expected_status in (
-                ("pass", ["workspace/probe.json"], "pass"),
-                ("fail", ["workspace/broken.json"], "fail"),
-            ):
+            # `validate_workspace_root` reads the tree rather than a named file, so the two
+            # cases are the SAME call against two states of `workspace/`: clean, then with a
+            # file that is not valid JSON in it. The order is load-bearing — planting the
+            # broken file first would make the pass case unreachable.
+            for label, expected_status in (("pass", "pass"), ("fail", "fail")):
                 with self.subTest(case=label):
-                    _result, summary = self._run_gate_capturing_stderr(
-                        repo_root, token, args_json={"paths": paths}
-                    )
+                    if label == "fail":
+                        (repo_root / "workspace" / "broken.json").write_text(
+                            "not json\n", encoding="utf-8")
+                    _result, summary = self._run_gate_capturing_stderr(repo_root, token)
                     self.assertEqual(summary["status"], expected_status)
-                    copy_path = repo_root / self._TMP_GATE_DIR / "check_artifact_syntax.json"
+                    copy_path = repo_root / self._TMP_GATE_DIR / "validate_workspace_root.json"
                     self.assertTrue(
                         copy_path.exists(),
                         "run-gate must leave its summary in the leaf's tmp root",
@@ -16900,7 +16877,7 @@ class TestPhase3RunGate(unittest.TestCase):
             _r2, second = self._run_gate_capturing_stderr(repo_root, token)
             self.assertIn("evaluated_at", first)
             self.assertNotEqual(first["evaluated_at"], second["evaluated_at"])
-            copy_path = repo_root / self._TMP_GATE_DIR / "check_artifact_syntax.json"
+            copy_path = repo_root / self._TMP_GATE_DIR / "validate_workspace_root.json"
             self.assertEqual(
                 json.loads(copy_path.read_text(encoding="utf-8"))["evaluated_at"],
                 second["evaluated_at"],
@@ -16924,12 +16901,14 @@ class TestPhase3RunGate(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             token = self._setup_run_gate_fixture(repo_root)
-            copy_path = repo_root / self._TMP_GATE_DIR / "check_artifact_syntax.json"
+            copy_path = repo_root / self._TMP_GATE_DIR / "validate_workspace_root.json"
 
+            # A NON-EMPTY args_json on purpose: `{}` would make the identity assertion
+            # below hold whether or not the summary carries the inputs at all.
             _r, summary = self._run_gate_capturing_stderr(
-                repo_root, token, args_json={"paths": ["workspace/probe.json"]}
+                repo_root, token, args_json={"workspace_root": "workspace"}
             )
-            self.assertEqual(summary["args_json"], {"paths": ["workspace/probe.json"]})
+            self.assertEqual(summary["args_json"], {"workspace_root": "workspace"})
             self.assertEqual(summary["exit_code"], 0)
             self.assertEqual(json.loads(copy_path.read_text(encoding="utf-8")), summary)
 
@@ -16944,9 +16923,9 @@ class TestPhase3RunGate(unittest.TestCase):
                 _run_gate(
                     repo_root,
                     orchestration_id="rg1",
-                    gate_name="check_artifact_syntax",
+                    gate_name="validate_workspace_root",
                     agent_run_id="build_child_rg1",
-                    args_json={"paths": ["workspace/probe.json"]},
+                    args_json={},
                     capability_token="not-the-token",
                 )
             self.assertFalse(
@@ -16969,9 +16948,9 @@ class TestPhase3RunGate(unittest.TestCase):
                     self.assertTrue(copy_path.exists())
                     call = dict(
                         orchestration_id="rg1",
-                        gate_name="check_artifact_syntax",
+                        gate_name="validate_workspace_root",
                         agent_run_id="build_child_rg1",
-                        args_json={"paths": ["workspace/probe.json"]},
+                        args_json={},
                         capability_token=token,
                     )
                     call.update(kwargs)
@@ -17061,7 +17040,7 @@ class TestPhase3RunGate(unittest.TestCase):
             real_unlink = Path.unlink
 
             def _refuse(self_path, *a, **kw):
-                if self_path.name == "check_artifact_syntax.json" and \
+                if self_path.name == "validate_workspace_root.json" and \
                         "gate_results" in str(self_path):
                     raise OSError("read-only parent")
                 return real_unlink(self_path, *a, **kw)
@@ -17090,7 +17069,7 @@ class TestPhase3RunGate(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             token = self._setup_run_gate_fixture(repo_root)
-            copy_path = repo_root / self._TMP_GATE_DIR / "check_artifact_syntax.json"
+            copy_path = repo_root / self._TMP_GATE_DIR / "validate_workspace_root.json"
 
             for label, call in (
                 ("wrong orchestration id", dict(orchestration_id="rg_not_this_one")),
@@ -17103,9 +17082,9 @@ class TestPhase3RunGate(unittest.TestCase):
                     self.assertTrue(copy_path.is_file(), "fixture: a completed run first")
                     kwargs = dict(
                         orchestration_id="rg1",
-                        gate_name="check_artifact_syntax",
+                        gate_name="validate_workspace_root",
                         agent_run_id="build_child_rg1",
-                        args_json={"paths": ["workspace/probe.json"]},
+                        args_json={},
                         capability_token=token,
                     )
                     kwargs.update(call)
@@ -17144,9 +17123,9 @@ class TestPhase3RunGate(unittest.TestCase):
                         _run_gate(
                             repo_root,
                             orchestration_id="rg1",
-                            gate_name="check_artifact_syntax",
+                            gate_name="validate_workspace_root",
                             agent_run_id=unsafe,
-                            args_json={"paths": ["workspace/probe.json"]},
+                            args_json={},
                             capability_token=token,
                         )
             self.assertTrue(outside.is_file(), "nothing outside the tmp root may be touched")
@@ -17166,7 +17145,7 @@ class TestPhase3RunGate(unittest.TestCase):
             # Computed, not guessed: `workspace/tmp/../../evil/...` normalises to
             # `<repo_root>/evil/...`, one level ABOVE `workspace/` entirely.
             would_delete = (
-                repo_root / "evil" / "gate_results" / "check_artifact_syntax.json"
+                repo_root / "evil" / "gate_results" / "validate_workspace_root.json"
             )
             would_delete.parent.mkdir(parents=True, exist_ok=True)
             would_delete.write_text('{"status": "pass"}\n', encoding="utf-8")
@@ -17174,9 +17153,9 @@ class TestPhase3RunGate(unittest.TestCase):
                 _run_gate(
                     repo_root,
                     orchestration_id="rg1",
-                    gate_name="check_artifact_syntax",
+                    gate_name="validate_workspace_root",
                     agent_run_id="../../evil",
-                    args_json={"paths": ["workspace/probe.json"]},
+                    args_json={},
                     capability_token=token,
                 )
             self.assertTrue(
@@ -17202,9 +17181,9 @@ class TestPhase3RunGate(unittest.TestCase):
                 run_gate(
                     repo_root,
                     orchestration_id="rg1",
-                    gate_name="check_artifact_syntax",
+                    gate_name="validate_workspace_root",
                     agent_run_id="build_child_rg1",
-                    args_json={"paths": ["workspace/probe.json"]},
+                    args_json={},
                     capability_token=token,
                 )
             line = err.getvalue().strip().splitlines()[-1]
@@ -17225,18 +17204,20 @@ class TestPhase3RunGate(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             token = self._setup_run_gate_fixture(repo_root)
-            _r1, syntax_summary = self._run_gate_capturing_stderr(repo_root, token)
-            _r2, root_summary = self._run_gate_capturing_stderr(
-                repo_root, token, gate_name="validate_workspace_root", args_json={}
+            _r1, semantics_summary = self._run_gate_capturing_stderr(
+                repo_root, token, gate_name="validate_pipeline_semantics",
+                args_json={"stage": "post_build", "pipeline_root": _FIX_PIPE_REF},
             )
+            _r2, root_summary = self._run_gate_capturing_stderr(repo_root, token)
             gate_dir = repo_root / self._TMP_GATE_DIR
             self.assertEqual(
                 sorted(q.name for q in gate_dir.iterdir()),
-                ["check_artifact_syntax.json", "validate_workspace_root.json"],
+                ["validate_pipeline_semantics.json", "validate_workspace_root.json"],
             )
             self.assertEqual(
-                json.loads((gate_dir / "check_artifact_syntax.json").read_text(encoding="utf-8")),
-                syntax_summary,
+                json.loads(
+                    (gate_dir / "validate_pipeline_semantics.json").read_text(encoding="utf-8")),
+                semantics_summary,
             )
             self.assertEqual(
                 json.loads((gate_dir / "validate_workspace_root.json").read_text(encoding="utf-8")),
@@ -17264,7 +17245,7 @@ class TestPhase3RunGate(unittest.TestCase):
             )
             tmp_root = manifest["allowed_tmp_root"]
             self.assertTrue(tmp_root, "the fixture must declare an allowed_tmp_root")
-            copy_rel = f"{tmp_root}/gate_results/check_artifact_syntax.json"
+            copy_rel = f"{tmp_root}/gate_results/validate_workspace_root.json"
             self.assertTrue((repo_root / copy_rel).is_file(), copy_rel)
 
     def test_run_gate_tmp_copy_write_failure_neither_fails_the_gate_nor_leaves_a_stale_file(
@@ -17282,7 +17263,7 @@ class TestPhase3RunGate(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             token = self._setup_run_gate_fixture(repo_root)
-            copy_path = repo_root / self._TMP_GATE_DIR / "check_artifact_syntax.json"
+            copy_path = repo_root / self._TMP_GATE_DIR / "validate_workspace_root.json"
 
             # Round 1 succeeds, so there IS an older copy to go stale.
             _r1, first = self._run_gate_capturing_stderr(repo_root, token)
@@ -17322,80 +17303,6 @@ class TestPhase3RunGate(unittest.TestCase):
                 copy_path.exists(),
                 "a copy that could not be refreshed must be removed, not left stale",
             )
-
-    def test_run_gate_check_artifact_syntax_rejects_legacy_path_key(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            token = self._setup_run_gate_fixture(repo_root)
-            out = run_gate(
-                repo_root,
-                orchestration_id="rg1",
-                gate_name="check_artifact_syntax",
-                agent_run_id="build_child_rg1",
-                args_json={"path": "workspace/probe.json", "expect_top": "object"},
-                capability_token=token,
-            )
-            self.assertEqual(len(out.get("violations", [])), 1)
-            self.assertIn("args-json validation failed", out["violations"][0])
-            self.assertIn("single 'path' is unsupported", out["violations"][0])
-            gate_doc = json.loads(
-                (
-                    repo_root
-                    / "workspace/orchestrations/rg1/gates/build_child_rg1/check_artifact_syntax.json"
-                ).read_text(encoding="utf-8")
-            )
-            self.assertEqual(gate_doc.get("status"), "fail")
-            self.assertEqual(gate_doc.get("exit_code"), 2)
-            self.assertIn("single 'path' is unsupported", gate_doc.get("arg_validation_error", ""))
-            self.assertEqual(gate_doc.get("violations"), out.get("violations"))
-
-    def test_run_gate_check_artifact_syntax_rejects_empty_paths(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            token = self._setup_run_gate_fixture(repo_root)
-            out = run_gate(
-                repo_root,
-                orchestration_id="rg1",
-                gate_name="check_artifact_syntax",
-                agent_run_id="build_child_rg1",
-                args_json={"paths": [], "expect_top": "object"},
-                capability_token=token,
-            )
-            self.assertEqual(len(out.get("violations", [])), 1)
-            self.assertIn("paths must be a non-empty list", out["violations"][0])
-            gate_doc = json.loads(
-                (
-                    repo_root
-                    / "workspace/orchestrations/rg1/gates/build_child_rg1/check_artifact_syntax.json"
-                ).read_text(encoding="utf-8")
-            )
-            self.assertEqual(gate_doc.get("status"), "fail")
-            self.assertEqual(gate_doc.get("exit_code"), 2)
-            self.assertIn("paths must be a non-empty list", gate_doc.get("arg_validation_error", ""))
-
-    def test_run_gate_check_artifact_syntax_rejects_non_string_path_member(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            token = self._setup_run_gate_fixture(repo_root)
-            out = run_gate(
-                repo_root,
-                orchestration_id="rg1",
-                gate_name="check_artifact_syntax",
-                agent_run_id="build_child_rg1",
-                args_json={"paths": ["workspace/probe.json", 1], "expect_top": "object"},
-                capability_token=token,
-            )
-            self.assertEqual(len(out.get("violations", [])), 1)
-            self.assertIn("paths[1] must be non-empty string", out["violations"][0])
-            gate_doc = json.loads(
-                (
-                    repo_root
-                    / "workspace/orchestrations/rg1/gates/build_child_rg1/check_artifact_syntax.json"
-                ).read_text(encoding="utf-8")
-            )
-            self.assertEqual(gate_doc.get("status"), "fail")
-            self.assertEqual(gate_doc.get("exit_code"), 2)
-            self.assertIn("paths[1] must be non-empty string", gate_doc.get("arg_validation_error", ""))
 
     def test_run_gate_orchestration_read_uses_inline_gate(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -17451,15 +17358,15 @@ class TestPhase3RunGate(unittest.TestCase):
             token = self._setup_run_gate_fixture(repo_root)
             pol = repo_root / "workspace/orchestrations/rg1/access_policies/build_child_rg1.json"
             body = json.loads(pol.read_text(encoding="utf-8"))
-            body["allowed_gate_services"] = ["validate_workspace_root"]
+            body["allowed_gate_services"] = ["orchestration_read"]
             pol.write_text(json.dumps(body, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
             with self.assertRaisesRegex(RuntimeError, "not permitted by access policy"):
                 run_gate(
                     repo_root,
                     orchestration_id="rg1",
-                    gate_name="check_artifact_syntax",
+                    gate_name="validate_workspace_root",
                     agent_run_id="build_child_rg1",
-                    args_json={"paths": ["workspace/probe.json"]},
+                    args_json={},
                     capability_token=token,
                 )
 
@@ -17543,11 +17450,11 @@ class TestPhase3RunGate(unittest.TestCase):
                         "--orchestration-id",
                         "rg1",
                         "--gate",
-                        "check_artifact_syntax",
+                        "validate_workspace_root",
                         "--agent-run-id",
                         "build_child_rg1",
                         "--args-json",
-                        json.dumps({"paths": ["workspace/broken.json"]}),
+                        json.dumps({}),
                         "--capability-token",
                         token,
                     ]
@@ -17779,13 +17686,14 @@ class DirectWritePathExtensionPolicyTests(unittest.TestCase):
         derived = _allowed_file_tool_paths_for_launch(
             request_payload={},
             allowed_output_paths=[
-                "workspace/ir/p/plan_meta.json",
+                "workspace/pipelines/p/source/s/source_meta.json",
                 "workspace/ir/p/ir_meta.json",
             ],
         )
         self.assertEqual(
             derived,
-            ["workspace/ir/p/ir_meta.json", "workspace/ir/p/plan_meta.json"],
+            ["workspace/ir/p/ir_meta.json",
+             "workspace/pipelines/p/source/s/source_meta.json"],
         )
 
     def test_allowed_file_tool_paths_explicit_subset_validation(self) -> None:
@@ -17927,8 +17835,8 @@ class TerminalUnauthorizedWriteDirectWriteTests(unittest.TestCase):
         from tools.orchestration_runtime import _validate_actual_write_paths
 
         for label, rel, expect_raise in (
-            ("inside the tmp root", "workspace/tmp/{run_id}/gate_results/check_artifact_syntax.json", False),
-            ("outside it", "workspace/tmp/other_arid/gate_results/check_artifact_syntax.json", True),
+            ("inside the tmp root", "workspace/tmp/{run_id}/gate_results/validate_workspace_root.json", False),
+            ("outside it", "workspace/tmp/other_arid/gate_results/validate_workspace_root.json", True),
         ):
             with self.subTest(case=label), tempfile.TemporaryDirectory() as tmp:
                 repo_root = Path(tmp)
@@ -17947,7 +17855,7 @@ class TerminalUnauthorizedWriteDirectWriteTests(unittest.TestCase):
                 copy_rel = rel.format(run_id=run_id)
                 copy_path = repo_root / copy_rel
                 copy_path.parent.mkdir(parents=True, exist_ok=True)
-                copy_path.write_text('{"gate": "check_artifact_syntax"}\n', encoding="utf-8")
+                copy_path.write_text('{"gate": "validate_workspace_root"}\n', encoding="utf-8")
 
                 payload = {
                     "agent_run_id": run_id,
@@ -19543,10 +19451,15 @@ class GateRunbookTests(unittest.TestCase):
         # compile.generate (compile.verify's gates moved to the deterministic compile.static
         # substep, so verify now emits no runbook — see test_runbook_compile_verify_emits_no_gate).
         rb = _build_gate_runbook(self._payload("compile", "generate"))
-        # ir_ref / orchestration_id / agent_run_id resolved to literals.
-        self.assertIn("workspace/ir/component__demo_dep_top__0.1.0/d_002/spec.ir.yaml", rb)
+        # orchestration_id / agent_run_id resolved to literals.
         self.assertIn("--orchestration-id orch_RUNBOOK_001", rb)
         self.assertIn("arid-RUNBOOK", rb)
+        # NOT PINNED SINCE ISSUE #180: `ir_ref`. It reached a runbook through exactly one
+        # command — the compile.generate well-formedness gate, retired with the tool it ran —
+        # and `_build_gate_runbook` no longer reads the field at all, so no payload can drive
+        # the assertion. A future runbook command that interpolates `ir_ref` needs this row
+        # restored; the leftover-placeholder check below is what would still catch it being
+        # rendered SYMBOLICALLY, and nothing catches it being rendered wrong.
         # Only <capability_token> / <PATH> remain as angle-bracket placeholders.
         leftover = set(_re.findall(r"<([a-zA-Z_]+)>", rb))
         self.assertEqual(leftover, {"capability_token", "PATH"})
@@ -19554,7 +19467,7 @@ class GateRunbookTests(unittest.TestCase):
     def test_runbook_judge_emits_no_gate(self) -> None:
         # G3: the `--stage pre_judge` gate moved out of the judge leaf to the conductor (a
         # pre-spawn dependency-DAG readiness check + a post-return pre_judge gate that authors
-        # judge_gate_meta.json), so validate.judge is a pure LLM semantic pass that emits NO
+        # pre_judge_meta.json), so validate.judge is a pure LLM semantic pass that emits NO
         # runbook (mirrors compile.verify / generate.verify).
         from tools.orchestration_runtime import (
             _build_gate_runbook,
@@ -19591,7 +19504,7 @@ class GateRunbookTests(unittest.TestCase):
                 self._payload("generate", "gate", deterministic=True)), "")
 
     def test_runbook_compile_verify_emits_no_gate(self) -> None:
-        # The workspace_root + check_artifact_syntax + --stage compile gates moved to the
+        # The workspace_root + --stage compile gates moved to the
         # conductor's deterministic compile.static substep, so compile.verify is a pure LLM
         # semantic pass that emits NO runbook (mirrors generate.verify).
         from tools.orchestration_runtime import (
@@ -29814,8 +29727,8 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # Still force-read by compile.generate/verify (its IR schema is the contract
         # the compile SKILL defers to).
         # Bumped 17000->18200: documented the deterministic Compile.static substep (G2,
-        # docs/design/deterministic_followups.md) — the workspace_root + check_artifact_syntax
-        # + --stage compile gates moved out of the Compile.verify leaf into the conductor's
+        # docs/design/deterministic_followups.md) — the deterministic compile gates
+        # moved out of the Compile.verify leaf into the conductor's
         # in-process Compile.static, so phase_01 now describes the new substep + that verify is
         # a pure spec-cross-reference semantic pass.
         # Bumped 18200->19100: the G2 commit (4ec8d79, "enhance documentation") expanded the
@@ -30149,8 +30062,9 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # `SKILL`. The body is unchanged: deleting it is issue #171, and a deletion lands with
         # the migration that makes it dead, never ahead of it.
         # (28850 first, from 28694 at the branch's first commit; re-measured at the round-3 HEAD
-        # after Operations Rule 10 gained the note that `repair_target_sections[]` has no reader
-        # in `tools/`, which the phase document had said and this file had not.)
+        # after Operations Rule 10 — rule 9 since issue #180 renumbered the list — gained the
+        # note that `repair_target_sections[]` has no reader in `tools/`, which the phase
+        # document had said and this file had not.)
         # Bumped 29050->30031 (issue #175, round 4; measured 29881). This file is the
         # AGENTIC compile producer's canonical procedure (`AGENTS.md` §Project Local Skills),
         # and it ordered `direct_deps` to 'exactly match the directly-required set of
@@ -30159,7 +30073,13 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # the new gate requires on those same two nodes. A leaf on that path was handed the
         # corrected phase document and this stale SKILL in one launch, with `AGENTS.md`
         # making the SKILL canonical, and would have failed Compile on every attempt.
-        "skills/workflow-compile-generate/SKILL.md": 30031,
+        # Lowered 30031->29499 (issue #180, review round 1; measured 29349). The issue deleted the
+        # two optional well-formedness self-checks and renumbered Operations rule 10
+        # to 9, shrinking the file by 532 B and leaving 682 B of headroom — 4.5x this table's
+        # ~150 B convention, i.e. the ceiling had stopped fencing. Re-set from the MEASURED
+        # size plus that slack, which is what the comment block above requires of a bump and
+        # equally of a shrink.
+        "skills/workflow-compile-generate/SKILL.md": 29499,
         # Bumped 11800->12100: G7 — compile.verify checks V4c only (operations ⊆ published); the
         # closure/topo consistency is conductor-authored + gate-checked, no longer LLM-verified (G7).
         # Bumped 12100->13100: R2 (G8) — compile.verify owns the SEMANTIC test_predicates fidelity
@@ -30881,7 +30801,7 @@ class GateResultTmpCopySurfaceTests(unittest.TestCase):
         # (b) a write there is exempt from the terminal FS-diff, so it is never attributed.
         orch = "orch_rw_claim"
         arid = "some_arid"
-        rel = f"workspace/orchestrations/{orch}/gates/{arid}/check_artifact_syntax.json"
+        rel = f"workspace/orchestrations/{orch}/gates/{arid}/validate_workspace_root.json"
         self.assertTrue(
             _should_ignore_runtime_snapshot_path(
                 rel, orchestration_id=orch, agent_run_id=arid

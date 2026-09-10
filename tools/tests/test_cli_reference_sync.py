@@ -21,6 +21,9 @@ from __future__ import annotations
 import argparse
 import io
 import re
+import subprocess
+import sys
+import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -208,6 +211,191 @@ class CliReferenceSyncTests(unittest.TestCase):
             f"Remove the section and keep only the overview in the Tier-B doc.",
         )
 
+
+class ValidatePipelineStageSetIsStatedOnceTests(unittest.TestCase):
+    """The `--stage` set of `tools/validate_pipeline_semantics.py` is stated in THREE places,
+    and only one of them is the definition.
+
+    The definition is the validator's own argparse `choices`. The two restatements are
+    `orchestration_runtime._RUN_GATE_ARGS_HELP` (what `run-gate --help` prints) and the
+    `validate_pipeline_semantics` row of the `--args-json` schema table in
+    `docs/CLI_REFERENCE.md`. Both are checked AGAINST the code here; neither is a source.
+
+    Why this exists: at issue #180's review round 1 the help string was found teaching
+    `'stage': 'plan|post_generate|...'`. There is no `plan` stage — `--stage plan` is an
+    argparse rc 2 — and `compile`, the stage the conductor runs at `compile.static`, was
+    missing. `docs/CLI_REFERENCE.md` had it right, so the two restatements had already
+    drifted apart from each other, unnoticed. An operator following the help composes a
+    command that cannot run, and `run_gate` persists `status="fail"` with argparse's usage
+    text as `violations` — a gate failure that never happened.
+
+    The stage set is read by DRIVING the CLI with a value it must reject, so the enumeration
+    comes from argparse itself rather than from a static read of the source. The parse is
+    self-tested: an empty or one-element result fails the row rather than passing it.
+    """
+
+    _VALIDATOR = REPO_ROOT / "tools" / "validate_pipeline_semantics.py"
+
+    def _declared_stages(self) -> list[str]:
+        proc = subprocess.run(
+            [sys.executable, str(self._VALIDATOR), "--stage", "__no_such_stage__"],
+            cwd=str(REPO_ROOT), text=True, capture_output=True, check=False)
+        self.assertEqual(proc.returncode, 2, proc.stderr)
+        match = re.search(r"choose from ([^)]+)\)", proc.stderr)
+        self.assertIsNotNone(
+            match,
+            "could not read the stage set out of argparse's refusal; the message shape "
+            f"changed and this check is measuring nothing. stderr was: {proc.stderr!r}")
+        stages = re.findall(r"'([^']+)'", match.group(1))
+        self.assertGreater(
+            len(stages), 1,
+            f"parsed {stages!r} out of argparse — a set this small means the parse failed, "
+            "not that the validator declares one stage")
+        return stages
+
+    def _ir_ref_stage(self) -> str:
+        """The ONE declared stage that requires `--ir-ref`, asked of the validator itself.
+
+        Driven rather than read: each declared stage is run against an EMPTY repo root and the
+        one whose violation says `requires non-empty --ir-ref` is the answer. The empty root is
+        what makes it affordable — the argument check fires before any tree is scanned, and
+        pointing this at the real checkout costs ~170s because each run walks `workspace/`.
+
+        Self-tested: exactly one stage must match, so a reworded violation or a second such
+        stage fails the row instead of silently answering the wrong question.
+        """
+        declared = self._declared_stages()
+        matched = []
+        with tempfile.TemporaryDirectory() as empty_root:
+            for stage in declared:
+                proc = subprocess.run(
+                    [sys.executable, str(self._VALIDATOR), "--stage", stage,
+                     "--repo-root", empty_root],
+                    cwd=str(REPO_ROOT), text=True, capture_output=True, check=False)
+                if "requires non-empty --ir-ref" in (proc.stdout + proc.stderr):
+                    matched.append(stage)
+        self.assertEqual(
+            len(matched), 1,
+            f"expected exactly one stage to require --ir-ref, got {matched!r} out of "
+            f"{declared!r}; the violation wording changed and this check is measuring nothing")
+        return matched[0]
+
+    def test_the_run_gate_help_names_exactly_the_declared_stages(self) -> None:
+        """Read from the RENDERED `run-gate --help`, which is what an operator sees.
+
+        `_RUN_GATE_ARGS_HELP` is a local of `main()`, not an importable constant, and
+        argparse re-wraps it — so the rendered text is both the only reachable form and the
+        right one to check. Whitespace is collapsed before matching for that reason.
+        """
+        declared = self._declared_stages()
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            try:
+                orchestration_runtime_main(["run-gate", "--help"])
+            except SystemExit:
+                pass
+        rendered = re.sub(r"\s+", "", buf.getvalue())
+        self.assertIn("validate_pipeline_semantics=>", rendered,
+                      "run-gate --help no longer prints a per-gate schema at all")
+        match = re.search(r"validate_pipeline_semantics=>\{'stage':'([^']+)'", rendered)
+        self.assertIsNotNone(
+            match, "the run-gate args help no longer states a stage set in the shape this "
+                   "check reads; re-point it rather than deleting the row")
+        stated = match.group(1).split("|")
+        self.assertEqual(
+            sorted(stated), sorted(declared),
+            "`_RUN_GATE_ARGS_HELP` states a stage set the validator does not declare. The "
+            "validator's argparse `choices` is the definition; fix the help, not the code.")
+        # THE SET IS STATED TWICE PER SITE, and coupling only the alternation leaves the other
+        # half free — issue #180's round 3 measured both qualifiers changeable to `plan` with
+        # this class green, which is the very defect it was written for.
+        qualifier = re.search(r"'ir_ref':[^(]*\((\w+)stage\)", rendered)
+        self.assertIsNotNone(
+            qualifier, "the run-gate args help no longer says which stage takes `ir_ref`")
+        self.assertEqual(
+            qualifier.group(1), self._ir_ref_stage(),
+            "the help names the wrong stage as the one taking `ir_ref`")
+
+    def test_the_cli_reference_row_names_exactly_the_declared_stages(self) -> None:
+        declared = self._declared_stages()
+        text = DOC_TIER_A.read_text(encoding="utf-8")
+        # Anchor on the gate NAME and tolerate table whitespace: a markdown table row is
+        # routinely re-aligned, and a check that goes red on a cosmetic space refuses correct
+        # work — over-refusal, which is this repository's recorded default error direction.
+        # Issue #180's round 2 caught exactly that here: the first version hard-coded one space
+        # on each side of the pipe.
+        match = re.search(
+            r"\|\s*`validate_pipeline_semantics`\s*\|\s*`\{\"stage\":\s*\"([^\"]+)\"", text)
+        self.assertIsNotNone(
+            match, "the --args-json schema table's validate_pipeline_semantics row no longer "
+                   "states a stage set in the shape this check reads. If the row is correct and "
+                   "only its FORMATTING changed, re-point this regex; if the row is gone, "
+                   "restore it — the stage set must be stated where an operator reads it.")
+        stated = match.group(1).split("|")
+        self.assertEqual(
+            sorted(stated), sorted(declared),
+            "docs/CLI_REFERENCE.md states a stage set the validator does not declare. The "
+            "validator's argparse `choices` is the definition; fix the document.")
+        # Same second statement as the help row above.
+        qualifier = re.search(r'"ir_ref":[^(]*\((\w+) stage\)', text)
+        self.assertIsNotNone(
+            qualifier, "the --args-json schema table no longer says which stage takes `ir_ref`")
+        self.assertEqual(
+            qualifier.group(1), self._ir_ref_stage(),
+            "docs/CLI_REFERENCE.md names the wrong stage as the one taking `ir_ref`")
+
+class RunGateGateSetIsStatedOnceTests(unittest.TestCase):
+    """`run-gate --gate`'s accepted set, coupled to the constant that defines it.
+
+    Same shape as `ValidatePipelineStageSetIsStatedOnceTests`, one table row up. The definition
+    is `orchestration_runtime.DEFAULT_ALLOWED_GATE_SERVICES`; the argparse `choices` and the
+    `--gate` help are already DERIVED from it (issue #180), so the only restatement left is the
+    `--gate` row of `docs/CLI_REFERENCE.md`, and nothing compared them.
+
+    Issue #180 shrank that set by one and hand-edited that row. Round 3 pointed out that
+    `b101142`'s own rationale — three statement sites is where discipline has already lost —
+    applies to this row unchanged, so it gets the same treatment: the set is read from the
+    RENDERED `run-gate --help`, which is where argparse prints what it will actually accept.
+    """
+
+    def _declared_gates(self) -> list[str]:
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            try:
+                orchestration_runtime_main(["run-gate", "--help"])
+            except SystemExit:
+                pass
+        rendered = re.sub(r"\s+", "", buf.getvalue())
+        match = re.search(r"--gate\{([^}]+)\}", rendered)
+        self.assertIsNotNone(
+            match, "run-gate --help no longer prints the --gate choices; argparse's rendering "
+                   f"changed and this check is measuring nothing. Rendered: {rendered[:400]!r}")
+        gates = [g for g in match.group(1).split(",") if g]
+        self.assertGreater(
+            len(gates), 1,
+            f"parsed {gates!r} out of argparse — a set this small means the parse failed")
+        from tools.orchestration_runtime import DEFAULT_ALLOWED_GATE_SERVICES
+        self.assertEqual(
+            sorted(gates), sorted(DEFAULT_ALLOWED_GATE_SERVICES),
+            "argparse's --gate choices and DEFAULT_ALLOWED_GATE_SERVICES have diverged; the "
+            "constant is the definition and `choices` must be derived from it")
+        return gates
+
+    def test_the_cli_reference_row_names_exactly_the_declared_gates(self) -> None:
+        declared = self._declared_gates()
+        text = DOC_TIER_A.read_text(encoding="utf-8")
+        match = re.search(r"\|\s*`--gate`\s*\|\s*yes\s*\|([^|]+)\|", text)
+        self.assertIsNotNone(
+            match, "the run-gate argument table no longer has a `--gate` row in the shape this "
+                   "check reads. If the row is correct and only its FORMATTING changed, "
+                   "re-point this regex; if it is gone, restore it.")
+        stated = re.findall(r"`([a-z_]+)`", match.group(1))
+        # The cell also cites the constant by name; that citation is not a gate.
+        stated = [g for g in stated if g != "DEFAULT_ALLOWED_GATE_SERVICES"]
+        self.assertEqual(
+            sorted(set(stated)), sorted(declared),
+            "docs/CLI_REFERENCE.md's `--gate` row names a set the code does not declare. "
+            "`DEFAULT_ALLOWED_GATE_SERVICES` is the definition; fix the document.")
 
 if __name__ == "__main__":
     unittest.main()

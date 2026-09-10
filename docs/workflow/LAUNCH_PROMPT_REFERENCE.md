@@ -46,8 +46,8 @@ It canonicalizes, per `(step, substep)`, the `validate_pipeline_semantics --stag
 
 | step | substep | allowed `validate_pipeline_semantics --stage` | note |
 |---|---|---|---|
-| compile | generate | (none) | gate calls are limited to `validate_workspace_root` / `check_artifact_syntax --expect-top object`. The authoritative `--stage compile` gate is the conductor's deterministic `Compile.static` substep. |
-| compile | static | (none) | deterministic conductor substep; the conductor (not a leaf) runs `validate_workspace_root` + `check_artifact_syntax` + `--stage compile` in-process. |
+| compile | generate | (none) | gate calls are limited to `validate_workspace_root`. The authoritative `--stage compile` gate is the conductor's deterministic `Compile.static` substep. |
+| compile | static | (none) | deterministic conductor substep; the conductor (not a leaf) runs `validate_workspace_root` + `--stage compile` in-process. |
 | compile | verify | (none) | a semantic pass holding no gate (spec-cross-reference invariants V1/V3/V5); the `--stage compile` gate moved to `Compile.static`, so verify launches no `validate_pipeline_semantics`. |
 | generate | generate | (none) | `--stage post_generate` is the conductor's deterministic `Generate.gate` static check responsibility (no leaf). |
 | generate | gate | (none) | deterministic conductor substep unioning three checkers (lint `run_linter`, syntax `run_syntax_check` gfortran `-fsyntax-only`, static `validate_workspace_root` + `--stage post_generate`), all run in-process; no leaf, no leaf `validate_pipeline_semantics`. |

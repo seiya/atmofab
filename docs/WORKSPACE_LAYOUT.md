@@ -223,7 +223,7 @@ The conductor writes this from the leaf's own output (`workflow_conductor._leaf_
 |---|---|---|---|---|
 | `workspace/ir/.../<ir_id>/spec.ir.yaml` | Compile/generate | conductor (host-written on the default `pure` path; substep agent (Edit/Write) on the residual agentic one) | all of Generate onward | the single structural IR. The notation rules for `temporaries[].shape_expr` etc. are `spec/schema/ir/shape_expr.schema.json` |
 | `workspace/ir/.../<ir_id>/ir_meta.json` | Compile/generate / verify | conductor (host-written on the default `pure` path; substep agent (Edit/Write) on the residual agentic one) | runtime / validator | `verification_status` is assigned only when verify passes |
-| `workspace/ir/.../<ir_id>/compile_static_meta.json` | Compile (`Compile.static`) | conductor (deterministic in-process; `_compile_static_inproc`) | conductor routing | records the `--stage compile` / `check_artifact_syntax` / `workspace_root` verdict; the leaf cannot write it |
+| `workspace/ir/.../<ir_id>/compile_static_meta.json` | Compile (`Compile.static`) | conductor (deterministic in-process; `_compile_static_inproc`) | conductor routing | records the `--stage compile` / `workspace_root` verdict; the leaf cannot write it |
 | `workspace/pipelines/.../<pipeline_id>/source/<source_id>/src/` | Generate | substep agent | subsequent phases | |
 | `workspace/pipelines/.../<pipeline_id>/source/<source_id>/source_meta.json` | Generate | substep agent (Edit/Write) | Build / validator | |
 | `workspace/pipelines/.../<pipeline_id>/source/<source_id>/gate_meta.json` | Generate (`Generate.gate`) | conductor (deterministic in-process; `_gate_inproc` composing `_gate_lint_check` / `_gate_syntax_check` / `_gate_static_check`) | validator (`post_generate`) / conductor routing | single union verdict of the lint / syntax / static checks (`checkers`, `failure_categories`, composed `failure_excerpt`); the leaf cannot write it |
@@ -231,7 +231,7 @@ The conductor writes this from the leaf's own output (`workflow_conductor._leaf_
 | `workspace/pipelines/.../<pipeline_id>/runs/<run_id>/<node_key_safe>/verdict.json` | Validate/judge | substep agent (Edit/Write) | runtime / validator / upper node | |
 | `workspace/pipelines/.../<pipeline_id>/lineage.json` | added by each phase | (via write-step-result) | runtime / validator | the phase id lineage |
 
-> The retired per-checker meta files `lint_meta.json` / `syntax_meta.json` / `static_meta.json` (superseded by the single `gate_meta.json`) are no longer written. A workspace produced before this change may still contain them; they are **inert** read-only history and are neither consumed nor deleted.
+> `lint_meta.json` / `syntax_meta.json` / `static_meta.json` were retired on 2026-07-23 (`59a89fd`) in favour of the single `gate_meta.json`; no code writes or reads them, and nothing but two test comments recording this retirement name them. A workspace snapshot from before that date may still contain them as **inert** history.
 
 ## Generation rule of node_key_safe
 
