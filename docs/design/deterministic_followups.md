@@ -1694,7 +1694,9 @@ informed regardless).
    warm-`--resume`s the `generate.generate` producer and the slim prompt renders the findings inside
    its untrusted fence. No new substep, no new run-node file, no new prompt form, and no marker-parity
    change (the slim branch is payload-flag driven, not reason driven). A garbage-collected session
-   degrades to the cold full prompt, exactly as a lint/static repair does today.
+   degrades to the cold full prompt, exactly as a lint/static repair does today. (This describes the
+   AGENTIC slim path, and still holds for it. The PURE producer's cold path has since become a repair
+   turn carrying the findings and the prior document — issue #209.)
 5. **dev is unchanged (F1).** A cross-phase rollback still fail_closes on the first occurrence with
    `reason_code=dev_phase_rollback`; the category now rides in `reason_detail` as
    `validate_execute_<category>`, which is what the B2 dev `--resume` directive keys on.
@@ -1756,6 +1758,8 @@ fail_closes; the directive fires only on `--resume`.
    does: `run_phase(repair=...)` → `_resolve_reuse_resume` warm-`--resume`s the `generate.generate`
    producer → the slim prompt renders the findings inside its untrusted fence. A garbage-collected
    session degrades to the cold full prompt (findings dropped), as every other `reuse` repair does.
+   (Agentic slim path. Since issue #209 the pure producer's cold reopen is a repair turn instead, and
+   carries both the findings and the prior document.)
 4. **Cross-module literals.** `_DEV_VALIDATE_EXECUTE_REUSE_CATEGORIES` /
    `_DEV_VALIDATE_EXECUTE_REASON_PREFIX` / `_DEV_RESUME_FINDINGS_MAX_CHARS` duplicate the conductor's
    `VALIDATE_EXECUTE_FAILURE_ROUTING` / `VALIDATE_EXECUTE_REASON_PREFIX` / `_EXECUTE_EXCERPT_MAX_CHARS`
