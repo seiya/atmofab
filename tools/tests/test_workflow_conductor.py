@@ -21245,7 +21245,7 @@ class RealValidatorAtTheRetiredArtifactSyntaxGateSitesTests(unittest.TestCase):
 
     # --- site B: validate.execute ---------------------------------------------------------
 
-    def _execute_with_real_gate(self, repo: Path, perf_body: str) -> tuple[dict, dict]:
+    def _execute_with_real_gate(self, repo: Path, perf_body: bytes) -> tuple[dict, dict]:
         from unittest import mock
 
         sys.path.insert(0, str(Path("mcp_servers").resolve()))
@@ -21271,8 +21271,10 @@ class RealValidatorAtTheRetiredArtifactSyntaxGateSitesTests(unittest.TestCase):
         (run_tmp / "diagnostics.json").write_text(json.dumps(diag), encoding="utf-8")
         (qc_tmp / "diagnostics.json").write_text(json.dumps(diag), encoding="utf-8")
         # perf.json is written by the leaf-authored runner and promoted verbatim by
-        # `_promote_run_evidence`, so a malformed one is leaf-reachable.
-        (run_tmp / "perf.json").write_text(perf_body, encoding="utf-8")
+        # `_promote_run_evidence`, so a malformed one is leaf-reachable. Written as BYTES
+        # because one of the shapes is not valid UTF-8, which a leaf-authored Fortran runner
+        # can emit and `write_text` cannot express.
+        (run_tmp / "perf.json").write_bytes(perf_body)
 
         with mock.patch.object(build_runtime_server, "tool_run_program",
                                lambda a: {"ok": True, "command_id": "R"}), \
@@ -21286,8 +21288,19 @@ class RealValidatorAtTheRetiredArtifactSyntaxGateSitesTests(unittest.TestCase):
         return result, meta
 
     def test_execute_inproc_real_post_execute_refuses_a_non_object_perf_json(self) -> None:
-        for perf_body, expected in (("[1, 2]", "perf.json: must be json object"),
-                                    ("not json", "perf.json: invalid json")):
+        """The third shape is issue #180's round-2 Codex finding, which was a FALSE POSITIVE
+        and is pinned here anyway because nothing at the conductor frame covered it.
+
+        Codex read `_read_json` as a plain `json.load` and reported that a non-UTF-8 `perf.json`
+        would raise `UnicodeDecodeError` past `_validate_execution_json_outputs` and `main()`,
+        reaching the leaf as a traceback. It does not: `_read_json` translates a decode failure
+        into `json.JSONDecodeError` (hardened earlier, pinned by
+        `test_non_utf8_json_evidence_is_a_violation_not_a_traceback`), so the existing handler
+        catches it and the leaf gets `perf.json: invalid json`. Measured through the real
+        `--stage post_execute` for all three run artifacts, no exception in any."""
+        for perf_body, expected in ((b"[1, 2]", "perf.json: must be json object"),
+                                    (b"not json", "perf.json: invalid json"),
+                                    (b"\xff\xfe{}", "perf.json: invalid json")):
             with self.subTest(perf=perf_body), tempfile.TemporaryDirectory() as td:
                 result, meta = self._execute_with_real_gate(Path(td), perf_body)
                 self.assertEqual(result["returncode"], 0)
