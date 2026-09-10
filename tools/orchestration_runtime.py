@@ -3575,7 +3575,7 @@ def _compute_initial_dependency_readiness(
       turned a declared dependency into none.
     - Otherwise, return fail-closed. A future readiness builder must explicitly
       flip these flags after verifying each direct dependency's `ir_meta.json` /
-      `pipeline_meta.json` / `aggregate_verdict`. The fail-closed default ensures
+      `binary_meta.json` / `aggregate_verdict`. The fail-closed default ensures
       that gate behaviour does not silently trust unverified state.
     """
     # Codex round 34 F1: detect a canonical empty-deps leaf via a strict
@@ -4911,7 +4911,6 @@ def _upsert_session_run_index_entry(
 
 DEFAULT_ALLOWED_GATE_SERVICES: tuple[str, ...] = (
     "validate_pipeline_semantics",
-    "check_artifact_syntax",
     "validate_workspace_root",
     "orchestration_read",
 )
@@ -6993,8 +6992,6 @@ def _gate_script_command(
     tool_path: Path
     if gate == "validate_pipeline_semantics":
         tool_path = tools_dir / "validate_pipeline_semantics.py"
-    elif gate == "check_artifact_syntax":
-        tool_path = tools_dir / "check_artifact_syntax.py"
     elif gate == "validate_workspace_root":
         tool_path = tools_dir / "validate_workspace_root.py"
     else:
@@ -7039,36 +7036,6 @@ def _gate_script_command(
     return cmd
 
 
-_CHECK_ARTIFACT_SYNTAX_EXPECT_TOP_ALLOWED = frozenset({"object", "array"})
-
-
-def _validate_check_artifact_syntax_args(args_json: dict[str, Any]) -> None:
-    paths_value = args_json.get("paths")
-    if "path" in args_json:
-        raise ValueError(
-            "check_artifact_syntax args-json requires 'paths' (list[str]); "
-            "single 'path' is unsupported"
-        )
-    if not isinstance(paths_value, list):
-        raise ValueError("check_artifact_syntax args-json requires key 'paths' as list[str]")
-    if not paths_value:
-        raise ValueError("check_artifact_syntax args-json paths must be a non-empty list")
-    for idx, item in enumerate(paths_value):
-        if not isinstance(item, str) or not item.strip():
-            raise ValueError(
-                f"check_artifact_syntax args-json paths[{idx}] must be non-empty string"
-            )
-
-    expect_top = args_json.get("expect_top")
-    if expect_top is None:
-        return
-    if not isinstance(expect_top, str) or expect_top.strip() not in _CHECK_ARTIFACT_SYNTAX_EXPECT_TOP_ALLOWED:
-        raise ValueError(
-            "check_artifact_syntax args-json expect_top must be one of "
-            f"{sorted(_CHECK_ARTIFACT_SYNTAX_EXPECT_TOP_ALLOWED)!r}"
-        )
-
-
 def _extract_gate_violations(stdout: str, stderr: str, returncode: int) -> list[str]:
     lines: list[str] = []
     for source in (stdout, stderr):
@@ -7076,7 +7043,7 @@ def _extract_gate_violations(stdout: str, stderr: str, returncode: int) -> list[
             token = raw.strip()
             if not token:
                 continue
-            if token.startswith("- ") or token.startswith("FAIL:"):
+            if token.startswith("- "):
                 lines.append(token)
                 continue
             if token.endswith(": FAIL") or " validation: FAIL" in token:
@@ -7364,19 +7331,8 @@ def run_gate(
             args_json,
         )
 
-    arg_validation_error: str | None = None
-    if gate == "check_artifact_syntax":
-        try:
-            _validate_check_artifact_syntax_args(args_json)
-        except ValueError as exc:
-            arg_validation_error = str(exc)
-
     inline_result: dict[str, Any] | None = None
-    if arg_validation_error is not None:
-        violations = [f"args-json validation failed: {arg_validation_error}"]
-        status = "fail"
-        exit_code = 2
-    elif gate == "orchestration_read":
+    if gate == "orchestration_read":
         inline_result = _inline_gate_result(
             repo_root,
             orchestration_id=orchestration_id,
@@ -7414,8 +7370,6 @@ def run_gate(
     }
     if inline_result is not None:
         gate_doc["result"] = inline_result
-    if arg_validation_error is not None:
-        gate_doc["arg_validation_error"] = arg_validation_error
     out_path = _gates_dir(repo_root, orchestration_id) / agent_run_id.strip() / f"{gate}.json"
     _write_json(out_path, gate_doc)
     gate_ref = (
@@ -11957,7 +11911,6 @@ def _build_gate_runbook(request_payload: dict[str, Any]) -> str:
     substep = str(request_payload.get("substep", "")).strip()
     oid = str(request_payload.get("orchestration_id", "")).strip()
     arid = str(request_payload.get("agent_run_id", "")).strip()
-    ir_ref = str(request_payload.get("ir_ref", "")).strip().rstrip("/")
 
     # Per-(step, substep) gate command sequence. Each command is a single logical line
     # (no `\` continuation) so the gate-allowlist stage scanner reads `--stage` within
@@ -11968,9 +11921,8 @@ def _build_gate_runbook(request_payload: dict[str, Any]) -> str:
     if step == "compile" and substep == "generate":
         commands = [
             "python3 tools/validate_workspace_root.py",
-            f"python3 tools/check_artifact_syntax.py --expect-top object {ir_ref}/spec.ir.yaml",
         ]
-    # compile.verify emits NO gate runbook: the workspace_root + check_artifact_syntax +
+    # compile.verify emits NO gate runbook: the workspace_root +
     # --stage compile gates it used to run now execute deterministically in the conductor's
     # compile.static substep (Conductor._compile_static_inproc) BEFORE verify, so verify is
     # reached only on a deterministically-clean IR and is a semantic pass holding no gate (the
@@ -13652,7 +13604,7 @@ ALLOWED_VALIDATE_PIPELINE_STAGES: dict[tuple[str, str], frozenset[str]] = {
     ("compile", "generate"): frozenset(),
     # compile.static is a deterministic in-process substep (no leaf, no
     # validate_pipeline_semantics invocation); the empty set keeps the table total. The
-    # `--stage compile` gate (plus workspace_root + check_artifact_syntax) that compile.verify
+    # `--stage compile` gate (plus workspace_root) that compile.verify
     # used to own now runs in the conductor's compile.static substep
     # (Conductor._compile_static_inproc), so compile.verify is a pure LLM semantic pass (the
     # spec-cross-reference invariants V1/V3/V5) that invokes no validator gate.
@@ -23437,8 +23389,8 @@ def main(argv: list[str] | None = None) -> int:
     _RUN_GATE_ARGS_HELP = (
         "JSON object for gate-specific arguments. Allowed gates and minimal args_json schema: "
         "orchestration_read => {'read_path': 'docs/...'}; "
-        "validate_workspace_root => {'paths': ['workspace']} (optional, defaults to repo workspace); "
-        "check_artifact_syntax => {'expect_top': 'object', 'paths': ['workspace/.../file.yaml', ...]}; "
+        "validate_workspace_root => {} (defaults to the repo workspace) or "
+        "{'workspace_root': 'workspace'}; "
         "validate_pipeline_semantics => {'stage': 'plan|post_generate|post_build|post_execute|pre_judge|full', "
         "'ir_ref': 'workspace/ir/...'(plan stage), "
         "'pipeline_root': 'workspace/pipelines/...' or ['workspace/pipelines/...', ...], "
@@ -23522,10 +23474,7 @@ def main(argv: list[str] | None = None) -> int:
         "--gate",
         required=True,
         choices=sorted(DEFAULT_ALLOWED_GATE_SERVICES),
-        help=(
-            "Gate name. "
-            "validate_pipeline_semantics | check_artifact_syntax | validate_workspace_root | orchestration_read"
-        ),
+        help="Gate name. " + " | ".join(sorted(DEFAULT_ALLOWED_GATE_SERVICES)),
     )
     gate_parser.add_argument("--agent-run-id", required=True)
     gate_parser.add_argument("--args-json", required=True, type=_json_arg, help=_RUN_GATE_ARGS_HELP)

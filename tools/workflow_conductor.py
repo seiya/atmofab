@@ -11313,8 +11313,8 @@ clean:
         as the post_build gate in _build_inproc, two gates: validate_workspace_root.py (bare),
         then validate_pipeline_semantics --stage compile. Well-formedness of spec.ir.yaml and
         ir_meta.json is the --stage compile validator's own first finding (`invalid yaml` /
-        `must be mapping` / `ir_meta.json: must be json object`), so it needs no gate ahead of
-        it — issue #180 retired the check_artifact_syntax.py run that used to sit there. A
+        `must be mapping` / `ir_meta.json: must be json object`), so it needs no separate
+        well-formedness gate ahead of it (issue #180). A
         violation is a CONTENT failure (status=fail + failure_category, rc 0) routed by
         classify_compile_static_failure back to compile.generate via a warm-resume reopen; only
         an unexpected error surfaces as a transport fail_closed (caught in
@@ -11707,8 +11707,8 @@ clean:
 
         # 4. gate: post_execute structural check. It also requires diagnostics.json, perf.json
         # and quality_check.json to be present and to parse as JSON objects
-        # (`_validate_raw_evidence` / `_validate_execution_json_outputs`), which is why issue
-        # #180 retired the check_artifact_syntax.py run that used to precede it here.
+        # (`_validate_raw_evidence` / `_validate_execution_json_outputs`), so it needs no
+        # separate well-formedness gate ahead of it (issue #180).
         gate = subprocess.run(
             ["python3", "tools/validate_pipeline_semantics.py", "--stage", "post_execute",
              "--pipeline-root", refs.pipeline_ref, "--run-id", refs.run_id or ""],

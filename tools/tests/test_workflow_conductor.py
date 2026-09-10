@@ -16000,9 +16000,8 @@ class DeterministicBuildTest(unittest.TestCase):
         (returncode, stdout) and the runner/make-test diagnostics seeded so the quality_check
         passes (matching_diagnostics) or fails. Returns (result, trial_meta-or-{}).
 
-        ONE gate: issue #180 retired the check_artifact_syntax.py run that used to precede it,
-        so the stub is exhaustive and any other subprocess is an error rather than a silent
-        `gate_result`."""
+        ONE gate (issue #180), so the stub is exhaustive: any other subprocess is an error
+        rather than a silent `gate_result`."""
         import sys
         import subprocess as _sp
         from unittest import mock
@@ -18300,10 +18299,9 @@ class DeterministicCompileStaticTest(unittest.TestCase):
     validate_pipeline_semantics --stage compile and authors compile_static_meta.json under the
     IR dir; a violation is a content failure routed to compile.generate (warm resume).
 
-    Two gates, not three: issue #180 retired the check_artifact_syntax.py run that used to sit
-    between them, because `--stage compile` reports the same shapes itself. `_fake_run`'s
-    trailing `raise AssertionError` is what pins the count — a third gate spawned here has no
-    branch and fails the row."""
+    TWO gates, and the count is pinned: `_fake_run`'s trailing `raise AssertionError` fails
+    the row for any third gate spawned here (issue #180 removed one, on the grounds that
+    `--stage compile` reports the well-formedness shapes itself)."""
 
     def _conductor(self, repo: Path) -> "wc.Conductor":
         return wc.Conductor(repo_root=repo, orchestration_id="t",
@@ -21125,18 +21123,17 @@ class LeafUsageRecordingTests(unittest.TestCase):
 
 
 class RealValidatorAtTheRetiredArtifactSyntaxGateSitesTests(unittest.TestCase):
-    """The two conductor sites that used to run `tools/check_artifact_syntax.py`, driven from the
-    production entry point with the REAL `validate_pipeline_semantics.py` in the subprocess.
+    """The two conductor gate sites, driven from the production entry point with the REAL
+    `validate_pipeline_semantics.py` in the subprocess.
 
-    Issue #180 removed that gate on the grounds that the validator behind it reports the same
-    shapes. Every other conductor gate test in this file stubs `subprocess.run`, so none of them
-    can see whether the surviving validator actually receives the conductor's argv, reaches the
-    broken file, and hands the leaf a violation rather than a traceback. These two rows do:
-    only `validate_workspace_root.py` is stubbed, and any third subprocess is an error.
-
-    Site A is RED on this branch's parent commit — the excerpt comes back tagged
-    `[compile artifact_syntax gate fail]` from the retired gate, which short-circuits before
-    `--stage compile` runs.
+    Issue #180 removed a well-formedness gate that used to precede the validator at each of
+    them, on the grounds that the validator reports the same shapes itself. Every other
+    conductor gate test in this file stubs `subprocess.run`, so none of them can see whether
+    the surviving validator actually receives the conductor's argv, reaches the broken file,
+    and hands the leaf a violation rather than a traceback. These two rows do: only
+    `validate_workspace_root.py` is stubbed, and any other subprocess is an error — which is
+    also what makes them RED at this branch's C1 commit, where the removed gate is still
+    spawned and the shim names its argv.
 
     The shim rewrites the script path and adds `--repo-root`: the conductor invokes
     `python3 tools/<script>` with `cwd=<tmp repo>`, which has no `tools/`, so the real script is

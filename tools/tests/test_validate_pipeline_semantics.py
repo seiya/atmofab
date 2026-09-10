@@ -24473,16 +24473,15 @@ class StaleDependencyIRExitCodeTests(unittest.TestCase):
 
 
 class WellFormednessSubsumesTheRetiredArtifactSyntaxGateTests(unittest.TestCase):
-    """The shapes `tools/check_artifact_syntax.py` used to refuse, asserted against the validator
-    that now answers for them alone.
+    """Well-formedness of the five artifacts the two deterministic conductor gates read,
+    asserted against the validator that answers for them alone.
 
-    That tool parsed a named JSON / YAML file and checked its top-level type, and the conductor
-    ran it in front of `--stage compile` (on `spec.ir.yaml` + `ir_meta.json`) and in front of
-    `--stage post_execute` (on `diagnostics.json` / `perf.json` / `quality_check.json`). Issue
-    #180 retires it because both stages already report the same shapes. This class is the
-    enumeration behind that claim, one row per failure mode the tool had (missing / unparsable /
-    not the expected top-level type), taken through the real `validate_compile_stage` /
-    `validate` entrypoints.
+    Until issue #180 a separate tool parsed each of these and checked its top-level type ahead
+    of the validator, at `compile.static` (`spec.ir.yaml` + `ir_meta.json`) and at
+    `validate.execute` (`diagnostics.json` / `perf.json` / `quality_check.json`). It was retired
+    because both stages already report the same shapes; this class is the enumeration behind
+    that claim, one row per failure mode (missing / unparsable / not the expected top-level
+    type), taken through the real `validate_compile_stage` / `validate` entrypoints.
 
     What is PINNED here: that each shape produces a violation rather than an exception. What is
     SAMPLED: the exact violation wording, which several loaders spell differently for the same
