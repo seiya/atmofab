@@ -524,7 +524,7 @@ paragraph after the list for what that leaves):
   that store, and the relocator left beside the homes root —
   `ATMOFAB_START_CLAIM_ROOT` — has no `protected_host_read_roots` entry, so pointing IT
   at the checkout's parent blocks nothing (re-measured through `evaluate_common_policy`:
-  all three commands ALLOW). The claims root's own hazard is the paragraph below.
+  all four of the commands above ALLOW). The claims root's own hazard is the paragraph below.
 
   Both halves resolve symlinks, so the path cannot be laundered through one — and the
   **moment** of the refusal decides where you look when it bites. It runs when a leaf is

@@ -174,8 +174,11 @@ class WorkflowHomesRootOverrideTests(unittest.TestCase):
         one of them overlaps the checkout. The consequence for a root ABOVE the checkout
         is that every in-repo path is a path under a protected root — and the guard
         matches the command's tokens, not only its read targets. Measured through the real
-        `evaluate_common_policy`: with either root set to the checkout's parent,
-        `cat README.md`, `ls`, `python3 tools/x.py` and `echo hi` all BLOCK.
+        `evaluate_common_policy` with `ATMOFAB_WORKFLOW_HOMES_ROOT` set to the checkout's
+        parent: `cat README.md`, `ls`, `python3 tools/x.py` and `echo hi` all BLOCK. It used
+        to read "with either root", and that quantifier died with the operator token store
+        (issue #176): the relocator left beside this one, `ATMOFAB_START_CLAIM_ROOT`, is in no
+        `protected_host_read_roots` entry, so all four of those commands ALLOW under it.
 
         `docs/RUNBOOK.md` described this as costing "every recursive in-repo read", which
         a round-5 reviewer measured as a wide understatement. Refusing costs nothing —
