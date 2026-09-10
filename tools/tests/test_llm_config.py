@@ -184,19 +184,35 @@ class SampleConfigTests(unittest.TestCase):
         Both are enumerations `llm_config` owns, so this asserts the DOCUMENT against the code —
         the set is never spelled in this test. `capabilities: [agentic]` is required literally
         because that is the operator instruction the comment exists to give; a sample that stops
-        naming the key has lost the thing it was added for."""
+        naming the key has lost the thing it was added for.
+
+        READ THE ENUMERATION, NOT THE HEADER, and this is the round-1 correction: the first
+        version asked `assertIn(cap, header)`, and `agentic` occurs 7 times and `pure` 6 times
+        elsewhere in that header, so those two were satisfied by unrelated prose — dropping
+        either from the enumeration left the row green (measured). The parenthetical is located
+        by a marker asserted UNIQUE, its contents are parsed into a set, and the comparison is
+        set IDENTITY rather than membership: a capability the code drops but the comment keeps
+        naming is as wrong for the operator as one it omits."""
         text = (SAMPLE_DIR / "llm_claude.example.yaml").read_text(encoding="utf-8")
         header = text.split("defaults:", 1)[0]
         self.assertIn("capabilities: [agentic]", header)
         self.assertIn("llm_config_capability_exceeds_provider", header)
-        for cap in sorted(lc.PROVIDER_CAPABILITIES["claude_cli"]):
-            with self.subTest(capability=cap):
-                self.assertIn(
-                    cap, header,
-                    f"llm_claude.example.yaml's header enumerates what `capabilities:` may "
-                    f"restrict and omits `{cap}`, which `PROVIDER_CAPABILITIES['claude_cli']` "
-                    f"declares. An operator reading a short list would think naming the missing "
-                    f"one is the superset the refusal above rejects.")
+        marker = "(`claude_cli`: "
+        self.assertEqual(
+            header.count(marker), 1,
+            f"llm_claude.example.yaml: {marker!r} is not a unique marker, so the parse below "
+            f"would read the wrong span. It is a hardcoded bound of this check.")
+        listed = header.split(marker, 1)[1].split(")", 1)[0]
+        # `strip("#")` too: the enumeration is inside a COMMENT, so a legitimate re-wrap puts a
+        # `#` at the head of a continuation line and would otherwise glue it to a capability
+        # name. Tolerating the comment marker keeps a reformat from reading as a disagreement.
+        declared = {name.strip(" `#\n") for name in listed.split(",") if name.strip(" `#\n")}
+        self.assertEqual(
+            declared, set(lc.PROVIDER_CAPABILITIES["claude_cli"]),
+            f"llm_claude.example.yaml's header enumerates what `capabilities:` may restrict and "
+            f"disagrees with `PROVIDER_CAPABILITIES['claude_cli']`. An operator reading a short "
+            f"list would think naming a missing one is the superset the refusal above rejects; "
+            f"one reading a long list would think a name the code no longer has is admissible.")
 
     def test_the_http_samples_put_the_http_provider_on_exactly_the_pure_leaves(self) -> None:
         """The scope rule the HTTP samples exist to demonstrate. An HTTP provider anywhere else
