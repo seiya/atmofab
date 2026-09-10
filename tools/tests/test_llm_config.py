@@ -174,6 +174,59 @@ class SampleConfigTests(unittest.TestCase):
                     continue
                 self.assertEqual(entry.model, top.model, msg=where)
 
+    def test_the_claude_sample_states_the_capability_surface_the_code_declares(self) -> None:
+        """Issue #168 put the `capabilities:` spelling into the claude sample's header, as a
+        COMMENT rather than a key: placing the key would change the leaf set the sample rows
+        above read. A comment is exactly the form that rots, so the two facts it states are
+        derived from the code here.
+
+        The comment names the provider's whole capability set and the refusal a superset raises.
+        Both are enumerations `llm_config` owns, so this asserts the DOCUMENT against the code —
+        the set is never spelled in this test. `capabilities: [agentic]` is required literally
+        because that is the operator instruction the comment exists to give; a sample that stops
+        naming the key has lost the thing it was added for.
+
+        READ THE ENUMERATION, NOT THE HEADER, and this is the round-1 correction: the first
+        version asked `assertIn(cap, header)`, and `agentic` occurs 6 further times and `pure` 5
+        further times in that header outside the enumeration line, so those two were satisfied by
+        unrelated prose — dropping either from the enumeration left the row green (measured).
+        (7 and 6 counting the enumeration itself; an earlier version of this sentence gave those
+        figures under the word "elsewhere", which is the wrong denominator for what it claims.) The parenthetical is located
+        by a marker asserted UNIQUE, its contents are parsed into a set, and the comparison is
+        set IDENTITY rather than membership: a capability the code drops but the comment keeps
+        naming is as wrong for the operator as one it omits."""
+        text = (SAMPLE_DIR / "llm_claude.example.yaml").read_text(encoding="utf-8")
+        # Anchored at a LINE START, and this is the round-2 correction. `text.split("defaults:")`
+        # cut at the first occurrence anywhere, including inside the comment prose — the header
+        # already says "would let all five leaves inherit one `defaults` block", one character
+        # from tripping it — so a legitimate sentence mentioning the key above the capabilities
+        # paragraph truncated the header and made the check report a string that IS in the file
+        # as missing, naming a repair that is a no-op. Measured before the fix.
+        parts = re.split(r"(?m)^defaults:", text, maxsplit=1)
+        self.assertEqual(len(parts), 2,
+                         "llm_claude.example.yaml has no top-level `defaults:` key, so the header "
+                         "below would be the whole file and every check in this row would be "
+                         "answered by the per-leaf blocks instead of by the comment.")
+        header = parts[0]
+        self.assertIn("capabilities: [agentic]", header)
+        self.assertIn("llm_config_capability_exceeds_provider", header)
+        marker = "(`claude_cli`: "
+        self.assertEqual(
+            header.count(marker), 1,
+            f"llm_claude.example.yaml: {marker!r} is not a unique marker, so the parse below "
+            f"would read the wrong span. It is a hardcoded bound of this check.")
+        listed = header.split(marker, 1)[1].split(")", 1)[0]
+        # `strip("#")` too: the enumeration is inside a COMMENT, so a legitimate re-wrap puts a
+        # `#` at the head of a continuation line and would otherwise glue it to a capability
+        # name. Tolerating the comment marker keeps a reformat from reading as a disagreement.
+        declared = {name.strip(" `#\n") for name in listed.split(",") if name.strip(" `#\n")}
+        self.assertEqual(
+            declared, set(lc.PROVIDER_CAPABILITIES["claude_cli"]),
+            "llm_claude.example.yaml's header enumerates what `capabilities:` may restrict and "
+            "disagrees with `PROVIDER_CAPABILITIES['claude_cli']`. An operator reading a short "
+            "list would think naming a missing one is the superset the refusal above rejects; "
+            "one reading a long list would think a name the code no longer has is admissible.")
+
     def test_the_http_samples_put_the_http_provider_on_exactly_the_pure_leaves(self) -> None:
         """The scope rule the HTTP samples exist to demonstrate. An HTTP provider anywhere else
         does not load at all (`llm_config_capability_insufficient_for_substep`, covered by
