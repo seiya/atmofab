@@ -13062,9 +13062,6 @@ class BuildLaunchRequestResolvedDependenciesTest(unittest.TestCase):
         self.assertTrue(any(p.endswith("/src/command_log.jsonl") for p in outs))
         # gate does not author model/runner sources
         self.assertFalse(any(p.endswith("_model.f90") for p in outs))
-        # no retired per-checker meta names are emitted
-        self.assertFalse(any(p.endswith(("/lint_meta.json", "/syntax_meta.json",
-                                         "/static_meta.json")) for p in outs))
 
     def test_omitted_for_compile(self) -> None:
         self.assertNotIn(
@@ -17594,8 +17591,11 @@ class DeterministicSyntaxTest(unittest.TestCase):
                     c._gate_syntax_check(refs, "child-1", "captok")
             self.assertIn(self.DEP_REF, str(ctx.exception))
             self.assertIn("Unused dummy argument", str(ctx.exception))
-            # no content-fail deliverable is authored on a transport fail_closed
-            self.assertFalse((repo / refs.source_dir() / "syntax_meta.json").exists())
+            # no content-fail deliverable is authored on a transport fail_closed. The
+            # deliverable `_gate_syntax_check` writes on a CONTENT failure is `gate_meta.json`
+            # (workflow_conductor._gate_syntax_check); asserting a name it never writes — which
+            # is what this row did until issue #180, with `syntax_meta.json` — pins nothing.
+            self.assertFalse((repo / refs.source_dir() / "gate_meta.json").exists())
 
     def test_gate_syntax_check_node_source_finding_with_deps_staged_still_content_fail(self) -> None:
         # The mirror of the test above: with a dependency staged, a finding in the NODE's own

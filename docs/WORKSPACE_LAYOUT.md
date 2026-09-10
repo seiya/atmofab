@@ -231,7 +231,7 @@ The conductor writes this from the leaf's own output (`workflow_conductor._leaf_
 | `workspace/pipelines/.../<pipeline_id>/runs/<run_id>/<node_key_safe>/verdict.json` | Validate/judge | substep agent (Edit/Write) | runtime / validator / upper node | |
 | `workspace/pipelines/.../<pipeline_id>/lineage.json` | added by each phase | (via write-step-result) | runtime / validator | the phase id lineage |
 
-> The retired per-checker meta files `lint_meta.json` / `syntax_meta.json` / `static_meta.json` (superseded by the single `gate_meta.json`) are no longer written. A workspace produced before this change may still contain them; they are **inert** read-only history and are neither consumed nor deleted.
+> `lint_meta.json` / `syntax_meta.json` / `static_meta.json` were retired on 2026-07-23 (`59a89fd`) in favour of the single `gate_meta.json`; no code writes, reads or names them. A workspace snapshot from before that date may still contain them as **inert** history.
 
 ## Generation rule of node_key_safe
 

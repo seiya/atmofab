@@ -4024,27 +4024,6 @@ shell_tool                       stable             true
                         request_payload=req,
                         write_roots=[f"{_FIX_PIPE_REF}/source/"],
                     )
-        # The retired lint/syntax/static_meta names are rejected for EVERY generate substep
-        # (incl. the gate substep) — a leaf can never mint a forged verdict under a stale name.
-        for substep in ("gate", "generate", "verify"):
-            for retired in ("lint_meta.json", "syntax_meta.json", "static_meta.json"):
-                retired_path = f"{_FIX_PIPE_REF}/source/{src_id}/{retired}"
-                req = {
-                    "agent_role": "substep",
-                    "node_key": "problem/shallow_water2d@0.3.0",
-                    "step": "generate",
-                    "substep": substep,
-                    "ir_ref": _FIX_IR_REF,
-                    "pipeline_ref": _FIX_PIPE_REF,
-                    "source_id": src_id,
-                    "allowed_output_paths": [retired_path],
-                }
-                with self.subTest(substep=substep, retired=retired):
-                    with self.assertRaisesRegex(ValueError, "outside phase contract outputs"):
-                        _allowed_output_paths_for_launch(
-                            request_payload=req,
-                            write_roots=[f"{_FIX_PIPE_REF}/source/"],
-                        )
 
     def test_compile_static_launch_accepts_compile_static_meta_json(self) -> None:
         """The deterministic Compile.static substep declares
@@ -4130,18 +4109,22 @@ shell_tool                       stable             true
                         write_roots=[f"{_FIX_IR_REF}/"],
                     )
 
-    def test_generate_leaf_launch_rejects_retired_lint_meta_json(self) -> None:
-        """The retired lint_meta.json (superseded by gate_meta.json) is accepted for NO substep
-        — a Generate.generate / Generate.verify leaf launch (real leaf with Edit/Write) listing
-        it as an output is rejected by the generate phase contract, so a leaf can never mint a
-        forged verdict under the stale name. (Only gate_meta.json is accepted, for Generate.gate.)
+    def test_generate_leaf_launch_rejects_unlisted_source_root_json(self) -> None:
+        """The generate phase contract is a MEMBERSHIP test on source-root JSON: a name it does
+        not list is refused whatever it is called, for every generate substep. `gate_meta.json`
+        is the one accepted name, and only for Generate.gate (the row above).
+
+        This is what makes a stale or invented verdict name unwritable without anyone enumerating
+        such names — the enumeration issue #180 deleted (`lint_meta` / `syntax_meta` /
+        `static_meta`) sat one layer BELOW this one and could only be reached by a request that
+        set `allowed_file_tool_paths` explicitly, which nothing in this tree does.
         """
         from tools.orchestration_runtime import _allowed_output_paths_for_launch
 
-        src_id = "src_lint_meta_002"
-        lint_meta = f"{_FIX_PIPE_REF}/source/{src_id}/lint_meta.json"
+        src_id = "src_unlisted_meta_002"
+        unlisted = f"{_FIX_PIPE_REF}/source/{src_id}/extra_meta.json"
         model_src = f"{_FIX_PIPE_REF}/source/{src_id}/src/m_model.f90"
-        for substep in ("generate", "verify"):
+        for substep in ("generate", "verify", "gate"):
             with self.subTest(substep=substep):
                 req = {
                     "agent_role": "substep",
@@ -4151,7 +4134,7 @@ shell_tool                       stable             true
                     "ir_ref": _FIX_IR_REF,
                     "pipeline_ref": _FIX_PIPE_REF,
                     "source_id": src_id,
-                    "allowed_output_paths": [model_src, lint_meta],
+                    "allowed_output_paths": [model_src, unlisted],
                 }
                 with self.assertRaisesRegex(
                     ValueError, "outside phase contract outputs"
@@ -4164,8 +4147,7 @@ shell_tool                       stable             true
     def test_gate_meta_json_not_file_tool_writable(self) -> None:
         """Even for the Generate.gate substep, gate_meta.json must stay out of the
         auto-derived allowed_file_tool_paths set (no leaf may Edit/Write it; the
-        conductor writes it in-process). An explicit request listing it — or any retired
-        per-checker meta name — is rejected.
+        conductor writes it in-process). An explicit request listing it is rejected.
         """
         from tools.orchestration_runtime import _allowed_file_tool_paths_for_launch
 
@@ -4196,16 +4178,6 @@ shell_tool                       stable             true
                 request_payload=req_explicit,
                 allowed_output_paths=[gate_meta, model_src, command_log],
             )
-        # The retired per-checker meta names are also rejected in an explicit list.
-        for retired in ("lint_meta.json", "syntax_meta.json", "static_meta.json"):
-            retired_path = f"{_FIX_PIPE_REF}/source/{src_id}/{retired}"
-            req_retired = {**req, "allowed_file_tool_paths": [model_src, retired_path]}
-            with self.subTest(retired=retired):
-                with self.assertRaisesRegex(ValueError, "retired per-checker deliverable"):
-                    _allowed_file_tool_paths_for_launch(
-                        request_payload=req_retired,
-                        allowed_output_paths=[retired_path, model_src, command_log],
-                    )
 
     def test_dependency_graph_sidecar_not_file_tool_writable(self) -> None:
         """The conductor-authored dependency-graph sidecar <ir_ref>/dependency_graph.json
@@ -4249,20 +4221,24 @@ shell_tool                       stable             true
             request_payload=gen_req, allowed_output_paths=[src_named])
         self.assertIn(src_named, gen_derived)
 
-    def test_src_tree_file_named_lint_meta_stays_writable(self) -> None:
+    def test_src_tree_file_named_gate_meta_stays_writable(self) -> None:
         """The conductor-owned deliverable is ONLY the source-ROOT
-        source/<source_id>/lint_meta.json. A legitimately generated source-tree
-        file that happens to be named lint_meta.json (under .../src/) is an
+        source/<source_id>/gate_meta.json. A legitimately generated source-tree
+        file that happens to be named gate_meta.json (under .../src/) is an
         ordinary leaf output: the phase contract accepts it via the /src/ rule and
         it must stay Edit/Write-eligible (not excluded by the source-root guard).
+
+        This row is the `/src/` carve-out's ONLY pin. It used to probe `lint_meta.json`, whose
+        guard issue #180 deleted, so the carve-out it was checking was the retired rule's and
+        the surviving `gate_meta.json` one had none.
         """
         from tools.orchestration_runtime import (
             _allowed_file_tool_paths_for_launch,
             _allowed_output_paths_for_launch,
         )
 
-        src_id = "src_lint_meta_004"
-        src_tree_file = f"{_FIX_PIPE_REF}/source/{src_id}/src/lint_meta.json"
+        src_id = "src_gate_meta_004"
+        src_tree_file = f"{_FIX_PIPE_REF}/source/{src_id}/src/gate_meta.json"
         req = {
             "agent_role": "substep",
             "node_key": "problem/shallow_water2d@0.3.0",
@@ -17705,13 +17681,14 @@ class DirectWritePathExtensionPolicyTests(unittest.TestCase):
         derived = _allowed_file_tool_paths_for_launch(
             request_payload={},
             allowed_output_paths=[
-                "workspace/ir/p/plan_meta.json",
+                "workspace/pipelines/p/source/s/source_meta.json",
                 "workspace/ir/p/ir_meta.json",
             ],
         )
         self.assertEqual(
             derived,
-            ["workspace/ir/p/ir_meta.json", "workspace/ir/p/plan_meta.json"],
+            ["workspace/ir/p/ir_meta.json",
+             "workspace/pipelines/p/source/s/source_meta.json"],
         )
 
     def test_allowed_file_tool_paths_explicit_subset_validation(self) -> None:
@@ -19485,7 +19462,7 @@ class GateRunbookTests(unittest.TestCase):
     def test_runbook_judge_emits_no_gate(self) -> None:
         # G3: the `--stage pre_judge` gate moved out of the judge leaf to the conductor (a
         # pre-spawn dependency-DAG readiness check + a post-return pre_judge gate that authors
-        # judge_gate_meta.json), so validate.judge is a pure LLM semantic pass that emits NO
+        # pre_judge_meta.json), so validate.judge is a pure LLM semantic pass that emits NO
         # runbook (mirrors compile.verify / generate.verify).
         from tools.orchestration_runtime import (
             _build_gate_runbook,

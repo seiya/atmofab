@@ -7747,8 +7747,7 @@ def _allowed_output_paths_for_launch(
                 # Generate.generate / Generate.verify leaf launch must NOT be able to list it as an
                 # output (which would auto-authorize the leaf to overwrite the gate verdict via
                 # _allowed_file_tool_paths_for_launch). Belt-and-suspenders: that helper also
-                # excludes gate_meta.json from the auto-derived file-tool set, and still rejects the
-                # retired lint/syntax/static_meta.json names outright.
+                # excludes gate_meta.json from the auto-derived file-tool set.
                 if substep_token == "gate" and path.endswith("/gate_meta.json"):
                     return True
             return False
@@ -8395,17 +8394,6 @@ def _allowed_file_tool_paths_for_launch(
                 f"allowed_file_tool_paths[{idx}] must not include the conductor-authored "
                 f"gate deliverable: {path!r} (written exclusively by Generate.gate in-process)"
             )
-        # Retired per-checker verdict names (lint_meta/syntax_meta/static_meta.json), superseded
-        # by gate_meta.json. Kept as explicit rejects so a leaf cannot mint a forged verdict under
-        # a stale name that a downstream reader might still honor. Safe to REMOVE once no workspace
-        # on any supported --resume path can still carry the old names.
-        for _retired in ("/lint_meta.json", "/syntax_meta.json", "/static_meta.json"):
-            if path.endswith(_retired) and "/src/" not in path:
-                raise ValueError(
-                    f"allowed_file_tool_paths[{idx}] must not include the retired per-checker "
-                    f"deliverable: {path!r} (superseded by the conductor-authored Generate.gate "
-                    "gate_meta.json)"
-                )
         # Same for the IR-ROOT compile_static_meta.json (Compile.static in-process deliverable).
         if path.endswith("/compile_static_meta.json"):
             raise ValueError(
