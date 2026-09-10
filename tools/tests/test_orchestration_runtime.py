@@ -30057,8 +30057,9 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # `SKILL`. The body is unchanged: deleting it is issue #171, and a deletion lands with
         # the migration that makes it dead, never ahead of it.
         # (28850 first, from 28694 at the branch's first commit; re-measured at the round-3 HEAD
-        # after Operations Rule 10 gained the note that `repair_target_sections[]` has no reader
-        # in `tools/`, which the phase document had said and this file had not.)
+        # after Operations Rule 10 — rule 9 since issue #180 renumbered the list — gained the
+        # note that `repair_target_sections[]` has no reader in `tools/`, which the phase
+        # document had said and this file had not.)
         # Bumped 29050->30031 (issue #175, round 4; measured 29881). This file is the
         # AGENTIC compile producer's canonical procedure (`AGENTS.md` §Project Local Skills),
         # and it ordered `direct_deps` to 'exactly match the directly-required set of
@@ -30067,7 +30068,13 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # the new gate requires on those same two nodes. A leaf on that path was handed the
         # corrected phase document and this stale SKILL in one launch, with `AGENTS.md`
         # making the SKILL canonical, and would have failed Compile on every attempt.
-        "skills/workflow-compile-generate/SKILL.md": 30031,
+        # Lowered 30031->29499 (issue #180, review round 1; measured 29349). The issue deleted the
+        # two optional `check_artifact_syntax` self-checks and renumbered Operations rule 10
+        # to 9, shrinking the file by 532 B and leaving 682 B of headroom — 4.5x this table's
+        # ~150 B convention, i.e. the ceiling had stopped fencing. Re-set from the MEASURED
+        # size plus that slack, which is what the comment block above requires of a bump and
+        # equally of a shrink.
+        "skills/workflow-compile-generate/SKILL.md": 29499,
         # Bumped 11800->12100: G7 — compile.verify checks V4c only (operations ⊆ published); the
         # closure/topo consistency is conductor-authored + gate-checked, no longer LLM-verified (G7).
         # Bumped 12100->13100: R2 (G8) — compile.verify owns the SEMANTIC test_predicates fidelity
