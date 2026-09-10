@@ -30074,7 +30074,7 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # corrected phase document and this stale SKILL in one launch, with `AGENTS.md`
         # making the SKILL canonical, and would have failed Compile on every attempt.
         # Lowered 30031->29499 (issue #180, review round 1; measured 29349). The issue deleted the
-        # two optional `check_artifact_syntax` self-checks and renumbered Operations rule 10
+        # two optional well-formedness self-checks and renumbered Operations rule 10
         # to 9, shrinking the file by 532 B and leaving 682 B of headroom — 4.5x this table's
         # ~150 B convention, i.e. the ceiling had stopped fencing. Re-set from the MEASURED
         # size plus that slack, which is what the comment block above requires of a bump and
