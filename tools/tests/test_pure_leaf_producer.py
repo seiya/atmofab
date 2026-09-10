@@ -1906,9 +1906,13 @@ class PureProducerExemplarTests(unittest.TestCase):
         warm-branch resolution left 311 tests green, because nothing in the repository drove the
         `turn is None` path at all.
 
-        The rotation is faked at `_spawn_pure_turn` rather than by rotating a real codex home:
-        what is under test is the LOOP's fallback, and the rotation detection itself is
-        `_prepare_codex_workflow_home`'s, pinned separately.
+        The rotation is faked rather than produced by rotating a real codex home: what is under
+        test is the LOOP's fallback, and the rotation detection itself is
+        `_prepare_codex_workflow_home`'s, pinned separately. For the same reason this row runs on
+        the CLAUDE fake, where a session id IS the child's arid — so what it does NOT observe is
+        the fallback's `cold_repair_target = resume_session_id`, which on codex records a THREAD
+        id in a field named `repair_target_agent_run_id`. That conflation is `origin/main`'s and
+        is not this row's subject.
         """
         excerpt = "gate_static: the bundle declares no capability_requirements"
         prior = _valid_bundle()
