@@ -742,6 +742,30 @@ class ColdOuterReopenTests(_HttpServeMixin, unittest.TestCase):
         self.assertEqual(self._event("pure_reopen_cold")["prior_document_carried"], False)
         self.assertEqual(self._event("pure_reopen_cold")["findings_carried"], True)
 
+    def test_a_damaged_launch_record_degrades_instead_of_raising(self) -> None:
+        """The seed's launch-record read is the FIRST caller `_read_launch_request_payload` has in
+        a frame that must not raise, and its `except` named `json.JSONDecodeError` rather than
+        `ValueError` — so a damaged record raised `UnicodeDecodeError` straight out of
+        `run_substep`, one frame above the guarantee the two restorers carry. The sibling
+        `_read_json_or_none` states the rule verbatim: `ValueError` covers malformed JSON AND a
+        non-UTF-8 file.
+
+        Non-UTF-8 bytes rather than malformed JSON, because malformed JSON was already caught and
+        would pass against the narrow spelling too.
+        """
+        from tools.tests.test_pure_leaf_compile import _doc
+        refs = self._compile_fixture()
+        (self.repo / "workspace" / "orchestrations" / "o" / "launches"
+         / f"{_PRIOR_ARID}.request.json").write_bytes(
+            b'{"ir_ref": "a", "pipeline_ref": "b", "source_id": "\xff\xfe"}')
+        sent = self._serve([json.dumps(_doc())])
+        c = self._conductor(_COMPILE_HTTP_CONFIG)
+        outcome = c.run_substep(refs, "compile", "generate", repair=self._repair())
+        self.assertEqual(outcome.status, "pass")
+        self.assertIn(_EXCERPT, sent[0]["messages"][-1]["content"])
+        self.assertNotIn("prior_document", c.requests[0])
+        self.assertEqual(self._event("pure_reopen_cold")["prior_document_carried"], False)
+
     def test_a_cold_outer_reopen_with_an_unusable_target_renders_the_launch_prompt(self) -> None:
         """`_validate_launch_request_payload` refuses a reuse repair whose target is `"none"`, so
         that reopen keeps today's cold LAUNCH. The one route the findings still cannot ride.

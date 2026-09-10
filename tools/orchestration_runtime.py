@@ -15560,7 +15560,14 @@ def _read_launch_request_payload(
     agent_run_id: str,
 ) -> dict[str, Any] | None:
     """Return the parsed `launches/<arid>.request.json` payload, or None
-    when absent / malformed."""
+    when absent / malformed.
+
+    `ValueError` rather than `json.JSONDecodeError` for the reason `_read_json_or_none` states
+    beside it: `ValueError` covers BOTH malformed JSON and `UnicodeDecodeError` (a damaged file
+    `read_text` chokes on), so no decode failure escapes. It was the narrower spelling until
+    issue #209 gave this helper its first caller in a frame that must not raise — the pure
+    producer loop's reopen seed, which runs outside the loop's context-assembly guard, so a
+    raise here takes the conductor down mid-run instead of failing the substep closed."""
     request_path = (
         _orchestration_root(repo_root, orchestration_id)
         / "launches"
@@ -15570,7 +15577,7 @@ def _read_launch_request_payload(
         return None
     try:
         payload = _read_json(request_path)
-    except (OSError, json.JSONDecodeError):
+    except (OSError, ValueError):
         return None
     if not isinstance(payload, dict):
         return None
