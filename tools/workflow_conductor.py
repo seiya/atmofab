@@ -152,7 +152,7 @@ SUBSTEPS: dict[str, tuple[str | None, ...]] = {
     # compile.static is a deterministic in-process substep run by the conductor AFTER
     # compile.generate produces spec.ir.yaml/ir_meta.json and BEFORE compile.verify:
     #   - static (Conductor._compile_static_inproc): runs validate_workspace_root +
-    #     check_artifact_syntax + validate_pipeline_semantics --stage compile; the verify
+    #     validate_pipeline_semantics --stage compile; the verify
     #     leaf no longer invokes them, so compile.verify is a semantic pass holding no gate
     #     (the spec-cross-reference invariants V1/V3/V5) reached only on a deterministically-clean
     #     IR. A finding routes back to compile.generate via a warm-resume reopen
@@ -344,7 +344,7 @@ def _gate_categories_canonical(categories: list[str]) -> list[str]:
     return known + unknown
 
 # Compile static-gate (compile.static) failure_category -> (retry_target_phase, repair_strategy).
-# The deterministic workspace_root / check_artifact_syntax / --stage compile gates run AFTER
+# The deterministic workspace_root / --stage compile gates run AFTER
 # compile.generate and BEFORE compile.verify; a structural IR violation re-runs
 # compile.generate with a warm resume (reuse), exactly like a generate.gate finding, so the
 # same leaf fixes its own IR with context intact. Like the generate gate this is a SAME-PHASE reopen
@@ -1562,8 +1562,8 @@ def build_launch_request(
         elif substep == "static":
             # Deterministic in-process compile gate: the conductor authors
             # compile_static_meta.json (the only freshness-gated deliverable) from
-            # validate_workspace_root + check_artifact_syntax + validate_pipeline_semantics
-            # --stage compile. No leaf, no must-read (deterministic), no IR authoring.
+            # validate_workspace_root + validate_pipeline_semantics --stage compile.
+            # No leaf, no must-read (deterministic), no IR authoring.
             req["allowed_output_paths"] = [
                 f"{refs.ir_ref}/compile_static_meta.json",
             ]
@@ -9819,7 +9819,7 @@ clean:
             return status, output_refs
         if phase == "compile" and substep == "static":
             # Deterministic compile gate: the conductor-authored compile_static_meta records the
-            # workspace_root + check_artifact_syntax + --stage compile verdict. A violation is
+            # workspace_root + --stage compile verdict. A violation is
             # status=fail with rc 0, so the substep fails here and classify_compile_static_failure
             # routes back to compile.generate (warm resume), not transport fail_closed.
             # compile_static_meta.json is the only freshness-gated deliverable.
@@ -11310,9 +11310,11 @@ clean:
         """Deterministic Compile.static: run the purely-static IR gates the verify leaf used to
         own (so verify is now a semantic pass holding no gate — the spec-cross-reference invariants
         V1/V3/V5 — reached only on a deterministically-clean IR). Runs, in the same order/idiom
-        as the post_build gate in _build_inproc, the three gates the old compile.verify runbook
-        emitted: validate_workspace_root.py (bare), check_artifact_syntax.py on
-        spec.ir.yaml + ir_meta.json, then validate_pipeline_semantics --stage compile. A
+        as the post_build gate in _build_inproc, two gates: validate_workspace_root.py (bare),
+        then validate_pipeline_semantics --stage compile. Well-formedness of spec.ir.yaml and
+        ir_meta.json is the --stage compile validator's own first finding (`invalid yaml` /
+        `must be mapping` / `ir_meta.json: must be json object`), so it needs no gate ahead of
+        it — issue #180 retired the check_artifact_syntax.py run that used to sit there. A
         violation is a CONTENT failure (status=fail + failure_category, rc 0) routed by
         classify_compile_static_failure back to compile.generate via a warm-resume reopen; only
         an unexpected error surfaces as a transport fail_closed (caught in
@@ -11326,12 +11328,10 @@ clean:
         stderr = ""
 
         ir_ref = refs.ir_ref
-        # workspace_root (global layout) -> syntax (yaml/json well-formed) -> --stage compile
-        # (structural IR invariants). The first failing gate short-circuits.
+        # workspace_root (global layout) -> --stage compile (well-formedness + structural IR
+        # invariants). The first failing gate short-circuits.
         gates = [
             (["python3", "tools/validate_workspace_root.py"], "workspace_root"),
-            (["python3", "tools/check_artifact_syntax.py", "--expect-top", "object",
-              f"{ir_ref}/spec.ir.yaml", f"{ir_ref}/ir_meta.json"], "artifact_syntax"),
             (["python3", "tools/validate_pipeline_semantics.py", "--stage", "compile",
               "--ir-ref", ir_ref], "compile_stage"),
         ]
@@ -11705,18 +11705,15 @@ clean:
         (node_dir / "trial_meta.json").write_text(
             json.dumps(trial_meta, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
-        # 4. gates: artifact syntax + post_execute structural check.
-        syn = subprocess.run(
-            ["python3", "tools/check_artifact_syntax.py", "--format", "json",
-             "--expect-top", "object",
-             str(node_dir / "diagnostics.json"), str(node_dir / "perf.json"),
-             str(node_dir / "quality_check.json")],
-            cwd=self.repo_root, env=self.env, text=True, capture_output=True, check=False)
+        # 4. gate: post_execute structural check. It also requires diagnostics.json, perf.json
+        # and quality_check.json to be present and to parse as JSON objects
+        # (`_validate_raw_evidence` / `_validate_execution_json_outputs`), which is why issue
+        # #180 retired the check_artifact_syntax.py run that used to precede it here.
         gate = subprocess.run(
             ["python3", "tools/validate_pipeline_semantics.py", "--stage", "post_execute",
              "--pipeline-root", refs.pipeline_ref, "--run-id", refs.run_id or ""],
             cwd=self.repo_root, env=self.env, text=True, capture_output=True, check=False)
-        structural_ok = (syn.returncode == 0 and gate.returncode == 0
+        structural_ok = (gate.returncode == 0
                          and qc_status == "pass" and not snapshot_gap)
         if not structural_ok:
             # Structural content failure (bad/missing evidence): record it in
@@ -11724,8 +11721,7 @@ clean:
             # run_phase routes it via the validate tables / diagnostician, NOT transport
             # fail_closed. No verdict.json is authored — classify_failure's execute branch
             # sees no failure_class and routes to Generate (regenerate the runner/code).
-            block = ("\n[execute fail]\n" + syn.stdout + syn.stderr
-                     + gate.stdout + gate.stderr)
+            block = "\n[execute fail]\n" + gate.stdout + gate.stderr
             if snapshot_gap:
                 block += "\n" + snapshot_gap
             # Actionable cause when the make-test candidate emitted no diagnostics/verdict:
@@ -11753,11 +11749,11 @@ clean:
             # two leading branches read the post_execute validator's DEDICATED EXIT CODES, which
             # say the failure is not the leaf's: rc 3 is an uninstalled structure front end (a
             # machine problem — the gates that need it read nothing), rc 4 a stale certified IR. Both
-            # must dominate a co-occurring `syn`/`quality_check`/snapshot symptom, because those
+            # must dominate a co-occurring `quality_check`/snapshot symptom, because those
             # symptoms are downstream of the same unrepairable condition and routing them warm
             # spends the leaf's budget re-authoring source that was never the cause. Below them
-            # the three warm categories route identically: a gate/syntax report is the most
-            # specific, a snapshot gap next, quality_check last.
+            # the three warm categories route identically: a gate report is the most specific,
+            # a snapshot gap next, quality_check last.
             #
             # rc 4 and rc 5 are UNREACHABLE from this stage today, for the same reason and with
             # the same remedy. The stale-IR violation has one emit site
@@ -11780,7 +11776,7 @@ clean:
                 failure_category = "stale_dependency_ir"
             elif gate.returncode == HOST_AUTHORED_ARTIFACT_EXIT_CODE:
                 failure_category = "host_authored_artifact_violation"
-            elif syn.returncode != 0 or gate.returncode != 0:
+            elif gate.returncode != 0:
                 failure_category = "post_execute_violation"
             elif snapshot_gap:
                 failure_category = "snapshot_deliverable_gap"
