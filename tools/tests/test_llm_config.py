@@ -194,7 +194,18 @@ class SampleConfigTests(unittest.TestCase):
         set IDENTITY rather than membership: a capability the code drops but the comment keeps
         naming is as wrong for the operator as one it omits."""
         text = (SAMPLE_DIR / "llm_claude.example.yaml").read_text(encoding="utf-8")
-        header = text.split("defaults:", 1)[0]
+        # Anchored at a LINE START, and this is the round-2 correction. `text.split("defaults:")`
+        # cut at the first occurrence anywhere, including inside the comment prose — the header
+        # already says "would let all five leaves inherit one `defaults` block", one character
+        # from tripping it — so a legitimate sentence mentioning the key above the capabilities
+        # paragraph truncated the header and made the check report a string that IS in the file
+        # as missing, naming a repair that is a no-op. Measured before the fix.
+        parts = re.split(r"(?m)^defaults:", text, maxsplit=1)
+        self.assertEqual(len(parts), 2,
+                         "llm_claude.example.yaml has no top-level `defaults:` key, so the header "
+                         "below would be the whole file and every check in this row would be "
+                         "answered by the per-leaf blocks instead of by the comment.")
+        header = parts[0]
         self.assertIn("capabilities: [agentic]", header)
         self.assertIn("llm_config_capability_exceeds_provider", header)
         marker = "(`claude_cli`: "
@@ -209,10 +220,10 @@ class SampleConfigTests(unittest.TestCase):
         declared = {name.strip(" `#\n") for name in listed.split(",") if name.strip(" `#\n")}
         self.assertEqual(
             declared, set(lc.PROVIDER_CAPABILITIES["claude_cli"]),
-            f"llm_claude.example.yaml's header enumerates what `capabilities:` may restrict and "
-            f"disagrees with `PROVIDER_CAPABILITIES['claude_cli']`. An operator reading a short "
-            f"list would think naming a missing one is the superset the refusal above rejects; "
-            f"one reading a long list would think a name the code no longer has is admissible.")
+            "llm_claude.example.yaml's header enumerates what `capabilities:` may restrict and "
+            "disagrees with `PROVIDER_CAPABILITIES['claude_cli']`. An operator reading a short "
+            "list would think naming a missing one is the superset the refusal above rejects; "
+            "one reading a long list would think a name the code no longer has is admissible.")
 
     def test_the_http_samples_put_the_http_provider_on_exactly_the_pure_leaves(self) -> None:
         """The scope rule the HTTP samples exist to demonstrate. An HTTP provider anywhere else
