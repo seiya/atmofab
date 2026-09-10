@@ -4535,9 +4535,9 @@ def _validate_raw_evidence(
         if not isinstance(quality, dict):
             # Same guard as `diagnostics.json` / `perf.json` in
             # `_validate_execution_json_outputs`. Without it a valid-JSON non-object raised
-            # `AttributeError` out of `quality.get` below, and `main()` catches only
-            # `FortranStructureUnavailableError` / `RuntimeError` — so the leaf received a
-            # traceback where every sibling shape gets a violation it can repair.
+            # `AttributeError` out of `quality.get` below, and `main()`'s two `except` clauses
+            # cover neither — so the leaf received a traceback where every sibling shape gets
+            # a violation it can repair.
             violations.append(f"{quality_path}: must be json object")
             return
         checks = quality.get("checks", {})
