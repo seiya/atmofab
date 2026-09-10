@@ -3049,5 +3049,74 @@ class PureValidatePipelineTests(unittest.TestCase):
             self.assertTrue(line0.startswith(PURE_PROMPT_SENTINEL), (fname, line0))
 
 
+# ======================================================================================
+# The repair turn's scope sentence (issue #209 round 4)
+# ======================================================================================
+class PureRepairScopeSentenceTests(unittest.TestCase):
+    """`pure_bundle_repair.txt` is ONE template for three personas, and only the producer's
+    repair is about content.
+
+    For `generate.verify` and `validate.judge` every repairable class is a document-SHAPE
+    violation, and the schema's joint invariant couples the DECISION to the findings. So the
+    findings text `decision 'fail' requires at least one finding` has two corrections: author the
+    finding (real work), or set `decision: "pass"` and leave `findings: []` — one token, accepted
+    by the host, and a wrong certification. The template now says a conclusion the document
+    already carries is not repaired by being reversed.
+
+    The pin is the SENTENCE, so the mutation for it is its REVERSAL and not its deletion — a
+    template that merely MENTIONS the subject would satisfy a looser assertion. That is why the
+    rows below assert the exact PROHIBITION CLAUSE rather than a keyword: a reversal
+    ("...and reversing what the other part records is the accepted way to clear it") deletes the
+    clause and reddens them, which a `assertIn("conclusion", text)` would not.
+
+    An earlier version of this class carried a fourth row that built the reversed template as a
+    string and asserted the clause was gone from it. That row exercised `str.replace` and nothing
+    of this repository — it was removed rather than shipped.
+    """
+
+    #: The clause a reversal has to destroy. Split out so the reversal test cannot pass by
+    #: matching a substring that survives an inverted sentence.
+    _PROHIBITION = "never to retract or reverse what the other part records"
+    _CONCLUSION_CLAUSE = "is not made correct by being flipped to agree with an incomplete field"
+
+    @staticmethod
+    def _render(step: str, substep: str) -> str:
+        from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION
+        return ort._render_pure_repair_prompt({
+            "node_key": "component/x@1.0.0", "step": step, "substep": substep,
+            "orchestration_id": "o", "agent_run_id": "child-1",
+            "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
+            "warm_resume": True, "repair_strategy": "reuse",
+            "repair_findings": "decision 'fail' requires at least one finding",
+        })
+
+    def test_every_persona_that_carries_a_verdict_is_told_not_to_flip_it(self) -> None:
+        # The two reviewer pairs, and the producer, which shares the template and for which the
+        # sentence is vacuous rather than false (a producer's document carries no verdict).
+        for step, substep in (("validate", "judge"), ("generate", "verify"),
+                              ("compile", "verify"), ("generate", "generate"),
+                              ("compile", "generate")):
+            with self.subTest(pair=f"{step}.{substep}"):
+                text = self._render(step, substep)
+                self.assertIn(self._PROHIBITION, text)
+                self.assertIn(self._CONCLUSION_CLAUSE, text)
+
+    def test_the_sentence_precedes_the_findings_it_governs(self) -> None:
+        """It has to be read before the violation text, not after it: the findings block is what
+        offers the cheap correction."""
+        from tools.pure_leaf import PURE_DOC_FENCE_BEGIN
+        text = self._render("validate", "judge")
+        self.assertLess(text.index(self._PROHIBITION), text.index(PURE_DOC_FENCE_BEGIN))
+
+    def test_the_sentence_is_outside_the_untrusted_fence(self) -> None:
+        """A host instruction inside the data fence is one the leaf is told to ignore."""
+        from tools.pure_leaf import PURE_DOC_FENCE_BEGIN, PURE_DOC_FENCE_END
+        text = self._render("generate", "verify")
+        at = text.index(self._PROHIBITION)
+        before = text[:at]
+        self.assertEqual(before.count(PURE_DOC_FENCE_BEGIN), before.count(PURE_DOC_FENCE_END))
+
+
+
 if __name__ == "__main__":
     unittest.main()

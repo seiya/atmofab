@@ -485,7 +485,16 @@ PINNED: dict[str, str] = {
     # `reuse` reopen on a provider without warm resume. The line now names the repair without
     # claiming a resumed session, and holds for warm, cold-with-prior-document and
     # cold-without-one alike. Nothing else on the pinned surface moved.
-    "pure-40": "e8b555541fec980f75b023dcbe231cde96381c7f3bccc7e6c6e03621a81d8eba",}
+    "pure-40": "e8b555541fec980f75b023dcbe231cde96381c7f3bccc7e6c6e03621a81d8eba",
+    # issue #209 round 4: `pure_bundle_repair.txt` is the ONE repair template for all three pure
+    # personas, and the producer is the only one whose repair is about content. For the
+    # `generate.verify` reviewer and the `validate.judge` judge every repairable class is a
+    # document-SHAPE violation, and the joint invariant coupling the decision to the findings makes
+    # the cheapest correction of `decision 'fail' requires at least one finding` a flip to
+    # `"pass"` — accepted by the host, and a wrong certification. Measured on `origin/main` too,
+    # so the template now states that a conclusion the document already carries is not repaired by
+    # being reversed. Nothing else on the pinned surface moved.
+    "pure-41": "92b95726a9116fa537a1a9d820668bb82b76299fda9a5671aa2078d3eb72989e",}
 
 
 def _contract_tuple() -> dict[str, object]:
