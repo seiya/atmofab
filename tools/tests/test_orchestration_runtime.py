@@ -10510,6 +10510,20 @@ shell_tool                       stable             true
                 )
 
     def test_write_step_result_backfill_requires_known_terminal_agent(self) -> None:
+        """SAMPLED, not pinned, and the name promises more than the body observes.
+
+        What this drives is the RECORD-ABSENT guard ("no agent_runs.jsonl record"). The
+        other two clauses the name reads as covering — that the recorded run must have
+        `agent_role == "step"`, and that its status must be in `TERMINAL_STATUSES` — have
+        no witness: neutering either leaves this file green (measured over the whole file
+        at `0482bf6`: 1281 passed both times). Inherited unchanged from `origin/main`, not
+        introduced by issue #176's revert, and recorded in `TODO.md` rather than closed
+        here. What a leaf would gain by either is ~nothing: the payload/recorded status
+        equality (pinned by
+        `test_write_step_result_backfill_rejects_status_mismatch`) still forbids inventing
+        a better status, and the node_key/step matching (pinned by the two mismatch rows)
+        still keeps a substep arid from filling a step's gap.
+        """
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._setup_preflight_and_orch_agent(repo_root)
@@ -10567,7 +10581,7 @@ shell_tool                       stable             true
             self._record_terminal_build_agent(
                 repo_root, agent_run_id="step_run_build_fail_001", status="fail"
             )
-            with self.assertRaisesRegex(RuntimeError, "without a step_result"):
+            with self.assertRaises(RuntimeError) as ctx:
                 record_launch(
                     repo_root=repo_root,
                     orchestration_id="orch_001",
@@ -10596,6 +10610,16 @@ shell_tool                       stable             true
                     "step_run_build_002",
                     json.dumps(json.loads(session_index_path.read_text(encoding="utf-8"))),
                 )
+            # The REMEDY the guard hands back must name BOTH procedures. In the state this
+            # guard fires in after a resume reset the phase is out of `child_finished`, which
+            # is exactly what `_phase_state_allows_write_step_result` refuses — so a message
+            # naming only the plain path points at the one procedure that cannot run there.
+            # Issue #176 deleted the `--backfill` alternative from this string as a "harmless
+            # subtraction" and nothing went red; that is what this asserts now.
+            message = str(ctx.exception)
+            self.assertIn("without a step_result", message)
+            self.assertIn("write-step-result", message)
+            self.assertIn("--backfill", message)
 
     def test_missing_step_result_skips_superseded_build_agent(self) -> None:
         """A build agent whose step_result was archived by `reopen_phase` (run_id in
