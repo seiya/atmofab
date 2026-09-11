@@ -5260,8 +5260,8 @@ def _reset_stale_child_running_node_steps(
     child. Returns the reset [{node_key_safe, step}].
 
     THE PRECONDITION IS NO LONGER "the status is terminal", and the difference matters because
-    this function verifies nothing — it deletes the legacy active-child file and every per-arid
-    marker unconditionally. What has to be true is that NO DRIVER IS RUNNING THIS ORCHESTRATION,
+    this function verifies nothing — it resets every `child_running` node/step in
+    `phase_state.json` to `not_started` unconditionally. What has to be true is that NO DRIVER IS RUNNING THIS ORCHESTRATION,
     and since issue #177's PR-3 that is established by the caller holding the run's EXCLUSIVE
     CLAIM (an advisory `flock` under `~/.atmofab/start_claims/`, released by the OS when the
     holding process dies) rather than by the recorded status. A terminal status still implies it;

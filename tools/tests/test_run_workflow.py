@@ -5600,6 +5600,35 @@ class DependencyClosureTests(unittest.TestCase):
             self.assertEqual(last.get("target_spec_ref"), "spec/problem/a")
 
 
+    def test_a_cold_closure_warns_about_resumable_priors_for_members_and_target(self) -> None:
+        """`origin/main` warned from THREE cold sites — single node, each cold closure member,
+        and the cold closure target. The restore reached only the first, and `--with-deps`
+        never gets there (`_run_main` returns into `_run_with_dependency_closure` before it).
+
+        That is the path where starting over silently costs the most: a closure launches
+        SEVERAL billed orchestrations, and each one it abandons is a checkpoint the operator
+        was never told about."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            _seed_shape_expr_schema_into(repo_root)
+            self._seed_diamond(repo_root)
+            for oid, spec in (("orch_c_abandoned", "spec/component/c"),
+                              ("orch_a_abandoned", "spec/problem/a")):
+                d = repo_root / "workspace" / "orchestrations" / oid
+                d.mkdir(parents=True, exist_ok=True)
+                (d / "orchestration_meta.json").write_text(
+                    json.dumps({"orchestration_id": oid, "status": "running",
+                                "spec_ref": spec}), encoding="utf-8")
+            _rc, _captured, stdout, _calls = self._drive_closure_with_runtime(
+                repo_root, resume=False, prior_orch_by_spec={})
+            warned = {json.loads(line)["orchestration_id"]
+                      for line in stdout.splitlines()
+                      if line.strip().startswith("{")
+                      and json.loads(line).get("event") == "prior_incomplete_orchestration"}
+            self.assertEqual(warned, {"orch_c_abandoned", "orch_a_abandoned"},
+                             f"a cold closure must warn for members AND the target; got {warned}")
+
+
 class StdoutTeeTests(unittest.TestCase):
     """Cover the host-side run-log tee added to run_workflow: stdout mirroring,
     best-effort IO suppression, attribute fall-through, and the open helper's

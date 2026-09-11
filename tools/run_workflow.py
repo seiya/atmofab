@@ -4249,6 +4249,12 @@ def _run_with_dependency_closure(
                     stdout_format,
                 )
                 return 2
+            # Same as the single-node cold path: the claim proves no driver is running this
+            # spec, and proves nothing about whether a resumable checkpoint exists. A closure
+            # starts SEVERAL billed orchestrations, so this is the path where starting over
+            # silently costs the most — and it was the one the restored warning did not reach.
+            if not dep_resume:
+                _warn_about_resumable_priors(repo_root, spec_ref, stdout_format)
             # No per-node liveness gate: `_run_node` takes this node's own exclusive claim
             # (`orch` when resuming a member, `spec` when starting one cold) and refuses with
             # `concurrent_orchestration_running` if another driver holds it. That serializes
@@ -4462,6 +4468,8 @@ def _run_with_dependency_closure(
                 stdout_format,
             )
             return 2
+        if not target_resume:
+            _warn_about_resumable_priors(repo_root, target_spec_ref, stdout_format)
         # No liveness gate for the target node either: `_run_node` takes its own exclusive
         # claim, which is what serializes it against a competing driver.
         target_invocation = None if target_resume else _build_invocation_record(
