@@ -2159,20 +2159,29 @@ def _strip_certification(
     ]
     if len(meta_refs) != 1:
         return None
-    meta_path = repo_root / meta_refs[0]
+    return meta_refs[0] if _strip_certification_keys(repo_root / meta_refs[0]) else None
+
+
+def _strip_certification_keys(meta_path: Path) -> bool:
+    """Remove `artifact_hashes` / `source_ir_id` from one stage meta, preserving every other
+    key. `True` when something was removed. Never raises: an absent or unreadable meta is the
+    ordinary shape of a phase that authored nothing, and there is nothing to strip."""
     try:
         doc = json.loads(meta_path.read_text(encoding="utf-8"))
     except Exception:
-        return None
+        return False
     if not isinstance(doc, dict):
-        return None
+        return False
     removed = [k for k in ("artifact_hashes", "source_ir_id") if k in doc]
     if not removed:
-        return None
+        return False
     for key in removed:
         doc.pop(key)
-    _write_json(meta_path, doc)
-    return meta_refs[0]
+    try:
+        _write_json(meta_path, doc)
+    except OSError:
+        return False
+    return True
 
 
 def _revocable_stage_meta_path(
@@ -11744,6 +11753,20 @@ def _validate_actual_write_paths(
             + f" (violation: {violation_path})"
         )
     if actor_role in {"step", "substep"}:
+        # A certification is a HOST stamp, so it never survives a child window. The
+        # `generate.verify` leaf's write_root IS `source_meta.json`, so that leaf can author
+        # `artifact_hashes` / `source_ir_id` with perfectly correct values — and the phase
+        # would then read as certified on a later run even though it never passed. The
+        # `write-step-result` strip does not cover it: a phase that fail-closes on a leaf
+        # transport error or a validate gate returns WITHOUT writing a step_result at all,
+        # and `run_phase` consults the certification BEFORE it would rotate the producer id.
+        # Erasing the keys from whatever stage meta this child actually CHANGED closes that:
+        # after this point the keys can only have been written by a passing
+        # `write-step-result`, which runs when every child window is already closed.
+        for changed in actual_changed_paths:
+            base = _normalize_rel_posix(changed).rsplit("/", 1)[-1]
+            if base in set(CERTIFYING_META_FILENAME_BY_STEP.values()):
+                _strip_certification_keys(repo_root / _normalize_rel_posix(changed))
         # Success path: persist the managed-write snapshot.
         # NEW-M2: tmp cleanup is DEFERRED to the post-lock end-of-function
         # phase in record_agent_run (Adv-35 two-phase commit). Doing it

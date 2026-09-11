@@ -12883,6 +12883,23 @@ class CertificationStampTests(unittest.TestCase):
     """`write_step_result` is the single host-side point that stamps a phase's certification
     into its stage meta (both the pure and the agentic path pass through it)."""
 
+    def _leaf_window(self, repo_root: Path, *, agent_run_id: str, write_roots: list[str],
+                     declared: list[str]) -> None:
+        """The launch state a child needs to reach terminal write validation: a capability
+        with its write_roots, an output manifest, and the window's own write baseline."""
+        from tools.orchestration_runtime import (
+            _capabilities_dir, _write_allowed_output_manifest, _write_run_write_baseline,
+        )
+        cap = _capabilities_dir(repo_root, "o1") / f"{agent_run_id}.json"
+        cap.parent.mkdir(parents=True, exist_ok=True)
+        cap.write_text(json.dumps({
+            "orchestration_id": "o1", "agent_run_id": agent_run_id,
+            "write_roots": write_roots}), encoding="utf-8")
+        _write_allowed_output_manifest(
+            repo_root, orchestration_id="o1", agent_run_id=agent_run_id,
+            allowed_output_paths=declared, allowed_file_tool_paths=declared)
+        _write_run_write_baseline(repo_root, "o1", agent_run_id=agent_run_id)
+
     def test_certifiable_artifact_refs_drops_the_meta_and_the_audit_logs(self) -> None:
         """Build declares `src/command_log.jsonl`, which Validate.execute later APPENDS to —
         hashing it would make every Validate attempt read as a tampered Build."""
@@ -12961,6 +12978,68 @@ class CertificationStampTests(unittest.TestCase):
             # Everything else the leaf recorded is preserved — this strips a claim, not a file.
             self.assertEqual(doc["verification_status"], "fail")
             self.assertEqual(doc["source_id"], "src_c_001")
+
+    def test_a_leaf_window_write_of_a_stage_meta_loses_its_certification(self) -> None:
+        """A certification is a HOST stamp and never survives a child window.
+
+        `generate.verify`'s write_root IS `source_meta.json`, so that leaf can author
+        `artifact_hashes` / `source_ir_id` with perfectly CORRECT values — no tampering
+        needed. The `write-step-result` strip does not reach it: a phase that fail-closes on a
+        leaf transport error writes no step_result at all, and `run_phase` consults the
+        certification before it would rotate the producer id. So the keys are erased at the
+        child's own terminalization, from whatever stage meta the child actually changed.
+        """
+        from tools.orchestration_runtime import _validate_actual_write_paths
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = certify_node(repo, "o1", through="generate")
+            meta_rel = refs["source_meta"]
+            arid = "substep_run_gen_verify_1"
+            init_orchestration(repo_root=repo, orchestration_id="o1")
+            self._leaf_window(repo, agent_run_id=arid, write_roots=[meta_rel],
+                              declared=[meta_rel])
+            # The leaf rewrites its own meta inside its window, certification keys and all.
+            doc = json.loads((repo / meta_rel).read_text("utf-8"))
+            doc["verification_status"] = "pass"
+            (repo / meta_rel).write_text(json.dumps(doc), encoding="utf-8")
+            self.assertIn("artifact_hashes", json.loads((repo / meta_rel).read_text("utf-8")))
+
+            _validate_actual_write_paths(repo, "o1", {
+                "agent_run_id": arid, "agent_role": "substep", "status": "pass",
+                "output_refs": [meta_rel]})
+
+            after = json.loads((repo / meta_rel).read_text("utf-8"))
+            self.assertNotIn("artifact_hashes", after)
+            self.assertNotIn("source_ir_id", after)
+            # The leaf's own verdict is untouched — this strips a HOST claim, not the leaf's.
+            self.assertEqual(after["verification_status"], "pass")
+            self.assertEqual(after["source_id"], refs["source_id"])
+            ok, detail = ort._phase_certified(repo, "o1", "component/spec_x@0.1.0", "generate")
+            self.assertFalse(ok)
+            self.assertEqual(detail["reason"], "source_not_bound")
+
+    def test_a_child_window_that_touched_no_stage_meta_strips_nothing(self) -> None:
+        """The over-refusal probe: the strip is keyed on the paths the child actually
+        CHANGED, so a passing phase's stamp is not erased by the next phase's children."""
+        from tools.orchestration_runtime import _validate_actual_write_paths
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = certify_node(repo, "o1", through="generate")
+            arid = "substep_run_other_1"
+            other = f"{refs['pipeline_ref']}/source/{refs['source_id']}/src/scratch.txt"
+            init_orchestration(repo_root=repo, orchestration_id="o1")
+            self._leaf_window(repo, agent_run_id=arid,
+                              write_roots=[f"{refs['pipeline_ref']}/source/"],
+                              declared=[other])
+            (repo / other).write_text("scratch\n", encoding="utf-8")
+            _validate_actual_write_paths(repo, "o1", {
+                "agent_run_id": arid, "agent_role": "substep", "status": "pass",
+                "output_refs": [other]})
+            after = json.loads((repo / refs["source_meta"]).read_text("utf-8"))
+            self.assertIn("artifact_hashes", after)
+            self.assertIn("source_ir_id", after)
 
     def test_write_step_result_pass_refuses_when_the_deliverable_is_absent(self) -> None:
         """A stamp that cannot be taken fails CLOSED, and before the step_result exists: an
