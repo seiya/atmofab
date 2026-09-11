@@ -237,6 +237,40 @@ The budget question this leaves open: a round that could not launch is not a rou
 count against round 0 plus three — but the wall-clock and the token cost were spent anyway, and
 the decision to keep paying for retries belongs to the user once the second one fails.
 
+## An agent that notifies twice (issue #177, PR #213, 2026-09-11)
+
+Round 2's correctness axis returned **two** completion notifications. They were not a resend.
+
+- The first was measured at `e3ab79f7` and led with an over-refusal it called high: after a
+  second Generate attempt, the latest source bound to the current ir_id is `src_…_002` while
+  the binary was built from `src_…_001`, so the new completion vouch refuses with
+  `binary_not_bound` a run that `origin/main` would have passed. It carried a reproduction.
+- The second was measured at `933ef740` (HEAD had advanced by one commit while it ran) and
+  opened with *"I could not find an over-refusal that wedges a real run"*. The
+  `binary_not_bound` finding appears nowhere in it — not as fixed, not as retracted, not under
+  `route not established`.
+
+Nothing in the pair says whether the later report dropped the finding deliberately, re-checked
+it and found it wrong, or simply did not carry it forward. **The silence is not a retraction,
+and reading it as one is how a finding gets lost between two reports of the same agent.**
+
+What it cost to settle: one reproduction. `conduct` sets `idx = target_idx` after a reopen and
+then walks FORWARD, and Build's own certification at that moment is `binary_not_bound` — so
+Build re-runs and rotates its binary_id before Validate is reached, and no run ends with the
+stale binding. The finding does not reproduce; the commit that answered the rest of the round
+says so in those words, and says the same about that report's M6.
+
+The rule in SKILL.md: diff the two reports and treat every finding the later one does not
+mention as OPEN. Two practical notes:
+
+- **Read the earlier report BEFORE the later one lands**, or you will reconstruct it from
+  memory. Both arrive as full notifications; keep the first.
+- **A malformed `<usage>` block is not evidence the report is spurious.** The first
+  notification's usage counters were garbage (a file path where the token count belongs), which
+  made it tempting to discount the whole thing. The findings in it were coherent, sourced and
+  worth the reproduction; the harness's accounting and the agent's report are different
+  artifacts.
+
 ## Over-refusal: the five countermeasures and where each came from
 
 - **For a change that adds checking machinery, include "construct legitimate work that this check

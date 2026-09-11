@@ -24,7 +24,7 @@ here that does not obviously apply to your case is answered in its reference fil
 guessing.
 
 - `references/judgment-episodes.md` — what each judgment rule below cost, in full
-- `references/input-surfaces.md` — surfaces 5-11, the marker-narrowing version table, the recipes
+- `references/input-surfaces.md` — surfaces 5-13 (incl. 9-b), the marker-narrowing version table, the recipes
 - `references/source-text-surface.md` — the spelling variation a source-text-reading gate must survive
 - `references/dual-read-pairs.md` — the table of facts two layers read
 - `references/failure-routing.md` — attribution criteria, the known branches, and remedy wording
@@ -307,8 +307,8 @@ When a rule derives its safety from an enumeration, **write a test that kills ea
 enumeration by mutation** (round 0 in `atmofab-review-loop`). A missing element shows up in no
 other test.
 
-The nine surfaces that are none of exec / env / argv / FS / evidence paths and none of the
-spelling variation. Each is one question; the episodes, the version tables and the measurement
+The surfaces that are none of exec / env / argv / FS / evidence paths and none of the
+spelling variation (numbered 5 through 13, with a 9-b). Each is one question; the episodes, the version tables and the measurement
 recipes are in `references/input-surfaces.md`:
 
 - **Surface 5 — is caller-controlled data mixed into the classification channel the verdict
@@ -372,6 +372,27 @@ recipes are in `references/input-surfaces.md`:
   And **attribution is not enforcement** — roots are sorted longest-path-first, so a new entry
   beneath an existing one silently takes over the block message; keep a control read that must
   still be attributed to the root above
+- **Surface 9-b — a HOST write that lands OUTSIDE every child window is a new thing for the
+  write-attribution layer to classify, and the layer has no category for it.** Surface 9 asks
+  what can MOVE a protected path; this asks what happens when the same path is written at a new
+  TIME. `_validate_actual_write_paths` attributes by WINDOW: a leaf's changes are diffed against
+  the baseline its launch took, and a child-authored path is excluded from the orchestration's
+  own diff only while its digest still equals what the child left
+  (`_child_managed_paths_excludable_from_orchestration_diff`). A host write after the window
+  closes therefore breaks that equality and the path re-enters the orchestration-role diff,
+  where the orchestration's write_roots are the ORCH ROOT ALONE — so it reads as an
+  unauthorized write to a path the host is entitled to write. Issue #177 met this by stamping a
+  certification into a stage meta at `write-step-result` time; measured, the direct call DOES
+  flag it. **It shipped because no production caller records a terminal orchestration-role agent
+  run** — `update_orchestration_status` rewrites that row in place — so the branch is
+  unreachable today, and the PR says so in both directions rather than only the convenient one.
+  **Rule: before adding a host write to a path a leaf also writes, name the window it lands in.
+  If the answer is "none", drive the attribution layer for EVERY actor role, not just the
+  child's, and write down which roles are unreachable and why** — "the check that would refuse
+  it never runs" is a statement about today's callers, and it is the sentence the next person
+  wiring that caller up needs to find. The cheap probe is the function itself with a synthetic
+  payload per role; it took minutes and it is the only reason the residual is documented instead
+  of latent.
 - **Surface 10 — when a gate delegates its verdict to an external tool, can that tool decline to do
   the work and report SUCCESS?** A gate that reads an exit status is trusting the tool to have
   looked. Tools bound their own effort — a configuration cap, a time or memory limit, a walk that
