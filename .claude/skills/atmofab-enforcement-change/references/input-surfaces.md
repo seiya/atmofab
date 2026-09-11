@@ -1,4 +1,4 @@
-# Input surfaces 5-12: the episodes behind them
+# Input surfaces 5-13: the episodes behind them
 
 Moved out of `SKILL.md` verbatim (2026-08-25). `SKILL.md` §1 "Inventory the surface before
 fixing" keeps each surface's question and its rule in a few lines; this file is what each one
@@ -218,6 +218,54 @@ not.
   orchestration's transcript (measured). **When you close this surface for an entry, grep the
   other decisions that name the same root** — membership, exemption, sort order, attribution —
   and re-check each in the moved configuration
+
+## Surface 9-b — a host write outside every child window (issue #177)
+
+The certification stamp of issue #177 writes `artifact_hashes` into a stage meta at
+`write-step-result` time — after every child window of that phase has closed, which is exactly
+what makes it trustworthy (the anti-mock-green check has just run, and no leaf can still be
+writing). The plan's own §4 asked one question about it: is that write attributed to anyone as
+an unauthorized write?
+
+Reading said no. The probe said yes, and the probe is the record:
+
+```python
+# after a child authored the meta inside its window and terminalized cleanly,
+# the host rewrites it — then the ORCHESTRATION role terminalizes
+_validate_actual_write_paths(repo, orch, {"agent_run_id": "orchestration_run_probe",
+                                          "agent_role": "orchestration", "status": "pass",
+                                          "output_refs": []})
+# control (no host stamp): no raise
+# with the host stamp:     ValueError: terminal run has unauthorized write paths:
+#                          workspace/pipelines/.../source_meta.json
+```
+
+The mechanism is `_child_managed_paths_excludable_from_orchestration_diff`: it excludes a
+child-authored path from the orchestration's own FS-diff **only while the path's current digest
+still equals the digest the child left** (`if current_digest != digest: continue`). The host
+stamp changes the bytes, the exclusion lapses, and the path falls through to the
+orchestration's write_roots — which are the orchestration root ALONE
+(`_orchestration_allowed_write_roots`). So the layer has no category for "the host wrote this,
+legitimately, after the window": it is neither a child write it can attribute nor a path the
+orchestration actor is authorized for.
+
+It shipped anyway, and the reason is the part worth copying: **no production caller records a
+terminal orchestration-role agent run.** The orchestration's row is appended once at init and
+thereafter rewritten in place by `update_orchestration_status`, which does not call
+`_validate_terminal_run_payload`. So the branch is unreachable — today, by that caller set, not
+by anything about the paths.
+
+Both halves went into the pull request, the negative one in the same paragraph as the positive
+one: *"if it ever gains a caller, the stamp needs an exclusion of its own"*. A round-2 reviewer
+reproduced the same thing independently and filed it under `route not established` with the
+words "a live trap for whoever wires that check up" — which is what the disclosure is for.
+
+The rule in SKILL.md is "name the window the write lands in". Two things make it cheap: the
+attribution function takes a payload, so driving it per role is minutes rather than an
+end-to-end run; and the CONTROL (the same sequence without the host write) is what tells a real
+refusal from a fixture that was never going to pass — the first version of this probe raised in
+both arms, because the child's managed-write snapshot is only recorded when the manifest
+declares the path, and a probe that refuses everything measures nothing.
 
 ## Surface 10 — the tool declined to do the work and reported success
 

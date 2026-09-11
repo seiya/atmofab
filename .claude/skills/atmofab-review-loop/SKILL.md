@@ -668,6 +668,19 @@ command; a claim that cannot name one is a reading. This is not a reason to dist
 axis — the same reviewer refused two false premises I had planted in its own checklist in the
 same run — it is a reason to re-run the positive verdicts your change actually rests on.
 
+**A reviewer can report TWICE, and the second report does not retract the first.** One agent
+returning two completion notifications is not a resend: each is a separate stop, and the later
+one is written against a later HEAD without reconciling itself against the earlier. On issue
+#177's round 2 the first report's highest finding — a `binary_not_bound` over-refusal after a
+second Generate attempt — was simply ABSENT from the final one, which said in its own words
+that it had found no over-refusal that wedges a real run. Neither report is wrong; they answer
+at different commits, and nothing in the pair says which findings the later one dropped
+deliberately. **Rule: when an agent notifies more than once, diff the reports yourself and
+treat every finding the later one does not mention as OPEN.** Then apply this section to it —
+reproduce it or establish it cannot happen — rather than reading the silence as a retraction.
+There it did not reproduce (`conduct` sets `idx = target_idx` and walks forward, so Build
+re-runs), and the commit says so; the cost of having assumed either way was one reproduction.
+
 ## Delegate verifiable work to sonnet
 
 **Operational conclusion (14 data points; the confound resolved in PR #72 by giving both models
