@@ -12778,7 +12778,10 @@ class PhaseCertificationTests(unittest.TestCase):
             repo = Path(tmp)
             init_orchestration(repo_root=repo, orchestration_id="o1",
                                invocation={"until_phase": "compile", "with_deps": False})
-            enable_checkpoint_resume(repo, "o1", until_phase="validate")
+            # Driven over the CLI, which is the only route `run_workflow` takes.
+            self.assertEqual(main([
+                "init", "--repo-root", str(repo), "--orchestration-id", "o1",
+                "--resume-from-checkpoint", "--until-phase", "validate"]), 0)
             meta = json.loads(
                 (repo / "workspace/orchestrations/o1/orchestration_meta.json").read_text("utf-8"))
             self.assertEqual(meta["invocation"]["until_phase"], "validate")
