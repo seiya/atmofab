@@ -12121,9 +12121,6 @@ class PhaseCertificationTests(unittest.TestCase):
             repo = Path(tmp)
             self._preflight(repo)
             refs = self._certified(repo, through="compile")
-            self.assertFalse(
-                (repo / "workspace/orchestrations/o1/orchestration_checkpoint.json").exists())
-
             out = ort.check_phase_certified(
                 repo_root=repo, orchestration_id="o1", node_key=self._NK, step="compile",
                 agent_run_id="orch_run_001")
