@@ -667,284 +667,6 @@ _RESUMABLE_TERMINAL_STATUSES: frozenset[str] = frozenset(
 )
 
 
-# `/proc/<pid>/stat` states that mean the process is no longer executing: `Z` is a
-# zombie (exited, not yet reaped by its parent) and `X`/`x` is a dead/exiting entry.
-# The stat file — and therefore `starttime` — survives in those states, so a probe
-# that only compares pid + start ticks calls a corpse `alive`. That misclassification
-# is the worst possible one here: it makes the resume gate refuse recovery AND the
-# cold gate refuse a fresh run, locking the spec harder than the bug this all fixes.
-_DEAD_PROC_STATES: frozenset[str] = frozenset({"Z", "X", "x"})
-
-
-def _parse_proc_stat(raw: str) -> tuple[str, str] | None:
-    """Extract `(state, starttime_ticks)` — fields 3 and 22 — from a `/proc/<pid>/stat` body.
-
-    Split out from the read so the parsing is directly testable against real stat
-    bodies, including the awkward ones: the comm field (2) is parenthesised and may
-    itself contain spaces and parentheses (a process can name itself `we ird) (name`),
-    so a naive `split()` misaligns every later field. Splitting AFTER the last `)` puts
-    field 3 (`state`) at index 0, hence field 22 at index 19.
-
-    Returns None on any malformed body rather than a partial answer: a non-numeric
-    starttime recorded as an identity would never compare equal again, so a live driver
-    would classify `dead` and get terminalized under a running workload.
-    """
-    close = raw.rfind(")")
-    if close < 0:
-        return None
-    fields = raw[close + 1 :].split()
-    if len(fields) < 20:
-        return None
-    state, ticks = fields[0], fields[19]
-    if not ticks.isdigit():
-        return None
-    return state, ticks
-
-
-def _read_proc_stat(pid: int) -> tuple[str, str] | None:
-    """Return `(state, starttime_ticks)` for a pid, or None if unreadable/malformed.
-
-    The start ticks paired with the pid make the recorded driver identity resistant to
-    PID reuse: a recycled pid belongs to a process that started later, so its ticks
-    differ. Both values come from ONE read so they describe the same instant. A None
-    here is reported by the probe as `unknown` rather than guessing.
-    """
-    try:
-        raw = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8", errors="replace")
-    except (OSError, ValueError):
-        return None
-    return _parse_proc_stat(raw)
-
-
-def _read_proc_starttime(pid: int) -> str | None:
-    """Field 22 (`starttime`) of `/proc/<pid>/stat` alone, for identity capture."""
-    stat = _read_proc_stat(pid)
-    return None if stat is None else stat[1]
-
-
-def _read_boot_id() -> str | None:
-    """Return this boot's `/proc/sys/kernel/random/boot_id`, or None if unreadable.
-
-    Recorded alongside the pid so a driver identity cannot survive a reboot: after a
-    restart the same pid may exist again with the same starttime ticks (ticks are
-    measured *since boot*), which would otherwise read as `alive`.
-    """
-    try:
-        value = Path("/proc/sys/kernel/random/boot_id").read_text(encoding="utf-8").strip()
-    except (OSError, ValueError):
-        return None
-    return value or None
-
-
-def _current_hostname() -> str:
-    try:
-        return socket.gethostname().strip()
-    except OSError:
-        return ""
-
-
-def _read_pid_namespace_inode() -> int | None:
-    """Inode of this process's PID namespace (`/proc/self/ns/pid`), or None.
-
-    Recorded so a later probe can answer the question every `/proc`-derived verdict
-    depends on: *does the local `/proc` answer for the recorded process at all?* PID
-    numbers are namespace-local, so a probe in a different namespace looks up a number
-    that means something else there — or nothing at all — and would read a live driver
-    as dead, either because the entry is absent or because the unrelated process it
-    finds has different start ticks. Reading one's OWN namespace inode is always permitted;
-    reading another process's requires PTRACE_MODE_READ, which is why this has to be
-    captured driver-side rather than derived at probe time.
-    """
-    try:
-        return os.stat("/proc/self/ns/pid").st_ino
-    except (OSError, AttributeError):
-        return None
-
-
-def _matches_recorded_int(recorded: Any, local: int | None) -> bool:
-    """Equality for an integer identity field, with `True == 1` refused.
-
-    Python compares `bool` equal to `int`, so a corrupt or hand-edited `"uid": true`
-    would otherwise match a real uid of 1 and be read as proof. Every field this
-    guards decides whether the local `/proc` may be read as evidence about the recorded
-    process at all, so a spurious match terminalizes a live run: reject anything that
-    is not a plain int, or that could not be read locally.
-    """
-    if isinstance(recorded, bool) or not isinstance(recorded, int):
-        return False
-    # `local is None` (the value could not be read here) needs no branch of its own:
-    # an int never equals None.
-    return recorded == local
-
-
-def _same_machine_proven(driver: dict[str, Any]) -> bool:
-    """True when the block records a hostname and it is this machine's.
-
-    Every `dead` verdict reasons from LOCAL evidence — this `/proc`, this `boot_id` —
-    so all of them need this first. An ABSENT hostname is not a pass: `hostname` is
-    omitted only when `socket.gethostname()` raises, and a block written on another
-    host that reaches a shared workspace would then have its differing `boot_id` read
-    as "this machine rebooted" and its missing `/proc` entry as "the process exited".
-    `pid_ns` cannot stand in for it — the initial PID namespace inode is a per-kernel
-    constant (typically 4026531836 everywhere), so two hosts routinely agree on it.
-    """
-    recorded_host = driver.get("hostname")
-    if not isinstance(recorded_host, str) or not recorded_host.strip():
-        return False
-    local_host = _current_hostname()
-    return bool(local_host) and local_host == recorded_host.strip()
-
-
-def _can_observe_recorded_pid(driver: dict[str, Any]) -> bool:
-    """True when the local `/proc` may be read as evidence about the recorded process.
-
-    Three conditions make a local observation conclusive, and all are recorded at capture time
-    (the first being that the block was written on this machine at all):
-    the same PID namespace (so the recorded number is in our numbering), and the same
-    uid (so no `hidepid` mode can hide that entry from us — hidepid restricts other
-    users' entries, never one's own). Anything missing or mismatched returns False, and
-    the probe answers `unknown` instead of `dead`.
-
-    This gates every `dead` verdict that reasons about a LOCAL `/proc` entry: the
-    absence inference, the PID-reuse inference, and the zombie state. Having read an
-    entry is NOT a substitute — it proves the pid number resolves in our numbering, not
-    that it resolves to the recorded process, and across namespaces those are different
-    processes whose start ticks differ (which the reuse branch would otherwise call
-    proof of death). Verified against a real `unshare -Upf --mount-proc` namespace,
-    whose `hostname` and `boot_id` are identical to the host's and so pass the earlier
-    guards untouched.
-
-    The boot-id verdict is deliberately NOT gated: `boot_id` is not namespaced, and a
-    mismatch proves a reboot outright without reference to any entry.
-
-    A block written before these fields existed therefore keeps only reboot-based
-    recovery, degrading to the pre-liveness behavior. That is the fail-safe direction
-    and the one this module's asymmetry requires: only an unambiguous `dead` may
-    unblock a resume.
-    """
-    if not _same_machine_proven(driver):
-        return False
-    if not _matches_recorded_int(driver.get("pid_ns"), _read_pid_namespace_inode()):
-        return False
-    try:
-        local_uid = os.getuid()
-    except AttributeError:  # pragma: no cover - non-POSIX
-        return False
-    return _matches_recorded_int(driver.get("uid"), local_uid)
-
-
-def _current_driver_identity() -> dict[str, Any] | None:
-    """Identity of THIS driver process, for `orchestration_meta.json#driver`.
-
-    Returns None when the pid's start time cannot be read (non-Linux, or a hardened
-    /proc): without it a pid alone cannot be trusted after reuse, so we record nothing
-    and every later probe degrades to `unknown` — i.e. exactly today's behavior.
-    """
-    pid = os.getpid()
-    ticks = _read_proc_starttime(pid)
-    if ticks is None:
-        return None
-    identity: dict[str, Any] = {"pid": pid, "pid_start_ticks": ticks}
-    boot_id = _read_boot_id()
-    if boot_id:
-        identity["boot_id"] = boot_id
-    hostname = _current_hostname()
-    if hostname:
-        identity["hostname"] = hostname
-    # PID namespace + uid: the pair that makes "absent from /proc" conclusive later
-    # (see _can_observe_recorded_pid). Both are free to read about oneself.
-    pid_ns = _read_pid_namespace_inode()
-    if pid_ns is not None:
-        identity["pid_ns"] = pid_ns
-    try:
-        identity["uid"] = os.getuid()
-    except AttributeError:  # pragma: no cover - non-POSIX
-        pass
-    return identity
-
-
-def _probe_driver_liveness(meta: dict[str, Any] | None) -> str:
-    """Classify the driver recorded on an orchestration meta: alive / dead / unknown.
-
-    A `running` orchestration is ambiguous on its own — it may be an active concurrent
-    run or the corpse of a host that died without terminalizing. This read-only probe
-    resolves that from `orchestration_meta.json#driver`.
-
-    The fail directions are asymmetric on purpose (deterministic-gate principle: a
-    necessary-condition gate must not act on an ambiguous signal): only an unambiguous
-    `dead` unblocks a resume, and only an unambiguous `alive` blocks a cold run. Every
-    indeterminate case — no/invalid block, a meta written on another host, an
-    unreadable /proc entry, or a recorded `pid_ns`/`uid` that does not match this
-    process — answers `unknown`. That last case is the dominant one in practice: it
-    covers every driver block written before those two fields existed.
-
-    One inference is deliberately NOT gated on observability: a `boot_id` mismatch
-    proves a reboot outright. It rests instead on the hostname comparison above having
-    established that the block was written on this machine, which compares hostname
-    STRINGS — two hosts sharing a workspace under one hostname would misclassify a live
-    driver. Give the hosts distinct hostnames if a workspace is ever shared.
-    """
-    if not isinstance(meta, dict):
-        return "unknown"
-    driver = meta.get("driver")
-    if not isinstance(driver, dict) or not driver:
-        return "unknown"
-    pid = driver.get("pid")
-    if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
-        return "unknown"
-    recorded_host = driver.get("hostname")
-    if isinstance(recorded_host, str) and recorded_host.strip():
-        # A pid from another machine says nothing about a local /proc entry.
-        local_host = _current_hostname()
-        if not local_host or local_host != recorded_host.strip():
-            return "unknown"
-    recorded_boot = driver.get("boot_id")
-    if isinstance(recorded_boot, str) and recorded_boot.strip():
-        local_boot = _read_boot_id()
-        if local_boot is None:
-            return "unknown"
-        if local_boot != recorded_boot.strip():
-            # A differing boot id means "this machine rebooted" only once the block is
-            # known to have been written on THIS machine. Without that, it is equally
-            # consistent with a live driver on another host reaching a shared
-            # workspace — so an unproven machine yields `unknown`, never a
-            # terminalization.
-            if not _same_machine_proven(driver):
-                return "unknown"
-            # The host rebooted since the run started: that process cannot exist.
-            return "dead"
-    if not Path("/proc").is_dir():
-        return "unknown"
-    if not Path(f"/proc/{pid}").exists():
-        # Absence is proof of death only where we could have seen the entry: the pid
-        # must be in our own namespace's numbering, and not hidden from us by a
-        # `hidepid` mount. Otherwise a live driver would be terminalized under load.
-        return "dead" if _can_observe_recorded_pid(driver) else "unknown"
-    recorded_ticks = driver.get("pid_start_ticks")
-    if not isinstance(recorded_ticks, str) or not recorded_ticks.strip():
-        return "unknown"
-    stat = _read_proc_stat(pid)
-    if stat is None:
-        # The pid exists but its stat is unreadable (permissions, or it exited
-        # between the two syscalls) — indeterminate, not proof of either state.
-        return "unknown"
-    state, ticks = stat
-    # Reading an entry proves the pid NUMBER resolves here — not that it resolves to
-    # the recorded process. Across PID namespaces the same number names a different
-    # process, whose start ticks naturally differ, which would otherwise be read as
-    # proof that the driver died. So both remaining `dead` verdicts are gated on the
-    # same observability check as the absence branch.
-    if ticks != recorded_ticks.strip():
-        # Either the pid was recycled here (the driver is gone) or we are reading an
-        # unrelated process in our own numbering. Only the first is proof of death.
-        return "dead" if _can_observe_recorded_pid(driver) else "unknown"
-    # Same start ticks — the same process, barring an astronomical coincidence. A
-    # zombie/exiting entry is a corpse the parent has not reaped, not a working driver.
-    if state in _DEAD_PROC_STATES:
-        return "dead" if _can_observe_recorded_pid(driver) else "unknown"
-    return "alive"
-
-
 def _resume_command_for(orchestration_id: str) -> str:
     return (
         "python3 tools/run_workflow.py --resume --orchestration-id "
@@ -1252,193 +974,6 @@ def _read_orchestration_meta(repo_root: Path, orchestration_id: str) -> dict[str
     return meta if isinstance(meta, dict) else {}
 
 
-def _is_non_terminal_status(meta: dict[str, Any]) -> bool:
-    """True when this meta's status is not one the resume gate treats as terminal.
-
-    The same predicate the resume gate uses, so the two gates agree on what counts as
-    an incomplete orchestration. Testing for `!= "running"` instead would miss a run
-    started with an operator-supplied `--status`, and would disagree with the doc.
-    """
-    return str(meta.get("status") or "").strip().lower() not in _RESUMABLE_TERMINAL_STATUSES
-
-
-def _index_incomplete_orchestrations_by_spec(repo_root: Path) -> dict[str, list[str]]:
-    """Map `spec_ref -> [orchestration_id, ...]` for every orchestration whose meta is
-    not in a terminal status.
-
-    One linear scan of `workspace/orchestrations` (same shape as
-    `_index_closure_orchestrations`), run by the cold-start guard on every call: a
-    fresh run of a spec that already has a non-terminal orchestration is either
-    concurrent with a live driver (refuse) or about to discard a resumable checkpoint
-    (warn). All matching ids are kept — a spec can accumulate several corpses —
-    ordered by `started_at` (id as a deterministic tie-break) so the emitted warnings
-    are stable.
-
-    The result is a candidate list, not a verdict: the guard re-reads each candidate's
-    meta and re-checks the status before acting on it, so a run that terminalized
-    between this scan and the probe is dropped rather than reported.
-    """
-    orch_root = repo_root / "workspace" / "orchestrations"
-    if not orch_root.is_dir():
-        return {}
-    found: dict[str, list[tuple[str, str]]] = {}
-    for path in orch_root.iterdir():
-        if not path.is_dir():
-            continue
-        meta = _read_json_if_exists(path / "orchestration_meta.json")
-        if not isinstance(meta, dict):
-            continue
-        if not _is_non_terminal_status(meta):
-            continue
-        spec_ref = meta.get("spec_ref")
-        if not isinstance(spec_ref, str) or not spec_ref.strip():
-            continue
-        found.setdefault(spec_ref.strip(), []).append(
-            (
-                meta.get("started_at").strip()
-                if isinstance(meta.get("started_at"), str)
-                else "",
-                path.name,
-            )
-        )
-    return {
-        spec_ref: [oid for _, oid in sorted(entries)]
-        for spec_ref, entries in found.items()
-    }
-
-
-def _terminalize_dead_driver(
-    repo_root: Path,
-    orchestration_id: str,
-    meta: dict[str, Any],
-    *,
-    stdout_format: str,
-    env: dict[str, str] | None = None,
-) -> str | None:
-    """Terminalize an orchestration whose driver was PROVEN dead. Returns an error
-    string on failure, None on success.
-
-    Recording `fail` / `driver_crashed` is what makes the corpse recoverable: the
-    subsequent `init --resume-from-checkpoint` then takes the `terminal_reset` path,
-    which is where the crash reconciliations live (stale active_child markers, orphan
-    agent_graph edges, stale `child_running` phase state, orphan launch tombstones).
-    Resuming a still-`running` meta skips all of them. Only ever called with a `dead`
-    probe verdict — an `unknown` must never mint a terminal status for a run that may
-    still be alive.
-    """
-    driver = meta.get("driver") if isinstance(meta.get("driver"), dict) else {}
-    prior_status = str(meta.get("status") or "").strip().lower() or "unknown"
-    # This can run BEFORE base_env exists (the entry resume gate), so build the one
-    # setting the runtime subprocess must not go without: bytecode written into the
-    # repo source tree lands in a later child's write-diff as an unauthorized write.
-    runtime_env = {**(env or dict(os.environ)), "PYTHONDONTWRITEBYTECODE": "1"}
-    try:
-        _runtime_command(
-            repo_root,
-            runtime_env,
-            [
-                "set-status",
-                "--repo-root",
-                str(repo_root),
-                "--orchestration-id",
-                orchestration_id,
-                "--status",
-                "fail",
-                "--reason-code",
-                "driver_crashed",
-                "--reason-detail",
-                (
-                    f"driver process (pid {driver.get('pid')}) is gone while the "
-                    f"orchestration was still '{prior_status}'; terminalized by a "
-                    "later run_workflow invocation so the checkpoint stays resumable"
-                ),
-            ],
-        )
-    except RuntimeError as exc:
-        return str(exc)
-    # Announced only after the write committed, so the event never claims a
-    # terminalization that did not happen.
-    _emit_unlogged_event(
-        {
-            "status": "info",
-            "event": "dead_driver_terminalized",
-            "orchestration_id": orchestration_id,
-            "prior_status": prior_status,
-            "driver_pid": driver.get("pid"),
-            "reason_code": "driver_crashed",
-        },
-        stdout_format,
-    )
-    return None
-
-
-def _warm_resume_liveness_guard(
-    repo_root: Path,
-    orchestration_id: str,
-    *,
-    stdout_format: str,
-    env: dict[str, str] | None = None,
-) -> dict[str, Any] | None:
-    """Liveness gate for a node about to be WARM-resumed (closure driver).
-
-    Mirrors the entry-point resume gate in `main()` for every closure member, which the
-    entry gate never sees: a dependency whose own driver died mid-closure is
-    terminalized (so its resume runs the crash reconciliations), a live one refuses the
-    whole closure, and an indeterminate one proceeds with a warn. Returns a fail
-    envelope to emit, or None to proceed.
-    """
-    meta = _read_orchestration_meta(repo_root, orchestration_id)
-    if not meta:
-        return None
-    status = str(meta.get("status") or "").strip().lower()
-    if status in _RESUMABLE_TERMINAL_STATUSES:
-        return None
-    liveness = _probe_driver_liveness(meta)
-    driver = meta.get("driver") if isinstance(meta.get("driver"), dict) else {}
-    if liveness == "dead":
-        error = _terminalize_dead_driver(
-            repo_root, orchestration_id, meta, stdout_format=stdout_format, env=env
-        )
-        if error is not None:
-            return {
-                "status": "fail",
-                "reason": "dead_driver_terminalize_failed",
-                "detail": (
-                    f"orchestration {orchestration_id} has a dead driver but could not "
-                    f"be terminalized: {error}"
-                ),
-                "orchestration_id": orchestration_id,
-            }
-        return None
-    if liveness == "alive":
-        # Same reason code as the entry-point resume gate's explicit-id refusal: both
-        # are "this orchestration cannot be resumed, its driver is still running", and
-        # an operator (or script) must not have to know which gate refused to match on
-        # it. `concurrent_orchestration_running` stays reserved for the cold path.
-        return {
-            "status": "fail",
-            "reason": "orchestration_driver_alive",
-            "detail": (
-                f"orchestration {orchestration_id} is still running and its driver "
-                f"(pid {driver.get('pid')}) is alive; the closure cannot resume it "
-                "while the live run owns its workspace state. Wait for it to finish."
-            ),
-            "orchestration_id": orchestration_id,
-            "driver_pid": driver.get("pid"),
-            "resume_command": _resume_command_for(orchestration_id),
-        }
-    _emit_unlogged_event(
-        {
-            "status": "info",
-            "event": "resume_liveness_indeterminate",
-            "orchestration_id": orchestration_id,
-            "orchestration_status": status or "unknown",
-        },
-        stdout_format,
-    )
-    return None
-
-
 def _terminalize_interrupted_orchestration(
     repo_root: Path,
     env: dict[str, str],
@@ -1536,7 +1071,6 @@ def _terminalize_owned_orchestration(
     orchestration_id: str,
     *,
     init_committed: bool,
-    driver_identity: dict[str, Any] | None,
     reason_code: str,
     detail: str,
 ) -> None:
@@ -1548,11 +1082,16 @@ def _terminalize_owned_orchestration(
     discarding the checkpoint. Three guards, all of which mirror
     `_terminalize_interrupted_orchestration` and the interrupt clause that calls it:
 
-    * **Ownership.** `init_committed` only flips when the runtime call RETURNS, but the
-      runtime writes the `running` meta well before that. So fall back to the durable
-      evidence: a meta whose `driver` block names THIS process was necessarily written
-      by this invocation's init. A reused `--orchestration-id` naming someone else's
-      run is left untouched.
+    * **Ownership is `init_committed` alone.** It only flips when the runtime call RETURNS,
+      while the runtime writes the `running` meta well before that, so a failure inside that
+      window leaves the meta `running` and this function declines to touch it. That is the
+      deliberate trade since issue #177 deleted the `driver` block: the durable evidence used
+      to be "a meta whose `driver` names THIS process", and that identity is gone. What
+      recovers the gap is the resume path — a `running` orchestration whose exclusive claim is
+      free is resumed and reconciled, where before #177 it would have refused. The failure mode
+      the ownership check existed to prevent (terminalizing someone else's run behind a reused
+      `--orchestration-id`) is prevented by the same claim: this process could not have got
+      this far without holding it.
     * **A more specific terminal status wins.** The runtime may have recorded e.g.
       `fail_closed` / `sandbox_enforcement_violation` just before the failure, and
       terminal→terminal is rejected anyway.
@@ -1565,7 +1104,7 @@ def _terminalize_owned_orchestration(
     OSError. The full text still reaches the operator on the caller's stdout envelope.
     """
     meta_now = _read_orchestration_meta(repo_root, orchestration_id)
-    if not (init_committed or _is_own_driver(meta_now, driver_identity)):
+    if not init_committed:
         return
     if str(meta_now.get("status") or "").strip().lower() in _RESUMABLE_TERMINAL_STATUSES:
         return
@@ -1589,38 +1128,6 @@ def _terminalize_owned_orchestration(
         )
     except Exception:  # noqa: BLE001 - best-effort; the envelope must still print
         pass
-
-
-def _is_own_driver(meta: dict[str, Any], identity: dict[str, Any] | None) -> bool:
-    """True when this meta's `driver` block names THIS process.
-
-    An orchestration driven by this process is not a concurrent run: probing it would
-    report `alive` and block us against our own work. Comparing every recorded identity
-    field identifies our own runs exactly, with no bookkeeping to keep in sync.
-
-    Within one `--with-deps` closure this cannot trigger — every node has a distinct
-    `spec_ref` and each node's guard runs before its own `init` — so it exists for the
-    case that CAN: a process that calls `main()` more than once against the same repo,
-    where an earlier call left a non-terminal orchestration for the spec a later call
-    cold-runs (e.g. `--no-run-conductor`, which never terminalizes). Without it that
-    second call would refuse, naming a run that has already returned.
-    """
-    if not identity:
-        return False
-    driver = meta.get("driver")
-    if not isinstance(driver, dict):
-        return False
-    # Every recorded field is compared, including `pid_ns` and `uid`. Concluding "this
-    # is us" from a subset while the block explicitly records a DIFFERENT namespace or
-    # uid would be the same error the probe's gate exists to prevent: a conclusion
-    # drawn past evidence that contradicts it. This direction fails open (a skipped
-    # candidate means a concurrent run goes unblocked) rather than terminalizing a live
-    # driver, so it is defense in depth — but the asymmetry is not a reason to compare
-    # less than what is on record.
-    return all(
-        driver.get(key) == identity.get(key)
-        for key in ("pid", "pid_start_ticks", "boot_id", "pid_ns", "uid")
-    )
 
 
 def _start_claims_root() -> Path:
@@ -1774,76 +1281,6 @@ def _concurrent_cold_start_envelope(spec_ref: str) -> dict[str, Any]:
         ),
         "spec_ref": spec_ref,
     }
-
-
-def _cold_start_running_guard(
-    repo_root: Path,
-    spec_ref: str,
-    *,
-    stdout_format: str,
-    driver_identity: dict[str, Any] | None = None,
-) -> dict[str, Any] | None:
-    """Guard a COLD run of `spec_ref` against this spec's non-terminal orchestrations.
-
-    A live driver → return a fail envelope (`concurrent_orchestration_running`): two
-    concurrent runs of one spec derive their `pipeline_id` from the same
-    `workspace/pipelines/<node_key_safe>/` tree and then write into it, so the second
-    run corrupts the first's.
-
-    A dead or indeterminate driver → emit a `prior_incomplete_orchestration` warn
-    naming the exact `--resume` command, and proceed. The cold path deliberately does
-    NOT terminalize (that would be a write on a run we were not asked to touch, and an
-    `unknown` may still be alive); it only makes sure the operator sees that a
-    resumable checkpoint is about to be left behind — inform over prohibit.
-
-    The workspace is rescanned on every call, not sampled once per invocation: a
-    `--with-deps` closure reaches its later nodes hours after it started, and the
-    concurrent run this guard exists to catch is most likely to have been launched
-    inside that window. A snapshot taken at closure start is blind to exactly that
-    case. Orchestrations this process itself drives are excluded (`_is_own_driver`).
-    """
-    candidates = _index_incomplete_orchestrations_by_spec(repo_root).get(spec_ref) or []
-    if not candidates:
-        return None
-    probed = []
-    for oid in candidates:
-        meta = _read_orchestration_meta(repo_root, oid)
-        if not meta or not _is_non_terminal_status(meta):
-            continue
-        if _is_own_driver(meta, driver_identity):
-            continue
-        probed.append((oid, meta, _probe_driver_liveness(meta)))
-    for oid, meta, liveness in probed:
-        if liveness != "alive":
-            continue
-        driver = meta.get("driver") if isinstance(meta.get("driver"), dict) else {}
-        return {
-            "status": "fail",
-            "reason": "concurrent_orchestration_running",
-            "detail": (
-                f"orchestration {oid} for {spec_ref} is still running and its driver "
-                f"(pid {driver.get('pid')}) is alive; a second run would corrupt its "
-                "in-flight pipeline state. Wait for it, or resume it with: "
-                f"{_resume_command_for(oid)}"
-            ),
-            "orchestration_id": oid,
-            "spec_ref": spec_ref,
-            "driver_pid": driver.get("pid"),
-            "resume_command": _resume_command_for(oid),
-        }
-    for oid, _meta, liveness in probed:
-        _emit_unlogged_event(
-            {
-                "status": "info",
-                "event": "prior_incomplete_orchestration",
-                "spec_ref": spec_ref,
-                "orchestration_id": oid,
-                "liveness": liveness,
-                "resume_command": _resume_command_for(oid),
-            },
-            stdout_format,
-        )
-    return None
 
 
 def _extract_prompt_params(prompt_text: str) -> dict[str, str]:
@@ -2651,94 +2088,23 @@ def _run_main(
                 args.stdout_format,
             )
             return 2
-        resume_meta = _read_orchestration_meta(repo_root, orchestration_id)
-        resume_status = str(resume_meta.get("status") or "").strip().lower()
-        if resume_status not in _RESUMABLE_TERMINAL_STATUSES:
-            liveness = _probe_driver_liveness(resume_meta) if resume_meta else "unknown"
-            resume_driver = (
-                resume_meta.get("driver")
-                if isinstance(resume_meta.get("driver"), dict)
-                else {}
-            )
-            if liveness == "dead":
-                # Proven corpse: terminalize it so the resume below enters
-                # `terminal_reset` and the crash reconciliations actually run. The
-                # status/meta is deliberately NOT re-read afterwards — the resume
-                # proceeds on the strength of this call having succeeded.
-                terminalize_error = _terminalize_dead_driver(
-                    repo_root,
-                    orchestration_id,
-                    resume_meta,
-                    stdout_format=args.stdout_format,
-                )
-                if terminalize_error is not None:
-                    _emit_unlogged_event(
-                        {
-                            "status": "fail",
-                            "reason": "dead_driver_terminalize_failed",
-                            "detail": (
-                                f"orchestration {orchestration_id} has a dead driver but could "
-                                f"not be terminalized: {terminalize_error}"
-                            ),
-                            "orchestration_id": orchestration_id,
-                        },
-                        args.stdout_format,
-                    )
-                    return 2
-            elif liveness == "alive":
-                # An explicit id is normally the deliberate override for the
-                # implicit-latest guard, but it cannot override physics: the run is
-                # demonstrably still being driven.
-                reason = (
-                    "orchestration_driver_alive"
-                    if explicit_id
-                    else "latest_orchestration_not_resumable"
-                )
-                _emit_unlogged_event(
-                    {
-                        "status": "fail",
-                        "reason": reason,
-                        "detail": (
-                            f"orchestration {orchestration_id} has non-terminal status "
-                            f"'{resume_status or 'unknown'}' and its driver "
-                            f"(pid {resume_driver.get('pid')}) is alive; resuming it would "
-                            "collide with the live run. Wait for it to finish."
-                        ),
-                        "orchestration_id": orchestration_id,
-                        "driver_pid": resume_driver.get("pid"),
-                    },
-                    args.stdout_format,
-                )
-                return 2
-            elif not explicit_id:
-                # Indeterminate liveness on the implicit path keeps the pre-existing
-                # refusal: an unknown must never auto-attach to a possibly-live run.
-                _emit_unlogged_event(
-                    {
-                        "status": "fail",
-                        "reason": "latest_orchestration_not_resumable",
-                        "detail": (
-                            f"latest orchestration {orchestration_id} has non-terminal status "
-                            f"'{resume_status or 'unknown'}'; pass --orchestration-id to resume a specific run"
-                        ),
-                        "orchestration_id": orchestration_id,
-                    },
-                    args.stdout_format,
-                )
-                return 2
-            elif resume_meta:
-                # Explicit id + indeterminate liveness: today's deliberate bypass, but
-                # say so — the operator is resuming a run that may still be live, and
-                # the crash reconciliations will NOT fire (status stays non-terminal).
-                _emit_unlogged_event(
-                    {
-                        "status": "info",
-                        "event": "resume_liveness_indeterminate",
-                        "orchestration_id": orchestration_id,
-                        "orchestration_status": resume_status or "unknown",
-                    },
-                    args.stdout_format,
-                )
+        # The claim above IS the gate. It is held for the life of this process and released
+        # by the OS when the process dies, so a claim that was free is a driver that is gone —
+        # whatever the recorded status says. Issue #177 deleted the driver-liveness probe that
+        # used to decide this from `/proc`: it answered `unknown` across a PID namespace, a
+        # `hidepid` mount and every host that is not the one that wrote the record, and an
+        # `unknown` refused the recovery it existed to enable.
+        #
+        # So a `running` prior is RESUMED rather than refused, and the reconciliations run for
+        # it (`resume_orchestration` treats `running` like a terminal prior). The implicit
+        # `--resume` path proceeds too: the thing that made an implicit latest dangerous was
+        # that it might be live, and the claim answers that directly.
+        #
+        # WHAT THIS COSTS, stated because it is a real narrowing: on a host where the claim
+        # cannot be taken at all — no `fcntl`, an unsupported filesystem, an unwritable home —
+        # `_exclusive_claim` yields True and there is now no second gate behind it. "One driver
+        # per workspace" becomes the operator's responsibility there. `docs/RUNBOOK.md` §3-1
+        # says so.
         recovered = _load_resume_params(repo_root, orchestration_id)
         spec_ref_arg = args.spec_ref
         until_phase_arg = args.until_phase
@@ -3117,15 +2483,13 @@ def _run_main(
                 _emit_unlogged_event(
                     _concurrent_cold_start_envelope(spec_ref), args.stdout_format)
                 return 2
-            cold_conflict = _cold_start_running_guard(
-                repo_root,
-                spec_ref,
-                stdout_format=args.stdout_format,
-                driver_identity=_current_driver_identity(),
-            )
-            if cold_conflict is not None:
-                _emit_unlogged_event(cold_conflict, args.stdout_format)
-                return 2
+            # The spec claim above is the whole cold gate since issue #177. It used to be
+            # followed by a scan of this spec's other non-terminal orchestrations, probing each
+            # one's recorded driver through `/proc` — which answered `unknown` for any run
+            # started on another host, in another PID namespace, or under a `hidepid` mount,
+            # and an `unknown` only ever emitted a warning and proceeded anyway. The claim
+            # answers the same question without asking `/proc` anything: another live driver of
+            # this spec holds it, and a dead one does not.
 
         # Plain single node. A cold run records the reproduction block (no closure); a
         # single-node resume passes None (the runtime preserves the existing block).
@@ -3613,7 +2977,6 @@ def _run_node(
     # that directory so concurrent workflows' workspace/tmp/<other_agent_run_id>/ are untouched.
     orchestration_tmp_for_cleanup: Path | None = None
     # Identity of this driver process, recorded on the orchestration meta by init.
-    driver_identity = _current_driver_identity()
     # True once init has committed this orchestration's meta — i.e. once there is a
     # `running` status that an interrupt would otherwise leave behind forever.
     init_committed = False
@@ -3712,7 +3075,7 @@ def _run_node(
                 str(repo_root),
                 "--orchestration-id",
                 orchestration_id,
-                "--resume-from-checkpoint",
+                "--resume",
                 "--spec-ref",
                 spec_ref,
                 "--source-dependency-ref",
@@ -3735,13 +3098,6 @@ def _run_node(
             # correctly resets a run that was started WITH the flag but is now resumed without it.
             if wait_usage_reset:
                 init_args += ["--wait-usage-reset"]
-            # THIS process is now the orchestration's driver, so its identity replaces
-            # whatever (often dead) driver the meta named before.
-            if driver_identity:
-                init_args += [
-                    "--driver-json",
-                    json.dumps(driver_identity, ensure_ascii=False),
-                ]
         else:
             init_args = [
                 "init",
@@ -3778,15 +3134,6 @@ def _run_node(
             # a divergent block if the immutability guard were ever relaxed).
             if invocation:
                 init_args += ["--invocation-json", json.dumps(invocation, ensure_ascii=False)]
-            # Driver liveness identity (pid + start ticks + boot id + hostname): what
-            # lets a later run tell this orchestration's corpse apart from a live run
-            # if this process dies without terminalizing. Omitted when it cannot be
-            # captured (non-Linux), which degrades every probe to `unknown`.
-            if driver_identity:
-                init_args += [
-                    "--driver-json",
-                    json.dumps(driver_identity, ensure_ascii=False),
-                ]
         try:
             init_result = _runtime_command(repo_root, env, init_args).payload
             orchestration_agent_run_id = str(init_result.get("orchestration_agent_run_id", "")).strip()
@@ -3873,7 +3220,6 @@ def _run_node(
             # `--orchestration-id` naming a foreign run is still left alone.
             _terminalize_owned_orchestration(
                 repo_root, env, orchestration_id, init_committed=init_committed,
-                driver_identity=driver_identity,
                 reason_code="runtime_command_failed", detail=str(exc),
             )
             print(
@@ -4110,9 +3456,7 @@ def _run_node(
         # which makes it ours to terminalize. Anything else — a reused
         # `--orchestration-id` naming someone else's run, a meta we never wrote — is
         # left untouched.
-        if init_committed or _is_own_driver(
-            _read_orchestration_meta(repo_root, orchestration_id), driver_identity
-        ):
+        if init_committed:
             _terminalize_interrupted_orchestration(repo_root, env, orchestration_id)
         raise
     except Exception as exc:  # noqa: BLE001 - backstop: no escape may leave `running`
@@ -4136,7 +3480,7 @@ def _run_node(
         detail = f"{type(exc).__name__}: {exc}"
         _terminalize_owned_orchestration(
             repo_root, env, orchestration_id, init_committed=init_committed,
-            driver_identity=driver_identity, reason_code="driver_exception",
+            reason_code="driver_exception",
             detail=detail,
         )
         print(json.dumps({
@@ -4600,7 +3944,6 @@ def _run_with_dependency_closure(
     # guard rescans the workspace per node rather than working from a snapshot taken
     # here: a closure reaches its later nodes hours after it starts, and a competing
     # run launched inside that window is precisely what the guard must catch.
-    closure_driver_identity = _current_driver_identity()
 
     dependency_runs: list[dict[str, Any]] = []
     for node in ordered:
@@ -4677,19 +4020,11 @@ def _run_with_dependency_closure(
                     stdout_format,
                 )
                 return 2
-            # Driver-liveness gate for this node: a warm-resumed member is terminalized
-            # when its own driver crashed (and refused when it is still live); a cold node
-            # is guarded against this spec's other non-terminal orchestrations.
-            node_conflict = (
-                _warm_resume_liveness_guard(
-                    repo_root, dep_orch_id, stdout_format=stdout_format, env=base_env
-                )
-                if dep_resume
-                else _cold_start_running_guard(
-                    repo_root, spec_ref, stdout_format=stdout_format,
-                    driver_identity=closure_driver_identity,
-                )
-            )
+            # No per-node liveness gate: `_run_node` takes this node's own exclusive claim
+            # (`orch` when resuming a member, `spec` when starting one cold) and refuses with
+            # `concurrent_orchestration_running` if another driver holds it. That serializes
+            # the closure against a competing run without probing anyone's `/proc`.
+            node_conflict = None
             if node_conflict is not None:
                 _emit_unlogged_event(
                     {
@@ -4909,18 +4244,9 @@ def _run_with_dependency_closure(
                 stdout_format,
             )
             return 2
-        # Same liveness gate for the target node (warm-resumed vs cold), after every
-        # dependency is ready and before the target's own orchestration is touched.
-        target_conflict = (
-            _warm_resume_liveness_guard(
-                repo_root, target_orchestration_id, stdout_format=stdout_format, env=base_env
-            )
-            if target_resume
-            else _cold_start_running_guard(
-                repo_root, target_spec_ref, stdout_format=stdout_format,
-                driver_identity=closure_driver_identity,
-            )
-        )
+        # No liveness gate for the target node either: `_run_node` takes its own exclusive
+        # claim, which is what serializes it against a competing driver.
+        target_conflict = None
         if target_conflict is not None:
             _emit_unlogged_event(
                 {

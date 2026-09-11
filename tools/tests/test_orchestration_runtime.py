@@ -57,7 +57,7 @@ from tools.orchestration_runtime import (
     build_launch_prompt_text,
     build_skill_must_read_refs,
     leaf_contract_doc_refs,
-    enable_checkpoint_resume,
+    resume_orchestration,
     get_preflight_ttl_status,
     init_orchestration,
     log_orchestration_read,
@@ -4798,7 +4798,7 @@ shell_tool                       stable             true
             self.assertEqual(_session_orch_status(), "fail_closed")
 
             # Resume must re-open the row to running and drop finished_at.
-            enable_checkpoint_resume(repo_root, oid)
+            resume_orchestration(repo_root, oid)
             reopened = _orch_row()
             self.assertEqual(reopened["status"], "running")
             self.assertNotIn("finished_at", reopened)
@@ -4843,7 +4843,7 @@ shell_tool                       stable             true
                 reason_detail="child launch did not return",
             )
 
-            enable_checkpoint_resume(repo_root, oid)
+            resume_orchestration(repo_root, oid)
 
             self.assertFalse((root / "active_child_agent_run_id.txt").exists())
             self.assertFalse((markers / f"{child}.txt").exists())
@@ -4906,7 +4906,7 @@ shell_tool                       stable             true
                 reason_code="launch_incomplete_active_child",
                 reason_detail="child launch did not return",
             )
-            enable_checkpoint_resume(repo_root, oid)
+            resume_orchestration(repo_root, oid)
 
             edges = json.loads((root / "agent_graph.json").read_text(encoding="utf-8"))["edges"]
             children = [e["child_agent_run_id"] for e in edges]
@@ -4955,7 +4955,7 @@ shell_tool                       stable             true
                 reason_code="launch_incomplete_active_child",
                 reason_detail="child launch did not return",
             )
-            enable_checkpoint_resume(repo_root, oid)
+            resume_orchestration(repo_root, oid)
 
             tomb = root / "launches" / f"{dangling}.pruned.json"
             self.assertTrue(tomb.is_file())
@@ -5008,7 +5008,7 @@ shell_tool                       stable             true
                 reason_code="launch_incomplete_active_child",
                 reason_detail="child launch did not return",
             )
-            enable_checkpoint_resume(repo_root, oid)
+            resume_orchestration(repo_root, oid)
 
             self.assertTrue((root / "launches" / f"{dangling}.pruned.json").is_file())
             self.assertFalse((root / "launches" / f"{returned}.pruned.json").is_file())
@@ -5046,7 +5046,7 @@ shell_tool                       stable             true
                 reason_code="launch_incomplete_active_child",
                 reason_detail="child launch did not return",
             )
-            enable_checkpoint_resume(repo_root, oid)
+            resume_orchestration(repo_root, oid)
 
             self.assertTrue((root / "launches" / f"{dangling}.pruned.json").is_file())
 
@@ -5080,7 +5080,7 @@ shell_tool                       stable             true
                 reason_code="launch_incomplete_active_child",
                 reason_detail="child launch did not return",
             )
-            enable_checkpoint_resume(repo_root, oid)
+            resume_orchestration(repo_root, oid)
 
             self.assertFalse((root / "launches" / f"{deactivated}.pruned.json").is_file())
             self.assertTrue((root / "launches" / f"{orphan}.pruned.json").is_file())
@@ -5168,7 +5168,7 @@ shell_tool                       stable             true
                 repo_root=repo_root, orchestration_id=oid, status="fail",
                 reason_code="launch_incomplete_active_child", reason_detail="x",
             )
-            enable_checkpoint_resume(repo_root, oid)
+            resume_orchestration(repo_root, oid)
 
             edges = json.loads((root / "agent_graph.json").read_text(encoding="utf-8"))["edges"]
             children = [e["child_agent_run_id"] for e in edges]
@@ -5199,7 +5199,7 @@ shell_tool                       stable             true
                 repo_root=repo_root, orchestration_id=oid, status="fail",
                 reason_code="some_unrelated_failure", reason_detail="x",
             )
-            enable_checkpoint_resume(repo_root, oid)
+            resume_orchestration(repo_root, oid)
             edges = json.loads((root / "agent_graph.json").read_text(encoding="utf-8"))["edges"]
             self.assertIn(never_launched, [e["child_agent_run_id"] for e in edges])
 
@@ -5241,7 +5241,7 @@ shell_tool                       stable             true
                 repo_root=repo_root, orchestration_id=oid, status="fail",
                 reason_code="launch_incomplete_active_child", reason_detail="x",
             )
-            enable_checkpoint_resume(repo_root, oid)
+            resume_orchestration(repo_root, oid)
 
             edges = json.loads((root / "agent_graph.json").read_text(encoding="utf-8"))["edges"]
             children = [e["child_agent_run_id"] for e in edges]
@@ -5274,7 +5274,7 @@ shell_tool                       stable             true
                 repo_root=repo_root, orchestration_id=oid, status="fail",
                 reason_code="launch_incomplete_active_child", reason_detail="x",
             )
-            enable_checkpoint_resume(repo_root, oid)
+            resume_orchestration(repo_root, oid)
             edges = json.loads((root / "agent_graph.json").read_text(encoding="utf-8"))["edges"]
             self.assertIn(returned, [e["child_agent_run_id"] for e in edges])
 
@@ -5301,7 +5301,7 @@ shell_tool                       stable             true
                 repo_root=repo_root, orchestration_id=oid, status="fail",
                 reason_code="launch_incomplete_active_child", reason_detail="x",
             )
-            enable_checkpoint_resume(repo_root, oid)
+            resume_orchestration(repo_root, oid)
 
             after = json.loads((root / "phase_state.json").read_text(encoding="utf-8"))
             self.assertEqual(after["node_states"][node]["compile"], "not_started")
@@ -5347,16 +5347,27 @@ shell_tool                       stable             true
                 reason_code="launch_incomplete_active_child", reason_detail="x",
             )
             # Must not raise.
-            meta = enable_checkpoint_resume(repo_root, oid)
+            meta = resume_orchestration(repo_root, oid)
             self.assertEqual(meta["status"], "running")
             edges = json.loads((root / "agent_graph.json").read_text(encoding="utf-8"))["edges"]
             self.assertNotIn(dangling, [e["child_agent_run_id"] for e in edges])
 
-    def test_resume_of_running_orchestration_keeps_active_child_markers(self) -> None:
-        """A non-terminal (`running`) resume must NOT clear active-child markers: the
-        child may be genuinely live, and clobbering its liveness guard could let a
-        concurrent record-timeout wipe live scratch. Clearing is scoped to the
-        terminal-reset path only."""
+    def test_resume_of_a_running_orchestration_clears_active_child_markers(self) -> None:
+        """INVERTED by issue #177's PR-3, and the inversion is the change.
+
+        This used to assert the opposite, on the premise that a `running` prior might be a
+        LIVE driver whose child is genuinely still running — so clearing its markers could let
+        a concurrent record-timeout wipe live scratch. What decided which it was was a `/proc`
+        probe of the recorded driver pid, and that probe answered `unknown` for any run started
+        on another host, in another PID namespace, or under a `hidepid` mount. An `unknown`
+        refused the recovery it existed to enable, and the markers stayed.
+
+        The exclusive claim answers the same question without asking `/proc` anything: it is
+        held for the life of the driver process and released by the OS when that process dies,
+        so a resume that reached this code holds it and NOTHING else is driving this run. A
+        `running` status therefore means a driver that is gone, its child cannot be live, and
+        leaving the markers would wedge the next launch behind a dead child's sequential-child
+        gate — the state §Incomplete launch recovery exists to clear."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             oid = "orch_resume_running"
@@ -5368,11 +5379,11 @@ shell_tool                       stable             true
             markers.mkdir(exist_ok=True)
             (markers / f"{child}.txt").write_text(child, encoding="utf-8")
 
-            # init leaves status non-terminal (running) → terminal_reset is False.
-            enable_checkpoint_resume(repo_root, oid)
+            # init leaves status non-terminal (`running`), which now reconciles.
+            resume_orchestration(repo_root, oid)
 
-            self.assertTrue((root / "active_child_agent_run_id.txt").exists())
-            self.assertTrue((markers / f"{child}.txt").exists())
+            self.assertFalse((root / "active_child_agent_run_id.txt").exists())
+            self.assertFalse((markers / f"{child}.txt").exists())
 
     def test_resume_row_reset_is_recoverable_on_interrupt(self) -> None:
         """The agent_runs row reset runs BEFORE the meta is committed to `running`,
@@ -5412,12 +5423,12 @@ shell_tool                       stable             true
                 side_effect=RuntimeError("boom"),
             ):
                 with self.assertRaises(RuntimeError):
-                    enable_checkpoint_resume(repo_root, oid)
+                    resume_orchestration(repo_root, oid)
             self.assertEqual(_meta_status(), "fail_closed")
             self.assertEqual(_orch_row()["status"], "fail_closed")
 
             # Retry (no fault) re-enters terminal_reset and completes the reset.
-            enable_checkpoint_resume(repo_root, oid)
+            resume_orchestration(repo_root, oid)
             self.assertEqual(_meta_status(), "running")
             self.assertEqual(_orch_row()["status"], "running")
             self.assertNotIn("finished_at", _orch_row())
@@ -10632,7 +10643,7 @@ shell_tool                       stable             true
 
     def _reset_phase_child_finished(self, repo_root: Path, step: str) -> None:
         """Re-arm the phase gate so a second write_step_result (the resumed re-run)
-        is accepted, as `cmd_init --resume-from-checkpoint` does in a real resume."""
+        is accepted, as `cmd_init --resume` does in a real resume."""
         phase_state_path = repo_root / "workspace/orchestrations/orch_001/phase_state.json"
         phase_state = json.loads(phase_state_path.read_text(encoding="utf-8"))
         phase_state["node_states"]["problem__shallow_water2d__0.3.0"][step] = "child_finished"
@@ -12112,7 +12123,6 @@ class PhaseCertificationTests(unittest.TestCase):
             refs = self._certified(repo, through="compile")
             meta = json.loads(
                 (repo / "workspace/orchestrations/o1/orchestration_meta.json").read_text("utf-8"))
-            self.assertFalse(meta.get("resume_enabled"))
             self.assertFalse(
                 (repo / "workspace/orchestrations/o1/orchestration_checkpoint.json").exists())
 
@@ -12156,14 +12166,14 @@ class PhaseCertificationTests(unittest.TestCase):
             })
 
     def test_check_phase_certified_certifies_on_resume(self) -> None:
-        """The same fixture, after `enable_checkpoint_resume`: identical answer. The resume
+        """The same fixture, after `resume_orchestration`: identical answer. The resume
         adds nothing the predicate reads, which is the property that lets one code path
         serve both."""
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             self._preflight(repo)
             self._certified(repo, through="validate")
-            enable_checkpoint_resume(repo, "o1")
+            resume_orchestration(repo, "o1")
             for step in ("compile", "generate", "build", "validate"):
                 with self.subTest(step=step):
                     out = ort.check_phase_certified(
@@ -12279,7 +12289,7 @@ class PhaseCertificationTests(unittest.TestCase):
                 self._preflight(repo, until_phase=recorded)
                 self._certified(repo, through="compile")
                 # Route 1: the resume writer.
-                enable_checkpoint_resume(repo, "o1", until_phase=requested)
+                resume_orchestration(repo, "o1", until_phase=requested)
                 with self.assertRaisesRegex(RuntimeError, "generate is not certified"):
                     update_orchestration_status(repo_root=repo, orchestration_id="o1",
                                                status="pass")
@@ -12317,7 +12327,7 @@ class PhaseCertificationTests(unittest.TestCase):
                 update_orchestration_status(repo_root=repo, orchestration_id="o1",
                                            status="pass")["status"], "pass")
             # Lowering the CURRENT end-phase is allowed; it just cannot lower the bar.
-            enable_checkpoint_resume(repo, "o1", until_phase="Compile")
+            resume_orchestration(repo, "o1", until_phase="Compile")
             meta = json.loads((repo / "workspace/orchestrations/o1/orchestration_meta.json")
                               .read_text("utf-8"))
             self.assertEqual(meta["invocation"]["until_phase_high_water"], "compile")
@@ -12334,7 +12344,7 @@ class PhaseCertificationTests(unittest.TestCase):
             # Driven over the CLI, which is the only route `run_workflow` takes.
             self.assertEqual(main([
                 "init", "--repo-root", str(repo), "--orchestration-id", "o1",
-                "--resume-from-checkpoint", "--until-phase", "validate"]), 0)
+                "--resume", "--until-phase", "validate"]), 0)
             meta = json.loads(
                 (repo / "workspace/orchestrations/o1/orchestration_meta.json").read_text("utf-8"))
             self.assertEqual(meta["invocation"]["until_phase"], "validate")
@@ -12346,13 +12356,13 @@ class PhaseCertificationTests(unittest.TestCase):
             meta.pop("invocation", None)
             (repo / "workspace/orchestrations/o1/orchestration_meta.json").write_text(
                 json.dumps(meta), encoding="utf-8")
-            enable_checkpoint_resume(repo, "o1", until_phase="build")
+            resume_orchestration(repo, "o1", until_phase="build")
             meta = json.loads(
                 (repo / "workspace/orchestrations/o1/orchestration_meta.json").read_text("utf-8"))
             self.assertEqual(meta["invocation"]["until_phase"], "build")
             # A resume that does not know its end-phase leaves the record alone rather than
             # clearing it (the over-refusal direction: a cleared record fails the vouch).
-            enable_checkpoint_resume(repo, "o1")
+            resume_orchestration(repo, "o1")
             meta = json.loads(
                 (repo / "workspace/orchestrations/o1/orchestration_meta.json").read_text("utf-8"))
             self.assertEqual(meta["invocation"]["until_phase"], "build")
@@ -13813,7 +13823,7 @@ class CompletionVouchAttemptModelTests(unittest.TestCase):
 
 
 
-class CheckpointResumeRuntimeTests(unittest.TestCase):
+class ResumeOrchestrationRuntimeTests(unittest.TestCase):
     """Item 8: unit tests for orchestration checkpoint / resume."""
 
     _NK = "component/solver@0.1.0"
@@ -13894,22 +13904,13 @@ class CheckpointResumeRuntimeTests(unittest.TestCase):
             self.assertIn(rel, h)
             self.assertTrue(h[rel].startswith("sha256:"))
 
-    def test_enable_checkpoint_resume_sets_resume_enabled(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            init_orchestration(repo_root=repo, orchestration_id="o1")
-            _mark_dependencies_ready(repo, "o1")
-            meta = enable_checkpoint_resume(repo, "o1")
-            self.assertTrue(meta.get("resume_enabled"))
-            self.assertIn("resumed_at", meta)
-
-    def test_enable_checkpoint_resume_raises_for_nonexistent_orchestration(self) -> None:
+    def test_resume_orchestration_raises_for_nonexistent_orchestration(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             with self.assertRaisesRegex(RuntimeError, "orchestration not found"):
-                enable_checkpoint_resume(repo, "missing")
+                resume_orchestration(repo, "missing")
 
-    def test_enable_checkpoint_resume_preserves_existing_fields(self) -> None:
+    def test_resume_orchestration_preserves_existing_fields(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             init_orchestration(
@@ -13918,16 +13919,15 @@ class CheckpointResumeRuntimeTests(unittest.TestCase):
                 spec_ref="spec/a.md",
                 source_dependency_ref="dep.yaml",
             )
-            enable_checkpoint_resume(repo, "o1")
+            resume_orchestration(repo, "o1")
             meta = json.loads(
                 (repo / "workspace/orchestrations/o1/orchestration_meta.json").read_text(
                     encoding="utf-8"
                 )
             )
             self.assertEqual(meta.get("spec_ref"), "spec/a.md")
-            self.assertTrue(meta.get("resume_enabled"))
 
-    def test_enable_checkpoint_resume_updates_refs_when_provided(self) -> None:
+    def test_resume_orchestration_updates_refs_when_provided(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             init_orchestration(
@@ -13936,7 +13936,7 @@ class CheckpointResumeRuntimeTests(unittest.TestCase):
                 spec_ref="spec/old/a.md",
                 source_dependency_ref="spec/old/deps.yaml",
             )
-            meta = enable_checkpoint_resume(
+            meta = resume_orchestration(
                 repo,
                 "o1",
                 spec_ref="spec/new/b.md",
@@ -13952,7 +13952,7 @@ class CheckpointResumeRuntimeTests(unittest.TestCase):
             self.assertEqual(on_disk.get("spec_ref"), "spec/new/b.md")
             self.assertEqual(on_disk.get("source_dependency_ref"), "spec/new/deps.yaml")
 
-    def test_enable_checkpoint_resume_resets_terminal_status_to_running(self) -> None:
+    def test_resume_orchestration_resets_terminal_status_to_running(self) -> None:
         # A resumed orchestration that already terminalized (fail / fail_closed)
         # must be reset to `running`, otherwise the resumed agent's final
         # set-status(pass) is a rejected terminal-to-terminal transition.
@@ -13982,12 +13982,11 @@ class CheckpointResumeRuntimeTests(unittest.TestCase):
                     marker.parent.mkdir(parents=True, exist_ok=True)
                     marker.write_text("{}\n", encoding="utf-8")
 
-                    returned = enable_checkpoint_resume(repo, "o1")
+                    returned = resume_orchestration(repo, "o1")
 
                     on_disk = json.loads(meta_path.read_text(encoding="utf-8"))
                     for view in (returned, on_disk):
                         self.assertEqual(view.get("status"), "running")
-                        self.assertTrue(view.get("resume_enabled"))
                         self.assertEqual(view.get("resumed_from_status"), prior)
                         # Live terminal narrative cleared, archived under resumed_from_*.
                         self.assertNotIn("reason_code", view)
@@ -14000,37 +13999,23 @@ class CheckpointResumeRuntimeTests(unittest.TestCase):
                     # Stale cleanup marker removed so the next terminalization is clean.
                     self.assertFalse(marker.exists())
 
-    def test_enable_checkpoint_resume_keeps_nonterminal_status(self) -> None:
-        # An interrupted (still `running`) orchestration must not be touched/archived.
+    def test_resume_of_a_running_orchestration_reconciles_it(self) -> None:
+        # INVERTED by issue #177's PR-3. A `running` prior used to be left untouched,
+        # because it might have been a LIVE driver and the thing that decided was a `/proc`
+        # probe of the recorded pid — which answered `unknown` across a PID namespace, a
+        # `hidepid` mount, and any other host, and an `unknown` refused the recovery it
+        # existed to enable. The exclusive claim answers it directly instead: a resume that
+        # got this far holds the claim, so nothing else is driving this run, so `running`
+        # means a driver that is gone. It therefore reconciles like any terminal prior and
+        # records `resumed_from_status: running` to say so.
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             init_orchestration(repo_root=repo, orchestration_id="o1", status="running")
-            returned = enable_checkpoint_resume(repo, "o1")
+            returned = resume_orchestration(repo, "o1")
             self.assertEqual(returned.get("status"), "running")
-            self.assertNotIn("resumed_from_status", returned)
+            self.assertEqual(returned.get("resumed_from_status"), "running")
 
-    def test_init_resume_from_checkpoint_sets_flag(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            init_orchestration(repo_root=repo, orchestration_id="o1")
-            _mark_dependencies_ready(repo, "o1")
-            buf = io.StringIO()
-            with redirect_stdout(buf):
-                rc = main(
-                    [
-                        "init",
-                        "--repo-root",
-                        str(repo),
-                        "--orchestration-id",
-                        "o1",
-                        "--resume-from-checkpoint",
-                    ]
-                )
-            self.assertEqual(rc, 0)
-            meta = json.loads(buf.getvalue())
-            self.assertTrue(meta.get("resume_enabled"))
-
-    def test_init_resume_from_checkpoint_fails_if_orchestration_missing(self) -> None:
+    def test_init_resume_fails_if_orchestration_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             with self.assertRaises(RuntimeError):
@@ -14041,11 +14026,11 @@ class CheckpointResumeRuntimeTests(unittest.TestCase):
                         str(repo),
                         "--orchestration-id",
                         "ghost",
-                        "--resume-from-checkpoint",
+                        "--resume",
                     ]
                 )
 
-    def test_init_resume_from_checkpoint_does_not_overwrite_meta(self) -> None:
+    def test_init_resume_does_not_overwrite_meta(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             init_orchestration(
@@ -14060,7 +14045,7 @@ class CheckpointResumeRuntimeTests(unittest.TestCase):
                     str(repo),
                     "--orchestration-id",
                     "o1",
-                    "--resume-from-checkpoint",
+                    "--resume",
                 ]
             )
             meta = json.loads(
@@ -14111,15 +14096,14 @@ class CheckpointResumeRuntimeTests(unittest.TestCase):
             meta = self._read_meta(repo, "o1")
             self.assertEqual(meta["invocation"], {"closure_id": "keep"})
 
-    def test_invocation_preserved_across_checkpoint_resume(self) -> None:
+    def test_invocation_preserved_across_resume(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             init_orchestration(repo_root=repo, orchestration_id="o1",
                                invocation={"closure_id": "orch_target"})
             _mark_dependencies_ready(repo, "o1")
-            enable_checkpoint_resume(repo, "o1", spec_ref="new-spec")
+            resume_orchestration(repo, "o1", spec_ref="new-spec")
             meta = self._read_meta(repo, "o1")
-            self.assertTrue(meta.get("resume_enabled"))
             self.assertEqual(meta.get("spec_ref"), "new-spec")
             # The block is preserved; the only refresh is wait_usage_reset -> the effective (here
             # default False) value of this resumed invocation.
@@ -14135,10 +14119,10 @@ class CheckpointResumeRuntimeTests(unittest.TestCase):
             repo = Path(tmp)
             init_orchestration(repo_root=repo, orchestration_id="o1",
                                invocation={"spec_ref": "s", "wait_usage_reset": False})
-            enable_checkpoint_resume(repo, "o1", spec_ref="s", wait_usage_reset=True)
+            resume_orchestration(repo, "o1", spec_ref="s", wait_usage_reset=True)
             self.assertIs(self._read_meta(repo, "o1")["invocation"]["wait_usage_reset"], True)
             # Now resume again WITHOUT the flag -> reset to False.
-            enable_checkpoint_resume(repo, "o1", spec_ref="s", wait_usage_reset=False)
+            resume_orchestration(repo, "o1", spec_ref="s", wait_usage_reset=False)
             self.assertIs(self._read_meta(repo, "o1")["invocation"]["wait_usage_reset"], False)
 
     def test_resume_does_not_add_wait_usage_reset_without_invocation_block(self) -> None:
@@ -14146,7 +14130,7 @@ class CheckpointResumeRuntimeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             init_orchestration(repo_root=repo, orchestration_id="o1")
-            enable_checkpoint_resume(repo, "o1", wait_usage_reset=True)
+            resume_orchestration(repo, "o1", wait_usage_reset=True)
             self.assertNotIn("invocation", self._read_meta(repo, "o1"))
 
     def test_resume_retarget_drops_stale_closure_link(self) -> None:
@@ -14160,7 +14144,7 @@ class CheckpointResumeRuntimeTests(unittest.TestCase):
                 invocation={"spec_ref": "spec/problem/top", "closure_id": "o1",
                             "closure_target_spec_ref": "spec/problem/top",
                             "closure_until_phase": "Validate"})
-            enable_checkpoint_resume(repo, "o1", spec_ref="spec/problem/other")
+            resume_orchestration(repo, "o1", spec_ref="spec/problem/other")
             meta = self._read_meta(repo, "o1")
             self.assertEqual(meta["spec_ref"], "spec/problem/other")
             inv = meta["invocation"]
@@ -14179,7 +14163,7 @@ class CheckpointResumeRuntimeTests(unittest.TestCase):
                 invocation={"spec_ref": "spec/problem/top", "closure_id": "o1",
                             "closure_target_spec_ref": "spec/problem/top",
                             "closure_until_phase": "Validate"})
-            enable_checkpoint_resume(repo, "o1", spec_ref="spec/problem/top")
+            resume_orchestration(repo, "o1", spec_ref="spec/problem/top")
             inv = self._read_meta(repo, "o1")["invocation"]
             self.assertEqual(inv["closure_id"], "o1")
             self.assertEqual(inv["closure_target_spec_ref"], "spec/problem/top")
@@ -14194,7 +14178,7 @@ class CheckpointResumeRuntimeTests(unittest.TestCase):
                 invocation={"spec_ref": "spec/component/c", "closure_id": "ORCHT",
                             "closure_target_spec_ref": "spec/problem/a",
                             "closure_until_phase": "Compile"})
-            enable_checkpoint_resume(repo, "dep_c", spec_ref="spec/component/c",
+            resume_orchestration(repo, "dep_c", spec_ref="spec/component/c",
                                      closure_until_phase="Validate")
             inv = self._read_meta(repo, "dep_c")["invocation"]
             self.assertEqual(inv["closure_until_phase"], "Validate")
@@ -14207,7 +14191,7 @@ class CheckpointResumeRuntimeTests(unittest.TestCase):
             init_orchestration(
                 repo_root=repo, orchestration_id="solo", spec_ref="spec/problem/x",
                 invocation={"spec_ref": "spec/problem/x"})
-            enable_checkpoint_resume(repo, "solo", spec_ref="spec/problem/x",
+            resume_orchestration(repo, "solo", spec_ref="spec/problem/x",
                                      closure_until_phase="Validate")
             inv = self._read_meta(repo, "solo")["invocation"]
             self.assertNotIn("closure_until_phase", inv)
@@ -15751,7 +15735,7 @@ class TestPhase1RuleSourceAudit(unittest.TestCase):
             orch = repo_root / "workspace/orchestrations/orch_p1m"
             (orch / "phase_state.json").unlink()
             (orch / "phase_state_log.jsonl").unlink()
-            doc = ort.merge_phase_state_for_resume(repo_root, "orch_p1m")
+            doc = ort.reconcile_phase_state_for_resume(repo_root, "orch_p1m")
             self.assertEqual(doc.get("current_state"), "preflight_passed")
 
     def test_phase1_orchestration_read_cli_outputs_json(self) -> None:
@@ -16726,7 +16710,7 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
         """The id becomes a directory name and every gate's path base, so both entry
         points refuse it. Resume as well as init: a workspace created under an older
         grammar would otherwise restart and fail at its first MCP call instead."""
-        from tools.orchestration_runtime import enable_checkpoint_resume
+        from tools.orchestration_runtime import resume_orchestration
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             for bad in ("../escape", "orch.1", "a/b", " orch_1 "):
@@ -16735,7 +16719,7 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
                         init_orchestration(repo_root=repo_root, orchestration_id=bad)
                     self.assertIn("plain [A-Za-z0-9_-] token", str(ctx.exception))
                     with self.assertRaises(RuntimeError) as ctx_resume:
-                        enable_checkpoint_resume(repo_root, bad)
+                        resume_orchestration(repo_root, bad)
                     self.assertIn("plain [A-Za-z0-9_-] token", str(ctx_resume.exception))
             # The generated form still works.
             init_orchestration(repo_root=repo_root,
@@ -33641,130 +33625,6 @@ class HostPycacheRedirectExemptionTest(unittest.TestCase):
             src,
             r"saved_pycache_prefix\s*=\s*sys\.pycache_prefix\s*\n\s*try:\s*\n"
             r"(?:.*\n)*?\s*finally:\s*\n\s*sys\.pycache_prefix\s*=\s*saved_pycache_prefix")
-
-
-class DriverIdentityRecordingTest(unittest.TestCase):
-    """`orchestration_meta.json#driver` — the record that lets a later run tell a
-    CRASHED driver (meta stuck at `running`) apart from a live concurrent one."""
-
-    def _meta(self, repo_root: Path, oid: str) -> dict:
-        return json.loads(
-            (repo_root / "workspace" / "orchestrations" / oid
-             / "orchestration_meta.json").read_text(encoding="utf-8")
-        )
-
-    def _run_init(self, argv: list[str]) -> None:
-        buf = io.StringIO()
-        with redirect_stdout(buf):
-            self.assertEqual(main(argv), 0)
-
-    def test_init_driver_json_records_block_with_recorded_at(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._run_init([
-                "init", "--repo-root", str(repo_root), "--orchestration-id", "o1",
-                "--driver-json",
-                json.dumps({"pid": 4242, "pid_start_ticks": "8236241",
-                            "boot_id": "b-1", "hostname": "h1"}),
-            ])
-            driver = self._meta(repo_root, "o1")["driver"]
-            self.assertEqual(driver["pid"], 4242)
-            self.assertEqual(driver["pid_start_ticks"], "8236241")
-            self.assertEqual(driver["hostname"], "h1")
-            self.assertTrue(driver["recorded_at"])
-
-    def test_cold_reinit_without_flag_drops_a_stale_driver_block(self) -> None:
-        # A cold (re-)init is a NEW driver. Preserving the old block would let a probe
-        # report the fresh run dead — or, after pid reuse, alive on another process.
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            init_orchestration(repo_root=repo_root, orchestration_id="o1",
-                               driver={"pid": 4242, "pid_start_ticks": "1"})
-            self.assertIn("driver", self._meta(repo_root, "o1"))
-            init_orchestration(repo_root=repo_root, orchestration_id="o1")
-            self.assertNotIn("driver", self._meta(repo_root, "o1"))
-
-    def test_malformed_driver_block_is_not_recorded(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            for bad in ({}, {"pid": 0}, {"pid": -1}, {"pid": "4242"}, {"pid": True},
-                        {"ticks": "1"}):
-                with self.subTest(driver=bad):
-                    init_orchestration(repo_root=repo_root, orchestration_id="o_bad",
-                                       driver=bad)
-                    self.assertNotIn("driver", self._meta(repo_root, "o_bad"))
-
-    def test_resume_init_refreshes_the_driver_block(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            init_orchestration(repo_root=repo_root, orchestration_id="o1",
-                               driver={"pid": 4242, "pid_start_ticks": "1"})
-            enable_checkpoint_resume(repo_root, "o1",
-                                     driver={"pid": 5151, "pid_start_ticks": "2"})
-            self.assertEqual(self._meta(repo_root, "o1")["driver"]["pid"], 5151)
-            # A resume that cannot capture an identity POPS the stale one rather than
-            # leaving the dead driver's pid on a live run.
-            enable_checkpoint_resume(repo_root, "o1")
-            self.assertNotIn("driver", self._meta(repo_root, "o1"))
-
-    def test_init_rejects_unusable_driver_json(self) -> None:
-        # Both arms raise rather than silently recording nothing: a driver block the
-        # caller believed it passed, but which never reached the meta, would make every
-        # later liveness probe answer `unknown` with no indication why.
-        # The two arms are asserted on their messages, not merely on the exception
-        # type: both reject, so only the diagnostic distinguishes "you passed a JSON
-        # array" from "you passed something that is not JSON at all".
-        for label, value, expected in (
-            ("non-object", "[1]", "must be a JSON object"),
-            ("invalid JSON", "{not json", "must be valid JSON"),
-        ):
-            with self.subTest(case=label), tempfile.TemporaryDirectory() as tmp:
-                with self.assertRaises(ValueError) as ctx:
-                    with redirect_stdout(io.StringIO()):
-                        main(["init", "--repo-root", str(tmp),
-                              "--orchestration-id", "o1", "--driver-json", value])
-                self.assertIn(expected, str(ctx.exception))
-
-    def test_driver_crashed_terminalization_enables_terminal_reset_resume(self) -> None:
-        # The whole point of terminalizing a corpse: `fail` is what routes the
-        # subsequent resume through `terminal_reset`, where the crash reconciliations
-        # (stale active_child markers, orphan graph edges, ...) actually run.
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            oid = "orch_crashed"
-            init_orchestration(repo_root=repo_root, orchestration_id=oid,
-                               driver={"pid": 4242, "pid_start_ticks": "1"})
-            root = repo_root / "workspace" / "orchestrations" / oid
-            child = "dangling-child-arid"
-            (root / "active_child_agent_run_id.txt").write_text(child, encoding="utf-8")
-            (root / "active_children").mkdir(exist_ok=True)
-            (root / "active_children" / f"{child}.txt").write_text(child, encoding="utf-8")
-
-            update_orchestration_status(
-                repo_root, oid, status="fail", reason_code="driver_crashed",
-                reason_detail="driver process is gone while the orchestration was running",
-            )
-            self.assertEqual(self._meta(repo_root, oid)["status"], "fail")
-
-            returned = enable_checkpoint_resume(repo_root, oid)
-            self.assertEqual(returned.get("status"), "running")
-            self.assertEqual(returned.get("resumed_from_status"), "fail")
-            self.assertEqual(returned.get("resumed_from_reason_code"), "driver_crashed")
-            # terminal_reset fired → the dangling launch's markers are reconciled.
-            self.assertFalse((root / "active_child_agent_run_id.txt").exists())
-            self.assertFalse((root / "active_children" / f"{child}.txt").exists())
-
-    def test_driver_interrupted_cancel_is_accepted(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            init_orchestration(repo_root=repo_root, orchestration_id="o1")
-            update_orchestration_status(
-                repo_root, "o1", status="cancel", reason_code="driver_interrupted",
-                reason_detail="driver process was interrupted",
-            )
-            meta = self._meta(repo_root, "o1")
-            self.assertEqual(meta["status"], "cancel")
-            self.assertEqual(meta["reason_code"], "driver_interrupted")
 
 
 class MultiProviderPreflightTests(unittest.TestCase):

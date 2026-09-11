@@ -93,48 +93,7 @@ def tearDownModule() -> None:
         _CLAIM_ROOT_TMPDIR.cleanup()
 
 
-def _unallocatable_pid() -> int:
-    """A pid the kernel can never hand out — so a driver block carrying it is foreign
-    to every process, including this one.
-
-    Fixtures that fabricate "another process's driver" as `{**our_identity, "pid": X}`
-    have X as their only discriminator in `_is_own_driver`, so a merely *unlikely* X
-    (a `pid + 1` neighbour, or a fixed constant like 424242) leaves a rare
-    nondeterministic failure. `pid_max` is the exclusive upper bound on allocation, so
-    `pid_max + 1` is out of range by construction — and `/proc/<it>` can never exist,
-    which keeps the real probe answering `dead` if a caller forgets to force a verdict.
-    """
-    try:
-        pid_max = int(Path("/proc/sys/kernel/pid_max").read_text(encoding="utf-8"))
-    except (OSError, ValueError):  # non-Linux: fall back to the 64-bit PID_MAX_LIMIT
-        pid_max = 4 * 1024 * 1024
-    return pid_max + 1
-
-
 @contextmanager
-def _forced_liveness():
-    """Route `_probe_driver_liveness` to a `driver.verdict` field on the seeded meta.
-
-    The driver-liveness FLOWS (terminalize / refuse / warn) are what the gate tests
-    pin; the /proc classification behind the verdict is pinned separately by
-    `DriverLivenessProbeTests`. A seeded block with no `verdict` still goes through the
-    real probe, so an unseeded orchestration keeps answering `unknown`.
-    """
-    original = run_workflow._probe_driver_liveness
-
-    def fake(meta):  # type: ignore[no-untyped-def]
-        driver = meta.get("driver") if isinstance(meta, dict) else None
-        if isinstance(driver, dict) and isinstance(driver.get("verdict"), str):
-            return driver["verdict"]
-        return original(meta)
-
-    run_workflow._probe_driver_liveness = fake  # type: ignore[assignment]
-    try:
-        yield
-    finally:
-        run_workflow._probe_driver_liveness = original  # type: ignore[assignment]
-
-
 class RunWorkflowTests(unittest.TestCase):
     def test_collect_failure_analysis_includes_unauthorized_write_violation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -611,9 +570,6 @@ class RunWorkflowTests(unittest.TestCase):
         out = json.loads(buf.getvalue().strip().splitlines()[-1])
         return code, out, observed_calls
 
-    def _forced_liveness(self):
-        return _forced_liveness()
-
     def test_node_start_event_emitted_once_on_stdout(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
@@ -670,7 +626,7 @@ class RunWorkflowTests(unittest.TestCase):
 
     def test_conductor_dev_failure_writes_failure_analysis(self) -> None:
         # In dev mode, a non-pass conductor run must persist failure_analysis.json
-        # (the documented dev-failure artifact that init --resume-from-checkpoint
+        # (the documented dev-failure artifact that init --resume
         # reads to build the cross-phase reopen resume_directive).
         import tools.workflow_conductor as wc
         with tempfile.TemporaryDirectory() as tmp:
@@ -782,11 +738,11 @@ class RunWorkflowTests(unittest.TestCase):
             self.assertEqual(out["until_phase"], "Build")
             self.assertEqual(out["llm"], "claude")
             self.assertEqual(out["workflow_mode"], "dev")
-            # init must use --resume-from-checkpoint (not a fresh init), and pass the
+            # init must use --resume (not a fresh init), and pass the
             # resolved spec/dep refs so meta stays in sync with the resumed run.
             init_calls = [c for c in calls if c and c[0] == "init"]
             self.assertEqual(len(init_calls), 1)
-            self.assertIn("--resume-from-checkpoint", init_calls[0])
+            self.assertIn("--resume", init_calls[0])
             idx = init_calls[0].index("--spec-ref")
             self.assertEqual(init_calls[0][idx + 1], "spec/problem/test.md")
             # ... and the end-phase THIS resume runs to, which the completion vouch reads to
@@ -799,7 +755,7 @@ class RunWorkflowTests(unittest.TestCase):
 
     def test_resume_with_wait_usage_reset_refreshes_it_in_init(self) -> None:
         """A resume that re-passes --wait-usage-reset forwards it to the resume init, so
-        enable_checkpoint_resume refreshes invocation.wait_usage_reset to the effective value (the
+        resume_orchestration refreshes invocation.wait_usage_reset to the effective value (the
         flag is not recovered from the record). Omitting it forwards nothing (records False)."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
@@ -812,7 +768,7 @@ class RunWorkflowTests(unittest.TestCase):
                  "--wait-usage-reset"])
             self.assertEqual(code, 0, out)
             init_calls = [c for c in calls if c and c[0] == "init"]
-            self.assertIn("--resume-from-checkpoint", init_calls[0])
+            self.assertIn("--resume", init_calls[0])
             self.assertIn("--wait-usage-reset", init_calls[0])
 
     def test_resume_without_wait_usage_reset_omits_it_from_init(self) -> None:
@@ -849,7 +805,7 @@ class RunWorkflowTests(unittest.TestCase):
             )
             self.assertEqual(code, 0, out)
             self.assertEqual(out["llm"], "claude")     # derived from the recorded pin
-            self.assertIn("--resume-from-checkpoint",
+            self.assertIn("--resume",
                           next(c for c in calls if c and c[0] == "init"))
 
     def test_a_resume_of_a_run_that_recorded_no_agent_model_omits_it(self) -> None:
@@ -885,7 +841,7 @@ class RunWorkflowTests(unittest.TestCase):
             self.assertEqual(code, 0, out)
             init_calls = [c for c in calls if c and c[0] == "init"]
             self.assertEqual(len(init_calls), 1)
-            self.assertNotIn("--resume-from-checkpoint", init_calls[0])
+            self.assertNotIn("--resume", init_calls[0])
             idx = init_calls[0].index("--agent-model")
             recorded = init_calls[0][idx + 1]
             self.assertEqual(recorded, resolve_claude_model_alias())
@@ -983,7 +939,7 @@ class RunWorkflowTests(unittest.TestCase):
         """The resumed run's backend comes from the RECORDED pin, not from the shared
         `./llm.yaml`. The orchestration agent's recorded model is NOT forwarded to the
         resume init any more: its only consumer was `repair-agent-runs`' sibling
-        derivation, deleted by issue #176, and `enable_checkpoint_resume` never took it."""
+        derivation, deleted by issue #176, and `resume_orchestration` never took it."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._seed_spec_tree(repo_root)
@@ -997,7 +953,7 @@ class RunWorkflowTests(unittest.TestCase):
             )
             self.assertEqual(code, 0, out)
             init_call = next(c for c in calls if c and c[0] == "init")
-            self.assertIn("--resume-from-checkpoint", init_call)
+            self.assertIn("--resume", init_call)
             self.assertNotIn("--agent-model", init_call)
             # This is genuinely a CODEX resume. Without this the test passed identically
             # against a claude configuration: the backend comes from the recorded pin, so a
@@ -1239,366 +1195,6 @@ class RunWorkflowTests(unittest.TestCase):
             repo_root, oid, spec_ref=spec_ref, until_phase="Build", mode="dev",
             backend="claude", status="running", driver=driver,
         )
-
-    def test_implicit_resume_terminalizes_dead_running_latest(self) -> None:
-        # A crashed driver leaves status='running' forever; the probe proves the corpse,
-        # so the resume terminalizes it FIRST (fail/driver_crashed) and only then runs
-        # init --resume-from-checkpoint — which is what routes the resume through
-        # `terminal_reset`, where the crash reconciliations live.
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._seed_spec_tree(repo_root)
-            oid = "orch_20260101T000000Z_aaaaaaaa"
-            self._seed_running_orchestration(repo_root, oid, verdict="dead")
-            # The bytecode assertion below reads the env this call BUILDS. With the
-            # variable already in the ambient environment it would pass for free via
-            # the `dict(os.environ)` fallback — and the environment where it is already
-            # set is exactly the one this repo mandates, i.e. where the guard would stop
-            # being tested. Clear it so the assertion can only pass if the code sets it.
-            ambient = os.environ.pop("PYTHONDONTWRITEBYTECODE", None)
-            try:
-                with self._forced_liveness():
-                    code, out, calls = self._run_main_with_fake_runtime(
-                        ["--resume", "--repo-root", str(repo_root), "--no-run-conductor"]
-                    )
-            finally:
-                if ambient is not None:
-                    os.environ["PYTHONDONTWRITEBYTECODE"] = ambient
-            self.assertEqual(code, 0, out)
-            self.assertEqual(out["orchestration_id"], oid)
-            verbs = [c[0] for c in calls]
-            self.assertEqual(verbs[0], "set-status")
-            self.assertIn("init", verbs)
-            self.assertLess(verbs.index("set-status"), verbs.index("init"))
-            set_status = calls[0]
-            self.assertEqual(set_status[set_status.index("--status") + 1], "fail")
-            self.assertEqual(
-                set_status[set_status.index("--reason-code") + 1], "driver_crashed"
-            )
-            init_call = calls[verbs.index("init")]
-            self.assertIn("--resume-from-checkpoint", init_call)
-            events = [e.get("event") for e in self._last_events]
-            self.assertIn("dead_driver_terminalized", events)
-            # This terminalization runs BEFORE base_env exists, so it must supply the
-            # no-bytecode setting itself; without it the runtime subprocess writes
-            # tools/__pycache__/*.pyc into the repo tree and a later child's write-diff
-            # reports it as an unauthorized write.
-            self.assertEqual(
-                self._last_runtime_envs[0].get("PYTHONDONTWRITEBYTECODE"), "1"
-            )
-
-    def test_implicit_resume_still_refuses_alive_running_latest(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._seed_spec_tree(repo_root)
-            self._seed_running_orchestration(
-                repo_root, "orch_20260101T000000Z_aaaaaaaa", verdict="alive")
-            with self._forced_liveness():
-                code, out, calls = self._run_main_with_fake_runtime(
-                    ["--resume", "--repo-root", str(repo_root), "--no-run-conductor"]
-                )
-            self.assertEqual(code, 2, out)
-            self.assertEqual(out["reason"], "latest_orchestration_not_resumable")
-            self.assertEqual(out["driver_pid"], 424242)
-            self.assertEqual(calls, [])
-
-    def test_explicit_resume_alive_running_refused(self) -> None:
-        # An explicit id is the deliberate override for the implicit-latest guard, but
-        # it cannot override a driver that is demonstrably still running.
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._seed_spec_tree(repo_root)
-            oid = "orch_20260101T000000Z_aaaaaaaa"
-            self._seed_running_orchestration(repo_root, oid, verdict="alive")
-            with self._forced_liveness():
-                code, out, calls = self._run_main_with_fake_runtime(
-                    ["--resume", "--orchestration-id", oid,
-                     "--repo-root", str(repo_root), "--no-run-conductor"]
-                )
-            self.assertEqual(code, 2, out)
-            self.assertEqual(out["reason"], "orchestration_driver_alive")
-            self.assertEqual(calls, [])
-
-    def test_explicit_resume_dead_running_terminalizes_first(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._seed_spec_tree(repo_root)
-            oid = "orch_20260101T000000Z_aaaaaaaa"
-            self._seed_running_orchestration(repo_root, oid, verdict="dead")
-            with self._forced_liveness():
-                code, out, calls = self._run_main_with_fake_runtime(
-                    ["--resume", "--orchestration-id", oid,
-                     "--repo-root", str(repo_root), "--no-run-conductor"]
-                )
-            self.assertEqual(code, 0, out)
-            self.assertEqual(calls[0][0], "set-status")
-            self.assertEqual(calls[0][calls[0].index("--reason-code") + 1], "driver_crashed")
-
-    def test_explicit_resume_indeterminate_running_warns_and_proceeds(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._seed_spec_tree(repo_root)
-            oid = "orch_20260101T000000Z_aaaaaaaa"
-            self._seed_running_orchestration(repo_root, oid, verdict="unknown")
-            with self._forced_liveness():
-                code, out, calls = self._run_main_with_fake_runtime(
-                    ["--resume", "--orchestration-id", oid,
-                     "--repo-root", str(repo_root), "--no-run-conductor"]
-                )
-            self.assertEqual(code, 0, out)
-            events = [e.get("event") for e in self._last_events]
-            self.assertIn("resume_liveness_indeterminate", events)
-            self.assertNotIn("set-status", [c[0] for c in calls])
-
-    def test_resume_fails_when_dead_driver_cannot_be_terminalized(self) -> None:
-        # Fail closed rather than resuming a still-`running` meta: the crash
-        # reconciliations would silently not run.
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._seed_spec_tree(repo_root)
-            oid = "orch_20260101T000000Z_aaaaaaaa"
-            self._seed_running_orchestration(repo_root, oid, verdict="dead")
-
-            def failing_runtime(root, env, args):  # type: ignore[no-untyped-def]
-                raise RuntimeError("runtime command failed (set-status): boom")
-
-            original = run_workflow._runtime_command
-            buf = io.StringIO()
-            try:
-                run_workflow._runtime_command = failing_runtime  # type: ignore[assignment]
-                with self._forced_liveness(), redirect_stdout(buf):
-                    code = run_workflow.main(
-                        ["--resume", "--orchestration-id", oid, "--repo-root",
-                         str(repo_root), "--no-run-conductor",
-                         "--stdout-format", "jsonl"]
-                    )
-            finally:
-                run_workflow._runtime_command = original  # type: ignore[assignment]
-            self.assertEqual(code, 2)
-            out = json.loads(buf.getvalue().strip().splitlines()[-1])
-            self.assertEqual(out["reason"], "dead_driver_terminalize_failed")
-
-    def test_cold_run_warns_about_prior_incomplete_orchestration(self) -> None:
-        # B: a cold run that leaves a resumable checkpoint behind must say so — the
-        # issue-#11 incident was a cold re-run silently discarding a 5083s compile pass.
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._seed_spec_tree(repo_root)
-            stale = "orch_20260101T000000Z_aaaaaaaa"
-            self._seed_running_orchestration(repo_root, stale, verdict="dead")
-            with self._forced_liveness():
-                code, out, calls = self._run_main_with_fake_runtime(
-                    ["spec/problem/test.md", "build", "--repo-root", str(repo_root),
-                     "--orchestration-id", "orch_cold", "--no-run-conductor"]
-                )
-            self.assertEqual(code, 0, out)
-            warns = [
-                e for e in self._last_events
-                if e.get("event") == "prior_incomplete_orchestration"
-            ]
-            self.assertEqual(len(warns), 1)
-            self.assertEqual(warns[0]["orchestration_id"], stale)
-            self.assertEqual(warns[0]["liveness"], "dead")
-            self.assertEqual(
-                warns[0]["resume_command"],
-                f"python3 tools/run_workflow.py --resume --orchestration-id {stale}",
-            )
-            # Warned, not blocked: the cold run still proceeds (inform over prohibit).
-            self.assertIn("init", [c[0] for c in calls])
-
-    def test_cold_run_warns_when_prior_liveness_indeterminate(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._seed_spec_tree(repo_root)
-            stale = "orch_20260101T000000Z_aaaaaaaa"
-            # No verdict seeded and no usable driver block → the real probe answers
-            # `unknown`, which must never block a cold run.
-            self._seed_resumable_orchestration(
-                repo_root, stale, spec_ref="spec/problem/test.md", until_phase="Build",
-                mode="dev", backend="claude", status="running",
-            )
-            code, out, calls = self._run_main_with_fake_runtime(
-                ["spec/problem/test.md", "build", "--repo-root", str(repo_root),
-                 "--orchestration-id", "orch_cold", "--no-run-conductor"]
-            )
-            self.assertEqual(code, 0, out)
-            warns = [
-                e for e in self._last_events
-                if e.get("event") == "prior_incomplete_orchestration"
-            ]
-            self.assertEqual([w["liveness"] for w in warns], ["unknown"])
-            self.assertIn("init", [c[0] for c in calls])
-
-    def test_cold_run_blocked_by_live_concurrent_orchestration(self) -> None:
-        # C: two live runs of one spec derive their pipeline_id from the same
-        # workspace/pipelines/<node_key_safe>/ tree and then write into it, so the
-        # second corrupts the first's in-flight state. Refuse before any orchestration
-        # state is created. (The workspace/tmp/<arid> collision is a RESUME hazard —
-        # a cold run always mints a fresh orchestration_agent_run_id.)
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._seed_spec_tree(repo_root)
-            live = "orch_20260101T000000Z_aaaaaaaa"
-            self._seed_running_orchestration(repo_root, live, verdict="alive")
-            with self._forced_liveness():
-                code, out, calls = self._run_main_with_fake_runtime(
-                    ["spec/problem/test.md", "build", "--repo-root", str(repo_root),
-                     "--orchestration-id", "orch_cold", "--no-run-conductor"]
-                )
-            self.assertEqual(code, 2, out)
-            self.assertEqual(out["reason"], "concurrent_orchestration_running")
-            self.assertEqual(out["orchestration_id"], live)
-            self.assertEqual(
-                out["resume_command"],
-                f"python3 tools/run_workflow.py --resume --orchestration-id {live}",
-            )
-            self.assertEqual(calls, [])
-
-    def test_cold_run_ignores_terminal_orchestration_of_the_same_spec(self) -> None:
-        # A completed (or failed) prior run of the same spec is not "incomplete": it
-        # has nothing to resume, so warning about it would be noise on every re-run.
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._seed_spec_tree(repo_root)
-            for status in ("pass", "fail", "fail_closed", "cancel"):
-                with self.subTest(status=status):
-                    self._seed_resumable_orchestration(
-                        repo_root, f"orch_prior_{status}",
-                        spec_ref="spec/problem/test.md", until_phase="Build",
-                        mode="dev", backend="claude", status=status,
-                        driver={"pid": 424242, "verdict": "alive"},
-                    )
-            with self._forced_liveness():
-                code, out, calls = self._run_main_with_fake_runtime(
-                    ["spec/problem/test.md", "build", "--repo-root", str(repo_root),
-                     "--orchestration-id", "orch_cold", "--no-run-conductor"]
-                )
-            self.assertEqual(code, 0, out)
-            self.assertEqual(
-                [e for e in self._last_events
-                 if e.get("event") == "prior_incomplete_orchestration"],
-                [],
-            )
-            self.assertIn("init", [c[0] for c in calls])
-
-    def test_cold_guard_ignores_an_orchestration_this_process_drives(self) -> None:
-        # The guard rescans the workspace on every call (a closure reaches its later
-        # nodes hours after it starts, and a competing run launched inside that window
-        # is exactly what must be caught), so it necessarily sees the orchestrations
-        # THIS invocation just started — whose driver is us and therefore probes
-        # `alive`. Without the self-exclusion a closure would block itself at its
-        # second node.
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._seed_spec_tree(repo_root)
-            identity = run_workflow._current_driver_identity()
-            self.assertIsNotNone(identity)
-            self._seed_resumable_orchestration(
-                repo_root, "orch_started_by_us", spec_ref="spec/problem/test.md",
-                until_phase="Build", mode="dev", backend="claude", status="running",
-                driver=dict(identity),
-            )
-            buf = io.StringIO()
-            with redirect_stdout(buf):
-                conflict = run_workflow._cold_start_running_guard(
-                    repo_root, "spec/problem/test.md", stdout_format="jsonl",
-                    driver_identity=identity,
-                )
-            self.assertIsNone(conflict)
-            self.assertEqual(buf.getvalue().strip(), "")
-            # Another live driver on the same spec is still caught. Each fixture below
-            # differs from our identity in EXACTLY ONE key, so the exclusion cannot be
-            # satisfied by any single key: matching on `pid` alone would re-admit the
-            # pid-reuse hazard the whole design is built around (a genuinely different
-            # earlier process, or a pre-reboot run, silently treated as "ours").
-            others = {
-                "orch_other_pid": {**identity, "pid": identity["pid"] + 1},
-                "orch_other_ticks": {
-                    **identity,
-                    "pid_start_ticks": str(int(identity["pid_start_ticks"]) + 1)},
-                "orch_other_boot": {**identity, "boot_id": "00000000-0000-0000-0000-000000000000"},
-                # A block that records a different namespace or uid is by its own
-                # account not this process, whatever the pid says.
-                "orch_other_ns": {**identity, "pid_ns": identity["pid_ns"] + 1},
-                "orch_other_uid": {**identity, "uid": identity["uid"] + 1},
-            }
-            for oid, other in others.items():
-                with self.subTest(differing_key=oid):
-                    for stale in others:
-                        shutil.rmtree(
-                            repo_root / "workspace" / "orchestrations" / stale,
-                            ignore_errors=True)
-                    self._seed_resumable_orchestration(
-                        repo_root, oid, spec_ref="spec/problem/test.md",
-                        until_phase="Build", mode="dev", backend="claude",
-                        status="running", driver={**other, "verdict": "alive"},
-                    )
-                    with self._forced_liveness(), redirect_stdout(io.StringIO()):
-                        conflict = run_workflow._cold_start_running_guard(
-                            repo_root, "spec/problem/test.md", stdout_format="jsonl",
-                            driver_identity=identity,
-                        )
-                    self.assertIsNotNone(conflict)
-                    self.assertEqual(conflict["orchestration_id"], oid)
-
-    def test_guards_skip_an_orchestration_whose_meta_is_gone(self) -> None:
-        # A meta that was deleted (or is unreadable) reads as `{}`, which has no
-        # status — so without the emptiness check it would be treated as non-terminal,
-        # probed as `unknown`, and reported as a "prior incomplete orchestration"
-        # pointing at a `--resume` that cannot possibly work.
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._seed_spec_tree(repo_root)
-            original_index = run_workflow._index_incomplete_orchestrations_by_spec
-            run_workflow._index_incomplete_orchestrations_by_spec = (  # type: ignore[assignment]
-                lambda root: {"spec/problem/test.md": ["orch_meta_deleted"]})
-            buf = io.StringIO()
-            try:
-                with redirect_stdout(buf):
-                    conflict = run_workflow._cold_start_running_guard(
-                        repo_root, "spec/problem/test.md", stdout_format="jsonl")
-            finally:
-                run_workflow._index_incomplete_orchestrations_by_spec = (  # type: ignore[assignment]
-                    original_index)
-            self.assertIsNone(conflict)
-            self.assertEqual(buf.getvalue().strip(), "")
-
-            # Same for the warm-resume guard: an id with no meta on disk is not a
-            # liveness question, it is a resume that init will reject on its own.
-            buf2 = io.StringIO()
-            with redirect_stdout(buf2):
-                self.assertIsNone(run_workflow._warm_resume_liveness_guard(
-                    repo_root, "orch_meta_deleted", stdout_format="jsonl"))
-            self.assertEqual(buf2.getvalue().strip(), "")
-
-    def test_repeated_in_process_run_is_not_blocked_by_its_own_prior_run(self) -> None:
-        # Pins the WIRING of the self-exclusion at the single-node call site: `main()`
-        # must hand the guard this process's identity. A caller that invokes `main()`
-        # more than once against one repo (an embedding caller, or a `--no-run-conductor`
-        # run, which never terminalizes) would otherwise have its second call refuse,
-        # naming a run that has already returned.
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._seed_spec_tree(repo_root)
-            identity = run_workflow._current_driver_identity()
-            self.assertIsNotNone(identity)
-            # Exactly the block `init --driver-json` persists, recorded_at included.
-            self._seed_resumable_orchestration(
-                repo_root, "orch_first_call", spec_ref="spec/problem/test.md",
-                until_phase="Build", mode="dev", backend="claude", status="running",
-                driver={**identity, "recorded_at": "2026-01-01T00:00:00.000000Z"},
-            )
-            code, out, calls = self._run_main_with_fake_runtime(
-                ["spec/problem/test.md", "build", "--repo-root", str(repo_root),
-                 "--orchestration-id", "orch_second_call", "--no-run-conductor"]
-            )
-            self.assertEqual(code, 0, out)
-            self.assertIn("init", [c[0] for c in calls])
-            self.assertEqual(
-                [e for e in self._last_events
-                 if e.get("event") == "prior_incomplete_orchestration"],
-                [],
-            )
 
     def test_claim_root_is_relocatable(self) -> None:
         # The override is what keeps a caller that drives many throwaway repo roots
@@ -1847,7 +1443,7 @@ class RunWorkflowTests(unittest.TestCase):
     def test_concurrent_resume_of_one_orchestration_is_refused(self) -> None:
         # The liveness gate cannot close this one: two `--resume` invocations of the
         # same run both observe the same dead driver, both terminalize it, and both
-        # reach `init --resume-from-checkpoint`, which PRESERVES
+        # reach `init --resume`, which PRESERVES
         # `orchestration_agent_run_id` — so both would drive one orchestration through
         # one `workspace/tmp/<arid>`, and whichever finishes first deletes the other's.
         with tempfile.TemporaryDirectory() as tmp:
@@ -1965,142 +1561,15 @@ class RunWorkflowTests(unittest.TestCase):
             self._seed_running_orchestration(repo_root, oid, verdict="dead")
             with run_workflow._exclusive_claim(repo_root, "orch", oid) as held:
                 self.assertTrue(held)
-                with self._forced_liveness():
-                    code, out, calls = self._run_main_with_fake_runtime(
-                        ["--resume", "--orchestration-id", oid,
-                         "--repo-root", str(repo_root), "--no-run-conductor"]
-                    )
+                code, out, calls = self._run_main_with_fake_runtime(
+                    ["--resume", "--orchestration-id", oid,
+                     "--repo-root", str(repo_root), "--no-run-conductor"]
+                )
             self.assertEqual(code, 2, out)
             self.assertEqual(out["reason"], "concurrent_orchestration_running")
-            # No set-status: the dead-driver terminalization never ran.
+            # Nothing else ran: the claim is the gate, and it is taken before the meta is
+            # read at all.
             self.assertEqual(calls, [])
-
-    def test_cold_guard_survives_an_uncapturable_driver_identity(self) -> None:
-        # `_current_driver_identity()` returns None wherever /proc is unavailable —
-        # the documented degrade path — and that None is handed straight to the guard.
-        # It must still classify the candidate, not raise: an AttributeError here is an
-        # uncaught crash inside the recovery gate, on the exact hosts that have no
-        # other recovery signal.
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._seed_spec_tree(repo_root)
-            self._seed_resumable_orchestration(
-                repo_root, "orch_prior", spec_ref="spec/problem/test.md",
-                until_phase="Build", mode="dev", backend="claude", status="running",
-                driver={"pid": _unused_pid(), "pid_start_ticks": "1",
-                        "hostname": run_workflow._current_hostname()},
-            )
-            buf = io.StringIO()
-            with redirect_stdout(buf):
-                conflict = run_workflow._cold_start_running_guard(
-                    repo_root, "spec/problem/test.md", stdout_format="jsonl",
-                    driver_identity=None,
-                )
-            self.assertIsNone(conflict)
-            warns = [json.loads(line) for line in buf.getvalue().splitlines()
-                     if line.strip()]
-            self.assertEqual([w["event"] for w in warns],
-                             ["prior_incomplete_orchestration"])
-
-    def test_cold_guard_rechecks_status_at_probe_time(self) -> None:
-        # A candidate that terminalized between the scan and the probe must be dropped:
-        # acting on it would refuse a cold run because of a finished orchestration and
-        # point the operator at a `--resume` that makes no sense.
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._seed_spec_tree(repo_root)
-            oid = "orch_finished_since"
-            self._seed_resumable_orchestration(
-                repo_root, oid, spec_ref="spec/problem/test.md", until_phase="Build",
-                mode="dev", backend="claude", status="running",
-                driver={"pid": 424242, "verdict": "alive"},
-            )
-            meta_path = (repo_root / "workspace" / "orchestrations" / oid
-                         / "orchestration_meta.json")
-            original_index = run_workflow._index_incomplete_orchestrations_by_spec
-
-            def index_then_terminalize(root):  # type: ignore[no-untyped-def]
-                # Scan sees it as incomplete; it terminalizes before the probe reads it.
-                index = original_index(root)
-                meta = json.loads(meta_path.read_text(encoding="utf-8"))
-                meta["status"] = "pass"
-                meta_path.write_text(json.dumps(meta), encoding="utf-8")
-                return index
-
-            run_workflow._index_incomplete_orchestrations_by_spec = (  # type: ignore[assignment]
-                index_then_terminalize)
-            buf = io.StringIO()
-            try:
-                with self._forced_liveness(), redirect_stdout(buf):
-                    conflict = run_workflow._cold_start_running_guard(
-                        repo_root, "spec/problem/test.md", stdout_format="jsonl")
-            finally:
-                run_workflow._index_incomplete_orchestrations_by_spec = (  # type: ignore[assignment]
-                    original_index)
-            self.assertIsNone(conflict)
-            self.assertEqual(buf.getvalue().strip(), "")
-
-    def test_cold_run_ignores_running_orchestration_of_another_spec(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._seed_spec_tree(repo_root)
-            self._seed_running_orchestration(
-                repo_root, "orch_20260101T000000Z_aaaaaaaa", verdict="alive",
-                spec_ref="spec/problem/other.md",
-            )
-            with self._forced_liveness():
-                code, out, calls = self._run_main_with_fake_runtime(
-                    ["spec/problem/test.md", "build", "--repo-root", str(repo_root),
-                     "--orchestration-id", "orch_cold", "--no-run-conductor"]
-                )
-            self.assertEqual(code, 0, out)
-            self.assertEqual(
-                [e for e in self._last_events
-                 if e.get("event") == "prior_incomplete_orchestration"],
-                [],
-            )
-            self.assertIn("init", [c[0] for c in calls])
-
-    @unittest.skipUnless(
-        Path("/proc/self/stat").exists(), "driver identity capture requires Linux /proc"
-    )
-    def test_cold_init_records_driver_identity(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._seed_spec_tree(repo_root)
-            code, out, calls = self._run_main_with_fake_runtime(
-                ["spec/problem/test.md", "build", "--repo-root", str(repo_root),
-                 "--orchestration-id", "orch_cold", "--no-run-conductor"]
-            )
-            self.assertEqual(code, 0, out)
-            init_call = [c for c in calls if c and c[0] == "init"][0]
-            driver = json.loads(init_call[init_call.index("--driver-json") + 1])
-            self.assertEqual(driver["pid"], os.getpid())
-            self.assertTrue(driver["pid_start_ticks"].isdigit())
-
-    @unittest.skipUnless(
-        Path("/proc/self/stat").exists(), "driver identity capture requires Linux /proc"
-    )
-    def test_resume_init_refreshes_driver_identity(self) -> None:
-        # The RESUMING process becomes the driver; leaving the dead one's pid recorded
-        # would let a probe call the live resumed run dead (or, after pid reuse, alive
-        # on an unrelated process).
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._seed_spec_tree(repo_root)
-            self._seed_resumable_orchestration(
-                repo_root, "orch_20260101T000000Z_aaaaaaaa",
-                spec_ref="spec/problem/test.md", until_phase="Build",
-                mode="dev", backend="claude",
-            )
-            code, out, calls = self._run_main_with_fake_runtime(
-                ["--resume", "--repo-root", str(repo_root), "--no-run-conductor"]
-            )
-            self.assertEqual(code, 0, out)
-            init_call = [c for c in calls if c and c[0] == "init"][0]
-            self.assertIn("--resume-from-checkpoint", init_call)
-            driver = json.loads(init_call[init_call.index("--driver-json") + 1])
-            self.assertEqual(driver["pid"], os.getpid())
 
     def _run_cold_with_conductor(self, repo_root: Path, oid: str, exc: BaseException,
                                  stdout_format: str = "jsonl"):
@@ -2318,21 +1787,18 @@ class RunWorkflowTests(unittest.TestCase):
             repo_root = Path(tmp)
             self._seed_spec_tree(repo_root)
             oid = "orch_interrupt_mid_init"
-            identity = run_workflow._current_driver_identity()
-            self.assertIsNotNone(identity)
             observed: list[list[str]] = []
 
             def runtime_that_commits_then_dies(root, env, args):  # type: ignore[no-untyped-def]
                 observed.append(args)
                 if args[0] == "init":
                     # Exactly what the real init does before it returns: commit the
-                    # meta (with our driver block), then die before answering.
+                    # meta, then die before answering — so `init_committed` never flips.
                     d = repo_root / "workspace" / "orchestrations" / oid
                     d.mkdir(parents=True, exist_ok=True)
                     (d / "orchestration_meta.json").write_text(
                         json.dumps({"orchestration_id": oid, "status": "running",
-                                    "spec_ref": "spec/problem/test.md",
-                                    "driver": {**identity, "recorded_at": "now"}}),
+                                    "spec_ref": "spec/problem/test.md"}),
                         encoding="utf-8")
                     raise KeyboardInterrupt()
                 return run_workflow.RuntimeResult(payload={"status": "ok"}, raw_stdout="{}")
@@ -2362,21 +1828,13 @@ class RunWorkflowTests(unittest.TestCase):
             repo_root = Path(tmp)
             self._seed_spec_tree(repo_root)
             oid = "orch_someone_elses"
-            identity = run_workflow._current_driver_identity()
-            self.assertIsNotNone(identity)
             d = repo_root / "workspace" / "orchestrations" / oid
             d.mkdir(parents=True, exist_ok=True)
             (d / "orchestration_meta.json").write_text(
+                # No `driver` block: issue #177 deleted it. What makes this run "someone
+                # else's" is simply that THIS invocation never committed its init.
                 json.dumps({"orchestration_id": oid, "status": "running",
-                            "spec_ref": "spec/problem/test.md",
-                            # Another process's driver block. Both the verdict and the
-                            # pid are pinned by construction: a `pid + 1` neighbour with
-                            # our own start ticks can accidentally denote a live
-                            # same-tick sibling, which makes the cold guard refuse
-                            # before the runtime (hence the interrupt) is ever reached
-                            # — issue #32. `dead` is the intended scenario here.
-                            "driver": {**identity, "pid": _unallocatable_pid(),
-                                       "verdict": "dead"}}),
+                            "spec_ref": "spec/problem/test.md"}),
                 encoding="utf-8")
             observed: list[list[str]] = []
 
@@ -2387,7 +1845,7 @@ class RunWorkflowTests(unittest.TestCase):
             original = run_workflow._runtime_command
             run_workflow._runtime_command = interrupting_runtime  # type: ignore[assignment]
             try:
-                with self._forced_liveness(), redirect_stdout(io.StringIO()):
+                with redirect_stdout(io.StringIO()):
                     with self.assertRaises(KeyboardInterrupt):
                         run_workflow.main(
                             ["spec/problem/test.md", "build", "--repo-root",
@@ -2396,64 +1854,6 @@ class RunWorkflowTests(unittest.TestCase):
             finally:
                 run_workflow._runtime_command = original  # type: ignore[assignment]
             self.assertEqual([c for c in observed if c and c[0] == "set-status"], [])
-
-    def test_interrupt_cannot_fire_when_a_live_foreign_driver_holds_the_id(self) -> None:
-        # The `alive` half of the case above, on purpose: when the reused
-        # `--orchestration-id` names a LIVE foreign driver, the cold guard refuses
-        # before the runtime runs, so no interrupt can be raised and the other run's
-        # meta stays untouched. (This is the mechanism that used to make the neighbor
-        # test flaky — issue #32 — pinned here deliberately.)
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._seed_spec_tree(repo_root)
-            oid = "orch_someone_elses_live"
-            identity = run_workflow._current_driver_identity()
-            self.assertIsNotNone(identity)
-            d = repo_root / "workspace" / "orchestrations" / oid
-            d.mkdir(parents=True, exist_ok=True)
-            seeded = {"orchestration_id": oid, "status": "running",
-                      "spec_ref": "spec/problem/test.md",
-                      # Foreign by construction — see the neighbor above.
-                      "driver": {**identity, "pid": _unallocatable_pid(),
-                                 "verdict": "alive"}}
-            meta_path = d / "orchestration_meta.json"
-            meta_path.write_text(json.dumps(seeded), encoding="utf-8")
-            observed: list[list[str]] = []
-
-            def interrupting_runtime(root, env, args):  # type: ignore[no-untyped-def]
-                observed.append(args)
-                raise KeyboardInterrupt()
-
-            original = run_workflow._runtime_command
-            run_workflow._runtime_command = interrupting_runtime  # type: ignore[assignment]
-            buf = io.StringIO()
-            code = None
-            reached_runtime = None
-            try:
-                with self._forced_liveness(), redirect_stdout(buf):
-                    try:
-                        code = run_workflow.main(
-                            ["spec/problem/test.md", "build", "--repo-root",
-                             str(repo_root), "--orchestration-id", oid,
-                             "--stdout-format", "jsonl"])
-                    except KeyboardInterrupt as exc:
-                        # Caught, not propagated: an escaping KeyboardInterrupt aborts
-                        # the whole pytest session (and reads like an operator Ctrl-C),
-                        # which would hide the regression instead of reporting it.
-                        reached_runtime = exc
-            finally:
-                run_workflow._runtime_command = original  # type: ignore[assignment]
-            if reached_runtime is not None:
-                self.fail(
-                    "cold guard let the run reach the runtime despite a live foreign "
-                    f"driver: {observed}")
-            out = json.loads(buf.getvalue().strip().splitlines()[-1])
-            self.assertEqual(code, 2, out)
-            self.assertEqual(out["reason"], "concurrent_orchestration_running")
-            # ("the runtime was never reached" is pinned by the `reached_runtime`
-            # check above — the stub cannot be entered without raising.)
-            self.assertEqual(
-                json.loads(meta_path.read_text(encoding="utf-8")), seeded)
 
     def test_interrupt_preserves_an_already_terminal_status(self) -> None:
         # The conductor/runtime may have recorded a more specific terminal outcome
@@ -2718,8 +2118,6 @@ class RunWorkflowTests(unittest.TestCase):
             repo_root = Path(tmp)
             self._seed_spec_tree(repo_root)
             oid = "orch_init_committed_then_failed"
-            identity = run_workflow._current_driver_identity()
-            self.assertIsNotNone(identity)
             observed: list[list[str]] = []
 
             def runtime_that_commits_then_answers_short(root, env, args):  # type: ignore[no-untyped-def]
@@ -2729,8 +2127,7 @@ class RunWorkflowTests(unittest.TestCase):
                     d.mkdir(parents=True, exist_ok=True)
                     (d / "orchestration_meta.json").write_text(
                         json.dumps({"orchestration_id": oid, "status": "running",
-                                    "spec_ref": "spec/problem/test.md",
-                                    "driver": {**identity, "recorded_at": "now"}}),
+                                    "spec_ref": "spec/problem/test.md"}),
                         encoding="utf-8")
                     return run_workflow.RuntimeResult(
                         payload={"status": "ok"}, raw_stdout="{}")
@@ -2765,19 +2162,14 @@ class RunWorkflowTests(unittest.TestCase):
             repo_root = Path(tmp)
             self._seed_spec_tree(repo_root)
             oid = "orch_rtfail_someone_elses"
-            identity = run_workflow._current_driver_identity()
-            self.assertIsNotNone(identity)
             d = repo_root / "workspace" / "orchestrations" / oid
             d.mkdir(parents=True, exist_ok=True)
             meta_path = d / "orchestration_meta.json"
             meta_path.write_text(
+                # Foreign by construction: this invocation never committed an init for
+                # it, which since issue #177 is the whole of the ownership test.
                 json.dumps({"orchestration_id": oid, "status": "running",
-                            "spec_ref": "spec/problem/test.md",
-                            # Foreign by construction — unallocatable pid plus an
-                            # explicit `dead` verdict, so the cold guard lets the run
-                            # reach the runtime (issue #32).
-                            "driver": {**identity, "pid": _unallocatable_pid(),
-                                       "verdict": "dead"}}),
+                            "spec_ref": "spec/problem/test.md"}),
                 encoding="utf-8")
             seeded_bytes = meta_path.read_bytes()
             observed: list[list[str]] = []
@@ -2790,7 +2182,7 @@ class RunWorkflowTests(unittest.TestCase):
             run_workflow._runtime_command = runtime_whose_init_dies  # type: ignore[assignment]
             buf = io.StringIO()
             try:
-                with self._forced_liveness(), redirect_stdout(buf):
+                with redirect_stdout(buf):
                     code = run_workflow.main(
                         ["spec/problem/test.md", "build", "--repo-root", str(repo_root),
                          "--orchestration-id", oid, "--stdout-format", "jsonl"])
@@ -2973,8 +2365,6 @@ class RunWorkflowTests(unittest.TestCase):
             repo_root = Path(tmp)
             self._seed_spec_tree(repo_root)
             oid = "orch_exc_mid_init"
-            identity = run_workflow._current_driver_identity()
-            self.assertIsNotNone(identity)
             observed: list[list[str]] = []
 
             def runtime_that_commits_then_dies(root, env, args):  # type: ignore[no-untyped-def]
@@ -2984,8 +2374,7 @@ class RunWorkflowTests(unittest.TestCase):
                     d.mkdir(parents=True, exist_ok=True)
                     (d / "orchestration_meta.json").write_text(
                         json.dumps({"orchestration_id": oid, "status": "running",
-                                    "spec_ref": "spec/problem/test.md",
-                                    "driver": {**identity, "recorded_at": "now"}}),
+                                    "spec_ref": "spec/problem/test.md"}),
                         encoding="utf-8")
                     raise ValueError("boom")
                 return run_workflow.RuntimeResult(payload={"status": "ok"}, raw_stdout="{}")
@@ -3017,17 +2406,12 @@ class RunWorkflowTests(unittest.TestCase):
             repo_root = Path(tmp)
             self._seed_spec_tree(repo_root)
             oid = "orch_exc_someone_elses"
-            identity = run_workflow._current_driver_identity()
-            self.assertIsNotNone(identity)
             d = repo_root / "workspace" / "orchestrations" / oid
             d.mkdir(parents=True, exist_ok=True)
+            # Foreign by construction: this invocation never committed an init for it,
+            # which since issue #177 is the whole of the ownership test.
             seeded = {"orchestration_id": oid, "status": "running",
-                      "spec_ref": "spec/problem/test.md",
-                      # Foreign by construction: an unallocatable pid plus an explicit
-                      # `dead` verdict, so no live same-tick sibling can make the cold
-                      # guard refuse before the runtime is reached — issue #32.
-                      "driver": {**identity, "pid": _unallocatable_pid(),
-                                 "verdict": "dead"}}
+                      "spec_ref": "spec/problem/test.md"}
             meta_path = d / "orchestration_meta.json"
             meta_path.write_text(json.dumps(seeded), encoding="utf-8")
             seeded_bytes = meta_path.read_bytes()
@@ -3041,7 +2425,7 @@ class RunWorkflowTests(unittest.TestCase):
             run_workflow._runtime_command = raising_runtime  # type: ignore[assignment]
             buf = io.StringIO()
             try:
-                with self._forced_liveness(), redirect_stderr(io.StringIO()), \
+                with redirect_stderr(io.StringIO()), \
                         redirect_stdout(buf):
                     code = run_workflow.main(
                         ["spec/problem/test.md", "build", "--repo-root", str(repo_root),
@@ -3079,43 +2463,9 @@ class RunWorkflowTests(unittest.TestCase):
             self.assertEqual(out["reason"], "driver_exception")
             self.assertEqual([c for c in observed if c and c[0] == "set-status"], [])
 
-    def test_resume_refuses_running_latest_without_explicit_id(self) -> None:
-        # Implicit `--resume` must not auto-attach to a non-terminal (running) latest.
-        # This seeds NO driver block, so the probe answers `unknown` — the branch that
-        # preserves both pre-liveness behaviors (implicit refuses, explicit bypasses).
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._seed_spec_tree(repo_root)
-            oid = "orch_20260101T000000Z_aaaaaaaa"
-            self._seed_resumable_orchestration(
-                repo_root, oid, spec_ref="spec/problem/test.md",
-                until_phase="Build", mode="dev", backend="claude",
-            )
-            meta_path = (
-                repo_root / "workspace" / "orchestrations" / oid / "orchestration_meta.json"
-            )
-            meta = json.loads(meta_path.read_text(encoding="utf-8"))
-            meta["status"] = "running"
-            meta_path.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
-
-            code, out, calls = self._run_main_with_fake_runtime(
-                ["--resume", "--repo-root", str(repo_root), "--no-run-conductor"]
-            )
-            self.assertEqual(code, 2)
-            self.assertEqual(out["reason"], "latest_orchestration_not_resumable")
-            self.assertEqual(calls, [])
-
-            # An explicit --orchestration-id bypasses the guard (deliberate choice).
-            code2, out2, _ = self._run_main_with_fake_runtime(
-                ["--resume", "--orchestration-id", oid,
-                 "--repo-root", str(repo_root), "--no-run-conductor"]
-            )
-            self.assertEqual(code2, 0, out2)
-            self.assertEqual(out2["orchestration_id"], oid)
-
     def test_resume_passes_overridden_spec_ref_to_init(self) -> None:
         # An explicit spec_ref override on resume must be forwarded to
-        # init --resume-from-checkpoint so meta is updated (not left stale).
+        # init --resume so meta is updated (not left stale).
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._seed_spec_tree(repo_root)
@@ -5950,35 +5300,6 @@ class DependencyClosureTests(unittest.TestCase):
             run_workflow._runtime_command = original  # type: ignore[assignment]
         return rc, captured, stdout, observed
 
-    def test_closure_resume_terminalizes_dead_prior_dependency(self) -> None:
-        # A dependency whose own driver died mid-closure is stuck at `running`; the
-        # entry-point resume gate never sees it, so the closure driver terminalizes it
-        # here — otherwise its warm resume skips the crash reconciliations.
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
-            self._seed_diamond(repo_root)
-            self._seed_prior_member(
-                repo_root, "orch_c_prev", "spec/component/c",
-                status="running", driver={"pid": 4242, "verdict": "dead"})
-            with _forced_liveness():
-                rc, captured, stdout, calls = self._drive_closure_with_runtime(
-                    repo_root, resume=True,
-                    prior_orch_by_spec={"spec/component/c": "orch_c_prev"})
-            self.assertEqual(rc, 0)
-            set_status = [c for c in calls if c and c[0] == "set-status"]
-            self.assertEqual(len(set_status), 1)
-            self.assertEqual(
-                set_status[0][set_status[0].index("--reason-code") + 1], "driver_crashed")
-            self.assertEqual(
-                set_status[0][set_status[0].index("--orchestration-id") + 1], "orch_c_prev")
-            # Terminalized, then still warm-resumed (the checkpoint is the whole point).
-            by_spec = {c["spec_ref"]: c for c in captured}
-            self.assertTrue(by_spec["spec/component/c"]["resume_mode"])
-            self.assertEqual(
-                by_spec["spec/component/c"]["orchestration_id"], "orch_c_prev")
-            self.assertIn("dead_driver_terminalized", stdout)
-
     def test_closure_resume_claims_a_member_before_terminalizing_it(self) -> None:
         # The per-member warm guard WRITES when it finds a dead driver
         # (`set-status fail/driver_crashed`). Two closures resuming the same member
@@ -5990,289 +5311,19 @@ class DependencyClosureTests(unittest.TestCase):
             _seed_shape_expr_schema_into(repo_root)
             self._seed_diamond(repo_root)
             self._seed_prior_member(
-                repo_root, "orch_c_prev", "spec/component/c",
-                status="running", driver={"pid": 4242, "verdict": "dead"})
+                repo_root, "orch_c_prev", "spec/component/c", status="running")
             with run_workflow._exclusive_claim(repo_root, "orch", "orch_c_prev") as held:
                 self.assertTrue(held)
-                with _forced_liveness():
-                    rc, captured, stdout, calls = self._drive_closure_with_runtime(
-                        repo_root, resume=True,
-                        prior_orch_by_spec={"spec/component/c": "orch_c_prev"})
+                rc, captured, stdout, calls = self._drive_closure_with_runtime(
+                    repo_root, resume=True,
+                    prior_orch_by_spec={"spec/component/c": "orch_c_prev"})
             self.assertEqual(rc, 2)
             self.assertEqual(captured, [])
-            # Refused before the guard: nothing was terminalized.
+            # Refused on the claim, before anything else ran.
             self.assertEqual([c for c in calls if c and c[0] == "set-status"], [])
             last = json.loads(stdout.strip().splitlines()[-1])
             self.assertEqual(last["reason"], "concurrent_orchestration_running")
             self.assertEqual(last["orchestration_id"], "orch_c_prev")
-
-    def test_closure_resume_refuses_live_prior_dependency(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
-            self._seed_diamond(repo_root)
-            self._seed_prior_member(
-                repo_root, "orch_c_prev", "spec/component/c",
-                status="running", driver={"pid": 4242, "verdict": "alive"})
-            with _forced_liveness():
-                rc, captured, stdout, calls = self._drive_closure_with_runtime(
-                    repo_root, resume=True,
-                    prior_orch_by_spec={"spec/component/c": "orch_c_prev"})
-            self.assertEqual(rc, 2)
-            self.assertEqual(captured, [])
-            self.assertEqual([c for c in calls if c and c[0] == "set-status"], [])
-            last = json.loads(stdout.strip().splitlines()[-1])
-            # Same reason code the entry-point resume gate uses for an explicit-id
-            # refusal: a consumer must not need to know which gate refused.
-            self.assertEqual(last["reason"], "orchestration_driver_alive")
-            self.assertEqual(last["failed_dependency_node"], "infrastructure/c@0.1.0")
-
-    def test_cold_closure_blocks_on_live_orchestration_for_a_node(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
-            self._seed_diamond(repo_root)
-            self._seed_prior_member(
-                repo_root, "orch_c_live", "spec/component/c",
-                status="running", driver={"pid": 4242, "verdict": "alive"})
-            with _forced_liveness():
-                rc, captured, stdout, _calls = self._drive_closure_with_runtime(
-                    repo_root, resume=False, prior_orch_by_spec=None)
-            self.assertEqual(rc, 2)
-            self.assertEqual(captured, [])
-            last = json.loads(stdout.strip().splitlines()[-1])
-            self.assertEqual(last["reason"], "concurrent_orchestration_running")
-            self.assertEqual(last["orchestration_id"], "orch_c_live")
-
-    def test_closure_resume_skips_the_liveness_probe_for_a_terminal_member(self) -> None:
-        # The normal warm-resume case: the member terminalized on its own (`fail`), so
-        # there is no driver to probe. Probing anyway would let a recycled pid recorded
-        # on a FINISHED run refuse the whole closure.
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
-            self._seed_diamond(repo_root)
-            self._seed_prior_member(
-                repo_root, "orch_c_prev", "spec/component/c",
-                status="fail", driver={"pid": 4242, "verdict": "alive"})
-            with _forced_liveness():
-                rc, captured, stdout, calls = self._drive_closure_with_runtime(
-                    repo_root, resume=True,
-                    prior_orch_by_spec={"spec/component/c": "orch_c_prev"})
-            self.assertEqual(rc, 0)
-            self.assertEqual(len(captured), 3)
-            self.assertEqual([c for c in calls if c and c[0] == "set-status"], [])
-            self.assertNotIn("orchestration_driver_alive", stdout)
-
-    def test_closure_resume_warns_when_member_liveness_indeterminate(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
-            self._seed_diamond(repo_root)
-            self._seed_prior_member(
-                repo_root, "orch_c_prev", "spec/component/c",
-                status="running", driver={"pid": 4242, "verdict": "unknown"})
-            with _forced_liveness():
-                rc, captured, stdout, calls = self._drive_closure_with_runtime(
-                    repo_root, resume=True,
-                    prior_orch_by_spec={"spec/component/c": "orch_c_prev"})
-            self.assertEqual(rc, 0)
-            warns = [
-                json.loads(line) for line in stdout.splitlines()
-                if line.strip().startswith("{")
-                and json.loads(line).get("event") == "resume_liveness_indeterminate"
-            ]
-            self.assertEqual([w["orchestration_id"] for w in warns], ["orch_c_prev"])
-            # Indeterminate never terminalizes, and never blocks the resume.
-            self.assertEqual([c for c in calls if c and c[0] == "set-status"], [])
-            self.assertEqual(len(captured), 3)
-
-    def test_closure_resume_fails_when_member_terminalize_fails(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
-            self._seed_diamond(repo_root)
-            self._seed_prior_member(
-                repo_root, "orch_c_prev", "spec/component/c",
-                status="running", driver={"pid": 4242, "verdict": "dead"})
-
-            def failing_runtime(root, env, args):  # type: ignore[no-untyped-def]
-                raise RuntimeError("runtime command failed (set-status): boom")
-
-            original = run_workflow._runtime_command
-            run_workflow._runtime_command = failing_runtime  # type: ignore[assignment]
-            try:
-                with _forced_liveness():
-                    rc, captured, stdout = self._drive_closure_raw(
-                        repo_root, resume=True,
-                        prior_orch_by_spec={"spec/component/c": "orch_c_prev"})
-            finally:
-                run_workflow._runtime_command = original  # type: ignore[assignment]
-            self.assertEqual(rc, 2)
-            self.assertEqual(captured, [])
-            last = json.loads(stdout.strip().splitlines()[-1])
-            self.assertEqual(last["reason"], "dead_driver_terminalize_failed")
-
-    def test_cold_closure_blocks_on_live_orchestration_for_the_target(self) -> None:
-        # The target's own gate: the dependencies are all ready/ran, and only then is
-        # the target checked. Without it the closure would drive the target into a
-        # live run's workspace state after paying for every dependency.
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
-            self._seed_diamond(repo_root)
-            self._seed_prior_member(
-                repo_root, "orch_a_live", "spec/problem/a",
-                status="running", driver={"pid": 4242, "verdict": "alive"})
-            with _forced_liveness():
-                rc, captured, stdout, _calls = self._drive_closure_with_runtime(
-                    repo_root, resume=False, prior_orch_by_spec=None)
-            self.assertEqual(rc, 2)
-            # Both dependencies ran; only the target was refused.
-            self.assertEqual([c["spec_ref"] for c in captured],
-                             ["spec/component/c", "spec/component/b"])
-            last = json.loads(stdout.strip().splitlines()[-1])
-            self.assertEqual(last["reason"], "concurrent_orchestration_running")
-            self.assertEqual(last["orchestration_id"], "orch_a_live")
-            self.assertEqual(last["target_spec_ref"], "spec/problem/a")
-
-    def test_cold_closure_detects_a_run_started_after_the_closure_began(self) -> None:
-        # The concurrency guard's whole point is the hours-long window a --with-deps
-        # closure occupies: the competing run is far more likely to be launched DURING
-        # the dependency phase than before it. A workspace scan sampled once at closure
-        # start is blind to exactly that case, so the guard rescans per node.
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
-            self._seed_diamond(repo_root)
-            captured: list[dict] = []
-            ran: set[str] = set()
-
-            def fake_run_node(**kw):
-                captured.append(kw)
-                ran.add(kw["spec_ref"])
-                if kw["spec_ref"] == "spec/component/c":
-                    # Operator B starts a run of the TARGET spec while this closure is
-                    # still working through its dependencies.
-                    self._seed_prior_member(
-                        repo_root, "orch_operator_b", "spec/problem/a",
-                        status="running", driver={"pid": 4242, "verdict": "alive"})
-                return 0
-
-            def fake_ready(repo_root_, node, required_stages):
-                # The driver reads the DICT form; a bool fake here would be bypassed.
-                ready = node["spec_ref"] in ran
-                return {"ready": ready, "version": node["spec_versions"][0],
-                        "failed_stage": None if ready else "ir_ref",
-                        "detail": None if ready else "fake: not run yet"}
-
-            from tools.orchestration_runtime import _load_spec_catalog
-            _load_spec_catalog.cache_clear()
-            orig, orig_ready = run_workflow._run_node, run_workflow._dependency_node_readiness
-            run_workflow._run_node = fake_run_node  # type: ignore[assignment]
-            run_workflow._dependency_node_readiness = fake_ready  # type: ignore[assignment]
-            buf = io.StringIO()
-            try:
-                with _forced_liveness(), redirect_stdout(buf):
-                    rc = run_workflow._run_with_dependency_closure(
-                        repo_root=repo_root,
-                        base_env={"PATH": os.environ.get("PATH", "")},
-                        target_orchestration_id="orch_target",
-                        target_spec_ref="spec/problem/a",
-                        target_source_dependency_ref="spec/problem/a/deps.yaml",
-                        until_phase="Validate",
-                        llm="claude", llm_command="claude",
-                        llm_config=_sample_config("claude"), workflow_mode="dev",
-                        agent_model=None, status="running", run_conductor=False,
-                        resume=False, prior_orch_by_spec=None,
-                        raw_argv=["spec/problem/a", "validate", "--with-deps"],
-                    )
-            finally:
-                run_workflow._run_node = orig  # type: ignore[assignment]
-                run_workflow._dependency_node_readiness = orig_ready  # type: ignore[assignment]
-            self.assertEqual(rc, 2)
-            # Both dependencies ran; the target was refused because of the run that
-            # appeared after the closure started.
-            self.assertEqual([c["spec_ref"] for c in captured],
-                             ["spec/component/c", "spec/component/b"])
-            last = json.loads(buf.getvalue().strip().splitlines()[-1])
-            self.assertEqual(last["reason"], "concurrent_orchestration_running")
-            self.assertEqual(last["orchestration_id"], "orch_operator_b")
-
-    def test_closure_is_not_blocked_by_orchestrations_this_process_drives(self) -> None:
-        # Pins the WIRING of the self-exclusion at both closure call sites (dependency
-        # and target): `closure_driver_identity` must reach each node's guard. Both
-        # node specs already carry a `running` orchestration whose driver is this
-        # process — without the identity they would probe `alive` and refuse.
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
-            self._seed_diamond(repo_root)
-            identity = run_workflow._current_driver_identity()
-            self.assertIsNotNone(identity)
-            own = {**identity, "recorded_at": "2026-01-01T00:00:00.000000Z"}
-            self._seed_prior_member(repo_root, "orch_ours_dep", "spec/component/c",
-                                    status="running", driver=own)
-            self._seed_prior_member(repo_root, "orch_ours_target", "spec/problem/a",
-                                    status="running", driver=own)
-            rc, captured, stdout, calls = self._drive_closure_with_runtime(
-                repo_root, resume=False, prior_orch_by_spec=None)
-            self.assertEqual(rc, 0, stdout)
-            self.assertEqual(len(captured), 3)
-            self.assertNotIn("concurrent_orchestration_running", stdout)
-            self.assertNotIn("prior_incomplete_orchestration", stdout)
-            self.assertEqual([c for c in calls if c and c[0] == "set-status"], [])
-
-    def test_closure_resume_terminalizes_dead_target_before_resuming(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
-            self._seed_diamond(repo_root)
-            # A target that is warm-resumed must carry this closure's back-link and
-            # matching spec, which is what makes `target_resume` true.
-            self._seed_prior_member(
-                repo_root, "orch_target", "spec/problem/a",
-                status="running", driver={"pid": 4242, "verdict": "dead"})
-            with _forced_liveness():
-                rc, captured, stdout, calls = self._drive_closure_with_runtime(
-                    repo_root, resume=True, prior_orch_by_spec={})
-            self.assertEqual(rc, 0)
-            set_status = [c for c in calls if c and c[0] == "set-status"]
-            self.assertEqual(len(set_status), 1)
-            self.assertEqual(
-                set_status[0][set_status[0].index("--orchestration-id") + 1],
-                "orch_target")
-            self.assertEqual(
-                set_status[0][set_status[0].index("--reason-code") + 1],
-                "driver_crashed")
-            self.assertTrue(captured[-1]["resume_mode"])
-            self.assertEqual(captured[-1]["spec_ref"], "spec/problem/a")
-
-    def test_cold_closure_warns_about_dead_prior_node_orchestration(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
-            self._seed_diamond(repo_root)
-            self._seed_prior_member(
-                repo_root, "orch_c_dead", "spec/component/c",
-                status="running", driver={"pid": 4242, "verdict": "dead"})
-            with _forced_liveness():
-                rc, captured, stdout, calls = self._drive_closure_with_runtime(
-                    repo_root, resume=False, prior_orch_by_spec=None)
-            self.assertEqual(rc, 0)
-            warns = [
-                json.loads(line) for line in stdout.splitlines()
-                if line.strip().startswith("{")
-                and json.loads(line).get("event") == "prior_incomplete_orchestration"
-            ]
-            self.assertEqual(len(warns), 1)
-            self.assertEqual(warns[0]["orchestration_id"], "orch_c_dead")
-            self.assertEqual(warns[0]["spec_ref"], "spec/component/c")
-            # Warned, not blocked: every node still runs, and the cold path does not
-            # terminalize anything on its own.
-            self.assertEqual(len(captured), 3)
-            self.assertEqual([c for c in calls if c and c[0] == "set-status"], [])
-
 
 class StdoutTeeTests(unittest.TestCase):
     """Cover the host-side run-log tee added to run_workflow: stdout mirroring,
@@ -6967,11 +6018,15 @@ class StartupEnvelopeStdoutFormatTests(unittest.TestCase):
         exact shape of the emission set rather than a lower bound.
 
         The no-raw-write half covers every function that emits outside a node run, not
-        just `_run_main`: the closure driver and the three gate emitters shared between
-        the two paths stand on exactly the same rule ("the elision is a property of the
-        emission point"), and a bare print added to one of THEM reintroduces the leak for
-        the `--with-deps` path — the divergence this branch's own review caught. They
-        contain no such write today, so the assertion costs nothing to hold.
+        just `_run_main`: the closure driver stands on exactly the same rule ("the elision
+        is a property of the emission point"), and a bare print added to IT reintroduces the
+        leak for the `--with-deps` path — the divergence this branch's own review caught.
+        It contains no such write today, so the assertion costs nothing to hold.
+
+        The three gate emitters this used to walk as well (`_cold_start_running_guard`,
+        `_warm_resume_liveness_guard`, `_terminalize_dead_driver`) were deleted with the
+        driver-liveness block in issue #177; the rule they stood on is unchanged and is
+        carried by the two that remain.
 
         Walked as an AST, not grepped: the sites are written as a multi-line
         `print(\\n    json.dumps(` that plain text search misses."""
@@ -6985,9 +6040,6 @@ class StartupEnvelopeStdoutFormatTests(unittest.TestCase):
         untee_d_emitters = {
             "_run_main": run_workflow._run_main,
             "_run_with_dependency_closure": run_workflow._run_with_dependency_closure,
-            "_cold_start_running_guard": run_workflow._cold_start_running_guard,
-            "_warm_resume_liveness_guard": run_workflow._warm_resume_liveness_guard,
-            "_terminalize_dead_driver": run_workflow._terminalize_dead_driver,
         }
         for name, func in untee_d_emitters.items():
             calls = calls_in(func)
@@ -7035,7 +6087,13 @@ class StartupEnvelopeStdoutFormatTests(unittest.TestCase):
         # phase earlier than where they used to surface).
         # 19 -> 20: the same family's VERSION half (issue #111) — a required tool that is present
         # but of a build this repository has not measured its gate's rule set against.
-        self.assertEqual(len(helper_calls), 20)
+        # 20 -> 15: issue #177 deleted the driver-liveness resume/cold gates, and with them five
+        # startup envelopes — `dead_driver_terminalize_failed`, `orchestration_driver_alive` /
+        # `latest_orchestration_not_resumable` (one site, two reasons), the implicit-latest
+        # refusal, `resume_liveness_indeterminate`, and the cold-guard conflict. The exclusive
+        # claim refuses in ONE place instead, and `concurrent_orchestration_running` was already
+        # among the counted sites.
+        self.assertEqual(len(helper_calls), 15)
         # Every one of them is handed the parsed flag — a hardcoded "jsonl"/"human" at any
         # site would silently pin that site to one format.
         for call in helper_calls:
@@ -7263,526 +6321,20 @@ class SubstepEventTests(unittest.TestCase):
         self.assertEqual(starts[0]["substep"], "step")
 
 
-_HAS_PROC = Path("/proc/self/stat").exists()
+class DriverLifecycleContractTests(unittest.TestCase):
+    """No longer needs `/proc`: issue #177 deleted the driver-liveness probe, and what is
+    left here is the terminal-status agreement and the SIGTERM seam, neither of which reads
+    procfs. The class-level `skipUnless` went with the probe."""
 
-
-def _unused_pid() -> int:
-    """A pid that cannot name a live process (one past the kernel's pid ceiling)."""
-    try:
-        return int(Path("/proc/sys/kernel/pid_max").read_text(encoding="utf-8").strip()) + 1
-    except (OSError, ValueError):
-        return 4194305
-
-
-@unittest.skipUnless(_HAS_PROC, "driver liveness probing requires Linux /proc")
-class DriverLivenessProbeTests(unittest.TestCase):
-    """`_probe_driver_liveness` — the read-only classifier behind resume/cold gating.
-
-    Fail directions are asymmetric on purpose: only an unambiguous `dead` unblocks a
-    resume and only an unambiguous `alive` blocks a cold run, so every test here that
-    ends in `unknown` is pinning a case that must preserve the pre-existing behavior.
-    """
-
-    def _self_identity(self) -> dict:
-        identity = run_workflow._current_driver_identity()
-        self.assertIsNotNone(identity)
-        return dict(identity)
-
-    def test_self_pid_with_matching_ticks_is_alive(self) -> None:
-        self.assertEqual(
-            run_workflow._probe_driver_liveness({"driver": self._self_identity()}),
-            "alive",
-        )
-
-    def test_pid_reuse_is_dead_not_alive(self) -> None:
-        # Same (live) pid, different start time = the recorded process is gone and its
-        # pid was recycled. Reporting `alive` here would wedge recovery forever.
-        identity = self._self_identity()
-        identity["pid_start_ticks"] = str(int(identity["pid_start_ticks"]) + 1)
-        self.assertEqual(run_workflow._probe_driver_liveness({"driver": identity}), "dead")
-
-    def test_absent_pid_is_dead(self) -> None:
-        identity = self._self_identity()
-        identity["pid"] = _unused_pid()
-        self.assertEqual(run_workflow._probe_driver_liveness({"driver": identity}), "dead")
-
-    def test_absent_pid_is_unknown_without_proven_visibility(self) -> None:
-        # "Absent from /proc" only proves death where the entry WOULD have been
-        # visible. PID numbers are namespace-local, and a `hidepid` mount hides other
-        # users' entries — either way a live driver would be read as dead and
-        # auto-terminalized under load. Both facts are recorded at capture time.
-        base = self._self_identity()
-        base["pid"] = _unused_pid()
-        self.assertEqual(base.get("pid_ns"), os.stat("/proc/self/ns/pid").st_ino)
-        self.assertEqual(base.get("uid"), os.getuid())
-        for label, driver in (
-            ("no pid_ns recorded (a pre-field block)",
-             {k: v for k, v in base.items() if k != "pid_ns"}),
-            ("no uid recorded",
-             {k: v for k, v in base.items() if k != "uid"}),
-            ("a different PID namespace", {**base, "pid_ns": base["pid_ns"] + 1}),
-            ("a different uid", {**base, "uid": base["uid"] + 1}),
-            ("pid_ns of the wrong type", {**base, "pid_ns": str(base["pid_ns"])}),
-        ):
-            with self.subTest(case=label):
-                self.assertEqual(
-                    run_workflow._probe_driver_liveness({"driver": driver}), "unknown")
-
-    def test_recorded_int_match_refuses_bools_and_unreadable_locals(self) -> None:
-        # `True == 1` in Python, so a corrupt `"uid": true` would otherwise match a
-        # real uid of 1 and be read as proof that an absent /proc entry means death.
-        match = run_workflow._matches_recorded_int
-        self.assertTrue(match(4026532221, 4026532221))
-        self.assertFalse(match(True, 1))
-        self.assertFalse(match(False, 0))
-        self.assertFalse(match(1, None))          # local value unreadable
-        self.assertFalse(match(None, 1))          # nothing recorded
-        self.assertFalse(match("1", 1))           # recorded as a string
-        # `1.0 == 1` too, so a JSON number that arrived as a float must not match.
-        self.assertFalse(match(1.0, 1))
-        self.assertFalse(match(2, 1))
-
-    def test_read_verdicts_are_gated_on_observability_too(self) -> None:
-        # Having READ an entry is not proof that it is the recorded process: it proves
-        # the pid NUMBER resolves in our numbering. Across PID namespaces the same
-        # number names a different process whose start ticks differ — which the
-        # PID-reuse branch would otherwise call proof of death, terminalizing a live
-        # driver. `hostname` and `boot_id` are not namespaced, so neither earlier guard
-        # catches it. Both post-read `dead` verdicts are therefore gated as well.
-        full = self._self_identity()
-        pre_field = {k: v for k, v in full.items() if k not in ("pid_ns", "uid")}
-        foreign_ns = {**full, "pid_ns": full["pid_ns"] + 1}
-
-        def with_ticks(driver: dict, delta: int) -> dict:
-            return {**driver,
-                    "pid_start_ticks": str(int(driver["pid_start_ticks"]) + delta)}
-
-        # PID reuse: proof only when the pid is ours to read.
-        self.assertEqual(
-            run_workflow._probe_driver_liveness({"driver": with_ticks(full, 1)}), "dead")
-        for label, driver in (("pre-field block", pre_field),
-                              ("foreign namespace", foreign_ns)):
-            with self.subTest(case=f"pid reuse / {label}"):
-                self.assertEqual(
-                    run_workflow._probe_driver_liveness({"driver": with_ticks(driver, 1)}),
-                    "unknown")
-
-        # Zombie state: same gating.
-        original = run_workflow._read_proc_stat
-        try:
-            for label, driver, expected in (
-                ("observable", full, "dead"),
-                ("pre-field block", pre_field, "unknown"),
-                ("foreign namespace", foreign_ns, "unknown"),
-            ):
-                with self.subTest(case=f"zombie / {label}"):
-                    run_workflow._read_proc_stat = (  # type: ignore[assignment]
-                        lambda pid, _t=driver["pid_start_ticks"]: ("Z", _t))
-                    self.assertEqual(
-                        run_workflow._probe_driver_liveness({"driver": driver}), expected)
-        finally:
-            run_workflow._read_proc_stat = original  # type: ignore[assignment]
-
-        # A reboot is the one `dead` that needs no entry at all: `boot_id` is not
-        # namespaced, so a mismatch proves it outright and stays ungated.
-        for label, driver in (("pre-field block", pre_field),
-                              ("foreign namespace", foreign_ns)):
-            with self.subTest(case=f"reboot / {label}"):
-                rebooted = {**driver, "boot_id": "00000000-0000-0000-0000-000000000000",
-                            "pid": _unused_pid()}
-                self.assertEqual(
-                    run_workflow._probe_driver_liveness({"driver": rebooted}), "dead")
-
-        # A live driver is still `alive` regardless: that verdict blocks rather than
-        # unblocks, so it is the conservative direction and needs no gate.
-        self.assertEqual(
-            run_workflow._probe_driver_liveness({"driver": pre_field}), "alive")
-
-    @unittest.skipUnless(
-        Path("/proc/sys/kernel/random/boot_id").exists(),
-        "boot_id comparison requires a readable /proc/sys/kernel/random/boot_id",
-    )
-    def test_boot_id_mismatch_is_dead(self) -> None:
-        # Start ticks are measured since boot, so after a reboot the same pid can
-        # legitimately carry the same ticks — the boot id is what rules that out.
-        # On a host where boot_id is masked the probe answers `unknown` instead, which
-        # is why this case is gated on the file actually being readable.
-        identity = self._self_identity()
-        identity["boot_id"] = "00000000-0000-0000-0000-000000000000"
-        self.assertEqual(run_workflow._probe_driver_liveness({"driver": identity}), "dead")
-
-    def test_zombie_process_is_dead_not_alive(self) -> None:
-        # A process that exited but has not been reaped keeps its /proc entry AND its
-        # start ticks, so a pid+ticks-only probe calls the corpse alive. That verdict
-        # is the worst one available: it makes the resume gate refuse recovery and the
-        # cold gate refuse a fresh run, locking the spec harder than issue #11 did.
-        pid = os.fork()
-        if pid == 0:  # pragma: no cover - child never returns to the test runner
-            os._exit(0)
-        try:
-            deadline = time.monotonic() + 5.0
-            state = ""
-            while time.monotonic() < deadline:
-                stat = run_workflow._read_proc_stat(pid)
-                if stat is not None and stat[0] in run_workflow._DEAD_PROC_STATES:
-                    state = stat[0]
-                    break
-                time.sleep(0.02)
-            self.assertIn(state, run_workflow._DEAD_PROC_STATES,
-                          "child did not reach a zombie state")
-            identity = self._self_identity()
-            identity["pid"] = pid
-            identity["pid_start_ticks"] = run_workflow._read_proc_starttime(pid)
-            self.assertEqual(
-                run_workflow._probe_driver_liveness({"driver": identity}), "dead")
-        finally:
-            os.waitpid(pid, 0)
-
-    def test_every_dead_proc_state_classifies_dead(self) -> None:
-        # A fork can only produce `Z`; `X`/`x` (dead / exiting) are the other half of
-        # the contract and are unreachable from a test process, so they are pinned
-        # against the parsed state directly.
-        identity = self._self_identity()
-        original = run_workflow._read_proc_stat
-        try:
-            # Literal, not `_DEAD_PROC_STATES`: iterating the constant under test makes
-            # the assertion self-referential — shrinking the set would shrink the loop
-            # and the test would still pass.
-            for state in ("Z", "X", "x"):
-                with self.subTest(state=state):
-                    run_workflow._read_proc_stat = (  # type: ignore[assignment]
-                        lambda pid, _s=state: (_s, identity["pid_start_ticks"]))
-                    self.assertEqual(
-                        run_workflow._probe_driver_liveness({"driver": identity}), "dead")
-            # A live driver may legitimately sit in states other than R/S — a stopped
-            # (`T`) or uninterruptible (`D`) process is still there and must stay alive.
-            for state in ("R", "S", "D", "T", "t", "I"):
-                with self.subTest(state=state):
-                    run_workflow._read_proc_stat = (  # type: ignore[assignment]
-                        lambda pid, _s=state: (_s, identity["pid_start_ticks"]))
-                    self.assertEqual(
-                        run_workflow._probe_driver_liveness({"driver": identity}), "alive")
-        finally:
-            run_workflow._read_proc_stat = original  # type: ignore[assignment]
-
-    def test_unreadable_boot_id_is_unknown(self) -> None:
-        # A meta recorded with a boot_id on a host where boot_id is now unreadable
-        # (masked /proc, some containers) cannot prove or disprove a reboot.
-        identity = self._self_identity()
-        self.assertIn("boot_id", identity)
-        original = run_workflow._read_boot_id
-        run_workflow._read_boot_id = lambda: None  # type: ignore[assignment]
-        try:
-            self.assertEqual(
-                run_workflow._probe_driver_liveness({"driver": identity}), "unknown")
-        finally:
-            run_workflow._read_boot_id = original  # type: ignore[assignment]
-
-    def test_unreadable_stat_for_an_existing_pid_is_unknown(self) -> None:
-        # The pid exists but its stat cannot be read (hardened /proc, or the process
-        # exited between the two syscalls). Answering `dead` here would terminalize a
-        # possibly-live run; answering `alive` would block recovery. Neither is proven.
-        identity = self._self_identity()
-        original = run_workflow._read_proc_stat
-        run_workflow._read_proc_stat = lambda pid: None  # type: ignore[assignment]
-        try:
-            self.assertEqual(
-                run_workflow._probe_driver_liveness({"driver": identity}), "unknown")
-        finally:
-            run_workflow._read_proc_stat = original  # type: ignore[assignment]
-
-    def test_absent_proc_filesystem_is_unknown(self) -> None:
-        identity = self._self_identity()
-        original = run_workflow.Path.is_dir
-        run_workflow.Path.is_dir = lambda self: False  # type: ignore[assignment]
-        try:
-            self.assertEqual(
-                run_workflow._probe_driver_liveness({"driver": identity}), "unknown")
-        finally:
-            run_workflow.Path.is_dir = original  # type: ignore[assignment]
-
-    def test_no_recorded_hostname_never_yields_dead(self) -> None:
-        # `hostname` is omitted only when `socket.gethostname()` raises, so a block can
-        # legitimately lack it — and then nothing establishes that it was written on
-        # THIS machine. Every `dead` verdict reasons from local evidence (this /proc,
-        # this boot_id), so all of them must degrade to `unknown`: a live driver on
-        # another host reaching a shared workspace would otherwise be terminalized.
-        # `pid_ns` cannot stand in for the hostname — the initial PID namespace inode
-        # is a per-kernel constant, so two ordinary hosts agree on it.
-        base = {k: v for k, v in self._self_identity().items() if k != "hostname"}
-        for label, driver in (
-            ("absent pid", {**base, "pid": _unused_pid()}),
-            ("boot id mismatch",
-             {**base, "boot_id": "ffffffff-ffff-ffff-ffff-ffffffffffff"}),
-            ("pid reuse",
-             {**base,
-              "pid_start_ticks": str(int(base["pid_start_ticks"]) + 1)}),
-            ("blank hostname recorded",
-             {**base, "hostname": "   ", "pid": _unused_pid()}),
-        ):
-            with self.subTest(case=label):
-                self.assertEqual(
-                    run_workflow._probe_driver_liveness({"driver": driver}), "unknown")
-        # The same block WITH this machine's hostname resolves normally again.
-        proven = {**base, "hostname": run_workflow._current_hostname(),
-                  "pid": _unused_pid()}
-        self.assertEqual(run_workflow._probe_driver_liveness({"driver": proven}), "dead")
-
-    def test_hostname_mismatch_is_unknown(self) -> None:
-        # A pid recorded on another machine says nothing about the local /proc.
-        identity = self._self_identity()
-        identity["hostname"] = "some-other-host.invalid"
-        self.assertEqual(run_workflow._probe_driver_liveness({"driver": identity}), "unknown")
-
-    def test_missing_or_malformed_block_is_unknown(self) -> None:
-        for meta in (
-            {},
-            {"driver": {}},
-            {"driver": "nope"},
-            {"driver": {"pid": 0}},
-            {"driver": {"pid": "1234"}},
-            {"driver": {"pid": True}},
-            {"driver": {"pid": os.getpid()}},  # no recorded ticks to compare
-        ):
-            with self.subTest(meta=meta):
-                self.assertEqual(run_workflow._probe_driver_liveness(meta), "unknown")
-
-    def test_current_identity_round_trips_through_the_probe(self) -> None:
-        identity = self._self_identity()
-        self.assertEqual(identity["pid"], os.getpid())
-        self.assertTrue(identity["pid_start_ticks"].isdigit())
-
-    def test_identity_is_none_when_start_ticks_cannot_be_read(self) -> None:
-        # The documented degrade: record NOTHING rather than a pid with a null start
-        # time. A pid alone cannot survive pid reuse, and a persisted null would make
-        # every later probe answer `unknown` while looking like a real identity.
-        original = run_workflow._read_proc_stat
-        run_workflow._read_proc_stat = lambda pid: None  # type: ignore[assignment]
-        try:
-            self.assertIsNone(run_workflow._current_driver_identity())
-        finally:
-            run_workflow._read_proc_stat = original  # type: ignore[assignment]
-
-    def test_proc_reads_degrade_instead_of_propagating(self) -> None:
-        # The degraded VALUES are pinned elsewhere by patching each reader to return
-        # them; this pins the catching itself. A host where the read genuinely raises
-        # (a masked boot_id, a restricted /proc) must degrade to `unknown`, not
-        # propagate an OSError out of the recovery gate.
-        original_read_text = Path.read_text
-        original_stat = os.stat
-
-        def raising_read_text(self, *args, **kwargs):  # type: ignore[no-untyped-def]
-            if str(self).startswith("/proc"):
-                raise PermissionError(f"denied: {self}")
-            return original_read_text(self, *args, **kwargs)
-
-        def raising_stat(path, *args, **kwargs):  # type: ignore[no-untyped-def]
-            # Only the namespace link: `/proc` itself must stay stat-able, since
-            # `Path.is_dir()` does not swallow EACCES and the probe's own
-            # `Path("/proc").is_dir()` is not the arm under test here.
-            if str(path).endswith("/ns/pid"):
-                raise PermissionError(f"denied: {path}")
-            return original_stat(path, *args, **kwargs)
-
-        Path.read_text = raising_read_text  # type: ignore[assignment]
-        os.stat = raising_stat  # type: ignore[assignment]
-        try:
-            self.assertIsNone(run_workflow._read_proc_stat(os.getpid()))
-            self.assertIsNone(run_workflow._read_boot_id())
-            self.assertIsNone(run_workflow._read_pid_namespace_inode())
-            self.assertIsNone(run_workflow._current_driver_identity())
-            self.assertEqual(
-                run_workflow._probe_driver_liveness(
-                    {"driver": {"pid": os.getpid(), "pid_start_ticks": "1",
-                                "hostname": run_workflow._current_hostname()}}),
-                "unknown",
-            )
-        finally:
-            Path.read_text = original_read_text  # type: ignore[assignment]
-            os.stat = original_stat  # type: ignore[assignment]
-
-    def test_unresolvable_hostname_is_not_fatal(self) -> None:
-        original = run_workflow.socket.gethostname
-        run_workflow.socket.gethostname = (  # type: ignore[assignment]
-            lambda: (_ for _ in ()).throw(OSError("no hostname")))
-        try:
-            self.assertEqual(run_workflow._current_hostname(), "")
-            # An unresolvable local hostname cannot confirm a recorded one either.
-            self.assertEqual(
-                run_workflow._probe_driver_liveness(
-                    {"driver": {"pid": os.getpid(), "pid_start_ticks": "1",
-                                "hostname": "somehost"}}),
-                "unknown",
-            )
-        finally:
-            run_workflow.socket.gethostname = original  # type: ignore[assignment]
-
-    def test_non_dict_meta_is_unknown(self) -> None:
-        for meta in (None, [], "running", 7):
-            with self.subTest(meta=meta):
-                self.assertEqual(run_workflow._probe_driver_liveness(meta), "unknown")
-
-
-class IncompleteOrchestrationIndexTests(unittest.TestCase):
-    """`_index_incomplete_orchestrations_by_spec` — the candidate list the cold-start
-    guard probes. It must use the same terminal-status predicate as the resume gate,
-    or the two gates disagree about what counts as an incomplete orchestration."""
-
-    def _write_meta(self, repo_root: Path, oid: str, meta: dict) -> None:
-        d = repo_root / "workspace" / "orchestrations" / oid
-        d.mkdir(parents=True, exist_ok=True)
-        (d / "orchestration_meta.json").write_text(json.dumps(meta), encoding="utf-8")
-
-    def test_indexes_every_non_terminal_status_and_skips_terminal_ones(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            for status in sorted(run_workflow._RESUMABLE_TERMINAL_STATUSES):
-                self._write_meta(repo_root, f"orch_t_{status}",
-                                 {"status": status, "spec_ref": "spec/x"})
-            # `running` is the common case; an operator-supplied `--status` (the CLI
-            # exposes it, defaulting to `running`) is non-terminal just the same.
-            self._write_meta(repo_root, "orch_running",
-                             {"status": "running", "spec_ref": "spec/x"})
-            self._write_meta(repo_root, "orch_custom",
-                             {"status": "in_progress", "spec_ref": "spec/x"})
-            index = run_workflow._index_incomplete_orchestrations_by_spec(repo_root)
-            self.assertEqual(sorted(index["spec/x"]), ["orch_custom", "orch_running"])
-
-    def test_groups_by_spec_orders_by_started_at_and_skips_unusable_metas(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._write_meta(repo_root, "orch_late", {
-                "status": "running", "spec_ref": "spec/a",
-                "started_at": "2026-02-01T00:00:00.000000Z"})
-            self._write_meta(repo_root, "orch_early", {
-                "status": "running", "spec_ref": "spec/a",
-                "started_at": "2026-01-01T00:00:00.000000Z"})
-            self._write_meta(repo_root, "orch_other",
-                             {"status": "running", "spec_ref": "spec/b"})
-            # No spec_ref → cannot be attributed to a spec; must not be indexed.
-            self._write_meta(repo_root, "orch_nospec", {"status": "running"})
-            # Corrupt meta → skipped rather than raising.
-            broken = repo_root / "workspace" / "orchestrations" / "orch_broken"
-            broken.mkdir(parents=True, exist_ok=True)
-            (broken / "orchestration_meta.json").write_text("{not json", encoding="utf-8")
-            index = run_workflow._index_incomplete_orchestrations_by_spec(repo_root)
-            self.assertEqual(index["spec/a"], ["orch_early", "orch_late"])
-            self.assertEqual(index["spec/b"], ["orch_other"])
-            self.assertNotIn("", index)
-            self.assertEqual(sorted(index), ["spec/a", "spec/b"])
-
-    def test_ordering_follows_started_at_not_the_directory_or_id_order(self) -> None:
-        # The docstring makes stable ordering a contract ("so the emitted warnings are
-        # stable"). Pinning it needs a fixture where started_at order contradicts BOTH
-        # the id order and the directory order — otherwise dropping the sort, or
-        # dropping the started_at key, still yields the expected list by accident.
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._write_meta(repo_root, "orch_aaa", {
-                "status": "running", "spec_ref": "spec/a",
-                "started_at": "2026-02-01T00:00:00.000000Z"})
-            self._write_meta(repo_root, "orch_zzz", {
-                "status": "running", "spec_ref": "spec/a",
-                "started_at": "2026-01-01T00:00:00.000000Z"})
-            original_iterdir = Path.iterdir
-
-            def name_ordered_iterdir(self):  # type: ignore[no-untyped-def]
-                # Directory order is a filesystem property; make it deterministic (and
-                # deliberately id-ascending, i.e. the wrong order) for this assertion.
-                return iter(sorted(original_iterdir(self), key=lambda p: p.name))
-
-            Path.iterdir = name_ordered_iterdir  # type: ignore[assignment]
-            try:
-                index = run_workflow._index_incomplete_orchestrations_by_spec(repo_root)
-            finally:
-                Path.iterdir = original_iterdir  # type: ignore[assignment]
-            self.assertEqual(index["spec/a"], ["orch_zzz", "orch_aaa"])
-
-    def test_missing_orchestrations_dir_is_empty(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            self.assertEqual(
-                run_workflow._index_incomplete_orchestrations_by_spec(Path(tmp)), {})
-
-
-class ProcStatParsingTests(unittest.TestCase):
-    """`_parse_proc_stat` — field extraction from a `/proc/<pid>/stat` body.
-
-    A wrong answer here is not a parse error, it is a wrong liveness verdict: a
-    misaligned field 22 never compares equal to the recorded ticks, so a live driver
-    reads as `dead` and gets terminalized while it is still running."""
-
-    def _stat_body(self, comm: str, state: str, starttime: str) -> str:
-        # Real layout: pid (comm) state ...fields 4..21... starttime(22) ...
-        middle = " ".join(str(i) for i in range(4, 22))
-        return f"4242 ({comm}) {state} {middle} {starttime} 0 0 0\n"
-
-    def test_parses_a_plain_stat_body(self) -> None:
-        self.assertEqual(
-            run_workflow._parse_proc_stat(self._stat_body("python3", "S", "8236241")),
-            ("S", "8236241"),
-        )
-
-    def test_parses_a_comm_containing_spaces_and_parentheses(self) -> None:
-        # A process can rename itself; `split()` on the whole line misaligns every
-        # field after comm, which is why the parser splits after the LAST ')'.
-        self.assertEqual(
-            run_workflow._parse_proc_stat(self._stat_body("we ird) (name", "R", "99")),
-            ("R", "99"),
-        )
-
-    def test_rejects_malformed_bodies(self) -> None:
-        # 19 post-`)` fields is the exact boundary: one short of the index the parser
-        # reads. A guard that lets it through raises IndexError out of the probe —
-        # an uncaught crash inside the recovery gate, not a `None` verdict.
-        nineteen = "4242 (python3) " + " ".join(str(i) for i in range(19)) + "\n"
-        self.assertEqual(len(nineteen[nineteen.rfind(")") + 1:].split()), 19)
-        for label, raw in (
-            ("no closing paren", "4242 python3 S 1 2 3\n"),
-            ("truncated fields", "4242 (python3) S 1 2 3\n"),
-            ("exactly 19 fields after the paren", nineteen),
-            # Without a `)` the fields cannot be located at all; a long body must be
-            # rejected rather than silently parsed at the wrong offsets.
-            ("no closing paren but plenty of fields",
-             "4242 python3 " + " ".join(str(i) for i in range(40)) + "\n"),
-            ("non-numeric starttime", self._stat_body("python3", "S", "not-a-number")),
-            ("empty body", ""),
-        ):
-            with self.subTest(case=label):
-                self.assertIsNone(run_workflow._parse_proc_stat(raw))
-
-    def test_accepts_the_minimum_field_count(self) -> None:
-        twenty = "4242 (python3) S " + " ".join(str(i) for i in range(4, 22)) + " 777\n"
-        self.assertEqual(len(twenty[twenty.rfind(")") + 1:].split()), 20)
-        self.assertEqual(run_workflow._parse_proc_stat(twenty), ("S", "777"))
-
-    @unittest.skipUnless(_HAS_PROC, "requires Linux /proc")
-    def test_matches_the_real_proc_entry_for_this_process(self) -> None:
-        # Guards against the crafted bodies above drifting from the real layout. The
-        # expected pair is derived HERE, from the documented field offsets, rather than
-        # by calling back into the function under test — otherwise a parser that reads
-        # the wrong index would agree with itself and the check would prove nothing.
-        raw = Path(f"/proc/{os.getpid()}/stat").read_text(encoding="utf-8")
-        fields = raw[raw.rfind(")") + 1:].split()
-        expected_state = fields[0]          # field 3
-        expected_ticks = fields[19]         # field 22
-        self.assertTrue(expected_ticks.isdigit())
-        self.assertEqual(run_workflow._parse_proc_stat(raw),
-                         (expected_state, expected_ticks))
-        # And the offsets themselves are right: field 22 is this process's start time,
-        # so it must place the process after boot and before now.
-        uptime = float(
-            Path("/proc/uptime").read_text(encoding="utf-8").split()[0])
-        ticks_per_sec = os.sysconf("SC_CLK_TCK")
-        self.assertLessEqual(int(expected_ticks) / ticks_per_sec, uptime)
-        self.assertEqual(expected_state, "R")  # the process running this assertion
-
-
-class DriverIdentityContractTests(unittest.TestCase):
-    def test_resumable_statuses_match_runtime_idempotent_terminals(self) -> None:
-        # run_workflow decides "is this resumable?" from its own copy of the terminal
-        # set (the subprocess boundary to the 21k-line runtime is deliberate), while
-        # enable_checkpoint_resume decides "does terminal_reset fire?" from the
+    def test_terminal_statuses_match_runtime_idempotent_terminals(self) -> None:
+        # run_workflow decides "is this already terminal?" from its own copy of the set
+        # (the subprocess boundary to the 21k-line runtime is deliberate), while
+        # `resume_orchestration` decides "does the reconciliation fire?" from the
         # runtime's. A drift between them silently skips the crash reconciliations.
+        #
+        # The two sets are no longer the WHOLE of that decision on the runtime side: since
+        # #177 a `running` prior reconciles too. This still has to agree, because the
+        # terminal half is what both use to mean "do not re-terminalize".
         from tools.orchestration_runtime import IDEMPOTENT_TERMINAL_STATUSES
 
         self.assertEqual(
