@@ -185,11 +185,6 @@ def _finalized(conductor) -> list[dict]:
     return [cap["--agent-run-json"] for s, cap in conductor.calls if s == "finalize-child"]
 
 
-def _superseded_reasons(conductor) -> list[str]:
-    """The `--reason` of every superseded-run tombstone, in order."""
-    return [cap["--reason"] for s, cap in conductor.calls if s == "add-superseded-runs"]
-
-
 class _Fixture(unittest.TestCase):
     KIND = "component"
     PROFILE = False
@@ -1033,34 +1028,6 @@ class PureCompileSpecValueTests(_Fixture):
             _finalized(c)[-1]["result_summary"],
             f"pure_compile_fail: {wc.COMPILE_DECLARED_FAIL}: {reason}")
 
-    def test_the_producer_tombstone_reasons_name_the_compile_repair(self) -> None:
-        """Both directions: a repaired PASS and an exhausted FAIL tombstone their superseded
-        attempts, and the two reasons are different strings."""
-        c = self.conductor(_envelope({"ir": _valid_ir()}), _envelope(_doc()))
-        c.run_substep(self.refs, "compile", "generate")
-        self.assertEqual(_superseded_reasons(c),
-                         ["pure_ir_document_repair_superseded_pass: attempts=2"])
-
-        c2 = self.conductor(_envelope({"ir": _valid_ir()}))
-        c2.run_substep(self.refs, "compile", "generate")
-        self.assertEqual(
-            _superseded_reasons(c2),
-            [f"pure_ir_document_repair_superseded: {wc.COMPILE_IR_DOCUMENT_VIOLATION}"])
-
-    def test_the_producer_host_write_failure_reason_names_the_compile_pair(self) -> None:
-        """The tombstone half of the host-write recovery, which the outcome-level row above does
-        not reach: it fires only when an EARLIER attempt was superseded."""
-        c = self.conductor(_envelope({"ir": _valid_ir()}), _envelope(_doc()))
-
-        def boom(*a, **k):
-            raise OSError("no space left on device")
-
-        c._write_pure_ir_artifacts = boom  # type: ignore[assignment]
-        outcome = c.run_substep(self.refs, "compile", "generate")
-        self.assertEqual(outcome.infra_error[0], "pure_compile_host_write_failed")
-        self.assertEqual(_superseded_reasons(c),
-                         ["pure_compile_host_write_failed_superseded: OSError"])
-
     def test_the_producer_carries_no_exemplar(self) -> None:
         """`wants_exemplar=False`. `_resolve_exemplar` reads an IR that does not exist yet at
         `compile.generate` time, and `build_launch_request` attaches an exemplar only to
@@ -1098,9 +1065,6 @@ class PureCompileReviewerSpecValueTests(_Fixture):
             f"pure_compile_verify_fail: {wc.GENERATE_VERDICT_SCHEMA_VIOLATION}")
         self.assertIn("pure_ir_verdict_attempt_failed", [e for e, _ in events])
         self.assertNotIn("pure_verdict_attempt_failed", [e for e, _ in events])
-        self.assertEqual(
-            _superseded_reasons(c),
-            [f"pure_ir_verdict_repair_superseded: {wc.GENERATE_VERDICT_SCHEMA_VIOLATION}"])
 
     def test_a_non_object_reply_says_a_verdict_was_expected(self) -> None:
         """`non_object_findings` reaches the repair turn's `repair_findings`, which is the only
@@ -1111,18 +1075,6 @@ class PureCompileReviewerSpecValueTests(_Fixture):
         repair = [cap["--request-json"] for s, cap in c.calls if s == "record-launch"][1]
         self.assertEqual(repair["repair_reason"], "pure_ir_verdict_repair")
         self.assertIn("expected a verdict", repair["repair_findings"])
-
-    def test_the_reviewer_host_write_failure_reason_names_the_compile_pair(self) -> None:
-        c = self.conductor(_envelope({"verification_status": "maybe"}), _envelope(_verdict()))
-
-        def boom(*a, **k):
-            raise OSError("no space left on device")
-
-        c._write_compile_verify_meta = boom  # type: ignore[assignment]
-        outcome = c.run_substep(self.refs, "compile", "verify")
-        self.assertEqual(outcome.infra_error[0], "pure_compile_verify_host_write_failed")
-        self.assertEqual(_superseded_reasons(c),
-                         ["pure_compile_verify_host_write_failed_superseded: OSError"])
 
 # ======================================================================================
 # The transport-shaped failure categories, on the COMPILE routing tables

@@ -1130,14 +1130,20 @@ class PureProducerSubstepTests(unittest.TestCase):
         self.assertEqual(rows[0]["node_key"], refs.node_key)
         self.assertIn("pure_runner_document_missing", rows[0]["detail"])
 
-    def test_pass_after_repair_tombstones_orphan_attempts(self) -> None:
-        # Review fix (HIGH): a repaired pass must tombstone the earlier (finalized, un-vouched)
-        # attempt arids, or the completion gate rejects the otherwise-passing run.
+    def test_pass_after_repair_vouches_only_the_surviving_attempt(self) -> None:
+        # A repaired pass leaves the earlier (finalized) attempt un-vouched. It used to be
+        # tombstoned, because the completion gate demanded a step_result for every terminal
+        # arid; issue #177 removed that demand, so what has to hold is only that the outcome
+        # carries the SURVIVING arid — the one the step_result will vouch.
         bad = _valid_bundle()
         del bad["capability_requirements"]
         c, refs, oc = self._run([_envelope(bad), _envelope(_valid_bundle())])
         self.assertEqual(oc.status, "pass")
-        self.assertTrue(any(sub == "add-superseded-runs" for sub, _ in c.calls))
+        self.assertEqual(oc.attempts, 2)
+        launched = [cap["--request-json"]["agent_run_id"]
+                    for sub, cap in c.calls if sub == "record-launch"]
+        self.assertEqual(len(launched), 2)
+        self.assertEqual(oc.agent_run_id, launched[-1])
 
     def test_exhausted_repair_records_bundle_meta_fail(self) -> None:
         bad = _valid_bundle()
@@ -1369,9 +1375,6 @@ class PureUsageLimitWaitTest(unittest.TestCase):
             # both launches are visible as per_attempt rows; the dead one is labeled pure_transport
             self.assertEqual(len(meta["per_attempt"]), 2)
             self.assertEqual(meta["per_attempt"][0]["failure_category"], "pure_transport")
-            # the dead usage attempt is tombstoned under the wait's own prefix
-            reasons = [cap["--reason"] for s, cap in c.calls if s == "add-superseded-runs"]
-            self.assertTrue(any("leaf_usage_limit_wait_orphan" in r for r in reasons))
             # the wait consulted the host `/usage` probe first and fell back to the scrape;
             # the stub is what keeps the suite from spawning the real backend
             self.assertEqual(c.usage_probe_calls, 1)

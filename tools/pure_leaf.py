@@ -587,7 +587,7 @@ def verify_verdict_violations(doc: Any) -> list[str]:
 # `finding_id` is deliberately NOT a key. The plan named one; the phase document's table does
 # not, no reader of `semantic_review.json#findings[*]` resolves one, and the only `finding_id`
 # this tree reads comes from `failure_analysis.json#original_finding`, a different,
-# agent-authored artifact (`orchestration_runtime._resume_directive_from_original_finding`).
+# agent-authored artifact.
 # Adding a field nothing reads is the surface this migration exists to remove.
 SEMANTIC_REVIEW_DECISIONS: tuple[str, ...] = ("pass", "fail")
 SEMANTIC_REVIEW_ATTRIBUTIONS: tuple[str, ...] = ("code", "ir", "spec", "evidence")

@@ -380,9 +380,11 @@ def _execute_failure_excerpt(text: str) -> str:
 
 
 # Marker of the per-test predicate failure report. Deliberately NOT the `[execute fail]` literal
-# the structural branch uses (`orchestration_runtime._EXECUTE_FAIL_MARKER`, which the dev resume
-# directive's stderr-log fallback searches for): a predicate failure is a different failure class
-# and reaches that directive through `trial_meta.json#failure_excerpt` only.
+# the structural branch uses: a predicate failure is a different failure class, and it reaches a
+# repair through `trial_meta.json#failure_excerpt` only. (It used to reach the dev resume
+# directive's stderr-log fallback, which issue #177 deleted along with the directive; what reads
+# the excerpt now is `_read_repair_findings`, and what carries it across a resume is the
+# `last_fail_reason` a revocation writes onto the artifact.)
 _VERDICT_FAIL_MARKER = "[execute fail: verdict]"
 
 
@@ -464,14 +466,15 @@ VALIDATE_EXECUTE_FAILURE_ROUTING: dict[str, tuple[str, str]] = {
 # Members are deliberately absent from `VALIDATE_EXECUTE_FAILURE_ROUTING`, so
 # `_read_repair_findings` cannot thread findings into a repair that provably cannot converge.
 #
-# They must also stay out of BOTH of `orchestration_runtime`'s dev category sets, or a `--resume`
-# in dev would issue a Generate resume directive for a condition no regeneration touches. NAME
-# THE RIGHT ONE: `conduct` maps this `fail_closed` to reason_code `conductor_phase_fail_closed`,
-# and `_derive_dev_validate_execute_resume_directive` consults
-# `_DEV_VALIDATE_EXECUTE_VERDICT_CATEGORIES` for that code —
-# `_DEV_VALIDATE_EXECUTE_REUSE_CATEGORIES` belongs to `dev_phase_rollback`, which this route
-# never produces. An earlier version of this comment cited only the latter, and the test written
-# beside it pinned only the latter too, so the set the route actually consults had no witness.
+# A `--resume` must not offer a repair for any of them either, and since issue #177 that is
+# structural rather than a second list to keep in step: a repair is seeded ONLY from a REVOKED
+# artifact (`_seed_repairs_from_revocations`), and this route revokes nothing — it terminalizes.
+# The two `orchestration_runtime` dev category sets that used to have to exclude these
+# (`_DEV_VALIDATE_EXECUTE_VERDICT_CATEGORIES` / `_DEV_VALIDATE_EXECUTE_REUSE_CATEGORIES`) are
+# deleted with the directive deriver that read them. The episode is worth keeping even though
+# the sets are gone: an earlier version of this comment cited only ONE of the two, and the test
+# written beside it pinned only that one, so the set the route actually consulted had no witness
+# — which is why the rule is now a property of the mechanism instead of a list.
 # Recovery is the operator's (install the front end / re-certify) followed by `--resume`.
 VALIDATE_EXECUTE_FAILURE_TERMINAL: frozenset[str] = frozenset(
     {"stale_dependency_ir", "static_frontend_unavailable",
@@ -748,6 +751,17 @@ class RouteDecision:
     # The escalate LLM's graded severity (minor | major | critical | None). Governs
     # reuse-vs-discard via resolve_severity_directive (G5); None for non-escalate decisions.
     severity: str | None = None
+
+
+class RevocationNotLandedError(RuntimeError):
+    """A re-derivation decision did not reach the artifact.
+
+    Raised when `revoke-artifact` resolved no stage meta while the phase stayed `certified`.
+    Surfaced as its own type so `conduct` terminalizes with a NAMED reason code instead of
+    letting it unwind to `run_workflow`'s generic `conductor_error` handler — which would lose
+    the routing reason AND return before the dev `failure_analysis.json` is written, i.e. before
+    the artifact the RUNBOOK tells the operator to read to perform the manual recovery this
+    failure is asking for."""
 
 
 class SandboxEnforcementError(RuntimeError):
@@ -1313,7 +1327,8 @@ def _parse_directive(stdout: str) -> RouteDecision | None:
 # orthogonal to reuse/discard and passes through unchanged. `target_phase` is NOT clamped by
 # severity (the LLM's rollback distance is honored as-is; conduct's dev_phase_rollback gate
 # still catches a dev cross-phase reopen). "Discard" == the existing `restart` strategy
-# (_ensure_fresh_producer_id id-rotation + reopen_phase supersede; nothing is deleted).
+# (_ensure_fresh_producer_id id-rotation + the revocation of the target's stage meta; nothing is
+# deleted, and the prior attempt's step_result is archived rather than overwritten).
 _SEVERITY_FORCED_STRATEGY: dict[str, str] = {
     "minor": "reuse",      # forced — an LLM restart is ignored
     "critical": "restart",  # forced — an LLM reuse is ignored
@@ -7876,7 +7891,6 @@ clean:
             attempt_failed_event="pure_semantic_review_attempt_failed",
             summary_prefix="pure_judge",
             host_write_failed_reason="pure_judge_host_write_failed",
-            superseded_prefix="pure_semantic_review_repair",
             host_authored_flags=self._node_host_authored_flags,
             violations=self._semantic_review_violations,
             schema_category=SEMANTIC_REVIEW_DOCUMENT_VIOLATION,
@@ -7885,7 +7899,6 @@ clean:
                 f"semantic review: decision {doc['decision']} "
                 f"(findings={len(doc['findings'])})\nleaf rc={rc}"),
             summary_of=self._semantic_review_summary,
-            superseded_detail=lambda doc: f"decision={doc['decision']}",
             document_name="semantic review",
         )
 
@@ -7918,7 +7931,7 @@ clean:
         #: The `repair_reason` of an in-loop repair turn.
         repair_reason: str
         attempt_failed_event: str
-        #: The `result_summary` / superseded-tombstone prefix (`pure_generate` / `pure_compile`).
+        #: The `result_summary` prefix (`pure_generate` / `pure_compile`).
         summary_prefix: str
         #: The noun the pass summary names ("bundle" / "IR").
         accept_noun: str
@@ -7961,7 +7974,6 @@ clean:
         attempt_failed_event: str
         summary_prefix: str
         host_write_failed_reason: str
-        superseded_prefix: str
         #: refs -> `(makefile_host_authored, runner_host_authored)`; see the producer spec.
         host_authored_flags: Callable[[NodeRefs], tuple[bool, bool]]
         #: (parsed document) -> the schema violations, empty when clean. The loop knows only
@@ -7977,8 +7989,6 @@ clean:
         #: (accepted document, attempt count) -> the `result_summary`. A pure row's output_refs
         #: is empty, so this is the only field that can satisfy `_validate_agent_summary_text`.
         summary_of: Callable[[dict[str, Any], int], str]
-        #: (accepted document) -> the tombstone reason's trailing clause on a repaired document.
-        superseded_detail: Callable[[dict[str, Any]], str]
         #: What the document is CALLED, for the reply text of an attempt that returned none.
         document_name: str
         #: The `pure_shape` the launch request carries; see the producer spec.
@@ -8510,20 +8520,10 @@ clean:
                         failure_excerpt=declared_fail[:_PURE_ATTEMPT_EXCERPT_MAX_CHARS],
                         attempts=len(per_attempt), per_attempt=per_attempt)
                 except Exception as exc:  # noqa: BLE001 — any host-write failure must recover
-                    if attempt > 0:
-                        self._add_superseded_run_ids(
-                            [a["agent_run_id"] for a in per_attempt[:-1]],
-                            reason=f"{spec.host_write_failed_reason}_superseded: "
-                                   f"{type(exc).__name__}")
                     return SubstepOutcome(
                         child_arid, "fail", [], 1,
                         (spec.host_write_failed_reason, f"{type(exc).__name__}: {exc}"),
                         len(per_attempt))
-                if attempt > 0:
-                    self._add_superseded_run_ids(
-                        [a["agent_run_id"] for a in per_attempt[:-1]],
-                        reason=f"{spec.summary_prefix}_declared_fail_superseded: "
-                               f"attempts={len(per_attempt)}")
                 return SubstepOutcome(child_arid, "fail", [], proc.returncode,
                                       None, len(per_attempt))
 
@@ -8545,25 +8545,15 @@ clean:
                     # route fail_closed via a non-zero leaf_returncode — run_phase's transport branch
                     # then tombstones THIS child_arid orphan too and fail-closes for an operator
                     # resume, rather than auto-retrying a write that a full disk would only repeat.
-                    if attempt > 0:
-                        self._add_superseded_run_ids(
-                            [a["agent_run_id"] for a in per_attempt[:-1]],
-                            reason=f"{spec.host_write_failed_reason}_superseded: "
-                                   f"{type(exc).__name__}")
                     return SubstepOutcome(
                         child_arid, "fail", [], 1,
                         (spec.host_write_failed_reason, f"{type(exc).__name__}: {exc}"),
                         len(per_attempt))
-                # Tombstone the superseded producer attempts of a repaired pass: each earlier
-                # attempt was finalized as a terminal `substep` row, but only THIS (passing)
-                # arid goes into the step_result's substep_agent_run_ids, so the earlier arids
-                # are un-vouched orphans the completion gate would reject at run end. Same
-                # treatment as the terminal-fail branch below and the transient-retry loop.
-                if attempt > 0:
-                    self._add_superseded_run_ids(
-                        [a["agent_run_id"] for a in per_attempt[:-1]],
-                        reason=f"{spec.repair_reason}_superseded_pass: "
-                               f"attempts={len(per_attempt)}")
+                # A repaired pass leaves earlier attempts terminal and un-vouched: each was
+                # finalized as a `substep` row, but only THIS (passing) arid goes into the
+                # step_result's substep_agent_run_ids. Since issue #177 that is simply what a
+                # failed attempt looks like — the completion vouch reads the artifact chain and
+                # the LATEST attempt's result, so nothing has to tombstone them.
                 return SubstepOutcome(child_arid, "pass", [], proc.returncode,
                                       None, len(per_attempt))
 
@@ -8633,9 +8623,8 @@ clean:
                 # NOT overwritten (the bookkeeping guard above), so `last_excerpt` may hold a prior
                 # content failure's text — the meta must describe the transport death that actually
                 # terminated the substep, not a stale carrier (and for a content exhaustion the two
-                # are identical). Tombstone the superseded producer attempts so a later completion
-                # vouch does not trip on the un-vouched arids (transport-dead waited attempts are
-                # already tombstoned by their wait). The bundle_meta write is the LAST host action
+                # are identical). Earlier producer attempts stay as they are; the completion
+                # vouch does not ask after an un-vouched arid. The bundle_meta write is the LAST host action
                 # here; it can still fail (ENOSPC, or a leaf-controlled failure_excerpt that is not
                 # UTF-8 encodable), so guard it the same way the pass path guards its writes — a
                 # host-write failure must recover as a fail_closed transport outcome, never escape
@@ -8646,19 +8635,10 @@ clean:
                         failure_excerpt=this_excerpt, attempts=len(per_attempt),
                         per_attempt=per_attempt)
                 except Exception as exc:  # noqa: BLE001 — any host-write failure must recover
-                    if attempt > 0:
-                        self._add_superseded_run_ids(
-                            [a["agent_run_id"] for a in per_attempt[:-1]],
-                            reason=f"{spec.host_write_failed_reason}_superseded: "
-                                   f"{type(exc).__name__}")
                     return SubstepOutcome(
                         child_arid, "fail", [], 1,
                         (spec.host_write_failed_reason, f"{type(exc).__name__}: {exc}"),
                         len(per_attempt))
-                if attempt > 0:
-                    self._add_superseded_run_ids(
-                        [a["agent_run_id"] for a in per_attempt[:-1]],
-                        reason=f"{spec.repair_reason}_superseded: {category}")
                 return SubstepOutcome(child_arid, "fail", [], proc.returncode,
                                       infra_error, len(per_attempt))
             # Set up the next (repair) turn: resume this attempt's session.
@@ -9017,14 +8997,12 @@ clean:
                 attempt_failed_event="pure_ir_verdict_attempt_failed",
                 summary_prefix="pure_compile_verify",
                 host_write_failed_reason="pure_compile_verify_host_write_failed",
-                superseded_prefix="pure_ir_verdict_repair",
                 host_authored_flags=_host_authored_m3c,
                 violations=self._verify_verdict_violations,
                 schema_category=GENERATE_VERDICT_SCHEMA_VIOLATION,
                 status_of=lambda doc: doc["verification_status"],
                 reply_of=self._verify_verdict_reply,
                 summary_of=self._verify_verdict_summary("pure_compile_verify"),
-                superseded_detail=lambda doc: f"verify_status={doc['verification_status']}",
                 document_name="verify verdict",
             )
         if phase == "generate" and shape == "harness":
@@ -9038,14 +9016,12 @@ clean:
                 attempt_failed_event="pure_verdict_attempt_failed",
                 summary_prefix="pure_verify",
                 host_write_failed_reason="pure_verify_host_write_failed",
-                superseded_prefix="pure_verdict_repair",
                 host_authored_flags=self._node_host_authored_flags,
                 violations=self._verify_verdict_violations,
                 schema_category=GENERATE_VERDICT_SCHEMA_VIOLATION,
                 status_of=lambda doc: doc["verification_status"],
                 reply_of=self._verify_verdict_reply,
                 summary_of=self._verify_verdict_summary("pure_verify"),
-                superseded_detail=lambda doc: f"verify_status={doc['verification_status']}",
                 document_name="verify verdict",
                 pure_shape="harness",
             )
@@ -9059,14 +9035,12 @@ clean:
             attempt_failed_event="pure_verdict_attempt_failed",
             summary_prefix="pure_verify",
             host_write_failed_reason="pure_verify_host_write_failed",
-            superseded_prefix="pure_verdict_repair",
             host_authored_flags=_host_authored_m3c,
             violations=self._verify_verdict_violations,
             schema_category=GENERATE_VERDICT_SCHEMA_VIOLATION,
             status_of=lambda doc: doc["verification_status"],
             reply_of=self._verify_verdict_reply,
             summary_of=self._verify_verdict_summary("pure_verify"),
-            superseded_detail=lambda doc: f"verify_status={doc['verification_status']}",
             document_name="verify verdict",
         )
 
@@ -9271,22 +9245,12 @@ clean:
                     # earlier attempts and route fail_closed via a non-zero leaf_returncode so
                     # run_phase's transport branch tombstones this arid too and the operator resumes
                     # (rather than auto-retrying a write a full disk would only repeat).
-                    if attempt > 0:
-                        self._add_superseded_run_ids(
-                            [a["agent_run_id"] for a in per_attempt[:-1]],
-                            reason=f"{spec.host_write_failed_reason}_superseded: "
-                                   f"{type(exc).__name__}")
                     return SubstepOutcome(
                         child_arid, "fail", [], 1,
                         (spec.host_write_failed_reason, f"{type(exc).__name__}: {exc}"),
                         len(per_attempt))
-                # Tombstone superseded reviewer attempts of a repaired verdict (each earlier attempt
+                # Earlier reviewer attempts of a repaired verdict stay as they are (each earlier attempt
                 # was finalized as a terminal `substep` row, but only THIS arid is vouched).
-                if attempt > 0:
-                    self._add_superseded_run_ids(
-                        [a["agent_run_id"] for a in per_attempt[:-1]],
-                        reason=f"{spec.superseded_prefix}_superseded: "
-                               f"{spec.superseded_detail(accepted_verdict)}")
                 return SubstepOutcome(child_arid, verify_status, [], proc.returncode,
                                       None, len(per_attempt))
 
@@ -9402,8 +9366,7 @@ clean:
                 # hold a prior schema failure's text — the meta must describe the transport death that
                 # terminated the substep (and for a schema exhaustion the two are identical).
                 # source_meta.json is intentionally NOT written (proof-of-work: no schema-valid
-                # verdict this attempt). Tombstone superseded arids (transport-dead waited attempts
-                # are already tombstoned by their wait). The verdict_meta write is the LAST host
+                # verdict this attempt). Earlier arids need no tombstone. The verdict_meta write is the LAST host
                 # action here; it can still fail (ENOSPC, or a leaf-controlled failure_excerpt that is
                 # not UTF-8 encodable), so guard it the same way the accepted-verdict path guards its
                 # writes — a host-write failure must recover as a fail_closed transport outcome, never
@@ -9414,19 +9377,10 @@ clean:
                         failure_excerpt=this_excerpt, attempts=len(per_attempt),
                         per_attempt=per_attempt)
                 except Exception as exc:  # noqa: BLE001 — any host-write failure must recover
-                    if attempt > 0:
-                        self._add_superseded_run_ids(
-                            [a["agent_run_id"] for a in per_attempt[:-1]],
-                            reason=f"{spec.host_write_failed_reason}_superseded: "
-                                   f"{type(exc).__name__}")
                     return SubstepOutcome(
                         child_arid, "fail", [], 1,
                         (spec.host_write_failed_reason, f"{type(exc).__name__}: {exc}"),
                         len(per_attempt))
-                if attempt > 0:
-                    self._add_superseded_run_ids(
-                        [a["agent_run_id"] for a in per_attempt[:-1]],
-                        reason=f"{spec.superseded_prefix}_superseded: {category}")
                 return SubstepOutcome(child_arid, "fail", [], proc.returncode,
                                       infra_error, len(per_attempt))
             # Set up the next (repair) turn: resume this attempt's OWN reviewer session (persona
@@ -9490,23 +9444,80 @@ clean:
             args += ["--reason-detail", reason_detail]
         return self.runtime(args)
 
-    def reopen_phase(self, node_key: str, from_phase: str, trigger_arid: str,
-                     reason: str) -> dict[str, Any]:
+    def revoke_artifact(self, node_key: str, step: str, trigger_arid: str, reason: str,
+                        last_fail_reason: str | None = None,
+                        severity: str | None = None,
+                        repair_strategy: str | None = None) -> dict[str, Any]:
+        """Revoke the stage meta of a phase this conductor has decided to re-derive — the half
+        of a retry that reaches the ARTIFACT, and therefore the half a cold re-run reads.
+
+        `last_fail_reason` travels over stdin: a findings excerpt runs to several thousand
+        characters, which does not belong on an argv. `severity` is the G5 grade of the finding,
+        and it must travel with the findings or the resumed repair re-enters a `critical` as a
+        `major` — reusing the very producer context the `critical` graded untrustworthy."""
+        args = ["revoke-artifact", *self._oid_args(),
+                "--node-key", node_key, "--step", step,
+                "--trigger-agent-run-id", trigger_arid, "--reason", reason]
+        if severity in ("minor", "major", "critical"):
+            args += ["--severity", severity]
+        # BESIDE the grade, never derived from it: G5 forces `minor -> reuse` and
+        # `critical -> restart`, but `major` DEFAULTS to reuse while honouring an explicit
+        # `restart`, so a resume that recovered only the grade turned every major-restart
+        # decision back into a warm reuse of the session it had said to throw away.
+        if repair_strategy in ("reuse", "restart", "re_execute"):
+            args += ["--repair-strategy", repair_strategy]
+        if last_fail_reason and last_fail_reason.strip():
+            return self.runtime(args + ["--last-fail-reason-from-stdin"],
+                                input=last_fail_reason)
+        return self.runtime(args)
+
+    def reset_phase(self, node_key: str, from_phase: str, trigger_arid: str,
+                    reason: str) -> dict[str, Any]:
+        """Reset the phase state of `from_phase` and everything downstream. A record, not a
+        gate — `record-launch` has no phase-state precondition — but it is what an operator and
+        the completion vouch read back."""
         return self.runtime([
-            "reopen-phase", *self._oid_args(),
+            "reset-phase", *self._oid_args(),
             "--node-key", node_key, "--from-phase", from_phase,
             "--trigger-agent-run-id", trigger_arid, "--reason", reason,
         ])
 
-    def _add_superseded_run_ids(self, run_ids: list[str], reason: str) -> dict[str, Any]:
-        """Tombstone substep arids of a phase attempt that fail-closed on a leaf transport
-        error (it wrote no step_result), so a later --resume can reach pass: the orphaned
-        terminalized substeps are exempted from the completion vouch (see runtime
-        add_superseded_run_ids). No-op caller-side when run_ids is empty."""
-        return self.runtime([
-            "add-superseded-runs", *self._oid_args(),
-            "--reason", reason, "--run-ids", *run_ids,
-        ])
+    def revoke_and_reset(self, node_key: str, phase: str, trigger_arid: str, reason: str,
+                         findings: str | None = None,
+                         severity: str | None = None,
+                         repair_strategy: str | None = None) -> None:
+        """The whole of a re-derivation decision: revoke the artifact, then reset the record.
+        Every retry route calls exactly this, so the two halves cannot drift apart.
+
+        The revocation's answer is READ, not discarded. `revoke-artifact` answers `noop` when it
+        can resolve no meta, and that answer has two very different causes wearing one word: the
+        legitimate one (validate certifies no meta; the phase never produced one) and the
+        failure this whole PR exists to prevent (the decision did not reach the artifact, so the
+        next `--resume` finds the phase still `certified` and skips straight past it). The
+        runtime tells them apart and reports `still_certified` on the `noop`.
+
+        The runtime answers it because the question has to be asked READ-ONLY, and the obvious
+        way to ask it from here was not: `check-phase-certified` TRANSITIONS the phase to
+        `skipped_certified` whenever certified — the exact state clause (e) of the completion
+        vouch reads as an EXEMPTION — so probing through it recorded "this phase was skipped
+        because it was certified" at the instant the conductor declared the decision lost. It
+        also cost an extra subprocess on an already-failed path, whose own failure would have
+        surfaced as `runtime check-phase-certified failed` instead of this message."""
+        outcome = self.revoke_artifact(node_key, phase, trigger_arid, reason,
+                                       last_fail_reason=findings, severity=severity,
+                                       repair_strategy=repair_strategy)
+        self.reset_phase(node_key, phase, trigger_arid, reason)
+        if str((outcome or {}).get("status") or "") == "noop":
+            self.emit("revoke_artifact_noop", node_key=node_key, phase=phase,
+                      reason=reason, detail=str((outcome or {}).get("reason") or ""),
+                      still_certified=bool((outcome or {}).get("still_certified")))
+            if (outcome or {}).get("still_certified"):
+                raise RevocationNotLandedError(
+                    f"revoke-artifact resolved no stage meta for {node_key}/{phase} "
+                    f"({(outcome or {}).get('reason')}), and the phase is still certified: the "
+                    "re-derivation decision did not reach the artifact, so a resume would skip "
+                    "the phase this run just decided to re-derive"
+                )
 
     # -- substep outcome (deterministic, reads canonical artifacts) -----------
 
@@ -9803,9 +9814,10 @@ clean:
         this method exists to remove, and `0.0` turns the freshness gate off silently. What it
         costs is stated rather than defended: this runs AFTER `record_launch` and BEFORE
         `finalize_child`, so a raise here (ENOSPC, EROFS) leaves a launched child that is never
-        terminalized — the same un-vouched-orphan state `docs/ORCHESTRATION.md` §per-attempt
-        describes, needing a manual `add-superseded-runs` rather than a `--resume`. A leaf gains
-        nothing from it; what is lost is the resume. Moving the call ABOVE `record_launch` would
+        terminalized. Since issue #177 that costs LESS than it used to: an un-vouched terminal
+        arid is simply a failed attempt, so the orchestration is not wedged by it — what the
+        raise costs is this launch, and a `--resume` re-runs the phase. A leaf gains nothing
+        from it. Moving the call ABOVE `record_launch` would
         close that window and reopen a worse one, since the instant would then predate
         `record_launch`'s own writes.
         """
@@ -11906,8 +11918,11 @@ clean:
         verdict_doc = self._author_execute_verdict(refs, ir, run_diag)
         if verdict_doc.get("self_verdict") == "fail":
             # Persist the failing predicate(s) as `failure_excerpt`, symmetric with the structural
-            # branch above: a dev `--resume` after the `fail_closed` threads it into the reopened
-            # Generate as repair findings (`_derive_dev_validate_execute_resume_directive`).
+            # branch above: the dev rollback revokes Generate's artifact before terminalizing and
+            # writes this excerpt onto it as `last_fail_reason`, so the operator's `--resume`
+            # seeds the repair from the ARTIFACT (`_seed_repairs_from_revocations`) rather than
+            # from a directive in this orchestration's own record — which is what lets a COLD
+            # re-run see the findings too.
             # `failure_category` is deliberately NOT written — it keys
             # VALIDATE_EXECUTE_FAILURE_ROUTING, and classify_failure's no-verdict branch (B1) would
             # then read this run as a structural gate failure. The resume deriver takes the category
@@ -12177,25 +12192,16 @@ clean:
             # fall back to for a claude leaf: the same value, from the leaf's own output
             # instead of from outside the access boundary.
             model_override = proc.model
-            # Terminalize the attempt FIRST, and only then tombstone it. Both orderings have a
-            # cost and this one is the survivable one:
-            #   - `finalize_child` closes the child's write window: `record-agent-run` re-walks the
-            #     live workspace and diffs it against the baseline `record-launch` took, and
-            #     ANY path outside the child's write_roots is an unauthorized write. The tombstone
-            #     writes `<orch_root>/reopen/{superseded_runs.json,reopen_log.jsonl}`, which is NOT
-            #     runtime-ignored (unlike launches/ agents/ violations/), so tombstoning inside the
-            #     window would attribute the conductor's own two writes to the dying leaf: the
-            #     attempt is rejected as an unauthorized write, finalize-child exits nonzero, and
-            #     the retry this function exists to perform never launches at all. (The three
-            #     pre-existing tombstone call sites all sit outside any open child window, which is
-            #     why they never hit this.)
-            #   - tombstoning a leaf that ALSO made a genuine unauthorized write would hide it from
-            #     `_derive_unauthorized_write_resume_directive`, which skips superseded candidates
-            #     — leaving the operator in the `resume_reopen_no_valid_trigger` dead end.
-            # The residual: a host crash BETWEEN the two writes leaves a terminal, un-vouched,
-            # un-tombstoned arid, which a resume cannot repair on its own (it needs a manual
-            # `add-superseded-runs`). That window is the same one the three pre-existing tombstone
-            # sites carry, and it is two subprocess calls wide.
+            # This used to terminalize the attempt and then TOMBSTONE it, in that order, and the
+            # ordering carried a careful two-part justification. Issue #177 deleted the tombstone
+            # — a terminal arid no step_result vouches is simply a failed attempt — so there is
+            # one write here now and no ordering left to get wrong. One half of that reasoning
+            # did not go with it, and it is recorded at clause (c) of
+            # `_validate_orchestration_completion_for_pass` rather than lost: the conductor
+            # deliberately did NOT tombstone a leaf that had made a genuine unauthorized write,
+            # so that the violation stayed visible. Nothing tombstones anything now, and the
+            # vouch refuses the diverted attempt's kept edge directly, which is the same
+            # protection stated where it is enforced instead of where it was worked around.
             self.finalize_child(
                 child_arid, token, reply,
                 self._agent_run_json(refs, phase, substep, child_arid, status,
@@ -12273,10 +12279,6 @@ clean:
             # an exhausted budget is tombstoned instead by run_phase's transport branch — between
             # the two, every arid this loop mints is covered. Idempotent (a set union), so a
             # re-tombstone is harmless.
-            self._add_superseded_run_ids(
-                [child_arid],
-                reason=(f"leaf_transient_retry_orphan: {tag}; "
-                        f"attempt={attempt + 1}/{max_attempts}"))
             delays = _LEAF_RETRY_BACKOFF_SECONDS.get(tag, _DEFAULT_LEAF_RETRY_BACKOFF)
             delay = delays[min(attempt, len(delays) - 1)]
             self.emit("leaf_transient_retry", node_key=refs.node_key, step=phase,
@@ -12341,10 +12343,6 @@ clean:
                 elapsed_s=elapsed_s, spent_s=spent_s):
             return False
         max_attempts = MAX_LEAF_TRANSIENT_RETRIES + 1
-        self._add_superseded_run_ids(
-            [child_arid],
-            reason=(f"leaf_transient_retry_orphan: {tag}; "
-                    f"attempt={retries_done + 1}/{max_attempts}"))
         delays = _LEAF_RETRY_BACKOFF_SECONDS.get(tag, _DEFAULT_LEAF_RETRY_BACKOFF)
         delay = delays[min(retries_done, len(delays) - 1)]
         self.emit("leaf_transient_retry", node_key=refs.node_key, step=phase,
@@ -12616,9 +12614,6 @@ clean:
         superseded here; idempotent (a set union) with the pure loop's later per-attempt tombstone.
         The lone `_sleep_backoff` is reused so tests stub one sleep and this loop stays the
         conductor's only block."""
-        self._add_superseded_run_ids(
-            [dead_agent_run_id],
-            reason=f"leaf_usage_limit_wait_orphan: attempt={wait_attempt}")
         self.emit("leaf_usage_limit_wait", node_key=node_key, step=step,
                   substep=substep, reset_epoch=reset_epoch, wait_seconds=wait_seconds,
                   reset_source=reset_source, window=window,
@@ -12844,10 +12839,16 @@ clean:
             meta_path = (self.repo_root / refs.ir_ref / "ir_meta.json" if phase == "compile"
                          else self.repo_root / refs.source_dir() / "source_meta.json")
         elif (r.startswith(VALIDATE_EXECUTE_REASON_PREFIX)
-              and r[len(VALIDATE_EXECUTE_REASON_PREFIX):] in VALIDATE_EXECUTE_FAILURE_ROUTING):
-            # A structural validate.execute failure (B1). Matched on the CATEGORY suffix, not the
-            # prefix: the cold-restart `validate_execute_fail` and the per-test predicate reasons
-            # share the prefix and must NOT pick up an excerpt.
+              and r[len(VALIDATE_EXECUTE_REASON_PREFIX):]
+              in (set(VALIDATE_EXECUTE_FAILURE_ROUTING) | {"structural_violation"})):
+            # A structural validate.execute failure (B1), or the per-test `structural_violation`
+            # verdict that dev routes to Generate. Matched on the CATEGORY suffix, not the
+            # prefix: the cold-restart `validate_execute_fail` and the OTHER per-test predicate
+            # reasons share the prefix and must NOT pick up an excerpt. `structural_violation`
+            # is included because `_execute_inproc` writes the failing predicates into the same
+            # `trial_meta.json#failure_excerpt` on the verdict-fail branch; `_ir`-suffixed
+            # reasons do not match this clause at all, which is what keeps the IR-rooted
+            # variant out.
             meta_path = self.repo_root / refs.run_node_dir() / "trial_meta.json"
         else:
             return None
@@ -13489,12 +13490,11 @@ clean:
         # failure leaves no canonical evidence (e.g. a judge that died with no
         # semantic_review.json), so writing the step_result would crash on the
         # post_phase_complete judge gate instead of cleanly failing closed. Skipping the write
-        # leaves the attempt's already-terminalized agents without a step_result, so tombstone
-        # them (add-superseded-runs) — otherwise a later --resume (which re-runs the phase fresh)
-        # trips _validate_orchestration_completion_for_pass on the orphaned arids. Tombstone
-        # EVERY outcome arid: substep agents for substep-aware phases, or the single step-role
-        # agent for build (substep_arids is empty there, but outcomes[0] is recorded in
-        # agent_runs.jsonl and would be flagged as a step orphan).
+        # leaves the attempt's already-terminalized agents without a step_result, and since
+        # issue #177 that costs nothing to clean up: a terminal arid no step_result vouches is
+        # simply a failed attempt. It used to need a tombstone for every one of them, or a later
+        # --resume tripped `_validate_orchestration_completion_for_pass` on the orphans — which
+        # is where 17 of this file's call sites came from, and 17 places to forget one.
         transport = (next((oc for oc in outcomes if oc.leaf_returncode != 0), None)
                      if status != "pass" else None)
         if transport is not None:
@@ -13538,12 +13538,6 @@ clean:
             # cases want opposite remedies (wait for the provider, vs. fix the intermediary's
             # read timeout — waiting never fixes a request that is simply too slow).
             suffix += attempts_marker
-            orphan_arids = [oc.agent_run_id for oc in outcomes]
-            if orphan_arids:
-                self._add_superseded_run_ids(
-                    orphan_arids,
-                    reason=(f"leaf_transport_error_orphan: "
-                            f"leaf_exit={transport.leaf_returncode}{suffix}"))
             decision = RouteDecision(
                 "fail_closed",
                 reason=f"leaf_transport_error: leaf_exit={transport.leaf_returncode}{suffix}")
@@ -13603,24 +13597,22 @@ clean:
                                    and (gate_meta or {}).get("disposition") == "escalate")
                 escalate_reason = ("validate_judge_conformance_violation"
                                    if judge_conformance_block else "validate_post_judge_unknown")
-                # Return the escalate decision WITHOUT pre-tombstoning the orphan arids:
-                # conduct() runs the diagnostician and, on a reopen directive, calls
-                # reopen_phase(trigger=this failed arid) — which NO-OPs if the trigger is already
-                # in superseded_runs.json (idempotency guard), so the trigger MUST stay live to
-                # drive the rollback. reopen_phase supersedes the whole validate attempt (incl.
-                # this trigger) as part of the upstream reopen; a fail_closed resolution is
-                # terminal (no completion vouch runs). Skip-write posture is preserved (no
-                # step_result written here).
+                # Return the escalate decision and let `conduct` run the diagnostician. The
+                # failed arid is carried on the outcome as the rollback's TRIGGER, and since
+                # issue #177 nothing can consume or neutralize it on the way: `revoke_artifact`
+                # names the phase to re-derive rather than a run to consume, so the trigger is
+                # only ever recorded as `revoked_by_agent_run_id`. (It used to matter a great
+                # deal that this path tombstoned nothing first: `reopen_phase` NO-OPed on a
+                # trigger already in `superseded_runs.json`, so pre-tombstoning here silently
+                # disarmed the rollback this return exists to reach.) Skip-write posture is
+                # preserved (no step_result written here).
                 if is_escalate and self.workflow_mode != "dev":
                     decision = RouteDecision("escalate", reason=escalate_reason)
                     return PhaseOutcome(phase, status, substep_arids, failed, decision)
                 # Terminal fail_closed cases (pre_judge / integrity / dev escalate):
-                # skip-write + tombstone the orphan arids (they have no
-                # step_result home, and no reopen will consume them as a trigger).
-                orphan_arids = [oc.agent_run_id for oc in outcomes]
-                if orphan_arids:
-                    self._add_superseded_run_ids(
-                        orphan_arids, reason=f"validate_gate_fail_orphan: {gate_reason}")
+                # skip-write. The attempt's terminalized arids need no tombstone since issue
+                # #177 — a terminal arid no step_result vouches is a failed attempt, and the
+                # completion vouch reads the artifact chain and the latest attempt instead.
                 if is_escalate:  # dev fail-fast (no billed escalate leaf)
                     decision = RouteDecision("fail_closed", reason=escalate_reason)
                 else:
@@ -13744,23 +13736,12 @@ clean:
         # `violations/<arid>.sandbox_enforcement_violation.json` behind it, pointing the
         # RUNBOOK's remedy ("check `sandbox_profiles/`, the bwrap binary") at the wrong place.
         try:
-            # Tombstone FIRST, before the launch is recorded at all. The diagnostician holds no
-            # deliverable and appears in no `step_result.json#substep_agent_run_ids`, so the
-            # pass completion vouch (`_validate_orchestration_completion_for_pass`) would
-            # demand a step_result it can never have; `superseded_run_ids` is the exemption.
-            # A tombstone for an arid that never gets a row is inert: the vouch derives its
-            # "must regain a fresh run" obligation from the tombstoned run's OWN record and
-            # skips an id it cannot find. A crash the other way round — a TERMINAL row with no
-            # tombstone — would block a later pass, and on the `build` phase (child role
-            # `step`) the re-launch guard `_build_step_agents_missing_step_result` too.
-            try:
-                self._add_superseded_run_ids(
-                    [child_arid], reason=f"escalate_diagnostician_consumed: {phase}")
-            except (OSError, RuntimeError) as exc:
-                self.emit("diagnose_tombstone_failed", phase=phase, agent_run_id=child_arid,
-                          error=str(exc)[:200])
-                return RouteDecision("fail_closed",
-                                     reason=f"{phase}_diagnose_unrecordable")
+            # The diagnostician used to be TOMBSTONED here, before its launch was recorded at
+            # all: it holds no deliverable and appears in no
+            # `step_result.json#substep_agent_run_ids`, so the pass completion vouch demanded a
+            # step_result it could never have. Issue #177 removed that demand — a terminal arid
+            # no step_result vouches is simply an attempt — so the tombstone, and the
+            # `diagnose_tombstone_failed` route it needed for its own failure, are gone.
             # `_spawn_pure_turn` does the `record_launch` ITSELF. Recording here as well made
             # two launches for one child, which the runtime refuses on the claude backend:
             # the first call writes `active_child_agent_run_id.txt`, and the second hits the
@@ -13999,12 +13980,25 @@ clean:
                     # (_author_execute_verdict's guard), i.e. a defect in the already-certified IR
                     # that Generate cannot author. Attribute it to the IR with the same `_ir`
                     # suffix the C2 backstop and the host-rendered-runner re-attribution use: the
-                    # diagnostician gets the attribution in prod, and in dev the suffix keeps the
-                    # reason out of the resume directive's category set, so `--resume` does not
-                    # reopen (and rebuild) a Generate that provably cannot converge.
-                    if fclass == "structural_violation" and verdict.get("predicate_error"):
+                    # diagnostician gets the attribution in prod, and in dev the suffix is what
+                    # keeps the reason OUT of the Generate route below, so a `--resume` does not
+                    # rebuild a Generate that provably cannot converge — it lands on the same
+                    # verdict again, and the operator fixes the IR or the spec.
+                    is_ir = fclass == "structural_violation" and verdict.get("predicate_error")
+                    if is_ir:
                         reason += "_ir"
                     if self.workflow_mode == "dev":
+                        # A `structural_violation` the leaf CAN fix routes to its producer in
+                        # dev too, as `("generate", "reuse")`. `conduct`'s F1 guard still
+                        # fail_closes the cross-phase rollback on the first occurrence — dev
+                        # does not auto-retry — but routing it rather than terminalizing flat
+                        # is what makes the revocation carry the findings, so the operator's
+                        # `--resume` re-derives Generate with the failing predicates in hand
+                        # instead of re-running the identical binary. That deadlock is what the
+                        # dev `resume_directive` existed to break.
+                        if fclass == "structural_violation" and not is_ir:
+                            return RouteDecision("retry", target_phase="generate",
+                                                 repair_strategy="reuse", reason=reason)
                         return RouteDecision("fail_closed", reason=reason)
                     return RouteDecision("escalate", reason=reason)
                 #   (b) a STRUCTURAL/runtime execute failure (no verdict.json): the runner
@@ -14118,76 +14112,97 @@ clean:
             return RouteDecision("escalate", reason=f"{phase}_fail_unclassified")
         return classify_verify_severity(sev, self.workflow_mode)
 
-    def _consume_resume_directive(self, refs: NodeRefs,
-                                  phases: list[str]) -> dict[str, dict[str, str]]:
-        """Act on a `resume_directive` left in orchestration_meta.json by the resume
-        (`cmd_init --resume-from-checkpoint`), returning the `pending_repair` it seeds.
+    def _seed_repairs_from_revocations(self, refs: NodeRefs,
+                                       phases: list[str]) -> dict[str, dict[str, str]]:
+        """Seed `pending_repair` from the ARTIFACTS a prior run revoked.
 
-        Only the dev structural-validate.execute directive
-        (`_derive_dev_validate_execute_resume_directive`) is honored. In dev such a failure is
-        terminal — F1 fail_closes a structural GATE failure as `dev_phase_rollback` instead of
-        retrying it, and a per-test `structural_violation` verdict fail_closes directly
-        (`conductor_phase_fail_closed`) — so a plain `--resume` would skip the certified
-        Generate/Build and re-run the identical binary into the identical deterministic failure.
-        Reopening Generate here — with the failure's own violation text as warm repair findings —
-        is the operator-initiated equivalent of the `("generate","reuse")` route prod takes
-        automatically (B1). F1 is unchanged: an in-run automatic rollback still fail_closes.
+        This replaces the `resume_directive` a resume used to carry. A directive was a second
+        copy of a decision the run had already made, derived at resume time from the prior
+        terminal reason code and read only by the conductor that wrote the code — so it could
+        disagree with the artifacts, and a COLD re-run (which reads no orchestration record at
+        all) never saw it. The revocation is the decision itself, recorded on the artifact: a
+        phase whose meta a retry revoked is refused by `check-phase-certified`, and the
+        `last_fail_reason` it carries is the finding the repair needs.
 
-        The producer arid is recovered BEFORE `reopen_phase`, which drops the checkpoint entry
-        it is read from. A reopen failure degrades to a plain resume (no repair seeded) rather
-        than crashing the run; the phases then simply re-run cold from Generate.
+        Only `compile` and `generate` are seeded: they are the phases with a producer a warm
+        repair can reuse. The repair target is the attempt that authored the revoked artifact
+        when this orchestration ran it, and `none` when it did not (a cold re-run over another
+        run's artifact), in which case the repair falls back to the full prompt.
         """
-        from tools.orchestration_runtime import DEV_VALIDATE_EXECUTE_RESUME_SOURCE
+        seeded: dict[str, dict[str, str]] = {}
+        for phase in ("compile", "generate"):
+            if phase not in phases:
+                continue
+            cert = self.check_phase_certified(refs.node_key, phase)
+            findings = cert.get("last_fail_reason")
+            if not (cert.get("revoked") and isinstance(findings, str) and findings.strip()):
+                continue
+            producer = self._completed_producer_arid(
+                refs.node_key, phase, self._certified_meta_ref(phase, cert, refs.node_key))
+            # The G5 grade travels ON the revocation, and the same policy applies to it here
+            # as to a live escalate directive: `critical` discards the producer's context
+            # (`restart`), everything else reuses it. Hardcoding `major` here would re-enter a
+            # `critical` as a warm reuse of the very session the `critical` graded
+            # untrustworthy — the defect the null-target clear in `resolve_severity_directive`
+            # was written to close, arriving by the resume boundary instead. A revocation
+            # written before the grade was recorded carries none, and defaults to `major` the
+            # way `_parse_directive` does.
+            severity = cert.get("revocation_severity") or "major"
+            # G5's FORCED mappings win over anything recorded; only `major`, which the policy
+            # leaves to the decision, takes the recorded strategy. Reading the record first
+            # would let a `(critical, reuse)` pair on the meta turn a discard back into a warm
+            # reuse — reintroducing, by way of the field added to preserve the decision, the
+            # exact defect that field was added to fix one grade over. Nothing validates the
+            # pair on the way in (`--severity critical --repair-strategy reuse` is accepted by
+            # the CLI), so the policy is applied HERE rather than trusted from the artifact.
+            #
+            # For `major` the recorded value is the whole point: the policy defaults it to
+            # `reuse` while honouring an explicit `restart`, so the grade alone cannot say which
+            # this decision was. A revocation written before the field existed records none and
+            # falls back to the default.
+            forced = _SEVERITY_FORCED_STRATEGY.get(severity)
+            strategy = forced or cert.get("revocation_repair_strategy") or "reuse"
+            seeded[phase] = {
+                "issue_severity": severity,
+                "repair_strategy": strategy,
+                # A `restart` discards the producer session by definition, so naming a reuse
+                # target beside it would be contradictory.
+                "repair_target_agent_run_id": (producer or "none") if strategy == "reuse"
+                                              else "none",
+                "repair_reason": "revoked_artifact_resume",
+                "repair_findings": findings.strip(),
+            }
+            self.emit("revoked_repair_seeded", node_key=refs.node_key, phase=phase,
+                      producer=producer or "none", severity=severity, strategy=strategy)
+        return seeded
 
-        meta = _read_json(self.repo_root / "workspace" / "orchestrations"
-                          / self.orchestration_id / "orchestration_meta.json") or {}
-        directive = meta.get("resume_directive")
-        if not isinstance(directive, dict):
-            return {}
-        source = directive.get("source")
-        if source != DEV_VALIDATE_EXECUTE_RESUME_SOURCE:
-            return {}
-        if str(directive.get("node_key") or "").strip() != refs.node_key:
-            return {}
-        if str(directive.get("reopen_from") or "").strip() != "generate" or "generate" not in phases:
-            return {}
-        trigger = str(directive.get("trigger_agent_run_id") or "").strip()
-        if not trigger:
-            return {}
-        # A Generate that is NOT certified will be re-run by the plain resume anyway, and
-        # reopening it would archive the in-progress attempt. Nothing to do.
-        cert = self.check_phase_certified(refs.node_key, "generate")
-        if not cert.get("certified"):
-            return {}
-        producer = self._completed_producer_arid(
-            refs.node_key, "generate",
-            self._certified_meta_ref("generate", cert, refs.node_key))
+    def _revoke_and_reset_or_terminalize(
+        self, refs: NodeRefs, phase: str, trigger: str, reason: str,
+        *, findings: str | None, severity: str | None, repair_strategy: str | None = None,
+        fallback_code: str, fallback_detail: str,
+    ) -> str | None:
+        """`revoke_and_reset`, terminalizing with a NAMED reason if the decision did not land.
+
+        Returns `"fail_closed"` when it terminalized here (the caller returns it) and `None`
+        when the revocation landed and the caller should carry on with its own terminal.
+
+        The whole point is that the reason code survives. A `RevocationNotLandedError` escaping
+        `conduct` unwinds to `run_workflow`'s generic handler, which finds the status still
+        `running`, clobbers it to `fail` / `conductor_error`, and returns BEFORE the dev
+        `failure_analysis.json` block — losing both the routing reason and the artifact
+        `docs/RUNBOOK.md` §3-1 tells the operator to read for the `agent_run_id` of the manual
+        `revoke-artifact` this failure is asking them to run."""
         try:
-            result = self.reopen_phase(refs.node_key, from_phase="generate", trigger_arid=trigger,
-                                       reason="dev_resume_validate_execute_structural")
-        except Exception as exc:  # noqa: BLE001 - degrade to a plain resume
-            self.emit("resume_directive_reopen_failed", node_key=refs.node_key,
-                      detail=str(exc)[:200])
-            return {}
-        # A `noop` means a prior reopen already consumed this trigger, so Generate was NOT
-        # reopened and stays certified — run_phase would skip it and silently drop the repair.
-        # The deriver already rejects superseded triggers; this is the second guard.
-        if str(result.get("status") or "").strip() == "noop":
-            self.emit("resume_directive_reopen_noop", node_key=refs.node_key, trigger=trigger)
-            return {}
-        payload: dict[str, str] = {
-            "issue_severity": "major",
-            "repair_strategy": "reuse",
-            "repair_target_agent_run_id": producer or "none",
-            "repair_reason": "validate_execute_structural_resume",
-        }
-        findings = directive.get("repair_findings")
-        if isinstance(findings, str) and findings.strip():
-            payload["repair_findings"] = findings.strip()
-        self.emit("resume_directive_consumed", node_key=refs.node_key, phase="generate",
-                  failure_category=str(directive.get("failure_category") or ""),
-                  findings=bool(payload.get("repair_findings")))
-        return {"generate": payload}
+            self.revoke_and_reset(refs.node_key, phase, trigger, reason,
+                                  findings=findings, severity=severity,
+                                  repair_strategy=repair_strategy)
+        except RevocationNotLandedError as exc:
+            self.emit("revocation_not_landed", node_key=refs.node_key, phase=phase,
+                      reason=reason, intended_terminal=fallback_code, error=str(exc)[:200])
+            self.set_status("fail_closed", reason_code="revocation_not_landed",
+                            reason_detail=f"{phase}: {reason}"[:200])
+            return "fail_closed"
+        return None
 
     def conduct(self, refs: NodeRefs, until_phase: str) -> str:
         """Drive the phases, acting on each phase's cross-phase routing decision:
@@ -14196,9 +14211,10 @@ clean:
         phases = phases_through(until_phase)
         attempts: dict[str, int] = {p: 0 for p in phases}
         pending_repair: dict[str, dict[str, str]] = {}
-        # A resume may carry a directive to reopen an already-passed phase and repair it with
-        # the findings of the failure that terminalized the prior run (dev F1 deadlock break).
-        pending_repair.update(self._consume_resume_directive(refs, phases))
+        # A phase whose artifact a prior run REVOKED is re-derived with that run's findings.
+        # The revocation is on the artifact, so this reaches a cold re-run too; it is what
+        # the `resume_directive` used to carry (dev F1 deadlock break).
+        pending_repair.update(self._seed_repairs_from_revocations(refs, phases))
         idx = 0
         while idx < len(phases):
             phase = phases[idx]
@@ -14247,35 +14263,7 @@ clean:
                 # `target = decision.target_phase or phase` two lines down then fired the reopen
                 # on it — with the severity forcing skipped, so a `critical` kept the artifacts
                 # it graded untrustworthy.
-                escalate_source = decision.reason
                 decision = self.escalate(refs, phase, outcome)
-                # G5: the validate post_judge / judge-conformance escalate returned WITHOUT
-                # tombstoning its orphan arids (skip-write posture) so that a diagnostician
-                # UPSTREAM REOPEN's trigger stays live (reopen_phase no-ops on an
-                # already-superseded trigger). For EVERY
-                # terminal, non-reopen resolution — fail_closed, an unparsable/sandbox directive,
-                # a null/out-of-scope target that falls to the `target_idx >= idx` terminal
-                # `fail`, or a budget-exhausted reopen — no reopen supersedes the attempt, so
-                # tombstone the orphans here (matching the transport/integrity terminal branches)
-                # to keep a later resume/pass completion vouch from tripping. Only an upstream
-                # reopen that will actually fire supersedes them via reopen_phase, so exclude
-                # exactly that case (mirroring conduct's own reopen conditions below: an in-scope
-                # upstream target with budget remaining).
-                if escalate_source in ("validate_post_judge_unknown",
-                                       "validate_judge_conformance_violation") and outcome.substep_arids:
-                    tgt = decision.target_phase
-                    will_upstream_reopen = (
-                        decision.action in ("retry", "reopen")
-                        and tgt in phases
-                        and phases.index(tgt) < idx
-                        and attempts[tgt] + 1 <= MAX_ATTEMPTS_PER_PHASE)
-                    if not will_upstream_reopen:
-                        orphan_reason = (
-                            "validate_judge_conformance_escalate_terminal_orphan"
-                            if escalate_source == "validate_judge_conformance_violation"
-                            else "validate_post_judge_escalate_terminal_orphan")
-                        self._add_superseded_run_ids(
-                            list(outcome.substep_arids), reason=orphan_reason)
             if decision.action == "fail_closed":
                 reason = decision.reason or ""
                 # Map to an allowlisted FAIL_CLOSED_REASON_CODES value (the runtime
@@ -14315,12 +14303,48 @@ clean:
             # keeps today's bounded cross-phase reopen/retry (the C2 backstop's compile reopen
             # stays live for prod and is a no-op here for dev).
             if self.workflow_mode == "dev" and target_idx < idx:
+                # REVOKE BEFORE TERMINALIZING. The rollback is a decision that the target's
+                # artifact must be re-derived, and dev declines to act on it in-run — but the
+                # decision still has to reach the artifact, or the operator's `--resume` finds
+                # the target certified, skips it, and re-runs the identical binary into the
+                # identical failure. That deadlock is what the dev `resume_directive` existed
+                # to break; the revocation replaces it, and carries the same findings on the
+                # meta's own `last_fail_reason` where a cold re-run can read them too.
+                trigger = outcome.failed_substeps[-1] if outcome.failed_substeps else None
+                if trigger and self._revoke_and_reset_or_terminalize(
+                        refs, target, trigger, decision.reason or f"{phase}->{target}",
+                        findings=self._read_repair_findings(refs, decision.reason, phase),
+                        severity=decision.severity,
+                        repair_strategy=decision.repair_strategy,
+                        fallback_code="dev_phase_rollback",
+                        fallback_detail=decision.reason or f"{phase}->{target}"):
+                    return "fail_closed"
                 self.set_status("fail_closed", reason_code="dev_phase_rollback",
                                 reason_detail=(decision.reason or f"{phase}->{target}")[:200])
                 return "fail_closed"
 
             attempts[target] += 1
             if attempts[target] > MAX_ATTEMPTS_PER_PHASE:
+                # REVOKE BEFORE TERMINALIZING, for the reason the dev branch above states and
+                # this branch used to miss. An exhausted budget is still a decision that the
+                # target must be re-derived; the run simply declines to act on it again. The
+                # target's meta is `pass` at this point — the earlier retries re-derived it
+                # SUCCESSFULLY and the failure that routed here came from downstream — so
+                # without the revocation the operator's `--resume` finds it certified, skips
+                # it, and re-runs every downstream phase into the identical failure, with no
+                # findings anywhere. That is the same deadlock the dev rollback's comment
+                # names, and only this branch was left outside the rule "every retry route
+                # issues both halves".
+                trigger = outcome.failed_substeps[-1] if outcome.failed_substeps else None
+                if trigger and self._revoke_and_reset_or_terminalize(
+                        refs, target, trigger,
+                        decision.reason or f"{target}_retry_budget_exhausted",
+                        findings=self._read_repair_findings(refs, decision.reason, phase),
+                        severity=decision.severity,
+                        repair_strategy=decision.repair_strategy,
+                        fallback_code="retry_budget_exhausted",
+                        fallback_detail=f"{target} exceeded {MAX_ATTEMPTS_PER_PHASE}"):
+                    return "fail_closed"
                 self.set_status("fail_closed", reason_code="retry_budget_exhausted",
                                 reason_detail=f"{target} exceeded {MAX_ATTEMPTS_PER_PHASE}")
                 return "fail_closed"
@@ -14347,13 +14371,18 @@ clean:
                     self.set_status("fail", reason_code=f"{phase}_fail",
                                     reason_detail="same_phase_reopen_no_trigger")
                     return "fail"
-                # Read the findings excerpt BEFORE reopen_phase/rotation while refs still names
+                # Read the findings excerpt BEFORE the revocation/rotation while refs still names
                 # the failed artifact (its {gate,compile_static}_meta.json failure_excerpt, or the
                 # verify meta last_fail_reason). None for a diagnostician reason -> the repair
                 # falls back to the full prompt (a cold restart re-derives anyway).
                 findings = self._read_repair_findings(refs, decision.reason, phase)
-                self.reopen_phase(refs.node_key, from_phase=phase, trigger_arid=trigger,
-                                  reason=decision.reason or "same_phase_reopen")
+                if self._revoke_and_reset_or_terminalize(
+                        refs, phase, trigger, decision.reason or "same_phase_reopen",
+                        findings=findings, severity=decision.severity,
+                        repair_strategy=decision.repair_strategy,
+                        fallback_code=f"{phase}_fail",
+                        fallback_detail=decision.reason or "same_phase_reopen"):
+                    return "fail_closed"
                 pending_repair[phase] = self._repair_payload(
                     decision, self._producer_arid.get(phase, "none"), findings=findings)
                 continue  # idx unchanged -> re-run the phase producer with the repair
@@ -14371,14 +14400,21 @@ clean:
                 self.set_status("fail", reason_code=f"{phase}_fail",
                                 reason_detail="reopen_no_trigger")
                 return "fail"
-            # As in the same-phase branch: read the findings excerpt BEFORE reopen_phase, while
-            # refs still names the failed artifact (a validate.execute structural failure keeps
-            # its excerpt in the failed run's trial_meta.json, and reopen rotates the run id).
+            # As in the same-phase branch: read the findings excerpt BEFORE the revocation,
+            # while refs still names the failed artifact (a validate.execute structural failure
+            # keeps its excerpt in the failed run's trial_meta.json, and the re-run rotates the
+            # run id). The excerpt is also what the revocation records as `last_fail_reason`, so
+            # a LATER run — which reads no `pending_repair` — recovers the same finding.
             # Every other cross-phase reason yields None -> the repair falls back to the full
             # prompt, exactly as before.
             findings = self._read_repair_findings(refs, decision.reason, phase)
-            self.reopen_phase(refs.node_key, from_phase=target, trigger_arid=trigger,
-                              reason=decision.reason or f"{phase}_reopen")
+            if self._revoke_and_reset_or_terminalize(
+                    refs, target, trigger, decision.reason or f"{phase}_reopen",
+                    findings=findings, severity=decision.severity,
+                    repair_strategy=decision.repair_strategy,
+                    fallback_code=f"{phase}_fail",
+                    fallback_detail=decision.reason or f"{phase}_reopen"):
+                return "fail_closed"
             if decision.repair_strategy and decision.repair_strategy not in ("none", None):
                 pending_repair[target] = self._repair_payload(
                     decision, self._producer_arid.get(target, "none"), findings=findings)

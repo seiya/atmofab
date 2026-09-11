@@ -173,7 +173,7 @@ When launching a retry to `Compile`, the `orchestration agent` must satisfy the 
 - At least 1 finding with `semantic_review.json#findings[*].attribution=ir` exists.
 - The `confidence` of the relevant finding is `high` or `medium` (when `low`, try a `Generate` retry first).
 - Quote the relevant finding's `description` and `evidence_refs[]` in `launches/<new_agent_run_id>.request.json#repair_reason`.
-- When `Compile` is already checkpointed `pass`, run `reopen-phase --from-phase compile --node-key <node_key> --trigger-agent-run-id <judge_fail_substep_agent_run_id> --reason <reason_code>` first (invalidates the stale `Compile` / `Generate` / `Build` checkpoints / `step_result`s; the `pass` upstream phase cannot otherwise be re-pointed), then re-run `Compile` → `Generate` → `Build` → `Validate`. Canonical: `docs/ORCHESTRATION.md` rule 50, `docs/CLI_REFERENCE_RARE.md#reopen-phase`.
+- When `Compile` is already `certified`, the return to `Compile` first runs `revoke-artifact --step compile --node-key <node_key> --trigger-agent-run-id <judge_fail_substep_agent_run_id> --reason <reason_code>` and then `reset-phase --from-phase compile`: the revocation is what makes `check-phase-certified` refuse the stale IR, so the re-run actually happens (and reaches a later run too). Canonical: `docs/CLI_REFERENCE_RARE.md#revoke-artifact`, `docs/ORCHESTRATION.md` item 50.
 - The re-submitted `Compile` **makes explicit the section of `spec.ir.yaml` to be fixed as the `restart` scope**, and records `validate_feedback:<finding_id>` in `ir_meta.json.last_fail_reason` (or, for a pure judge's finding, which carries no `finding_id`, `validate_feedback:` with the finding's description text).
 
 ### Handling of Spec retry

@@ -117,7 +117,6 @@ workspace/
       preflight.json
       phase_state.json
       phase_state_log.jsonl
-      orchestration_checkpoint.json
       agent_graph.json
       agent_runs.jsonl
       launches/                          # excerpt; the full inventory is docs/WORKSPACE_LAYOUT.md

@@ -10014,6 +10014,22 @@ def _validate_orchestration_hierarchy(
     has_substep_role = False
 
     for orchestration_dir in orchestration_dirs:
+        # An UNAUTHORIZED WRITE that landed. `--stage pre_judge` used to reach this shape
+        # through the diverted child's `agent_graph.json` edge; issue #177 moved the refusal to
+        # the violation marker, because the edge is pruned as an orphan once
+        # `agent_runs_invalid.jsonl` no longer names the child. Moving it left this gate with
+        # NOTHING covering the shape — one layer instead of two — which is a narrowing of a
+        # defense and therefore a classification, not a side effect of a refactor. The check
+        # belongs here as well as in the completion vouch: this gate runs at Validate's
+        # pre_judge, long before any `set-status pass`, so it stops the run before a whole
+        # Validate phase is spent on a workspace that cannot be certified.
+        for marker in sorted(
+                (orchestration_dir / "violations").glob("*.unauthorized_write_violation.json")
+                if (orchestration_dir / "violations").is_dir() else []):
+            violations.append(
+                f"{marker}: unauthorized write violation is outstanding; the paths it names "
+                "were written outside the child's write_roots and nothing rolled them back"
+            )
         meta_path = orchestration_dir / "orchestration_meta.json"
         graph_path = orchestration_dir / "agent_graph.json"
         runs_path = orchestration_dir / "agent_runs.jsonl"
@@ -10773,31 +10789,13 @@ def _validate_orchestration_hierarchy(
                             f"{runs_path}:line {idx + 1} context_id must not be sequential placeholder ({context_id})"
                         )
 
-        # Children that a `reopen-phase` cross-phase retry consumed AND that were
-        # diverted to agent_runs_invalid.jsonl (terminal-payload validation, e.g. an
-        # unauthorized write). record-launch wrote their agent_graph edge before the
-        # run, and _prune_orphan_agent_graph_edges deliberately KEEPS that edge (so an
-        # UN-consumed invalid attempt still surfaces). Once reopen has superseded such
-        # a run, the kept edge must not block pass — mirror the same-named exemption in
-        # _validate_orchestration_completion_for_pass (orchestration_runtime.py). Both
-        # loads are fail-tolerant: a missing/corrupt file widens the requirement back to
-        # every edge rather than wedging the gate.
-        superseded_arids: set[str] = set()
-        superseded_path = orchestration_dir / "reopen" / "superseded_runs.json"
-        if superseded_path.is_file():
-            try:
-                superseded_doc = _read_json(superseded_path)
-            except (OSError, json.JSONDecodeError):
-                superseded_doc = None
-            superseded_ids = (
-                superseded_doc.get("superseded_agent_run_ids")
-                if isinstance(superseded_doc, dict)
-                else superseded_doc
-            )
-            if isinstance(superseded_ids, list):
-                superseded_arids = {
-                    s.strip() for s in superseded_ids if isinstance(s, str) and s.strip()
-                }
+        # A child recorded ONLY in `agent_runs_invalid.jsonl` is a terminal attempt whose
+        # payload was refused (an unauthorized write, a malformed terminal record).
+        # `record-launch` wrote its `agent_graph` edge before the run, and
+        # `_prune_orphan_agent_graph_edges` deliberately KEEPS that edge. Since issue #177 the
+        # edge is tolerated on the strength of the invalid-log record alone: a failed attempt
+        # needs no consumer, so there is no tombstone to require a conjunction with. What the
+        # exemption does NOT relax is the hierarchy — a substep can never be a parent.
         invalid_arids: set[str] = set()
         invalid_runs_path = orchestration_dir / "agent_runs_invalid.jsonl"
         if invalid_runs_path.is_file():
@@ -10818,7 +10816,6 @@ def _validate_orchestration_hierarchy(
                 invalid_arid = invalid_item.get("agent_run_id")
                 if isinstance(invalid_arid, str) and invalid_arid.strip():
                     invalid_arids.add(invalid_arid.strip())
-        superseded_invalid_arids = superseded_arids & invalid_arids
 
         for edge_idx, parent_id, child_id in graph_edges:
             parent_role = run_roles.get(parent_id)
@@ -10847,22 +10844,20 @@ def _validate_orchestration_hierarchy(
                             f"{graph_path}:edges[{edge_idx}] substep must not be parent role"
                         )
                     continue
-                if child_id in superseded_invalid_arids:
-                    # A reopen-consumed unauthorized-write trigger: superseded by
-                    # reopen-phase AND diverted to agent_runs_invalid.jsonl (no
-                    # agent_runs.jsonl row). Its edge is deliberately KEPT by
-                    # _prune_orphan_agent_graph_edges so an UN-consumed invalid attempt
-                    # still fails; once reopen has consumed and superseded it, tolerate
-                    # the kept edge. The tight superseded-AND-invalid conjunction keeps
-                    # an un-consumed invalid terminal attempt (not in superseded_runs)
-                    # and an arbitrarily corrupt edge failing closed. Mirrors the
-                    # same-named exemption in _validate_orchestration_completion_for_pass.
+                if child_id in invalid_arids:
+                    # A terminal attempt diverted to `agent_runs_invalid.jsonl`. The kept edge is
+                    # tolerated HERE, because this scan checks graph integrity and the divert
+                    # covers far more than the write audit (a session-id mismatch, a missing
+                    # sandbox profile, an empty `output_refs`). The landed-write case — an
+                    # outstanding `violations/<arid>.unauthorized_write_violation.json` — is
+                    # refused by the completion vouch, anchored on a path that is NOT exempt
+                    # from the terminal write-audit diff and does not disappear when this edge
+                    # is pruned. Mirrors clause (c) of
+                    # `_validate_orchestration_completion_for_pass`.
                     #
                     # As with the in-flight exemption above, this tolerates ONLY the
-                    # missing-child record. The parent role is known from
-                    # agent_runs.jsonl and the hierarchy invariant still holds: a
-                    # substep can never be a parent, so keep failing closed on that
-                    # malformed edge.
+                    # missing-child record. The parent role is known from agent_runs.jsonl and
+                    # the hierarchy invariant still holds: a substep can never be a parent.
                     if parent_role == "substep":
                         violations.append(
                             f"{graph_path}:edges[{edge_idx}] substep must not be parent role"
