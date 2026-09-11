@@ -1985,6 +1985,23 @@ def _phase_certified(
     # docs/GLOSSARY.md: an `xfail` aggregate is a certifying outcome, like `pass`.
     if verdict not in {"pass", "xfail"}:
         return (False, {**detail, "reason": "verdict_not_pass"})
+    # The verdict alone does NOT certify Validate. The conductor authors
+    # `aggregate_verdict.json` BEFORE the `--stage pre_judge` gate runs (the gate
+    # re-validates the host's own summary, so the order cannot be swapped), and a
+    # `fail_closed` disposition returns without writing a step_result — leaving a passing
+    # verdict on disk for a phase that terminated fail-closed. `post_judge_meta.json` is the
+    # host record of the gate's own outcome (written in the deterministic post_judge substep;
+    # no `LLM` leaf has it in its write_roots — the judge's is `semantic_review.json` alone),
+    # so it is what says the phase actually completed.
+    gate_meta_path = verdict_path.parent / "post_judge_meta.json"
+    try:
+        gate_doc = json.loads(gate_meta_path.read_text(encoding="utf-8"))
+    except Exception:
+        return (False, {**detail, "reason": "post_judge_not_recorded"})
+    if not isinstance(gate_doc, dict):
+        return (False, {**detail, "reason": "post_judge_not_recorded"})
+    if str(gate_doc.get("status", "")).strip().lower() != "pass":
+        return (False, {**detail, "reason": "post_judge_not_pass"})
     return (True, detail)
 
 

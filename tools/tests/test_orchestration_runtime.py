@@ -12781,6 +12781,28 @@ class PhaseCertificationTests(unittest.TestCase):
             self.assertEqual(self._reason(repo, "validate"), "verdict_not_bound")
             self.assertTrue(ort._phase_certified(repo, "o1", self._NK, "build")[0])
 
+    def test_check_phase_certified_refuses_a_validate_whose_gate_failed(self) -> None:
+        """The conductor authors `aggregate_verdict.json` BEFORE the `--stage pre_judge` gate
+        (the gate re-validates the host's own summary, so the order cannot be swapped), and a
+        `fail_closed` disposition returns WITHOUT writing a step_result. A passing verdict is
+        therefore left on disk for a phase that terminated fail-closed, and the verdict alone
+        must not certify it — `post_judge_meta.json`, the host record of the gate's own
+        outcome, is what says the phase completed."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = self._certified(repo, through="validate")
+            path = repo / refs["post_judge_meta"]
+            gate_fail = json.loads(path.read_text("utf-8"))
+            gate_fail.update({"status": "fail", "disposition": "fail_closed",
+                              "failure_category": "static_frontend_unavailable"})
+            path.write_text(json.dumps(gate_fail), encoding="utf-8")
+            self.assertEqual(self._reason(repo, "validate"), "post_judge_not_pass")
+            # Build, which the gate says nothing about, is unaffected.
+            self.assertTrue(ort._phase_certified(repo, "o1", self._NK, "build")[0])
+            # A phase that never reached post_judge at all leaves no record: also refused.
+            path.unlink()
+            self.assertEqual(self._reason(repo, "validate"), "post_judge_not_recorded")
+
     def test_check_phase_certified_refuses_a_non_certifying_verdict(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)

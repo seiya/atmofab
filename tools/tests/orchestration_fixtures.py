@@ -144,6 +144,15 @@ def certify_node(
     _write_json(run_node / "aggregate_verdict.json", {
         "node_key": node_key, "run_id": run_id, "aggregate_verdict": "pass",
     })
+    # The host record of the `--stage pre_judge` gate's own outcome. Validate is not
+    # certified by the verdict alone: the verdict is authored BEFORE that gate runs, so a
+    # phase that fail-closed on the gate leaves a passing verdict behind.
+    _write_json(run_node / "post_judge_meta.json", {
+        "run_id": run_id, "node_key": node_key, "pipeline_id": pipeline_id,
+        "status": "pass", "validation_stage": "pre_judge", "failure_category": None,
+        "failure_excerpt": None, "violations": [], "disposition": None,
+    })
     refs |= {"run_id": run_id,
-             "aggregate_verdict": f"{pipe_ref}/runs/{run_id}/{safe}/aggregate_verdict.json"}
+             "aggregate_verdict": f"{pipe_ref}/runs/{run_id}/{safe}/aggregate_verdict.json",
+             "post_judge_meta": f"{pipe_ref}/runs/{run_id}/{safe}/post_judge_meta.json"}
     return refs
