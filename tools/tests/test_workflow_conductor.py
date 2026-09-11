@@ -817,12 +817,14 @@ class _FakeConductor(wc.Conductor):
                 captured[inline] = self._resolve_evidence(args[args.index(flag) + 1])
         if "--reply-from-stdin" in args:
             captured["--reply-text"] = input
+        if "--last-fail-reason-from-stdin" in args:
+            captured["--last-fail-reason"] = input
         for flag in ("--result-json", "--agent-run-json", "--request-json"):
             if flag in args:
                 captured[flag] = json.loads(args[args.index(flag) + 1])
         for flag in ("--node-key", "--step", "--agent-run-id", "--status",
                      "--from-phase", "--reason", "--trigger-agent-run-id",
-                     "--reserved-id", "--reason-code", "--reason-detail"):
+                     "--reserved-id", "--reason-code", "--reason-detail", "--severity"):
             if flag in args:
                 captured[flag] = args[args.index(flag) + 1]
         if "--run-ids" in args:  # nargs="+": collect until the next --flag or end
@@ -934,6 +936,85 @@ class _FakeConductor(wc.Conductor):
         return super().classify_failure(refs, phase, outcomes)
 
 
+class RevokeAndResetTest(unittest.TestCase):
+    """`revoke_and_reset` is the single point every retry route goes through, so what it does
+    with the revocation's ANSWER decides whether a re-derivation decision can silently not
+    happen."""
+
+    def _conductor(self, revoke_result, cert_after) -> _FakeConductor:
+        c = _FakeConductor(
+            repo_root=Path("/tmp/repo"), orchestration_id="orch_x",
+            orchestration_agent_run_id="ORCH", llm_config=_agentic_cfg("claude"), env={},
+        )
+        c.calls = []
+        c.cert_fn = lambda phase: dict(cert_after)
+        real_runtime = _FakeConductor.runtime
+
+        def runtime(self, args, *, input=None):
+            out = real_runtime(self, args, input=input)
+            return dict(revoke_result) if args[0] == "revoke-artifact" else out
+
+        c.runtime = runtime.__get__(c, _FakeConductor)
+        return c
+
+    _NK = "component/spec_x@0.1.0"
+
+    def test_a_noop_revocation_over_a_still_certified_phase_fails_closed(self) -> None:
+        """The failure mode this PR exists to prevent, wearing the word `noop`. If the
+        revocation resolved no meta and the phase is STILL certified, the decision did not
+        reach the artifact — so the next `--resume` skips the phase this run just decided to
+        re-derive, and every downstream phase re-runs into the same failure. Continuing here
+        would spend a whole billed run to arrive back where it started."""
+        c = self._conductor({"status": "noop", "meta_ref": None, "reason": "no_meta"},
+                            {"certified": True})
+        buf = io.StringIO()
+        with redirect_stdout(buf), self.assertRaisesRegex(
+                RuntimeError, "re-derivation decision did not reach the artifact"):
+            c.revoke_and_reset(self._NK, "generate", "t1", "r")
+        self.assertTrue(any(e.get("event") == "revoke_artifact_noop"
+                            for e in [json.loads(l) for l in
+                                      buf.getvalue().splitlines() if l.strip()]))
+
+    def test_a_noop_over_a_phase_that_is_not_certified_is_only_reported(self) -> None:
+        """The legitimate half of the same word: validate certifies no meta, and a phase that
+        never produced one has nothing to revoke. Neither is a failure — but both are still
+        EMITTED, because `noop` is the one answer that looks identical in the good case and the
+        bad one, and a run log that never mentions it cannot be read back either way."""
+        c = self._conductor({"status": "noop", "meta_ref": None, "reason": "no_meta"},
+                            {"certified": False, "reason": "ir_not_reserved"})
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            c.revoke_and_reset(self._NK, "validate", "t1", "r")
+        events = [json.loads(l) for l in buf.getvalue().splitlines() if l.strip()]
+        self.assertTrue(any(e.get("event") == "revoke_artifact_noop" for e in events))
+        self.assertIn("reset-phase", [sub for sub, _ in c.calls])
+
+    def test_a_landed_revocation_asks_the_predicate_nothing(self) -> None:
+        """A revocation that resolved a meta needs no confirmation: the runtime rewrote the
+        file. Asking anyway would put a certification read on every retry route."""
+        c = self._conductor({"status": "revoked", "meta_ref": "a/b/ir_meta.json",
+                             "prior_verification_status": "pass"},
+                            {"certified": True})
+        with redirect_stdout(io.StringIO()):
+            c.revoke_and_reset(self._NK, "generate", "t1", "r")
+        self.assertEqual([sub for sub, _ in c.calls], ["revoke-artifact", "reset-phase"])
+
+    def test_both_halves_run_and_the_findings_and_grade_reach_the_runtime(self) -> None:
+        """The pairing itself, and the two payloads that must travel with it. `severity` on an
+        argv, `findings` on stdin — a findings excerpt runs to thousands of characters."""
+        c = self._conductor({"status": "revoked", "meta_ref": "a/b/ir_meta.json"},
+                            {"certified": False})
+        with redirect_stdout(io.StringIO()):
+            c.revoke_and_reset(self._NK, "generate", "t1", "route_reason",
+                               findings="p1 failed", severity="critical")
+        subs = [sub for sub, _ in c.calls]
+        self.assertEqual(subs, ["revoke-artifact", "reset-phase"])
+        revoke = c.calls[0][1]
+        self.assertEqual(revoke["--severity"], "critical")
+        self.assertEqual(revoke["--last-fail-reason"], "p1 failed")
+        self.assertEqual(c.calls[1][1]["--from-phase"], "generate")
+
+
 class SeedRepairsFromRevocationsTest(unittest.TestCase):
     """`_seed_repairs_from_revocations` is the whole of what a resume carries forward about a
     prior run's rejection — the `resume_directive` it replaced is gone. If it seeds nothing,
@@ -990,6 +1071,40 @@ class SeedRepairsFromRevocationsTest(unittest.TestCase):
         self.assertEqual(len(seeds), 1)
         self.assertEqual((seeds[0]["node_key"], seeds[0]["phase"], seeds[0]["producer"]),
                          (self._refs().node_key, "generate", "child-7"))
+
+    def test_the_seeded_repair_honours_the_grade_recorded_on_the_revocation(self) -> None:
+        """G5 across the resume boundary. `critical` means the producer's context is not to be
+        trusted, so the repair must DISCARD it (`restart`) and name no reuse target; anything
+        else reuses. Hardcoding `major` here would re-enter a `critical` as a warm reuse of the
+        very session the `critical` graded untrustworthy — the same defect
+        `resolve_severity_directive`'s null-target clear closes for a live directive, arriving
+        by the resume instead. An ungraded revocation (one written before the grade was
+        recorded) defaults to `major`, the way `_parse_directive` does."""
+        cases = {
+            "critical": ("critical", "restart", "none"),
+            "major": ("major", "reuse", "child-7"),
+            "minor": ("minor", "reuse", "child-7"),
+            "ungraded": (None, "major", "reuse", "child-7"),
+        }
+        for label, row in cases.items():
+            recorded, severity, strategy, target = row if len(row) == 4 else (row[0], *row)
+            with self.subTest(case=label):
+                answer = dict(self._REVOKED_GENERATE)
+                answer["revocation_severity"] = recorded
+                c = self._conductor(lambda phase, a=answer:
+                                    dict(a) if phase == "generate" else {"certified": False})
+                buf = io.StringIO()
+                with redirect_stdout(buf), patch.object(
+                        _FakeConductor, "_completed_producer_arid", return_value="child-7"):
+                    seeded = c._seed_repairs_from_revocations(
+                        self._refs(), ["compile", "generate"])
+                self.assertEqual(seeded["generate"]["issue_severity"], severity)
+                self.assertEqual(seeded["generate"]["repair_strategy"], strategy)
+                self.assertEqual(seeded["generate"]["repair_target_agent_run_id"], target)
+                seed_event = [e for e in self._events(buf)
+                              if e.get("event") == "revoked_repair_seeded"][0]
+                self.assertEqual((seed_event["severity"], seed_event["strategy"]),
+                                 (severity, strategy))
 
     def test_a_cold_re_run_over_another_runs_artifact_seeds_a_full_prompt_repair(self) -> None:
         """`_completed_producer_arid` answers `None` when THIS orchestration never ran the

@@ -12731,6 +12731,98 @@ class PhaseCertificationTests(unittest.TestCase):
                                     reason="r", trigger_agent_run_id="t")["status"],
                 "noop")
 
+    def test_revoke_artifact_is_a_noop_when_the_pipeline_has_no_lineage(self) -> None:
+        """The contract stated in this function's own docstring and in
+        `docs/CLI_REFERENCE_RARE.md`: `noop`, not an error. `_read_json` RAISES on a missing
+        file, so without an `.is_file()` guard the documented RUNBOOK recipe against a node
+        whose pipeline directory was never written came back as a raw errno. `_reserved_id`,
+        twenty-five lines above in the same function, carries the same guard — this was the
+        half of that pair that was left open."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._preflight(repo)
+            refs = self._certified(repo, through="generate")
+            (repo / refs["pipeline_ref"] / "lineage.json").unlink()
+            for step in ("generate", "build"):
+                with self.subTest(step=step):
+                    self.assertEqual(
+                        ort.revoke_artifact(repo, "o1", node_key=self._NK, step=step,
+                                            reason="r", trigger_agent_run_id="t")["status"],
+                        "noop")
+            # compile does not read lineage at all and still revokes.
+            self.assertEqual(
+                ort.revoke_artifact(repo, "o1", node_key=self._NK, step="compile",
+                                    reason="r", trigger_agent_run_id="t")["status"],
+                "revoked")
+
+    def test_a_second_revocation_does_not_destroy_the_audit_trail(self) -> None:
+        """`prior_verification_status` exists so that WHAT was revoked stays visible, not
+        merely that the meta is non-passing. A second revocation of the same meta is reachable
+        by a documented route — the dev F1 rollback revokes automatically before terminalizing,
+        and the operator then revokes by hand following the RUNBOOK — and writing
+        `prior_verification_status: "revoked"` there destroys the one fact the field is for."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._preflight(repo)
+            refs = self._certified(repo, through="compile")
+            first = ort.revoke_artifact(repo, "o1", node_key=self._NK, step="compile",
+                                        reason="first", trigger_agent_run_id="t1",
+                                        last_fail_reason="p1 failed")
+            self.assertEqual(first["prior_verification_status"], "pass")
+            second = ort.revoke_artifact(repo, "o1", node_key=self._NK, step="compile",
+                                         reason="second", trigger_agent_run_id="t2",
+                                         last_fail_reason="p2 failed")
+            self.assertEqual(second["prior_verification_status"], "pass")
+            doc = json.loads((repo / refs["ir_meta"]).read_text("utf-8"))
+            self.assertEqual(doc["prior_verification_status"], "pass")
+            # Everything else is the LATEST decision, so the two do not disagree.
+            self.assertEqual(doc["revocation_reason"], "second")
+            self.assertEqual(doc["revoked_by_agent_run_id"], "t2")
+            self.assertEqual(doc["last_fail_reason"], "p2 failed")
+
+    def test_a_revocation_records_its_severity_and_the_predicate_reports_it(self) -> None:
+        """The G5 grade has to survive the resume boundary. Without it a revoked artifact
+        carries its findings but not how bad they were, and the resumed repair can only assume
+        `major` — turning every `critical` into a warm reuse of the producer context the
+        `critical` judged untrustworthy."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._preflight(repo)
+            refs = self._certified(repo, through="compile")
+            ort.revoke_artifact(repo, "o1", node_key=self._NK, step="compile",
+                                reason="r", trigger_agent_run_id="t1",
+                                last_fail_reason="p1 failed", severity="critical")
+            self.assertEqual(
+                json.loads((repo / refs["ir_meta"]).read_text("utf-8"))["revocation_severity"],
+                "critical")
+            _, detail = ort._phase_certified(repo, "o1", self._NK, "compile")
+            self.assertEqual(detail["revocation_severity"], "critical")
+            self.assertEqual(
+                ort.check_phase_certified(repo_root=repo, orchestration_id="o1",
+                                          node_key=self._NK, step="compile",
+                                          agent_run_id="t1")["revocation_severity"],
+                "critical")
+
+    def test_an_ungraded_or_out_of_vocabulary_severity_is_reported_as_none(self) -> None:
+        """A revocation written before the grade was recorded carries none, and the conductor
+        defaults it to `major` the way `_parse_directive` does. An out-of-vocabulary value must
+        not travel either — it would reach `_SEVERITY_FORCED_STRATEGY` as a miss and silently
+        become `reuse` while LOOKING like a graded decision."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._preflight(repo)
+            refs = self._certified(repo, through="compile")
+            ort.revoke_artifact(repo, "o1", node_key=self._NK, step="compile",
+                                reason="r", trigger_agent_run_id="t1")
+            self.assertIsNone(ort._phase_certified(repo, "o1", self._NK,
+                                                   "compile")[1]["revocation_severity"])
+            meta = repo / refs["ir_meta"]
+            doc = json.loads(meta.read_text("utf-8"))
+            doc["revocation_severity"] = "catastrophic"
+            meta.write_text(json.dumps(doc), encoding="utf-8")
+            self.assertIsNone(ort._phase_certified(repo, "o1", self._NK,
+                                                   "compile")[1]["revocation_severity"])
+
     def test_reset_phase_reaches_every_phase_downstream_of_the_target(self) -> None:
         """The record half of a re-derivation decision. `revoke-artifact` refuses the phase
         it names; `reset-phase` is what says the phases BELOW it are not happening either.

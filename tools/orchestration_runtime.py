@@ -1789,11 +1789,15 @@ def _stage_meta_certification(repo_root: Path, meta_path: Path) -> tuple[bool, d
     """The per-meta half of the predicate, shared by all three certifying phases:
     readable object, `verification_status == "pass"`, and hashes that re-compute.
 
-    The second element always carries `revoked` and `last_fail_reason` — even on refusal —
-    because the conductor seeds a repair from exactly those two fields when a resume finds a
-    revoked artifact, and a refusal that dropped them would leave the repair with no findings.
+    The second element always carries `revoked`, `last_fail_reason` and
+    `revocation_severity` — even on refusal — because the conductor seeds a repair from
+    exactly those fields when a resume finds a revoked artifact. A refusal that dropped the
+    findings would leave the repair with nothing to repair from; one that dropped the severity
+    would silently downgrade a `critical` to the `major` default, which under the G5 policy is
+    the difference between discarding the producer's context and reusing it.
     """
-    detail: dict[str, Any] = {"revoked": False, "last_fail_reason": None}
+    detail: dict[str, Any] = {"revoked": False, "last_fail_reason": None,
+                              "revocation_severity": None}
     try:
         doc = json.loads(meta_path.read_text(encoding="utf-8"))
     except Exception:
@@ -1802,6 +1806,8 @@ def _stage_meta_certification(repo_root: Path, meta_path: Path) -> tuple[bool, d
         return (False, {**detail, "reason": "stage_meta_unreadable"})
     fail_reason = doc.get("last_fail_reason")
     detail["last_fail_reason"] = fail_reason if isinstance(fail_reason, str) and fail_reason.strip() else None
+    sev = doc.get("revocation_severity")
+    detail["revocation_severity"] = sev if sev in REVOCATION_SEVERITIES else None
     status = str(doc.get("verification_status", "")).strip().lower()
     if status == "revoked":
         detail["revoked"] = True
@@ -1840,15 +1846,18 @@ def _ir_certification(
     try:
         kind, spec_id, version = _parse_node_key_strict(node_key)
     except ValueError:
-        return (False, {"reason": "node_key_invalid", "revoked": False, "last_fail_reason": None})
+        return (False, {"reason": "node_key_invalid", "revoked": False, "last_fail_reason": None,
+                        "revocation_severity": None})
     safe = f"{kind}__{spec_id}__{version}"
     root = repo_root / "workspace" / "ir" / safe
     latest = _latest_meta_under(root, "*/ir_meta.json") if root.is_dir() else None
     if latest is None:
-        return (False, {"reason": "ir_not_found", "revoked": False, "last_fail_reason": None})
+        return (False, {"reason": "ir_not_found", "revoked": False, "last_fail_reason": None,
+                        "revocation_severity": None})
     ir_id = latest.parent.name
     if reserved_ir_id is not None and ir_id != reserved_ir_id.strip():
-        return (False, {"reason": "ir_not_latest", "revoked": False, "last_fail_reason": None})
+        return (False, {"reason": "ir_not_latest", "revoked": False, "last_fail_reason": None,
+                        "revocation_severity": None})
     ok, detail = _stage_meta_certification(repo_root, latest)
     detail["ir_id"] = ir_id
     detail["ir_ref"] = _normalize_rel_posix(str(latest.parent.relative_to(repo_root)))
@@ -1888,7 +1897,7 @@ def _phase_certified(
     detail: dict[str, Any] = {
         "reason": None, "ir_ref": None, "pipeline_ref": None,
         "source_id": None, "binary_id": None, "run_id": None,
-        "revoked": False, "last_fail_reason": None,
+        "revoked": False, "last_fail_reason": None, "revocation_severity": None,
     }
     try:
         kind, spec_id, version = _parse_node_key_strict(node_key)
@@ -1904,6 +1913,7 @@ def _phase_certified(
     detail["ir_ref"] = ir_detail.get("ir_ref")
     detail["revoked"] = bool(ir_detail.get("revoked"))
     detail["last_fail_reason"] = ir_detail.get("last_fail_reason")
+    detail["revocation_severity"] = ir_detail.get("revocation_severity")
     if not ok:
         return (False, {**detail, "reason": ir_detail.get("reason")})
     ir_id = str(ir_detail["ir_id"])
@@ -1933,6 +1943,7 @@ def _phase_certified(
     ok, src_detail = _stage_meta_certification(repo_root, source_meta_path)
     detail["revoked"] = bool(src_detail.get("revoked"))
     detail["last_fail_reason"] = src_detail.get("last_fail_reason")
+    detail["revocation_severity"] = src_detail.get("revocation_severity")
     source_id = source_meta_path.parent.name
     detail["source_id"] = source_id
     if not ok:
@@ -1958,6 +1969,7 @@ def _phase_certified(
     ok, bin_detail = _stage_meta_certification(repo_root, binary_meta_path)
     detail["revoked"] = bool(bin_detail.get("revoked"))
     detail["last_fail_reason"] = bin_detail.get("last_fail_reason")
+    detail["revocation_severity"] = bin_detail.get("revocation_severity")
     detail["binary_id"] = binary_meta_path.parent.name
     if not ok:
         return (False, {**detail, "reason": bin_detail.get("reason")})
@@ -2225,7 +2237,16 @@ def _revocable_stage_meta_path(
     if pipeline_id is None:
         return None
     pipe_dir = repo_root / "workspace" / "pipelines" / node_safe / pipeline_id
-    lineage = _read_json(pipe_dir / "lineage.json") or {}
+    # `_read_json` RAISES on a missing file, and this function's contract — stated in its own
+    # docstring and in `docs/CLI_REFERENCE_RARE.md` — is `None`, which the caller reports as a
+    # `noop`. Without the guard the documented RUNBOOK recipe (`revoke-artifact --step <phase>`
+    # against a node whose pipeline directory does not exist, e.g. a run stopped at compile)
+    # returns a raw errno instead. `_reserved_id`, twenty-five lines above, carries the same
+    # guard for the same reason; this is the half of that pair that was left open.
+    lineage_path = pipe_dir / "lineage.json"
+    if not lineage_path.is_file():
+        return None
+    lineage = _read_json(lineage_path) or {}
     key = "source_id" if step_token == "generate" else "binary_id"
     stage_id = lineage.get(key)
     if not (isinstance(stage_id, str) and stage_id.strip()):
@@ -2241,6 +2262,7 @@ def _revoke_stage_meta(
     reason: str,
     trigger_agent_run_id: str,
     last_fail_reason: str | None = None,
+    severity: str | None = None,
 ) -> dict[str, Any]:
     """Rewrite a stage meta as `verification_status: "revoked"`, in place, preserving every
     other key. Returns `{status, meta_ref, prior_verification_status}`.
@@ -2255,19 +2277,32 @@ def _revoke_stage_meta(
     if not isinstance(doc, dict):
         raise RuntimeError(f"revoke-artifact: {meta_path} is not a JSON object")
     prior = doc.get("verification_status")
-    doc["prior_verification_status"] = prior
+    # Re-revoking must not overwrite the audit trail with `revoked`. This function exists to
+    # keep "what was revoked" visible rather than merely "the meta is non-passing", and a
+    # second revocation of the same meta is REACHABLE by a documented route: the dev F1
+    # rollback revokes automatically before terminalizing, and the operator then follows
+    # `docs/RUNBOOK.md` §3-1 and revokes by hand. Writing `prior_verification_status:
+    # "revoked"` there destroys the one fact the field is for.
+    if prior != "revoked":
+        doc["prior_verification_status"] = prior
+    # What is REPORTED is what the meta now records, not the local `prior` — on a second
+    # revocation those differ, and reporting the local one would tell the caller the audit
+    # trail had been overwritten when it has just been protected.
+    reported_prior = doc.get("prior_verification_status")
     doc["verification_status"] = "revoked"
     doc["revoked_at"] = _utc_now_iso()
     doc["revoked_by_agent_run_id"] = trigger_agent_run_id.strip()
     doc["revocation_reason"] = reason
     if last_fail_reason is not None and last_fail_reason.strip():
         doc["last_fail_reason"] = last_fail_reason
+    if severity in REVOCATION_SEVERITIES:
+        doc["revocation_severity"] = severity
     _write_json(meta_path, doc)
     return {
         "status": "revoked",
         "meta_ref": _normalize_rel_posix(str(meta_path.relative_to(repo_root)))
         if meta_path.is_relative_to(repo_root) else str(meta_path),
-        "prior_verification_status": prior,
+        "prior_verification_status": reported_prior,
     }
 
 
@@ -2332,6 +2367,7 @@ def check_phase_certified(
         "run_id": detail.get("run_id"),
         "revoked": bool(detail.get("revoked")),
         "last_fail_reason": detail.get("last_fail_reason"),
+        "revocation_severity": detail.get("revocation_severity"),
         "phase_state": current_state,
     }
 
@@ -5638,6 +5674,14 @@ DIAGNOSE_LAUNCH_PAIRS: frozenset[tuple[str, str]] = frozenset(
 # answer a DIFFERENT question and folding them would make a later change to one silently change
 # the others: `build_capability_document` (x2), "which roles may a CAPABILITY document name".
 AGENT_RUN_ROLES: frozenset[str] = frozenset({"orchestration", "step", "substep"})
+
+# The G5 severity vocabulary, as recorded ON a revocation. `resolve_severity_directive` in the
+# conductor is canonical for what each value MEANS for a repair (minor -> reuse,
+# critical -> restart); this set exists so the value survives the resume boundary. Without it a
+# revoked artifact carries its findings but not how bad they were, and the resumed repair has
+# no choice but to assume `major` — which turns every `critical` into a warm reuse of the very
+# producer context the `critical` judged untrustworthy.
+REVOCATION_SEVERITIES: frozenset[str] = frozenset({"minor", "major", "critical"})
 
 FAIL_CLOSED_REASON_CODES = {
     "child_agent_forbidden_by_session_policy",
@@ -22073,6 +22117,7 @@ def revoke_artifact(
     reason: str,
     trigger_agent_run_id: str,
     last_fail_reason: str | None = None,
+    severity: str | None = None,
 ) -> dict[str, Any]:
     """Revoke the stage meta of `(node_key, step)` — the half of a re-derivation decision that
     reaches the ARTIFACT.
@@ -22088,7 +22133,10 @@ def revoke_artifact(
     was never written are `noop` — there is nothing to revoke, which is not an error.
 
     `last_fail_reason` overwrites the meta's own when given: on the routes that carry findings
-    it is what the resumed run seeds the repair from.
+    it is what the resumed run seeds the repair from. `severity` travels with it for the same
+    reason — the G5 policy turns `critical` into a context-discarding `restart` and everything
+    else into a warm `reuse`, and a resume that read the findings without the grade would
+    re-enter a `critical` as a `major`.
     """
     _require_preflight_launchable(repo_root, orchestration_id, enforce_live_probe=False)
     step_token = step.strip().lower()
@@ -22116,6 +22164,7 @@ def revoke_artifact(
         reason=reason,
         trigger_agent_run_id=trigger_agent_run_id,
         last_fail_reason=last_fail_reason,
+        severity=severity,
     )
     result.update(revoked)
     result.pop("reason", None)
@@ -23524,6 +23573,14 @@ def main(argv: list[str] | None = None) -> int:
         help="Findings excerpt to record on the meta, overwriting its own.",
     )
     revoke_artifact_parser.add_argument(
+        "--severity", default=None, choices=sorted(REVOCATION_SEVERITIES),
+        help=(
+            "G5 severity of the finding that drove the re-derivation, recorded as "
+            "revocation_severity. A resumed repair reads it to choose reuse vs restart; "
+            "without it every revocation re-enters as `major`."
+        ),
+    )
+    revoke_artifact_parser.add_argument(
         "--last-fail-reason-from-stdin", action="store_true",
         help=(
             "Read --last-fail-reason from stdin instead. The excerpt can reach several "
@@ -23880,6 +23937,7 @@ def main(argv: list[str] | None = None) -> int:
                 reason=args.reason,
                 trigger_agent_run_id=args.trigger_agent_run_id,
                 last_fail_reason=last_fail_reason,
+                severity=args.severity,
             )
         except (ValueError, RuntimeError, OSError) as exc:
             print(f"revoke-artifact: {exc}", file=sys.stderr)

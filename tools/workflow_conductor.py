@@ -9430,15 +9430,20 @@ clean:
         return self.runtime(args)
 
     def revoke_artifact(self, node_key: str, step: str, trigger_arid: str, reason: str,
-                        last_fail_reason: str | None = None) -> dict[str, Any]:
+                        last_fail_reason: str | None = None,
+                        severity: str | None = None) -> dict[str, Any]:
         """Revoke the stage meta of a phase this conductor has decided to re-derive — the half
         of a retry that reaches the ARTIFACT, and therefore the half a cold re-run reads.
 
         `last_fail_reason` travels over stdin: a findings excerpt runs to several thousand
-        characters, which does not belong on an argv."""
+        characters, which does not belong on an argv. `severity` is the G5 grade of the finding,
+        and it must travel with the findings or the resumed repair re-enters a `critical` as a
+        `major` — reusing the very producer context the `critical` graded untrustworthy."""
         args = ["revoke-artifact", *self._oid_args(),
                 "--node-key", node_key, "--step", step,
                 "--trigger-agent-run-id", trigger_arid, "--reason", reason]
+        if severity in ("minor", "major", "critical"):
+            args += ["--severity", severity]
         if last_fail_reason and last_fail_reason.strip():
             return self.runtime(args + ["--last-fail-reason-from-stdin"],
                                 input=last_fail_reason)
@@ -9456,11 +9461,32 @@ clean:
         ])
 
     def revoke_and_reset(self, node_key: str, phase: str, trigger_arid: str, reason: str,
-                         findings: str | None = None) -> None:
+                         findings: str | None = None,
+                         severity: str | None = None) -> None:
         """The whole of a re-derivation decision: revoke the artifact, then reset the record.
-        Every retry route calls exactly this, so the two halves cannot drift apart."""
-        self.revoke_artifact(node_key, phase, trigger_arid, reason, last_fail_reason=findings)
+        Every retry route calls exactly this, so the two halves cannot drift apart.
+
+        The revocation's answer is READ, not discarded. `revoke-artifact` answers `noop` when it
+        can resolve no meta, and that answer has two very different causes wearing one word: the
+        legitimate one (validate certifies no meta; the phase never produced one) and the
+        failure this whole PR exists to prevent (the decision did not reach the artifact, so the
+        next `--resume` finds the phase still `certified` and skips straight past it). They are
+        told apart by asking the predicate afterwards: if the phase is STILL certified once the
+        revocation has run, the decision did not land, and continuing would re-run every
+        downstream phase into the same failure. That is fail-closed, not a warning."""
+        outcome = self.revoke_artifact(node_key, phase, trigger_arid, reason,
+                                       last_fail_reason=findings, severity=severity)
         self.reset_phase(node_key, phase, trigger_arid, reason)
+        if str((outcome or {}).get("status") or "") == "noop":
+            self.emit("revoke_artifact_noop", node_key=node_key, phase=phase,
+                      reason=reason, detail=str((outcome or {}).get("reason") or ""))
+            if self.check_phase_certified(node_key, phase).get("certified"):
+                raise RuntimeError(
+                    f"revoke-artifact resolved no stage meta for {node_key}/{phase} "
+                    f"({(outcome or {}).get('reason')}), and the phase is still certified: the "
+                    "re-derivation decision did not reach the artifact, so a resume would skip "
+                    "the phase this run just decided to re-derive"
+                )
 
     # -- substep outcome (deterministic, reads canonical artifacts) -----------
 
@@ -14087,15 +14113,28 @@ clean:
                 continue
             producer = self._completed_producer_arid(
                 refs.node_key, phase, self._certified_meta_ref(phase, cert, refs.node_key))
+            # The G5 grade travels ON the revocation, and the same policy applies to it here
+            # as to a live escalate directive: `critical` discards the producer's context
+            # (`restart`), everything else reuses it. Hardcoding `major` here would re-enter a
+            # `critical` as a warm reuse of the very session the `critical` graded
+            # untrustworthy — the defect the null-target clear in `resolve_severity_directive`
+            # was written to close, arriving by the resume boundary instead. A revocation
+            # written before the grade was recorded carries none, and defaults to `major` the
+            # way `_parse_directive` does.
+            severity = cert.get("revocation_severity") or "major"
+            strategy = _SEVERITY_FORCED_STRATEGY.get(severity, "reuse")
             seeded[phase] = {
-                "issue_severity": "major",
-                "repair_strategy": "reuse",
-                "repair_target_agent_run_id": producer or "none",
+                "issue_severity": severity,
+                "repair_strategy": strategy,
+                # A `restart` discards the producer session by definition, so naming a reuse
+                # target beside it would be contradictory.
+                "repair_target_agent_run_id": (producer or "none") if strategy == "reuse"
+                                              else "none",
                 "repair_reason": "revoked_artifact_resume",
                 "repair_findings": findings.strip(),
             }
             self.emit("revoked_repair_seeded", node_key=refs.node_key, phase=phase,
-                      producer=producer or "none")
+                      producer=producer or "none", severity=severity, strategy=strategy)
         return seeded
 
     def conduct(self, refs: NodeRefs, until_phase: str) -> str:
@@ -14209,7 +14248,8 @@ clean:
                     self.revoke_and_reset(
                         refs.node_key, target, trigger,
                         decision.reason or f"{phase}->{target}",
-                        findings=self._read_repair_findings(refs, decision.reason, phase))
+                        findings=self._read_repair_findings(refs, decision.reason, phase),
+                        severity=decision.severity)
                 self.set_status("fail_closed", reason_code="dev_phase_rollback",
                                 reason_detail=(decision.reason or f"{phase}->{target}")[:200])
                 return "fail_closed"
@@ -14249,7 +14289,7 @@ clean:
                 findings = self._read_repair_findings(refs, decision.reason, phase)
                 self.revoke_and_reset(refs.node_key, phase, trigger,
                                       decision.reason or "same_phase_reopen",
-                                      findings=findings)
+                                      findings=findings, severity=decision.severity)
                 pending_repair[phase] = self._repair_payload(
                     decision, self._producer_arid.get(phase, "none"), findings=findings)
                 continue  # idx unchanged -> re-run the phase producer with the repair
@@ -14277,7 +14317,7 @@ clean:
             findings = self._read_repair_findings(refs, decision.reason, phase)
             self.revoke_and_reset(refs.node_key, target, trigger,
                                   decision.reason or f"{phase}_reopen",
-                                  findings=findings)
+                                  findings=findings, severity=decision.severity)
             if decision.repair_strategy and decision.repair_strategy not in ("none", None):
                 pending_repair[target] = self._repair_payload(
                     decision, self._producer_arid.get(target, "none"), findings=findings)
