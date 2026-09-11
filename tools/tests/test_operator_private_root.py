@@ -481,12 +481,14 @@ class RunbookStatesTheRelocatorsTests(unittest.TestCase):
             "satisfiable by a sentence somewhere else in the document")
         # `assertTrue`, not `assertIn`: the haystack here is the whole 163 KB document.
         self.assertTrue(
-            "advisory `flock` under `~/.atmofab/start_claims/`" in text,
-            "the cold-start bullet this bound is tested against has moved or was "
-            "reworded; re-choose a control sentence that names a relocator and sits "
-            "OUTSIDE the operator-private-root section")
+            "(relocatable with `ATMOFAB_START_CLAIM_ROOT`) and a cold start takes one" in text,
+            "the claim bullet this bound is tested against has moved or was reworded; "
+            "re-choose a control sentence that names a relocator and sits OUTSIDE the "
+            "operator-private-root section. (It has moved once already: issue #177 "
+            "rewrote §3-1's concurrency bullet when the driver-liveness probe was "
+            "deleted, and this control had pinned that sentence's exact wording.)")
         self.assertFalse(
-            "advisory `flock` under `~/.atmofab/start_claims/`" in section,
+            "(relocatable with `ATMOFAB_START_CLAIM_ROOT`) and a cold start takes one" in section,
             "the section slice reached outside the section — the bound is broken")
 
 

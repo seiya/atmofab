@@ -1760,7 +1760,7 @@ def _verify_dep_stage_detail(
 # certified node re-derived every phase from scratch.
 #
 # The predicate is READ IDENTICALLY on a cold run and on a resume — there is no
-# `resume_enabled` gate — so "this phase is already done" has one answer in the codebase.
+# resume-only gate — so "this phase is already done" has one answer in the codebase.
 
 
 def _certification_hash_mismatch(repo_root: Path, meta_doc: dict[str, Any]) -> str | None:
@@ -4947,10 +4947,21 @@ def _clear_stale_active_child_markers(
     check in `record_launch` then rejects the next launch, permanently wedging the
     documented recovery (`launch_incomplete_active_child` / `llm_launch_interrupted`).
 
-    This is only safe to call when the orchestration is being reset from a TERMINAL
-    status — a terminal status proves no child is actually running, so the markers
-    are stale by definition. Removes the legacy active-child file and every per-arid
-    marker, returning the cleared arids for audit.
+    THE PRECONDITION IS NO LONGER "the status is terminal", and the difference matters because
+    this function verifies nothing — it deletes the legacy active-child file and every per-arid
+    marker unconditionally. What has to be true is that NO DRIVER IS RUNNING THIS ORCHESTRATION,
+    and since issue #177's PR-3 that is established by the caller holding the run's EXCLUSIVE
+    CLAIM (an advisory `flock` under `~/.atmofab/start_claims/`, released by the OS when the
+    holding process dies) rather than by the recorded status. A terminal status still implies it;
+    a `running` status no longer contradicts it, which is why `resume_orchestration` now
+    reconciles a `running` prior too.
+
+    Calling it WITHOUT that claim held is the unsafe case, and it is unsafe in a specific way:
+    a live leaf loses its phase authority and its active-child marker mid-run. `docs/RUNBOOK.md`
+    §3-1 records where the claim can degrade and what that costs.
+
+    Removes the legacy active-child file and every per-arid marker, returning the cleared arids
+    for audit.
     """
     cleared: list[str] = []
     active_path = _active_child_agent_run_id_path(repo_root, orchestration_id)
@@ -5242,12 +5253,24 @@ def _reset_stale_child_running_node_steps(
     (host died mid-flight) leaves it there even after its active-child marker is
     cleared. The phase gates authorize child work when the node/step is
     `child_running` — apply-patch (`_phase_write_requires_child_running`), the MCP
-    phase gate, and `run-gate` — so a terminal-reset resume must drop that stale
-    authority, otherwise the abandoned child's capability stays phase-authorized and
-    agents reading phase_state still see the substep as running. A terminal status
-    proves no child is actually running, so any `child_running` node/step is stale →
-    reset to `not_started`; the resumed re-launch transitions it back to
-    `child_running` for the real new child. Returns the reset [{node_key_safe, step}].
+    phase gate, and `run-gate` — so a resume must drop that stale authority, otherwise the
+    abandoned child's capability stays phase-authorized and agents reading phase_state still see
+    the substep as running. Any `child_running` node/step is then stale → reset to
+    `not_started`; the resumed re-launch transitions it back to `child_running` for the real new
+    child. Returns the reset [{node_key_safe, step}].
+
+    THE PRECONDITION IS NO LONGER "the status is terminal", and the difference matters because
+    this function verifies nothing — it resets every `child_running` node/step in
+    `phase_state.json` to `not_started` unconditionally. What has to be true is that NO DRIVER IS RUNNING THIS ORCHESTRATION,
+    and since issue #177's PR-3 that is established by the caller holding the run's EXCLUSIVE
+    CLAIM (an advisory `flock` under `~/.atmofab/start_claims/`, released by the OS when the
+    holding process dies) rather than by the recorded status. A terminal status still implies it;
+    a `running` status no longer contradicts it, which is why `resume_orchestration` now
+    reconciles a `running` prior too.
+
+    Calling it WITHOUT that claim held is the unsafe case, and it is unsafe in a specific way:
+    a live leaf loses its phase authority and its active-child marker mid-run. `docs/RUNBOOK.md`
+    §3-1 records where the claim can degrade and what that costs.
     """
     doc = _load_phase_state(repo_root, orchestration_id)
     if not isinstance(doc, dict):
@@ -5993,11 +6016,88 @@ def _load_phase_state(repo_root: Path, orchestration_id: str) -> dict[str, Any] 
     return data
 
 
+def _current_hostname_for_record() -> str:
+    """This host's name, for the resume record. Never raises and never blocks a run: an
+    unresolvable hostname records the empty string, which simply cannot trigger the cross-host
+    warning."""
+    try:
+        import socket
+
+        return socket.gethostname().strip()
+    except Exception:  # noqa: BLE001 - a provenance field must not fail a run
+        return ""
+
+
+def reconcile_phase_state_for_resume(
+    repo_root: Path,
+    orchestration_id: str,
+) -> dict[str, Any]:
+    """Prepare `phase_state.json` for a run that is about to be driven again.
+
+    Two cases, and NEITHER of them is a merge from anywhere:
+
+      * **The file is missing.** Create it, inferring `current_state` from the recorded
+        preflight rather than starting at `initialized` — an orchestration that passed
+        preflight and lost its phase state must not come back unable to launch.
+      * **The file exists.** Keep `current_state` and `node_states` as they are, normalizing
+        the node states so every step key is present.
+
+    Issue #177 renamed this from `merge_phase_state_for_resume` and rewrote its docstring,
+    and the rename is the point: the old name described reconciling against
+    `orchestration_checkpoint.json`'s completion information, and the plan for #177's PR-3
+    listed the function for DELETION on the strength of that name. Reading the body says
+    otherwise — the preflight inference and the node-state normalization are real behaviour
+    that never touched the ledger, and `TestPhase1RuleSourceAudit` pins the inference. What
+    the ledger's deletion removed is the second source; what remains is this file, which is
+    now the only record of where a node's phases stand.
+    """
+    _ensure_orchestration_audit_dirs(repo_root, orchestration_id)
+    existing = _load_phase_state(repo_root, orchestration_id)
+    if existing is None:
+        inferred = _initial_current_state_when_phase_state_missing(repo_root, orchestration_id)
+        doc = _new_phase_state_document(orchestration_id)
+        doc["current_state"] = inferred
+        _write_phase_state(repo_root, orchestration_id, doc)
+        _append_phase_state_log(
+            repo_root,
+            orchestration_id,
+            {
+                "ts": _utc_now_iso(),
+                "event": "resume_missing_phase_state",
+                "from": None,
+                "to": inferred,
+                "note": "created for resume; inferred from preflight when possible",
+            },
+        )
+        return doc
+    orch_id = existing.get("orchestration_id")
+    if orch_id != orchestration_id:
+        raise RuntimeError(
+            f"phase_state.json orchestration_id mismatch: expected {orchestration_id!r}, got {orch_id!r}"
+        )
+    merged = dict(existing)
+    merged["node_states"] = _merge_node_states(merged.get("node_states"), orchestration_id)
+    _write_phase_state(repo_root, orchestration_id, merged)
+    _append_phase_state_log(
+        repo_root,
+        orchestration_id,
+        {
+            "ts": _utc_now_iso(),
+            "event": "resume_phase_state_preserved",
+            "from": merged.get("current_state"),
+            "to": merged.get("current_state"),
+            "note": "phase_state preserved for resume",
+        },
+    )
+    return merged
+
+
 def _merge_node_states(
     existing: Any,
     orchestration_id: str,
 ) -> dict[str, dict[str, str]]:
-    """Keep the existing node_states so as not to contradict the checkpoint, while filling missing keys."""
+    """Normalize `node_states`: keep every recorded value, fill every missing step key with
+    `not_started`. Reads nothing but its argument."""
     merged: dict[str, dict[str, str]] = {}
     if isinstance(existing, dict):
         for node_key, steps in existing.items():
@@ -6054,62 +6154,6 @@ def _initial_current_state_when_phase_state_missing(
     if isinstance(payload, dict) and _preflight_allows_agent_launch(payload):
         return "preflight_passed"
     return "initialized"
-
-
-def merge_phase_state_for_resume(
-    repo_root: Path,
-    orchestration_id: str,
-) -> dict[str, Any]:
-    """On `--resume-from-checkpoint`: keep `node_states` without discarding the existing `phase_state`.
-
-Initialize only a missing `phase_state.json`; when one exists, do not overwrite
-    `current_state` and `node_states`. For audit, append an entry to `phase_state_log.jsonl`.
-
-    Nothing is merged FROM any other file. It used to be worth saying that this state is
-    separate from `orchestration_checkpoint.json`'s completion information; issue #177 deleted
-    that ledger, so `phase_state.json` is now the only record of where a node's phases stand
-    and there is no second source to reconcile against.
-    """
-    _ensure_orchestration_audit_dirs(repo_root, orchestration_id)
-    existing = _load_phase_state(repo_root, orchestration_id)
-    if existing is None:
-        inferred = _initial_current_state_when_phase_state_missing(repo_root, orchestration_id)
-        _ensure_orchestration_audit_dirs(repo_root, orchestration_id)
-        doc = _new_phase_state_document(orchestration_id)
-        doc["current_state"] = inferred
-        _write_phase_state(repo_root, orchestration_id, doc)
-        _append_phase_state_log(
-            repo_root,
-            orchestration_id,
-            {
-                "ts": _utc_now_iso(),
-                "event": "resume_missing_phase_state",
-                "from": None,
-                "to": inferred,
-                "note": "created for checkpoint resume; inferred from preflight when possible",
-            },
-        )
-        return doc
-    orch_id = existing.get("orchestration_id")
-    if orch_id != orchestration_id:
-        raise RuntimeError(
-            f"phase_state.json orchestration_id mismatch: expected {orchestration_id!r}, got {orch_id!r}"
-        )
-    merged = dict(existing)
-    merged["node_states"] = _merge_node_states(merged.get("node_states"), orchestration_id)
-    _write_phase_state(repo_root, orchestration_id, merged)
-    _append_phase_state_log(
-        repo_root,
-        orchestration_id,
-        {
-            "ts": _utc_now_iso(),
-            "event": "checkpoint_resume_enabled",
-            "from": merged.get("current_state"),
-            "to": merged.get("current_state"),
-            "note": "orchestration_meta resume_enabled; phase_state preserved",
-        },
-    )
-    return merged
 
 
 def _transition_phase_state(
@@ -14906,7 +14950,7 @@ def _dev_execute_trial_meta(repo_root: Path, root: Path, arid: str) -> dict[str,
 
 
 
-def enable_checkpoint_resume(
+def resume_orchestration(
     repo_root: Path,
     orchestration_id: str,
     *,
@@ -14915,9 +14959,13 @@ def enable_checkpoint_resume(
     closure_until_phase: str | None = None,
     until_phase: str | None = None,
     wait_usage_reset: bool = False,
-    driver: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Set resume_enabled=true in orchestration_meta.json.
+    """Prepare an existing orchestration to be driven again, and reconcile what the prior
+    driver left behind.
+
+    Named for what it does since issue #177 deleted the checkpoint ledger: there is no
+    `resume_enabled` flag to set and no ledger to consult, so "enable checkpoint resume" named
+    neither the input nor the effect.
 
     Update the meta only when `spec_ref` / `source_dependency_ref` is specified
     (to reflect the value overridden via the CLI at resume time into the meta so that
@@ -14953,7 +15001,6 @@ def enable_checkpoint_resume(
         raise RuntimeError(f"orchestration_meta.json is invalid: {meta_path}") from exc
     if not isinstance(meta, dict):
         raise RuntimeError(f"orchestration_meta.json is invalid: {meta_path}")
-    meta["resume_enabled"] = True
     meta["resumed_at"] = _utc_now_iso()
     if isinstance(spec_ref, str) and spec_ref.strip():
         meta["spec_ref"] = spec_ref.strip()
@@ -15023,10 +15070,45 @@ def enable_checkpoint_resume(
     if isinstance(invocation_block, dict):
         _record_until_phase_high_water(invocation_block)
     prior_status = meta.get("status")
-    terminal_reset = (
-        isinstance(prior_status, str) and prior_status in IDEMPOTENT_TERMINAL_STATUSES
+    # `running` reconciles too, and that is the whole point of issue #177's PR-3. Before it, a
+    # `running` prior meant "possibly a live driver", so the resume path refused rather than
+    # reconciled — and the thing that decided which it was probed the recorded pid through
+    # `/proc`, answering `unknown` for every run started on another host, in another PID
+    # namespace, or under a `hidepid` mount. An `unknown` refused the recovery it existed to
+    # enable. The exclusive claim answers it directly instead: a driver that is gone does not
+    # hold its claim, so a resume that GOT here already knows nothing else is driving this run.
+    # The crash reconciliations below therefore have to run for a `running` prior as well, or a
+    # resume recovers the status and leaves the dead child's markers, orphan edges and stale
+    # `child_running` phase state behind it.
+    reconcile = isinstance(prior_status, str) and (
+        prior_status in IDEMPOTENT_TERMINAL_STATUSES or prior_status == "running"
     )
-    if terminal_reset:
+    # A status this function cannot reason about REFUSES the resume rather than proceeding
+    # without reconciling. Proceeding was the worse of the two: the resume succeeded, the
+    # reconciliations were skipped, and the run carried on with the dead child's
+    # `active_children/` markers and its `child_running` phase authority still in place — which
+    # wedges the next launch behind a sequential-child gate whose owner is gone, for a reason
+    # nothing reported. Refusing says which value it could not place.
+    #
+    # Reachable, not hypothetical: neither `init --status` nor `set-status --status` declares
+    # argparse `choices=`, so any string an operator or a leaf passes is stored verbatim. The
+    # runtime's own writers only ever produce the statuses below.
+    # EVERY unplaceable value, not just a non-empty string. The first cut of this guard read
+    # `isinstance(prior_status, str) and prior_status.strip() and not reconcile`, which exempted
+    # the three shapes that are EASIEST to produce: an empty string, a JSON `null`, and an
+    # absent key. Measured — `set-status --status ""` exits 0, and the resume then took the
+    # exact path the guard was added to close. Worse, the meta was left at `''` rather than
+    # `running`, so `_warn_about_resumable_priors` (which skips a falsy status) stopped
+    # mentioning the run on the cold path too: invisible in both directions.
+    if not reconcile:
+        raise RuntimeError(
+            f"cannot resume orchestration {orchestration_id}: its recorded status "
+            f"{prior_status!r} is neither terminal ({sorted(IDEMPOTENT_TERMINAL_STATUSES)}) "
+            "nor 'running', so this resume cannot tell whether the crash reconciliations "
+            "(active-child markers, orphan graph edges, stale child_running phase authority) "
+            "are safe to run. Set a status this runtime writes before resuming."
+        )
+    if reconcile:
         # Archive the prior terminal narrative, then hand the resumed run a fresh
         # in-progress lifecycle so its eventual set-status(pass/fail) is a valid
         # forward transition from `running` rather than a rejected terminal-to-terminal one.
@@ -15083,7 +15165,7 @@ def enable_checkpoint_resume(
         pruned_graph_children = _prune_orphan_agent_graph_edges(repo_root, orchestration_id)
         # Drop stale `child_running` authority for the abandoned launch — the phase
         # gates (apply-patch / MCP / run-gate) authorize child work on that state, and
-        # a terminal status proves no child is live. merge_phase_state_for_resume below
+        # a terminal status proves no child is live. The phase-state init below
         # preserves node_states, so this reset survives into the resumed run.
         reset_child_running = _reset_stale_child_running_node_steps(repo_root, orchestration_id)
         # Tombstone the abandoned launches' residual artifacts so a later manual
@@ -15098,18 +15180,43 @@ def enable_checkpoint_resume(
             orchestration_id,
             list(pruned_graph_children) + list(cleared_active_child),
         )
-    # The RESUMING process is now this orchestration's driver, so its identity replaces
-    # the block the prior (often dead) driver left behind. An unusable/absent identity
-    # POPS the field rather than leaving the corpse's pid in place: a stale pid can be
-    # reused by an unrelated process, and a probe would then call this run alive.
-    normalized_driver = _normalized_driver_identity(driver)
-    if normalized_driver is not None:
-        meta["driver"] = normalized_driver
-    else:
-        meta.pop("driver", None)
+    # The `driver` block is GONE (issue #177): nothing reads it any more, and a record that
+    # nothing reads is a record that drifts. A stale one was actively harmful — a reused pid
+    # made a probe call a dead run alive — so a resume drops it rather than refreshing it.
+    meta.pop("driver", None)
+    # ONE fact from that block survives it, and only one: the HOST. The exclusive claim that
+    # replaced the driver probe lives under the operator's own `~/.atmofab/start_claims/`, so
+    # it is host-scoped — with host-local homes (a container and its host bind-mounting the
+    # checkout, a cluster with local `/home` and shared `/work`) two drivers each take their
+    # own claim and both proceed. Nothing else in the tree can notice that.
+    #
+    # Recorded to WARN, never to refuse. Refusing on a differing hostname would reinstate the
+    # failure this issue exists to delete: an operator who legitimately moves a checkout to a
+    # new host, or out of a container, could never resume — `unknown ⇒ refuse` under a new
+    # name. The previous host is reported and the resume proceeds.
+    previous_host = meta.get("last_driver_host")
+    meta["last_driver_host"] = _current_hostname_for_record()
     _write_json(meta_path, meta)
-    merge_phase_state_for_resume(repo_root, orchestration_id)
-    if terminal_reset:
+    reconcile_phase_state_for_resume(repo_root, orchestration_id)
+    # Said where an operator will find it: the phase-state log is what they read back to
+    # understand a run, and it is the durable record the claim itself cannot leave.
+    if previous_host and previous_host != meta["last_driver_host"]:
+        _append_phase_state_log(
+            repo_root,
+            orchestration_id,
+            {
+                "ts": _utc_now_iso(),
+                "event": "resume_crossed_hosts",
+                "from": previous_host,
+                "to": meta["last_driver_host"],
+                "note": (
+                    "this orchestration was last driven on another host; the start claim is "
+                    "host-scoped (~/.atmofab/start_claims/), so it cannot prove the other "
+                    "host is not still running it — see docs/RUNBOOK.md §3-1"
+                ),
+            },
+        )
+    if reconcile:
         _append_phase_state_log(
             repo_root,
             orchestration_id,
@@ -15118,7 +15225,7 @@ def enable_checkpoint_resume(
                 "event": "resume_status_reset",
                 "from": prior_status,
                 "to": "running",
-                "note": "terminal status reset to running for checkpoint resume",
+                "note": f"status reset to running for resume (from {prior_status})",
             },
         )
         if pruned_graph_children:
@@ -15948,7 +16055,7 @@ def _until_phase_index(repo_root: Path, orchestration_id: str) -> int:
             "cannot mark orchestration pass: orchestration_meta.invocation.until_phase is "
             f"missing or unknown ({token!r}); it decides which phases must be certified. "
             "A run started by tools/run_workflow.py records it; record one on an "
-            "orchestration that has none with `init --resume-from-checkpoint "
+            "orchestration that has none with `init --resume "
             f"--until-phase <{'|'.join(STEP_KEYS_FOR_NODE_STATE)}>`"
         )
     return STEP_KEYS_FOR_NODE_STATE.index(token.strip().lower())
@@ -20000,26 +20107,6 @@ def _capture_repo_revision(
     return {"commit": commit, "dirty": dirty}
 
 
-def _normalized_driver_identity(driver: Any) -> dict[str, Any] | None:
-    """Return the driver-liveness block to persist, or None when it is unusable.
-
-    `driver` is the identity of the host process that is (re)starting this
-    orchestration — captured by `tools/run_workflow.py` and passed through
-    `init --driver-json`. It exists so a later run can tell a CRASHED driver
-    (its meta is stuck at `running` because nothing terminalized it) apart from a
-    genuinely live concurrent run. The only structural requirement enforced here is
-    a usable `pid`: every other field is advisory and the probe side degrades to
-    `unknown` when one is missing, which is the fail direction that never unblocks
-    an implicit resume and never blocks a cold run.
-    """
-    if not isinstance(driver, dict) or not driver:
-        return None
-    pid = driver.get("pid")
-    if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
-        return None
-    return {**driver, "recorded_at": _utc_now_iso()}
-
-
 def init_orchestration(
     repo_root: Path,
     orchestration_id: str,
@@ -20033,7 +20120,6 @@ def init_orchestration(
     agent_backend: str = "claude",
     agent_model: str | None = None,
     invocation: dict[str, Any] | None = None,
-    driver: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     # The id becomes a directory name and is later interpolated into every gate's path,
     # where anything but a plain token is refused. Refuse it here so an operator learns
@@ -20097,7 +20183,7 @@ def init_orchestration(
     # closure back-link behind (which would misdirect a later --resume). The
     # preservation loop above keeps the existing block only when no fresh invocation
     # is supplied (an internal re-init). Real --resume goes through
-    # enable_checkpoint_resume, which never re-supplies invocation and preserves it.
+    # resume_orchestration, which never re-supplies invocation and preserves it.
     if isinstance(invocation, dict) and invocation:
         # ... but the end-phase HIGH WATER survives the overwrite. This is the second writer of
         # `invocation.until_phase`, and it was not covered when the first was: re-initing an
@@ -20132,14 +20218,10 @@ def init_orchestration(
                     break
         meta["invocation"] = invocation
         _record_until_phase_high_water(invocation)
-    # Driver liveness identity of the process that starts this run. Deliberately NOT
-    # in the preservation loop above: a cold (re-)init is a NEW driver, so an omitted
-    # block must DROP the stale one rather than leave a corpse's pid on a live run's
-    # meta (a probe would then report the new run dead, or — worse, after pid reuse —
-    # alive on the wrong process).
-    normalized_driver = _normalized_driver_identity(driver)
-    if normalized_driver is not None:
-        meta["driver"] = normalized_driver
+    # No `driver` block: issue #177 deleted the liveness probe that read it, and the exclusive
+    # claim (`~/.atmofab/start_claims/`, released by the OS when the process dies) answers
+    # "is another driver running this?" without a recorded identity to go stale.
+    meta.pop("driver", None)
     if not orchestration_agent_run_id:
         orchestration_agent_run_id = str(uuid.uuid4())
     backend_token = str(agent_backend).strip().lower()
@@ -22680,7 +22762,7 @@ def _reset_orchestration_run_row_to_running(
     """Re-open the orchestration's own agent_runs.jsonl row for a resumed run.
 
     Inverse of `_finalize_orchestration_run_row`, symmetric with
-    `enable_checkpoint_resume` resetting `orchestration_meta.status` to `running`
+    `resume_orchestration` resetting `orchestration_meta.status` to `running`
     and dropping the cleanup_committed marker. When a terminal orchestration is
     resumed, its agent_runs row (terminalized in place by the prior set-status)
     must also be reset to `running` with `finished_at` cleared. Otherwise the live
@@ -23343,9 +23425,15 @@ def main(argv: list[str] | None = None) -> int:
         help="Model id (or unpinned alias, e.g. 'opus') of the orchestration agent itself; recorded on the orchestration agent_runs row for cost attribution / reproducibility. Prefer an alias over a pinned version so it does not go stale.",
     )
     init_parser.add_argument(
-        "--resume-from-checkpoint",
+        "--resume",
         action="store_true",
-        help="Enable checkpoint resume on an existing orchestration (sets resume_enabled; resets a terminal status back to running).",
+        help=(
+            "Drive an EXISTING orchestration again instead of creating one: preserve its "
+            "orchestration_agent_run_id and invocation, reset a terminal (or `running`) status "
+            "back to `running`, and run the crash reconciliations for whatever the prior driver "
+            "left behind. The caller is expected to hold this orchestration's exclusive claim; "
+            "that claim, not a recorded driver identity, is what says no one else is driving it."
+        ),
     )
     init_parser.add_argument(
         "--invocation-json",
@@ -23354,30 +23442,14 @@ def main(argv: list[str] | None = None) -> int:
             "JSON object recording how this run was invoked (raw command + resolved "
             "params + closure back-link), persisted to orchestration_meta.json#invocation "
             "for reproduction and closure-aware resume. Only used on a cold init; on "
-            "--resume-from-checkpoint the existing block is preserved."
-        ),
-    )
-    init_parser.add_argument(
-        "--driver-json",
-        default=None,
-        help=(
-            "JSON object identifying the host process driving this run (pid, "
-            "pid_start_ticks, boot_id, hostname, pid_ns, uid), persisted to "
-            "orchestration_meta.json#driver. Lets a later run distinguish a crashed "
-            "driver (status stuck at 'running') from a live concurrent one. pid_ns (the "
-            "PID-namespace inode) and uid are what make a later /proc lookup conclusive: "
-            "without them a probe cannot tell whether the recorded pid is even in its own "
-            "numbering, so it reports 'unknown' rather than terminalizing. Only 'pid' "
-            "(a positive int) is required; the block is recorded as given. Recorded on "
-            "BOTH the cold init and --resume-from-checkpoint (the resuming process "
-            "becomes the driver); omitting it drops any recorded block."
+            "--resume the existing block is preserved."
         ),
     )
     init_parser.add_argument(
         "--until-phase",
         default=None,
         help=(
-            "On --resume-from-checkpoint, refresh invocation.until_phase to the phase THIS "
+            "On --resume, refresh invocation.until_phase to the phase THIS "
             "resume runs to. A resume may extend the run, and the completion vouch reads "
             "that record to decide which phases must be certified — a stale one would vouch "
             "a four-phase run against one phase. Ignored on a cold init, where the phase "
@@ -23388,7 +23460,7 @@ def main(argv: list[str] | None = None) -> int:
         "--closure-until-phase",
         default=None,
         help=(
-            "On --resume-from-checkpoint of a --with-deps closure node, refresh this "
+            "On --resume of a --with-deps closure node, refresh this "
             "node's invocation.closure_until_phase to the effective closure end-phase, "
             "so an operator phase override persists on the dependency nodes themselves "
             "(recoverable by a later plain --resume even if the target never started)."
@@ -23398,7 +23470,7 @@ def main(argv: list[str] | None = None) -> int:
         "--wait-usage-reset",
         action="store_true",
         help=(
-            "On --resume-from-checkpoint, refresh invocation.wait_usage_reset to the "
+            "On --resume, refresh invocation.wait_usage_reset to the "
             "effective (re-passed) value of the opt-in usage-limit wait, so the recorded "
             "provenance matches the behavior of THIS resumed run (the flag is not recovered "
             "from the record — it is re-passed per invocation). Absent on resume records False."
@@ -23930,18 +24002,8 @@ def main(argv: list[str] | None = None) -> int:
     repo_root = Path(getattr(args, "repo_root")).resolve()
 
     if args.command == "init":
-        driver_record: dict[str, Any] | None = None
-        driver_json = getattr(args, "driver_json", None)
-        if isinstance(driver_json, str) and driver_json.strip():
-            try:
-                parsed_driver = json.loads(driver_json)
-            except json.JSONDecodeError as exc:
-                raise ValueError(f"--driver-json must be valid JSON: {exc}") from exc
-            if not isinstance(parsed_driver, dict):
-                raise ValueError("--driver-json must be a JSON object")
-            driver_record = parsed_driver
-        if getattr(args, "resume_from_checkpoint", False):
-            result = enable_checkpoint_resume(
+        if getattr(args, "resume", False):
+            result = resume_orchestration(
                 repo_root=repo_root,
                 orchestration_id=args.orchestration_id,
                 spec_ref=args.spec_ref,
@@ -23949,7 +24011,6 @@ def main(argv: list[str] | None = None) -> int:
                 closure_until_phase=getattr(args, "closure_until_phase", None),
                 until_phase=getattr(args, "until_phase", None),
                 wait_usage_reset=bool(getattr(args, "wait_usage_reset", False)),
-                driver=driver_record,
             )
         else:
             invocation_record: dict[str, Any] | None = None
@@ -23973,7 +24034,6 @@ def main(argv: list[str] | None = None) -> int:
                 agent_backend=args.agent_backend,
                 agent_model=args.agent_model,
                 invocation=invocation_record,
-                driver=driver_record,
             )
     elif args.command == "preflight":
         agent_command = args.agent_command
