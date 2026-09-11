@@ -1307,7 +1307,8 @@ class RunWorkflowTests(unittest.TestCase):
                         side_effect=OSError("locking not supported here")))
                 buf = io.StringIO()
                 with ctx, redirect_stdout(buf), \
-                        run_workflow._exclusive_claim(repo_root, "spec", "spec/x") as held:
+                        run_workflow._exclusive_claim(
+                            repo_root, "spec", "spec/x", stdout_format="jsonl") as held:
                     pass
                 self.assertTrue(held, "a degraded claim must still let the run proceed")
                 events = [json.loads(line) for line in buf.getvalue().splitlines()
@@ -1315,8 +1316,8 @@ class RunWorkflowTests(unittest.TestCase):
                 degraded = [e for e in events if e.get("event") == "start_claim_degraded"]
                 self.assertEqual([e["reason"] for e in degraded], [reason],
                                  f"{shape}: expected exactly one {reason} warning; got {events}")
-                self.assertIn("One driver per workspace is yours to enforce",
-                              degraded[0]["detail"])
+                self.assertTrue(degraded[0]["cause"],
+                                "the warning must name WHY, not just that it degraded")
                 if lock is not None:
                     # Restored INSIDE the subTest: the tempdir is gone by cleanup time.
                     lock.chmod(0o600)
@@ -1332,10 +1333,12 @@ class RunWorkflowTests(unittest.TestCase):
                                  {"ATMOFAB_START_CLAIM_ROOT": str(Path(tmp) / "claims")}), \
                     mock.patch.object(run_workflow, "fcntl", None), redirect_stdout(buf):
                 for _ in range(3):
-                    with run_workflow._exclusive_claim(repo_root, "spec", "spec/x"):
+                    with run_workflow._exclusive_claim(
+                            repo_root, "spec", "spec/x", stdout_format="jsonl"):
                         pass
                 # A DIFFERENT key is its own fact and warns again.
-                with run_workflow._exclusive_claim(repo_root, "orch", "o1"):
+                with run_workflow._exclusive_claim(
+                        repo_root, "orch", "o1", stdout_format="jsonl"):
                     pass
             reasons = [json.loads(line)["claim_key"]
                        for line in buf.getvalue().splitlines()
@@ -1589,6 +1592,46 @@ class RunWorkflowTests(unittest.TestCase):
             self.assertEqual(code, 0, out)
             self.assertEqual(observed, [False],
                              "the claim must still be held while tmp is being removed")
+
+    def test_a_transient_meta_read_error_does_not_make_a_reused_id_look_unowned(self) -> None:
+        """Ownership asks whether an orchestration was ALREADY THERE, and the meta reader
+        cannot answer that: it swallows `OSError` and `JSONDecodeError` into `{}`, so a meta
+        that is present but momentarily unreadable — a transient EIO, a partially visible file
+        over a network mount, a permissions blip — read as "no meta existed".
+
+        The consequence is that a reused `--orchestration-id` looks like a fresh cold start,
+        so a failing invocation terminalizes somebody else's abandoned run on its way out.
+        Found by fault injection in round 2."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            oid = "orch_reused"
+            d = repo_root / "workspace" / "orchestrations" / oid
+            d.mkdir(parents=True, exist_ok=True)
+            (d / "orchestration_meta.json").write_text(
+                json.dumps({"orchestration_id": oid, "status": "running",
+                            "spec_ref": "spec/problem/test.md"}), encoding="utf-8")
+
+            # The reader says "nothing here" for BOTH causes — absent, and present-but-
+            # unreadable (its `except (OSError, JSONDecodeError): return None`). The path does
+            # not. Driven through the real swallow by making the file unreadable.
+            meta_file = run_workflow._orchestration_meta_path(repo_root, oid)
+            meta_file.chmod(0o000)
+            try:
+                self.assertEqual(run_workflow._read_orchestration_meta(repo_root, oid), {},
+                                 "the reader is deliberately total; that is the problem")
+                self.assertTrue(meta_file.exists(),
+                                "existence is what ownership must key on")
+            finally:
+                meta_file.chmod(0o600)
+            # And the ownership answer follows the path, not the read.
+            with mock.patch.object(run_workflow, "_read_json_if_exists", return_value=None):
+                self.assertFalse(
+                    run_workflow._owns_orchestration(
+                        repo_root, oid, init_committed=False, init_attempted=True,
+                        resume_mode=False,
+                        meta_existed_before_init=(
+                            run_workflow._orchestration_meta_path(repo_root, oid).exists())),
+                    "a reused id whose meta merely failed to parse is still not ours")
 
     def test_a_cold_run_warns_that_a_resumable_orchestration_exists(self) -> None:
         """Inform, never prohibit. The operator asked for a cold run and gets one — what they

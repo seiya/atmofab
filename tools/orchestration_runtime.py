@@ -15071,6 +15071,24 @@ def resume_orchestration(
     reconcile = isinstance(prior_status, str) and (
         prior_status in IDEMPOTENT_TERMINAL_STATUSES or prior_status == "running"
     )
+    # A status this function cannot reason about REFUSES the resume rather than proceeding
+    # without reconciling. Proceeding was the worse of the two: the resume succeeded, the
+    # reconciliations were skipped, and the run carried on with the dead child's
+    # `active_children/` markers and its `child_running` phase authority still in place — which
+    # wedges the next launch behind a sequential-child gate whose owner is gone, for a reason
+    # nothing reported. Refusing says which value it could not place.
+    #
+    # Reachable, not hypothetical: neither `init --status` nor `set-status --status` declares
+    # argparse `choices=`, so any string an operator or a leaf passes is stored verbatim. The
+    # runtime's own writers only ever produce the statuses below.
+    if isinstance(prior_status, str) and prior_status.strip() and not reconcile:
+        raise RuntimeError(
+            f"cannot resume orchestration {orchestration_id}: its recorded status "
+            f"{prior_status!r} is neither terminal ({sorted(IDEMPOTENT_TERMINAL_STATUSES)}) "
+            "nor 'running', so this resume cannot tell whether the crash reconciliations "
+            "(active-child markers, orphan graph edges, stale child_running phase authority) "
+            "are safe to run. Set a status this runtime writes before resuming."
+        )
     if reconcile:
         # Archive the prior terminal narrative, then hand the resumed run a fresh
         # in-progress lifecycle so its eventual set-status(pass/fail) is a valid

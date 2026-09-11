@@ -14053,7 +14053,7 @@ class ResumeOrchestrationRuntimeTests(unittest.TestCase):
             init_orchestration(repo_root=repo, orchestration_id="o1")
             self.assertNotIn("driver", json.loads(meta_path.read_text("utf-8")))
 
-    def test_a_prior_that_is_neither_terminal_nor_running_is_not_reconciled(self) -> None:
+    def test_a_prior_that_is_neither_terminal_nor_running_is_refused(self) -> None:
         """The NEGATIVE control of the reconcile gate, which the inversion took with it.
 
         `reconcile` is `prior_status in IDEMPOTENT_TERMINAL_STATUSES or prior_status ==
@@ -14081,13 +14081,19 @@ class ResumeOrchestrationRuntimeTests(unittest.TestCase):
             markers.mkdir(exist_ok=True)
             (markers / f"{child}.txt").write_text(child, encoding="utf-8")
 
-            returned = resume_orchestration(repo, "o1")
-
-            self.assertNotIn("resumed_from_status", returned,
-                             "an unrecognised prior status must not be archived as reconciled")
-            self.assertTrue((root / "active_child_agent_run_id.txt").exists(),
-                            "markers must survive a status the gate does not recognise")
+            # REFUSED, not silently un-reconciled. Proceeding was the worse of the two: the
+            # resume succeeded, the reconciliations were skipped, and the run carried on with
+            # the dead child's markers and `child_running` phase authority still in place —
+            # wedging the next launch behind a sequential-child gate whose owner is gone, for
+            # a reason nothing reported.
+            with self.assertRaisesRegex(RuntimeError, "is neither terminal .* nor 'running'"):
+                resume_orchestration(repo, "o1")
+            self.assertTrue((root / "active_child_agent_run_id.txt").exists())
             self.assertTrue((markers / f"{child}.txt").exists())
+            # The status is left alone: a refusal must not half-apply.
+            self.assertEqual(
+                json.loads((root / "orchestration_meta.json").read_text("utf-8"))["status"],
+                "quiescing")
 
     def test_a_resume_records_when_it_happened(self) -> None:
         """`resumed_at` is part of `orchestration_meta.json`'s documented shape

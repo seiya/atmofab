@@ -1017,11 +1017,16 @@ def _index_closure_orchestrations(repo_root: Path, closure_id: str) -> dict[str,
     return {spec_ref: value[1] for spec_ref, value in best.items()}
 
 
+def _orchestration_meta_path(repo_root: Path, orchestration_id: str) -> Path:
+    """Where an orchestration's meta lives. Split out from the reader because ownership asks
+    whether the file EXISTS, and the reader cannot answer that: it swallows `OSError` and
+    `JSONDecodeError` into `{}`, so "unreadable" and "absent" arrive identically."""
+    return (repo_root / "workspace" / "orchestrations" / orchestration_id
+            / "orchestration_meta.json")
+
+
 def _read_orchestration_meta(repo_root: Path, orchestration_id: str) -> dict[str, Any]:
-    meta = _read_json_if_exists(
-        repo_root / "workspace" / "orchestrations" / orchestration_id
-        / "orchestration_meta.json"
-    )
+    meta = _read_json_if_exists(_orchestration_meta_path(repo_root, orchestration_id))
     return meta if isinstance(meta, dict) else {}
 
 
@@ -1237,7 +1242,8 @@ _CLAIM_DEGRADATIONS: dict[str, str] = {
 _CLAIM_DEGRADATIONS_WARNED: set[tuple[str, str]] = set()
 
 
-def _warn_claim_degraded(kind: str, key: str, reason: str) -> None:
+def _warn_claim_degraded(kind: str, key: str, reason: str, *, cause: str = "",
+                         stdout_format: str = "human") -> None:
     """Say, once per (reason, key), that this run has no concurrency gate.
 
     Once rather than every acquisition, because a closure takes a claim per node and the
@@ -1249,20 +1255,27 @@ def _warn_claim_degraded(kind: str, key: str, reason: str) -> None:
         return
     _CLAIM_DEGRADATIONS_WARNED.add(token)
     try:
-        print(json.dumps({
-            "status": "warn",
-            "event": "start_claim_degraded",
-            "reason": reason,
-            "detail": (
-                f"{_CLAIM_DEGRADATIONS.get(reason, reason)}. This run proceeds WITHOUT the "
-                "exclusive claim that serializes drivers, so nothing is stopping a second run "
-                "of this " + ("orchestration" if kind == "orch" else "spec") +
-                " from writing into the same tree. One driver per workspace is yours to "
-                "enforce here (docs/RUNBOOK.md §3-1)."
-            ),
-            "claim_kind": kind,
-            "claim_key": key,
-        }, ensure_ascii=False), flush=True)
+        _emit_unlogged_event(
+            {
+                # `status: info`, not `warn`: `_format_event_human` dispatches on
+                # `info` + event name, and a status it has no arm for falls through to the
+                # raw-JSON fallback — which is the leak `_emit_unlogged_event` exists to
+                # prevent, in the DEFAULT output format. The `[warn ]` prefix is the
+                # renderer's job, as it is for every sibling here.
+                "status": "info",
+                "event": "start_claim_degraded",
+                "reason": reason,
+                # The SPECIFIC cause, not the generic one. `_start_claims_root` raises a
+                # `ValueError` naming absoluteness for a relative override, and
+                # `_exclusive_claim` catches it — so without threading the text through, the
+                # operator was told only "could not be resolved" and never which rule was
+                # broken.
+                "cause": cause or _CLAIM_DEGRADATIONS.get(reason, reason),
+                "claim_kind": kind,
+                "claim_key": key,
+            },
+            stdout_format,
+        )
     except Exception:  # noqa: BLE001,S110 - a warning must never take the run down, and
         # there is nowhere to log a failure to log: this IS the reporting channel.
         pass
@@ -1333,7 +1346,8 @@ def _claim_lock_path(repo_root: Path, kind: str, key: str) -> Path:
 
 
 @contextlib.contextmanager
-def _exclusive_claim(repo_root: Path, kind: str, key: str):
+def _exclusive_claim(repo_root: Path, kind: str, key: str, *,
+                     stdout_format: str = "human"):
     """Hold an advisory, process-scoped claim on `(repo_root, kind, key)`.
 
     `kind="spec"` serializes cold starts of one spec against each other;
@@ -1374,24 +1388,31 @@ def _exclusive_claim(repo_root: Path, kind: str, key: str):
     `~/.atmofab`, and swallowing it here would turn that guard into a silent "proceed",
     the failure mode the guard exists to replace.
 
-    The degradation is SILENT, like the `fcntl` and unwritable-home arms beside it: the
-    run proceeds with no cold-start serialisation and nothing says so. That is the
-    contract this function has always had, and it is worth knowing that a mistyped
-    `ATMOFAB_START_CLAIM_ROOT` now costs the claim rather than crashing.
+    The degradation no longer has to be inferred: like the `fcntl` and unwritable-home arms
+    beside it, this one calls `_warn_claim_degraded`, so a mistyped or relative
+    `ATMOFAB_START_CLAIM_ROOT` costs the claim, says that it did, and does not crash. It was
+    silent until issue #177's PR-3 review; what changed is not the contract (proceed) but
+    whether the operator finds out.
     """
     path = None
+    resolve_error = ""
     try:
         path = _claim_lock_path(repo_root, kind, key)
-    except (OSError, RuntimeError, ValueError):
+    except (OSError, RuntimeError, ValueError) as exc:
         # The `yield` is OUTSIDE the handler on purpose. Yielding from inside one leaves
         # the swallowed exception as `__context__` for the whole body, so every later
         # failure in the caller is reported "During handling of the above exception…"
         # under an error this function decided did not matter — a false lead written
         # into the run's own error record, which `tools/run_workflow.py`'s backstop
         # prints and persists. Found by a round-5 reviewer.
-        pass
+        #
+        # The MESSAGE is kept, though: `_start_claims_root` raises a `ValueError` that names
+        # the rule that was broken (an override must be absolute), and reporting only
+        # "could not be resolved" left the operator without the one fact they need to fix it.
+        resolve_error = str(exc)
     if path is None:
-        _warn_claim_degraded(kind, key, "claim_root_unresolvable")
+        _warn_claim_degraded(kind, key, "claim_root_unresolvable", cause=resolve_error,
+                             stdout_format=stdout_format)
         yield True
         return
     handle = None
@@ -1409,7 +1430,8 @@ def _exclusive_claim(repo_root: Path, kind: str, key: str):
             unopenable = True
     if handle is None:
         _warn_claim_degraded(
-            kind, key, "claim_file_unopenable" if unopenable else "claim_no_fcntl")
+            kind, key, "claim_file_unopenable" if unopenable else "claim_no_fcntl",
+            stdout_format=stdout_format)
         yield True
         return
     try:
@@ -1425,7 +1447,8 @@ def _exclusive_claim(repo_root: Path, kind: str, key: str):
             # able to run — but SAY SO: since issue #177 deleted the driver-liveness probe
             # there is no second gate behind this, so proceeding here means proceeding with
             # no concurrency check at all.
-            _warn_claim_degraded(kind, key, "claim_lock_unsupported")
+            _warn_claim_degraded(kind, key, "claim_lock_unsupported",
+                                 stdout_format=stdout_format)
             yield True
             return
         yield True
@@ -2239,7 +2262,8 @@ def _run_main(
         # Held for the rest of this invocation, which is why `_run_node` is told not to
         # re-acquire it.
         if not resume_claim.enter_context(
-            _exclusive_claim(repo_root, "orch", orchestration_id)
+            _exclusive_claim(repo_root, "orch", orchestration_id,
+                             stdout_format=args.stdout_format)
         ):
             _emit_unlogged_event(
                 {
@@ -2644,7 +2668,8 @@ def _run_main(
     with cold_start_claim:
         if not resume_mode:
             if not cold_start_claim.enter_context(
-                _exclusive_claim(repo_root, "spec", spec_ref)
+                _exclusive_claim(repo_root, "spec", spec_ref,
+                                 stdout_format=args.stdout_format)
             ):
                 _emit_unlogged_event(
                     _concurrent_cold_start_envelope(spec_ref), args.stdout_format)
@@ -2850,6 +2875,15 @@ def _format_event_human(payload: dict[str, Any], *, elide_detail: bool = True) -
         origin = f" (source={source}{f'/{window}' if window else ''})" if source else ""
         return (f"    [warn   ] usage limit in {phase}.{substep} [wait {attempt}]{origin}: "
                 f"waiting {wait}s for the reset, then re-launching")
+
+    if status == "info" and event == "start_claim_degraded":
+        kind = payload.get("claim_kind", "?")
+        key = payload.get("claim_key", "?")
+        cause = payload.get("cause", payload.get("reason", "?"))
+        scope = "orchestration" if kind == "orch" else "spec"
+        return (f"    [warn   ] no start claim for {scope} {key}: {cause} — this run proceeds "
+                f"with NO concurrency gate; one driver per workspace is yours to enforce "
+                f"(docs/RUNBOOK.md §3-1)")
 
     if status == "info" and event == "prior_incomplete_orchestration":
         orch = payload.get("orchestration_id", "?")
@@ -3309,8 +3343,14 @@ def _run_node(
             # exclusive claim already refused a reused `--orchestration-id` naming a run
             # someone else is driving: we could not have reached this line otherwise.
             init_attempted = True
-            meta_existed_before_init = bool(
-                _read_orchestration_meta(repo_root, orchestration_id))
+            # EXISTENCE, not readability. `_read_orchestration_meta` swallows `OSError` and
+            # `JSONDecodeError` into `{}`, so a meta that is present but momentarily unreadable
+            # — a transient EIO, a partially visible file over a network mount, a permissions
+            # blip — came back as "no meta existed", which made a reused `--orchestration-id`
+            # look like a fresh cold start and let this invocation terminalize somebody else's
+            # abandoned run on its way out. Reproduced by fault injection in round 2.
+            meta_existed_before_init = (
+                _orchestration_meta_path(repo_root, orchestration_id).exists())
             init_result = _runtime_command(repo_root, env, init_args).payload
             orchestration_agent_run_id = str(init_result.get("orchestration_agent_run_id", "")).strip()
             if not orchestration_agent_run_id:
@@ -4191,10 +4231,12 @@ def _run_with_dependency_closure(
         with contextlib.ExitStack() as node_claim:
             if dep_resume:
                 node_claim_ok = dep_orch_preclaimed or node_claim.enter_context(
-                    _exclusive_claim(repo_root, "orch", dep_orch_id))
+                    _exclusive_claim(repo_root, "orch", dep_orch_id,
+                                     stdout_format=stdout_format))
             else:
                 node_claim_ok = node_claim.enter_context(
-                    _exclusive_claim(repo_root, "spec", spec_ref))
+                    _exclusive_claim(repo_root, "spec", spec_ref,
+                                     stdout_format=stdout_format))
             if not node_claim_ok:
                 _emit_unlogged_event(
                     {
@@ -4404,10 +4446,12 @@ def _run_with_dependency_closure(
     with contextlib.ExitStack() as target_claim:
         if target_resume:
             target_claim_ok = target_preclaimed or target_claim.enter_context(
-                _exclusive_claim(repo_root, "orch", target_orchestration_id))
+                _exclusive_claim(repo_root, "orch", target_orchestration_id,
+                                 stdout_format=stdout_format))
         else:
             target_claim_ok = target_claim.enter_context(
-                _exclusive_claim(repo_root, "spec", target_spec_ref))
+                _exclusive_claim(repo_root, "spec", target_spec_ref,
+                                 stdout_format=stdout_format))
         if not target_claim_ok:
             _emit_unlogged_event(
                 {

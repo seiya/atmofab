@@ -8498,6 +8498,93 @@ def _unallocatable_pid() -> int:
 
 _UNALLOCATABLE_PID = _unallocatable_pid()
 
+# `/proc` is what the parser reads; a host without it has no identity to parse.
+_HAS_PROC = Path("/proc/self/stat").exists()
+
+
+
+class ProcStatParsingTests(unittest.TestCase):
+    """`_parse_proc_stat` — field extraction from a `/proc/<pid>/stat` body.
+
+    MOVED here with the parser in issue #177's PR-3. It was written for the driver-liveness
+    probe, which that PR deleted; the parser's remaining reader is `_pid_start_ticks`, and a
+    wrong answer there is worse than a wrong liveness verdict. `_terminate_leaf_process_group`
+    uses the ticks to prove a process-group id still belongs to the leaf before signalling it,
+    so a parser that returns the same value for every pid makes a RECYCLED pid compare equal —
+    and the group gets `killpg(SIGTERM)` then `killpg(SIGKILL)`. That is the incident
+    `_terminate_leaf_process_group`'s own docstring records as measured.
+
+    Field 22 is `starttime`; field 21 is `itrealvalue`, which is **0 for every process on
+    Linux**, so an off-by-one here does not look wrong — it looks like a working identity that
+    always matches. The parser moved in that PR and this class did not, leaving it with zero
+    tests: four mutations (`rfind`->`find`, `fields[19]`->`fields[18]`, the length bound, the
+    `isdigit` guard) all passed the whole suite.""" 
+
+    def _stat_body(self, comm: str, state: str, starttime: str) -> str:
+        # Real layout: pid (comm) state ...fields 4..21... starttime(22) ...
+        middle = " ".join(str(i) for i in range(4, 22))
+        return f"4242 ({comm}) {state} {middle} {starttime} 0 0 0\n"
+
+    def test_parses_a_plain_stat_body(self) -> None:
+        self.assertEqual(
+            wc._parse_proc_stat(self._stat_body("python3", "S", "8236241")),
+            ("S", "8236241"),
+        )
+
+    def test_parses_a_comm_containing_spaces_and_parentheses(self) -> None:
+        # A process can rename itself; `split()` on the whole line misaligns every
+        # field after comm, which is why the parser splits after the LAST ')'.
+        self.assertEqual(
+            wc._parse_proc_stat(self._stat_body("we ird) (name", "R", "99")),
+            ("R", "99"),
+        )
+
+    def test_rejects_malformed_bodies(self) -> None:
+        # 19 post-`)` fields is the exact boundary: one short of the index the parser
+        # reads. A guard that lets it through raises IndexError out of the probe —
+        # an uncaught crash inside the recovery gate, not a `None` verdict.
+        nineteen = "4242 (python3) " + " ".join(str(i) for i in range(19)) + "\n"
+        self.assertEqual(len(nineteen[nineteen.rfind(")") + 1:].split()), 19)
+        for label, raw in (
+            ("no closing paren", "4242 python3 S 1 2 3\n"),
+            ("truncated fields", "4242 (python3) S 1 2 3\n"),
+            ("exactly 19 fields after the paren", nineteen),
+            # Without a `)` the fields cannot be located at all; a long body must be
+            # rejected rather than silently parsed at the wrong offsets.
+            ("no closing paren but plenty of fields",
+             "4242 python3 " + " ".join(str(i) for i in range(40)) + "\n"),
+            ("non-numeric starttime", self._stat_body("python3", "S", "not-a-number")),
+            ("empty body", ""),
+        ):
+            with self.subTest(case=label):
+                self.assertIsNone(wc._parse_proc_stat(raw))
+
+    def test_accepts_the_minimum_field_count(self) -> None:
+        twenty = "4242 (python3) S " + " ".join(str(i) for i in range(4, 22)) + " 777\n"
+        self.assertEqual(len(twenty[twenty.rfind(")") + 1:].split()), 20)
+        self.assertEqual(wc._parse_proc_stat(twenty), ("S", "777"))
+
+    @unittest.skipUnless(_HAS_PROC, "requires Linux /proc")
+    def test_matches_the_real_proc_entry_for_this_process(self) -> None:
+        # Guards against the crafted bodies above drifting from the real layout. The
+        # expected pair is derived HERE, from the documented field offsets, rather than
+        # by calling back into the function under test — otherwise a parser that reads
+        # the wrong index would agree with itself and the check would prove nothing.
+        raw = Path(f"/proc/{os.getpid()}/stat").read_text(encoding="utf-8")
+        fields = raw[raw.rfind(")") + 1:].split()
+        expected_state = fields[0]          # field 3
+        expected_ticks = fields[19]         # field 22
+        self.assertTrue(expected_ticks.isdigit())
+        self.assertEqual(wc._parse_proc_stat(raw),
+                         (expected_state, expected_ticks))
+        # And the offsets themselves are right: field 22 is this process's start time,
+        # so it must place the process after boot and before now.
+        uptime = float(
+            Path("/proc/uptime").read_text(encoding="utf-8").split()[0])
+        ticks_per_sec = os.sysconf("SC_CLK_TCK")
+        self.assertLessEqual(int(expected_ticks) / ticks_per_sec, uptime)
+        self.assertEqual(expected_state, "R")  # the process running this assertion
+
 
 class LeafSpawnTest(unittest.TestCase):
     """Codex follow-ups: honor custom llm_command; gate substep on leaf returncode."""
