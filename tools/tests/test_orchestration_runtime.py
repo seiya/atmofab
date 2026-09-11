@@ -12695,6 +12695,51 @@ class PhaseCertificationTests(unittest.TestCase):
             path.unlink()
             self.assertEqual(self._reason(repo, "validate"), "post_judge_not_recorded")
 
+    def test_validate_is_not_certified_on_a_half_written_run_directory(self) -> None:
+        """Validate is the ONE phase with no entry in `CERTIFYING_META_FILENAME_BY_STEP`, so it
+        gets no `artifact_hashes` byte-pin, no child-window certification strip and no revocable
+        meta. The other three phases refuse a missing deliverable for free — it cannot re-hash —
+        and Validate had nothing playing that part.
+
+        The consequence is not a missing file; it is a false `pass`. `aggregate_verdict.json`
+        and `post_judge_meta.json` are written BEFORE the rest, so an attempt that died between
+        them and `validate_meta.json` left a chain that read as complete; a `--resume` then
+        recorded `skipped_certified`, which clause (e) of the completion vouch reads as an
+        EXEMPTION from the latest-attempt check — so the half-written run was certified AND
+        exempted from the check that would have caught it."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = self._certified(repo, through="validate")
+            run_dir = repo / refs["run_node_dir"]
+            self.assertTrue(ort._phase_certified(repo, "o1", self._NK, "validate")[0])
+            for name in ort.VALIDATE_CERTIFYING_DELIVERABLE_BASENAMES:
+                with self.subTest(missing=name):
+                    path = run_dir / name
+                    body = path.read_text("utf-8")
+                    path.unlink()
+                    ok, detail = ort._phase_certified(repo, "o1", self._NK, "validate")
+                    self.assertFalse(ok)
+                    # aggregate_verdict is caught earlier, by the binding lookup; the rest by
+                    # the deliverable check. Either way the phase is not certified.
+                    self.assertIn(detail["reason"].split(":")[0],
+                                  {"validate_outputs_missing", "verdict_not_bound"})
+                    path.write_text(body, encoding="utf-8")
+            # restored
+            self.assertTrue(ort._phase_certified(repo, "o1", self._NK, "validate")[0])
+
+    def test_validate_certifying_deliverables_match_the_declared_outputs(self) -> None:
+        """Coupled to the conductor, not restated beside it. `phase_required_outputs` is what
+        the phase actually declares and what `write-step-result` proves present; if a
+        deliverable is added there and not here, certification silently stops covering it."""
+        from tools.workflow_conductor import NodeRefs, phase_required_outputs
+
+        refs = NodeRefs(node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
+                        ir_id="i", pipeline_id="p", source_id="s", binary_id="b",
+                        run_id="r", source_binary_id="b")
+        declared = {ref.rsplit("/", 1)[-1]
+                    for ref in phase_required_outputs(refs, "validate")}
+        self.assertEqual(set(ort.VALIDATE_CERTIFYING_DELIVERABLE_BASENAMES), declared)
+
     def test_check_phase_certified_refuses_a_non_certifying_verdict(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)

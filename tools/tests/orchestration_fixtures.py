@@ -152,7 +152,24 @@ def certify_node(
         "status": "pass", "validation_stage": "pre_judge", "failure_category": None,
         "failure_excerpt": None, "violations": [], "disposition": None,
     })
+    # The rest of Validate's declared deliverables. `_phase_certified` requires all of them:
+    # Validate carries no `artifact_hashes` stamp, so their presence is the only thing standing
+    # between "the chain reads as complete" and "the attempt actually finished writing".
+    _write_json(run_node / "verdict.json", {
+        "node_key": node_key, "run_id": run_id, "self_verdict": "pass", "failure_class": None,
+    })
+    _write_json(run_node / "summary.json", {
+        "node_key": node_key, "run_id": run_id, "total": 0, "pass": 0, "fail": 0,
+    })
+    _write_json(run_node / "semantic_review.json", {
+        "decision": "pass", "findings": [],
+    })
+    _write_json(run_node / "validate_meta.json", {
+        "run_id": run_id, "node_key": node_key, "pipeline_id": pipeline_id,
+        "verification_status": "pass", "attempt_count": 1,
+    })
     refs |= {"run_id": run_id,
              "aggregate_verdict": f"{pipe_ref}/runs/{run_id}/{safe}/aggregate_verdict.json",
-             "post_judge_meta": f"{pipe_ref}/runs/{run_id}/{safe}/post_judge_meta.json"}
+             "post_judge_meta": f"{pipe_ref}/runs/{run_id}/{safe}/post_judge_meta.json",
+             "run_node_dir": f"{pipe_ref}/runs/{run_id}/{safe}"}
     return refs

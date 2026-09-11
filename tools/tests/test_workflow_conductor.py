@@ -1157,17 +1157,27 @@ class SeedRepairsFromRevocationsTest(unittest.TestCase):
         `resolve_severity_directive`'s null-target clear closes for a live directive, arriving
         by the resume instead. An ungraded revocation (one written before the grade was
         recorded) defaults to `major`, the way `_parse_directive` does."""
+        # (recorded severity, recorded strategy) -> (severity, strategy, reuse target)
         cases = {
-            "critical": ("critical", "restart", "none"),
-            "major": ("major", "reuse", "child-7"),
-            "minor": ("minor", "reuse", "child-7"),
-            "ungraded": (None, "major", "reuse", "child-7"),
+            "critical": (("critical", "restart"), "critical", "restart", "none"),
+            "major default": (("major", "reuse"), "major", "reuse", "child-7"),
+            # The one a grade cannot reconstruct: G5 forces minor->reuse and
+            # critical->restart, but `major` DEFAULTS to reuse while HONOURING an explicit
+            # restart. Deriving the strategy from the grade turned this decision — "discard
+            # the producer's context" — back into a warm reuse of the session it distrusted.
+            "major with an explicit restart": (("major", "restart"), "major", "restart", "none"),
+            "minor": (("minor", "reuse"), "minor", "reuse", "child-7"),
+            # A revocation written before either field was recorded falls back to the
+            # derivation, the way `_parse_directive` defaults an absent severity.
+            "ungraded and unrecorded": ((None, None), "major", "reuse", "child-7"),
+            "graded but no strategy recorded": ((None, None), "major", "reuse", "child-7"),
         }
         for label, row in cases.items():
-            recorded, severity, strategy, target = row if len(row) == 4 else (row[0], *row)
+            (recorded, recorded_strategy), severity, strategy, target = row
             with self.subTest(case=label):
                 answer = dict(self._REVOKED_GENERATE)
                 answer["revocation_severity"] = recorded
+                answer["revocation_repair_strategy"] = recorded_strategy
                 c = self._conductor(lambda phase, a=answer:
                                     dict(a) if phase == "generate" else {"certified": False})
                 buf = io.StringIO()
@@ -7088,11 +7098,29 @@ class ConductorProducedChainCertifiesTest(unittest.TestCase):
                 "pipeline_id": refs.pipeline_id, "status": "pass",
                 "validation_stage": "pre_judge", "failure_category": None,
                 "failure_excerpt": None, "violations": [], "disposition": None})
+            # Validate's remaining declared deliverables. A real pass has them all — the
+            # `required_outputs` check inside `write_step_result` proves every one present
+            # before the certification stamp runs — so a fixture that omits them is asserting
+            # certification over a state the product cannot produce. Writing them through
+            # `phase_required_outputs` rather than by name keeps this test coupled to the
+            # declaration instead of to a copy of it.
+            for ref in wc.phase_required_outputs(refs, "validate"):
+                path = root / ref
+                if not path.exists():
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text("{}", encoding="utf-8")
             ok, detail = ort._phase_certified(root, "o1", self.NODE_KEY, "validate")
             self.assertTrue(ok, detail)
             self.assertEqual(
                 (detail["source_id"], detail["binary_id"], detail["run_id"]),
                 (refs.source_id, refs.binary_id, refs.run_id))
+
+            # ... and the predicate refuses the half-written run directory the conductor would
+            # leave if an attempt died after the gate record and before the rest.
+            (root / refs.run_node_dir() / "validate_meta.json").unlink()
+            ok2, detail2 = ort._phase_certified(root, "o1", self.NODE_KEY, "validate")
+            self.assertFalse(ok2)
+            self.assertTrue(detail2["reason"].startswith("validate_outputs_missing:"), detail2)
 
 
 class DiagnosticianTest(unittest.TestCase):

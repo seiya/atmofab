@@ -1797,7 +1797,8 @@ def _stage_meta_certification(repo_root: Path, meta_path: Path) -> tuple[bool, d
     the difference between discarding the producer's context and reusing it.
     """
     detail: dict[str, Any] = {"revoked": False, "last_fail_reason": None,
-                              "revocation_severity": None}
+                              "revocation_severity": None,
+                              "revocation_repair_strategy": None}
     try:
         doc = json.loads(meta_path.read_text(encoding="utf-8"))
     except Exception:
@@ -1808,6 +1809,9 @@ def _stage_meta_certification(repo_root: Path, meta_path: Path) -> tuple[bool, d
     detail["last_fail_reason"] = fail_reason if isinstance(fail_reason, str) and fail_reason.strip() else None
     sev = doc.get("revocation_severity")
     detail["revocation_severity"] = sev if sev in REVOCATION_SEVERITIES else None
+    strat = doc.get("revocation_repair_strategy")
+    detail["revocation_repair_strategy"] = (
+        strat if strat in REVOCATION_REPAIR_STRATEGIES else None)
     status = str(doc.get("verification_status", "")).strip().lower()
     if status == "revoked":
         detail["revoked"] = True
@@ -1847,17 +1851,20 @@ def _ir_certification(
         kind, spec_id, version = _parse_node_key_strict(node_key)
     except ValueError:
         return (False, {"reason": "node_key_invalid", "revoked": False, "last_fail_reason": None,
-                        "revocation_severity": None})
+                        "revocation_severity": None,
+                        "revocation_repair_strategy": None})
     safe = f"{kind}__{spec_id}__{version}"
     root = repo_root / "workspace" / "ir" / safe
     latest = _latest_meta_under(root, "*/ir_meta.json") if root.is_dir() else None
     if latest is None:
         return (False, {"reason": "ir_not_found", "revoked": False, "last_fail_reason": None,
-                        "revocation_severity": None})
+                        "revocation_severity": None,
+                        "revocation_repair_strategy": None})
     ir_id = latest.parent.name
     if reserved_ir_id is not None and ir_id != reserved_ir_id.strip():
         return (False, {"reason": "ir_not_latest", "revoked": False, "last_fail_reason": None,
-                        "revocation_severity": None})
+                        "revocation_severity": None,
+                        "revocation_repair_strategy": None})
     ok, detail = _stage_meta_certification(repo_root, latest)
     detail["ir_id"] = ir_id
     detail["ir_ref"] = _normalize_rel_posix(str(latest.parent.relative_to(repo_root)))
@@ -1898,6 +1905,7 @@ def _phase_certified(
         "reason": None, "ir_ref": None, "pipeline_ref": None,
         "source_id": None, "binary_id": None, "run_id": None,
         "revoked": False, "last_fail_reason": None, "revocation_severity": None,
+        "revocation_repair_strategy": None,
     }
     try:
         kind, spec_id, version = _parse_node_key_strict(node_key)
@@ -1914,6 +1922,7 @@ def _phase_certified(
     detail["revoked"] = bool(ir_detail.get("revoked"))
     detail["last_fail_reason"] = ir_detail.get("last_fail_reason")
     detail["revocation_severity"] = ir_detail.get("revocation_severity")
+    detail["revocation_repair_strategy"] = ir_detail.get("revocation_repair_strategy")
     if not ok:
         return (False, {**detail, "reason": ir_detail.get("reason")})
     ir_id = str(ir_detail["ir_id"])
@@ -1944,6 +1953,7 @@ def _phase_certified(
     detail["revoked"] = bool(src_detail.get("revoked"))
     detail["last_fail_reason"] = src_detail.get("last_fail_reason")
     detail["revocation_severity"] = src_detail.get("revocation_severity")
+    detail["revocation_repair_strategy"] = src_detail.get("revocation_repair_strategy")
     source_id = source_meta_path.parent.name
     detail["source_id"] = source_id
     if not ok:
@@ -1970,6 +1980,7 @@ def _phase_certified(
     detail["revoked"] = bool(bin_detail.get("revoked"))
     detail["last_fail_reason"] = bin_detail.get("last_fail_reason")
     detail["revocation_severity"] = bin_detail.get("revocation_severity")
+    detail["revocation_repair_strategy"] = bin_detail.get("revocation_repair_strategy")
     detail["binary_id"] = binary_meta_path.parent.name
     if not ok:
         return (False, {**detail, "reason": bin_detail.get("reason")})
@@ -2013,6 +2024,15 @@ def _phase_certified(
         return (False, {**detail, "reason": "post_judge_not_recorded"})
     if str(gate_doc.get("status", "")).strip().lower() != "pass":
         return (False, {**detail, "reason": "post_judge_not_pass"})
+    # And every declared deliverable is on disk. The other three phases get this for free from
+    # `artifact_hashes` — a missing deliverable cannot re-hash — but Validate has no stamp, so
+    # without this an attempt that died after `post_judge_meta.json` and before the rest
+    # certifies on a half-written run directory.
+    missing = [name for name in VALIDATE_CERTIFYING_DELIVERABLE_BASENAMES
+               if not (verdict_path.parent / name).is_file()]
+    if missing:
+        return (False, {**detail,
+                        "reason": f"validate_outputs_missing:{','.join(missing)}"})
     return (True, detail)
 
 
@@ -2266,6 +2286,7 @@ def _revoke_stage_meta(
     trigger_agent_run_id: str,
     last_fail_reason: str | None = None,
     severity: str | None = None,
+    repair_strategy: str | None = None,
 ) -> dict[str, Any]:
     """Rewrite a stage meta as `verification_status: "revoked"`, in place, preserving every
     other key. Returns `{status, meta_ref, prior_verification_status}`.
@@ -2312,6 +2333,8 @@ def _revoke_stage_meta(
     if last_fail_reason is not None and last_fail_reason.strip():
         doc["last_fail_reason"] = last_fail_reason
     doc["revocation_severity"] = severity if severity in REVOCATION_SEVERITIES else None
+    doc["revocation_repair_strategy"] = (
+        repair_strategy if repair_strategy in REVOCATION_REPAIR_STRATEGIES else None)
     _write_json(meta_path, doc)
     return {
         "status": "revoked",
@@ -2386,6 +2409,7 @@ def check_phase_certified(
         "revoked": bool(detail.get("revoked")),
         "last_fail_reason": detail.get("last_fail_reason"),
         "revocation_severity": detail.get("revocation_severity"),
+        "revocation_repair_strategy": detail.get("revocation_repair_strategy"),
         "phase_state": current_state,
     }
 
@@ -5700,6 +5724,33 @@ AGENT_RUN_ROLES: frozenset[str] = frozenset({"orchestration", "step", "substep"}
 # no choice but to assume `major` — which turns every `critical` into a warm reuse of the very
 # producer context the `critical` judged untrustworthy.
 REVOCATION_SEVERITIES: frozenset[str] = frozenset({"minor", "major", "critical"})
+
+# The repair strategy a revocation records ALONGSIDE its severity. Both are needed and neither
+# implies the other: the G5 policy forces `minor -> reuse` and `critical -> restart`, but `major`
+# DEFAULTS to reuse while honouring an explicit `restart` (an escalate-to-discard). A resume that
+# recovered only the grade therefore turned every `major` + `restart` decision back into a warm
+# `reuse` of the producer session the decision had said to throw away.
+REVOCATION_REPAIR_STRATEGIES: frozenset[str] = frozenset({"reuse", "restart", "re_execute"})
+
+# Validate's deliverables, as basenames under `runs/<run_id>/<node_key_safe>/`. Validate is the
+# one phase with NO entry in `CERTIFYING_META_FILENAME_BY_STEP`, so it gets no `artifact_hashes`
+# byte-pin, no child-window certification strip, and no revocable meta — its certification rests
+# entirely on what `_phase_certified` reads. Reading only the verdict and the gate record let a
+# phase that DIED mid-write certify: `aggregate_verdict.json` and `post_judge_meta.json` are
+# written before the rest, so an attempt that stopped between them and `validate_meta.json` left
+# a chain that read as complete, and a `--resume` then recorded `skipped_certified` — which
+# clause (e) of the completion vouch reads as an EXEMPTION from the latest-attempt check.
+#
+# COUPLED to `workflow_conductor.phase_required_outputs(..., "validate")` by
+# `test_validate_certifying_deliverables_match_the_declared_outputs`, so adding a deliverable
+# there without deciding about it here fails rather than silently narrowing what certifies.
+VALIDATE_CERTIFYING_DELIVERABLE_BASENAMES: tuple[str, ...] = (
+    "aggregate_verdict.json",
+    "verdict.json",
+    "summary.json",
+    "semantic_review.json",
+    "validate_meta.json",
+)
 
 
 def _normalized_until_phase(token: Any) -> str | None:
@@ -22234,6 +22285,7 @@ def revoke_artifact(
     trigger_agent_run_id: str,
     last_fail_reason: str | None = None,
     severity: str | None = None,
+    repair_strategy: str | None = None,
 ) -> dict[str, Any]:
     """Revoke the stage meta of `(node_key, step)` — the half of a re-derivation decision that
     reaches the ARTIFACT.
@@ -22292,6 +22344,7 @@ def revoke_artifact(
         trigger_agent_run_id=trigger_agent_run_id,
         last_fail_reason=last_fail_reason,
         severity=severity,
+        repair_strategy=repair_strategy,
     )
     result.update(revoked)
     result.pop("reason", None)
@@ -23708,6 +23761,14 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     revoke_artifact_parser.add_argument(
+        "--repair-strategy", default=None, choices=sorted(REVOCATION_REPAIR_STRATEGIES),
+        help=(
+            "Repair strategy of the decision that drove the re-derivation, recorded as "
+            "revocation_repair_strategy. Needed BESIDE --severity: `major` defaults to reuse "
+            "but honours an explicit restart, so the grade alone cannot reconstruct it."
+        ),
+    )
+    revoke_artifact_parser.add_argument(
         "--last-fail-reason-from-stdin", action="store_true",
         help=(
             "Read --last-fail-reason from stdin instead. The excerpt can reach several "
@@ -24065,6 +24126,7 @@ def main(argv: list[str] | None = None) -> int:
                 trigger_agent_run_id=args.trigger_agent_run_id,
                 last_fail_reason=last_fail_reason,
                 severity=args.severity,
+                repair_strategy=args.repair_strategy,
             )
         except (ValueError, RuntimeError, OSError) as exc:
             print(f"revoke-artifact: {exc}", file=sys.stderr)

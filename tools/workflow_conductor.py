@@ -9446,7 +9446,8 @@ clean:
 
     def revoke_artifact(self, node_key: str, step: str, trigger_arid: str, reason: str,
                         last_fail_reason: str | None = None,
-                        severity: str | None = None) -> dict[str, Any]:
+                        severity: str | None = None,
+                        repair_strategy: str | None = None) -> dict[str, Any]:
         """Revoke the stage meta of a phase this conductor has decided to re-derive — the half
         of a retry that reaches the ARTIFACT, and therefore the half a cold re-run reads.
 
@@ -9459,6 +9460,12 @@ clean:
                 "--trigger-agent-run-id", trigger_arid, "--reason", reason]
         if severity in ("minor", "major", "critical"):
             args += ["--severity", severity]
+        # BESIDE the grade, never derived from it: G5 forces `minor -> reuse` and
+        # `critical -> restart`, but `major` DEFAULTS to reuse while honouring an explicit
+        # `restart`, so a resume that recovered only the grade turned every major-restart
+        # decision back into a warm reuse of the session it had said to throw away.
+        if repair_strategy in ("reuse", "restart", "re_execute"):
+            args += ["--repair-strategy", repair_strategy]
         if last_fail_reason and last_fail_reason.strip():
             return self.runtime(args + ["--last-fail-reason-from-stdin"],
                                 input=last_fail_reason)
@@ -9477,7 +9484,8 @@ clean:
 
     def revoke_and_reset(self, node_key: str, phase: str, trigger_arid: str, reason: str,
                          findings: str | None = None,
-                         severity: str | None = None) -> None:
+                         severity: str | None = None,
+                         repair_strategy: str | None = None) -> None:
         """The whole of a re-derivation decision: revoke the artifact, then reset the record.
         Every retry route calls exactly this, so the two halves cannot drift apart.
 
@@ -9496,7 +9504,8 @@ clean:
         also cost an extra subprocess on an already-failed path, whose own failure would have
         surfaced as `runtime check-phase-certified failed` instead of this message."""
         outcome = self.revoke_artifact(node_key, phase, trigger_arid, reason,
-                                       last_fail_reason=findings, severity=severity)
+                                       last_fail_reason=findings, severity=severity,
+                                       repair_strategy=repair_strategy)
         self.reset_phase(node_key, phase, trigger_arid, reason)
         if str((outcome or {}).get("status") or "") == "noop":
             self.emit("revoke_artifact_noop", node_key=node_key, phase=phase,
@@ -14139,7 +14148,13 @@ clean:
             # written before the grade was recorded carries none, and defaults to `major` the
             # way `_parse_directive` does.
             severity = cert.get("revocation_severity") or "major"
-            strategy = _SEVERITY_FORCED_STRATEGY.get(severity, "reuse")
+            # The RECORDED strategy wins over the grade-derived default. Deriving it from the
+            # grade alone loses `major` + an explicit `restart`, which G5 honours: the decision
+            # said to discard the producer's context, and re-entering it as a warm `reuse` hands
+            # the repair back the session that decision distrusted. Only a revocation written
+            # before the strategy was recorded falls back to the derivation.
+            strategy = (cert.get("revocation_repair_strategy")
+                        or _SEVERITY_FORCED_STRATEGY.get(severity, "reuse"))
             seeded[phase] = {
                 "issue_severity": severity,
                 "repair_strategy": strategy,
@@ -14156,7 +14171,7 @@ clean:
 
     def _revoke_and_reset_or_terminalize(
         self, refs: "NodeRefs", phase: str, trigger: str, reason: str,
-        *, findings: str | None, severity: str | None,
+        *, findings: str | None, severity: str | None, repair_strategy: str | None = None,
         fallback_code: str, fallback_detail: str,
     ) -> str | None:
         """`revoke_and_reset`, terminalizing with a NAMED reason if the decision did not land.
@@ -14172,7 +14187,8 @@ clean:
         `revoke-artifact` this failure is asking them to run."""
         try:
             self.revoke_and_reset(refs.node_key, phase, trigger, reason,
-                                  findings=findings, severity=severity)
+                                  findings=findings, severity=severity,
+                                  repair_strategy=repair_strategy)
         except RevocationNotLandedError as exc:
             self.emit("revocation_not_landed", node_key=refs.node_key, phase=phase,
                       reason=reason, intended_terminal=fallback_code, error=str(exc)[:200])
@@ -14292,6 +14308,7 @@ clean:
                         refs, target, trigger, decision.reason or f"{phase}->{target}",
                         findings=self._read_repair_findings(refs, decision.reason, phase),
                         severity=decision.severity,
+                        repair_strategy=decision.repair_strategy,
                         fallback_code="dev_phase_rollback",
                         fallback_detail=decision.reason or f"{phase}->{target}"):
                     return "fail_closed"
@@ -14317,6 +14334,7 @@ clean:
                         decision.reason or f"{target}_retry_budget_exhausted",
                         findings=self._read_repair_findings(refs, decision.reason, phase),
                         severity=decision.severity,
+                        repair_strategy=decision.repair_strategy,
                         fallback_code="retry_budget_exhausted",
                         fallback_detail=f"{target} exceeded {MAX_ATTEMPTS_PER_PHASE}"):
                     return "fail_closed"
@@ -14354,6 +14372,7 @@ clean:
                 if self._revoke_and_reset_or_terminalize(
                         refs, phase, trigger, decision.reason or "same_phase_reopen",
                         findings=findings, severity=decision.severity,
+                        repair_strategy=decision.repair_strategy,
                         fallback_code=f"{phase}_fail",
                         fallback_detail=decision.reason or "same_phase_reopen"):
                     return "fail_closed"
@@ -14385,6 +14404,7 @@ clean:
             if self._revoke_and_reset_or_terminalize(
                     refs, target, trigger, decision.reason or f"{phase}_reopen",
                     findings=findings, severity=decision.severity,
+                    repair_strategy=decision.repair_strategy,
                     fallback_code=f"{phase}_fail",
                     fallback_detail=decision.reason or f"{phase}_reopen"):
                 return "fail_closed"
