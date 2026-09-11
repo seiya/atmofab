@@ -179,7 +179,7 @@ Measured consequences of the current model (2026-07 baseline): 96-97% of node wa
 |--------|---------|-----------|
 | identity | hand-minted id families + format rules + indexes | derivation key + attempt id + output hash |
 | incremental / freshness | R6-lite version-granularity readiness + closure-source content hashing (issue #153) | hash invalidation (R6 proper) over every input, structural |
-| resume / recovery | checkpoint + reopen-phase + supersede + backfill + overwrite-archiver | DAG re-evaluation over cache |
+| resume / recovery | certified artifacts + revoke-artifact + overwrite-archiver (issue #177 retired the checkpoint ledger, reopen-phase, the superseded set and backfill) | DAG re-evaluation over cache |
 | parallelism | forbidden by invariant, revision planned | native, concurrency-limited |
 | run records | ~15 JSON artifact kinds per orchestration, cross-validated by a 10.9k-line semantics validator | append-only event log + generated views |
 | audit | policed (manifests, hooks, diffs) with known observational gaps | total at the gateway by construction |

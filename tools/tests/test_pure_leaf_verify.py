@@ -760,8 +760,6 @@ class PureVerifySubstepTests(unittest.TestCase):
         self.assertEqual(oc.attempts, 2)             # launch count (the wait launch is counted)
         self.assertEqual(c.slept, [420.0])           # 300s + 120s margin
         self.assertTrue((c.repo_root / refs.source_dir() / "source_meta.json").exists())
-        reasons = [cap["--reason"] for s, cap in c.calls if s == "add-superseded-runs"]
-        self.assertTrue(any("leaf_usage_limit_wait_orphan" in r for r in reasons))
         # the wait consulted the host `/usage` probe first and fell back to the scrape;
         # the stub is what keeps the suite from spawning the real backend
         self.assertEqual(c.usage_probe_calls, 1)
@@ -847,8 +845,6 @@ class PureVerifySubstepTests(unittest.TestCase):
         self.assertEqual(c._spawn, 2)
         reset = datetime(2026, 7, 19, 12, 30, tzinfo=ZoneInfo("Asia/Tokyo")).timestamp()
         self.assertEqual(c.slept, [reset - now + wc.USAGE_LIMIT_WAIT_MARGIN_SECONDS])
-        sup = [cap for sub, cap in c.calls if sub == "add-superseded-runs"]
-        self.assertTrue(any("leaf_usage_limit_wait_orphan" in cap["--reason"] for cap in sup))
         # the wait consulted the host `/usage` probe first and fell back to the scrape;
         # the stub is what keeps the suite from spawning the real backend
         self.assertEqual(c.usage_probe_calls, 1)

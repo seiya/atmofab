@@ -5,7 +5,7 @@ today (`Compile.static`, `Generate.gate`, `Build`, `Validate.pre_judge`, `Valida
 `Validate.post_judge`). This file is the wiring checklist for adding another one — every one of
 these was hit adding `Generate.static` (later folded into `Generate.gate`), and every miss left
 the unit suite green while the real flow fail-closed, because the conductor-level tests drive a
-mock conductor that captures `record-launch` / `reopen-phase` as call tuples and never reaches
+mock conductor that captures `record-launch` / `revoke-artifact` as call tuples and never reaches
 `orchestration_runtime.py`'s own CLI enforcement.
 
 Grep the existing deterministic substep's name across **both** `tools/workflow_conductor.py` and
@@ -25,8 +25,11 @@ and dispatch sites — which is how the green-unit-suite failure above happens:
 4. `_validate_launch_request_payload`'s deterministic=True allowlist.
 5. `_matches_phase_contract` — which artifact filenames this substep may write (a host-authored
    certificate needs an explicit allowance here, or it is judged as an unauthorized write).
-6. `reopen-phase`'s same-phase carve-out — which triggering substep is permitted to reopen the
-   phase this one belongs to.
+6. The same-phase re-derivation route in `conduct` — which triggering substep is permitted to
+   re-derive the phase this one belongs to. There is no carve-out to add on the runtime side any
+   more: `revoke-artifact` takes the phase to re-derive rather than a trigger to validate, so the
+   permission lives entirely in `conduct`'s routing conditions (issue #177 retired `reopen-phase`,
+   whose trigger gate was the thing this item used to point at).
 7. `_mandatory_file_tool_pins_for_launch`'s early-return set, if this substep's output is
    host-written and should be exempt from leaf file-tool pins.
 8. `_allowed_file_tool_paths_for_launch` — both the auto-derive and the explicit-list branches —

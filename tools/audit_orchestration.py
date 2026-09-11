@@ -633,15 +633,8 @@ def _pure_source_dirs_of(
     `prepare_node` writes before Compile runs and which `resume_node_refs` already
     treats as the authority for the pipeline id.
 
-    The `orchestration_checkpoint.json` is NOT usable for this: `update_checkpoint`
-    fills `pipeline_ref` from the step result, and the conductor only supplies it
-    (via `launch_request_ref`) for the `validate` step — so every real
-    `compile` / `generate` / `build` entry records `pipeline_ref: ""`. Discovering
-    from the checkpoint would therefore find nothing on a `generate`-only run, which
-    is exactly the A/B command, and nothing for a terminally-failed generate.
-
-    Globbing `<pipeline_ref>/source/*` (rather than reading pass-only
-    `completed_steps[].output_refs`) is what keeps a terminally-failed generate and
+    Globbing `<pipeline_ref>/source/*` (rather than reading a pass-only ledger) is what
+    keeps a terminally-failed generate and
     every cold-restart-rotated source dir measured — otherwise the pure-arm totals
     silently undercount. The node's `pipeline_id` is allocated once per orchestration
     node and reused across restarts, so the glob is exactly this orchestration's

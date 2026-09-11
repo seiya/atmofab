@@ -10416,45 +10416,49 @@ end program shallow_water2d_runner
                 msg=f"substep-parent edge must still fail closed; got: {violations}",
             )
 
-    def test_pre_judge_exempts_superseded_invalid_unauthorized_write_edge(self) -> None:
-        """A reopen-consumed unauthorized-write trigger lives only in
-        agent_runs_invalid.jsonl (no agent_runs.jsonl row), is listed in
-        reopen/superseded_runs.json, and its agent_graph edge is deliberately KEPT.
-        The pre_judge edge scan must tolerate that kept edge (mirroring
-        _validate_orchestration_completion_for_pass) so a clean reopened run can pass."""
-        execute_arid = "substep_run_validate_execute_001"
-        with tempfile.TemporaryDirectory() as tmp:
-            violations = self._violations_with_removed_child(
-                Path(tmp),
-                removed_arid=execute_arid,
-                divert_removed_child_to_invalid=True,
-                superseded_arids=[execute_arid],
-            )
-            self.assertFalse(
-                self._has_dangling_edge(violations, execute_arid),
-                msg=(
-                    "a superseded child diverted to agent_runs_invalid.jsonl must not "
-                    f"trip the dangling-edge check; got: {violations}"
-                ),
-            )
+    def test_pre_judge_exempts_an_invalid_log_child_edge(self) -> None:
+        """A terminal attempt whose payload was refused lives only in
+        `agent_runs_invalid.jsonl` (no `agent_runs.jsonl` row) and its agent_graph edge is
+        deliberately KEPT. The pre_judge edge scan tolerates that kept edge — mirroring clause
+        (c) of `_validate_orchestration_completion_for_pass`.
 
-    def test_pre_judge_still_fails_unconsumed_invalid_edge(self) -> None:
-        """Safety: an invalid-log diversion that has NOT been consumed by reopen
-        (absent from superseded_runs.json) must still fail closed — the kept edge
-        exists precisely to surface an un-consumed invalid terminal attempt."""
+        Since issue #177 the invalid-log record is SUFFICIENT on its own. It used to require a
+        conjunction with `reopen/superseded_runs.json` because the completion vouch demanded a
+        consumer for every terminal arid; with that demand gone a failed attempt needs no
+        tombstone, and the tombstone file itself is gone."""
+        execute_arid = "substep_run_validate_execute_001"
+        for label, superseded in (("consumed by a reopen", [execute_arid]),
+                                  ("never tombstoned at all", None)):
+            with self.subTest(case=label), tempfile.TemporaryDirectory() as tmp:
+                violations = self._violations_with_removed_child(
+                    Path(tmp),
+                    removed_arid=execute_arid,
+                    divert_removed_child_to_invalid=True,
+                    superseded_arids=superseded,
+                )
+                self.assertFalse(
+                    self._has_dangling_edge(violations, execute_arid),
+                    msg=(
+                        "a child diverted to agent_runs_invalid.jsonl must not trip the "
+                        f"dangling-edge check; got: {violations}"
+                    ),
+                )
+
+    def test_pre_judge_still_fails_a_child_in_neither_log(self) -> None:
+        """The safety the exemption rests on: a child recorded in NEITHER log is an
+        arbitrarily corrupt edge and must still fail closed."""
         execute_arid = "substep_run_validate_execute_001"
         with tempfile.TemporaryDirectory() as tmp:
             violations = self._violations_with_removed_child(
                 Path(tmp),
                 removed_arid=execute_arid,
-                divert_removed_child_to_invalid=True,
-                superseded_arids=None,  # not reopen-consumed
+                divert_removed_child_to_invalid=False,
             )
             self.assertTrue(
                 self._has_dangling_edge(violations, execute_arid),
                 msg=(
-                    "an un-consumed invalid-log child (no superseded_runs entry) must "
-                    f"still fail the dangling-edge check; got: {violations}"
+                    "a child in neither agent_runs.jsonl nor agent_runs_invalid.jsonl must "
+                    f"fail the dangling-edge check; got: {violations}"
                 ),
             )
 

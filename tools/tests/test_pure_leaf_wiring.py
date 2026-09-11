@@ -1511,8 +1511,13 @@ class PureRenderTests(unittest.TestCase):
         # the line still matches the pattern through the mentions it already had.
         "docs/AGENT_CONTRACT.md: - A verify-family finding always sets `verification_status=f"
         " #12a92add46ae",
+        # Re-taken a THIRD time, for issue #177: the paragraph's `resume_directive` sentences
+        # were replaced by the revocation chain (`revoke-artifact` writes the finding as
+        # `last_fail_reason`, and that is what seeds a repair). Read before re-approving: the
+        # new text names `revoke-artifact` and the reason_detail literals and assigns no
+        # severity — the line still matches the pattern only through the mentions it had.
         "docs/RUNBOOK.md: - Recovery from a **`conductor_phase_fail_closed` whose `rea"
-        " #cbf9b4d05f90",
+        " #ce3cf072ca6f",
         "skills/workflow-generate-verify/SKILL.md: - A finding always sets "
         "`verification_status=fail` (record ` #4a2a99cfe8e9",
         # Issue #148: the `Compile.verify` mirror of the line above. It routes and points; it
@@ -2646,21 +2651,21 @@ class PureRenderTests(unittest.TestCase):
         return " ".join(entry)
 
 
-    def test_runbook_dev_verify_recovery_entry_is_true_about_the_derivation_chain(self) -> None:
+    def test_runbook_dev_verify_recovery_entry_is_true_about_the_repair_chain(self) -> None:
         """The §3-1 entry an operator reads after a `dev` verify stop.
 
         PINNED: (a) both `reason_detail` literals appear in §3-1 at all, so a `grep` finds the
-        recovery; (b) the entry's own BULLET — not the 60 KB section around it — names every
-        resume-directive deriver and states their number in words. Round 2 defeated the earlier
-        version twice: parking the four names in a throwaway line under the §3-1 heading left the
-        bullet's conclusion unjustified and the check green, and adding a fifth deriver while
-        correctly naming it in the sentence left the word "four" behind — which is round 1's own
-        defect, reintroduced.
-        The BEHAVIOURAL half of the claim — that no directive is derived for these two reasons —
-        is deliberately not pinned here but by driving it, in
-        `test_orchestration_runtime.DevVerifyResumeDirectiveTests`: a name-shape regex cannot see
-        a deriver that does not conform to it, and that test does not care what anything is
-        called.
+        recovery; (b) the entry's own BULLET — not the 60 KB section around it — names the
+        mechanism that actually carries a finding into a repair, and does not name one that no
+        longer exists.
+
+        Until issue #177 that mechanism was the `resume_directive`, and this row enumerated its
+        derivers by name and stated their number in words. The directive is gone: a repair is
+        seeded from the REVOCATION on the artifact, so the row now pins that the bullet names
+        `revoke-artifact` and names no deriver — a sentence surviving the deletion would tell an
+        operator to look for a dispatch chain that is not there. The BEHAVIOURAL half — that this
+        stop revokes nothing and the producer re-runs cold — is pinned by driving it, in
+        `test_workflow_conductor`'s dev-rollback rows.
         """
         runbook = (Path(ort.__file__).resolve().parents[1]
                    / "docs" / "RUNBOOK.md").read_text(encoding="utf-8")
@@ -2678,33 +2683,33 @@ class PureRenderTests(unittest.TestCase):
             self.assertIn(reason, section,
                           f"§3-1 does not name {reason}, so the operator who greps the "
                           f"reason_detail finds no recovery")
-        # Select by the bullet's OPENING, not by the token: a token count reported "found 2" for
-        # any reformat that split the bullet across lines — a message that misdescribes the edit
-        # (round 4's over-refusal probe). The entry used to carry `dev_verify_major` twice on its
-        # own line, the second being the sentence saying no rubric governed `Compile.verify`;
-        # issue #148 wrote that rubric and removed the sentence, so the count is now 1 — which is
-        # exactly why selecting by count would have been the wrong pin either way.
         entry = self._runbook_dev_verify_entry(section)
         self.assertTrue(entry,
                         "§3-1 must carry exactly one bullet opening `- Recovery from a "
                         "**`conductor_phase_fail_closed` whose `reason_detail` is `; the "
                         "enumeration below is read from that bullet, continuation lines included")
-        derivers = re.findall(r"^def (_derive_\w*resume_directive)\(",
-                              (Path(ort.__file__).resolve().parent
-                               / "orchestration_runtime.py").read_text(encoding="utf-8"),
+        self.assertIn("revoke-artifact", entry,
+                      "the entry must name the mechanism a repair is actually seeded from")
+        # Derived from the module, not from a list here: a deriver reintroduced under any name
+        # of that shape has to be described, and one that no longer exists must not be named.
+        runtime_src = (Path(ort.__file__).resolve().parent
+                       / "orchestration_runtime.py").read_text(encoding="utf-8")
+        derivers = re.findall(r"^def (_derive_\w*resume_directive)\(", runtime_src,
                               flags=re.MULTILINE)
-        self.assertGreater(len(derivers), 1,
-                           "fewer than two resume-directive derivers were found; this check is "
-                           "reading the wrong module and would pass vacuously")
-        for name in derivers:
-            self.assertIn(name, entry,
-                          f"the `dev_verify_major` entry justifies its conclusion by enumerating "
-                          f"the resume-directive derivers and does not name {name}")
-        word = self._COUNT_WORDS.get(len(derivers))
-        self.assertIsNotNone(word, f"no count word for {len(derivers)} derivers; extend the map")
-        self.assertIn(f"the {word} derivers", entry,
-                      f"there are {len(derivers)} resume-directive derivers and the entry does "
-                      f"not say 'the {word} derivers'")
+        self.assertEqual(derivers, [],
+                         "a resume-directive deriver is back; this entry describes the "
+                         "revocation chain and would now be describing the wrong one")
+        # `resume_directive` may still be NAMED — the entry says it is gone, which is what an
+        # operator who remembers it needs to read. What must not appear is a DERIVER name: that
+        # is the dispatch chain the old entry told them to reason about, and there is nothing
+        # to look at.
+        self.assertNotIn(
+            "_derive_", entry,
+            "the entry names a resume-directive deriver, which issue #177 removed — an "
+            "operator following it would look for a dispatch chain that does not exist")
+        self.assertIn(
+            "gone", entry,
+            "the entry names `resume_directive` without saying it is gone")
 
     def test_every_required_pure_context_key_has_exactly_one_template_slot(self) -> None:
         # Structural closure of "a required key with no template slot is silently dropped": the

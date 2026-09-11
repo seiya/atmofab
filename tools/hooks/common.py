@@ -4208,10 +4208,6 @@ _CLI_MANAGED_PATHS: list[_CliManagedPath] = [
         "python3 tools/orchestration_runtime.py record-launch (capability is auto-generated)",
     ),
     _CliManagedPath(
-        re.compile(r"workspace/orchestrations/[^/]+/orchestration_checkpoint\.json$"),
-        "python3 tools/orchestration_runtime.py write-step-result (checkpoint is auto-updated)",
-    ),
-    _CliManagedPath(
         re.compile(r"workspace/orchestrations/[^/]+/phase_state\.json$"),
         "python3 tools/orchestration_runtime.py (phase_state is managed by the runtime)",
     ),

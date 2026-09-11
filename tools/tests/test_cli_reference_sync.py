@@ -53,10 +53,9 @@ TIER_B_SUBCOMMANDS: frozenset[str] = frozenset({
     "preflight-status",
     "record-timeout",
     "check-phase-certified",
-    "check-step-completed",
     "orchestration-read",
-    "reopen-phase",
-    "add-superseded-runs",
+    "revoke-artifact",
+    "reset-phase",
 })
 
 REPO_ROOT = Path(__file__).resolve().parents[2]

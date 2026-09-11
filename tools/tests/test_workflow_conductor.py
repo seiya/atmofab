@@ -541,8 +541,17 @@ class ReuseResumeAndFindingsTest(unittest.TestCase):
                 c._read_repair_findings(refs, "validate_execute_post_execute_violation",
                                         "validate"),
                 "missing required_raw_variables: a1")
+            # `structural_violation` DOES carry an excerpt since issue #177: dev routes it to
+            # Generate, and `_execute_inproc` writes the failing predicates into the same
+            # `trial_meta.json#failure_excerpt` on its verdict-fail branch. The `_ir`-suffixed
+            # variant does not — it is the IR-rooted one Generate cannot fix — and neither do
+            # the cold-restart or physics reasons.
+            self.assertEqual(
+                c._read_repair_findings(refs, "validate_execute_structural_violation",
+                                        "validate"),
+                "missing required_raw_variables: a1")
             for reason in ("validate_execute_fail", "validate_execute_physics_fail",
-                           "validate_execute_structural_violation"):
+                           "validate_execute_structural_violation_ir"):
                 self.assertIsNone(c._read_repair_findings(refs, reason, "validate"), reason)
 
 
@@ -945,12 +954,17 @@ class ConductHappyPathTest(unittest.TestCase):
         self.assertEqual(status, "pass")
         subs = [s for s, _ in c.calls]
 
-        # per phase: check-phase-certified, workflow-launch-check, then per substep
+        # `conduct` opens by asking whether a prior run REVOKED either repairable phase's
+        # artifact (`_seed_repairs_from_revocations` — compile, then generate), which is two
+        # certification reads before the loop starts.
+        #
+        # Then, per phase: check-phase-certified, workflow-launch-check, then per substep
         # (record-launch, [record-child-return if deterministic], finalize-child),
         # then write-step-result. Build and Validate.execute are deterministic (the
         # conductor issues their record-child-return); compile/generate/judge are leaves.
         expected = (
-            ["check-phase-certified", "workflow-launch-check",
+            ["check-phase-certified", "check-phase-certified"]
+            + ["check-phase-certified", "workflow-launch-check",
              "record-launch", "finalize-child",  # compile.generate (leaf)
              "record-launch", "record-child-return", "finalize-child",  # compile.static (deterministic)
              "record-launch", "finalize-child",  # compile.verify (leaf)
@@ -1203,193 +1217,6 @@ class ConductHappyPathTest(unittest.TestCase):
         self.assertEqual(steps, ["compile"])
 
 
-class ConsumeResumeDirectiveTest(unittest.TestCase):
-    """B2: `conduct` honors the dev structural-validate.execute `resume_directive` by
-    reopening Generate and seeding a warm repair carrying the gate's findings."""
-
-    NODE_KEY = "component/spec_x@0.1.0"
-    OID = "orch_resume"
-    TRIGGER = "validate-exec-fail-1"
-    PRODUCER = "generate-sub-1"
-    PIPE_REF = "workspace/pipelines/component__spec_x__0.1.0/x_20260101_001"
-    FINDINGS = "[execute fail]\npost_execute: missing required_raw_variables {'a1'}"
-
-    def _refs(self) -> wc.NodeRefs:
-        return wc.NodeRefs(
-            node_key=self.NODE_KEY, spec_path="spec/component/spec_x",
-            ir_id="x_20260101_001", pipeline_id="x_20260101_001",
-            source_id="src_20260101_001", binary_id="bin_20260101_001",
-            run_id="run_20260101_001", source_binary_id="bin_20260101_001",
-        )
-
-    def _conductor(self, repo_root: Path, directive: dict | None, *,
-                   generate_completed: bool = True,
-                   reopen_raises: bool = False,
-                   reopen_noop: bool = False) -> _FakeConductor:
-        root = repo_root / "workspace" / "orchestrations" / self.OID
-        root.mkdir(parents=True, exist_ok=True)
-        meta: dict = {"orchestration_id": self.OID}
-        if directive is not None:
-            meta["resume_directive"] = directive
-        (root / "orchestration_meta.json").write_text(json.dumps(meta), encoding="utf-8")
-        sr = root / "steps" / wc.node_key_safe(self.NODE_KEY) / "generate" / "ORCH"
-        sr.mkdir(parents=True, exist_ok=True)
-        # The producing attempt is found by the ARTIFACT it published, so the step_result
-        # must declare the certified source_meta among its required_outputs.
-        (sr / "step_result.json").write_text(
-            json.dumps({"status": "pass", "executor_agent_run_id": "ORCH",
-                        "required_outputs": [f"{self.PIPE_REF}/source/SRC/source_meta.json"],
-                        "substep_agent_run_ids": [self.PRODUCER, "generate-sub-2"]}),
-            encoding="utf-8")
-
-        pipe_ref = self.PIPE_REF
-
-        class _C(_FakeConductor):
-            def runtime(self, args, *, input=None):  # type: ignore[override]
-                if args[0] == "check-phase-certified":
-                    if not generate_completed and "generate" in args:
-                        return {"certified": False, "reason": "source_not_bound"}
-                    return {"certified": True, "pipeline_ref": pipe_ref, "source_id": "SRC"}
-                if args[0] == "reopen-phase":
-                    if reopen_raises:
-                        raise RuntimeError("reopen-phase: trigger not found")
-                    if reopen_noop:
-                        super().runtime(args, input=input)  # still record the call
-                        return {"status": "noop"}
-                return super().runtime(args, input=input)
-
-        c = _C(repo_root=repo_root, orchestration_id=self.OID,
-               orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
-        c.calls = []
-        return c
-
-    def _directive(self, **over) -> dict:
-        base = {
-            "reopen_from": "generate",
-            "node_key": self.NODE_KEY,
-            "trigger_agent_run_id": self.TRIGGER,
-            "reason_code": "dev_phase_rollback",
-            "failure_category": "post_execute_violation",
-            "source": wc_runtime.DEV_VALIDATE_EXECUTE_RESUME_SOURCE,
-            "repair_findings": self.FINDINGS,
-        }
-        base.update(over)
-        return base
-
-    def test_directive_reopens_generate_and_seeds_warm_repair(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            c = self._conductor(repo_root, self._directive())
-            repair = c._consume_resume_directive(self._refs(), ["compile", "generate",
-                                                               "build", "validate"])
-            reopens = [cap for s, cap in c.calls if s == "reopen-phase"]
-            self.assertEqual(len(reopens), 1)
-            self.assertEqual(reopens[0]["--from-phase"], "generate")
-            self.assertEqual(reopens[0]["--trigger-agent-run-id"], self.TRIGGER)
-            self.assertEqual(reopens[0]["--reason"], "dev_resume_validate_execute_structural")
-            self.assertEqual(repair, {"generate": {
-                "issue_severity": "major",
-                "repair_strategy": "reuse",
-                # recovered from the checkpointed step_result BEFORE reopen dropped it
-                "repair_target_agent_run_id": self.PRODUCER,
-                "repair_reason": "validate_execute_structural_resume",
-                "repair_findings": self.FINDINGS,
-            }})
-
-    def test_no_directive_is_a_noop(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            for directive in (None,
-                              self._directive(source="failure_analysis.original_finding"),
-                              self._directive(node_key="component/other@0.1.0"),
-                              self._directive(trigger_agent_run_id=""),
-                              self._directive(reopen_from="compile")):
-                c = self._conductor(repo_root, directive)
-                self.assertEqual(
-                    c._consume_resume_directive(self._refs(),
-                                                ["compile", "generate", "build", "validate"]),
-                    {})
-                self.assertEqual([s for s, _ in c.calls if s == "reopen-phase"], [])
-
-    def test_generate_out_of_scope_is_a_noop(self) -> None:
-        """A `--until compile` run never reaches Generate; nothing to reopen."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            c = self._conductor(repo_root, self._directive())
-            self.assertEqual(c._consume_resume_directive(self._refs(), ["compile"]), {})
-            self.assertEqual([s for s, _ in c.calls if s == "reopen-phase"], [])
-
-    def test_incomplete_generate_is_a_noop(self) -> None:
-        """Generate is not checkpointed (a prior reopen already dropped it): the plain
-        resume re-runs it, and reopening would archive the in-progress attempt."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            c = self._conductor(repo_root, self._directive(), generate_completed=False)
-            self.assertEqual(
-                c._consume_resume_directive(self._refs(),
-                                            ["compile", "generate", "build", "validate"]),
-                {})
-            self.assertEqual([s for s, _ in c.calls if s == "reopen-phase"], [])
-
-    def test_reopen_failure_degrades_to_plain_resume(self) -> None:
-        """A rejected reopen must not crash the run and must not seed a repair."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            c = self._conductor(repo_root, self._directive(), reopen_raises=True)
-            self.assertEqual(
-                c._consume_resume_directive(self._refs(),
-                                            ["compile", "generate", "build", "validate"]),
-                {})
-
-    def test_reopen_noop_seeds_no_repair(self) -> None:
-        """A trigger a prior reopen already consumed leaves Generate checkpointed, so
-        run_phase would skip it — seeding a repair there would drop it silently."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            c = self._conductor(repo_root, self._directive(), reopen_noop=True)
-            self.assertEqual(
-                c._consume_resume_directive(self._refs(),
-                                            ["compile", "generate", "build", "validate"]),
-                {})
-
-    def test_missing_findings_still_reopens(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            d = self._directive()
-            d.pop("repair_findings")
-            c = self._conductor(repo_root, d)
-            repair = c._consume_resume_directive(self._refs(), ["compile", "generate",
-                                                                "build", "validate"])
-            self.assertNotIn("repair_findings", repair["generate"])
-            self.assertEqual(repair["generate"]["repair_strategy"], "reuse")
-
-    def test_conduct_repairs_generate_from_the_directive(self) -> None:
-        """End-to-end at the conduct level: the reopened Generate's producer substep is
-        launched with the warm repair payload (findings in the request)."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            c = self._conductor(repo_root, self._directive())
-            # Generate is reopened by the directive; every phase then passes. The fake's
-            # check-step-completed reports "completed" for every phase, so only the reopened
-            # Generate is re-run... which the fake cannot model. Assert on the payload the
-            # conductor hands run_phase instead.
-            captured: list = []
-            orig = c.run_phase
-
-            def _run_phase(refs, phase, repair=None):
-                captured.append((phase, repair))
-                return wc.PhaseOutcome(phase, "pass", decision=wc.RouteDecision("advance"),
-                                       skipped=True)
-
-            c.run_phase = _run_phase  # type: ignore[assignment]
-            self.assertEqual(c.conduct(self._refs(), "validate"), "pass")
-            del orig
-            repairs = {phase: rep for phase, rep in captured if rep}
-            self.assertEqual(list(repairs), ["generate"])
-            self.assertEqual(repairs["generate"]["repair_findings"], self.FINDINGS)
-            self.assertEqual(repairs["generate"]["repair_target_agent_run_id"], self.PRODUCER)
-
-
 class ConductRoutingTest(unittest.TestCase):
     """M3: deterministic failure routing (reopen / in-place retry / fail_closed)."""
 
@@ -1466,12 +1293,12 @@ class ConductRoutingTest(unittest.TestCase):
 
         status = c.conduct(self._refs(), "validate")
         self.assertEqual(status, "pass")
-        reopens = [cap for s, cap in c.calls if s == "reopen-phase"]
-        self.assertEqual(len(reopens), 1)
-        self.assertEqual(reopens[0]["--from-phase"], "compile")
-        self.assertEqual(reopens[0]["--reason"], "judge_structural_violation_ir")
+        revokes = [cap for s, cap in c.calls if s == "revoke-artifact"]
+        self.assertEqual(len(revokes), 1)
+        self.assertEqual(revokes[0]["--step"], "compile")
+        self.assertEqual(revokes[0]["--reason"], "judge_structural_violation_ir")
         # trigger is the failed (judge) substep arid
-        self.assertTrue(reopens[0]["--trigger-agent-run-id"].startswith("child-"))
+        self.assertTrue(revokes[0]["--trigger-agent-run-id"].startswith("child-"))
         # validate ran twice (once failed, once after reopen)
         validate_writes = [cap for s, cap in c.calls
                            if s == "write-step-result" and cap["--step"] == "validate"]
@@ -1499,10 +1326,10 @@ class ConductRoutingTest(unittest.TestCase):
         c._read_repair_findings = lambda refs, reason, phase=None: "C061 argument 'u_l'"  # type: ignore[assignment]
         status = c.conduct(self._refs(), "generate")
         self.assertEqual(status, "pass")
-        reopens = [cap for s, cap in c.calls if s == "reopen-phase"]
-        self.assertEqual(len(reopens), 1)
-        self.assertEqual(reopens[0]["--from-phase"], "generate")
-        self.assertEqual(reopens[0]["--reason"], "gate_syntax_error+lint_findings")
+        revokes = [cap for s, cap in c.calls if s == "revoke-artifact"]
+        self.assertEqual(len(revokes), 1)
+        self.assertEqual(revokes[0]["--step"], "generate")
+        self.assertEqual(revokes[0]["--reason"], "gate_syntax_error+lint_findings")
         # generate ran twice (lint-fail attempt, then clean attempt)
         gen_writes = [cap for s, cap in c.calls
                       if s == "write-step-result" and cap["--step"] == "generate"]
@@ -1566,7 +1393,7 @@ class ConductRoutingTest(unittest.TestCase):
             wc.classify_gate_failure(["host_rendered_lint_findings"]).action, "fail_closed")
 
     def test_structural_execute_failure_warm_reopens_generate_cross_phase(self) -> None:
-        # B1 end to end (prod): a structural validate.execute failure cross-phase reopens
+        # B1 end to end (prod): a structural validate.execute failure cross-phase revokes
         # generate with a WARM reuse repair carrying the gate's findings — the same treatment
         # the judge's ("structural_violation","code") route already gets. The findings must be
         # read BEFORE reopen-phase, while refs still names the failed run.
@@ -1586,12 +1413,12 @@ class ConductRoutingTest(unittest.TestCase):
             "retry", target_phase="generate", repair_strategy="reuse",
             reason="validate_execute_post_execute_violation")
         # Stub the on-disk excerpt read (covered by ReuseResumeAndFindingsTest) and record how
-        # many reopens had happened when it ran: reopen rotates the run id, so a read after it
+        # many revokes had happened when it ran: reopen rotates the run id, so a read after it
         # would look at a fresh (empty) run node dir.
         seen: list[tuple[int, str | None, str | None, str | None]] = []
 
         def fake_findings(refs, reason, phase=None):
-            seen.append((len([s for s, _ in c.calls if s == "reopen-phase"]),
+            seen.append((len([s for s, _ in c.calls if s == "revoke-artifact"]),
                          refs.run_id, reason, phase))
             return "missing required_raw_variables: a1 (wrapper key 'values')"
 
@@ -1603,10 +1430,10 @@ class ConductRoutingTest(unittest.TestCase):
         self.assertEqual(
             seen, [(0, "run_1_001", "validate_execute_post_execute_violation", "validate")])
 
-        reopens = [cap for s, cap in c.calls if s == "reopen-phase"]
-        self.assertEqual(len(reopens), 1)
-        self.assertEqual(reopens[0]["--from-phase"], "generate")
-        self.assertEqual(reopens[0]["--reason"], "validate_execute_post_execute_violation")
+        revokes = [cap for s, cap in c.calls if s == "revoke-artifact"]
+        self.assertEqual(len(revokes), 1)
+        self.assertEqual(revokes[0]["--step"], "generate")
+        self.assertEqual(revokes[0]["--reason"], "validate_execute_post_execute_violation")
 
         gen_launches = [cap["--request-json"] for s, cap in c.calls
                         if s == "record-launch"
@@ -1636,12 +1463,21 @@ class ConductRoutingTest(unittest.TestCase):
         ss = [cap for s, cap in c.calls if s == "set-status"][-1]
         self.assertEqual(ss["--reason-code"], "dev_phase_rollback")
         self.assertEqual(ss["--reason-detail"], "validate_execute_post_execute_violation")
-        self.assertEqual([s for s, _ in c.calls if s == "reopen-phase"], [])
+        # The rollback still fail_closes on the first occurrence — dev does not auto-retry —
+        # but since issue #177 it REVOKES the target first, and the revocation precedes the
+        # terminalization. Without it the operator's `--resume` finds Generate certified,
+        # skips it, and re-runs the identical binary into the identical failure: the deadlock
+        # the dev `resume_directive` used to exist for.
+        revokes = [cap for s, cap in c.calls if s == "revoke-artifact"]
+        self.assertEqual(len(revokes), 1)
+        self.assertEqual(revokes[0]["--step"], "generate")
+        subs = [s for s, _ in c.calls]
+        self.assertLess(subs.index("revoke-artifact"), len(subs) - 1 - subs[::-1].index("set-status"))
 
     def test_compile_static_finding_warm_reopens_compile_same_phase(self) -> None:
         # A compile.static finding routes retry/compile/reuse (same-phase); conduct
-        # must do a SAME-PHASE warm reopen (reopen-phase --from-phase compile) and re-run
-        # compile, exactly like a generate.gate finding reopens generate.
+        # must do a SAME-PHASE warm re-derivation (revoke-artifact --step compile) and re-run
+        # compile, exactly like a generate.gate finding revokes generate.
         c = self._conductor()
         state = {"static_failed": False}
 
@@ -1657,9 +1493,9 @@ class ConductRoutingTest(unittest.TestCase):
             reason="compile_static_compile_static_violation")
         status = c.conduct(self._refs(), "compile")
         self.assertEqual(status, "pass")
-        reopens = [cap for s, cap in c.calls if s == "reopen-phase"]
-        self.assertEqual(len(reopens), 1)
-        self.assertEqual(reopens[0]["--from-phase"], "compile")
+        revokes = [cap for s, cap in c.calls if s == "revoke-artifact"]
+        self.assertEqual(len(revokes), 1)
+        self.assertEqual(revokes[0]["--step"], "compile")
         # compile ran twice (static-fail attempt, then clean attempt)
         compile_writes = [cap for s, cap in c.calls
                           if s == "write-step-result" and cap["--step"] == "compile"]
@@ -1667,7 +1503,7 @@ class ConductRoutingTest(unittest.TestCase):
 
     def test_verify_minor_finding_warm_reopens_same_phase(self) -> None:
         # A minor verify finding is NOT tolerated: it routes retry/reuse (same-phase)
-        # (via classify_verify_severity), so conduct warm-reopens the phase and re-runs the
+        # (via classify_verify_severity), so conduct warm-revokes the phase and re-runs the
         # producer (compile.generate) to fix it — instead of passing/terminalizing.
         c = self._conductor()
         state = {"verify_failed": False}
@@ -1682,9 +1518,9 @@ class ConductRoutingTest(unittest.TestCase):
         c.decision_fn = lambda phase, outcomes: wc.classify_verify_severity("minor", "prod")
         status = c.conduct(self._refs(), "compile")
         self.assertEqual(status, "pass")
-        reopens = [cap for s, cap in c.calls if s == "reopen-phase"]
-        self.assertEqual(len(reopens), 1)
-        self.assertEqual(reopens[0]["--from-phase"], "compile")
+        revokes = [cap for s, cap in c.calls if s == "revoke-artifact"]
+        self.assertEqual(len(revokes), 1)
+        self.assertEqual(revokes[0]["--step"], "compile")
         compile_writes = [cap for s, cap in c.calls
                           if s == "write-step-result" and cap["--step"] == "compile"]
         self.assertEqual(len(compile_writes), 2)  # verify-fail attempt, then clean attempt
@@ -1713,9 +1549,9 @@ class ConductRoutingTest(unittest.TestCase):
             reason="diagnostician_regenerate_ir")
         status = c.conduct(self._refs(), "compile")
         self.assertEqual(status, "pass")
-        reopens = [cap for s, cap in c.calls if s == "reopen-phase"]
-        self.assertEqual(len(reopens), 1)
-        self.assertEqual(reopens[0]["--from-phase"], "compile")
+        revokes = [cap for s, cap in c.calls if s == "revoke-artifact"]
+        self.assertEqual(len(revokes), 1)
+        self.assertEqual(revokes[0]["--step"], "compile")
         compile_writes = [cap for s, cap in c.calls
                           if s == "write-step-result" and cap["--step"] == "compile"]
         self.assertEqual(len(compile_writes), 2)
@@ -1730,7 +1566,7 @@ class ConductRoutingTest(unittest.TestCase):
             "retry", target_phase=None, reason="diag_ambiguous")
         status = c.conduct(self._refs(), "compile")
         self.assertIn(status, ("fail", "fail_closed"))
-        self.assertEqual([s for s, _ in c.calls if s == "reopen-phase"], [])
+        self.assertEqual([s for s, _ in c.calls if s == "revoke-artifact"], [])
 
     def test_escalate_same_phase_build_validate_does_not_reopen(self) -> None:
         # The same-phase producer reopen is scoped to compile/generate (the only phases with a
@@ -1744,7 +1580,7 @@ class ConductRoutingTest(unittest.TestCase):
             "retry", target_phase="validate", repair_strategy="restart", reason="diag")
         status = c.conduct(self._refs(), "validate")
         self.assertIn(status, ("fail", "fail_closed"))
-        self.assertEqual([s for s, _ in c.calls if s == "reopen-phase"], [])
+        self.assertEqual([s for s, _ in c.calls if s == "revoke-artifact"], [])
 
     def test_fail_closed_on_spec_attribution(self) -> None:
         c = self._conductor()
@@ -1765,20 +1601,20 @@ class ConductRoutingTest(unittest.TestCase):
             "reopen", target_phase="compile", reason="judge_ir")
         status = c.conduct(self._refs(), "validate")
         self.assertEqual(status, "fail_closed")
-        reopens = [cap for s, cap in c.calls if s == "reopen-phase"]
-        self.assertEqual(len(reopens), wc.MAX_ATTEMPTS_PER_PHASE)
+        revokes = [cap for s, cap in c.calls if s == "revoke-artifact"]
+        self.assertEqual(len(revokes), wc.MAX_ATTEMPTS_PER_PHASE)
 
     def test_same_phase_retry_terminalises_without_retry_decisions(self) -> None:
         # In-place retry is intentionally not done; a same-phase "retry" decision with NO
         # repair_strategy (a malformed/unflagged retry) terminalizes via conduct rather than
         # emitting the error-prone retry_decisions bookkeeping. (A real verify-minor carries
-        # repair_strategy=reuse and warm-reopens the producer — covered separately.)
+        # repair_strategy=reuse and warm-revokes the producer — covered separately.)
         c = self._conductor()
         c.status_fn = lambda phase, substep, n: "fail" if (phase == "compile" and substep == "verify") else "pass"
         c.decision_fn = lambda phase, outcomes: wc.RouteDecision("retry", reason="unflagged_retry")
         status = c.conduct(self._refs(), "compile")
         self.assertIn(status, ("fail", "fail_closed"))
-        self.assertEqual([s for s, _ in c.calls if s == "reopen-phase"], [])  # no cross-phase reopen
+        self.assertEqual([s for s, _ in c.calls if s == "revoke-artifact"], [])  # no cross-phase reopen
         compile_wsr = [cap for s, cap in c.calls
                        if s == "write-step-result" and cap["--step"] == "compile"]
         self.assertEqual(len(compile_wsr), 1)  # single attempt, one step_result
@@ -1824,7 +1660,11 @@ class DevPhaseRollbackTest(unittest.TestCase):
         self.assertEqual(ss["--status"], "fail_closed")
         self.assertEqual(ss["--reason-code"], "dev_phase_rollback")
         self.assertEqual(ss["--reason-detail"], "code_defect")
-        self.assertEqual([s for s, _ in c.calls if s == "reopen-phase"], [])  # no reopen in dev
+        # The rollback still fail_closes, but it REVOKES the target first (issue
+        # #177): the decision that the artifact must be re-derived has to reach the
+        # artifact, or the operator's `--resume` skips the target as certified.
+        revokes = [cap for s, cap in c.calls if s == "revoke-artifact"]
+        self.assertEqual(len(revokes), 1)
 
     def test_dev_reopen_decision_fails_closed(self) -> None:
         # A reopen decision (target compile) is a backward rollback by construction.
@@ -1837,7 +1677,11 @@ class DevPhaseRollbackTest(unittest.TestCase):
         ss = self._last_set_status(c)
         self.assertEqual(ss["--reason-code"], "dev_phase_rollback")
         self.assertEqual(ss["--reason-detail"], "judge_structural_violation_ir")
-        self.assertEqual([s for s, _ in c.calls if s == "reopen-phase"], [])
+        # The rollback still fail_closes, but it REVOKES the target first (issue
+        # #177): the decision that the artifact must be re-derived has to reach the
+        # artifact, or the operator's `--resume` skips the target as certified.
+        revokes = [cap for s, cap in c.calls if s == "revoke-artifact"]
+        self.assertEqual(len(revokes), 1)
 
     def test_dev_execute_no_verdict_routes_generate_fails_closed(self) -> None:
         # The deterministic execute-no-verdict route (classify_failure) returns retry->generate;
@@ -1850,7 +1694,11 @@ class DevPhaseRollbackTest(unittest.TestCase):
         status = c.conduct(self._refs(), "validate")
         self.assertEqual(status, "fail_closed")
         self.assertEqual(self._last_set_status(c)["--reason-code"], "dev_phase_rollback")
-        self.assertEqual([s for s, _ in c.calls if s == "reopen-phase"], [])
+        # The rollback still fail_closes, but it REVOKES the target first (issue
+        # #177): the decision that the artifact must be re-derived has to reach the
+        # artifact, or the operator's `--resume` skips the target as certified.
+        revokes = [cap for s, cap in c.calls if s == "revoke-artifact"]
+        self.assertEqual(len(revokes), 1)
 
     def test_prod_same_rollback_reopens_as_today(self) -> None:
         # Identical scenario in prod: the cross-phase reopen still happens (F1 is dev-only).
@@ -1868,9 +1716,9 @@ class DevPhaseRollbackTest(unittest.TestCase):
             "reopen", target_phase="compile", reason="judge_structural_violation_ir")
         status = c.conduct(self._refs(), "validate")
         self.assertEqual(status, "pass")
-        reopens = [cap for s, cap in c.calls if s == "reopen-phase"]
-        self.assertEqual(len(reopens), 1)
-        self.assertEqual(reopens[0]["--from-phase"], "compile")
+        revokes = [cap for s, cap in c.calls if s == "revoke-artifact"]
+        self.assertEqual(len(revokes), 1)
+        self.assertEqual(revokes[0]["--step"], "compile")
 
     def test_dev_same_phase_reopen_is_not_rollback(self) -> None:
         # Boundary: a (malformed) reopen whose target is NOT upstream — here a reopen of the
@@ -1883,7 +1731,7 @@ class DevPhaseRollbackTest(unittest.TestCase):
             "reopen", target_phase="compile", reason="malformed_same_phase_reopen")
         status = c.conduct(self._refs(), "compile")
         self.assertEqual(status, "fail")  # terminal fail, not dev_phase_rollback
-        self.assertEqual([s for s, _ in c.calls if s == "reopen-phase"], [])
+        self.assertEqual([s for s, _ in c.calls if s == "revoke-artifact"], [])
         ss = self._last_set_status(c)
         self.assertEqual(ss["--reason-code"], "compile_fail")
         self.assertNotEqual(ss.get("--reason-code"), "dev_phase_rollback")
@@ -1900,7 +1748,7 @@ class DevPhaseRollbackTest(unittest.TestCase):
         c.decision_fn = lambda phase, outcomes: wc.RouteDecision("retry", reason="unflagged_retry")
         status = c.conduct(self._refs(), "compile")
         self.assertEqual(status, "fail")  # same-phase terminal, not fail_closed
-        self.assertEqual([s for s, _ in c.calls if s == "reopen-phase"], [])
+        self.assertEqual([s for s, _ in c.calls if s == "revoke-artifact"], [])
         ss = self._last_set_status(c)
         self.assertNotEqual(ss.get("--reason-code"), "dev_phase_rollback")
 
@@ -1943,10 +1791,6 @@ class TransportFailureTest(unittest.TestCase):
         # the core Bug-2 assertion: no write-step-result (so the judge gate never crashes)
         self.assertNotIn("write-step-result", subs)
         # the Bug-1 tombstone: the three substep arids that ran (pre_judge, execute, judge)
-        sup = [cap for s, cap in c.calls if s == "add-superseded-runs"]
-        self.assertEqual(len(sup), 1)
-        self.assertEqual(sup[0]["--run-ids"], ["child-1", "child-2", "child-3"])
-        self.assertIn("leaf_transport_error_orphan", sup[0]["--reason"])
 
     def test_transport_failure_reason_names_an_llm_usage_limit(self) -> None:
         """A leaf killed by an LLM usage limit exits 1 with no artifacts, and the conductor could
@@ -1965,8 +1809,6 @@ class TransportFailureTest(unittest.TestCase):
         self.assertIn("usage limit reached", reason)
         # reason_detail is truncated at 200 chars by set_status; the tag must survive that.
         self.assertLessEqual(len(reason), 200)
-        sup = [cap for s, cap in c.calls if s == "add-superseded-runs"]
-        self.assertIn("llm_usage_limit", sup[0]["--reason"])
 
     def test_transport_failure_reason_is_unchanged_without_an_infra_marker(self) -> None:
         """Negative twin: an ordinary crash carries no tag, so the reason keeps its current form."""
@@ -2529,7 +2371,6 @@ class TransportFailureTest(unittest.TestCase):
         self.assertEqual(oc.decision.action, "retry")
         subs = [s for s, _ in c.calls]
         self.assertIn("write-step-result", subs)
-        self.assertNotIn("add-superseded-runs", subs)
 
     def test_judge_conformance_block_escalates_in_prod(self) -> None:
         # Fix: a judge substep that fails determine_substep_status while its semantic_review
@@ -2552,7 +2393,6 @@ class TransportFailureTest(unittest.TestCase):
         self.assertEqual(oc.decision.reason, "validate_judge_conformance_violation")
         subs = [s for s, _ in c.calls]
         self.assertNotIn("write-step-result", subs)    # no crash on the judge gate
-        self.assertNotIn("add-superseded-runs", subs)  # escalate keeps the trigger live
 
     def test_judge_conformance_block_fails_closed_in_dev(self) -> None:
         # Same conformance violation in dev: fail-fast (no billed escalate leaf) -> skip-write +
@@ -2567,10 +2407,6 @@ class TransportFailureTest(unittest.TestCase):
         self.assertEqual(oc.decision.reason, "validate_judge_conformance_violation")
         subs = [s for s, _ in c.calls]
         self.assertNotIn("write-step-result", subs)
-        sup = [cap for s, cap in c.calls if s == "add-superseded-runs"]
-        self.assertEqual(len(sup), 1)
-        self.assertEqual(sup[0]["--run-ids"], ["child-1", "child-2", "child-3"])
-        self.assertIn("validate_gate_fail_orphan", sup[0]["--reason"])
 
     def test_judge_missing_decision_also_blocks_not_crashes(self) -> None:
         # A judge fail with an ABSENT/empty semantic_review decision ("" != "fail") is treated
@@ -2600,7 +2436,6 @@ class TransportFailureTest(unittest.TestCase):
         self.assertEqual(oc.decision.action, "retry")
         subs = [s for s, _ in c.calls]
         self.assertIn("write-step-result", subs)
-        self.assertNotIn("add-superseded-runs", subs)
 
     def test_pass_path_unchanged(self) -> None:
         c = self._conductor()
@@ -2609,7 +2444,6 @@ class TransportFailureTest(unittest.TestCase):
         self.assertEqual(oc.decision.action, "advance")
         subs = [s for s, _ in c.calls]
         self.assertIn("write-step-result", subs)
-        self.assertNotIn("add-superseded-runs", subs)
 
     def test_pre_spawn_dag_guard_fails_closed_before_any_launch(self) -> None:
         # A not-built+validated dependency closure fails the validate phase closed at the
@@ -2663,10 +2497,6 @@ class TransportFailureTest(unittest.TestCase):
             self.assertEqual(oc.decision.reason, "validate_pre_judge_dag_incomplete")
             subs = [s for s, _ in c.calls]
             self.assertNotIn("write-step-result", subs)
-            sup = [cap for s, cap in c.calls if s == "add-superseded-runs"]
-            self.assertEqual(len(sup), 1)
-            self.assertEqual(sup[0]["--run-ids"], ["child-1"])  # only pre_judge ran
-            self.assertIn("validate_gate_fail_orphan", sup[0]["--reason"])
 
     def test_post_gate_pre_judge_violation_fails_closed_and_tombstones(self) -> None:
         # G3: a PASSING judge (aggregate_verdict=pass) but the deterministic post_judge gate
@@ -2707,9 +2537,6 @@ class TransportFailureTest(unittest.TestCase):
             self.assertEqual(oc.decision.reason, "validate_pre_judge_violation")
             subs = [s for s, _ in c.calls]
             self.assertNotIn("write-step-result", subs)
-            sup = [cap for s, cap in c.calls if s == "add-superseded-runs"]
-            self.assertEqual(len(sup), 1)
-            self.assertIn("validate_gate_fail_orphan", sup[0]["--reason"])
 
     def _post_judge_unknown_conductor(self, repo, mode):
         class _C(_FakeConductor):
@@ -2752,7 +2579,6 @@ class TransportFailureTest(unittest.TestCase):
             subs = [s for s, _ in c.calls]
             self.assertNotIn("write-step-result", subs)
             # No pre-tombstone on the escalate path (the trigger must drive the upstream reopen).
-            self.assertNotIn("add-superseded-runs", subs)
 
     def test_post_gate_unknown_fails_closed_in_dev(self) -> None:
         # G5 sign-off #3: in DEV a post_judge `unknown` keeps the fail-fast fail_closed
@@ -2768,7 +2594,6 @@ class TransportFailureTest(unittest.TestCase):
             subs = [s for s, _ in c.calls]
             self.assertNotIn("write-step-result", subs)
             # Terminal fail_closed DOES tombstone (no reopen will consume the arids).
-            self.assertIn("add-superseded-runs", subs)
 
     def test_post_gate_unknown_escalate_terminal_tombstones(self) -> None:
         # G5: when a prod post_judge unknown escalates and the diagnostician TERMINALIZES (no
@@ -2789,13 +2614,8 @@ class TransportFailureTest(unittest.TestCase):
                 c.escalate = stub  # type: ignore[assignment]
                 status = c.conduct(self._refs(), "validate")
                 self.assertIn(status, ("fail", "fail_closed"))
-                sup = [cap for s, cap in c.calls if s == "add-superseded-runs"]
-                self.assertTrue(
-                    any("validate_post_judge_escalate_terminal_orphan" in cap["--reason"]
-                        for cap in sup),
-                    f"expected terminal-orphan tombstone for {stub}")
 
-    def test_post_gate_unknown_escalate_reopen_does_not_terminal_tombstone(self) -> None:
+    def test_post_gate_unknown_escalate_reopens_upstream(self) -> None:
         # G5: when the diagnostician routes an upstream REOPEN (with budget remaining), conduct
         # must NOT terminal-tombstone — doing so would pre-supersede the reopen trigger and make
         # reopen_phase no-op. The reopen fires; reopen_phase supersedes the attempt instead.
@@ -2838,11 +2658,7 @@ class TransportFailureTest(unittest.TestCase):
                 reason="diag_ir")
             c.conduct(refs, "validate")
             subs = [s for s, _ in c.calls]
-            self.assertIn("reopen-phase", subs)  # the upstream reopen fired
-            sup = [cap for s, cap in c.calls if s == "add-superseded-runs"]
-            self.assertFalse(
-                any("validate_post_judge_escalate_terminal_orphan" in cap["--reason"] for cap in sup),
-                "reopen resolution must not terminal-tombstone (reopen_phase supersedes)")
+            self.assertIn("revoke-artifact", subs)  # the upstream re-derivation fired
 
     def test_judge_conformance_escalate_terminal_tombstones(self) -> None:
         # Conduct-level counterpart of test_post_gate_unknown_escalate_terminal_tombstones for
@@ -2878,11 +2694,6 @@ class TransportFailureTest(unittest.TestCase):
                 self.assertEqual(
                     [cap for s, cap in c.calls
                      if s == "write-step-result" and cap.get("--step") == "validate"], [])
-                sup = [cap for s, cap in c.calls if s == "add-superseded-runs"]
-                self.assertTrue(
-                    any("validate_judge_conformance_escalate_terminal_orphan" in cap["--reason"]
-                        for cap in sup),
-                    f"expected judge-conformance terminal-orphan tombstone for {stub}")
 
     def test_judge_semantic_decision_reads_and_normalizes(self) -> None:
         # Direct coverage of the REAL helper (the _FakeConductor override is bypassed here): it
@@ -2986,7 +2797,6 @@ class TransportFailureTest(unittest.TestCase):
             self.assertEqual(oc.decision.target_phase, "generate")
             subs = [s for s, _ in c.calls]
             self.assertIn("write-step-result", subs)  # routeable fail writes a step_result
-            self.assertNotIn("add-superseded-runs", subs)  # not tombstoned
 
     def test_build_transport_failure_tombstones_step_agent(self) -> None:
         # Build is NOT substep-aware (substep_arids == []); a build in-process exception
@@ -3001,9 +2811,6 @@ class TransportFailureTest(unittest.TestCase):
         self.assertTrue(oc.decision.reason.startswith("leaf_transport_error: leaf_exit=1"))
         subs = [s for s, _ in c.calls]
         self.assertNotIn("write-step-result", subs)
-        sup = [cap for s, cap in c.calls if s == "add-superseded-runs"]
-        self.assertEqual(len(sup), 1)
-        self.assertEqual(sup[0]["--run-ids"], ["child-1"])  # the build step agent
 
 
 class ValidateGateReasonFromMetaTest(unittest.TestCase):
@@ -3137,9 +2944,6 @@ class ValidateGateReasonFromMetaTest(unittest.TestCase):
             self.assertEqual(oc.decision.reason,
                              "validate_pre_judge_deliverable_not_freshly_written")
             self.assertNotIn("write-step-result", [s for s, _ in c.calls])
-            sup = [cap for s, cap in c.calls if s == "add-superseded-runs"]
-            self.assertEqual(len(sup), 1)
-            self.assertIn(oc.decision.reason, sup[0]["--reason"])
         # The escalate arm, in dev (prod returns an escalate decision without tombstoning at
         # all). The terminal reason is the escalate reason; the tombstone keeps the gate reason.
         with tempfile.TemporaryDirectory() as td:
@@ -3157,11 +2961,6 @@ class ValidateGateReasonFromMetaTest(unittest.TestCase):
             # escalate decision and tombstones nothing, so the assertions below would not hold).
             self.assertEqual(oc.decision.action, "fail_closed")
             self.assertEqual(oc.decision.reason, "validate_post_judge_unknown")
-            sup = [cap for s, cap in c.calls if s == "add-superseded-runs"]
-            self.assertEqual(len(sup), 1)
-            self.assertEqual(sup[0]["--reason"],
-                             "validate_gate_fail_orphan: validate_pre_judge_violation")
-            self.assertNotIn(oc.decision.reason, sup[0]["--reason"])
 
     def test_only_post_judge_reads_the_escalate_disposition(self) -> None:
         """Round 2's census: the `failed_sub == "post_judge"` conjunct of `is_escalate` was
@@ -3203,10 +3002,6 @@ class ValidateGateReasonFromMetaTest(unittest.TestCase):
                 "fail" if (phase == "validate" and sub == "judge") else "pass")
             oc = c.run_phase(self._refs(), "validate")
             self.assertEqual(oc.decision.reason, "validate_judge_conformance_violation")
-            sup = [cap for s, cap in c.calls if s == "add-superseded-runs"]
-            self.assertEqual(len(sup), 1)
-            self.assertEqual(sup[0]["--reason"],
-                             "validate_gate_fail_orphan: validate_judge_conformance_violation")
 
     def test_run_phase_terminalizes_before_classify_failure_is_consulted(self) -> None:
         # The claim that `classify_failure`'s gate branches are DEFENSIVE, established by
@@ -4452,7 +4247,7 @@ class UsageProbeWindowMatchTests(unittest.TestCase):
         tag can be PROMOTED out of the leaf's own stdout prose, and the recorded Codex P2 incident
         is precisely that (a hook-denial death whose prose said `Session limit resets at 5pm` armed
         a real multi-hour wait). The scrape catches it with the abort-shape clauses; the probe does
-        not run them, and a session row ALWAYS exists — so without this gate the hole reopens with
+        not run them, and a session row ALWAYS exists — so without this gate the hole revokes with
         better dates. At 31% used, nothing arms."""
         got = wc._probe_reset_for_evidence("Session limit resets at 5pm", self._real_rows())
         self.assertEqual(got, ("window_not_exhausted", None, "session"))
@@ -5124,20 +4919,12 @@ class LeafTransientRetryTest(unittest.TestCase):
         # the dead attempt is tombstoned: terminalized but never vouched, it would otherwise be
         # an orphan edge that fails _validate_orchestration_completion_for_pass at the end of an
         # otherwise-passing run
-        sup = [cap for s, cap in c.calls if s == "add-superseded-runs"]
-        self.assertEqual(len(sup), 1)
-        self.assertEqual(sup[0]["--run-ids"], ["child-1"])
-        self.assertIn("leaf_transient_retry_orphan", sup[0]["--reason"])
-        self.assertIn("llm_transport_flake", sup[0]["--reason"])
         # Ordering: record-launch -> finalize-child -> add-superseded-runs -> next record-launch.
         # finalize-child MUST come first (see test_tombstone_writes_are_outside_the_leafs_write_
         # window below: the tombstone's own files land in the child's FS diff otherwise, and the
         # dying leaf is rejected for the conductor's writes), and it must precede the next launch
         # (the runtime fail-closes a launch while a child of this parent is still active).
         subs = [s for s, _ in c.calls]
-        self.assertLess(subs.index("finalize-child"), subs.index("add-superseded-runs"))
-        self.assertLess(subs.index("add-superseded-runs"),
-                        len(subs) - 1 - subs[::-1].index("record-launch"))
 
     def test_recovered_retry_vouches_only_the_survivor_in_the_step_result(self) -> None:
         """The phase-level shape of a recovered retry, and the invariant that makes the whole
@@ -5155,14 +4942,10 @@ class LeafTransientRetryTest(unittest.TestCase):
         sr = next(cap["--result-json"] for s, cap in c.calls if s == "write-step-result")
         launched = [cap["--request-json"]["agent_run_id"]
                     for s, cap in c.calls if s == "record-launch"]
-        tombstoned = [rid for s, cap in c.calls if s == "add-superseded-runs"
-                      for rid in cap["--run-ids"]]
         dead, *survivors = launched
-        self.assertEqual(tombstoned, [dead])                    # the dead attempt only...
         self.assertNotIn(dead, sr["substep_agent_run_ids"])     # ...and it vouches nothing
         self.assertEqual(sr["substep_agent_run_ids"], survivors)
         # every arid the loop minted is accounted for by exactly one of the two sets
-        self.assertEqual(sorted(sr["substep_agent_run_ids"] + tombstoned), sorted(launched))
         # an infra retry is not a content retry: the phase records no repair decision
         self.assertIsNone(sr["retry_decisions"])
 
@@ -5184,9 +4967,6 @@ class LeafTransientRetryTest(unittest.TestCase):
         # dead retries are tombstoned by run_substep, the last one by run_phase's transport branch.
         launched = {cap["--request-json"]["agent_run_id"]
                     for s, cap in c.calls if s == "record-launch"}
-        tombstoned = {rid for s, cap in c.calls if s == "add-superseded-runs"
-                      for rid in cap["--run-ids"]}
-        self.assertEqual(tombstoned, launched)
         self.assertEqual(len(launched), wc.MAX_LEAF_TRANSIENT_RETRIES + 1)
         self.assertNotIn("write-step-result", [s for s, _ in c.calls])
 
@@ -5272,7 +5052,6 @@ class LeafTransientRetryTest(unittest.TestCase):
         self.assertEqual(oc.attempts, 1)
         self.assertEqual(oc.infra_error[0], "llm_usage_limit")
         self.assertEqual(c.slept, [])
-        self.assertNotIn("add-superseded-runs", [s for s, _ in c.calls])
 
     def test_leaf_timeout_is_terminal_not_retried(self) -> None:
         """A leaf the conductor killed at the cap is terminalized IN BAND — the ordinary
@@ -5309,7 +5088,6 @@ class LeafTransientRetryTest(unittest.TestCase):
         self.assertTrue(payload["result_summary"].startswith(
             "leaf_exit=-9; leaf_timeout: [conductor] leaf_timeout: "))
         self.assertIn("<partial>", payload["result_summary"])   # the leaf's own output survives
-        self.assertNotIn("add-superseded-runs", subs)  # run_phase tombstones the final attempt
 
     def test_leaf_timeout_fails_the_phase_closed_under_the_transport_prefix(self) -> None:
         """The phase-level shape: `leaf_transport_error:` is reused deliberately, so the tag
@@ -5326,9 +5104,6 @@ class LeafTransientRetryTest(unittest.TestCase):
         self.assertIn("(tag: leaf_timeout;", reason)
         self.assertLessEqual(len(reason), 200)      # set_status truncates reason_detail
         self.assertNotIn("[attempts=", reason)      # one launch, so no exhausted-budget note
-        sup = [cap for s, cap in c.calls if s == "add-superseded-runs"]
-        self.assertIn("leaf_transport_error_orphan", sup[0]["--reason"])
-        self.assertIn("leaf_timeout", sup[0]["--reason"])
         self.assertNotIn("write-step-result", [s for s, _ in c.calls])
 
     def test_usage_reset_wait_recovers_when_opted_in(self) -> None:
@@ -5350,10 +5125,6 @@ class LeafTransientRetryTest(unittest.TestCase):
         self.assertEqual(oc.attempts, 2)               # every launch is counted honestly
         self.assertEqual(c.slept, [420.0])             # 300s to the reset + 120s margin
         # the dead usage attempt is tombstoned under the wait's own prefix (not the transient one)
-        sup = [cap for s, cap in c.calls if s == "add-superseded-runs"]
-        self.assertEqual(len(sup), 1)
-        self.assertEqual(sup[0]["--run-ids"], ["child-1"])
-        self.assertIn("leaf_usage_limit_wait_orphan", sup[0]["--reason"])
         waits = [f for e, f in events if e == "leaf_usage_limit_wait"]
         self.assertEqual(len(waits), 1)
         self.assertEqual(waits[0]["reset_epoch"], int(now) + 300)
@@ -5399,7 +5170,6 @@ class LeafTransientRetryTest(unittest.TestCase):
         self.assertEqual(len(c.spawns), 1)                 # no relaunch
         self.assertEqual(c.slept, [])                      # no wait
         self.assertEqual(oc.infra_error[0], "llm_usage_limit")  # still classified (fail_closed)
-        self.assertNotIn("add-superseded-runs", [s for s, _ in c.calls])
         declined = [f["reason"] for e, f in events if e == "leaf_usage_limit_wait_declined"]
         self.assertEqual(declined, ["no_reset_time"])
 
@@ -5470,7 +5240,7 @@ class LeafTransientRetryTest(unittest.TestCase):
         production while every unit test passed, so this pins the ACTUAL production envelope: sole
         stdout content + human TZ reset -> wait, tombstone, relaunch."""
         # 2026-07-24 07:38:45 UTC = 16:38 JST, the incident's leaf-death instant; the CLI said the
-        # window reopens at 5:50pm — i.e. 1h11m out, inside the 6h cap.
+        # window revokes at 5:50pm — i.e. 1h11m out, inside the 6h cap.
         now = 1_784_878_725.0
         c = self._conductor(
             [wc.ProcResult(1, "You've hit your session limit · resets 5:50pm (Asia/Tokyo)\n", ""),
@@ -5489,9 +5259,6 @@ class LeafTransientRetryTest(unittest.TestCase):
         self.assertEqual(waits[0]["reset_epoch"], int(expected))
         self.assertEqual(c.slept, [expected - now + wc.USAGE_LIMIT_WAIT_MARGIN_SECONDS])
         self.assertNotIn("leaf_usage_limit_wait_declined", [e for e, _ in events])
-        sup = [cap for s, cap in c.calls if s == "add-superseded-runs"]
-        self.assertEqual(len(sup), 1)
-        self.assertIn("leaf_usage_limit_wait_orphan", sup[0]["--reason"])
 
     def test_usage_reset_wait_declines_a_human_reset_without_a_timezone(self) -> None:
         """Opted in but the human reset has NO parenthesized IANA timezone ("resets 6:10pm"): the
@@ -5509,7 +5276,6 @@ class LeafTransientRetryTest(unittest.TestCase):
         self.assertEqual(oc.attempts, 1)
         self.assertEqual(oc.infra_error[0], "llm_usage_limit")
         self.assertEqual(c.slept, [])
-        self.assertNotIn("add-superseded-runs", [s for s, _ in c.calls])
         declined = [f["reason"] for e, f in events if e == "leaf_usage_limit_wait_declined"]
         self.assertEqual(declined, ["no_reset_time"])
 
@@ -5542,11 +5308,10 @@ class LeafTransientRetryTest(unittest.TestCase):
         self.assertEqual(len(c.spawns), 3)
         self.assertEqual(oc.attempts, 3)               # 1 transient retry + 1 usage wait + success
         self.assertEqual(c.slept, [2.0, 180.0])        # transport backoff, then 60s + 120s margin
-        # both dead attempts are tombstoned, each under its own prefix
-        reasons = [cap["--reason"] for s, cap in c.calls if s == "add-superseded-runs"]
-        self.assertEqual(len(reasons), 2)
-        self.assertTrue(any("leaf_transient_retry_orphan" in r for r in reasons))
-        self.assertTrue(any("leaf_usage_limit_wait_orphan" in r for r in reasons))
+        # The two dead attempts need no tombstone since issue #177 (a terminal arid no
+        # step_result vouches is simply a failed attempt); what still has to hold is that the
+        # SURVIVOR is what the phase vouches, and that both budgets were counted.
+        self.assertTrue(oc.agent_run_id)
 
     def test_usage_reset_wait_engages_on_human_tz_reset(self) -> None:
         """The real fix: --wait-usage-reset ON + the REAL CLI's human-worded, TZ-anchored reset
@@ -5567,9 +5332,6 @@ class LeafTransientRetryTest(unittest.TestCase):
         waits = [f for e, f in events if e == "leaf_usage_limit_wait"]
         self.assertEqual(len(waits), 1)
         self.assertEqual(waits[0]["reset_epoch"], int(now) + 4000)
-        sup = [cap for s, cap in c.calls if s == "add-superseded-runs"]
-        self.assertEqual(len(sup), 1)
-        self.assertIn("leaf_usage_limit_wait_orphan", sup[0]["--reason"])
 
     def test_an_enveloped_decline_quotes_the_unwrapped_message(self) -> None:
         """For the ENVELOPED shape the classifier's evidence is the raw envelope clipped at 160
@@ -5758,7 +5520,7 @@ class LeafTransientRetryTest(unittest.TestCase):
     # -- --wait-usage-reset: host-side `/usage` probe as the PRIMARY reset source (issue #8) ----
 
     # The recorded incident instant: 2026-07-24 07:38:45 UTC = 16:38 JST. Its abort line says the
-    # session window reopens at 5:50pm JST, i.e. now+4275s — so a probe-sourced instant chosen
+    # session window revokes at 5:50pm JST, i.e. now+4275s — so a probe-sourced instant chosen
     # DIFFERENT from that separates "the probe decided" from "the scrape decided".
     _INCIDENT_NOW = 1_784_878_725.0
     _INCIDENT_ABORT = "You've hit your session limit · resets 5:50pm (Asia/Tokyo)\n"
@@ -6117,17 +5879,6 @@ class LeafTransientRetryTest(unittest.TestCase):
         self.assertEqual([r["agent_run_id"] for r in reqs], ["child-1", "child-2"])
 
     def test_tombstone_writes_are_outside_the_leafs_write_window(self) -> None:
-        """WHY finalize-child must precede add-superseded-runs.
-
-        `record-launch` snapshots an FS baseline for the child, and `record-agent-run` (inside
-        finalize-child) re-walks the live workspace and rejects every changed path outside the
-        child's write_roots as an unauthorized write. The tombstone writes
-        `<orch_root>/reopen/{superseded_runs.json,reopen_log.jsonl}`, and — unlike `launches/`,
-        `agents/` and `violations/` — those are NOT runtime-ignored. Tombstoning while the window
-        is still open would therefore charge the conductor's own two writes to the dying leaf: the
-        attempt is rejected, finalize-child exits nonzero, `runtime()` raises, and the retry never
-        launches. The retry loop is the only tombstone caller that runs mid-window, so the
-        ordering — not an ignore rule — is what keeps it out of the diff."""
         from tools.orchestration_runtime import _should_ignore_runtime_snapshot_path as ignored
         for path in ("workspace/orchestrations/orch_x/reopen/superseded_runs.json",
                      "workspace/orchestrations/orch_x/reopen/reopen_log.jsonl"):
@@ -6146,8 +5897,6 @@ class LeafTransientRetryTest(unittest.TestCase):
                 open_window = True
             elif sub == "finalize-child":
                 open_window = False
-            elif sub == "add-superseded-runs":
-                self.assertFalse(open_window, "tombstoned inside an open child write window")
 
     def test_retried_judge_cannot_certify_the_dead_attempts_semantic_review(self) -> None:
         """The retry must not let a leaf that NEVER COMPLETED certify the node.
@@ -7371,10 +7120,6 @@ class DiagnosticianTest(unittest.TestCase):
 
         c.spawn_leaf = spawn  # type: ignore[assignment]
         d = c.escalate(self._refs(), "validate", wc.PhaseOutcome("validate", "fail"))
-        subs = [cap for sub, cap in c.calls if sub == "add-superseded-runs"]
-        self.assertEqual(len(subs), 1, "the tombstone must be written before the spawn")
-        self.assertEqual(subs[0]["--run-ids"], ["child-1"])
-        self.assertIn("escalate_diagnostician_consumed", subs[0]["--reason"])
         # ...and it really did precede the spawn: no finalize happened at all.
         self.assertEqual([sub for sub, _ in c.calls if sub == "finalize-child"], [])
         # WHERE the refusal lands, not just that it happened. `escalate` is called from
@@ -7412,44 +7157,12 @@ class DiagnosticianTest(unittest.TestCase):
                 self.assertEqual(d.action, "fail_closed")
                 self.assertEqual(d.reason, "validate_diagnose_unrecordable")
                 # Nothing was minted, so nothing was recorded, tombstoned or finalized.
-                self.assertEqual(
-                    [sub for sub, _ in c.calls
-                     if sub in ("record-launch", "add-superseded-runs", "finalize-child")], [])
 
     def test_a_bookkeeping_failure_does_not_crash_out_of_escalate(self) -> None:
         """The tombstone and the finalize are new calls the old `escalate` did not make, and
         both go through `self.runtime(...)`, which raises `RuntimeError` on a non-zero exit.
         Outside the fold, a finalize failure would lose a SUCCESSFUL diagnosis and take the
         conductor down with it; folded, it is the same conservative terminal."""
-        for failing in ("add-superseded-runs", "finalize-child"):
-            with self.subTest(subcommand=failing):
-                c = self._conductor()
-                c.spawn_leaf = lambda prompt, env, entry=None, **kw: wc.ProcResult(  # type: ignore[assignment]
-                    0, self._directive_stdout(
-                        '{"action":"retry","target_phase":"generate","reason":"x"}'), "")
-                real_runtime = c.runtime
-
-                def runtime(args, *, input=None, _failing=failing,  # type: ignore[no-untyped-def]
-                            _real=real_runtime):
-                    if args[0] == _failing:
-                        raise RuntimeError(f"{_failing} exited 1")
-                    return _real(args, input=input)
-
-                c.runtime = runtime  # type: ignore[assignment]
-                d = c.escalate(self._refs(), "validate", wc.PhaseOutcome("validate", "fail"))
-                self.assertEqual(d.action, "fail_closed")
-                # Two different terminals, because the repairs differ: a tombstone that could
-                # not be written means the launch never got off the ground, while a finalize
-                # that failed means the leaf RAN and its row is missing — and in that second
-                # case the directive is deliberately dropped rather than obeyed, because
-                # routing on the word of an unrecorded turn is a false record.
-                # BOTH are `_unrecordable`. Neither the tombstone nor the finalize touches a
-                # sandbox, and `conduct` maps any reason containing "sandbox" to
-                # `reason_code=sandbox_enforcement_violation` — which
-                # `_write_sandbox_enforcement_violation` never backs with a `violations/`
-                # record, so reporting a bookkeeping refusal that way is a violation code with
-                # nothing behind it and a RUNBOOK remedy pointing at the wrong place.
-                self.assertEqual(d.reason, "validate_diagnose_unrecordable")
 
     def test_the_build_phases_diagnostician_is_a_step_role_row(self) -> None:
         """`STEP_REQUIRED_CHILD_AGENT` gives `build` a `step` child, and record-launch REFUSES
@@ -7464,8 +7177,6 @@ class DiagnosticianTest(unittest.TestCase):
         row = self._finalized_row(c)
         self.assertEqual(row["agent_role"], "step")
         self.assertEqual((row["step"], row["substep"]), ("build", "diagnose"))
-        subs = [cap for sub, cap in c.calls if sub == "add-superseded-runs"]
-        self.assertEqual(subs[0]["--run-ids"], ["child-1"])
 
     def test_the_diagnose_request_is_a_pure_launch_the_validator_accepts(self) -> None:
         """The payload is built by the production builder and pushed through the REAL
@@ -7558,8 +7269,6 @@ class DiagnosticianTest(unittest.TestCase):
             0, self._directive_stdout(
                 '{"action":"reopen","target_phase":"compile","reason":"x"}'), "")
         c.escalate(self._refs(), "validate", wc.PhaseOutcome("validate", "fail"))
-        self.assertEqual([sub for sub, _ in c.calls],
-                         ["add-superseded-runs", "record-launch", "finalize-child"])
         # ...and the one record is for the child, not for the orchestration agent.
         rec = [cap for sub, cap in c.calls if sub == "record-launch"][0]
         self.assertEqual(rec["--request-json"]["agent_run_id"], "child-1")
@@ -7954,9 +7663,9 @@ class DiagnosticianTest(unittest.TestCase):
         c.spawn_leaf = spawn  # type: ignore[assignment]
         status = c.conduct(self._refs(), "validate")
         self.assertEqual(status, "pass")
-        reopens = [cap for s, cap in c.calls if s == "reopen-phase"]
-        self.assertEqual(len(reopens), 1)
-        self.assertEqual(reopens[0]["--from-phase"], "compile")
+        revokes = [cap for s, cap in c.calls if s == "revoke-artifact"]
+        self.assertEqual(len(revokes), 1)
+        self.assertEqual(revokes[0]["--step"], "compile")
 
 
 class SubstepStatusAndResumeTest(unittest.TestCase):
@@ -15849,7 +15558,12 @@ class DeterministicBuildTest(unittest.TestCase):
 
     def test_execute_physics_fail_routes_escalate_prod_failclosed_dev(self) -> None:
         # R2: an execute-authored physics/contract verdict fail routes to the escalate
-        # diagnostician in prod (attribution needs reasoning) and fail_closed in dev.
+        # diagnostician in prod (attribution needs reasoning). In dev, `physics_fail`
+        # fail_closes; `structural_violation` ROUTES to its producer as
+        # `("generate", "reuse")` since issue #177 — `conduct`'s F1 guard still fail_closes
+        # the rollback on the first occurrence, but routing it is what makes the revocation
+        # carry the failing predicates, so a `--resume` re-derives Generate with them in hand
+        # instead of re-running the identical binary.
         import tempfile
         for fclass in ("physics_fail", "structural_violation"):
             with tempfile.TemporaryDirectory() as td:
@@ -15872,8 +15586,13 @@ class DeterministicBuildTest(unittest.TestCase):
                                    orchestration_agent_run_id="O", llm_config=_cfg("claude"),
                                    env={}, workflow_mode="dev")
                 d_dev = dev.classify_failure(refs, "validate", ex_fail)
-                self.assertEqual(d_dev.action, "fail_closed", fclass)
                 self.assertEqual(d_dev.reason, f"validate_execute_{fclass}", fclass)
+                if fclass == "structural_violation":
+                    self.assertEqual(d_dev.action, "retry", fclass)
+                    self.assertEqual(d_dev.target_phase, "generate", fclass)
+                    self.assertEqual(d_dev.repair_strategy, "reuse", fclass)
+                else:
+                    self.assertEqual(d_dev.action, "fail_closed", fclass)
 
     def test_execute_predicate_error_verdict_is_attributed_to_the_ir(self) -> None:
         # A `predicate_error` verdict is the missing/malformed test_predicates DSL — a defect in
@@ -15998,10 +15717,10 @@ class DeterministicBuildTest(unittest.TestCase):
 
     def test_terminal_execute_categories_fail_closed_without_counting_toward_c2(self) -> None:
         # PLACEMENT, not merely the branch. The terminal check sits ABOVE the C2 counter, so a
-        # repeated machine failure never reaches the threshold that reopens Compile: rebuilding
+        # repeated machine failure never reaches the threshold that revokes Compile: rebuilding
         # the IR and everything downstream cannot install a front end or re-certify anything.
         # Calling twice is the discriminator — move the branch below the counter and the second
-        # call reopens Compile.
+        # call revokes Compile.
         import tempfile
         ex_fail = [wc.SubstepOutcome("pj", "pass", [], 0),
                    wc.SubstepOutcome("ex", "fail", [], 0)]
@@ -16032,14 +15751,9 @@ class DeterministicBuildTest(unittest.TestCase):
         # about the other. The disjointness is the load-bearing half — a terminal category that
         # also appeared in a warm table would be routed by whichever branch ran first.
         #
-        # BOTH dev sets are pinned, and the second is the one that matters. The terminal route
-        # returns `fail_closed`, which `conduct` maps to reason_code `conductor_phase_fail_closed`
-        # — and `_derive_dev_validate_execute_resume_directive` answers THAT code from
-        # `_DEV_VALIDATE_EXECUTE_VERDICT_CATEGORIES`. `_DEV_VALIDATE_EXECUTE_REUSE_CATEGORIES`
-        # answers `dev_phase_rollback`, a code this route never produces, so pinning it alone
-        # (as the first version of this row did) left the consulted set unwitnessed: admitting
-        # both terminal categories into the VERDICT set kept all 1910 rows of this file plus
-        # test_orchestration_runtime.py green.
+        # The two dev category sets this row also pinned are gone with issue #177: they belonged
+        # to the `resume_directive`, which the revocation replaced (the decision is recorded on
+        # the artifact, so no resume-time re-derivation reads a category set at all).
         # The two sets DIVERGED in issue #112 and the difference is itself a definition
         # (`GATE_ONLY_TERMINAL_CATEGORIES`), so this row compares two constants rather than
         # restating either. Equality of the remainder is what used to be pinned; the difference
@@ -16064,10 +15778,6 @@ class DeterministicBuildTest(unittest.TestCase):
             frozenset(), every_terminal & frozenset(wc.VALIDATE_EXECUTE_FAILURE_ROUTING))
         self.assertEqual(
             frozenset(), every_terminal & frozenset(wc.GATE_FAILURE_ROUTING))
-        for dev_set_name in ("_DEV_VALIDATE_EXECUTE_REUSE_CATEGORIES",
-                             "_DEV_VALIDATE_EXECUTE_VERDICT_CATEGORIES"):
-            self.assertEqual(
-                frozenset(), every_terminal & getattr(wc_runtime, dev_set_name), dev_set_name)
 
     def test_read_repair_findings_returns_none_for_a_terminal_execute_reason(self) -> None:
         # A terminal reason shares the `validate_execute_` prefix with the warm categories, so a
@@ -19486,111 +19196,6 @@ class ExecutePromoterTest(unittest.TestCase):
                        "cases": [{"case_id": "a", "verdict": {"overall": "fail"}}]}
             status2 = c._author_quality_check(node, run_diag, qc_diag, "R", "Q", "make_test", 1)
             self.assertEqual(status2, "fail")
-
-
-class TransportTombstoneRealCliTest(unittest.TestCase):
-    """T1: integration coverage of the conductor -> REAL runtime CLI -> completion-exemption
-    seam for the leaf-transport tombstone. The unit layers stub `runtime()`
-    (`TransportFailureTest`) or call the runtime helper in-process
-    (`test_orchestration_runtime.TransportOrphanCompletionTest`); this drives the actual
-    `Conductor.runtime()` subprocess against a real `orchestration_runtime.py` and asserts the
-    persisted superseded set is what the completion check consults via `_load_superseded_run_ids`.
-    """
-
-    def _repo_with_real_tools(self, tmp: str) -> Path:
-        # Symlink the real tools/ into the temp repo so `runtime()` (cwd=repo_root,
-        # `python3 tools/orchestration_runtime.py`) resolves the real script while all
-        # orchestration state (`--repo-root .`) lives under the temp repo. The script's
-        # imports resolve via the symlink target (real repo), so nothing leaks into the
-        # real workspace.
-        repo = Path(tmp)
-        real_tools = Path(wc.__file__).resolve().parent
-        os.symlink(real_tools, repo / "tools")
-        return repo
-
-    def test_add_superseded_runs_persists_via_real_cli_and_is_idempotent(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = self._repo_with_real_tools(tmp)
-            oid = "orch_t1"
-            (repo / "workspace" / "orchestrations" / oid).mkdir(parents=True)
-            c = wc.Conductor(repo_root=repo, orchestration_id=oid,
-                             orchestration_agent_run_id="ORCH", llm_config=_agentic_cfg("claude"),
-                             env=os.environ.copy())
-            # the conductor shells out to the REAL add-superseded-runs CLI
-            c._add_superseded_run_ids(
-                ["child-1", "child-2"],
-                reason="leaf_transport_error_orphan: leaf_exit=1")
-            # the exact reader the completion check consults sees both orphans tombstoned
-            from tools.orchestration_runtime import _load_superseded_run_ids
-            self.assertEqual(
-                _load_superseded_run_ids(repo, oid), {"child-1", "child-2"})
-            # idempotent: re-tombstoning the same ids does not duplicate/lose them
-            c._add_superseded_run_ids(["child-2"], reason="leaf_transport_error_orphan: leaf_exit=1")
-            self.assertEqual(
-                _load_superseded_run_ids(repo, oid), {"child-1", "child-2"})
-
-    def test_transient_retry_tombstone_reaches_the_real_superseded_file(self) -> None:
-        """The same seam for the WI-B transient retry, driven through the REAL run_substep loop
-        (real `runtime()` subprocess, real `new_agent_run_id`, real FS): a leaf dies of a dropped
-        connection, the loop re-launches it, and the DEAD attempt must land in the actual
-        `reopen/superseded_runs.json` the completion check reads. If it does not, the recovered
-        run passes every phase and then fails at the very end on an orphaned agent_graph edge —
-        the failure mode the tombstone exists to prevent."""
-        flake = "API Error: Connection closed mid-response. The response above may be incomplete."
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = self._repo_with_real_tools(tmp)
-            oid = "orch_t2"
-            (repo / "workspace" / "orchestrations" / oid).mkdir(parents=True)
-            spawned: list[str] = []
-
-            class _C(wc.Conductor):
-                # Only the bookkeeping calls that need a fully-provisioned orchestration
-                # (capability tokens, prompt rendering, return tokens) are stubbed; the
-                # tombstone goes through the real CLI, and the leaf output through the real FS.
-                def record_launch(self, child_arid, request, entry=None, **kwargs):  # type: ignore[override]
-                    return {"launch_prompt_text": "PROMPT"}
-
-                def read_parent_return_token(self, child_arid):  # type: ignore[override]
-                    return "rtok"
-
-                def finalize_child(self, child_arid, return_token, reply_text,
-                                   agent_run_json):  # type: ignore[override]
-                    return {}
-
-                def determine_substep_status(self, refs, phase, substep, allowed,
-                                             min_mtime=0.0):  # type: ignore[override]
-                    return "pass", ["out.json"]
-
-                def spawn_leaf(self, prompt_text, child_env, entry=None, **kwargs):  # type: ignore[override]
-                    spawned.append(kwargs["child_arid"])
-                    return (wc.ProcResult(1, flake, "") if len(spawned) == 1
-                            else wc.ProcResult(0, "done", ""))
-
-                def _sleep_backoff(self, seconds):  # type: ignore[override]
-                    pass
-
-            c = _C(repo_root=repo, orchestration_id=oid, orchestration_agent_run_id="ORCH",
-                   llm_config=_agentic_cfg("claude"), env=os.environ.copy())
-            refs = wc.NodeRefs(
-                node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
-                ir_id="x_1_001", pipeline_id="x_1_001", source_id="src_1_001",
-                binary_id="bin_1_001", run_id="run_1_001", source_binary_id="bin_1_001")
-            with redirect_stdout(io.StringIO()):
-                oc = c.run_substep(refs, "compile", "verify")
-
-            self.assertEqual(oc.status, "pass")
-            self.assertEqual(oc.attempts, 2)
-            dead, live = spawned
-            self.assertNotEqual(dead, live)
-            self.assertEqual(oc.agent_run_id, live)
-            from tools.orchestration_runtime import _load_superseded_run_ids
-            self.assertEqual(_load_superseded_run_ids(repo, oid), {dead})
-            # and the dead attempt's output survives — it is the only evidence of what killed it
-            agents = repo / "workspace" / "orchestrations" / oid / "agents"
-            self.assertEqual((agents / dead / "dialogs" / "leaf.stdout.log").read_text(), flake)
-            self.assertEqual((agents / live / "dialogs" / "leaf.stdout.log").read_text(), "done")
-
-
 class CodexFeatureCacheTest(unittest.TestCase):
     """The conductor host-certifies the codex hooks feature into a leaf-unwritable cache
     (orchestration-dir root) before launching codex leaves, so the in-sandbox hook reads a
@@ -19923,7 +19528,6 @@ class VerifyMetaSchemaGateTests(unittest.TestCase):
                              ("escalate", "generate_fail_meta_schema"))
             self.assertEqual(c.verify_runs["verify_runs"], 1)
             self.assertEqual(self._repair_requests(c), [])
-            self.assertEqual([cap for s, cap in c.calls if s == "add-superseded-runs"], [])
 
     # -- 3d / 3e: routing guard + findings recomputation --------------------------------
 
