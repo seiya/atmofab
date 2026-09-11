@@ -1234,8 +1234,10 @@ _CLAIM_DEGRADATIONS: dict[str, str] = {
         "an unwritable or quota-exhausted home"
     ),
     "claim_lock_unsupported": (
-        "the filesystem refused advisory locking (some network filesystems, or a mount with "
-        "`nolock`)"
+        "the filesystem refused advisory locking outright (ENOLCK / EOPNOTSUPP). NOTE: an NFS "
+        "mount with `nolock` or `local_lock=` does NOT come here - per `man 5 nfs` it succeeds "
+        "LOCALLY on each client with no error, so this process believes it holds a claim that "
+        "serializes nothing against another client. That shape cannot be detected from here"
     ),
 }
 

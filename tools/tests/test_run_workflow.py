@@ -1318,9 +1318,40 @@ class RunWorkflowTests(unittest.TestCase):
                                  f"{shape}: expected exactly one {reason} warning; got {events}")
                 self.assertTrue(degraded[0]["cause"],
                                 "the warning must name WHY, not just that it degraded")
+                if reason == "claim_root_unresolvable":
+                    # The SPECIFIC failure, not the generic "could not be resolved".
+                    # `_start_claims_root` raises a ValueError naming the rule that was broken
+                    # (an override must be absolute), `_exclusive_claim` catches it, and
+                    # without threading the text through the operator is never told which rule
+                    # it was — the remedy becomes unfollowable rather than merely terse.
+                    self.assertIn("absolute path", degraded[0]["cause"])
                 if lock is not None:
                     # Restored INSIDE the subTest: the tempdir is gone by cleanup time.
                     lock.chmod(0o600)
+
+    def test_the_degradation_warning_renders_in_the_default_human_format(self) -> None:
+        """The whole point of routing it through `_emit_unlogged_event`, and it had no witness:
+        every other claim test drives `stdout_format="jsonl"` so it can read the payload, which
+        is exactly the format the bug did NOT affect. Round 2 shipped this as `status: "warn"`
+        — a status `_format_event_human` has no arm for — and four mutations of the fix
+        (including reverting the status) passed the whole suite."""
+        with tempfile.TemporaryDirectory() as tmp:
+            run_workflow._CLAIM_DEGRADATIONS_WARNED.clear()
+            repo_root = Path(tmp) / "repo"
+            repo_root.mkdir()
+            buf = io.StringIO()
+            with mock.patch.dict(os.environ,
+                                 {"ATMOFAB_START_CLAIM_ROOT": str(Path(tmp) / "claims")}), \
+                    mock.patch.object(run_workflow, "fcntl", None), redirect_stdout(buf), \
+                    run_workflow._exclusive_claim(repo_root, "spec", "spec/x",
+                                                  stdout_format="human"):
+                pass
+            out = buf.getvalue()
+            self.assertNotIn("{", out, f"human mode must not leak raw JSON; got {out!r}")
+            self.assertIn("[warn   ] no start claim for spec spec/x", out)
+            self.assertIn("NO concurrency gate", out)
+            # The CAUSE, not just the reason code: it is what the operator acts on.
+            self.assertIn("advisory locking is unavailable", out)
 
     def test_the_degradation_warning_is_said_once_not_per_acquisition(self) -> None:
         """A closure takes a claim per node. The operator needs the fact, not a column of it."""
@@ -1623,15 +1654,39 @@ class RunWorkflowTests(unittest.TestCase):
                                 "existence is what ownership must key on")
             finally:
                 meta_file.chmod(0o600)
-            # And the ownership answer follows the path, not the read.
-            with mock.patch.object(run_workflow, "_read_json_if_exists", return_value=None):
-                self.assertFalse(
-                    run_workflow._owns_orchestration(
-                        repo_root, oid, init_committed=False, init_attempted=True,
-                        resume_mode=False,
-                        meta_existed_before_init=(
-                            run_workflow._orchestration_meta_path(repo_root, oid).exists())),
-                    "a reused id whose meta merely failed to parse is still not ours")
+            # And the PRODUCTION line is what decides it — pinned STRUCTURALLY, which is
+            # weaker than a behaviour test and is said plainly rather than dressed up.
+            #
+            # The first version of this test computed `meta_existed_before_init` in its own
+            # body and asserted on the result, so reverting the production line to the reader
+            # changed nothing: a fix whose test asserts the fix's own arithmetic. Driving the
+            # real call site needs `_run_node` to reach its fail-envelope path with
+            # `init_committed` False AND a pre-existing meta, and I could not construct that
+            # through `main()` — every shape I tried stopped at `init`. An AST assertion at
+            # least fails when the line is reverted, which is what the mutation showed it must
+            # do; `test_run_main_writes_stdout_only_through_the_emit_helper` sets the precedent
+            # for this kind of pin in this file.
+            import ast as _ast
+            import inspect as _inspect
+            import textwrap as _textwrap
+
+            tree = _ast.parse(_textwrap.dedent(_inspect.getsource(run_workflow._run_node)))
+            assigns = [
+                node for node in _ast.walk(tree)
+                if isinstance(node, _ast.Assign)
+                and any(isinstance(t, _ast.Name) and t.id == "meta_existed_before_init"
+                        for t in node.targets)
+            ]
+            sources = [_ast.dump(a.value) for a in assigns]
+            self.assertTrue(sources, "the ownership input vanished from _run_node")
+            self.assertTrue(
+                any("_orchestration_meta_path" in src for src in sources),
+                "ownership must key on the meta's EXISTENCE; keying on "
+                "_read_orchestration_meta cannot tell 'absent' from 'present but unreadable'")
+            self.assertFalse(
+                any("_read_orchestration_meta" in src for src in sources),
+                "the reader swallows OSError/JSONDecodeError into {} — it is the wrong "
+                "question for ownership")
 
     def test_a_cold_run_warns_that_a_resumable_orchestration_exists(self) -> None:
         """Inform, never prohibit. The operator asked for a cold run and gets one — what they
@@ -6035,6 +6090,29 @@ class StdoutFormatTests(unittest.TestCase):
                "window": "session", "dead_agent_run_id": "ar_dead", "orchestration_id": "o"}),
             "    [warn   ] usage limit in generate.generate [wait 1] (source=probe/session): "
             "waiting 420.0s for the reset, then re-launching",
+        )
+        # The claim-degradation warning. `human` is the DEFAULT format, so a payload the
+        # renderer has no arm for falls through to the raw-JSON fallback — which is the leak
+        # `_emit_unlogged_event` exists to prevent, in the format the operator actually reads.
+        # This event is emitted with `status: "info"` for exactly that reason; `"warn"` has no
+        # arm here, and round 2 shipped it as `"warn"` first.
+        self.assertEqual(
+            f({"status": "info", "event": "start_claim_degraded",
+               "reason": "claim_file_unopenable", "claim_kind": "spec",
+               "claim_key": "spec/x", "cause": "the lock file could not be opened"}),
+            "    [warn   ] no start claim for spec spec/x: the lock file could not be opened "
+            "— this run proceeds with NO concurrency gate; one driver per workspace is yours "
+            "to enforce (docs/RUNBOOK.md §3-1)",
+        )
+        # `orch` names the orchestration rather than the spec, and the CAUSE is what the
+        # operator acts on — the generic reason alone never says which rule was broken.
+        self.assertEqual(
+            f({"status": "info", "event": "start_claim_degraded",
+               "reason": "claim_root_unresolvable", "claim_kind": "orch",
+               "claim_key": "o1", "cause": "must be an absolute path"}),
+            "    [warn   ] no start claim for orchestration o1: must be an absolute path "
+            "— this run proceeds with NO concurrency gate; one driver per workspace is yours "
+            "to enforce (docs/RUNBOOK.md §3-1)",
         )
         # The cold path's resumable-prior warning. `human` is the default stdout format, so
         # this is what an operator actually reads before a cold run starts over on top of a

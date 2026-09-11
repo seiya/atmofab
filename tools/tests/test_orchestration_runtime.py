@@ -14075,6 +14075,7 @@ class ResumeOrchestrationRuntimeTests(unittest.TestCase):
             doc = json.loads(meta_path.read_text("utf-8"))
             doc["status"] = "quiescing"          # neither terminal nor `running`
             meta_path.write_text(json.dumps(doc), encoding="utf-8")
+            del doc
             child = "live-child-arid"
             (root / "active_child_agent_run_id.txt").write_text(child, encoding="utf-8")
             markers = root / "active_children"
@@ -14094,6 +14095,95 @@ class ResumeOrchestrationRuntimeTests(unittest.TestCase):
             self.assertEqual(
                 json.loads((root / "orchestration_meta.json").read_text("utf-8"))["status"],
                 "quiescing")
+
+    def test_every_unplaceable_status_shape_is_refused_not_just_a_non_empty_string(self) -> None:
+        """The first cut of the refusal read `isinstance(str) and status.strip() and not
+        reconcile`, which exempted the three shapes that are EASIEST to produce — an empty
+        string, a JSON `null`, and an absent key. `set-status --status ""` exits 0, and the
+        resume then took the exact path the guard was added to close.
+
+        The second-order effect is worse than the first: the meta is left at `''` rather than
+        `running`, and `_warn_about_resumable_priors` skips a falsy status — so the run stops
+        being mentioned on the cold path too, and becomes invisible in both directions."""
+        for label, mutate in (
+            ("empty string", lambda d: d.__setitem__("status", "")),
+            ("whitespace", lambda d: d.__setitem__("status", "   ")),
+            ("json null", lambda d: d.__setitem__("status", None)),
+            ("absent key", lambda d: d.pop("status", None)),
+            ("not a string", lambda d: d.__setitem__("status", 3)),
+            ("unrecognised word", lambda d: d.__setitem__("status", "quiescing")),
+        ):
+            with self.subTest(case=label), tempfile.TemporaryDirectory() as tmp:
+                repo = Path(tmp)
+                init_orchestration(repo_root=repo, orchestration_id="o1", status="running")
+                _mark_dependencies_ready(repo, "o1")
+                root = repo / "workspace/orchestrations/o1"
+                meta_path = root / "orchestration_meta.json"
+                doc = json.loads(meta_path.read_text("utf-8"))
+                mutate(doc)
+                meta_path.write_text(json.dumps(doc), encoding="utf-8")
+                child = "live-child-arid"
+                (root / "active_child_agent_run_id.txt").write_text(child, encoding="utf-8")
+                markers = root / "active_children"
+                markers.mkdir(exist_ok=True)
+                (markers / f"{child}.txt").write_text(child, encoding="utf-8")
+
+                with self.assertRaisesRegex(RuntimeError, "is neither terminal"):
+                    resume_orchestration(repo, "o1")
+                self.assertTrue((root / "active_child_agent_run_id.txt").exists(),
+                                f"{label}: a refused resume must not clear live markers")
+                self.assertTrue((markers / f"{child}.txt").exists())
+
+    def test_a_resume_records_its_host_and_reports_crossing_one(self) -> None:
+        """The ONE fact from the deleted `driver` block that has no substitute.
+
+        The claim that replaced the driver probe lives under the operator's own
+        `~/.atmofab/start_claims/`, so it is host-scoped: with host-local homes (a container
+        and its host bind-mounting the checkout, a cluster with local `/home` and shared
+        `/work`) two drivers each take their own claim and both proceed, and nothing else in
+        the tree can notice. `origin/main` recorded the hostname precisely here.
+
+        Recorded to WARN, never to refuse — refusing on a differing hostname would reinstate
+        the failure this issue exists to delete: an operator who legitimately moves a checkout
+        to a new host could never resume."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            init_orchestration(repo_root=repo, orchestration_id="o1")
+            _mark_dependencies_ready(repo, "o1")
+            meta_path = repo / "workspace/orchestrations/o1/orchestration_meta.json"
+
+            # First resume on this host: the field is recorded, nothing is reported.
+            resume_orchestration(repo, "o1")
+            here = json.loads(meta_path.read_text("utf-8"))["last_driver_host"]
+            self.assertTrue(here)
+            self.assertEqual([], self._resume_events(repo, "o1", "resume_crossed_hosts"))
+
+            # Same host again: still nothing.
+            resume_orchestration(repo, "o1")
+            self.assertEqual([], self._resume_events(repo, "o1", "resume_crossed_hosts"))
+
+            # A prior run on ANOTHER host: reported, and the resume still proceeds.
+            doc = json.loads(meta_path.read_text("utf-8"))
+            doc["last_driver_host"] = "some-other-node"
+            meta_path.write_text(json.dumps(doc), encoding="utf-8")
+            returned = resume_orchestration(repo, "o1")
+            self.assertEqual(returned.get("status"), "running", "a warning must not refuse")
+            crossed = self._resume_events(repo, "o1", "resume_crossed_hosts")
+            self.assertEqual(len(crossed), 1)
+            self.assertEqual(crossed[0]["from"], "some-other-node")
+            self.assertEqual(crossed[0]["to"], here)
+            self.assertIn("host-scoped", crossed[0]["note"])
+            self.assertEqual(
+                json.loads(meta_path.read_text("utf-8"))["last_driver_host"], here,
+                "the record must follow the driver that actually resumed")
+
+    @staticmethod
+    def _resume_events(repo: Path, oid: str, event: str) -> list[dict]:
+        path = ort._phase_state_log_path(repo, oid)
+        if not path.is_file():
+            return []
+        return [json.loads(line) for line in path.read_text("utf-8").splitlines()
+                if line.strip() and json.loads(line).get("event") == event]
 
     def test_a_resume_records_when_it_happened(self) -> None:
         """`resumed_at` is part of `orchestration_meta.json`'s documented shape

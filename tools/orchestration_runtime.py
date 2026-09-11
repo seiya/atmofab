@@ -6016,6 +6016,18 @@ def _load_phase_state(repo_root: Path, orchestration_id: str) -> dict[str, Any] 
     return data
 
 
+def _current_hostname_for_record() -> str:
+    """This host's name, for the resume record. Never raises and never blocks a run: an
+    unresolvable hostname records the empty string, which simply cannot trigger the cross-host
+    warning."""
+    try:
+        import socket
+
+        return socket.gethostname().strip()
+    except Exception:  # noqa: BLE001 - a provenance field must not fail a run
+        return ""
+
+
 def reconcile_phase_state_for_resume(
     repo_root: Path,
     orchestration_id: str,
@@ -15081,7 +15093,14 @@ def resume_orchestration(
     # Reachable, not hypothetical: neither `init --status` nor `set-status --status` declares
     # argparse `choices=`, so any string an operator or a leaf passes is stored verbatim. The
     # runtime's own writers only ever produce the statuses below.
-    if isinstance(prior_status, str) and prior_status.strip() and not reconcile:
+    # EVERY unplaceable value, not just a non-empty string. The first cut of this guard read
+    # `isinstance(prior_status, str) and prior_status.strip() and not reconcile`, which exempted
+    # the three shapes that are EASIEST to produce: an empty string, a JSON `null`, and an
+    # absent key. Measured — `set-status --status ""` exits 0, and the resume then took the
+    # exact path the guard was added to close. Worse, the meta was left at `''` rather than
+    # `running`, so `_warn_about_resumable_priors` (which skips a falsy status) stopped
+    # mentioning the run on the cold path too: invisible in both directions.
+    if not reconcile:
         raise RuntimeError(
             f"cannot resume orchestration {orchestration_id}: its recorded status "
             f"{prior_status!r} is neither terminal ({sorted(IDEMPOTENT_TERMINAL_STATUSES)}) "
@@ -15165,8 +15184,38 @@ def resume_orchestration(
     # nothing reads is a record that drifts. A stale one was actively harmful — a reused pid
     # made a probe call a dead run alive — so a resume drops it rather than refreshing it.
     meta.pop("driver", None)
+    # ONE fact from that block survives it, and only one: the HOST. The exclusive claim that
+    # replaced the driver probe lives under the operator's own `~/.atmofab/start_claims/`, so
+    # it is host-scoped — with host-local homes (a container and its host bind-mounting the
+    # checkout, a cluster with local `/home` and shared `/work`) two drivers each take their
+    # own claim and both proceed. Nothing else in the tree can notice that.
+    #
+    # Recorded to WARN, never to refuse. Refusing on a differing hostname would reinstate the
+    # failure this issue exists to delete: an operator who legitimately moves a checkout to a
+    # new host, or out of a container, could never resume — `unknown ⇒ refuse` under a new
+    # name. The previous host is reported and the resume proceeds.
+    previous_host = meta.get("last_driver_host")
+    meta["last_driver_host"] = _current_hostname_for_record()
     _write_json(meta_path, meta)
     reconcile_phase_state_for_resume(repo_root, orchestration_id)
+    # Said where an operator will find it: the phase-state log is what they read back to
+    # understand a run, and it is the durable record the claim itself cannot leave.
+    if previous_host and previous_host != meta["last_driver_host"]:
+        _append_phase_state_log(
+            repo_root,
+            orchestration_id,
+            {
+                "ts": _utc_now_iso(),
+                "event": "resume_crossed_hosts",
+                "from": previous_host,
+                "to": meta["last_driver_host"],
+                "note": (
+                    "this orchestration was last driven on another host; the start claim is "
+                    "host-scoped (~/.atmofab/start_claims/), so it cannot prove the other "
+                    "host is not still running it — see docs/RUNBOOK.md §3-1"
+                ),
+            },
+        )
     if reconcile:
         _append_phase_state_log(
             repo_root,
