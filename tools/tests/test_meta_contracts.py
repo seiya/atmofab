@@ -157,5 +157,68 @@ class StageMetaTypeViolationsTests(unittest.TestCase):
         self.assertEqual(stage_meta_type_violations(meta, step_token="compile"), [])
 
 
+class CertificationKeyTypeTests(unittest.TestCase):
+    """Issue #177: the two keys `write_step_result` stamps on a pass. They are type-checked
+    here rather than only at the writer because `_phase_certified` REFUSES a phase whose
+    hashes do not re-compute — a structurally wrong stamp would read as a tampered
+    deliverable and send the operator hunting for a change nobody made."""
+
+    def test_a_conformant_stamp_is_accepted(self) -> None:
+        meta = dict(_conformant(),
+                    artifact_hashes={"workspace/ir/s/i1/spec.ir.yaml": "sha256:" + "a" * 64},
+                    source_ir_id="i1")
+        self.assertEqual(stage_meta_type_violations(meta, step_token="generate"), [])
+
+    def test_artifact_hashes_must_be_a_non_empty_object(self) -> None:
+        for bad in ({}, [], "sha256:abc", None):
+            with self.subTest(value=bad):
+                meta = dict(_conformant(), artifact_hashes=bad)
+                self.assertEqual(stage_meta_type_violations(meta, step_token="compile"),
+                                 ["artifact_hashes must be a non-empty object"])
+
+    def test_artifact_hash_values_must_carry_a_digest(self) -> None:
+        for bad in ("sha256:", "abc123", "", 7, None):
+            with self.subTest(value=bad):
+                meta = dict(_conformant(), artifact_hashes={"a/b.yaml": bad})
+                violations = stage_meta_type_violations(meta, step_token="compile")
+                self.assertEqual(len(violations), 1)
+                self.assertIn("artifact_hashes values must be", violations[0])
+                self.assertIn("a/b.yaml", violations[0])
+
+    def test_artifact_hash_keys_must_be_non_blank_strings(self) -> None:
+        """The key is the repo-relative deliverable the digest belongs to. A blank or
+        non-string one names no file, so the predicate would hash `<repo_root>/` and refuse
+        the phase forever (witness census)."""
+        for bad_key in ("   ", "", 1):
+            with self.subTest(key=bad_key):
+                meta = dict(_conformant(), artifact_hashes={bad_key: "sha256:" + "a" * 64})
+                violations = stage_meta_type_violations(meta, step_token="compile")
+                self.assertEqual(len(violations), 1)
+                self.assertIn("artifact_hashes values must be", violations[0])
+
+    def test_artifact_hash_values_must_name_the_sha256_algorithm(self) -> None:
+        """`sha256:<hex>` is the form the predicate re-computes and compares against; a bare
+        digest or another algorithm never matches (witness census)."""
+        for bad in ("md5:deadbeef", "a" * 64, "SHA256:" + "a" * 64):
+            with self.subTest(value=bad):
+                meta = dict(_conformant(), artifact_hashes={"a/b.f90": bad})
+                violations = stage_meta_type_violations(meta, step_token="compile")
+                self.assertEqual(len(violations), 1)
+                self.assertIn("a/b.f90", violations[0])
+
+    def test_source_ir_id_must_be_a_non_empty_string(self) -> None:
+        for bad in ("", "   ", 1, None, ["i1"]):
+            with self.subTest(value=bad):
+                meta = dict(_conformant(), source_ir_id=bad)
+                self.assertEqual(stage_meta_type_violations(meta, step_token="generate"),
+                                 ["source_ir_id must be non-empty string"])
+
+    def test_the_keys_are_optional(self) -> None:
+        """A meta that carries neither is type-clean. It is simply not CERTIFIED — which is
+        the certification predicate's judgment to make, not this contract's."""
+        self.assertEqual(stage_meta_type_violations(_conformant(), step_token="compile"), [])
+
+
+
 if __name__ == "__main__":
     unittest.main()

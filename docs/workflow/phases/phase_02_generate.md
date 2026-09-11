@@ -27,6 +27,8 @@ Since `M-F` the `generate-executor` is no longer selectable (`docs/GLOSSARY.md`)
 ## `source_meta.json` required keys
 - Common: `attempt_count`, `verification_status`, `last_fail_reason`, `debug_mode`, `context_isolated`
 - When `context_isolated=false`, `constraint_reason` is required.
+- `artifact_hashes`: stamped by the host at `write-step-result` on a `pass` (NOT authored by any leaf) — the sha256 of each of this phase's declared deliverables. It is what makes the phase `certified` (`docs/GLOSSARY.md`), so an artifact edited afterwards is refused and the phase re-derives. Canonical: `docs/CLI_REFERENCE.md#write-step-result`.
+- `source_ir_id`: stamped by the host at `write-step-result` on a `pass`, from this orchestration's `compile` reservation — the ir_id this source was generated from. A source that names a different IR than the one standing is not `certified`, which is how a re-derived `Compile` invalidates its `Generate` without any downstream bookkeeping.
 - `lint_command_ref` is no longer recorded by the leaf: lint is the deterministic conductor-run `Generate.gate` lint check, and `post_generate` certifies it against the host-authored `<pipeline_root>/lint_evidence/<source_id>.json` (which the leaf cannot write).
 
 ## substep details

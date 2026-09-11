@@ -52,6 +52,7 @@ TIER_B_SUBCOMMANDS: frozenset[str] = frozenset({
     "preflight",
     "preflight-status",
     "record-timeout",
+    "check-phase-certified",
     "check-step-completed",
     "orchestration-read",
     "reopen-phase",

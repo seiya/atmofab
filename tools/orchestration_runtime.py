@@ -78,6 +78,7 @@ try:
         WORKFLOW_HOMES_ROOT_ENV,
     )
     from tools.meta_contracts import (
+        CERTIFYING_META_FILENAME_BY_STEP,
         STAGE_META_FILENAME_BY_STEP,
         missing_required_meta_keys,
         stage_meta_type_violations,
@@ -111,6 +112,7 @@ except ModuleNotFoundError:  # pragma: no cover - import bootstrap for direct CL
         WORKFLOW_HOMES_ROOT_ENV,
     )
     from tools.meta_contracts import (
+        CERTIFYING_META_FILENAME_BY_STEP,
         STAGE_META_FILENAME_BY_STEP,
         missing_required_meta_keys,
         stage_meta_type_violations,
@@ -1001,15 +1003,38 @@ def _select_max_by_id_extracted(
     return tied[0]
 
 
-def _latest_meta_under(root: Path, glob_pattern: str) -> Path | None:
+def _latest_meta_under(
+    root: Path,
+    glob_pattern: str,
+    *,
+    predicate: Callable[[dict[str, Any]], bool] | None = None,
+) -> Path | None:
     """Return the latest meta file under `root` matching `glob_pattern`,
     selected by parsed canonical id `(date, seq)` from the enclosing
     directory name. Both `*/ir_meta.json` (ir_id parent) and
     `binary/*/binary_meta.json` (binary_id parent) put the runtime-issued
     id directly above the file. Non-canonical enclosing names are filtered
     out (defense against stray `zzz/` directories).
+
+    `predicate`, when given, narrows the candidate set BEFORE the latest-id
+    selection, by the parsed meta document. `_phase_certified` uses it to ask
+    for "the latest source_meta bound to THIS ir_id" — narrowing after the
+    selection would instead answer "the latest source, if it happens to be
+    bound", which reports a stale generate as certified whenever a newer
+    unrelated source exists. A meta that is missing, unreadable or not an
+    object is dropped by the predicate path (it cannot be shown to satisfy it).
     """
     candidates = [p for p in root.glob(glob_pattern) if p.is_file()]
+    if predicate is not None:
+        kept: list[Path] = []
+        for path in candidates:
+            try:
+                doc = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if isinstance(doc, dict) and predicate(doc):
+                kept.append(path)
+        candidates = kept
     return _select_max_by_id_extracted(candidates, lambda p: p.parent.name)
 
 
@@ -1721,6 +1746,595 @@ def _verify_dep_stage_detail(
         )
         return (False, detail)
     raise ValueError(f"unknown readiness stage: {stage!r}")
+
+
+# --- phase certification (issue #177) -------------------------------------------------
+#
+# "Certified" is a property of the ARTIFACTS a phase produced, not of a ledger entry
+# recording that it ran. A phase is certified when its deliverable exists, its stage meta
+# records `verification_status: pass`, the meta is BOUND to the current artifact of the phase
+# above it, the deliverable still hashes to what the certifying run recorded
+# (`artifact_hashes`, stamped by `write_step_result`), and the same freshness conditions the
+# dependency-readiness stages apply are met. That is what replaces the checkpoint ledger:
+# `orchestration_checkpoint.json` recorded a run, could not see a later edit of anything it
+# did not itself hash, and was consulted only on a resume, so a cold re-run of an already
+# certified node re-derived every phase from scratch.
+#
+# The predicate is READ IDENTICALLY on a cold run and on a resume — there is no
+# `resume_enabled` gate — so "this phase is already done" has one answer in the codebase.
+
+
+def _certification_hash_mismatch(repo_root: Path, meta_doc: dict[str, Any]) -> str | None:
+    """`None` when every `artifact_hashes` entry re-computes to the recorded digest.
+
+    Otherwise the refusal reason: `artifact_hashes_missing` for a meta written before the
+    stamp existed (or by a writer that skipped it — an unstamped meta is NOT certified, or
+    the stamp could be evaded by omission), and `artifact_hash_mismatch:<ref>` naming the
+    first deliverable whose bytes moved. `sha256:missing` is NOT excused here (unlike the
+    ledger's integrity check, which skipped it): a deliverable that has since been deleted
+    must re-run the phase.
+    """
+    hashes = meta_doc.get("artifact_hashes")
+    if not isinstance(hashes, dict) or not hashes:
+        return "artifact_hashes_missing"
+    for ref in sorted(hashes):
+        expected = hashes.get(ref)
+        if not isinstance(ref, str) or not ref.strip() or not isinstance(expected, str):
+            return f"artifact_hash_mismatch:{ref}"
+        if _compute_sha256(repo_root / _normalize_rel_posix(ref.strip())) != expected:
+            return f"artifact_hash_mismatch:{ref}"
+    return None
+
+
+def _stage_meta_certification(repo_root: Path, meta_path: Path) -> tuple[bool, dict[str, Any]]:
+    """The per-meta half of the predicate, shared by all three certifying phases:
+    readable object, `verification_status == "pass"`, and hashes that re-compute.
+
+    The second element always carries `revoked` and `last_fail_reason` — even on refusal —
+    because the conductor seeds a repair from exactly those two fields when a resume finds a
+    revoked artifact, and a refusal that dropped them would leave the repair with no findings.
+    """
+    detail: dict[str, Any] = {"revoked": False, "last_fail_reason": None}
+    try:
+        doc = json.loads(meta_path.read_text(encoding="utf-8"))
+    except Exception:
+        return (False, {**detail, "reason": "stage_meta_unreadable"})
+    if not isinstance(doc, dict):
+        return (False, {**detail, "reason": "stage_meta_unreadable"})
+    fail_reason = doc.get("last_fail_reason")
+    detail["last_fail_reason"] = fail_reason if isinstance(fail_reason, str) and fail_reason.strip() else None
+    status = str(doc.get("verification_status", "")).strip().lower()
+    if status == "revoked":
+        detail["revoked"] = True
+        return (False, {**detail, "reason": "revoked"})
+    if status != "pass":
+        return (False, {**detail, "reason": "verification_status_not_pass"})
+    mismatch = _certification_hash_mismatch(repo_root, doc)
+    if mismatch is not None:
+        return (False, {**detail, "reason": mismatch})
+    return (True, {**detail, "reason": None, "meta": doc})
+
+
+def _certified_ir_candidate(repo_root: Path, node_key: str) -> str | None:
+    """The ir_id of the latest IR under `workspace/ir/<safe>/` when it satisfies the compile
+    clause of `_phase_certified`, else `None`.
+
+    Used by the conductor's `prepare_node` on a COLD run to ADOPT an already certified IR
+    instead of minting a new ir_id (which would make the reservation not-latest and refuse
+    every phase). Takes no orchestration: the artifacts, not this run's records, decide.
+    """
+    ok, detail = _ir_certification(repo_root, node_key, reserved_ir_id=None)
+    return detail.get("ir_id") if ok else None
+
+
+def _ir_certification(
+    repo_root: Path, node_key: str, *, reserved_ir_id: str | None
+) -> tuple[bool, dict[str, Any]]:
+    """The compile clause. `reserved_ir_id` pins the answer to the id this orchestration
+    reserved; `None` asks the same question of whatever IR is latest (the adoption path).
+
+    `ir_not_latest` is a refusal and not a redirect (decision 15): the readiness stages
+    (`_dependency_resolution_freshness` via `_certified_ir_dir`) evaluate the LATEST ir dir,
+    so certifying a non-latest reservation would let the skip and the launch gate disagree
+    about which artifact the node is standing on.
+    """
+    try:
+        kind, spec_id, version = _parse_node_key_strict(node_key)
+    except ValueError:
+        return (False, {"reason": "node_key_invalid", "revoked": False, "last_fail_reason": None})
+    safe = f"{kind}__{spec_id}__{version}"
+    root = repo_root / "workspace" / "ir" / safe
+    latest = _latest_meta_under(root, "*/ir_meta.json") if root.is_dir() else None
+    if latest is None:
+        return (False, {"reason": "ir_not_found", "revoked": False, "last_fail_reason": None})
+    ir_id = latest.parent.name
+    if reserved_ir_id is not None and ir_id != reserved_ir_id.strip():
+        return (False, {"reason": "ir_not_latest", "revoked": False, "last_fail_reason": None})
+    ok, detail = _stage_meta_certification(repo_root, latest)
+    detail["ir_id"] = ir_id
+    detail["ir_ref"] = _normalize_rel_posix(str(latest.parent.relative_to(repo_root)))
+    if not ok:
+        return (False, detail)
+    fresh, freshness_detail = _dependency_resolution_freshness(repo_root, kind, spec_id, version)
+    if not fresh:
+        return (False, {**detail, "reason": f"resolution_stale:{freshness_detail}"})
+    return (True, detail)
+
+
+def _phase_certified(
+    repo_root: Path,
+    orchestration_id: str,
+    node_key: str,
+    step: str,
+) -> tuple[bool, dict[str, Any]]:
+    """Is `(node_key, step)` certified for this orchestration? Returns `(certified, detail)`.
+
+    `detail` always carries `reason` (the FIRST clause that refused, `None` on success), the
+    refs that did resolve (`ir_ref` / `pipeline_ref` / `source_id` / `binary_id` / `run_id`,
+    each `None` when the chain stopped before it), and `revoked` / `last_fail_reason` read
+    from the deepest meta the chain reached — the conductor seeds a repair from those.
+
+    The chain is cumulative: `build` is certified only if `generate` is, which is certified
+    only if `compile` is. Each link binds to the id of the link above (`source_ir_id`,
+    `source_source_id`, `trial_meta.source_binary_id`), so re-deriving one phase invalidates
+    everything downstream without any downstream bookkeeping.
+
+    Reads only this orchestration's reservations and the workspace artifacts. It never reads
+    `agent_runs.jsonl`, a step_result or the phase_state: what a run RECORDED about itself is
+    not evidence that the artifact on disk is the one it certified.
+    """
+    step_token = step.strip().lower()
+    if step_token not in STEP_KEYS_FOR_NODE_STATE:
+        raise ValueError(f"unsupported step for certification: {step!r}")
+    detail: dict[str, Any] = {
+        "reason": None, "ir_ref": None, "pipeline_ref": None,
+        "source_id": None, "binary_id": None, "run_id": None,
+        "revoked": False, "last_fail_reason": None,
+    }
+    try:
+        kind, spec_id, version = _parse_node_key_strict(node_key)
+    except ValueError:
+        return (False, {**detail, "reason": "node_key_invalid"})
+    safe = f"{kind}__{spec_id}__{version}"
+    res_dir = _orchestration_root(repo_root, orchestration_id) / "reservations" / safe
+    reserved_ir_id = _reserved_id(res_dir, "compile")
+    if reserved_ir_id is None:
+        return (False, {**detail, "reason": "ir_not_reserved"})
+
+    ok, ir_detail = _ir_certification(repo_root, node_key, reserved_ir_id=reserved_ir_id)
+    detail["ir_ref"] = ir_detail.get("ir_ref")
+    detail["revoked"] = bool(ir_detail.get("revoked"))
+    detail["last_fail_reason"] = ir_detail.get("last_fail_reason")
+    if not ok:
+        return (False, {**detail, "reason": ir_detail.get("reason")})
+    ir_id = str(ir_detail["ir_id"])
+    if step_token == "compile":
+        return (True, detail)
+
+    reserved_pipeline_id = _reserved_id(res_dir, "generate")
+    if reserved_pipeline_id is None:
+        return (False, {**detail, "reason": "pipeline_not_reserved"})
+    safe_root = repo_root / "workspace" / "pipelines" / safe
+    pipe_dir = safe_root / reserved_pipeline_id
+    detail["pipeline_ref"] = _normalize_rel_posix(
+        f"workspace/pipelines/{safe}/{reserved_pipeline_id}")
+    if not pipe_dir.is_dir():
+        return (False, {**detail, "reason": "pipeline_not_found"})
+
+    # The generate binding: the latest source that names THIS ir_id as the document it was
+    # generated from. `source_meta.json` carried no IR binding before issue #177 — an
+    # unstamped source is `source_not_bound`, which re-runs generate rather than adopting a
+    # source whose provenance cannot be established.
+    source_meta_path = _latest_meta_under(
+        pipe_dir, "source/*/source_meta.json",
+        predicate=lambda doc: str(doc.get("source_ir_id") or "").strip() == ir_id,
+    )
+    if source_meta_path is None:
+        return (False, {**detail, "reason": "source_not_bound"})
+    ok, src_detail = _stage_meta_certification(repo_root, source_meta_path)
+    detail["revoked"] = bool(src_detail.get("revoked"))
+    detail["last_fail_reason"] = src_detail.get("last_fail_reason")
+    source_id = source_meta_path.parent.name
+    detail["source_id"] = source_id
+    if not ok:
+        return (False, {**detail, "reason": src_detail.get("reason")})
+    if step_token == "generate":
+        return (True, detail)
+
+    # Build additionally requires the pipeline itself to be the latest one, for the same
+    # reason compile requires the latest ir dir: `_dependency_binding_freshness` and the
+    # readiness stages both evaluate `_latest_pipeline_dir`.
+    latest_pipe = _latest_pipeline_dir(safe_root)
+    if latest_pipe is None or latest_pipe != pipe_dir:
+        return (False, {**detail, "reason": "pipeline_not_latest"})
+    binary_meta_path = _latest_meta_under(
+        pipe_dir, "binary/*/binary_meta.json",
+        predicate=lambda doc: (
+            str(doc.get("source_source_id") or "").strip() == source_id
+            and str(doc.get("source_ir_id") or "").strip() == ir_id
+        ),
+    )
+    if binary_meta_path is None:
+        return (False, {**detail, "reason": "binary_not_bound"})
+    ok, bin_detail = _stage_meta_certification(repo_root, binary_meta_path)
+    detail["revoked"] = bool(bin_detail.get("revoked"))
+    detail["last_fail_reason"] = bin_detail.get("last_fail_reason")
+    detail["binary_id"] = binary_meta_path.parent.name
+    if not ok:
+        return (False, {**detail, "reason": bin_detail.get("reason")})
+    fresh, freshness_detail = _dependency_binding_freshness(repo_root, kind, spec_id, version)
+    if not fresh:
+        return (False, {**detail, "reason": f"binding_stale:{freshness_detail}"})
+    if step_token == "build":
+        return (True, detail)
+
+    verdict_path = _latest_aggregate_verdict_under(
+        pipe_dir, bound_to_binary_id=str(detail["binary_id"]))
+    if verdict_path is None:
+        return (False, {**detail, "reason": "verdict_not_bound"})
+    # `runs/<run_id>/<node_safe>/aggregate_verdict.json`: the run_id is the SECOND segment,
+    # not the parent dir (which is the node), and `_latest_aggregate_verdict_under` selects by
+    # that same segment.
+    detail["run_id"] = verdict_path.relative_to(pipe_dir).parts[1]
+    try:
+        verdict_doc = json.loads(verdict_path.read_text(encoding="utf-8"))
+    except Exception:
+        return (False, {**detail, "reason": "verdict_not_pass"})
+    verdict = (str(verdict_doc.get("aggregate_verdict", "")).strip().lower()
+               if isinstance(verdict_doc, dict) else "")
+    # docs/GLOSSARY.md: an `xfail` aggregate is a certifying outcome, like `pass`.
+    if verdict not in {"pass", "xfail"}:
+        return (False, {**detail, "reason": "verdict_not_pass"})
+    # The verdict alone does NOT certify Validate. The conductor authors
+    # `aggregate_verdict.json` BEFORE the `--stage pre_judge` gate runs (the gate
+    # re-validates the host's own summary, so the order cannot be swapped), and a
+    # `fail_closed` disposition returns without writing a step_result — leaving a passing
+    # verdict on disk for a phase that terminated fail-closed. `post_judge_meta.json` is the
+    # host record of the gate's own outcome (written in the deterministic post_judge substep;
+    # no `LLM` leaf has it in its write_roots — the judge's is `semantic_review.json` alone),
+    # so it is what says the phase actually completed.
+    gate_meta_path = verdict_path.parent / "post_judge_meta.json"
+    try:
+        gate_doc = json.loads(gate_meta_path.read_text(encoding="utf-8"))
+    except Exception:
+        return (False, {**detail, "reason": "post_judge_not_recorded"})
+    if not isinstance(gate_doc, dict):
+        return (False, {**detail, "reason": "post_judge_not_recorded"})
+    if str(gate_doc.get("status", "")).strip().lower() != "pass":
+        return (False, {**detail, "reason": "post_judge_not_pass"})
+    return (True, detail)
+
+
+def _certifiable_artifact_refs(required_outputs: Sequence[str], meta_ref: str) -> list[str]:
+    """The deliverables of a phase whose bytes the certification pins: its
+    `required_outputs`, minus the stage meta the hashes are written INTO (it cannot hash
+    itself) and minus the audit logs (`AUDIT_LOG_BASENAMES`), which later phases append to.
+    """
+    meta_norm = _normalize_rel_posix(meta_ref)
+    refs: list[str] = []
+    for ref in required_outputs:
+        if not isinstance(ref, str) or not ref.strip():
+            continue
+        norm = _normalize_rel_posix(ref.strip())
+        if norm == meta_norm or norm.rsplit("/", 1)[-1] in AUDIT_LOG_BASENAMES:
+            continue
+        if norm not in refs:
+            refs.append(norm)
+    return refs
+
+
+def _stamp_certification(
+    repo_root: Path,
+    orchestration_id: str,
+    *,
+    node_key: str,
+    step: str,
+    required_outputs: Sequence[str],
+) -> dict[str, Any] | None:
+    """Write `artifact_hashes` (and, for generate and build, `source_ir_id`) into the phase's stage
+    meta. Returns the stamped document, or `None` for a phase that certifies no meta.
+
+    Called from `write_step_result` on a `pass`, after `_validate_step_result_payload` has
+    proved every `required_outputs` entry exists and before the result file is written. That
+    position is the whole design:
+
+      - it is the ONE host-side point both the pure path (host writes the meta) and the
+        agentic path (the verify leaf writes it) pass through, so there is one writer of the
+        hashes rather than one per meta author;
+      - the anti-mock-green check has just established the deliverables are on disk, so the
+        hashes are taken of artifacts that were proved to exist;
+      - it is itself an enforcement gate a later `set-status pass` trusts, so a phase that
+        could not be stamped must not get a passing step_result.
+
+    Failure is a `RuntimeError`, not a warning. The ledger this replaces updated on a
+    best-effort basis (`update_checkpoint` was WARN-only), which was affordable because a
+    missing entry only cost a re-run; an unstamped meta is instead indistinguishable from a
+    meta whose author skipped the stamp, and `_phase_certified` refuses both — so failing
+    open here would silently disable the certification of that phase forever.
+    """
+    step_token = step.strip().lower()
+    meta_filename = CERTIFYING_META_FILENAME_BY_STEP.get(step_token)
+    if meta_filename is None:
+        return None
+    refs = [r.strip() for r in required_outputs if isinstance(r, str) and r.strip()]
+    meta_refs = [r for r in refs if _normalize_rel_posix(r).rsplit("/", 1)[-1] == meta_filename]
+    if len(meta_refs) != 1:
+        raise RuntimeError(
+            f"certification stamp: pass step_result for {step_token} must declare exactly one "
+            f"{meta_filename} in required_outputs, got {meta_refs}"
+        )
+    meta_ref = _normalize_rel_posix(meta_refs[0])
+    meta_path = repo_root / meta_ref
+    try:
+        doc = json.loads(meta_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise RuntimeError(
+            f"certification stamp: cannot read {meta_ref}: {exc}"
+        ) from exc
+    if not isinstance(doc, dict):
+        raise RuntimeError(f"certification stamp: {meta_ref} is not a JSON object")
+
+    artifact_refs = _certifiable_artifact_refs(refs, meta_ref)
+    if not artifact_refs:
+        raise RuntimeError(
+            f"certification stamp: {step_token} declares no hashable deliverable besides "
+            f"{meta_filename} (required_outputs={refs})"
+        )
+    hashes: dict[str, str] = {}
+    for ref in artifact_refs:
+        digest = _compute_sha256(repo_root / ref)
+        if digest == "sha256:missing":
+            raise RuntimeError(
+                f"certification stamp: declared deliverable is absent on disk: {ref}"
+            )
+        hashes[ref] = digest
+    doc["artifact_hashes"] = hashes
+
+    if step_token in {"generate", "build"}:
+        # The IR binding. `source_meta.json` never carried one; `binary_meta.json` does carry
+        # `source_ir_id` (host-written by `_build_inproc`), but that write happens INSIDE the
+        # build child's window, so the child-window strip erases it — restoring it here is
+        # what keeps a successfully built binary bound (without this, every build reads
+        # `binary_not_bound` and Build/Validate could never be skipped again).
+        #
+        # Taken from the RESERVATION, not from the meta or the leaf: the reservation is what
+        # this orchestration is holding the compile phase to, so an artifact can never claim
+        # a lineage the run did not reserve.
+        node_safe = _node_key_to_safe(node_key.strip())
+        reserved_ir_id = _reserved_id(
+            _orchestration_root(repo_root, orchestration_id) / "reservations" / node_safe,
+            "compile")
+        if reserved_ir_id is None:
+            raise RuntimeError(
+                f"certification stamp: {step_token} cannot record source_ir_id — no compile "
+                f"reservation for {node_key}"
+            )
+        doc["source_ir_id"] = reserved_ir_id
+
+    _write_json(meta_path, doc)
+    return doc
+
+
+def _reserved_id(res_dir: Path, step: str) -> str | None:
+    """The id this orchestration reserved for `step` (`compile.json` names the ir_id,
+    `generate.json` the pipeline_id), or `None` when no reservation was made.
+
+    `_read_json` RAISES on a missing file; a node whose reservation does not exist is an
+    ordinary state (nothing has run yet, or the record belongs to another node_key), and
+    both readers here answer it as "not certified" / "nothing to revoke"."""
+    path = res_dir / f"{step}.json"
+    if not path.is_file():
+        return None
+    doc = _read_json(path)
+    if not isinstance(doc, dict):
+        return None
+    value = doc.get("reserved_ir_id")
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def _strip_certification(
+    repo_root: Path,
+    *,
+    step: str,
+    required_outputs: Sequence[str],
+) -> str | None:
+    """Remove the certification keys from a NON-passing phase's stage meta. Returns the meta
+    ref when something was removed, else `None`.
+
+    The stamp is host-written, but on the agentic path the stage meta lives inside the verify
+    leaf's write_root — so a leaf can put `artifact_hashes` / `source_ir_id` there itself. That
+    buys it nothing while the phase passes (the host overwrites them with its own measurement
+    of the same files), but a phase that ends NON-pass would otherwise leave a meta claiming a
+    certification no host ever issued, and the skip decision reads exactly that claim. Erasing
+    the keys when the phase terminates non-pass makes "certified" mean "a passing
+    `write-step-result` stamped it" for every phase that reaches this function.
+
+    Best effort by design: an absent or unreadable meta is the ordinary shape of a failed
+    phase (nothing was authored), and there is nothing to strip.
+
+    This is the SECOND of two strips and covers only phases that reach here. The phase that
+    fail-closes without writing a step_result at all (a leaf transport error, a validate gate
+    failure) is covered by the FIRST one, in `_validate_actual_write_paths` — every child
+    window terminalizes, and the keys are erased there from whatever stage meta the child
+    changed. Between them, the keys exist only where a passing `write-step-result` stamped
+    them.
+    """
+    meta_filename = CERTIFYING_META_FILENAME_BY_STEP.get(step.strip().lower())
+    if meta_filename is None:
+        return None
+    meta_refs = [
+        _normalize_rel_posix(r.strip()) for r in required_outputs
+        if isinstance(r, str) and r.strip()
+        and _normalize_rel_posix(r.strip()).rsplit("/", 1)[-1] == meta_filename
+    ]
+    if len(meta_refs) != 1:
+        return None
+    return meta_refs[0] if _strip_certification_keys(repo_root / meta_refs[0]) else None
+
+
+def _strip_certification_keys(meta_path: Path) -> bool:
+    """Remove `artifact_hashes` / `source_ir_id` from one stage meta, preserving every other
+    key. `True` when something was removed. Never raises: an absent or unreadable meta is the
+    ordinary shape of a phase that authored nothing, and there is nothing to strip."""
+    try:
+        doc = json.loads(meta_path.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    if not isinstance(doc, dict):
+        return False
+    removed = [k for k in ("artifact_hashes", "source_ir_id") if k in doc]
+    if not removed:
+        return False
+    for key in removed:
+        doc.pop(key)
+    try:
+        _write_json(meta_path, doc)
+    except OSError:
+        return False
+    return True
+
+
+def _revocable_stage_meta_path(
+    repo_root: Path,
+    orchestration_id: str,
+    *,
+    node_key: str,
+    step: str,
+) -> Path | None:
+    """The stage meta a re-derivation of `(node_key, step)` must revoke, resolved from THIS
+    orchestration's records — the compile reservation for the ir_id, and
+    `<pipeline_ref>/lineage.json` for the source_id / binary_id.
+
+    Resolved from the records rather than by re-selecting the latest artifact: a retry is a
+    statement about the artifact this run produced, and the latest one under the root may
+    already belong to a different orchestration. `None` when the step certifies no meta
+    (validate) or the record naming it does not exist — the caller reports that as a no-op
+    rather than an error, because a phase that never produced a meta has nothing to revoke.
+    """
+    step_token = step.strip().lower()
+    meta_filename = CERTIFYING_META_FILENAME_BY_STEP.get(step_token)
+    if meta_filename is None:
+        return None
+    node_safe = _node_key_to_safe(node_key.strip())
+    res_dir = _orchestration_root(repo_root, orchestration_id) / "reservations" / node_safe
+    if step_token == "compile":
+        ir_id = _reserved_id(res_dir, "compile")
+        if ir_id is None:
+            return None
+        return repo_root / "workspace" / "ir" / node_safe / ir_id / meta_filename
+    pipeline_id = _reserved_id(res_dir, "generate")
+    if pipeline_id is None:
+        return None
+    pipe_dir = repo_root / "workspace" / "pipelines" / node_safe / pipeline_id
+    lineage = _read_json(pipe_dir / "lineage.json") or {}
+    key = "source_id" if step_token == "generate" else "binary_id"
+    stage_id = lineage.get(key)
+    if not (isinstance(stage_id, str) and stage_id.strip()):
+        return None
+    sub = "source" if step_token == "generate" else "binary"
+    return pipe_dir / sub / stage_id.strip() / meta_filename
+
+
+def _revoke_stage_meta(
+    repo_root: Path,
+    meta_path: Path,
+    *,
+    reason: str,
+    trigger_agent_run_id: str,
+    last_fail_reason: str | None = None,
+) -> dict[str, Any]:
+    """Rewrite a stage meta as `verification_status: "revoked"`, in place, preserving every
+    other key. Returns `{status, meta_ref, prior_verification_status}`.
+
+    Revocation is what makes a re-derivation decision reach the ARTIFACT. The prior model
+    recorded the decision in this orchestration's own ledger (a checkpoint entry dropped, a
+    phase state reset), so a COLD re-run — which reads no ledger — would have adopted the very
+    artifact a previous run rejected. `prior_verification_status` keeps the audit trail: what
+    was revoked is visible, not merely that the meta is now non-passing.
+    """
+    doc = json.loads(meta_path.read_text(encoding="utf-8"))
+    if not isinstance(doc, dict):
+        raise RuntimeError(f"revoke-artifact: {meta_path} is not a JSON object")
+    prior = doc.get("verification_status")
+    doc["prior_verification_status"] = prior
+    doc["verification_status"] = "revoked"
+    doc["revoked_at"] = _utc_now_iso()
+    doc["revoked_by_agent_run_id"] = trigger_agent_run_id.strip()
+    doc["revocation_reason"] = reason
+    if last_fail_reason is not None and last_fail_reason.strip():
+        doc["last_fail_reason"] = last_fail_reason
+    _write_json(meta_path, doc)
+    return {
+        "status": "revoked",
+        "meta_ref": _normalize_rel_posix(str(meta_path.relative_to(repo_root)))
+        if meta_path.is_relative_to(repo_root) else str(meta_path),
+        "prior_verification_status": prior,
+    }
+
+
+def _certified_by_ref(step: str, detail: dict[str, Any]) -> str:
+    """The one id that identifies what a skipped phase adopted, per phase."""
+    key = {"compile": "ir_ref", "generate": "source_id",
+           "build": "binary_id", "validate": "run_id"}[step]
+    return str(detail.get(key) or "")
+
+
+def check_phase_certified(
+    repo_root: Path,
+    orchestration_id: str,
+    *,
+    node_key: str,
+    step: str,
+    agent_run_id: str | None = None,
+) -> dict[str, Any]:
+    """`_phase_certified` plus its DURABLE record: a certified phase is transitioned to
+    `skipped_certified` in `phase_state.json` (event `skip_certified`).
+
+    That transition is the durable record that the phase was certified rather than run. It is
+    what will let the completion vouch accept a node whose earlier attempt in this same
+    orchestration left a `fail` step_result behind — the phase became certified afterwards and
+    was skipped, and the phase state is what says so. The vouch reads it from issue #177's
+    PR-2; nothing reads it today. Idempotent — `run_phase` may ask again after `conduct`
+    already asked.
+    """
+    _require_preflight_launchable(repo_root, orchestration_id, enforce_live_probe=False)
+    certified, detail = _phase_certified(repo_root, orchestration_id, node_key, step)
+    step_token = step.strip().lower()
+    if certified:
+        _transition_node_step_phase_state(
+            repo_root,
+            orchestration_id,
+            node_key=node_key,
+            step=step_token,
+            new_state="skipped_certified",
+            event="skip_certified",
+            agent_run_id=agent_run_id,
+            # The artifact THIS phase adopted, not the IR every phase happens to stand on:
+            # an operator reading `phase_state_log.jsonl` to see which binary a skipped Build
+            # took must not be handed the ir_ref.
+            reason=f"certified:{_certified_by_ref(step_token, detail)}",
+        )
+    phase_state_doc = _load_phase_state(repo_root, orchestration_id) or {}
+    node_states = phase_state_doc.get("node_states")
+    current_state = None
+    if isinstance(node_states, dict):
+        inner = node_states.get(_node_key_to_safe(node_key.strip()))
+        if isinstance(inner, dict):
+            current_state = inner.get(step_token)
+    return {
+        "certified": certified,
+        "node_key": node_key.strip(),
+        "step": step_token,
+        "reason": detail.get("reason"),
+        "ir_ref": detail.get("ir_ref"),
+        "pipeline_ref": detail.get("pipeline_ref"),
+        "source_id": detail.get("source_id"),
+        "binary_id": detail.get("binary_id"),
+        "run_id": detail.get("run_id"),
+        "revoked": bool(detail.get("revoked")),
+        "last_fail_reason": detail.get("last_fail_reason"),
+        "phase_state": current_state,
+    }
 
 
 def _certified_binary_meta(pipe_dir: Path) -> tuple[Path, dict[str, Any]] | None:
@@ -5078,6 +5692,23 @@ STEP_KEYS_FOR_NODE_STATE: tuple[str, ...] = (
     "validate",
 )
 
+# Output basenames that are audit/process logs rather than deliverables. Two rules read this
+# one definition: the conductor's "all deliverables written" check (which must not require a
+# log whose placement varies by build system), and `_certifiable_artifact_refs` (which must not
+# HASH one). The second is why the definition lives here rather than in the conductor: Build's
+# `required_outputs` carries `<source>/src/command_log.jsonl` and Validate.execute APPENDS to
+# that same file (`run_quality_checks`'s command log), so hashing it would make every Validate
+# attempt read as a tampered Build. Measured on the conductor-authored Makefile: `make test` has
+# no build prerequisite and runs the binary with `cwd=RUNDIR`, so nothing else under
+# `source/*/src/` or `binary/*/bin/` changes.
+# The two readers pull in OPPOSITE safety directions, so adding a basename here is not a
+# neutral edit: it makes the hash exclusion safer (one fewer false tamper) and the conductor's
+# "all deliverables written" check weaker (one fewer required output). Weigh both.
+AUDIT_LOG_BASENAMES: frozenset[str] = frozenset({
+    "command_log.jsonl", "stdout.log", "stderr.log",
+    "compile.stdout.log", "compile.stderr.log",
+})
+
 
 def _access_policies_dir(repo_root: Path, orchestration_id: str) -> Path:
     return _orchestration_root(repo_root, orchestration_id) / "access_policies"
@@ -5697,8 +6328,14 @@ def _transition_node_step_phase_state(
     new_state: str,
     event: str,
     agent_run_id: str | None = None,
+    reason: str | None = None,
 ) -> dict[str, Any]:
-    """Update `node_states[node_key_safe][step]` of `phase_state.json`."""
+    """Update `node_states[node_key_safe][step]` of `phase_state.json`.
+
+    `reason` is recorded on the log entry only. The two transitions that carry one are the
+    ones a person reads back to understand why a phase did not run: `skip_certified` (which
+    artifact was adopted) and `phase_reset` (the routing reason that re-derived it).
+    """
     node_safe = _node_key_to_safe(node_key.strip())
     step_key = step.strip().lower()
     if step_key not in STEP_KEYS_FOR_NODE_STATE:
@@ -5740,6 +6377,8 @@ def _transition_node_step_phase_state(
     }
     if agent_run_id:
         log_entry["agent_run_id"] = agent_run_id
+    if reason:
+        log_entry["reason"] = reason
     _append_phase_state_log(repo_root, orchestration_id, log_entry)
     return doc
 
@@ -10861,6 +11500,29 @@ def _validate_actual_write_paths(
     )
     output_refs = _declared_output_refs(payload)
 
+    if actor_role in {"step", "substep"}:
+        # A certification is a HOST stamp, so it never survives a child window. The
+        # `generate.verify` leaf's write_root IS `source_meta.json`, so that leaf can author
+        # `artifact_hashes` / `source_ir_id` with perfectly correct values — and the phase
+        # would then read as certified on a later run even though it never passed. The
+        # `write-step-result` strip does not cover it: a phase that fail-closes on a leaf
+        # transport error or a validate gate returns WITHOUT writing a step_result at all,
+        # and `run_phase` consults the certification BEFORE it would rotate the producer id.
+        # Erasing the keys from whatever stage meta this child actually CHANGED closes that:
+        # after this point the keys can only have been written by a passing
+        # `write-step-result`, which runs when every child window is already closed.
+        #
+        # Placed HERE — right after the diff, before every refusal this function can raise —
+        # because the round-1 version sat after the unauthorized-write raise, and a leaf that
+        # made ONE unauthorized write (a stray file beside its own file pin, whose parent is
+        # bound writable for the Write tool's temp-sibling rename) therefore kept its forged
+        # certification. Measured end to end: that leaf's phase then read as certified in this
+        # orchestration AND in a fresh one, and the run reached `pass`.
+        for changed in actual_changed_paths:
+            base = _normalize_rel_posix(changed).rsplit("/", 1)[-1]
+            if base in set(CERTIFYING_META_FILENAME_BY_STEP.values()):
+                _strip_certification_keys(repo_root / _normalize_rel_posix(changed))
+
     if actor_role == "orchestration":
         child_excludable = _child_managed_paths_excludable_from_orchestration_diff(
             repo_root,
@@ -14633,6 +15295,7 @@ def enable_checkpoint_resume(
     spec_ref: str | None = None,
     source_dependency_ref: str | None = None,
     closure_until_phase: str | None = None,
+    until_phase: str | None = None,
     wait_usage_reset: bool = False,
     driver: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -14721,6 +15384,20 @@ def enable_checkpoint_resume(
     # Always written (not gated on truthiness) so a resume that DROPS the flag also resets it.
     if isinstance(invocation_block, dict):
         invocation_block["wait_usage_reset"] = bool(wait_usage_reset)
+    # The end-phase THIS resume runs to. A resume may EXTEND the run (`--resume <spec>
+    # validate` over a run started `--until-phase compile`), and the completion vouch reads
+    # this field to decide which phases must be certified — left stale, it would vouch a
+    # four-phase run against one phase. Refreshed only when the caller passes one, so a
+    # resume that does not know its end-phase leaves the record alone rather than clearing it.
+    if isinstance(until_phase, str) and until_phase.strip():
+        if not isinstance(invocation_block, dict):
+            # A legacy orchestration carries no `invocation` block at all. Refreshing only an
+            # EXISTING dict left it permanently unvouchable — the completion vouch reads this
+            # field and raises when it is absent — so a resume that KNOWS its end-phase
+            # records one rather than requiring the operator to hand-edit the meta.
+            invocation_block = {}
+            meta["invocation"] = invocation_block
+        invocation_block["until_phase"] = until_phase.strip()
     prior_status = meta.get("status")
     terminal_reset = (
         isinstance(prior_status, str) and prior_status in IDEMPOTENT_TERMINAL_STATUSES
@@ -15652,6 +16329,51 @@ def _iter_step_result_paths(root: Path) -> list[Path]:
     return sorted(steps_root.glob("*/*/*/step_result.json"))
 
 
+def _until_phase_index(repo_root: Path, orchestration_id: str) -> int:
+    """The index in `STEP_KEYS_FOR_NODE_STATE` of the phase this invocation was asked to
+    reach, from `orchestration_meta.invocation.until_phase`.
+
+    Raises when the record is missing or names a phase the state machine does not know: the
+    completion vouch uses it to decide WHICH phases must be certified, so guessing would
+    either demand a phase the operator never asked for or skip one they did.
+    """
+    meta_path = _orchestration_root(repo_root, orchestration_id) / "orchestration_meta.json"
+    meta = _read_json(meta_path) if meta_path.is_file() else None
+    invocation = meta.get("invocation") if isinstance(meta, dict) else None
+    token = invocation.get("until_phase") if isinstance(invocation, dict) else None
+    if not isinstance(token, str) or token.strip().lower() not in STEP_KEYS_FOR_NODE_STATE:
+        raise RuntimeError(
+            "cannot mark orchestration pass: orchestration_meta.invocation.until_phase is "
+            f"missing or unknown ({token!r}); it decides which phases must be certified. "
+            "A run started by tools/run_workflow.py records it; record one on an "
+            "orchestration that has none with `init --resume-from-checkpoint "
+            f"--until-phase <{'|'.join(STEP_KEYS_FOR_NODE_STATE)}>`"
+        )
+    return STEP_KEYS_FOR_NODE_STATE.index(token.strip().lower())
+
+
+def _reserved_node_keys(repo_root: Path, orchestration_id: str) -> list[str]:
+    """The node_keys this orchestration reserved a phase root for, read from
+    `reservations/<node_safe>/compile.json`.
+
+    `prepare_node` writes it before the first phase runs, on every route — so it is present
+    whether the phases then ran or were skipped as certified, which is what makes it the
+    right replacement for the completion vouch's old "the agent graph has edges" rule.
+    """
+    res_root = _orchestration_root(repo_root, orchestration_id) / "reservations"
+    if not res_root.is_dir():
+        return []
+    keys: list[str] = []
+    for path in sorted(res_root.glob("*/compile.json")):
+        doc = _read_json(path) if path.is_file() else None
+        if not isinstance(doc, dict):
+            continue
+        node_key = doc.get("node_key")
+        if isinstance(node_key, str) and node_key.strip():
+            keys.append(node_key.strip())
+    return keys
+
+
 def _validate_orchestration_completion_for_pass(
     repo_root: Path,
     orchestration_id: str,
@@ -15672,9 +16394,56 @@ def _validate_orchestration_completion_for_pass(
         raise RuntimeError("cannot mark orchestration pass without orchestration agent run record")
 
     graph = _load_graph(graph_path)
+    # An orchestration that launched no child has no edges, and since issue #177 that is a
+    # LEGITIMATE terminal state: a re-run over a node whose every phase is already certified
+    # skips all four, so nothing is launched. The edges requirement existed to refuse an
+    # orchestration that did nothing at all; what distinguishes "did nothing" from "had
+    # nothing to do" is whether a node was ever RESERVED — `prepare_node` reserves the ir and
+    # pipeline roots before the first phase, on every run, skipped or not. So the reservation
+    # is the replacement guard, and it refuses exactly what the edge rule refused.
+    reserved_nodes = _reserved_node_keys(repo_root, orchestration_id)
+    if not reserved_nodes:
+        raise RuntimeError("cannot mark orchestration pass: no node reservations")
+    # A reservation proves PREPARATION, not completion (Codex round 2, P1): with no children,
+    # no edges and no step_results, every loop below is empty and would accept the run. So the
+    # edgeless case is carried by the artifacts instead — each reserved node must be CERTIFIED
+    # through the phase this invocation was asked to reach. That is the same predicate the
+    # skip decision uses, which is what makes "skipped because certified" and "passed" one
+    # statement rather than two.
+    for node_key in reserved_nodes:
+        for phase in STEP_KEYS_FOR_NODE_STATE[:_until_phase_index(repo_root, orchestration_id) + 1]:
+            certified, detail = _phase_certified(repo_root, orchestration_id, node_key, phase)
+            if not certified:
+                raise RuntimeError(
+                    f"cannot mark orchestration pass: {node_key}/{phase} is not certified: "
+                    f"{detail.get('reason')}"
+                )
+    # EMPTY edges is the new legitimate case; MALFORMED is not. The rule this replaced refused
+    # both together — not by detecting malformation, but because `_load_graph` NORMALIZES a
+    # corrupt graph to `{"edges": []}` and the old rule refused empty. So the raw file is what
+    # has to be read here: reading the normalization would skip the whole per-edge parent/child
+    # validation below on a record `tools/audit_orchestration.py` and `docs/ORCHESTRATION.md`
+    # read back as the run's agent tree.
+    raw_graph = _read_json(graph_path) if graph_path.is_file() else None
+    if not (isinstance(raw_graph, dict) and isinstance(raw_graph.get("edges"), list)):
+        raise RuntimeError(
+            "cannot mark orchestration pass: agent_graph.json is missing or has no `edges` list"
+        )
     edges = graph.get("edges")
-    if not isinstance(edges, list) or not edges:
-        raise RuntimeError("cannot mark orchestration pass without agent_graph edges")
+    # EMPTY edges is legitimate only when NOTHING LAUNCHED. A run that recorded a step or
+    # substep and has no edge lost its parent-child record, and the per-edge validation below
+    # then iterates nothing — so the vouch could not tell "launched nothing" from "launched and
+    # lost the record", which is the false record the `edges` rule used to refuse. Measured
+    # red-then-GREEN by the disclosure axis on a real one-edge run whose graph was emptied.
+    if not edges and any(
+        _normalized_agent_role(str(payload.get("agent_role") or "")) in {"step", "substep"}
+        for payload in runs.values()
+        if isinstance(payload, dict)
+    ):
+        raise RuntimeError(
+            "cannot mark orchestration pass: agent_graph.json records no edges while "
+            "agent_runs.jsonl records step/substep runs (the agent tree is not traceable)"
+        )
 
     step_result_refs_by_substep: dict[str, Path] = {}
     for result_path in _iter_step_result_paths(root):
@@ -21912,6 +22681,28 @@ def write_step_result(
         payload=result,
     )
 
+    # Stamp the phase's certification into its stage meta. Placed AFTER the payload
+    # validation (which has just proved every declared deliverable exists) and BEFORE the
+    # step_result is written, so a phase that cannot be certified never gets a passing
+    # step_result to certify it. The child windows are all closed by now — the phase gate
+    # above requires `child_finished` — so this host write lands in no leaf's FS-diff.
+    _declared_outputs = [
+        r for r in (result.get("required_outputs") or [])
+        if isinstance(r, str) and r.strip()
+    ]
+    if str(result.get("status", "")).strip().lower() == "pass":
+        _stamp_certification(
+            repo_root,
+            orchestration_id,
+            node_key=node_key,
+            step=step_token,
+            required_outputs=_declared_outputs,
+        )
+    else:
+        # A non-passing phase leaves no certification behind — including one a leaf wrote
+        # into its own stage meta.
+        _strip_certification(repo_root, step=step_token, required_outputs=_declared_outputs)
+
     # A pre-existing step_result here means the phase re-ran WITHOUT reopen_phase
     # archiving the prior attempt aside. Every in-run re-run route goes through
     # reopen_phase (archive + supersede) or the skip-write+tombstone branches; the
@@ -22227,8 +23018,10 @@ def reopen_phase(
     superseded runs + append `reopen/reopen_log.jsonl`; (3) archive each affected
     `step_result.json` to `step_result.superseded.<seq>.json` (drops it from the
     `_iter_step_result_paths` glob and frees the deterministic executor path);
-    (4) drop the affected `completed_steps` checkpoint entries; (5) reset the
-    affected `phase_state` node_states to `not_started`.
+    (3b) REVOKE the `from_phase` stage meta, which is what carries the decision to the
+    artifact — the operations around it only tell THIS orchestration's records, and a cold
+    re-run reads none of them; (4) drop the affected `completed_steps` checkpoint entries;
+    (5) reset the affected `phase_state` node_states to `not_started`.
     """
     _require_preflight_launchable(repo_root, orchestration_id, enforce_live_probe=False)
 
@@ -22395,6 +23188,23 @@ def reopen_phase(
                 else str(archived_path)
             )
 
+    # (2b) Revoke the `from_phase` stage meta. Dropping the checkpoint entry below tells THIS
+    # orchestration to re-run the phase; the revocation tells the ARTIFACT, which is what the
+    # certification predicate (`_phase_certified`) and therefore every later run — including a
+    # cold one, which reads no checkpoint — actually consult. Downstream phases need no
+    # revocation: each binds to the id of the phase above it, so a re-derived `from_phase`
+    # leaves them unbound. A missing meta is a no-op (nothing was certified).
+    revoked_meta_ref: str | None = None
+    revocable = _revocable_stage_meta_path(
+        repo_root, orchestration_id, node_key=node_key_norm, step=from_token)
+    if revocable is not None and revocable.is_file():
+        revoked_meta_ref = _revoke_stage_meta(
+            repo_root,
+            revocable,
+            reason=reason,
+            trigger_agent_run_id=trigger_agent_run_id,
+        )["meta_ref"]
+
     # (3) Drop the affected checkpoint entries so check_step_completed re-runs them.
     checkpoint = _load_checkpoint(repo_root, orchestration_id)
     dropped_checkpoint_steps: list[str] = []
@@ -22467,6 +23277,7 @@ def reopen_phase(
         "trigger_source": "agent_runs_invalid" if trigger_from_invalid_log else "agent_runs",
         "superseded_run_count": len(superseded_now),
         "archived_step_results": archived,
+        "revoked_meta_ref": revoked_meta_ref,
         "dropped_checkpoint_steps": dropped_checkpoint_steps,
         "next_action": f"relaunch from {from_token}",
     }
@@ -23335,6 +24146,17 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     init_parser.add_argument(
+        "--until-phase",
+        default=None,
+        help=(
+            "On --resume-from-checkpoint, refresh invocation.until_phase to the phase THIS "
+            "resume runs to. A resume may extend the run, and the completion vouch reads "
+            "that record to decide which phases must be certified — a stale one would vouch "
+            "a four-phase run against one phase. Ignored on a cold init, where the phase "
+            "comes from --invocation-json."
+        ),
+    )
+    init_parser.add_argument(
         "--closure-until-phase",
         default=None,
         help=(
@@ -23766,6 +24588,26 @@ def main(argv: list[str] | None = None) -> int:
     reserve_root_parser.add_argument("--reserved-by-agent-run-id", required=True,
                                      help="UUID of the agent that will use this reserved ID.")
 
+    check_phase_certified_parser = subparsers.add_parser(
+        "check-phase-certified",
+        help=(
+            "Is this (node, phase) already certified by the artifacts on disk? Answers the "
+            "same way on a cold run and on a resume: the phase's stage meta must record "
+            "verification_status=pass, be bound to the current artifact of the phase above "
+            "it, and its deliverables must still hash to the recorded artifact_hashes. On "
+            "yes, the phase state is recorded as skipped_certified."
+        ),
+    )
+    check_phase_certified_parser.add_argument("--repo-root", required=True)
+    check_phase_certified_parser.add_argument("--orchestration-id", required=True)
+    check_phase_certified_parser.add_argument("--node-key", required=True)
+    check_phase_certified_parser.add_argument(
+        "--step", required=True, choices=list(STEP_KEYS_FOR_NODE_STATE))
+    check_phase_certified_parser.add_argument(
+        "--agent-run-id",
+        help="Agent run id recorded on the skip_certified phase-state event (the orchestration arid).",
+    )
+
     check_step_parser = subparsers.add_parser("check-step-completed")
     check_step_parser.add_argument("--repo-root", required=True)
     check_step_parser.add_argument("--orchestration-id", required=True)
@@ -23880,6 +24722,7 @@ def main(argv: list[str] | None = None) -> int:
                 spec_ref=args.spec_ref,
                 source_dependency_ref=args.source_dependency_ref,
                 closure_until_phase=getattr(args, "closure_until_phase", None),
+                until_phase=getattr(args, "until_phase", None),
                 wait_usage_reset=bool(getattr(args, "wait_usage_reset", False)),
                 driver=driver_record,
             )
@@ -24139,6 +24982,14 @@ def main(argv: list[str] | None = None) -> int:
         except (ValueError, RuntimeError) as exc:
             print(str(exc), file=sys.stderr)
             return 1
+    elif args.command == "check-phase-certified":
+        result = check_phase_certified(
+            repo_root=repo_root,
+            orchestration_id=args.orchestration_id,
+            node_key=args.node_key,
+            step=args.step,
+            agent_run_id=args.agent_run_id,
+        )
     elif args.command == "check-step-completed":
         info = check_step_completed(
             repo_root=repo_root,

@@ -30,6 +30,7 @@ from unittest.mock import patch
 
 from mcp_servers.build_runtime_server import tool_compile_project
 from tools import orchestration_runtime as ort
+from tools.tests.orchestration_fixtures import certify_node
 from tools.llm_config import config_sha256 as lc_config_sha256
 
 from tools.orchestration_runtime import (
@@ -192,6 +193,101 @@ _FIX_COMPILE_STEP_DEP_REF = "spec/problem/shallow_water2d/deps.yaml"
 
 def _dep_ref_for_step(step: str) -> str:
     return _FIX_COMPILE_STEP_DEP_REF if step.strip().lower() == "compile" else _FIX_DEP_REF
+
+
+def _seed_generate_pass_outputs(repo_root: Path, meta_ref: str) -> list[str]:
+    """Put a generate phase's certifiable deliverables on disk (the meta itself is written
+    by the caller, which owns its content) plus the compile reservation, and return the
+    `required_outputs` a PASSING generate step_result must declare.
+
+    Two reasons a bare `[meta_ref]` no longer stands in for a real generate: the
+    certification stamp refuses a phase that declares no hashable deliverable besides its
+    own meta, and it records `source_ir_id` from the orchestration's compile RESERVATION,
+    so a generate with no reserved IR cannot be certified to one."""
+    src_dir = (repo_root / meta_ref).parent / "src"
+    src_dir.mkdir(parents=True, exist_ok=True)
+    (src_dir / "shallow_water2d_model.f90").write_text("module m\nend module m\n", encoding="utf-8")
+    res = (repo_root / "workspace" / "orchestrations" / "orch_001" / "reservations"
+           / "problem__shallow_water2d__0.3.0")
+    res.mkdir(parents=True, exist_ok=True)
+    (res / "compile.json").write_text(json.dumps({
+        "node_key": "problem/shallow_water2d@0.3.0", "step": "compile",
+        "reserved_ir_id": "shallow-water2d_20260415_001",
+        "reserved_by_agent_run_id": "orch_run_001", "status": "reserved",
+    }), encoding="utf-8")
+    return _generate_output_refs(meta_ref)
+
+
+def _generate_output_refs(meta_ref: str) -> list[str]:
+    """The (deliverable, meta) pair a generate attempt publishes — the same list the
+    producing substep's `output_refs` must carry and the step_result must declare."""
+    return [str((Path(meta_ref).parent / "src" / "shallow_water2d_model.f90").as_posix()),
+            meta_ref]
+
+
+
+def _seed_node_reservation(repo_root: Path, orchestration_id: str, node_key: str,
+                           *, ir_id: str = "n_20260101_001",
+                           pipeline_id: str = "n_20260101_001",
+                           until_phase: str = "validate") -> None:
+    """What a real run carries by the time it reaches `set-status pass`: the phase-root
+    RESERVATIONS `prepare_node` writes before the first phase, the CERTIFIED artifact chain
+    through `until_phase`, and the `invocation.until_phase` record that says how far the run
+    was asked to go.
+
+    The completion vouch reads all three since issue #177. It replaced the old "the agent
+    graph has edges" rule — which a fully-skipped certified re-run cannot satisfy — with the
+    artifacts themselves, so a fixture that drives `set-status pass` while certifying nothing
+    is no longer a run that could have happened."""
+    certify_node(repo_root, orchestration_id, node_key, through=until_phase,
+                 ir_id=ir_id, pipeline_id=pipeline_id)
+    meta_path = (repo_root / "workspace" / "orchestrations" / orchestration_id
+                 / "orchestration_meta.json")
+    if meta_path.is_file():
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        invocation = meta.get("invocation")
+        meta["invocation"] = {**(invocation if isinstance(invocation, dict) else {}),
+                              "until_phase": until_phase}
+        meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+
+
+def _seed_build_pass_outputs(repo_root: Path, *, binary_id: str = "bin_20260101_001") -> list[str]:
+    """Put a build phase's two certifiable deliverables on disk and return the
+    `required_outputs` a PASSING build step_result must declare.
+
+    `write_step_result` stamps the phase certification (the sha256 of each declared
+    deliverable) into `binary_meta.json` before writing the result, and refuses a pass that
+    declares no meta or whose declared deliverable is absent — so a fixture that names a
+    binary it never wrote no longer stands in for a real build."""
+    # The compile reservation the certification stamp reads `source_ir_id` from — a build
+    # binds to the IR its source was generated from, and the reservation is what this
+    # orchestration is holding that to.
+    res = (repo_root / "workspace" / "orchestrations" / "orch_001" / "reservations"
+           / "problem__shallow_water2d__0.3.0")
+    res.mkdir(parents=True, exist_ok=True)
+    (res / "compile.json").write_text(json.dumps({
+        "node_key": "problem/shallow_water2d@0.3.0", "step": "compile",
+        "reserved_ir_id": "shallow-water2d_20260415_001",
+        "reserved_by_agent_run_id": "orch_run_001", "status": "reserved"}), encoding="utf-8")
+    bin_dir = repo_root / _FIX_PIPE_REF / "binary" / binary_id
+    (bin_dir / "bin").mkdir(parents=True, exist_ok=True)
+    (bin_dir / "bin" / "simulate").write_bytes(b"\x00")
+    (bin_dir / "binary_meta.json").write_text(
+        json.dumps({
+            "binary_id": binary_id, "verification_status": "pass",
+            # The bindings that keep the node's certification chain intact: a binary is
+            # certified only while it names the source and the IR it was built from.
+            "source_source_id": "src_20260101_001",
+            "source_ir_id": "shallow-water2d_20260415_001",
+            "dependency_check": {"direct_deps": [], "resolved": "match",
+                                 "closure_bindings": []},
+        }),
+        encoding="utf-8",
+    )
+    return [
+        f"{_FIX_PIPE_REF}/binary/{binary_id}/bin/simulate",
+        f"{_FIX_PIPE_REF}/binary/{binary_id}/binary_meta.json",
+    ]
 
 
 def _fixture_generate_downstream_ready(repo_root: Path, *, source_id: str = "src_fixture_001") -> None:
@@ -2751,6 +2847,10 @@ shell_tool                       stable             true
                 spec_ref="spec/problem/shallow_water2d/controlled_spec.md",
                 source_dependency_ref="spec/problem/shallow_water2d/deps.yaml",
             )
+            _seed_node_reservation(repo_root, "orch_001", "problem/shallow_water2d@0.3.0",
+                                   ir_id="shallow-water2d_20260415_001",
+                                   pipeline_id="shallow-water2d_20260415_001",
+                                   until_phase="build")
             _mark_dependencies_ready(repo_root)
             write_preflight(
                 repo_root=repo_root,
@@ -2905,6 +3005,9 @@ shell_tool                       stable             true
                 json.dumps(self._valid_ir_meta()),
                 encoding="utf-8",
             )
+            # The IR deliverable itself: the pass path stamps its sha256 into ir_meta.json.
+            (ir_meta_path.parent / "spec.ir.yaml").write_text(
+                "spec: shallow_water2d\n", encoding="utf-8")
             # Fail-fast executor-role guard: a substep-aware phase (compile) rejects a
             # non-orchestration --agent-run-id (here the verify-substep and the build
             # step arid) BEFORE the file is written and BEFORE the phase transitions, so
@@ -2968,9 +3071,7 @@ shell_tool                       stable             true
                     payload={
                         "status": "pass",
                         "validation_stage": "post_build",
-                        "required_outputs": [
-                            "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/binary/bin_20260101_001/bin/simulate"
-                        ],
+                        "required_outputs": _seed_build_pass_outputs(repo_root),
                         "failed_substeps": [],
                         "substep_agent_run_ids": [],
                         "executor_agent_run_id": "orch_run_001",
@@ -2985,9 +3086,7 @@ shell_tool                       stable             true
                 payload={
                     "status": "pass",
                     "validation_stage": "post_build",
-                    "required_outputs": [
-                        "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/binary/bin_20260101_001/bin/simulate"
-                    ],
+                    "required_outputs": _seed_build_pass_outputs(repo_root),
                     "failed_substeps": [],
                     "substep_agent_run_ids": [],
                     "executor_agent_run_id": "step_run_build_001",
@@ -9948,6 +10047,9 @@ shell_tool                       stable             true
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             init_orchestration(repo_root=repo_root, orchestration_id="orch_001")
+            _seed_node_reservation(repo_root, "orch_001", "problem/shallow_water2d@0.3.0",
+                                   ir_id="shallow-water2d_20260415_001",
+                                   pipeline_id="shallow-water2d_20260415_001")
             _mark_dependencies_ready(repo_root)
             write_preflight(
                 repo_root=repo_root,
@@ -10034,9 +10136,7 @@ shell_tool                       stable             true
                     payload={
                         "status": "pass",
                         "validation_stage": "post_build",
-                        "required_outputs": [
-                            "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/binary/bin_20260101_001/bin/simulate"
-                        ],
+                        "required_outputs": _seed_build_pass_outputs(repo_root),
                         "failed_substeps": [],
                         "substep_agent_run_ids": [],
                     },
@@ -10051,6 +10151,9 @@ shell_tool                       stable             true
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             init_orchestration(repo_root=repo_root, orchestration_id="orch_001")
+            _seed_node_reservation(repo_root, "orch_001", "problem/shallow_water2d@0.3.0",
+                                   ir_id="shallow-water2d_20260415_001",
+                                   pipeline_id="shallow-water2d_20260415_001")
             _mark_dependencies_ready(repo_root)
             write_preflight(
                 repo_root=repo_root,
@@ -10311,9 +10414,7 @@ shell_tool                       stable             true
                 payload={
                     "status": "pass",
                     "validation_stage": "post_build",
-                    "required_outputs": [
-                        "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/binary/bin_20260101_001/bin/simulate"
-                    ],
+                    "required_outputs": _seed_build_pass_outputs(repo_root),
                     "failed_substeps": [],
                     "substep_agent_run_ids": [],
                 },
@@ -10440,9 +10541,7 @@ shell_tool                       stable             true
                 payload={
                     "status": "pass",
                     "validation_stage": "post_build",
-                    "required_outputs": [
-                        "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/binary/bin_20260101_001/bin/simulate"
-                    ],
+                    "required_outputs": _seed_build_pass_outputs(repo_root),
                     "failed_substeps": [],
                     "substep_agent_run_ids": [],
                 },
@@ -10845,13 +10944,15 @@ shell_tool                       stable             true
             }
             with runs_path.open("a", encoding="utf-8") as fh:
                 fh.write(json.dumps(substep_record) + "\n")
-            # create ir_meta.json on disk
-            ir_meta_path = repo_root / "workspace" / "ir" / "problem__shallow_water2d__0.3.0" / "shallow-water2d_20260415_001" / "ir_meta.json"
-            ir_meta_path.parent.mkdir(parents=True, exist_ok=True)
-            ir_meta_path.write_text(
+            # create ir_meta.json + the IR deliverable it certifies on disk (the pass path
+            # stamps the deliverable's sha256 into the meta and refuses an absent one)
+            ir_dir = repo_root / "workspace" / "ir" / "problem__shallow_water2d__0.3.0" / "shallow-water2d_20260415_001"
+            ir_dir.mkdir(parents=True, exist_ok=True)
+            (ir_dir / "ir_meta.json").write_text(
                 json.dumps(self._valid_ir_meta()),
                 encoding="utf-8",
             )
+            (ir_dir / "spec.ir.yaml").write_text("spec: shallow_water2d\n", encoding="utf-8")
             # a compile step requires validation_stage='compile' on pass
             write_step_result(
                 repo_root=repo_root,
@@ -10942,10 +11043,15 @@ shell_tool                       stable             true
         ):
             with runs_path.open("a", encoding="utf-8") as fh:
                 fh.write(json.dumps(record) + "\n")
-        ir_meta_path = (repo_root / "workspace" / "ir" / "problem__shallow_water2d__0.3.0"
-                        / "shallow-water2d_20260415_001" / "ir_meta.json")
-        ir_meta_path.parent.mkdir(parents=True, exist_ok=True)
-        ir_meta_path.write_text(json.dumps(self._valid_ir_meta()), encoding="utf-8")
+        ir_dir = (repo_root / "workspace" / "ir" / "problem__shallow_water2d__0.3.0"
+                  / "shallow-water2d_20260415_001")
+        ir_dir.mkdir(parents=True, exist_ok=True)
+        (ir_dir / "ir_meta.json").write_text(
+            json.dumps(self._valid_ir_meta()), encoding="utf-8")
+        # The deliverable itself, not only its meta: `write_step_result` stamps the phase's
+        # certification (the sha256 of every declared deliverable) into ir_meta.json, and
+        # refuses a pass whose declared deliverable is absent.
+        (ir_dir / "spec.ir.yaml").write_text("spec: shallow_water2d\n", encoding="utf-8")
 
     def _write_passing_compile_step_result(self, repo_root: Path) -> None:
         """The fresh (resumed) compile attempt, written through the real
@@ -11514,7 +11620,7 @@ shell_tool                       stable             true
                 "substep": "verify",
                 "status": "pass",
                 "agent_backend": "claude",
-                "output_refs": [meta_ref],
+                "output_refs": _generate_output_refs(meta_ref),
             }
             with runs_path.open("a", encoding="utf-8") as fh:
                 fh.write(json.dumps(substep_record) + "\n")
@@ -11528,7 +11634,7 @@ shell_tool                       stable             true
                     payload={
                         "status": "pass",
                         "validation_stage": "post_generate",
-                        "required_outputs": [meta_ref],
+                        "required_outputs": _seed_generate_pass_outputs(repo_root, meta_ref),
                         "failed_substeps": [],
                         "substep_agent_run_ids": ["substep_run_gen_verify_001"],
                     },
@@ -11559,7 +11665,7 @@ shell_tool                       stable             true
                             "substep": "verify",
                             "status": "pass",
                             "agent_backend": "claude",
-                            "output_refs": [meta_ref],
+                            "output_refs": _generate_output_refs(meta_ref),
                         }
                     )
                     + "\n"
@@ -11574,7 +11680,7 @@ shell_tool                       stable             true
                     payload={
                         "status": "pass",
                         "validation_stage": "post_generate",
-                        "required_outputs": [meta_ref],
+                        "required_outputs": _seed_generate_pass_outputs(repo_root, meta_ref),
                         "failed_substeps": [],
                         "substep_agent_run_ids": ["substep_run_gen_verify_001"],
                     },
@@ -11604,7 +11710,7 @@ shell_tool                       stable             true
                             "substep": "verify",
                             "status": "pass",
                             "agent_backend": "claude",
-                            "output_refs": [meta_ref],
+                            "output_refs": _generate_output_refs(meta_ref),
                         }
                     )
                     + "\n"
@@ -11618,7 +11724,7 @@ shell_tool                       stable             true
                 payload={
                     "status": "pass",
                     "validation_stage": "post_generate",
-                    "required_outputs": [meta_ref],
+                    "required_outputs": _seed_generate_pass_outputs(repo_root, meta_ref),
                     "failed_substeps": [],
                     "substep_agent_run_ids": ["substep_run_gen_verify_001"],
                 },
@@ -11690,7 +11796,7 @@ shell_tool                       stable             true
                 "substep": "generate",
                 "status": "pass",
                 "agent_backend": "claude",
-                "output_refs": [meta_ref],
+                "output_refs": _generate_output_refs(meta_ref),
             }
             with runs_path.open("a", encoding="utf-8") as fh:
                 fh.write(json.dumps(substep_record) + "\n")
@@ -11733,7 +11839,7 @@ shell_tool                       stable             true
                             "substep": "generate",
                             "status": "pass",
                             "agent_backend": "claude",
-                            "output_refs": [meta_ref],
+                            "output_refs": _generate_output_refs(meta_ref),
                         }
                     )
                     + "\n"
@@ -11777,7 +11883,7 @@ shell_tool                       stable             true
                             "substep": "generate",
                             "status": "pass",
                             "agent_backend": "claude",
-                            "output_refs": [meta_ref],
+                            "output_refs": _generate_output_refs(meta_ref),
                         }
                     )
                     + "\n"
@@ -11821,7 +11927,7 @@ shell_tool                       stable             true
                 "substep": "verify",
                 "status": "pass",
                 "agent_backend": "claude",
-                "output_refs": [meta_ref],
+                "output_refs": _generate_output_refs(meta_ref),
             }
             with runs_path.open("a", encoding="utf-8") as fh:
                 fh.write(json.dumps(substep_record) + "\n")
@@ -11835,7 +11941,7 @@ shell_tool                       stable             true
                 payload={
                     "status": "pass",
                     "validation_stage": "post_generate",
-                    "required_outputs": [meta_ref],
+                    "required_outputs": _seed_generate_pass_outputs(repo_root, meta_ref),
                     "failed_substeps": [],
                     "substep_agent_run_ids": ["substep_run_gen_verify_001"],
                 },
@@ -11882,7 +11988,7 @@ shell_tool                       stable             true
                             "substep": "generate",
                             "status": "pass",
                             "agent_backend": "claude",
-                            "output_refs": [new_meta_ref],
+                            "output_refs": _generate_output_refs(new_meta_ref),
                         }
                     )
                     + "\n"
@@ -11896,7 +12002,7 @@ shell_tool                       stable             true
                 payload={
                     "status": "pass",
                     "validation_stage": "post_generate",
-                    "required_outputs": [new_meta_ref],
+                    "required_outputs": _seed_generate_pass_outputs(repo_root, new_meta_ref),
                     "failed_substeps": ["substep_run_gen_generate_001"],
                     "substep_agent_run_ids": [
                         "substep_run_gen_generate_001",
@@ -11936,7 +12042,7 @@ shell_tool                       stable             true
                             "substep": "generate",
                             "status": "pass",
                             "agent_backend": "claude",
-                            "output_refs": [meta_ref],
+                            "output_refs": _generate_output_refs(meta_ref),
                         }
                     )
                     + "\n"
@@ -11951,7 +12057,7 @@ shell_tool                       stable             true
                     payload={
                         "status": "pass",
                         "validation_stage": "post_generate",
-                        "required_outputs": [meta_ref],
+                        "required_outputs": _seed_generate_pass_outputs(repo_root, meta_ref),
                         "failed_substeps": ["substep_run_gen_generate_001"],
                         "substep_agent_run_ids": ["substep_run_gen_generate_001"],
                     },
@@ -11997,7 +12103,7 @@ shell_tool                       stable             true
                             "substep": "generate",
                             "status": "pass",
                             "agent_backend": "claude",
-                            "output_refs": [new_meta_ref],
+                            "output_refs": _generate_output_refs(new_meta_ref),
                         }
                     )
                     + "\n"
@@ -12070,7 +12176,7 @@ shell_tool                       stable             true
                             "substep": "generate",
                             "status": "pass",
                             "agent_backend": "claude",
-                            "output_refs": [new_meta_ref],
+                            "output_refs": _generate_output_refs(new_meta_ref),
                         }
                     )
                     + "\n"
@@ -12405,6 +12511,1064 @@ shell_tool                       stable             true
         prompt = render_launch_prompt_text(payload)
         self.assertIn("capabilities/step_run_build_001.json", prompt)
         self.assertIn("`capability_token` is not obtained or mismatched", prompt)
+
+
+
+_CERT_NK = "component/spec_x@0.1.0"
+_CERT_SAFE = "component__spec_x__0.1.0"
+_CERT_PIPE_REF = f"workspace/pipelines/{_CERT_SAFE}/spec-x_20260101_001"
+
+
+def _setup_certifiable_generate(repo_root: Path, *, verification_status: str = "pass") -> None:
+    """An orchestration positioned exactly where `write_step_result` is called for a passing
+    generate phase: preflight launchable, the phase at `child_finished`, a recorded producing
+    substep publishing the source deliverables, and the compile reservation the certification
+    stamp reads `source_ir_id` from."""
+    oid = "o1"
+    init_orchestration(repo_root=repo_root, orchestration_id=oid)
+    _mark_dependencies_ready(repo_root, oid)
+    write_preflight(
+        repo_root=repo_root, orchestration_id=oid,
+        payload={
+            "status": "pass", "sandbox_runtime": "bwrap", "sandbox_enforced": True,
+            "can_launch_step_agents": True, "can_launch_substep_agents": True,
+            "feature_states": {"multi_agent": True, "hooks": True},
+            "checks": [{"name": "multi_agent_enabled", "pass": True},
+                       {"name": "hooks_enabled", "pass": True},
+                       {"name": "codex_home_writable", "pass": True},
+                       {"name": "sandbox_bwrap_available", "pass": True},
+                       {"name": "sandbox_bwrap_userns", "pass": True}],
+        },
+    )
+    record_agent_run(
+        repo_root=repo_root, orchestration_id=oid,
+        payload={"agent_run_id": "orch_run_001", "agent_role": "orchestration",
+                 "status": "running", "agent_backend": "claude"},
+    )
+    orch_root = repo_root / "workspace" / "orchestrations" / oid
+    res = orch_root / "reservations" / _CERT_SAFE
+    res.mkdir(parents=True, exist_ok=True)
+    (res / "compile.json").write_text(json.dumps({
+        "node_key": _CERT_NK, "step": "compile", "reserved_ir_id": "spec-x_20260101_001",
+        "reserved_by_agent_run_id": "orch_run_001", "status": "reserved"}), encoding="utf-8")
+
+    src_dir = repo_root / _CERT_PIPE_REF / "source" / "src_c_001" / "src"
+    src_dir.mkdir(parents=True, exist_ok=True)
+    (src_dir / "spec_x_model.f90").write_text("module m\nend module m\n", encoding="utf-8")
+    (src_dir / "command_log.jsonl").write_text('{"cmd": "make"}\n', encoding="utf-8")
+    meta_ref = f"{_CERT_PIPE_REF}/source/src_c_001/source_meta.json"
+    model_ref = f"{_CERT_PIPE_REF}/source/src_c_001/src/spec_x_model.f90"
+    log_ref = f"{_CERT_PIPE_REF}/source/src_c_001/src/command_log.jsonl"
+    (repo_root / meta_ref).write_text(json.dumps({
+        "source_id": "src_c_001", "node_key": _CERT_NK, "attempt_count": 1,
+        "verification_status": verification_status, "last_fail_reason": None,
+        "debug_mode": False, "context_isolated": True,
+        "lint_command_ref": "workspace/tmp/lint.json"}), encoding="utf-8")
+    with (orch_root / "agent_runs.jsonl").open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps({
+            "agent_run_id": "substep_gen_verify_001", "parent_agent_run_id": "orch_run_001",
+            "agent_role": "substep", "node_key": _CERT_NK, "step": "generate",
+            "substep": "verify", "status": "pass", "agent_backend": "claude",
+            "output_refs": [model_ref, log_ref, meta_ref]}) + "\n")
+    ps_path = orch_root / "phase_state.json"
+    ps = json.loads(ps_path.read_text(encoding="utf-8"))
+    ps["node_states"][_CERT_SAFE] = {
+        "compile": "step_result_written", "generate": "child_finished",
+        "build": "not_started", "validate": "not_started"}
+    ps_path.write_text(json.dumps(ps, indent=2) + "\n", encoding="utf-8")
+
+
+class PhaseCertificationTests(unittest.TestCase):
+    """Issue #177: a phase is skipped because its ARTIFACTS are certified, not because a
+    ledger says a run completed. The predicate reads the same way on a cold run and on a
+    resume, so each refusal below is a property of the artifact chain, never of the mode."""
+
+    _NK = "component/spec_x@0.1.0"
+
+    def _preflight(self, repo_root: Path, oid: str = "o1",
+                   until_phase: str = "validate") -> None:
+        init_orchestration(repo_root=repo_root, orchestration_id=oid,
+                           invocation={"until_phase": until_phase})
+        _mark_dependencies_ready(repo_root, oid)
+        write_preflight(
+            repo_root=repo_root,
+            orchestration_id=oid,
+            payload={
+                "status": "pass",
+                "sandbox_runtime": "bwrap",
+                "sandbox_enforced": True,
+                "can_launch_step_agents": True,
+                "can_launch_substep_agents": True,
+                "feature_states": {"multi_agent": True, "hooks": True},
+                "checks": [{"name": "multi_agent_enabled", "pass": True},
+                           {"name": "hooks_enabled", "pass": True},
+                           {"name": "codex_home_writable", "pass": True},
+                           {"name": "sandbox_bwrap_available", "pass": True},
+                           {"name": "sandbox_bwrap_userns", "pass": True}],
+            },
+        )
+
+    def _certified(self, repo_root: Path, **kw) -> dict[str, str]:
+        return certify_node(repo_root, "o1", self._NK, **kw)
+
+    def _reason(self, repo_root: Path, step: str) -> str | None:
+        ok, detail = ort._phase_certified(repo_root, "o1", self._NK, step)
+        self.assertFalse(ok, f"{step} was expected to be refused, detail={detail}")
+        return detail.get("reason")
+
+    def test_check_phase_certified_certifies_compile_on_a_cold_orchestration(self) -> None:
+        """No resume flag, no checkpoint: the artifacts alone certify the phase, and the skip
+        is recorded durably as `skipped_certified` with a `skip_certified` log event."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._preflight(repo)
+            refs = self._certified(repo, through="compile")
+            meta = json.loads(
+                (repo / "workspace/orchestrations/o1/orchestration_meta.json").read_text("utf-8"))
+            self.assertFalse(meta.get("resume_enabled"))
+            self.assertFalse(
+                (repo / "workspace/orchestrations/o1/orchestration_checkpoint.json").exists())
+
+            out = ort.check_phase_certified(
+                repo_root=repo, orchestration_id="o1", node_key=self._NK, step="compile",
+                agent_run_id="orch_run_001")
+            self.assertTrue(out["certified"])
+            self.assertIsNone(out["reason"])
+            self.assertEqual(out["ir_ref"], refs["ir_ref"])
+            self.assertEqual(out["phase_state"], "skipped_certified")
+
+            log = [json.loads(x) for x in (
+                repo / "workspace/orchestrations/o1/phase_state_log.jsonl"
+            ).read_text("utf-8").splitlines() if x.strip()]
+            skip = [e for e in log if e.get("event") == "skip_certified"]
+            self.assertEqual(len(skip), 1)
+            self.assertEqual(skip[0]["to"], "skipped_certified")
+            self.assertEqual(skip[0]["reason"], f"certified:{refs['ir_ref']}")
+            self.assertEqual(skip[0]["agent_run_id"], "orch_run_001")
+
+    def test_the_skip_event_names_the_artifact_that_phase_adopted(self) -> None:
+        """Per PHASE, not the ir_ref every phase happens to stand on: an operator reading
+        `phase_state_log.jsonl` to see which binary a skipped Build took must not be handed
+        the IR."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._preflight(repo)
+            refs = self._certified(repo, through="validate")
+            for step in ("compile", "generate", "build", "validate"):
+                ort.check_phase_certified(repo_root=repo, orchestration_id="o1",
+                                          node_key=self._NK, step=step)
+            log = [json.loads(x) for x in (
+                repo / "workspace/orchestrations/o1/phase_state_log.jsonl"
+            ).read_text("utf-8").splitlines() if x.strip()]
+            reasons = {e["step"]: e["reason"] for e in log if e.get("event") == "skip_certified"}
+            self.assertEqual(reasons, {
+                "compile": f"certified:{refs['ir_ref']}",
+                "generate": f"certified:{refs['source_id']}",
+                "build": f"certified:{refs['binary_id']}",
+                "validate": f"certified:{refs['run_id']}",
+            })
+
+    def test_check_phase_certified_certifies_on_resume(self) -> None:
+        """The same fixture, after `enable_checkpoint_resume`: identical answer. The resume
+        adds nothing the predicate reads, which is the property that lets one code path
+        serve both."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._preflight(repo)
+            self._certified(repo, through="validate")
+            enable_checkpoint_resume(repo, "o1")
+            for step in ("compile", "generate", "build", "validate"):
+                with self.subTest(step=step):
+                    out = ort.check_phase_certified(
+                        repo_root=repo, orchestration_id="o1", node_key=self._NK, step=step)
+                    self.assertTrue(out["certified"], out)
+                    self.assertEqual(out["phase_state"], "skipped_certified")
+
+    def test_check_phase_certified_resolves_every_bound_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._preflight(repo)
+            refs = self._certified(repo, through="validate")
+            out = ort.check_phase_certified(
+                repo_root=repo, orchestration_id="o1", node_key=self._NK, step="validate")
+            self.assertTrue(out["certified"], out)
+            self.assertEqual(
+                (out["ir_ref"], out["pipeline_ref"], out["source_id"], out["binary_id"],
+                 out["run_id"]),
+                (refs["ir_ref"], refs["pipeline_ref"], refs["source_id"], refs["binary_id"],
+                 refs["run_id"]))
+
+    def test_check_phase_certified_cli_json(self) -> None:
+        """The CLI is the conductor's only route to this predicate, so the subcommand and its
+        dispatch are driven end to end — the argparse registration and the `--step` choices
+        included (a phase the state machine does not know must be refused at the parser, not
+        inside the predicate)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._preflight(repo)
+            refs = self._certified(repo, through="generate")
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                rc = main([
+                    "check-phase-certified",
+                    "--repo-root", str(repo),
+                    "--orchestration-id", "o1",
+                    "--node-key", self._NK,
+                    "--step", "generate",
+                    "--agent-run-id", "orch_run_001",
+                ])
+            self.assertEqual(rc, 0)
+            payload = json.loads(buf.getvalue())
+            self.assertTrue(payload["certified"])
+            self.assertEqual(payload["source_id"], refs["source_id"])
+            self.assertEqual(payload["phase_state"], "skipped_certified")
+            self.assertIsNone(payload["reason"])
+
+            # The refusal shape the conductor branches on, over the same CLI.
+            ort._revoke_stage_meta(repo, repo / refs["source_meta"], reason="r",
+                                   trigger_agent_run_id="t1",
+                                   last_fail_reason="the finding")
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                main([
+                    "check-phase-certified", "--repo-root", str(repo),
+                    "--orchestration-id", "o1", "--node-key", self._NK, "--step", "generate",
+                ])
+            payload = json.loads(buf.getvalue())
+            self.assertFalse(payload["certified"])
+            self.assertEqual(payload["reason"], "revoked")
+            self.assertEqual(payload["last_fail_reason"], "the finding")
+
+            # An unknown phase is refused by the parser's own choices.
+            with self.assertRaises(SystemExit), redirect_stderr(io.StringIO()):
+                main([
+                    "check-phase-certified", "--repo-root", str(repo),
+                    "--orchestration-id", "o1", "--node-key", self._NK, "--step", "promote",
+                ])
+
+    def test_a_fully_skipped_rerun_can_be_marked_pass(self) -> None:
+        """The behaviour this branch exists for, driven through the real `set-status pass`.
+
+        A cold re-run over an already certified node launches nothing, so its agent graph has
+        no edges — which the completion vouch used to refuse outright. The replacement guard
+        is the node RESERVATION: `prepare_node` writes one on every run, skipped or not, so it
+        distinguishes "had nothing to do" from "did nothing"."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._preflight(repo)
+            self._certified(repo, through="validate")
+            for step in ("compile", "generate", "build", "validate"):
+                out = ort.check_phase_certified(
+                    repo_root=repo, orchestration_id="o1", node_key=self._NK, step=step)
+                self.assertTrue(out["certified"], out)
+            graph = json.loads(
+                (repo / "workspace/orchestrations/o1/agent_graph.json").read_text("utf-8"))
+            self.assertEqual(graph.get("edges"), [])
+
+            result = update_orchestration_status(
+                repo_root=repo, orchestration_id="o1", status="pass")
+            self.assertEqual(result["status"], "pass")
+
+    def test_resume_refreshes_the_recorded_until_phase(self) -> None:
+        """A resume may EXTEND the run (`--resume <spec> validate` over a run started
+        `--until-phase compile`), and the vouch reads `invocation.until_phase` to decide which
+        phases must be certified — left stale, a four-phase run is vouched against one phase
+        (security round 2, F2)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            init_orchestration(repo_root=repo, orchestration_id="o1",
+                               invocation={"until_phase": "compile", "with_deps": False})
+            # Driven over the CLI, which is the only route `run_workflow` takes.
+            self.assertEqual(main([
+                "init", "--repo-root", str(repo), "--orchestration-id", "o1",
+                "--resume-from-checkpoint", "--until-phase", "validate"]), 0)
+            meta = json.loads(
+                (repo / "workspace/orchestrations/o1/orchestration_meta.json").read_text("utf-8"))
+            self.assertEqual(meta["invocation"]["until_phase"], "validate")
+            self.assertIs(meta["invocation"]["with_deps"], False)
+            invocation_before = dict(meta["invocation"])
+            # A LEGACY orchestration carries no `invocation` block at all; a resume that knows
+            # its end-phase records one, rather than leaving it permanently unvouchable
+            # (disclosure round over-refusal probe 2).
+            meta.pop("invocation", None)
+            (repo / "workspace/orchestrations/o1/orchestration_meta.json").write_text(
+                json.dumps(meta), encoding="utf-8")
+            enable_checkpoint_resume(repo, "o1", until_phase="build")
+            meta = json.loads(
+                (repo / "workspace/orchestrations/o1/orchestration_meta.json").read_text("utf-8"))
+            self.assertEqual(meta["invocation"]["until_phase"], "build")
+            # A resume that does not know its end-phase leaves the record alone rather than
+            # clearing it (the over-refusal direction: a cleared record fails the vouch).
+            enable_checkpoint_resume(repo, "o1")
+            meta = json.loads(
+                (repo / "workspace/orchestrations/o1/orchestration_meta.json").read_text("utf-8"))
+            self.assertEqual(meta["invocation"]["until_phase"], "build")
+            self.assertIsNotNone(invocation_before)
+
+    def test_check_phase_certified_does_not_record_a_skip_it_did_not_make(self) -> None:
+        """The transition is gated on the ANSWER. Unpinned, a refused phase could still be
+        stamped `skipped_certified` in `phase_state.json` and logged `skip_certified` — a
+        durable false record of a skip that never happened (witness census)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._preflight(repo)
+            refs = self._certified(repo, through="compile")
+            doc = json.loads((repo / refs["ir_meta"]).read_text("utf-8"))
+            doc["verification_status"] = "fail"
+            (repo / refs["ir_meta"]).write_text(json.dumps(doc), encoding="utf-8")
+            out = ort.check_phase_certified(
+                repo_root=repo, orchestration_id="o1", node_key=self._NK, step="compile")
+            self.assertFalse(out["certified"])
+            # Reported as-is: the phase has no recorded state at all, and certainly not the
+            # skip. (`None` here is "no entry yet", which is what a node that has not run has.)
+            self.assertIsNone(out["phase_state"])
+            log_path = repo / "workspace/orchestrations/o1/phase_state_log.jsonl"
+            events = [json.loads(x)["event"] for x in log_path.read_text("utf-8").splitlines()
+                      if x.strip()] if log_path.is_file() else []
+            self.assertNotIn("skip_certified", events)
+
+    def test_reserved_node_keys_reads_a_compile_only_reservation_set(self) -> None:
+        """A `--until-phase compile` run reserves `compile.json` and nothing else, so the
+        vouch's node enumeration must key on that file — globbing `generate.json` would refuse
+        every compile-only run (witness census; the fixtures always write both)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            res = (repo / "workspace/orchestrations/o1/reservations"
+                   / "component__spec_x__0.1.0")
+            res.mkdir(parents=True)
+            (res / "compile.json").write_text(json.dumps({
+                "node_key": self._NK, "step": "compile",
+                "reserved_ir_id": "spec-x_20260101_001"}), encoding="utf-8")
+            self.assertEqual(ort._reserved_node_keys(repo, "o1"), [self._NK])
+            # A reservation whose node_key is blank or absent names no node and must not
+            # enter the certification loop as one.
+            (res / "compile.json").write_text(json.dumps(
+                {"step": "compile", "node_key": "   "}), encoding="utf-8")
+            self.assertEqual(ort._reserved_node_keys(repo, "o1"), [])
+
+    def test_the_vouch_refuses_empty_edges_when_children_actually_ran(self) -> None:
+        """EMPTY edges is legitimate only when NOTHING LAUNCHED. A run that recorded a step or
+        substep and has no edge lost its parent-child record, and the per-edge validation
+        iterates nothing — so the vouch could not tell "launched nothing" from "launched and
+        lost the record" (disclosure round, red-then-GREEN against origin/main)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._preflight(repo)
+            self._certified(repo, through="validate")
+            runs = repo / "workspace/orchestrations/o1/agent_runs.jsonl"
+            with runs.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps({
+                    "agent_run_id": "substep_1", "agent_role": "substep",
+                    "parent_agent_run_id": "orch_run_001", "node_key": self._NK,
+                    "step": "compile", "substep": "generate", "status": "pass",
+                    "agent_backend": "claude"}) + "\n")
+            (repo / "workspace/orchestrations/o1/agent_graph.json").write_text(
+                '{"edges": []}', encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "records no edges while"):
+                update_orchestration_status(
+                    repo_root=repo, orchestration_id="o1", status="pass")
+
+    def test_the_vouch_refuses_a_malformed_edges_record(self) -> None:
+        """EMPTY edges is the new legitimate case; MALFORMED is not. The rule this replaced
+        refused both together, and reading a non-list as "no edges" would skip the whole
+        per-edge parent/child validation on a record the audit tool reads back as the run's
+        agent tree (correctness round 2, F4)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._preflight(repo)
+            self._certified(repo, through="validate")
+            graph_path = repo / "workspace/orchestrations/o1/agent_graph.json"
+            for bad in ('{"edges": "boom"}', "{}", '{"edges": null}'):
+                with self.subTest(graph=bad):
+                    graph_path.write_text(bad, encoding="utf-8")
+                    with self.assertRaisesRegex(
+                            RuntimeError, "missing or has no `edges` list"):
+                        update_orchestration_status(
+                            repo_root=repo, orchestration_id="o1", status="pass")
+            graph_path.write_text('{"edges": []}', encoding="utf-8")
+            self.assertEqual(
+                update_orchestration_status(
+                    repo_root=repo, orchestration_id="o1", status="pass")["status"],
+                "pass")
+
+    def test_a_reserved_but_uncertified_node_cannot_be_marked_pass(self) -> None:
+        """A reservation proves PREPARATION, not completion. With no children, no edges and no
+        step_results every other loop in the vouch is empty, so without this clause an
+        orchestration that reserved a node and then did nothing would be marked pass — a false
+        record (Codex round 2, P1)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._preflight(repo)
+            self._certified(repo, through="build")   # validate never ran
+            with self.assertRaisesRegex(
+                    RuntimeError, r"validate is not certified: verdict_not_bound"):
+                update_orchestration_status(
+                    repo_root=repo, orchestration_id="o1", status="pass")
+
+    def test_the_vouch_requires_only_the_phases_the_invocation_asked_for(self) -> None:
+        """The over-refusal probe: a run invoked `--until-phase build` must not be held to a
+        Validate it was never asked to run."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._preflight(repo, until_phase="build")
+            self._certified(repo, through="build")
+            result = update_orchestration_status(
+                repo_root=repo, orchestration_id="o1", status="pass")
+            self.assertEqual(result["status"], "pass")
+
+    def test_the_vouch_refuses_an_orchestration_that_records_no_until_phase(self) -> None:
+        """It decides WHICH phases must be certified, so a missing record cannot be guessed:
+        either it demands a phase the operator never asked for, or it skips one they did."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            init_orchestration(repo_root=repo, orchestration_id="o1")
+            _mark_dependencies_ready(repo, "o1")
+            write_preflight(
+                repo_root=repo, orchestration_id="o1",
+                payload={"status": "pass", "sandbox_runtime": "bwrap",
+                         "sandbox_enforced": True, "can_launch_step_agents": True,
+                         "can_launch_substep_agents": True,
+                         "feature_states": {"multi_agent": True, "hooks": True},
+                         "checks": [{"name": "multi_agent_enabled", "pass": True},
+                                    {"name": "hooks_enabled", "pass": True},
+                                    {"name": "codex_home_writable", "pass": True},
+                                    {"name": "sandbox_bwrap_available", "pass": True},
+                                    {"name": "sandbox_bwrap_userns", "pass": True}]})
+            self._certified(repo, through="validate")
+            with self.assertRaisesRegex(RuntimeError, "until_phase is missing or unknown"):
+                update_orchestration_status(
+                    repo_root=repo, orchestration_id="o1", status="pass")
+
+    def test_an_orchestration_that_reserved_no_node_cannot_be_marked_pass(self) -> None:
+        """The other half: an orchestration that did nothing at all is still refused. This is
+        what the deleted `agent_graph edges` rule was protecting."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._preflight(repo)
+            with self.assertRaisesRegex(RuntimeError, "no node reservations"):
+                update_orchestration_status(
+                    repo_root=repo, orchestration_id="o1", status="pass")
+
+    def test_latest_meta_under_narrows_before_selecting_the_latest(self) -> None:
+        """The order is load-bearing and had no pin (round-1 mutant M1). Narrowing AFTER the
+        latest-id selection answers a different question — "the latest source, IF it happens
+        to be bound" — which reports a stale generate as certified whenever a newer unrelated
+        source exists beside it."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = self._certified(repo, through="generate")
+            # A NEWER source, bound to a different IR (e.g. a later run's, or a reopen's).
+            other = (repo / refs["pipeline_ref"] / "source" / "src_20260101_009")
+            other.mkdir(parents=True, exist_ok=True)
+            (other / "source_meta.json").write_text(json.dumps({
+                "source_id": "src_20260101_009", "verification_status": "pass",
+                "source_ir_id": "some-other-ir_20250101_001",
+                "artifact_hashes": {"nope": "sha256:" + "0" * 64}}), encoding="utf-8")
+            ok, detail = ort._phase_certified(repo, "o1", self._NK, "generate")
+            self.assertTrue(ok, detail)
+            self.assertEqual(detail["source_id"], refs["source_id"])
+
+    def test_check_phase_certified_refuses_a_binary_bound_to_a_different_ir(self) -> None:
+        """The binary binding has TWO halves and only the source half was pinned (round-1
+        mutant M16). A binary built from the same source but a different IR lineage — what a
+        Compile reopen under an unchanged pipeline produces — is not bound either."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = self._certified(repo, through="build")
+            path = repo / refs["binary_meta"]
+            doc = json.loads(path.read_text("utf-8"))
+            doc["source_ir_id"] = "some-other-ir_20250101_001"
+            path.write_text(json.dumps(doc), encoding="utf-8")
+            self.assertEqual(self._reason(repo, "build"), "binary_not_bound")
+
+    def test_check_phase_certified_names_the_clause_that_refused(self) -> None:
+        """Every refusal reason the predicate can return, each from the state that produces
+        it. The reason is what the conductor's run log and an operator read to find out WHY a
+        phase re-derived, so a reason that no state produces (or a state that produces the
+        wrong reason) is a false record."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            # node_key that is not the canonical form at all
+            ok, detail = ort._phase_certified(repo, "o1", "not-a-node-key", "compile")
+            self.assertFalse(ok)
+            self.assertEqual(detail["reason"], "node_key_invalid")
+            # reserved, but nothing under workspace/ir yet
+            self._certified(repo, through="compile")
+            shutil.rmtree(repo / "workspace" / "ir")
+            self.assertEqual(self._reason(repo, "compile"), "ir_not_found")
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = self._certified(repo, through="generate")
+            # compile reserved, generate not
+            (repo / "workspace/orchestrations/o1/reservations" / refs["safe"]
+             / "generate.json").unlink()
+            self.assertEqual(self._reason(repo, "generate"), "pipeline_not_reserved")
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = self._certified(repo, through="generate")
+            shutil.rmtree(repo / refs["pipeline_ref"])
+            self.assertEqual(self._reason(repo, "generate"), "pipeline_not_found")
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = self._certified(repo, through="compile")
+            (repo / refs["ir_meta"]).write_text("{not json", encoding="utf-8")
+            self.assertEqual(self._reason(repo, "compile"), "stage_meta_unreadable")
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = self._certified(repo, through="compile")
+            doc = json.loads((repo / refs["ir_meta"]).read_text("utf-8"))
+            doc["verification_status"] = "fail"
+            (repo / refs["ir_meta"]).write_text(json.dumps(doc), encoding="utf-8")
+            self.assertEqual(self._reason(repo, "compile"), "verification_status_not_pass")
+
+    def test_check_phase_certified_refuses_a_revoked_artifact_and_reports_last_fail_reason(self) -> None:
+        """Revocation is what a re-derivation decision leaves on the ARTIFACT, so it survives
+        into a cold run — and it carries the findings the conductor seeds a repair from."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._preflight(repo)
+            refs = self._certified(repo, through="generate")
+            ort._revoke_stage_meta(
+                repo, repo / refs["source_meta"], reason="validate_execute_structural_violation",
+                trigger_agent_run_id="trigger-1", last_fail_reason="predicate p1 failed")
+            out = ort.check_phase_certified(
+                repo_root=repo, orchestration_id="o1", node_key=self._NK, step="generate")
+            self.assertFalse(out["certified"])
+            self.assertEqual(out["reason"], "revoked")
+            self.assertTrue(out["revoked"])
+            self.assertEqual(out["last_fail_reason"], "predicate p1 failed")
+            # The audit trail of what was revoked, not merely that it is now non-passing.
+            doc = json.loads((repo / refs["source_meta"]).read_text("utf-8"))
+            self.assertEqual(doc["prior_verification_status"], "pass")
+            self.assertEqual(doc["revoked_by_agent_run_id"], "trigger-1")
+            self.assertEqual(doc["revocation_reason"], "validate_execute_structural_violation")
+            # Compile is untouched: only the phase being re-derived is revoked.
+            self.assertTrue(ort._phase_certified(repo, "o1", self._NK, "compile")[0])
+
+    def test_check_phase_certified_refuses_a_tampered_deliverable(self) -> None:
+        """The hole the checkpoint ledger could not close: an artifact edited after it was
+        certified. The hashes are of the DELIVERABLE, so the edit is what fails."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = self._certified(repo, through="compile")
+            (repo / refs["ir_ref"] / "spec.ir.yaml").write_text("tampered: yes\n", encoding="utf-8")
+            self.assertEqual(self._reason(repo, "compile"),
+                             f"artifact_hash_mismatch:{refs['ir_ref']}/spec.ir.yaml")
+
+    def test_check_phase_certified_refuses_a_deleted_deliverable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = self._certified(repo, through="compile")
+            (repo / refs["ir_ref"] / "spec.ir.yaml").unlink()
+            self.assertEqual(self._reason(repo, "compile"),
+                             f"artifact_hash_mismatch:{refs['ir_ref']}/spec.ir.yaml")
+
+    def test_check_phase_certified_refuses_a_meta_without_artifact_hashes(self) -> None:
+        """A meta from before the stamp existed — or one whose writer skipped it — is not
+        certified. Absence must not read as "nothing to check"."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = self._certified(repo, through="compile")
+            path = repo / refs["ir_meta"]
+            doc = json.loads(path.read_text("utf-8"))
+            del doc["artifact_hashes"]
+            path.write_text(json.dumps(doc), encoding="utf-8")
+            self.assertEqual(self._reason(repo, "compile"), "artifact_hashes_missing")
+
+    def test_check_phase_certified_refuses_a_source_bound_to_a_different_ir(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = self._certified(repo, through="generate")
+            path = repo / refs["source_meta"]
+            doc = json.loads(path.read_text("utf-8"))
+            doc["source_ir_id"] = "some-other-ir_20250101_001"
+            path.write_text(json.dumps(doc), encoding="utf-8")
+            self.assertEqual(self._reason(repo, "generate"), "source_not_bound")
+            # ... and compile, which does not depend on it, still certifies.
+            self.assertTrue(ort._phase_certified(repo, "o1", self._NK, "compile")[0])
+
+    def test_check_phase_certified_refuses_a_build_bound_to_a_different_source(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = self._certified(repo, through="build")
+            path = repo / refs["binary_meta"]
+            doc = json.loads(path.read_text("utf-8"))
+            doc["source_source_id"] = "src_20250101_099"
+            path.write_text(json.dumps(doc), encoding="utf-8")
+            self.assertEqual(self._reason(repo, "build"), "binary_not_bound")
+            self.assertTrue(ort._phase_certified(repo, "o1", self._NK, "generate")[0])
+
+    def test_check_phase_certified_refuses_when_the_reserved_ir_is_not_the_latest(self) -> None:
+        """Decision 15: the readiness stages evaluate the LATEST ir dir, so certifying a
+        reservation that is no longer latest would let the skip and the launch gate stand on
+        different artifacts."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._certified(repo, through="compile")
+            # A newer IR appears under the same root (a concurrent/serial later run).
+            certify_node(repo, "o1", self._NK, through="compile",
+                         ir_id="spec-x_20260101_002", reserve=False)
+            self.assertEqual(self._reason(repo, "compile"), "ir_not_latest")
+
+    def test_check_phase_certified_refuses_when_the_pipeline_is_not_the_latest(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._certified(repo, through="build")
+            certify_node(repo, "o1", self._NK, through="build",
+                         pipeline_id="spec-x_20260101_002", reserve=False)
+            self.assertEqual(self._reason(repo, "build"), "pipeline_not_latest")
+            # generate does not carry the latest-pipeline clause: its binding is the ir_id.
+            self.assertTrue(ort._phase_certified(repo, "o1", self._NK, "generate")[0])
+
+    def test_check_phase_certified_binds_validate_to_the_certified_binary(self) -> None:
+        """A passing verdict for an OLDER binary does not certify validate for the binary the
+        chain actually selected."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = self._certified(repo, through="validate")
+            trial = (repo / refs["pipeline_ref"] / "runs" / refs["run_id"] / refs["safe"]
+                     / "trial_meta.json")
+            doc = json.loads(trial.read_text("utf-8"))
+            doc["source_binary_id"] = "bin_20250101_099"
+            trial.write_text(json.dumps(doc), encoding="utf-8")
+            self.assertEqual(self._reason(repo, "validate"), "verdict_not_bound")
+            self.assertTrue(ort._phase_certified(repo, "o1", self._NK, "build")[0])
+
+    def test_check_phase_certified_refuses_a_validate_whose_gate_failed(self) -> None:
+        """The conductor authors `aggregate_verdict.json` BEFORE the `--stage pre_judge` gate
+        (the gate re-validates the host's own summary, so the order cannot be swapped), and a
+        `fail_closed` disposition returns WITHOUT writing a step_result. A passing verdict is
+        therefore left on disk for a phase that terminated fail-closed, and the verdict alone
+        must not certify it — `post_judge_meta.json`, the host record of the gate's own
+        outcome, is what says the phase completed."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = self._certified(repo, through="validate")
+            path = repo / refs["post_judge_meta"]
+            gate_fail = json.loads(path.read_text("utf-8"))
+            gate_fail.update({"status": "fail", "disposition": "fail_closed",
+                              "failure_category": "static_frontend_unavailable"})
+            path.write_text(json.dumps(gate_fail), encoding="utf-8")
+            self.assertEqual(self._reason(repo, "validate"), "post_judge_not_pass")
+            # Build, which the gate says nothing about, is unaffected.
+            self.assertTrue(ort._phase_certified(repo, "o1", self._NK, "build")[0])
+            # A phase that never reached post_judge at all leaves no record: also refused.
+            path.unlink()
+            self.assertEqual(self._reason(repo, "validate"), "post_judge_not_recorded")
+
+    def test_check_phase_certified_refuses_a_non_certifying_verdict(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = self._certified(repo, through="validate")
+            path = repo / refs["aggregate_verdict"]
+            for verdict, certified in (("fail", False), ("xfail", True), ("pass", True)):
+                with self.subTest(verdict=verdict):
+                    path.write_text(json.dumps({"aggregate_verdict": verdict}), encoding="utf-8")
+                    ok, detail = ort._phase_certified(repo, "o1", self._NK, "validate")
+                    self.assertEqual(ok, certified, detail)
+                    if not certified:
+                        self.assertEqual(detail["reason"], "verdict_not_pass")
+
+    def test_check_phase_certified_refuses_without_a_reservation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._certified(repo, through="compile", reserve=False)
+            self.assertEqual(self._reason(repo, "compile"), "ir_not_reserved")
+
+    def test_check_phase_certified_applies_resolution_and_binding_freshness(self) -> None:
+        """The predicate does not re-implement dependency freshness — it calls the SAME two
+        functions the readiness stages do, so a stale node is refused by the one definition."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._certified(repo, through="build")
+            with patch.object(ort, "_dependency_resolution_freshness",
+                              return_value=(False, "closure moved")):
+                self.assertEqual(self._reason(repo, "compile"), "resolution_stale:closure moved")
+            with patch.object(ort, "_dependency_binding_freshness",
+                              return_value=(False, "dep source regenerated")):
+                self.assertEqual(self._reason(repo, "build"),
+                                 "binding_stale:dep source regenerated")
+                # The stale clause belongs to build; generate is unaffected.
+                self.assertTrue(ort._phase_certified(repo, "o1", self._NK, "generate")[0])
+
+    def test_phase_certified_rejects_an_unknown_step(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(ValueError):
+                ort._phase_certified(Path(tmp), "o1", self._NK, "promote")
+
+    def test_certified_ir_candidate_adopts_only_a_certified_latest_ir(self) -> None:
+        """The cold-run adoption path asks the compile clause WITHOUT a reservation."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = self._certified(repo, through="compile", reserve=False)
+            self.assertEqual(ort._certified_ir_candidate(repo, self._NK), refs["ir_id"])
+            ort._revoke_stage_meta(repo, repo / refs["ir_meta"], reason="r",
+                                   trigger_agent_run_id="t")
+            self.assertIsNone(ort._certified_ir_candidate(repo, self._NK))
+
+    def test_reopen_phase_revokes_the_from_phase_meta(self) -> None:
+        """The bridge this PR keeps: `reopen-phase` still drives the retry loop, and now also
+        revokes the artifact it invalidated — so the predicate refuses it afterwards, in this
+        run and in any later one."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._preflight(repo)
+            refs = self._certified(repo, through="validate")
+            self.assertTrue(ort._phase_certified(repo, "o1", self._NK, "compile")[0])
+            runs = repo / "workspace/orchestrations/o1/agent_runs.jsonl"
+            with runs.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps({
+                    "agent_run_id": "validate-fail-1", "agent_role": "substep",
+                    "parent_agent_run_id": "orch_run_001", "node_key": self._NK,
+                    "step": "validate", "substep": "judge", "status": "fail",
+                    "agent_backend": "claude"}) + "\n")
+            result = reopen_phase(
+                repo, "o1", node_key=self._NK, from_phase="compile",
+                reason="validate_structural_violation_ir",
+                trigger_agent_run_id="validate-fail-1")
+            self.assertEqual(result["revoked_meta_ref"], refs["ir_meta"])
+            ok, detail = ort._phase_certified(repo, "o1", self._NK, "compile")
+            self.assertFalse(ok)
+            self.assertEqual(detail["reason"], "revoked")
+
+
+class CertificationStampTests(unittest.TestCase):
+    """`write_step_result` is the single host-side point that stamps a phase's certification
+    into its stage meta (both the pure and the agentic path pass through it)."""
+
+    def _leaf_window(self, repo_root: Path, *, agent_run_id: str, write_roots: list[str],
+                     declared: list[str]) -> None:
+        """The launch state a child needs to reach terminal write validation: a capability
+        with its write_roots, an output manifest, and the window's own write baseline."""
+        from tools.orchestration_runtime import (
+            _capabilities_dir, _write_allowed_output_manifest, _write_run_write_baseline,
+        )
+        cap = _capabilities_dir(repo_root, "o1") / f"{agent_run_id}.json"
+        cap.parent.mkdir(parents=True, exist_ok=True)
+        cap.write_text(json.dumps({
+            "orchestration_id": "o1", "agent_run_id": agent_run_id,
+            "write_roots": write_roots}), encoding="utf-8")
+        _write_allowed_output_manifest(
+            repo_root, orchestration_id="o1", agent_run_id=agent_run_id,
+            allowed_output_paths=declared, allowed_file_tool_paths=declared)
+        _write_run_write_baseline(repo_root, "o1", agent_run_id=agent_run_id)
+
+    def test_certifiable_artifact_refs_drops_the_meta_and_the_audit_logs(self) -> None:
+        """Build declares `src/command_log.jsonl`, which Validate.execute later APPENDS to —
+        hashing it would make every Validate attempt read as a tampered Build."""
+        refs = ort._certifiable_artifact_refs(
+            ["p/binary/b1/bin/exe", "p/binary/b1/binary_meta.json",
+             "p/source/s1/src/command_log.jsonl", "p/binary/b1/compile.stdout.log"],
+            "p/binary/b1/binary_meta.json")
+        self.assertEqual(refs, ["p/binary/b1/bin/exe"])
+
+    def test_write_step_result_pass_stamps_artifact_hashes_and_source_ir_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            _setup_certifiable_generate(repo)
+            meta_ref = f"{_CERT_PIPE_REF}/source/src_c_001/source_meta.json"
+            model_ref = f"{_CERT_PIPE_REF}/source/src_c_001/src/spec_x_model.f90"
+            log_ref = f"{_CERT_PIPE_REF}/source/src_c_001/src/command_log.jsonl"
+            write_step_result(
+                repo_root=repo, orchestration_id="o1", node_key=_CERT_NK, step="generate",
+                agent_run_id="orch_run_001",
+                payload={"status": "pass", "validation_stage": "post_generate",
+                         "required_outputs": [model_ref, log_ref, meta_ref],
+                         "failed_substeps": [],
+                         "substep_agent_run_ids": ["substep_gen_verify_001"]},
+            )
+            doc = json.loads((repo / meta_ref).read_text("utf-8"))
+            self.assertEqual(list(doc["artifact_hashes"]), [model_ref])
+            self.assertEqual(doc["artifact_hashes"][model_ref],
+                             _compute_sha256(repo / model_ref))
+            # The IR binding comes from the RESERVATION, never from the leaf-authored meta.
+            self.assertEqual(doc["source_ir_id"], "spec-x_20260101_001")
+            # The audit log is excluded from the stamp (Validate.execute appends to it).
+            self.assertNotIn(log_ref, doc["artifact_hashes"])
+
+    def test_write_step_result_fail_does_not_stamp(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            _setup_certifiable_generate(repo, verification_status="fail")
+            meta_ref = f"{_CERT_PIPE_REF}/source/src_c_001/source_meta.json"
+            model_ref = f"{_CERT_PIPE_REF}/source/src_c_001/src/spec_x_model.f90"
+            write_step_result(
+                repo_root=repo, orchestration_id="o1", node_key=_CERT_NK, step="generate",
+                agent_run_id="orch_run_001",
+                payload={"status": "fail", "validation_stage": "post_generate",
+                         "required_outputs": [model_ref, meta_ref],
+                         "failed_substeps": ["substep_gen_verify_001"],
+                         "substep_agent_run_ids": ["substep_gen_verify_001"]},
+            )
+            doc = json.loads((repo / meta_ref).read_text("utf-8"))
+            self.assertNotIn("artifact_hashes", doc)
+
+    def test_write_step_result_fail_strips_a_leaf_written_certification(self) -> None:
+        """On the agentic path the stage meta sits inside the verify leaf's write_root, so the
+        leaf can put the certification keys there itself. A phase that ends NON-pass must not
+        leave a meta claiming a certification no host ever stamped — the skip decision reads
+        exactly that claim."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            _setup_certifiable_generate(repo, verification_status="fail")
+            meta_ref = f"{_CERT_PIPE_REF}/source/src_c_001/source_meta.json"
+            model_ref = f"{_CERT_PIPE_REF}/source/src_c_001/src/spec_x_model.f90"
+            forged = json.loads((repo / meta_ref).read_text("utf-8"))
+            forged["artifact_hashes"] = {model_ref: _compute_sha256(repo / model_ref)}
+            forged["source_ir_id"] = "spec-x_20260101_001"
+            (repo / meta_ref).write_text(json.dumps(forged), encoding="utf-8")
+            write_step_result(
+                repo_root=repo, orchestration_id="o1", node_key=_CERT_NK, step="generate",
+                agent_run_id="orch_run_001",
+                payload={"status": "fail", "validation_stage": "post_generate",
+                         "required_outputs": [model_ref, meta_ref],
+                         "failed_substeps": ["substep_gen_verify_001"],
+                         "substep_agent_run_ids": ["substep_gen_verify_001"]},
+            )
+            doc = json.loads((repo / meta_ref).read_text("utf-8"))
+            self.assertNotIn("artifact_hashes", doc)
+            self.assertNotIn("source_ir_id", doc)
+            # Everything else the leaf recorded is preserved — this strips a claim, not a file.
+            self.assertEqual(doc["verification_status"], "fail")
+            self.assertEqual(doc["source_id"], "src_c_001")
+
+    def test_a_leaf_window_write_of_a_stage_meta_loses_its_certification(self) -> None:
+        """A certification is a HOST stamp and never survives a child window.
+
+        `generate.verify`'s write_root IS `source_meta.json`, so that leaf can author
+        `artifact_hashes` / `source_ir_id` with perfectly CORRECT values — no tampering
+        needed. The `write-step-result` strip does not reach it: a phase that fail-closes on a
+        leaf transport error writes no step_result at all, and `run_phase` consults the
+        certification before it would rotate the producer id. So the keys are erased at the
+        child's own terminalization, from whatever stage meta the child actually changed.
+        """
+        from tools.orchestration_runtime import _validate_actual_write_paths
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = certify_node(repo, "o1", through="generate")
+            meta_rel = refs["source_meta"]
+            arid = "substep_run_gen_verify_1"
+            init_orchestration(repo_root=repo, orchestration_id="o1")
+            self._leaf_window(repo, agent_run_id=arid, write_roots=[meta_rel],
+                              declared=[meta_rel])
+            # The leaf rewrites its own meta inside its window, certification keys and all.
+            doc = json.loads((repo / meta_rel).read_text("utf-8"))
+            doc["verification_status"] = "pass"
+            (repo / meta_rel).write_text(json.dumps(doc), encoding="utf-8")
+            self.assertIn("artifact_hashes", json.loads((repo / meta_rel).read_text("utf-8")))
+
+            _validate_actual_write_paths(repo, "o1", {
+                "agent_run_id": arid, "agent_role": "substep", "status": "pass",
+                "output_refs": [meta_rel]})
+
+            after = json.loads((repo / meta_rel).read_text("utf-8"))
+            self.assertNotIn("artifact_hashes", after)
+            self.assertNotIn("source_ir_id", after)
+            # The leaf's own verdict is untouched — this strips a HOST claim, not the leaf's.
+            self.assertEqual(after["verification_status"], "pass")
+            self.assertEqual(after["source_id"], refs["source_id"])
+            ok, detail = ort._phase_certified(repo, "o1", "component/spec_x@0.1.0", "generate")
+            self.assertFalse(ok)
+            self.assertEqual(detail["reason"], "source_not_bound")
+
+    def test_the_strip_runs_even_when_the_window_ends_in_an_unauthorized_write(self) -> None:
+        """The round-1 strip sat AFTER the unauthorized-write raise, so a leaf that made ONE
+        unauthorized write kept its forged certification — and that phase then read as
+        certified in this orchestration and in a fresh one (security round 2, F1). The write
+        the leaf is allowed to make (its own file pin) and the one it is not (a stray beside
+        it, whose parent is bound writable for the Write tool's temp-sibling rename) arrive in
+        the same window, so the strip has to run before the refusal, not after it."""
+        from tools.orchestration_runtime import _validate_actual_write_paths
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = certify_node(repo, "o1", through="generate")
+            meta_rel = refs["source_meta"]
+            stray_rel = f"{refs['pipeline_ref']}/source/{refs['source_id']}/stray.json"
+            arid = "substep_run_gen_verify_2"
+            init_orchestration(repo_root=repo, orchestration_id="o1")
+            self._leaf_window(repo, agent_run_id=arid, write_roots=[meta_rel],
+                              declared=[meta_rel])
+            # Inside the window the leaf authors its own meta — the allowed write — and drops
+            # one file beside it, the unauthorized one.
+            forged = json.loads((repo / meta_rel).read_text("utf-8"))
+            forged["verification_status"] = "pass"
+            (repo / meta_rel).write_text(json.dumps(forged), encoding="utf-8")
+            (repo / stray_rel).write_text("{}", encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "unauthorized write paths"):
+                _validate_actual_write_paths(repo, "o1", {
+                    "agent_run_id": arid, "agent_role": "substep", "status": "fail",
+                    "output_refs": [meta_rel]})
+
+            after = json.loads((repo / meta_rel).read_text("utf-8"))
+            self.assertNotIn("artifact_hashes", after)
+            self.assertNotIn("source_ir_id", after)
+            ok, detail = ort._phase_certified(repo, "o1", "component/spec_x@0.1.0", "generate")
+            self.assertFalse(ok)
+            self.assertEqual(detail["reason"], "source_not_bound")
+
+    def test_stamp_refuses_a_phase_declaring_more_than_one_certifying_meta(self) -> None:
+        """The `exactly one` rule (security round 2, mutant M21). With it dropped, a phase
+        declaring two metas has the FIRST one stamped silently and the second left
+        uncertified — a phase whose certification names an artifact nobody chose."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = certify_node(repo, "o1", through="generate")
+            second = f"{refs['pipeline_ref']}/source/src_20260101_002/source_meta.json"
+            (repo / second).parent.mkdir(parents=True, exist_ok=True)
+            (repo / second).write_text("{}", encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "exactly one source_meta.json"):
+                ort._stamp_certification(
+                    repo, "o1", node_key="component/spec_x@0.1.0", step="generate",
+                    required_outputs=[refs["model_ref"], refs["source_meta"], second])
+            with self.assertRaisesRegex(RuntimeError, "exactly one source_meta.json"):
+                ort._stamp_certification(
+                    repo, "o1", node_key="component/spec_x@0.1.0", step="generate",
+                    required_outputs=[refs["model_ref"]])
+
+    def test_write_step_result_pass_for_validate_certifies_no_meta(self) -> None:
+        """Validate declares no certifying meta, so the stamp returns without writing one —
+        and a passing validate `write-step-result` must not raise. Nothing on the branch drove
+        that path at all (witness census), and it is the one every real run takes."""
+        self.assertIsNone(ort.CERTIFYING_META_FILENAME_BY_STEP.get("validate"))
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = certify_node(repo, "o1", through="validate")
+            outs = [refs["aggregate_verdict"]]
+            self.assertIsNone(ort._stamp_certification(
+                repo, "o1", node_key="component/spec_x@0.1.0", step="validate",
+                required_outputs=outs))
+            self.assertIsNone(ort._strip_certification(
+                repo, step="validate", required_outputs=outs))
+
+    def test_stamp_refuses_an_unreadable_certifying_meta(self) -> None:
+        """For BUILD this raise is the meta's only reader: `STAGE_META_FILENAME_BY_STEP` has
+        no build entry, so `_validate_step_meta_payload` never opens `binary_meta.json`.
+        Without it a corrupt one takes a PASSING build step_result and the phase is then never
+        certifiable — `set-status pass` refuses the run forever with `binary_not_bound`
+        (correctness round 2, mutant X11)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = certify_node(repo, "o1", through="build")
+            (repo / refs["binary_meta"]).write_text("{not json", encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "cannot read .*binary_meta.json"):
+                ort._stamp_certification(
+                    repo, "o1", node_key="component/spec_x@0.1.0", step="build",
+                    required_outputs=[refs["exe_ref"], refs["binary_meta"]])
+            (repo / refs["binary_meta"]).write_text("[]", encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "is not a JSON object"):
+                ort._stamp_certification(
+                    repo, "o1", node_key="component/spec_x@0.1.0", step="build",
+                    required_outputs=[refs["exe_ref"], refs["binary_meta"]])
+
+    def test_stamp_refuses_a_phase_declaring_only_its_own_meta(self) -> None:
+        """A phase whose `required_outputs` carry no hashable deliverable would be stamped
+        with an empty `artifact_hashes`, which the predicate refuses — so the phase would be
+        permanently uncertifiable instead of failing here (correctness round 2, mutant X12)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = certify_node(repo, "o1", through="compile")
+            with self.assertRaisesRegex(RuntimeError, "no hashable deliverable"):
+                ort._stamp_certification(
+                    repo, "o1", node_key="component/spec_x@0.1.0", step="compile",
+                    required_outputs=[refs["ir_meta"]])
+
+    def test_a_child_window_that_touched_no_stage_meta_strips_nothing(self) -> None:
+        """The over-refusal probe: the strip is keyed on the paths the child actually
+        CHANGED, so a passing phase's stamp is not erased by the next phase's children."""
+        from tools.orchestration_runtime import _validate_actual_write_paths
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = certify_node(repo, "o1", through="generate")
+            arid = "substep_run_other_1"
+            other = f"{refs['pipeline_ref']}/source/{refs['source_id']}/src/scratch.txt"
+            init_orchestration(repo_root=repo, orchestration_id="o1")
+            self._leaf_window(repo, agent_run_id=arid,
+                              write_roots=[f"{refs['pipeline_ref']}/source/"],
+                              declared=[other])
+            (repo / other).write_text("scratch\n", encoding="utf-8")
+            _validate_actual_write_paths(repo, "o1", {
+                "agent_run_id": arid, "agent_role": "substep", "status": "pass",
+                "output_refs": [other]})
+            after = json.loads((repo / refs["source_meta"]).read_text("utf-8"))
+            self.assertIn("artifact_hashes", after)
+            self.assertIn("source_ir_id", after)
+
+    def test_a_build_keeps_its_ir_binding_across_the_child_window_strip(self) -> None:
+        """`_build_inproc` writes `binary_meta.source_ir_id` INSIDE the build child's window,
+        so the child-window strip erases it. The stamp restores it from the reservation —
+        without that, every successfully built binary reads `binary_not_bound` and Build and
+        Validate could never be skipped again (Codex round 2, P1)."""
+        from tools.orchestration_runtime import _validate_actual_write_paths
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = certify_node(repo, "o1", through="build")
+            meta_rel = refs["binary_meta"]
+            arid = "step_run_build_1"
+            init_orchestration(repo_root=repo, orchestration_id="o1")
+            self._leaf_window(repo, agent_run_id=arid,
+                              write_roots=[f"{refs['pipeline_ref']}/binary/"],
+                              declared=[meta_rel, refs["exe_ref"]])
+            # The host's in-process build authors binary_meta inside the child's window.
+            doc = json.loads((repo / meta_rel).read_text("utf-8"))
+            doc["command_id"] = "cmd_1"
+            (repo / meta_rel).write_text(json.dumps(doc), encoding="utf-8")
+            _validate_actual_write_paths(repo, "o1", {
+                "agent_run_id": arid, "agent_role": "step", "status": "pass",
+                "output_refs": [meta_rel]})
+            stripped = json.loads((repo / meta_rel).read_text("utf-8"))
+            self.assertNotIn("source_ir_id", stripped)
+
+            ort._stamp_certification(
+                repo, "o1", node_key="component/spec_x@0.1.0", step="build",
+                required_outputs=[refs["exe_ref"], meta_rel])
+            restamped = json.loads((repo / meta_rel).read_text("utf-8"))
+            self.assertEqual(restamped["source_ir_id"], refs["ir_id"])
+            self.assertTrue(
+                ort._phase_certified(repo, "o1", "component/spec_x@0.1.0", "build")[0])
+
+    def test_write_step_result_pass_refuses_when_the_deliverable_is_absent(self) -> None:
+        """A stamp that cannot be taken fails CLOSED, and before the step_result exists: an
+        unstamped meta is indistinguishable from one whose author skipped the stamp, and the
+        predicate refuses both — so failing open would silently uncertify the phase forever."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            _setup_certifiable_generate(repo)
+            meta_ref = f"{_CERT_PIPE_REF}/source/src_c_001/source_meta.json"
+            model_ref = f"{_CERT_PIPE_REF}/source/src_c_001/src/spec_x_model.f90"
+            (repo / model_ref).unlink()
+            with self.assertRaisesRegex(RuntimeError, "declared deliverable is absent on disk"):
+                write_step_result(
+                    repo_root=repo, orchestration_id="o1", node_key=_CERT_NK, step="generate",
+                    agent_run_id="orch_run_001",
+                    payload={"status": "pass", "validation_stage": "post_generate",
+                             "required_outputs": [model_ref, meta_ref], "failed_substeps": [],
+                             "substep_agent_run_ids": ["substep_gen_verify_001"]},
+                )
+            result_path = (repo / "workspace/orchestrations/o1/steps"
+                           / "component__spec_x__0.1.0/generate/orch_run_001/step_result.json")
+            self.assertFalse(result_path.exists())
+
+    def test_write_step_result_pass_refuses_a_generate_without_a_compile_reservation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            _setup_certifiable_generate(repo)
+            (repo / "workspace/orchestrations/o1/reservations/component__spec_x__0.1.0"
+             / "compile.json").unlink()
+            meta_ref = f"{_CERT_PIPE_REF}/source/src_c_001/source_meta.json"
+            model_ref = f"{_CERT_PIPE_REF}/source/src_c_001/src/spec_x_model.f90"
+            with self.assertRaisesRegex(RuntimeError, "no compile reservation"):
+                write_step_result(
+                    repo_root=repo, orchestration_id="o1", node_key=_CERT_NK, step="generate",
+                    agent_run_id="orch_run_001",
+                    payload={"status": "pass", "validation_stage": "post_generate",
+                             "required_outputs": [model_ref, meta_ref], "failed_substeps": [],
+                             "substep_agent_run_ids": ["substep_gen_verify_001"]},
+                )
 
 
 class CheckpointResumeRuntimeTests(unittest.TestCase):
@@ -12969,7 +14133,7 @@ class CheckpointResumeRuntimeTests(unittest.TestCase):
                 payload={
                     "status": "pass",
                     "validation_stage": "post_build",
-                    "required_outputs": [out_ref],
+                    "required_outputs": _seed_build_pass_outputs(repo_root),
                     "failed_substeps": [],
                     "substep_agent_run_ids": [],
                 },
@@ -13038,7 +14202,7 @@ class CheckpointResumeRuntimeTests(unittest.TestCase):
                     payload={
                         "status": "pass",
                         "validation_stage": "post_build",
-                        "required_outputs": [out_ref],
+                        "required_outputs": _seed_build_pass_outputs(repo_root),
                         "failed_substeps": [],
                         "substep_agent_run_ids": [],
                     },
@@ -29643,7 +30807,13 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # this one works. 19700 then left ~100 bytes, a tripwire again by the same rule.
         # Bumped 20100->20170 (issue #148): the verify-family routing sentence now names both
         # phase rubrics, `Compile.verify` having gained one. Measured 20018; 20100 left 82 B.
-        "docs/AGENT_CONTRACT.md": 20170,
+        # Bumped for issue #177: `prepare_node` may hand a leaf an `ir_ref` an EARLIER run
+        # produced and this one adopted, and the past-artifact prohibition in this file is the
+        # leaf-actionable statement of the rule. Without the qualifier a leaf can read its own
+        # contract as forbidding the input it was handed and stop with `fail` — an
+        # over-refusal delivered as prose, which is why it belongs in the file every leaf
+        # force-reads rather than only in `docs/workflow/WORKFLOW_CORE.md`.
+        "docs/AGENT_CONTRACT.md": 20400,
         # Consolidated runner-output contract (was duplicated across phase_02/04 +
         # PERF §2/§6); M3d: a validate.judge-only leaf must-read (generate dropped it).
         # Bumped 7600->8100: §3 disambiguated the guard-case snapshot rule (declared
@@ -29956,7 +31126,11 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # `skills/spec-input-check/SKILL.md` names THIS document as the canonical source for
         # exactly that rule, so the check corrected in round 1 and the document it cites had
         # disagreed since.
-        "docs/workflow/phases/phase_01_compile.md": 69274,
+        # Bumped for issue #177: `artifact_hashes` is a key a compile leaf will SEE in
+        # `ir_meta.json` and must neither author nor delete, so the one sentence saying so
+        # belongs in the file that leaf force-reads. One line, not the rule's rationale —
+        # that is in `docs/CLI_REFERENCE.md#write-step-result`, which no leaf reads.
+        "docs/workflow/phases/phase_01_compile.md": 69500,
         # Per-substep SKILLs — each force-read by its own LLM leaf.
         # Bumped 10800->11500: Compile.generate now authors the io_contract section (G2 /
         # docs/design/deterministic_followups.md) — it was moved here from Compile.verify so the
@@ -32190,6 +33364,7 @@ class CompletionValidatorSupersededTest(unittest.TestCase):
         has no step_result vouch and no launch refs — what would block pass without
         the exemption."""
         init_orchestration(repo_root=repo_root, orchestration_id=oid)
+        _seed_node_reservation(repo_root, oid, self.NODE_KEY)
         root = repo_root / "workspace" / "orchestrations" / oid
         orch_arid = json.loads(
             (root / "orchestration_meta.json").read_text(encoding="utf-8")
@@ -32342,6 +33517,7 @@ class CompletionValidatorSupersededTest(unittest.TestCase):
         whether ANY fresh re-run row exists — with none, the reopened compile phase has no fresh
         vouch and the fresh-replacement rule must raise."""
         init_orchestration(repo_root=repo_root, orchestration_id=oid)
+        _seed_node_reservation(repo_root, oid, self.NODE_KEY)
         root = repo_root / "workspace" / "orchestrations" / oid
         orch_arid = json.loads(
             (root / "orchestration_meta.json").read_text(encoding="utf-8")
@@ -32412,6 +33588,7 @@ class TransportOrphanCompletionTest(unittest.TestCase):
         """orphaned validate execute(pass)+judge(fail) substeps: no step_result, no launch
         refs (what would block pass without the supersede exemption)."""
         init_orchestration(repo_root=repo_root, orchestration_id=oid)
+        _seed_node_reservation(repo_root, oid, self.NODE_KEY)
         root = repo_root / "workspace" / "orchestrations" / oid
         orch_arid = json.loads(
             (root / "orchestration_meta.json").read_text(encoding="utf-8")

@@ -211,11 +211,10 @@ SUBSTEP_AWARE_PHASES: frozenset[str] = frozenset({"compile", "generate", "valida
 
 # Output basenames excluded from a producer substep's "all deliverables written"
 # check: audit/process logs whose presence/placement is not a deliverable contract
-# (the MCP command log placement in particular varies by build system).
-_OPTIONAL_OUTPUT_BASENAMES: frozenset[str] = frozenset({
-    "command_log.jsonl", "stdout.log", "stderr.log",
-    "compile.stdout.log", "compile.stderr.log",
-})
+# (the MCP command log placement in particular varies by build system). The set is defined
+# in the runtime (`AUDIT_LOG_BASENAMES`) because the certification stamp excludes the same
+# basenames from the hashes it records; one definition, two readers.
+from tools.orchestration_runtime import AUDIT_LOG_BASENAMES as _OPTIONAL_OUTPUT_BASENAMES
 
 # Deterministic in-process build/run capture limit. The canonical per-step
 # stdout/stderr log files must be FULL (untrimmed); the MCP `_run_command` trims its
@@ -9445,12 +9444,21 @@ clean:
             "--result-json", json.dumps(result),
         ])
 
-    def check_step_completed(self, node_key: str, step: str) -> dict[str, Any] | None:
+    def check_phase_certified(self, node_key: str, phase: str) -> dict[str, Any]:
+        """Is this (node, phase) already certified by the artifacts on disk?
+
+        Asked on EVERY run, cold or resumed — the artifacts answer, so there is no
+        resume-only skip path. On yes the runtime also records the phase as
+        `skipped_certified`; the call is idempotent, so `conduct` and `run_phase` may both
+        ask. Always returns the answer dict (never None): `certified` decides the skip, and
+        `revoked` / `last_fail_reason` seed a repair when a prior run rejected the artifact.
+        """
         out = self.runtime([
-            "check-step-completed", *self._oid_args(),
-            "--node-key", node_key, "--step", step,
+            "check-phase-certified", *self._oid_args(),
+            "--node-key", node_key, "--step", phase,
+            "--agent-run-id", self.orchestration_agent_run_id,
         ])
-        return out if isinstance(out, dict) and out.get("integrity") == "ok" else None
+        return out if isinstance(out, dict) else {"certified": False}
 
     def workflow_launch_check(self, node_key: str, step: str, require_child_agent: str,
                               entry: ResolvedLeafEntry | None = None) -> dict[str, Any]:
@@ -12676,21 +12684,85 @@ clean:
 
     # -- phase + conduct ------------------------------------------------------
 
+    @staticmethod
+    def _adopt_certified_refs(refs: NodeRefs, phase: str, cert: dict[str, Any]) -> None:
+        """Take the producer id a skipped phase's certification resolved into `refs`.
+
+        The ir_id and pipeline_id are NOT touched: those come from this orchestration's
+        reservations, and the certification is refused outright when they are not the
+        artifacts it evaluated (`ir_not_latest` / `pipeline_not_latest`), so they already
+        agree. What the reservations do not carry is the producer id of each pipeline stage —
+        which is exactly what the certification chain resolved by binding, and what the next
+        phase (or a `--resume` seed) must build against."""
+        if phase == "generate" and cert.get("source_id"):
+            refs.source_id = str(cert["source_id"])
+        elif phase == "build" and cert.get("binary_id"):
+            refs.binary_id = str(cert["binary_id"])
+            refs.source_binary_id = str(cert["binary_id"])
+        elif phase == "validate" and cert.get("run_id"):
+            refs.run_id = str(cert["run_id"])
+
+    @staticmethod
+    def _certified_by_label(phase: str, cert: dict[str, Any]) -> str:
+        """The one id that identifies what a skipped phase adopted, for the run log."""
+        key = {"compile": "ir_ref", "generate": "source_id",
+               "build": "binary_id", "validate": "run_id"}[phase]
+        return str(cert.get(key) or "")
+
+    @staticmethod
+    def _certified_meta_ref(phase: str, cert: dict[str, Any], node_key: str) -> str | None:
+        """The certifying artifact of a skipped phase, composed from the ids
+        `check-phase-certified` resolved. It is what identifies WHICH attempt produced the
+        artifact this run is standing on (`_completed_producer_arid`)."""
+        ir_ref = cert.get("ir_ref")
+        pipe = cert.get("pipeline_ref")
+        if phase == "compile":
+            return f"{ir_ref}/ir_meta.json" if ir_ref else None
+        if not pipe:
+            return None
+        if phase == "generate":
+            sid = cert.get("source_id")
+            return f"{pipe}/source/{sid}/source_meta.json" if sid else None
+        if phase == "build":
+            bid = cert.get("binary_id")
+            return f"{pipe}/binary/{bid}/binary_meta.json" if bid else None
+        rid = cert.get("run_id")
+        # `phase_required_outputs` places the validate deliverables under the run NODE dir
+        # (`runs/<run_id>/<node_key_safe>/`), so the ref built here has to match it or no
+        # step_result ever declares it.
+        return (f"{pipe}/runs/{rid}/{node_key_safe(node_key)}/validate_meta.json"
+                if rid else None)
+
     def _completed_producer_arid(self, node_key: str, phase: str,
-                                 executor_arid: str | None) -> str | None:
-        """The producing substep arid of an already-completed phase, read from its
-        checkpointed step_result (recovers a repair target when resume skips it)."""
-        if not executor_arid:
+                                 artifact_ref: str | None) -> str | None:
+        """The producing substep arid of an already-certified phase: the attempt in THIS
+        orchestration whose passing step_result declares `artifact_ref` among its
+        `required_outputs`. Recovers a repair target (`repair_strategy=reuse`) for a phase
+        that was skipped rather than run.
+
+        Keyed by the ARTIFACT rather than by an executor arid handed over from a ledger
+        entry, because the phase may have been certified by an attempt this run never
+        recorded — a cold re-run over an already certified node has no step_result at all,
+        and correctly gets `None` (the repair then falls back to the full prompt)."""
+        if not artifact_ref:
             return None
-        sr = _read_json(
-            self.repo_root / "workspace" / "orchestrations" / self.orchestration_id
-            / "steps" / node_key_safe(node_key) / phase / executor_arid / "step_result.json")
-        if not isinstance(sr, dict):
-            return None
-        subs = sr.get("substep_agent_run_ids")
-        if isinstance(subs, list) and subs:
-            return subs[0]
-        return sr.get("executor_agent_run_id")
+        steps_dir = (self.repo_root / "workspace" / "orchestrations" / self.orchestration_id
+                     / "steps" / node_key_safe(node_key) / phase)
+        for result_path in sorted(steps_dir.glob("*/step_result.json")):
+            sr = _read_json(result_path)
+            if not isinstance(sr, dict):
+                continue
+            if str(sr.get("status") or "").strip().lower() != "pass":
+                continue
+            required = sr.get("required_outputs")
+            if not (isinstance(required, list) and artifact_ref in required):
+                continue
+            subs = sr.get("substep_agent_run_ids")
+            if isinstance(subs, list) and subs:
+                return subs[0]
+            executor = sr.get("executor_agent_run_id")
+            return executor if isinstance(executor, str) and executor.strip() else None
+        return None
 
     def _ensure_fresh_producer_id(self, refs: NodeRefs, phase: str) -> None:
         """If a producing phase's output already exists (a prior attempt or a
@@ -13238,18 +13310,24 @@ clean:
         node_key = refs.node_key
         if not hasattr(self, "_producer_arid"):
             self._producer_arid: dict[str, str] = {}
-        completed = self.check_step_completed(node_key, phase)
-        if completed is not None:
-            # A resumed run skips this phase, but a later cross-phase repair may
-            # still target its producer (repair_strategy=reuse). Recover the
-            # producing substep arid from the checkpointed step_result so the
-            # repair child has a prior run to diff against.
+        cert = self.check_phase_certified(node_key, phase)
+        if cert.get("certified"):
+            # The artifacts of this phase are certified, so it does not run — on a cold run
+            # exactly as on a resume. ADOPT the ids the certification resolved into `refs`:
+            # they are the artifacts every later phase must bind to, and a `refs` still
+            # carrying the freshly-minted ids would make the next phase build against
+            # something that does not exist.
+            self._adopt_certified_refs(refs, phase, cert)
+            # A later cross-phase repair may still target this phase's producer
+            # (repair_strategy=reuse), so recover the attempt that authored the adopted
+            # artifact — if this orchestration ran it at all.
             producer = self._completed_producer_arid(
-                node_key, phase, completed.get("agent_run_id"))
+                node_key, phase, self._certified_meta_ref(phase, cert, node_key))
             if producer:
                 self._producer_arid[phase] = producer
             return PhaseOutcome(phase, "pass", decision=RouteDecision("advance"),
-                                skipped=True)
+                                skipped=True,
+                                certified_by=self._certified_by_label(phase, cert))
         # Validate dependency-DAG readiness is checked HERE, before the generic launch gate.
         # This is load-bearing: workflow_launch_check (and EVERY substep's own record-launch,
         # including pre_judge's) is itself dependency-gated (`_dependency_ready`), so a
@@ -14049,7 +14127,7 @@ clean:
         (`_derive_dev_validate_execute_resume_directive`) is honored. In dev such a failure is
         terminal — F1 fail_closes a structural GATE failure as `dev_phase_rollback` instead of
         retrying it, and a per-test `structural_violation` verdict fail_closes directly
-        (`conductor_phase_fail_closed`) — so a plain `--resume` would skip the checkpointed
+        (`conductor_phase_fail_closed`) — so a plain `--resume` would skip the certified
         Generate/Build and re-run the identical binary into the identical deterministic failure.
         Reopening Generate here — with the failure's own violation text as warm repair findings —
         is the operator-initiated equivalent of the `("generate","reuse")` route prod takes
@@ -14076,13 +14154,14 @@ clean:
         trigger = str(directive.get("trigger_agent_run_id") or "").strip()
         if not trigger:
             return {}
-        # A Generate that is NOT checkpointed-complete will be re-run by the plain resume
-        # anyway, and reopening it would archive the in-progress attempt. Nothing to do.
-        completed = self.check_step_completed(refs.node_key, "generate")
-        if completed is None:
+        # A Generate that is NOT certified will be re-run by the plain resume anyway, and
+        # reopening it would archive the in-progress attempt. Nothing to do.
+        cert = self.check_phase_certified(refs.node_key, "generate")
+        if not cert.get("certified"):
             return {}
         producer = self._completed_producer_arid(
-            refs.node_key, "generate", completed.get("agent_run_id"))
+            refs.node_key, "generate",
+            self._certified_meta_ref("generate", cert, refs.node_key))
         try:
             result = self.reopen_phase(refs.node_key, from_phase="generate", trigger_arid=trigger,
                                        reason="dev_resume_validate_execute_structural")
@@ -14091,7 +14170,7 @@ clean:
                       detail=str(exc)[:200])
             return {}
         # A `noop` means a prior reopen already consumed this trigger, so Generate was NOT
-        # reopened and stays checkpointed — run_phase would skip it and silently drop the repair.
+        # reopened and stays certified — run_phase would skip it and silently drop the repair.
         # The deriver already rejects superseded triggers; this is the second guard.
         if str(result.get("status") or "").strip() == "noop":
             self.emit("resume_directive_reopen_noop", node_key=refs.node_key, trigger=trigger)
@@ -14136,10 +14215,10 @@ clean:
                                 reason_detail=str(exc)[:200])
                 return "fail_closed"
             if outcome.skipped:
-                # Already checkpointed complete (resume): no body ran, so an
-                # elapsed time would be misleading — report it as skipped instead.
+                # Certified by the artifacts already on disk: no body ran, so an elapsed
+                # time would be misleading — report it as skipped instead.
                 self.emit("phase_complete", node_key=refs.node_key, phase=phase,
-                          result="skipped")
+                          result="skipped", certified_by=outcome.certified_by or "")
             else:
                 self.emit("phase_complete", node_key=refs.node_key, phase=phase,
                           result=outcome.status,
@@ -14286,7 +14365,7 @@ clean:
                                 reason_detail=(decision.reason or "")[:200])
                 return "fail"
 
-            # upstream target is checkpointed pass -> reopen it (and downstream).
+            # upstream target is certified -> reopen it (revoke + reset, and downstream).
             trigger = outcome.failed_substeps[-1] if outcome.failed_substeps else None
             if trigger is None:
                 self.set_status("fail", reason_code=f"{phase}_fail",
@@ -14397,10 +14476,15 @@ class PhaseOutcome:
     substep_arids: list[str] = field(default_factory=list)
     failed_substeps: list[str] = field(default_factory=list)
     decision: RouteDecision | None = None
-    # True when a --resume short-circuited the phase because it was already
-    # checkpointed complete (no body re-run). Lets conduct() avoid reporting a
-    # misleading ~0.0s elapsed time for a phase that did not actually execute.
+    # True when the phase did not run because its artifacts are already certified (cold or
+    # resumed alike). Lets conduct() avoid reporting a misleading ~0.0s elapsed time for a
+    # phase that did not actually execute.
     skipped: bool = False
+    # The artifact that certified a skipped phase (ir_ref / source_id / binary_id / run_id).
+    # Reported on the `phase_complete result=skipped` event so a run log says WHICH standing
+    # artifact was adopted — without it a fully-skipped run is indistinguishable from a run
+    # that skipped the wrong node's work.
+    certified_by: str | None = None
 
 
 # --- node resolution + id allocation + entrypoint ------------------------------
@@ -14533,9 +14617,15 @@ def resolve_node(repo_root: Path, spec_ref: str) -> tuple[str, str]:
 def resume_node_refs(conductor: "Conductor", node_key: str, spec_path: str) -> NodeRefs:
     """Reconstruct NodeRefs from the RESUMED ORCHESTRATION's own records (NOT the
     global-latest workspace dirs, which could belong to a different/newer run).
-    ir_id/pipeline_id come from this orchestration's reservations; source/binary/run
-    come from its checkpoint's completed-step outputs (fresh ids are allocated for a
-    producing phase that has not run yet, which the resumed run then creates)."""
+    ir_id/pipeline_id come from this orchestration's reservations; source/binary/run come
+    from `<pipeline_ref>/lineage.json`, which the host writes at the start of every pipeline
+    phase (after the producer id is rotated) and which therefore names the ids this
+    orchestration last worked on. Fresh ids are allocated for a producing phase that never
+    ran, which the resumed run then creates.
+
+    This is a SEED, not the decision: `run_phase`'s skip branch re-derives each phase's ids
+    from the certification chain and overwrites what it adopts (`_adopt_certified_refs`).
+    lineage records what was last ATTEMPTED; the certification records what stands."""
     safe = node_key_safe(node_key)
     orch_dir = (conductor.repo_root / "workspace" / "orchestrations"
                 / conductor.orchestration_id)
@@ -14558,20 +14648,15 @@ def resume_node_refs(conductor: "Conductor", node_key: str, spec_path: str) -> N
             f"conductor resume: missing ir/pipeline reservation for {node_key} in "
             f"{conductor.orchestration_id}{hint}")
 
-    source_id = binary_id = run_id = None
-    checkpoint = _read_json(orch_dir / "orchestration_checkpoint.json") or {}
-    for entry in checkpoint.get("completed_steps", []):
-        if not isinstance(entry, dict) or entry.get("node_key") != node_key:
-            continue
-        for ref in entry.get("output_refs", []):
-            if not isinstance(ref, str):
-                continue
-            if "/source/" in ref:
-                source_id = ref.split("/source/")[1].split("/")[0]
-            if "/binary/" in ref:
-                binary_id = ref.split("/binary/")[1].split("/")[0]
-            if "/runs/" in ref:
-                run_id = ref.split("/runs/")[1].split("/")[0]
+    lineage = _read_json(
+        conductor.repo_root / "workspace" / "pipelines" / safe / str(pipeline_id)
+        / "lineage.json") or {}
+
+    def _seed(key: str) -> str | None:
+        value = lineage.get(key)
+        return value.strip() if isinstance(value, str) and value.strip() else None
+
+    source_id, binary_id, run_id = _seed("source_id"), _seed("binary_id"), _seed("run_id")
     date = _today()
     source_id = source_id or f"src_{date}_001"
     binary_id = binary_id or f"bin_{date}_001"
@@ -14586,20 +14671,59 @@ def resume_node_refs(conductor: "Conductor", node_key: str, spec_path: str) -> N
 
 def prepare_node(conductor: "Conductor", node_key: str, spec_path: str) -> NodeRefs:
     """Allocate canonical ids (ir/pipeline/source/binary/run) and reserve the
-    ir_id + pipeline_id roots before the Compile phase runs."""
+    ir_id + pipeline_id roots before the Compile phase runs.
+
+    A COLD run over a node that is already certified ADOPTS the standing artifacts instead
+    of minting new ids. Minting would be self-defeating: the certification predicate refuses
+    a reservation that is not the latest artifact under the root, so a fresh ir_id would make
+    every phase of an already-certified node re-derive. Adoption is what makes "re-run the
+    same target and it passes with four skips" true, which is the point of certifying
+    artifacts rather than recording runs. A revoked or unstamped IR is not adopted, so a
+    re-derivation still gets a fresh id and never overwrites the artifact it replaces."""
+    from tools.orchestration_runtime import _certified_ir_candidate
+
     safe = node_key_safe(node_key)
     slug = _slug_of(spec_id_of(node_key))
     date = _today()
-    ir_id = f"{slug}_{date}_{_next_seq(conductor.repo_root / 'workspace' / 'ir' / safe, f'{slug}_{date}')}"
-    pipeline_id = (
-        f"{slug}_{date}_"
-        f"{_next_seq(conductor.repo_root / 'workspace' / 'pipelines' / safe, f'{slug}_{date}')}"
-    )
+    ir_id = _certified_ir_candidate(conductor.repo_root, node_key)
+    pipeline_id = None
+    if ir_id:
+        # The pipeline that was built FROM the adopted IR — identified by `lineage.json`,
+        # the host-authored record of which IR a pipeline belongs to. Adopting the latest
+        # pipeline unconditionally would bind the run to a pipeline of a different IR.
+        pipe_root = conductor.repo_root / "workspace" / "pipelines" / safe
+        ir_ref = f"workspace/ir/{safe}/{ir_id}"
+        for candidate in sorted((p for p in pipe_root.glob("*") if p.is_dir()),
+                                key=lambda p: p.name, reverse=True):
+            lineage = _read_json(candidate / "lineage.json") or {}
+            if str(lineage.get("ir_ref") or "").strip() == ir_ref:
+                pipeline_id = candidate.name
+                break
+    if not ir_id:
+        ir_id = f"{slug}_{date}_{_next_seq(conductor.repo_root / 'workspace' / 'ir' / safe, f'{slug}_{date}')}"
+    if pipeline_id is None:
+        # Either the IR was minted, or it is certified but no pipeline was ever built from it
+        # (a run stopped at `--until-phase compile`). Keep the adopted IR and mint the
+        # pipeline: Compile stays skippable and Generate runs, which is exactly the state.
+        pipeline_id = (
+            f"{slug}_{date}_"
+            f"{_next_seq(conductor.repo_root / 'workspace' / 'pipelines' / safe, f'{slug}_{date}')}"
+        )
+    lineage = _read_json(
+        conductor.repo_root / "workspace" / "pipelines" / safe / str(pipeline_id)
+        / "lineage.json") or {}
+
+    def _adopted(key: str, fallback: str) -> str:
+        value = lineage.get(key)
+        return value.strip() if isinstance(value, str) and value.strip() else fallback
+
     refs = NodeRefs(
         node_key=node_key, spec_path=spec_path,
-        ir_id=ir_id, pipeline_id=pipeline_id,
-        source_id=f"src_{date}_001", binary_id=f"bin_{date}_001",
-        run_id=f"run_{date}_001", source_binary_id=f"bin_{date}_001",
+        ir_id=ir_id, pipeline_id=str(pipeline_id),
+        source_id=_adopted("source_id", f"src_{date}_001"),
+        binary_id=_adopted("binary_id", f"bin_{date}_001"),
+        run_id=_adopted("run_id", f"run_{date}_001"),
+        source_binary_id=_adopted("binary_id", f"bin_{date}_001"),
     )
     by = conductor.orchestration_agent_run_id
     conductor.reserve_root(node_key, "compile", ir_id, by)
@@ -14614,8 +14738,9 @@ def run_conductor(*, repo_root: Path | str, orchestration_id: str,
                   env: dict[str, str] | None = None, resume: bool = False,
                   wait_usage_reset: bool = False) -> str:
     """Conductor entrypoint used by run_workflow.py (the only orchestration driver).
-    Resolves the node, allocates+reserves ids (or, on resume, reuses the checkpointed
-    ids), and runs the deterministic phase loop. Returns the terminal orchestration
+    Resolves the node, allocates+reserves ids (adopting an already-certified IR and the
+    pipeline bound to it on a cold run; on resume, seeding the stage ids from
+    `<pipeline_ref>/lineage.json`), and runs the deterministic phase loop. Returns the terminal orchestration
     status (pass | fail | fail_closed).
 
     `llm_config` is the leaf-model authority, and is required: the caller has already loaded

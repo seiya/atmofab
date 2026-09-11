@@ -266,6 +266,7 @@ Only `boundary_apply` / `reconstruct` / `flux_compute` / `source_term` / `time_i
 ## `ir_meta.json` required keys
 - `attempt_count`, `verification_status`, `last_fail_reason`, `debug_mode`, `context_isolated`
 - When `context_isolated=false`, `constraint_reason` is required.
+- `artifact_hashes` is the HOST's certification of this phase, never a key you author: a value written inside a leaf window is erased when that window closes, and the host stamps its own at `write-step-result` on a `pass`. Re-authoring `ir_meta.json` without it is correct.
 - On the PURE path the host writes this file, and the values are fixed rather than chosen: `ir_id` and `node_key` identify the artifact, `context_isolated` is `true` by construction (the leaf sees only the inlined context), `debug_mode` follows the run's `dev` mode, and `attempt_count` is the number of LAUNCHES the substep that wrote the file made — the producer's for the producer's write, the reviewer's for the reviewer's. `Compile.generate` writes `verification_status: "pending"`: the contract requires a non-empty string, and every dependency-certification reader compares against `"pass"` exactly, so a producer must not leave its own artifact reading as certified. `Compile.verify` then re-authors the file from its verdict.
 
 ## `ir_id` format
