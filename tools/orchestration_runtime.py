@@ -14823,6 +14823,21 @@ def enable_checkpoint_resume(
     # this field to decide which phases must be certified — left stale, it would vouch a
     # four-phase run against one phase. Refreshed only when the caller passes one, so a
     # resume that does not know its end-phase leaves the record alone rather than clearing it.
+    #
+    # It may only EXTEND. Lowering it is the completion vouch's own bar being moved by the
+    # thing it is meant to judge: a run started for `validate`, resumed `--until-phase
+    # compile`, then vouched — every later phase uncertified and never run — reaches `pass`,
+    # and that `pass` is the final verdict the workflow reports for the operator's original
+    # request. Measured on this branch and on `origin/main` alike (so this is a pre-existing
+    # hole, not a regression of issue #177): with only `compile` certified, `set-status
+    # --status pass` is refused; after `init --resume-from-checkpoint --until-phase compile`
+    # it succeeds. A leaf may run it — `leaf_config/claude/settings.json` grants
+    # `Bash(python3 tools/orchestration_runtime.py *)` — so the `leaf shortcut` blank fills
+    # with the verdict itself, which is as far as it goes.
+    #
+    # Refusing rather than silently keeping the maximum: an operator who asks for a shorter
+    # run is asking for something this orchestration cannot now report, and being told so is
+    # the answer. A shorter run is a fresh orchestration.
     if isinstance(until_phase, str) and until_phase.strip():
         if not isinstance(invocation_block, dict):
             # A legacy orchestration carries no `invocation` block at all. Refreshing only an
@@ -14831,7 +14846,21 @@ def enable_checkpoint_resume(
             # records one rather than requiring the operator to hand-edit the meta.
             invocation_block = {}
             meta["invocation"] = invocation_block
-        invocation_block["until_phase"] = until_phase.strip()
+        requested = until_phase.strip()
+        recorded = invocation_block.get("until_phase")
+        if (requested in STEP_KEYS_FOR_NODE_STATE
+                and isinstance(recorded, str) and recorded.strip() in STEP_KEYS_FOR_NODE_STATE
+                and STEP_KEYS_FOR_NODE_STATE.index(requested)
+                < STEP_KEYS_FOR_NODE_STATE.index(recorded.strip())):
+            raise RuntimeError(
+                f"resume: --until-phase {requested!r} is EARLIER than the end-phase this "
+                f"orchestration was started for ({recorded.strip()!r}). A resume may extend a "
+                "run, never shorten it: the completion vouch reads this field to decide which "
+                "phases must be certified, so lowering it would let the run report `pass` "
+                "without ever running the phases it was started for. Start a fresh "
+                "orchestration for a shorter run."
+            )
+        invocation_block["until_phase"] = requested
     prior_status = meta.get("status")
     terminal_reset = (
         isinstance(prior_status, str) and prior_status in IDEMPOTENT_TERMINAL_STATUSES

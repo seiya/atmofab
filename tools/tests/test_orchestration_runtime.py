@@ -12258,6 +12258,43 @@ class PhaseCertificationTests(unittest.TestCase):
                 repo_root=repo, orchestration_id="o1", status="pass")
             self.assertEqual(result["status"], "pass")
 
+    def test_a_resume_may_not_LOWER_the_recorded_until_phase(self) -> None:
+        """The other direction of the refresh above, and the reason it has to be refused.
+
+        The completion vouch reads `invocation.until_phase` to decide which phases must be
+        certified, so lowering it moves the vouch's own bar. Measured: a run started for
+        `validate` with only `compile` certified is REFUSED at `set-status --status pass`;
+        after `init --resume-from-checkpoint --until-phase compile` the same call SUCCEEDS,
+        with generate / build / validate never run and never certified — and that `pass` is
+        the final verdict the workflow reports for the operator's original request.
+
+        A leaf can take this route: `leaf_config/claude/settings.json` grants
+        `Bash(python3 tools/orchestration_runtime.py *)`, so the `leaf shortcut` blank fills
+        with the verdict itself. The same measurement holds on `origin/main`, so this is a
+        pre-existing hole rather than a regression of issue #177 — it is fixed here because
+        this PR owns the vouch and clause (d) is what reads the field."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._preflight(repo, until_phase="validate")
+            self._certified(repo, through="compile")
+            with self.assertRaisesRegex(RuntimeError, "may extend a run, never shorten it"):
+                main(["init", "--repo-root", str(repo), "--orchestration-id", "o1",
+                      "--resume-from-checkpoint", "--until-phase", "compile"])
+            meta = json.loads(
+                (repo / "workspace/orchestrations/o1/orchestration_meta.json").read_text("utf-8"))
+            self.assertEqual(meta["invocation"]["until_phase"], "validate")
+            # ... and the vouch the attack was aimed at still refuses.
+            with self.assertRaisesRegex(RuntimeError, "generate is not certified"):
+                update_orchestration_status(repo_root=repo, orchestration_id="o1",
+                                           status="pass")
+
+            # Re-stating the SAME end-phase is not a lowering and must stay allowed: an
+            # ordinary `--resume` passes the end-phase it is running to every time.
+            enable_checkpoint_resume(repo, "o1", until_phase="validate")
+            self.assertEqual(
+                json.loads((repo / "workspace/orchestrations/o1/orchestration_meta.json")
+                           .read_text("utf-8"))["invocation"]["until_phase"], "validate")
+
     def test_resume_refreshes_the_recorded_until_phase(self) -> None:
         """A resume may EXTEND the run (`--resume <spec> validate` over a run started
         `--until-phase compile`), and the vouch reads `invocation.until_phase` to decide which
