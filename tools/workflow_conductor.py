@@ -14127,7 +14127,7 @@ clean:
         (`_derive_dev_validate_execute_resume_directive`) is honored. In dev such a failure is
         terminal — F1 fail_closes a structural GATE failure as `dev_phase_rollback` instead of
         retrying it, and a per-test `structural_violation` verdict fail_closes directly
-        (`conductor_phase_fail_closed`) — so a plain `--resume` would skip the checkpointed
+        (`conductor_phase_fail_closed`) — so a plain `--resume` would skip the certified
         Generate/Build and re-run the identical binary into the identical deterministic failure.
         Reopening Generate here — with the failure's own violation text as warm repair findings —
         is the operator-initiated equivalent of the `("generate","reuse")` route prod takes
@@ -14170,7 +14170,7 @@ clean:
                       detail=str(exc)[:200])
             return {}
         # A `noop` means a prior reopen already consumed this trigger, so Generate was NOT
-        # reopened and stays checkpointed — run_phase would skip it and silently drop the repair.
+        # reopened and stays certified — run_phase would skip it and silently drop the repair.
         # The deriver already rejects superseded triggers; this is the second guard.
         if str(result.get("status") or "").strip() == "noop":
             self.emit("resume_directive_reopen_noop", node_key=refs.node_key, trigger=trigger)
@@ -14365,7 +14365,7 @@ clean:
                                 reason_detail=(decision.reason or "")[:200])
                 return "fail"
 
-            # upstream target is checkpointed pass -> reopen it (and downstream).
+            # upstream target is certified -> reopen it (revoke + reset, and downstream).
             trigger = outcome.failed_substeps[-1] if outcome.failed_substeps else None
             if trigger is None:
                 self.set_status("fail", reason_code=f"{phase}_fail",
@@ -14738,8 +14738,9 @@ def run_conductor(*, repo_root: Path | str, orchestration_id: str,
                   env: dict[str, str] | None = None, resume: bool = False,
                   wait_usage_reset: bool = False) -> str:
     """Conductor entrypoint used by run_workflow.py (the only orchestration driver).
-    Resolves the node, allocates+reserves ids (or, on resume, reuses the checkpointed
-    ids), and runs the deterministic phase loop. Returns the terminal orchestration
+    Resolves the node, allocates+reserves ids (adopting an already-certified IR and the
+    pipeline bound to it on a cold run; on resume, seeding the stage ids from
+    `<pipeline_ref>/lineage.json`), and runs the deterministic phase loop. Returns the terminal orchestration
     status (pass | fail | fail_closed).
 
     `llm_config` is the leaf-model authority, and is required: the caller has already loaded

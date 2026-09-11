@@ -31,6 +31,27 @@ Related canonical sources:
 | `reopen-phase` | reopen a checkpointed-pass phase (`--from-phase`) and every downstream phase for `--node-key`, so a cross-phase retry (`Validate.judge` `structural_violation`/`ir` → Compile, or `Generate.verify` `ir_inconsistency` → Compile) runs in place. Snapshots the prior attempt's step/substep runs as superseded (exempt from the pass-completion vouch), archives their `step_result.json` aside to `step_result.superseded.<seq>.json`, **revokes the `from_phase` stage meta** (`verification_status: revoked` — the half that reaches the ARTIFACT, so `check-phase-certified` refuses it in this run and in every later one, cold included), drops the affected `completed_steps` checkpoint entries, and resets the affected `phase_state` to `not_started` | used by the orchestration agent when the decision table routes a `Validate` / `Generate` failure back to an already-passed `Compile` (the `pass` upstream phase cannot otherwise be re-pointed: `check-step-completed` reads the stale IR as `integrity=ok`, the phase sits at `step_result_written`, and `retry_decisions` only models within-step retries). Idempotent. `--trigger-agent-run-id` must be a terminal non-pass step/substep strictly downstream of `--from-phase` (the anti-abuse gate — refuses to erase a passing pipeline). The trigger is resolved from `agent_runs.jsonl`; when absent there it falls back to an `agent_runs_invalid.jsonl` entry **only if** a matching `violations/<arid>.unauthorized_write_violation.json` exists (the recovery path for a phase whose failure mode *is* an unauthorized write — that run is diverted to the invalid log and would otherwise be an unusable trigger; the result/log records `trigger_source`). On `--resume` of an `attribution=ir` failure, or an unauthorized-write failure attributed to a single upstream phase, `orchestration_meta.resume_directive` records the parameters to feed here (for details, `RUNBOOK.md` §3-1) |
 | `add-superseded-runs` | tombstone `--run-ids` into the superseded set (`reopen/superseded_runs.json`) without a reopen, so they are exempt from the pass-completion vouch | used by the conductor when a phase attempt fail-closes on a leaf transport error (e.g. the `Validate.judge` leaf hit a Claude session limit, `rc!=0`): the attempt's already-terminalized substep agents are recorded in `agent_runs.jsonl` but have no `step_result` (the attempt never wrote one), so on a later `--resume` (which re-runs the phase fresh) `_validate_orchestration_completion_for_pass` would flag them as orphans. Unlike `reopen-phase` this archives no `step_result` and needs no trigger. Idempotent (merges into the existing set); appends an `add_superseded_runs` line to `reopen/reopen_log.jsonl` |
 
+## `check-phase-certified` refusal reasons
+
+The `reason` a refusal reports is what a `phase_state_log.jsonl` entry and the
+`cannot mark orchestration pass: <node>/<phase> is not certified: <reason>` message hand back.
+Each one says which link of the chain refused, so the remedy is "re-derive that phase", never
+"edit the record".
+
+| reason | what it means | what to do |
+|---|---|---|
+| `ir_not_reserved` / `pipeline_not_reserved` | this orchestration never reserved that phase root | the run did not get that far; start or `--resume` it |
+| `ir_not_found` / `pipeline_not_found` | the reserved root does not exist on disk | as above |
+| `ir_not_latest` / `pipeline_not_latest` | a NEWER artifact exists under the same root, so this run is standing on a superseded one | re-run the node; the readiness stages evaluate the latest artifact, and a skip must not disagree with them |
+| `verification_status_not_pass` | the phase's own verify did not certify it | re-run the phase |
+| `revoked` | a retry revoked it deliberately; `last_fail_reason` carries the finding | re-run the phase (the conductor does this automatically) |
+| `artifact_hashes_missing` | the stage meta was never stamped (an older artifact, or a phase that never passed) | re-run the phase |
+| `artifact_hash_mismatch:<ref>` | the named deliverable's bytes changed after it was certified | restore it, or re-run the phase to re-derive it |
+| `source_not_bound` / `binary_not_bound` / `verdict_not_bound` | the artifact names a different upstream id than the one standing | re-run that phase against the current upstream |
+| `resolution_stale:<detail>` / `binding_stale:<detail>` | a dependency moved (`docs/ORCHESTRATION.md` §13b); the detail names it | `--with-deps` re-certifies the closure bottom-up |
+| `post_judge_not_recorded` / `post_judge_not_pass` | the Validate gate did not record a pass, whatever the verdict says | re-run Validate |
+| `stage_meta_unreadable` / `node_key_invalid` | a malformed record | inspect it; this is a defect, not a stale artifact |
+
 ## Argument-acquisition path
 
 Confirm the required / optional arguments and return-value schema of each subcommand with the following command.

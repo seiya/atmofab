@@ -185,6 +185,27 @@ class CertificationKeyTypeTests(unittest.TestCase):
                 self.assertIn("artifact_hashes values must be", violations[0])
                 self.assertIn("a/b.yaml", violations[0])
 
+    def test_artifact_hash_keys_must_be_non_blank_strings(self) -> None:
+        """The key is the repo-relative deliverable the digest belongs to. A blank or
+        non-string one names no file, so the predicate would hash `<repo_root>/` and refuse
+        the phase forever (witness census)."""
+        for bad_key in ("   ", "", 1):
+            with self.subTest(key=bad_key):
+                meta = dict(_conformant(), artifact_hashes={bad_key: "sha256:" + "a" * 64})
+                violations = stage_meta_type_violations(meta, step_token="compile")
+                self.assertEqual(len(violations), 1)
+                self.assertIn("artifact_hashes values must be", violations[0])
+
+    def test_artifact_hash_values_must_name_the_sha256_algorithm(self) -> None:
+        """`sha256:<hex>` is the form the predicate re-computes and compares against; a bare
+        digest or another algorithm never matches (witness census)."""
+        for bad in ("md5:deadbeef", "a" * 64, "SHA256:" + "a" * 64):
+            with self.subTest(value=bad):
+                meta = dict(_conformant(), artifact_hashes={"a/b.f90": bad})
+                violations = stage_meta_type_violations(meta, step_token="compile")
+                self.assertEqual(len(violations), 1)
+                self.assertIn("a/b.f90", violations[0])
+
     def test_source_ir_id_must_be_a_non_empty_string(self) -> None:
         for bad in ("", "   ", 1, None, ["i1"]):
             with self.subTest(value=bad):

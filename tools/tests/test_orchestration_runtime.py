@@ -12783,12 +12783,87 @@ class PhaseCertificationTests(unittest.TestCase):
                 (repo / "workspace/orchestrations/o1/orchestration_meta.json").read_text("utf-8"))
             self.assertEqual(meta["invocation"]["until_phase"], "validate")
             self.assertIs(meta["invocation"]["with_deps"], False)
+            invocation_before = dict(meta["invocation"])
+            # A LEGACY orchestration carries no `invocation` block at all; a resume that knows
+            # its end-phase records one, rather than leaving it permanently unvouchable
+            # (disclosure round over-refusal probe 2).
+            meta.pop("invocation", None)
+            (repo / "workspace/orchestrations/o1/orchestration_meta.json").write_text(
+                json.dumps(meta), encoding="utf-8")
+            enable_checkpoint_resume(repo, "o1", until_phase="build")
+            meta = json.loads(
+                (repo / "workspace/orchestrations/o1/orchestration_meta.json").read_text("utf-8"))
+            self.assertEqual(meta["invocation"]["until_phase"], "build")
             # A resume that does not know its end-phase leaves the record alone rather than
             # clearing it (the over-refusal direction: a cleared record fails the vouch).
             enable_checkpoint_resume(repo, "o1")
             meta = json.loads(
                 (repo / "workspace/orchestrations/o1/orchestration_meta.json").read_text("utf-8"))
-            self.assertEqual(meta["invocation"]["until_phase"], "validate")
+            self.assertEqual(meta["invocation"]["until_phase"], "build")
+            self.assertIsNotNone(invocation_before)
+
+    def test_check_phase_certified_does_not_record_a_skip_it_did_not_make(self) -> None:
+        """The transition is gated on the ANSWER. Unpinned, a refused phase could still be
+        stamped `skipped_certified` in `phase_state.json` and logged `skip_certified` — a
+        durable false record of a skip that never happened (witness census)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._preflight(repo)
+            refs = self._certified(repo, through="compile")
+            doc = json.loads((repo / refs["ir_meta"]).read_text("utf-8"))
+            doc["verification_status"] = "fail"
+            (repo / refs["ir_meta"]).write_text(json.dumps(doc), encoding="utf-8")
+            out = ort.check_phase_certified(
+                repo_root=repo, orchestration_id="o1", node_key=self._NK, step="compile")
+            self.assertFalse(out["certified"])
+            # Reported as-is: the phase has no recorded state at all, and certainly not the
+            # skip. (`None` here is "no entry yet", which is what a node that has not run has.)
+            self.assertIsNone(out["phase_state"])
+            log_path = repo / "workspace/orchestrations/o1/phase_state_log.jsonl"
+            events = [json.loads(x)["event"] for x in log_path.read_text("utf-8").splitlines()
+                      if x.strip()] if log_path.is_file() else []
+            self.assertNotIn("skip_certified", events)
+
+    def test_reserved_node_keys_reads_a_compile_only_reservation_set(self) -> None:
+        """A `--until-phase compile` run reserves `compile.json` and nothing else, so the
+        vouch's node enumeration must key on that file — globbing `generate.json` would refuse
+        every compile-only run (witness census; the fixtures always write both)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            res = (repo / "workspace/orchestrations/o1/reservations"
+                   / "component__spec_x__0.1.0")
+            res.mkdir(parents=True)
+            (res / "compile.json").write_text(json.dumps({
+                "node_key": self._NK, "step": "compile",
+                "reserved_ir_id": "spec-x_20260101_001"}), encoding="utf-8")
+            self.assertEqual(ort._reserved_node_keys(repo, "o1"), [self._NK])
+            # A reservation whose node_key is blank or absent names no node and must not
+            # enter the certification loop as one.
+            (res / "compile.json").write_text(json.dumps(
+                {"step": "compile", "node_key": "   "}), encoding="utf-8")
+            self.assertEqual(ort._reserved_node_keys(repo, "o1"), [])
+
+    def test_the_vouch_refuses_empty_edges_when_children_actually_ran(self) -> None:
+        """EMPTY edges is legitimate only when NOTHING LAUNCHED. A run that recorded a step or
+        substep and has no edge lost its parent-child record, and the per-edge validation
+        iterates nothing — so the vouch could not tell "launched nothing" from "launched and
+        lost the record" (disclosure round, red-then-GREEN against origin/main)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._preflight(repo)
+            self._certified(repo, through="validate")
+            runs = repo / "workspace/orchestrations/o1/agent_runs.jsonl"
+            with runs.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps({
+                    "agent_run_id": "substep_1", "agent_role": "substep",
+                    "parent_agent_run_id": "orch_run_001", "node_key": self._NK,
+                    "step": "compile", "substep": "generate", "status": "pass",
+                    "agent_backend": "claude"}) + "\n")
+            (repo / "workspace/orchestrations/o1/agent_graph.json").write_text(
+                '{"edges": []}', encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "records no edges while"):
+                update_orchestration_status(
+                    repo_root=repo, orchestration_id="o1", status="pass")
 
     def test_the_vouch_refuses_a_malformed_edges_record(self) -> None:
         """EMPTY edges is the new legitimate case; MALFORMED is not. The rule this replaced
@@ -13349,6 +13424,21 @@ class CertificationStampTests(unittest.TestCase):
                 ort._stamp_certification(
                     repo, "o1", node_key="component/spec_x@0.1.0", step="generate",
                     required_outputs=[refs["model_ref"]])
+
+    def test_write_step_result_pass_for_validate_certifies_no_meta(self) -> None:
+        """Validate declares no certifying meta, so the stamp returns without writing one —
+        and a passing validate `write-step-result` must not raise. Nothing on the branch drove
+        that path at all (witness census), and it is the one every real run takes."""
+        self.assertIsNone(ort.CERTIFYING_META_FILENAME_BY_STEP.get("validate"))
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = certify_node(repo, "o1", through="validate")
+            outs = [refs["aggregate_verdict"]]
+            self.assertIsNone(ort._stamp_certification(
+                repo, "o1", node_key="component/spec_x@0.1.0", step="validate",
+                required_outputs=outs))
+            self.assertIsNone(ort._strip_certification(
+                repo, step="validate", required_outputs=outs))
 
     def test_stamp_refuses_an_unreadable_certifying_meta(self) -> None:
         """For BUILD this raise is the meta's only reader: `STAGE_META_FILENAME_BY_STEP` has
@@ -30714,7 +30804,13 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # this one works. 19700 then left ~100 bytes, a tripwire again by the same rule.
         # Bumped 20100->20170 (issue #148): the verify-family routing sentence now names both
         # phase rubrics, `Compile.verify` having gained one. Measured 20018; 20100 left 82 B.
-        "docs/AGENT_CONTRACT.md": 20170,
+        # Bumped for issue #177: `prepare_node` may hand a leaf an `ir_ref` an EARLIER run
+        # produced and this one adopted, and the past-artifact prohibition in this file is the
+        # leaf-actionable statement of the rule. Without the qualifier a leaf can read its own
+        # contract as forbidding the input it was handed and stop with `fail` — an
+        # over-refusal delivered as prose, which is why it belongs in the file every leaf
+        # force-reads rather than only in `docs/workflow/WORKFLOW_CORE.md`.
+        "docs/AGENT_CONTRACT.md": 20400,
         # Consolidated runner-output contract (was duplicated across phase_02/04 +
         # PERF §2/§6); M3d: a validate.judge-only leaf must-read (generate dropped it).
         # Bumped 7600->8100: §3 disambiguated the guard-case snapshot rule (declared

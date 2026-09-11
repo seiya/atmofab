@@ -2150,10 +2150,14 @@ def _strip_certification(
     `write-step-result` stamped it" for every phase that reaches this function.
 
     Best effort by design: an absent or unreadable meta is the ordinary shape of a failed
-    phase (nothing was authored), and there is nothing to strip. What it does NOT cover is a
-    phase that fail-closes without reaching `write-step-result` at all (a leaf transport
-    error, a validate gate failure) — there the forged keys survive, and the artifact is
-    invalidated instead by the producer-id rotation of the next attempt.
+    phase (nothing was authored), and there is nothing to strip.
+
+    This is the SECOND of two strips and covers only phases that reach here. The phase that
+    fail-closes without writing a step_result at all (a leaf transport error, a validate gate
+    failure) is covered by the FIRST one, in `_validate_actual_write_paths` — every child
+    window terminalizes, and the keys are erased there from whatever stage meta the child
+    changed. Between them, the keys exist only where a passing `write-step-result` stamped
+    them.
     """
     meta_filename = CERTIFYING_META_FILENAME_BY_STEP.get(step.strip().lower())
     if meta_filename is None:
@@ -5697,6 +5701,9 @@ STEP_KEYS_FOR_NODE_STATE: tuple[str, ...] = (
 # attempt read as a tampered Build. Measured on the conductor-authored Makefile: `make test` has
 # no build prerequisite and runs the binary with `cwd=RUNDIR`, so nothing else under
 # `source/*/src/` or `binary/*/bin/` changes.
+# The two readers pull in OPPOSITE safety directions, so adding a basename here is not a
+# neutral edit: it makes the hash exclusion safer (one fewer false tamper) and the conductor's
+# "all deliverables written" check weaker (one fewer required output). Weigh both.
 AUDIT_LOG_BASENAMES: frozenset[str] = frozenset({
     "command_log.jsonl", "stdout.log", "stderr.log",
     "compile.stdout.log", "compile.stderr.log",
@@ -15382,8 +15389,14 @@ def enable_checkpoint_resume(
     # this field to decide which phases must be certified — left stale, it would vouch a
     # four-phase run against one phase. Refreshed only when the caller passes one, so a
     # resume that does not know its end-phase leaves the record alone rather than clearing it.
-    if (isinstance(invocation_block, dict)
-            and isinstance(until_phase, str) and until_phase.strip()):
+    if isinstance(until_phase, str) and until_phase.strip():
+        if not isinstance(invocation_block, dict):
+            # A legacy orchestration carries no `invocation` block at all. Refreshing only an
+            # EXISTING dict left it permanently unvouchable — the completion vouch reads this
+            # field and raises when it is absent — so a resume that KNOWS its end-phase
+            # records one rather than requiring the operator to hand-edit the meta.
+            invocation_block = {}
+            meta["invocation"] = invocation_block
         invocation_block["until_phase"] = until_phase.strip()
     prior_status = meta.get("status")
     terminal_reset = (
@@ -16331,7 +16344,10 @@ def _until_phase_index(repo_root: Path, orchestration_id: str) -> int:
     if not isinstance(token, str) or token.strip().lower() not in STEP_KEYS_FOR_NODE_STATE:
         raise RuntimeError(
             "cannot mark orchestration pass: orchestration_meta.invocation.until_phase is "
-            f"missing or unknown ({token!r}); it decides which phases must be certified"
+            f"missing or unknown ({token!r}); it decides which phases must be certified. "
+            "A run started by tools/run_workflow.py records it; record one on an "
+            "orchestration that has none with `init --resume-from-checkpoint "
+            f"--until-phase <{'|'.join(STEP_KEYS_FOR_NODE_STATE)}>`"
         )
     return STEP_KEYS_FOR_NODE_STATE.index(token.strip().lower())
 
@@ -16414,6 +16430,20 @@ def _validate_orchestration_completion_for_pass(
             "cannot mark orchestration pass: agent_graph.json is missing or has no `edges` list"
         )
     edges = graph.get("edges")
+    # EMPTY edges is legitimate only when NOTHING LAUNCHED. A run that recorded a step or
+    # substep and has no edge lost its parent-child record, and the per-edge validation below
+    # then iterates nothing — so the vouch could not tell "launched nothing" from "launched and
+    # lost the record", which is the false record the `edges` rule used to refuse. Measured
+    # red-then-GREEN by the disclosure axis on a real one-edge run whose graph was emptied.
+    if not edges and any(
+        _normalized_agent_role(str(payload.get("agent_role") or "")) in {"step", "substep"}
+        for payload in runs.values()
+        if isinstance(payload, dict)
+    ):
+        raise RuntimeError(
+            "cannot mark orchestration pass: agent_graph.json records no edges while "
+            "agent_runs.jsonl records step/substep runs (the agent tree is not traceable)"
+        )
 
     step_result_refs_by_substep: dict[str, Path] = {}
     for result_path in _iter_step_result_paths(root):

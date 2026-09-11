@@ -789,6 +789,12 @@ class RunWorkflowTests(unittest.TestCase):
             self.assertIn("--resume-from-checkpoint", init_calls[0])
             idx = init_calls[0].index("--spec-ref")
             self.assertEqual(init_calls[0][idx + 1], "spec/problem/test.md")
+            # ... and the end-phase THIS resume runs to, which the completion vouch reads to
+            # decide which phases must be certified. Without it a resume that extends the run
+            # is vouched against the original (shorter) phase list — the exact false record
+            # `_until_phase_index` exists to prevent (witness census).
+            idx = init_calls[0].index("--until-phase")
+            self.assertEqual(init_calls[0][idx + 1].lower(), "build")
 
 
     def test_resume_with_wait_usage_reset_refreshes_it_in_init(self) -> None:

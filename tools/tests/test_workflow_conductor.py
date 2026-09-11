@@ -6799,6 +6799,37 @@ class NodeAllocationTest(unittest.TestCase):
                 ref = wc.Conductor._certified_meta_ref(phase, cert, refs.node_key)
                 self.assertIn(ref, declared)
 
+    def test_certified_by_label_names_each_phases_own_artifact(self) -> None:
+        """The run log's `certified_by` — per PHASE. Only the compile value was asserted
+        anywhere (witness census), so a table collapsed to one key was invisible."""
+        cert = {"ir_ref": "IR", "source_id": "SRC", "binary_id": "BIN", "run_id": "RUN"}
+        self.assertEqual(
+            {p: wc.Conductor._certified_by_label(p, cert)
+             for p in ("compile", "generate", "build", "validate")},
+            {"compile": "IR", "generate": "SRC", "build": "BIN", "validate": "RUN"})
+
+    def test_prepare_node_adopts_the_newest_pipeline_bound_to_the_certified_ir(self) -> None:
+        """Two pipelines bound to the adopted IR: the run must take the NEWEST, or it would
+        re-derive into a pipeline older than one that already exists (witness census)."""
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            on_disk = certify_node(root, "o", "component/spec_x@0.1.0",
+                                   through="generate", reserve=False)
+            newer = (root / "workspace" / "pipelines" / on_disk["safe"]
+                     / "spec-x_20260101_002")
+            newer.mkdir(parents=True)
+            (newer / "lineage.json").write_text(json.dumps({
+                "node_key": "component/spec_x@0.1.0", "ir_ref": on_disk["ir_ref"],
+                "pipeline_id": "spec-x_20260101_002", "source_id": "src_20260101_009"}),
+                encoding="utf-8")
+            c = _FakeConductor(repo_root=root, orchestration_id="o",
+                               orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"),
+                               env={})
+            c.calls = []
+            refs = wc.prepare_node(c, "component/spec_x@0.1.0", "spec/component/spec_x")
+            self.assertEqual(refs.pipeline_id, "spec-x_20260101_002")
+            self.assertEqual(refs.source_id, "src_20260101_009")
+
     def test_run_phase_skip_adopts_certified_ids_into_refs(self) -> None:
         """A skipped phase's ids are taken from the certification, so the next phase builds
         against the artifact that stands rather than against a freshly-minted id."""
