@@ -192,7 +192,7 @@ Append 1 line to `agent_runs.jsonl`. For a step/substep role, also save `agent.r
 | field | required | content |
 |---|---|---|
 | `agent_run_id` | yes | UUID |
-| `agent_role` | yes | `orchestration` / `step` / `substep` — the complete vocabulary, and a value outside it is rejected. `skipped_by_checkpoint` additionally requires `status=skipped` and a `skipped_step` matching `step`. The first three are the roles subject to the terminal filesystem-diff write audit; a role this list does not name used to skip that audit silently |
+| `agent_role` | yes | `orchestration` / `step` / `substep` — the complete vocabulary, and a value outside it is rejected. All three are subject to the terminal filesystem-diff write audit; there is no longer a role that is recorded but exempt from it |
 | `agent_backend` | yes | `claude` / `codex` |
 | `status` | yes | `running` / `pass` / `fail` / `blocked` / `timeout` / `cancel` |
 | `started_at` | yes | ISO 8601 |
