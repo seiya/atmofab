@@ -10829,16 +10829,21 @@ def _validate_orchestration_hierarchy(
                         )
                     continue
                 if child_id in invalid_arids:
-                    # A terminal attempt diverted to `agent_runs_invalid.jsonl`. Its kept edge
-                    # is tolerated; an arbitrarily corrupt edge (a child in NEITHER log) still
-                    # fails closed. Mirrors clause (c) of
-                    # `_validate_orchestration_completion_for_pass`.
-                    #
-                    # As with the in-flight exemption above, this tolerates ONLY the
-                    # missing-child record. The parent role is known from
-                    # agent_runs.jsonl and the hierarchy invariant still holds: a
-                    # substep can never be a parent, so keep failing closed on that
-                    # malformed edge.
+                    # A terminal attempt DIVERTED to `agent_runs_invalid.jsonl` and never
+                    # re-recorded. `record_agent_run` diverts for one class of cause only —
+                    # the terminal write audit refused the payload (unauthorized write,
+                    # unenforced sandbox, undeclared output) — and none of those writes is
+                    # rolled back. `_prune_orphan_agent_graph_edges` keeps this edge
+                    # deliberately, "so validation surfaces the invalid terminal attempt";
+                    # this is that validation, so it must not be the thing that looks away.
+                    # The benign shape — a child that fixed its payload and re-recorded under
+                    # the same arid — is in `agent_runs.jsonl` and never reaches here.
+                    # Mirrors clause (c) of `_validate_orchestration_completion_for_pass`.
+                    violations.append(
+                        f"{graph_path}:edges[{edge_idx}] child_agent_run_id is in "
+                        f"agent_runs_invalid.jsonl with no agent_runs.jsonl row ({child_id}): "
+                        "its terminal payload was refused and never re-recorded"
+                    )
                     if parent_role == "substep":
                         violations.append(
                             f"{graph_path}:edges[{edge_idx}] substep must not be parent role"

@@ -13267,29 +13267,67 @@ class CompletionVouchAttemptModelTests(unittest.TestCase):
                 update_orchestration_status(
                     repo_root=repo, orchestration_id="o1", status="pass")
 
-    def test_an_edge_child_in_the_invalid_log_is_accepted_and_one_in_neither_is_not(self) -> None:
-        """A diverted terminal attempt is a FAILED attempt: `record_agent_run` sent it to the
-        invalid log because its payload was refused. It needs no consumer and no tombstone —
-        which is what the old rule demanded. A child in NEITHER log is still a corrupt edge."""
+    def _dangle(self, repo: Path, orch: str, child: str) -> None:
+        """Give the orchestration one passing substep and an agent_graph edge to `child`."""
+        root = repo / "workspace/orchestrations/o1"
+        self._record(repo, "live_1", status="pass")
+        self._step_result(repo, executor=orch, status="pass", substeps=["live_1"])
+        graph = json.loads((root / "agent_graph.json").read_text("utf-8"))
+        graph["edges"].append({"parent_agent_run_id": orch, "child_agent_run_id": child,
+                               "relation_type": "launch"})
+        (root / "agent_graph.json").write_text(json.dumps(graph), encoding="utf-8")
+
+    def test_an_edge_child_recorded_in_neither_log_is_a_corrupt_edge(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
-            orch = self._orch(repo)
-            root = repo / "workspace/orchestrations/o1"
-            self._record(repo, "live_1", status="pass")
-            self._step_result(repo, executor=orch, status="pass", substeps=["live_1"])
-            graph = json.loads((root / "agent_graph.json").read_text("utf-8"))
-            graph["edges"].append({"parent_agent_run_id": orch,
-                                   "child_agent_run_id": "diverted_1",
-                                   "relation_type": "launch"})
-            (root / "agent_graph.json").write_text(json.dumps(graph), encoding="utf-8")
-
-            with self.assertRaisesRegex(RuntimeError, "missing from agent_runs.jsonl and"):
+            self._dangle(repo, self._orch(repo), "diverted_1")
+            with self.assertRaisesRegex(RuntimeError, "missing from agent_runs.jsonl: index=1"):
                 update_orchestration_status(
                     repo_root=repo, orchestration_id="o1", status="pass")
 
+    def test_an_unacknowledged_diverted_child_blocks_pass(self) -> None:
+        """`record_agent_run` diverts a terminal payload to `agent_runs_invalid.jsonl` for one
+        class of cause: the terminal write audit refused it — an unauthorized write outside the
+        child's write_roots, an unenforced sandbox, an undeclared output. None of those writes
+        is rolled back, so an orchestration that reaches `pass` over one reports a clean verdict
+        on a workspace a leaf has already written into outside its window.
+
+        `origin/main` refused this too, by a route that reads as bookkeeping and was not:
+        its rule exempted `superseded AND invalid`, and the conductor refused ON PURPOSE to
+        tombstone an unauthorized-write child, so the conjunction was unsatisfiable for exactly
+        this shape. Issue #177's first cut of the clause dropped the `superseded` half — the
+        only half that made the exemption unreachable — and accepted what main refused."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            root = repo / "workspace/orchestrations/o1"
+            self._dangle(repo, self._orch(repo), "diverted_1")
             (root / "agent_runs_invalid.jsonl").write_text(
                 json.dumps({"agent_run_id": "diverted_1", "agent_role": "substep",
-                            "status": "fail"}) + "\n", encoding="utf-8")
+                            "status": "fail",
+                            "fail_reason": "unauthorized_write_paths"}) + "\n",
+                encoding="utf-8")
+            with self.assertRaisesRegex(
+                    RuntimeError, "it is in agent_runs_invalid.jsonl, so its terminal payload "
+                                  "was refused"):
+                update_orchestration_status(
+                    repo_root=repo, orchestration_id="o1", status="pass")
+
+    def test_a_diverted_child_that_re_recorded_under_the_same_arid_passes(self) -> None:
+        """The benign shape, and the reason the refusal above is narrow. `record_agent_run`
+        sends the refused payload to a SEPARATE log precisely so the retry path stays open on
+        the same `agent_run_id`; a child that fixed its payload and re-recorded is therefore in
+        `agent_runs.jsonl` and is an ordinary attempt. Only the child that was diverted and
+        never came back is refused."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            root = repo / "workspace/orchestrations/o1"
+            self._dangle(repo, self._orch(repo), "diverted_1")
+            (root / "agent_runs_invalid.jsonl").write_text(
+                json.dumps({"agent_run_id": "diverted_1", "agent_role": "substep",
+                            "status": "fail",
+                            "fail_reason": "unauthorized_write_paths"}) + "\n",
+                encoding="utf-8")
+            self._record(repo, "diverted_1", status="fail")
             self.assertEqual(
                 update_orchestration_status(
                     repo_root=repo, orchestration_id="o1", status="pass")["status"],

@@ -15799,12 +15799,34 @@ def _validate_orchestration_completion_for_pass(
             "agent_runs.jsonl records step/substep runs (the agent tree is not traceable)"
         )
 
-    # (c) Every edge's parent is a recorded run; its child is recorded EITHER in
-    # `agent_runs.jsonl` or in `agent_runs_invalid.jsonl`. A diverted terminal attempt is a
-    # FAILED attempt — `record_agent_run` sends it to the invalid log precisely because its
-    # payload was refused — and a failed attempt needs no consumer and no tombstone. The old
-    # rule demanded one, which is what made the 17 `add-superseded-runs` call sites necessary.
-    invalid_runs = _load_invalid_run_records(root)
+    # (c) Every edge's parent AND child are recorded in `agent_runs.jsonl`.
+    #
+    # A child that reached `record_agent_run` and was DIVERTED to `agent_runs_invalid.jsonl`
+    # is not tolerated here, and the reason is not bookkeeping. `record_agent_run` diverts a
+    # terminal payload for exactly one class of cause: the terminal write audit refused it —
+    # an unauthorized write outside the child's `write_roots`, an unenforced sandbox, an
+    # undeclared output. None of those is rolled back; the files the child wrote are still on
+    # disk. An orchestration that reaches `pass` over one is reporting a clean verdict on a
+    # workspace a leaf has already written into outside its window, which is the `leaf
+    # shortcut` class this repository defends against.
+    #
+    # This does NOT refuse the benign shape. `record_agent_run` keeps the retry path open on
+    # the SAME `agent_run_id` (that is why the diverted row goes to a separate log rather than
+    # to `agent_runs.jsonl`, where duplicate detection would refuse it), so a child that fixed
+    # its payload and re-recorded is in `agent_runs.jsonl` and passes on the line below. The
+    # only shape this refuses is the one that was diverted and never came back — an
+    # unacknowledged violation.
+    #
+    # `origin/main` reached the same refusal by a different route, and by a deliberate one:
+    # its rule exempted `superseded AND invalid`, and the conductor's unauthorized-write path
+    # refused to tombstone that child on purpose ("tombstoning a leaf that ALSO made a genuine
+    # unauthorized write would hide it from `_derive_unauthorized_write_resume_directive`"),
+    # so the conjunction was unsatisfiable for it. Issue #177's first cut of this clause
+    # dropped the `superseded` half — which was the ONLY half that made the exemption
+    # unreachable — and so accepted what main refused. There is no operator escape hatch for
+    # this any more and there should not be one: an unacknowledged unauthorized write means
+    # the workspace is tainted, and the remedy is a fresh orchestration, not a bookkeeping
+    # entry that makes the taint invisible.
     for idx, edge in enumerate(edges):
         if not isinstance(edge, dict):
             raise RuntimeError(f"agent_graph edge must be object: index={idx}")
@@ -15815,10 +15837,18 @@ def _validate_orchestration_completion_for_pass(
                 f"agent_graph edge parent_agent_run_id missing from agent_runs.jsonl: index={idx}"
             )
         child_norm = child_id.strip() if isinstance(child_id, str) and child_id.strip() else None
-        if child_norm is None or (child_norm not in runs and child_norm not in invalid_runs):
+        if child_norm is None or child_norm not in runs:
+            detail = ""
+            if child_norm is not None and child_norm in _load_invalid_run_records(root):
+                detail = (
+                    "; it is in agent_runs_invalid.jsonl, so its terminal payload was refused "
+                    "(unauthorized write / unenforced sandbox / undeclared output) and never "
+                    "re-recorded. The writes it made are still on disk: start a fresh "
+                    "orchestration rather than passing over them"
+                )
             raise RuntimeError(
-                "agent_graph edge child_agent_run_id missing from agent_runs.jsonl and "
-                f"agent_runs_invalid.jsonl: index={idx}"
+                "agent_graph edge child_agent_run_id missing from agent_runs.jsonl: "
+                f"index={idx}{detail}"
             )
 
     # (b) Every step / substep run is terminal and its launch refs resolve. What is NO LONGER
