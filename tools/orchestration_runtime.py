@@ -2090,17 +2090,23 @@ def _stamp_certification(
         hashes[ref] = digest
     doc["artifact_hashes"] = hashes
 
-    if step_token == "generate":
-        # The IR binding `source_meta.json` never carried. Taken from the RESERVATION, not
-        # from the meta or the leaf: the reservation is what this orchestration is holding
-        # the compile phase to, so a source can never claim a lineage the run did not reserve.
+    if step_token in {"generate", "build"}:
+        # The IR binding. `source_meta.json` never carried one; `binary_meta.json` does carry
+        # `source_ir_id` (host-written by `_build_inproc`), but that write happens INSIDE the
+        # build child's window, so the child-window strip erases it — restoring it here is
+        # what keeps a successfully built binary bound (without this, every build reads
+        # `binary_not_bound` and Build/Validate could never be skipped again).
+        #
+        # Taken from the RESERVATION, not from the meta or the leaf: the reservation is what
+        # this orchestration is holding the compile phase to, so an artifact can never claim
+        # a lineage the run did not reserve.
         node_safe = _node_key_to_safe(node_key.strip())
         reserved_ir_id = _reserved_id(
             _orchestration_root(repo_root, orchestration_id) / "reservations" / node_safe,
             "compile")
         if reserved_ir_id is None:
             raise RuntimeError(
-                "certification stamp: generate cannot record source_ir_id — no compile "
+                f"certification stamp: {step_token} cannot record source_ir_id — no compile "
                 f"reservation for {node_key}"
             )
         doc["source_ir_id"] = reserved_ir_id
@@ -16292,6 +16298,26 @@ def _iter_step_result_paths(root: Path) -> list[Path]:
     return sorted(steps_root.glob("*/*/*/step_result.json"))
 
 
+def _until_phase_index(repo_root: Path, orchestration_id: str) -> int:
+    """The index in `STEP_KEYS_FOR_NODE_STATE` of the phase this invocation was asked to
+    reach, from `orchestration_meta.invocation.until_phase`.
+
+    Raises when the record is missing or names a phase the state machine does not know: the
+    completion vouch uses it to decide WHICH phases must be certified, so guessing would
+    either demand a phase the operator never asked for or skip one they did.
+    """
+    meta_path = _orchestration_root(repo_root, orchestration_id) / "orchestration_meta.json"
+    meta = _read_json(meta_path) if meta_path.is_file() else None
+    invocation = meta.get("invocation") if isinstance(meta, dict) else None
+    token = invocation.get("until_phase") if isinstance(invocation, dict) else None
+    if not isinstance(token, str) or token.strip().lower() not in STEP_KEYS_FOR_NODE_STATE:
+        raise RuntimeError(
+            "cannot mark orchestration pass: orchestration_meta.invocation.until_phase is "
+            f"missing or unknown ({token!r}); it decides which phases must be certified"
+        )
+    return STEP_KEYS_FOR_NODE_STATE.index(token.strip().lower())
+
+
 def _reserved_node_keys(repo_root: Path, orchestration_id: str) -> list[str]:
     """The node_keys this orchestration reserved a phase root for, read from
     `reservations/<node_safe>/compile.json`.
@@ -16341,8 +16367,23 @@ def _validate_orchestration_completion_for_pass(
     # nothing to do" is whether a node was ever RESERVED — `prepare_node` reserves the ir and
     # pipeline roots before the first phase, on every run, skipped or not. So the reservation
     # is the replacement guard, and it refuses exactly what the edge rule refused.
-    if not _reserved_node_keys(repo_root, orchestration_id):
+    reserved_nodes = _reserved_node_keys(repo_root, orchestration_id)
+    if not reserved_nodes:
         raise RuntimeError("cannot mark orchestration pass: no node reservations")
+    # A reservation proves PREPARATION, not completion (Codex round 2, P1): with no children,
+    # no edges and no step_results, every loop below is empty and would accept the run. So the
+    # edgeless case is carried by the artifacts instead — each reserved node must be CERTIFIED
+    # through the phase this invocation was asked to reach. That is the same predicate the
+    # skip decision uses, which is what makes "skipped because certified" and "passed" one
+    # statement rather than two.
+    for node_key in reserved_nodes:
+        for phase in STEP_KEYS_FOR_NODE_STATE[:_until_phase_index(repo_root, orchestration_id) + 1]:
+            certified, detail = _phase_certified(repo_root, orchestration_id, node_key, phase)
+            if not certified:
+                raise RuntimeError(
+                    f"cannot mark orchestration pass: {node_key}/{phase} is not certified: "
+                    f"{detail.get('reason')}"
+                )
     edges_obj = graph.get("edges")
     edges = edges_obj if isinstance(edges_obj, list) else []
 

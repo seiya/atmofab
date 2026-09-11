@@ -228,25 +228,27 @@ def _generate_output_refs(meta_ref: str) -> list[str]:
 
 def _seed_node_reservation(repo_root: Path, orchestration_id: str, node_key: str,
                            *, ir_id: str = "n_20260101_001",
-                           pipeline_id: str = "n_20260101_001") -> None:
-    """The compile/generate phase-root reservations `prepare_node` writes before the first
-    phase runs. The completion vouch requires at least one (it replaced the old "the agent
-    graph has edges" rule, which a fully-skipped certified re-run cannot satisfy), so a
-    fixture that drives `set-status pass` has to carry what a real run carries."""
-    res = (repo_root / "workspace" / "orchestrations" / orchestration_id
-           / "reservations" / _node_key_to_safe_for_tests(node_key))
-    res.mkdir(parents=True, exist_ok=True)
-    for step, reserved in (("compile", ir_id), ("generate", pipeline_id)):
-        (res / f"{step}.json").write_text(json.dumps({
-            "node_key": node_key, "step": step, "reserved_ir_id": reserved,
-            "reserved_by_agent_run_id": "orch_run_001", "status": "reserved",
-        }), encoding="utf-8")
+                           pipeline_id: str = "n_20260101_001",
+                           until_phase: str = "validate") -> None:
+    """What a real run carries by the time it reaches `set-status pass`: the phase-root
+    RESERVATIONS `prepare_node` writes before the first phase, the CERTIFIED artifact chain
+    through `until_phase`, and the `invocation.until_phase` record that says how far the run
+    was asked to go.
 
-
-def _node_key_to_safe_for_tests(node_key: str) -> str:
-    kind, rest = node_key.split("/", 1)
-    spec_id, version = rest.split("@", 1)
-    return f"{kind}__{spec_id}__{version}"
+    The completion vouch reads all three since issue #177. It replaced the old "the agent
+    graph has edges" rule — which a fully-skipped certified re-run cannot satisfy — with the
+    artifacts themselves, so a fixture that drives `set-status pass` while certifying nothing
+    is no longer a run that could have happened."""
+    certify_node(repo_root, orchestration_id, node_key, through=until_phase,
+                 ir_id=ir_id, pipeline_id=pipeline_id)
+    meta_path = (repo_root / "workspace" / "orchestrations" / orchestration_id
+                 / "orchestration_meta.json")
+    if meta_path.is_file():
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        invocation = meta.get("invocation")
+        meta["invocation"] = {**(invocation if isinstance(invocation, dict) else {}),
+                              "until_phase": until_phase}
+        meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
 
 
 def _seed_build_pass_outputs(repo_root: Path, *, binary_id: str = "bin_20260101_001") -> list[str]:
@@ -257,11 +259,29 @@ def _seed_build_pass_outputs(repo_root: Path, *, binary_id: str = "bin_20260101_
     deliverable) into `binary_meta.json` before writing the result, and refuses a pass that
     declares no meta or whose declared deliverable is absent — so a fixture that names a
     binary it never wrote no longer stands in for a real build."""
+    # The compile reservation the certification stamp reads `source_ir_id` from — a build
+    # binds to the IR its source was generated from, and the reservation is what this
+    # orchestration is holding that to.
+    res = (repo_root / "workspace" / "orchestrations" / "orch_001" / "reservations"
+           / "problem__shallow_water2d__0.3.0")
+    res.mkdir(parents=True, exist_ok=True)
+    (res / "compile.json").write_text(json.dumps({
+        "node_key": "problem/shallow_water2d@0.3.0", "step": "compile",
+        "reserved_ir_id": "shallow-water2d_20260415_001",
+        "reserved_by_agent_run_id": "orch_run_001", "status": "reserved"}), encoding="utf-8")
     bin_dir = repo_root / _FIX_PIPE_REF / "binary" / binary_id
     (bin_dir / "bin").mkdir(parents=True, exist_ok=True)
     (bin_dir / "bin" / "simulate").write_bytes(b"\x00")
     (bin_dir / "binary_meta.json").write_text(
-        json.dumps({"binary_id": binary_id, "verification_status": "pass"}),
+        json.dumps({
+            "binary_id": binary_id, "verification_status": "pass",
+            # The bindings that keep the node's certification chain intact: a binary is
+            # certified only while it names the source and the IR it was built from.
+            "source_source_id": "src_20260101_001",
+            "source_ir_id": "shallow-water2d_20260415_001",
+            "dependency_check": {"direct_deps": [], "resolved": "match",
+                                 "closure_bindings": []},
+        }),
         encoding="utf-8",
     )
     return [
@@ -2829,7 +2849,8 @@ shell_tool                       stable             true
             )
             _seed_node_reservation(repo_root, "orch_001", "problem/shallow_water2d@0.3.0",
                                    ir_id="shallow-water2d_20260415_001",
-                                   pipeline_id="shallow-water2d_20260415_001")
+                                   pipeline_id="shallow-water2d_20260415_001",
+                                   until_phase="build")
             _mark_dependencies_ready(repo_root)
             write_preflight(
                 repo_root=repo_root,
@@ -10026,7 +10047,9 @@ shell_tool                       stable             true
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             init_orchestration(repo_root=repo_root, orchestration_id="orch_001")
-            _seed_node_reservation(repo_root, "orch_001", "problem/shallow_water2d@0.3.0")
+            _seed_node_reservation(repo_root, "orch_001", "problem/shallow_water2d@0.3.0",
+                                   ir_id="shallow-water2d_20260415_001",
+                                   pipeline_id="shallow-water2d_20260415_001")
             _mark_dependencies_ready(repo_root)
             write_preflight(
                 repo_root=repo_root,
@@ -10128,7 +10151,9 @@ shell_tool                       stable             true
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             init_orchestration(repo_root=repo_root, orchestration_id="orch_001")
-            _seed_node_reservation(repo_root, "orch_001", "problem/shallow_water2d@0.3.0")
+            _seed_node_reservation(repo_root, "orch_001", "problem/shallow_water2d@0.3.0",
+                                   ir_id="shallow-water2d_20260415_001",
+                                   pipeline_id="shallow-water2d_20260415_001")
             _mark_dependencies_ready(repo_root)
             write_preflight(
                 repo_root=repo_root,
@@ -12560,8 +12585,10 @@ class PhaseCertificationTests(unittest.TestCase):
 
     _NK = "component/spec_x@0.1.0"
 
-    def _preflight(self, repo_root: Path, oid: str = "o1") -> None:
-        init_orchestration(repo_root=repo_root, orchestration_id=oid)
+    def _preflight(self, repo_root: Path, oid: str = "o1",
+                   until_phase: str = "validate") -> None:
+        init_orchestration(repo_root=repo_root, orchestration_id=oid,
+                           invocation={"until_phase": until_phase})
         _mark_dependencies_ready(repo_root, oid)
         write_preflight(
             repo_root=repo_root,
@@ -12741,6 +12768,54 @@ class PhaseCertificationTests(unittest.TestCase):
             result = update_orchestration_status(
                 repo_root=repo, orchestration_id="o1", status="pass")
             self.assertEqual(result["status"], "pass")
+
+    def test_a_reserved_but_uncertified_node_cannot_be_marked_pass(self) -> None:
+        """A reservation proves PREPARATION, not completion. With no children, no edges and no
+        step_results every other loop in the vouch is empty, so without this clause an
+        orchestration that reserved a node and then did nothing would be marked pass — a false
+        record (Codex round 2, P1)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._preflight(repo)
+            self._certified(repo, through="build")   # validate never ran
+            with self.assertRaisesRegex(
+                    RuntimeError, r"validate is not certified: verdict_not_bound"):
+                update_orchestration_status(
+                    repo_root=repo, orchestration_id="o1", status="pass")
+
+    def test_the_vouch_requires_only_the_phases_the_invocation_asked_for(self) -> None:
+        """The over-refusal probe: a run invoked `--until-phase build` must not be held to a
+        Validate it was never asked to run."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._preflight(repo, until_phase="build")
+            self._certified(repo, through="build")
+            result = update_orchestration_status(
+                repo_root=repo, orchestration_id="o1", status="pass")
+            self.assertEqual(result["status"], "pass")
+
+    def test_the_vouch_refuses_an_orchestration_that_records_no_until_phase(self) -> None:
+        """It decides WHICH phases must be certified, so a missing record cannot be guessed:
+        either it demands a phase the operator never asked for, or it skips one they did."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            init_orchestration(repo_root=repo, orchestration_id="o1")
+            _mark_dependencies_ready(repo, "o1")
+            write_preflight(
+                repo_root=repo, orchestration_id="o1",
+                payload={"status": "pass", "sandbox_runtime": "bwrap",
+                         "sandbox_enforced": True, "can_launch_step_agents": True,
+                         "can_launch_substep_agents": True,
+                         "feature_states": {"multi_agent": True, "hooks": True},
+                         "checks": [{"name": "multi_agent_enabled", "pass": True},
+                                    {"name": "hooks_enabled", "pass": True},
+                                    {"name": "codex_home_writable", "pass": True},
+                                    {"name": "sandbox_bwrap_available", "pass": True},
+                                    {"name": "sandbox_bwrap_userns", "pass": True}]})
+            self._certified(repo, through="validate")
+            with self.assertRaisesRegex(RuntimeError, "until_phase is missing or unknown"):
+                update_orchestration_status(
+                    repo_root=repo, orchestration_id="o1", status="pass")
 
     def test_an_orchestration_that_reserved_no_node_cannot_be_marked_pass(self) -> None:
         """The other half: an orchestration that did nothing at all is still refused. This is
@@ -13196,6 +13271,40 @@ class CertificationStampTests(unittest.TestCase):
             after = json.loads((repo / refs["source_meta"]).read_text("utf-8"))
             self.assertIn("artifact_hashes", after)
             self.assertIn("source_ir_id", after)
+
+    def test_a_build_keeps_its_ir_binding_across_the_child_window_strip(self) -> None:
+        """`_build_inproc` writes `binary_meta.source_ir_id` INSIDE the build child's window,
+        so the child-window strip erases it. The stamp restores it from the reservation —
+        without that, every successfully built binary reads `binary_not_bound` and Build and
+        Validate could never be skipped again (Codex round 2, P1)."""
+        from tools.orchestration_runtime import _validate_actual_write_paths
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = certify_node(repo, "o1", through="build")
+            meta_rel = refs["binary_meta"]
+            arid = "step_run_build_1"
+            init_orchestration(repo_root=repo, orchestration_id="o1")
+            self._leaf_window(repo, agent_run_id=arid,
+                              write_roots=[f"{refs['pipeline_ref']}/binary/"],
+                              declared=[meta_rel, refs["exe_ref"]])
+            # The host's in-process build authors binary_meta inside the child's window.
+            doc = json.loads((repo / meta_rel).read_text("utf-8"))
+            doc["command_id"] = "cmd_1"
+            (repo / meta_rel).write_text(json.dumps(doc), encoding="utf-8")
+            _validate_actual_write_paths(repo, "o1", {
+                "agent_run_id": arid, "agent_role": "step", "status": "pass",
+                "output_refs": [meta_rel]})
+            stripped = json.loads((repo / meta_rel).read_text("utf-8"))
+            self.assertNotIn("source_ir_id", stripped)
+
+            ort._stamp_certification(
+                repo, "o1", node_key="component/spec_x@0.1.0", step="build",
+                required_outputs=[refs["exe_ref"], meta_rel])
+            restamped = json.loads((repo / meta_rel).read_text("utf-8"))
+            self.assertEqual(restamped["source_ir_id"], refs["ir_id"])
+            self.assertTrue(
+                ort._phase_certified(repo, "o1", "component/spec_x@0.1.0", "build")[0])
 
     def test_write_step_result_pass_refuses_when_the_deliverable_is_absent(self) -> None:
         """A stamp that cannot be taken fails CLOSED, and before the step_result exists: an
