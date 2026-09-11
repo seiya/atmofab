@@ -12857,6 +12857,116 @@ class PhaseCertificationTests(unittest.TestCase):
             self.assertEqual(doc["revoked_by_agent_run_id"], "t2")
             self.assertEqual(doc["last_fail_reason"], "p2 failed")
 
+    def test_an_ungraded_revocation_clears_a_previous_grade(self) -> None:
+        """`revocation_severity` takes the LATEST decision's value, including none.
+
+        Written only-when-in-vocabulary it was sticky where every sibling is refreshed, so a
+        second revocation carrying no grade left the FIRST one's `critical` standing beside the
+        SECOND one's findings — and the resumed repair then paired mismatched halves and chose
+        `restart`, discarding a producer session nothing had graded untrustworthy. Every
+        non-escalate route passes `decision.severity=None`, so that pairing was the common case.
+
+        `last_fail_reason` is deliberately asymmetric: it is the PHASE's own field (the verify
+        substep and the meta authors write it too), so a revocation that carries none leaves it
+        alone rather than destroying a failure reason it knows nothing about."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._preflight(repo)
+            refs = self._certified(repo, through="compile")
+            ort.revoke_artifact(repo, "o1", node_key=self._NK, step="compile",
+                                reason="r2", trigger_agent_run_id="t2",
+                                last_fail_reason="second findings", severity="critical")
+            ort.revoke_artifact(repo, "o1", node_key=self._NK, step="compile",
+                                reason="r3", trigger_agent_run_id="t3",
+                                last_fail_reason="third findings")
+            doc = json.loads((repo / refs["ir_meta"]).read_text("utf-8"))
+            self.assertIsNone(doc["revocation_severity"])
+            self.assertEqual(doc["last_fail_reason"], "third findings")
+            self.assertEqual(doc["revocation_reason"], "r3")
+            # An ungraded revocation that carries NO findings leaves the phase's own reason.
+            ort.revoke_artifact(repo, "o1", node_key=self._NK, step="compile",
+                                reason="r4", trigger_agent_run_id="t4")
+            doc = json.loads((repo / refs["ir_meta"]).read_text("utf-8"))
+            self.assertEqual(doc["last_fail_reason"], "third findings")
+            self.assertIsNone(doc["revocation_severity"])
+
+    def test_revoke_artifact_is_a_noop_on_a_corrupt_lineage_not_an_error(self) -> None:
+        """`docs/CLI_REFERENCE_RARE.md` says `noop` ... "never an error". The first fix here
+        guarded only the MISSING file, so a CORRUPT one still raised `JSONDecodeError` against
+        a doc sentence written in the same commit — rule 1-b's "try at least one more different
+        spelling", applied to a fix rather than to a deletion."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._preflight(repo)
+            refs = self._certified(repo, through="generate")
+            lineage = repo / refs["pipeline_ref"] / "lineage.json"
+            for label, write in (("corrupt", lambda: lineage.write_text("{not json", "utf-8")),
+                                 ("not an object", lambda: lineage.write_text("[]", "utf-8")),
+                                 ("missing", lambda: lineage.unlink())):
+                with self.subTest(case=label):
+                    write()
+                    self.assertEqual(
+                        ort.revoke_artifact(repo, "o1", node_key=self._NK, step="generate",
+                                            reason="r", trigger_agent_run_id="t")["status"],
+                        "noop")
+
+    def test_a_noop_reports_whether_the_phase_is_still_certified(self) -> None:
+        """`noop` wears one word over two very different causes, and the conductor fails closed
+        on one of them. The runtime answers the distinguishing question because it can do so
+        READ-ONLY: `check_phase_certified` would WRITE `skipped_certified`, the state clause (e)
+        of the completion vouch reads as an exemption."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._preflight(repo)
+            refs = self._certified(repo, through="generate")
+            (repo / refs["pipeline_ref"] / "lineage.json").unlink()
+            before = ort._load_phase_state(repo, "o1")
+            result = ort.revoke_artifact(repo, "o1", node_key=self._NK, step="generate",
+                                         reason="r", trigger_agent_run_id="t")
+            self.assertEqual(result["status"], "noop")
+            self.assertTrue(result["still_certified"])
+            # ... and asking did not write anything.
+            self.assertEqual(ort._load_phase_state(repo, "o1"), before)
+
+            # An uncertified phase answers the other way, so the conductor does not fail closed
+            # on a phase that genuinely has nothing to revoke.
+            ort.revoke_artifact(repo, "o1", node_key=self._NK, step="compile",
+                                reason="r", trigger_agent_run_id="t")
+            (repo / refs["pipeline_ref"] / "lineage.json").write_text("{}", encoding="utf-8")
+            self.assertFalse(
+                ort.revoke_artifact(repo, "o1", node_key=self._NK, step="generate",
+                                    reason="r", trigger_agent_run_id="t")["still_certified"])
+
+    def test_the_cli_route_fails_on_a_revocation_that_did_not_land(self) -> None:
+        """The conductor fails closed on a lost revocation; so must the CLI. The documented
+        manual recipe (`docs/RUNBOOK.md` §3-1) goes through this route, and it used to print
+        `{"status": "noop"}` and exit 0 while the phase stayed certified — an operator following
+        the recipe would `--resume` and watch the phase be skipped. Same answer, same exit
+        code, on both routes."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._preflight(repo)
+            refs = self._certified(repo, through="generate")
+            (repo / refs["pipeline_ref"] / "lineage.json").unlink()
+            err = io.StringIO()
+            with redirect_stderr(err), redirect_stdout(io.StringIO()):
+                rc = main(["revoke-artifact", "--repo-root", str(repo),
+                           "--orchestration-id", "o1", "--node-key", self._NK,
+                           "--step", "generate", "--reason", "r",
+                           "--trigger-agent-run-id", "t"])
+            self.assertEqual(rc, 1)
+            self.assertIn("did not reach the artifact", err.getvalue())
+
+            # A `noop` over a phase that is NOT certified is the legitimate half and exits 0.
+            err2 = io.StringIO()
+            with redirect_stderr(err2), redirect_stdout(io.StringIO()):
+                rc2 = main(["revoke-artifact", "--repo-root", str(repo),
+                            "--orchestration-id", "o1", "--node-key", self._NK,
+                            "--step", "validate", "--reason", "r",
+                            "--trigger-agent-run-id", "t"])
+            self.assertEqual(rc2, 0)
+            self.assertNotIn("did not reach the artifact", err2.getvalue())
+
     def test_a_revocation_records_its_severity_and_the_predicate_reports_it(self) -> None:
         """The G5 grade has to survive the resume boundary. Without it a revoked artifact
         carries its findings but not how bad they were, and the resumed repair can only assume

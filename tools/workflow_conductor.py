@@ -753,6 +753,17 @@ class RouteDecision:
     severity: str | None = None
 
 
+class RevocationNotLandedError(RuntimeError):
+    """A re-derivation decision did not reach the artifact.
+
+    Raised when `revoke-artifact` resolved no stage meta while the phase stayed `certified`.
+    Surfaced as its own type so `conduct` terminalizes with a NAMED reason code instead of
+    letting it unwind to `run_workflow`'s generic `conductor_error` handler — which would lose
+    the routing reason AND return before the dev `failure_analysis.json` is written, i.e. before
+    the artifact the RUNBOOK tells the operator to read to perform the manual recovery this
+    failure is asking for."""
+
+
 class SandboxEnforcementError(RuntimeError):
     """Raised when bwrap enforcement is mandatory but a leaf cannot be sandboxed
     (no usable profile). Surfaced so the conductor terminalizes as `fail_closed` rather
@@ -9474,18 +9485,25 @@ clean:
         can resolve no meta, and that answer has two very different causes wearing one word: the
         legitimate one (validate certifies no meta; the phase never produced one) and the
         failure this whole PR exists to prevent (the decision did not reach the artifact, so the
-        next `--resume` finds the phase still `certified` and skips straight past it). They are
-        told apart by asking the predicate afterwards: if the phase is STILL certified once the
-        revocation has run, the decision did not land, and continuing would re-run every
-        downstream phase into the same failure. That is fail-closed, not a warning."""
+        next `--resume` finds the phase still `certified` and skips straight past it). The
+        runtime tells them apart and reports `still_certified` on the `noop`.
+
+        The runtime answers it because the question has to be asked READ-ONLY, and the obvious
+        way to ask it from here was not: `check-phase-certified` TRANSITIONS the phase to
+        `skipped_certified` whenever certified — the exact state clause (e) of the completion
+        vouch reads as an EXEMPTION — so probing through it recorded "this phase was skipped
+        because it was certified" at the instant the conductor declared the decision lost. It
+        also cost an extra subprocess on an already-failed path, whose own failure would have
+        surfaced as `runtime check-phase-certified failed` instead of this message."""
         outcome = self.revoke_artifact(node_key, phase, trigger_arid, reason,
                                        last_fail_reason=findings, severity=severity)
         self.reset_phase(node_key, phase, trigger_arid, reason)
         if str((outcome or {}).get("status") or "") == "noop":
             self.emit("revoke_artifact_noop", node_key=node_key, phase=phase,
-                      reason=reason, detail=str((outcome or {}).get("reason") or ""))
-            if self.check_phase_certified(node_key, phase).get("certified"):
-                raise RuntimeError(
+                      reason=reason, detail=str((outcome or {}).get("reason") or ""),
+                      still_certified=bool((outcome or {}).get("still_certified")))
+            if (outcome or {}).get("still_certified"):
+                raise RevocationNotLandedError(
                     f"revoke-artifact resolved no stage meta for {node_key}/{phase} "
                     f"({(outcome or {}).get('reason')}), and the phase is still certified: the "
                     "re-derivation decision did not reach the artifact, so a resume would skip "
@@ -14136,6 +14154,33 @@ clean:
                       producer=producer or "none", severity=severity, strategy=strategy)
         return seeded
 
+    def _revoke_and_reset_or_terminalize(
+        self, refs: "NodeRefs", phase: str, trigger: str, reason: str,
+        *, findings: str | None, severity: str | None,
+        fallback_code: str, fallback_detail: str,
+    ) -> str | None:
+        """`revoke_and_reset`, terminalizing with a NAMED reason if the decision did not land.
+
+        Returns `"fail_closed"` when it terminalized here (the caller returns it) and `None`
+        when the revocation landed and the caller should carry on with its own terminal.
+
+        The whole point is that the reason code survives. A `RevocationNotLandedError` escaping
+        `conduct` unwinds to `run_workflow`'s generic handler, which finds the status still
+        `running`, clobbers it to `fail` / `conductor_error`, and returns BEFORE the dev
+        `failure_analysis.json` block — losing both the routing reason and the artifact
+        `docs/RUNBOOK.md` §3-1 tells the operator to read for the `agent_run_id` of the manual
+        `revoke-artifact` this failure is asking them to run."""
+        try:
+            self.revoke_and_reset(refs.node_key, phase, trigger, reason,
+                                  findings=findings, severity=severity)
+        except RevocationNotLandedError as exc:
+            self.emit("revocation_not_landed", node_key=refs.node_key, phase=phase,
+                      reason=reason, intended_terminal=fallback_code, error=str(exc)[:200])
+            self.set_status("fail_closed", reason_code="revocation_not_landed",
+                            reason_detail=f"{phase}: {reason}"[:200])
+            return "fail_closed"
+        return None
+
     def conduct(self, refs: NodeRefs, until_phase: str) -> str:
         """Drive the phases, acting on each phase's cross-phase routing decision:
         reopen an upstream (already-passed) phase, fail_closed, or escalate. The
@@ -14243,12 +14288,13 @@ clean:
                 # to break; the revocation replaces it, and carries the same findings on the
                 # meta's own `last_fail_reason` where a cold re-run can read them too.
                 trigger = outcome.failed_substeps[-1] if outcome.failed_substeps else None
-                if trigger:
-                    self.revoke_and_reset(
-                        refs.node_key, target, trigger,
-                        decision.reason or f"{phase}->{target}",
+                if trigger and self._revoke_and_reset_or_terminalize(
+                        refs, target, trigger, decision.reason or f"{phase}->{target}",
                         findings=self._read_repair_findings(refs, decision.reason, phase),
-                        severity=decision.severity)
+                        severity=decision.severity,
+                        fallback_code="dev_phase_rollback",
+                        fallback_detail=decision.reason or f"{phase}->{target}"):
+                    return "fail_closed"
                 self.set_status("fail_closed", reason_code="dev_phase_rollback",
                                 reason_detail=(decision.reason or f"{phase}->{target}")[:200])
                 return "fail_closed"
@@ -14266,12 +14312,14 @@ clean:
                 # names, and only this branch was left outside the rule "every retry route
                 # issues both halves".
                 trigger = outcome.failed_substeps[-1] if outcome.failed_substeps else None
-                if trigger:
-                    self.revoke_and_reset(
-                        refs.node_key, target, trigger,
+                if trigger and self._revoke_and_reset_or_terminalize(
+                        refs, target, trigger,
                         decision.reason or f"{target}_retry_budget_exhausted",
                         findings=self._read_repair_findings(refs, decision.reason, phase),
-                        severity=decision.severity)
+                        severity=decision.severity,
+                        fallback_code="retry_budget_exhausted",
+                        fallback_detail=f"{target} exceeded {MAX_ATTEMPTS_PER_PHASE}"):
+                    return "fail_closed"
                 self.set_status("fail_closed", reason_code="retry_budget_exhausted",
                                 reason_detail=f"{target} exceeded {MAX_ATTEMPTS_PER_PHASE}")
                 return "fail_closed"
@@ -14303,9 +14351,12 @@ clean:
                 # verify meta last_fail_reason). None for a diagnostician reason -> the repair
                 # falls back to the full prompt (a cold restart re-derives anyway).
                 findings = self._read_repair_findings(refs, decision.reason, phase)
-                self.revoke_and_reset(refs.node_key, phase, trigger,
-                                      decision.reason or "same_phase_reopen",
-                                      findings=findings, severity=decision.severity)
+                if self._revoke_and_reset_or_terminalize(
+                        refs, phase, trigger, decision.reason or "same_phase_reopen",
+                        findings=findings, severity=decision.severity,
+                        fallback_code=f"{phase}_fail",
+                        fallback_detail=decision.reason or "same_phase_reopen"):
+                    return "fail_closed"
                 pending_repair[phase] = self._repair_payload(
                     decision, self._producer_arid.get(phase, "none"), findings=findings)
                 continue  # idx unchanged -> re-run the phase producer with the repair
@@ -14331,9 +14382,12 @@ clean:
             # Every other cross-phase reason yields None -> the repair falls back to the full
             # prompt, exactly as before.
             findings = self._read_repair_findings(refs, decision.reason, phase)
-            self.revoke_and_reset(refs.node_key, target, trigger,
-                                  decision.reason or f"{phase}_reopen",
-                                  findings=findings, severity=decision.severity)
+            if self._revoke_and_reset_or_terminalize(
+                    refs, target, trigger, decision.reason or f"{phase}_reopen",
+                    findings=findings, severity=decision.severity,
+                    fallback_code=f"{phase}_fail",
+                    fallback_detail=decision.reason or f"{phase}_reopen"):
+                return "fail_closed"
             if decision.repair_strategy and decision.repair_strategy not in ("none", None):
                 pending_repair[target] = self._repair_payload(
                     decision, self._producer_arid.get(target, "none"), findings=findings)

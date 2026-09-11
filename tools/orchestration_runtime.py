@@ -2237,16 +2237,19 @@ def _revocable_stage_meta_path(
     if pipeline_id is None:
         return None
     pipe_dir = repo_root / "workspace" / "pipelines" / node_safe / pipeline_id
-    # `_read_json` RAISES on a missing file, and this function's contract — stated in its own
-    # docstring and in `docs/CLI_REFERENCE_RARE.md` — is `None`, which the caller reports as a
-    # `noop`. Without the guard the documented RUNBOOK recipe (`revoke-artifact --step <phase>`
-    # against a node whose pipeline directory does not exist, e.g. a run stopped at compile)
-    # returns a raw errno instead. `_reserved_id`, twenty-five lines above, carries the same
-    # guard for the same reason; this is the half of that pair that was left open.
-    lineage_path = pipe_dir / "lineage.json"
-    if not lineage_path.is_file():
+    # `_read_json` RAISES, and this function's contract — stated in its own docstring and in
+    # `docs/CLI_REFERENCE_RARE.md` — is `None`, which the caller reports as a `noop`. The
+    # documented RUNBOOK recipe (`revoke-artifact --step <phase>` against a node whose pipeline
+    # directory was never written) returned a raw errno without this.
+    #
+    # `_read_json_or_none` rather than an `.is_file()` guard, because the first fix covered ONE
+    # spelling: a MISSING lineage answered `noop` while a CORRUPT one still raised
+    # `JSONDecodeError`, against a doc sentence written in the same commit that says "never an
+    # error". Rule 1-b's "try at least one more different spelling" applied to a fix rather than
+    # to a deletion. A non-dict is treated the same way — it names no stage id either.
+    lineage = _read_json_or_none(pipe_dir / "lineage.json")
+    if not isinstance(lineage, dict):
         return None
-    lineage = _read_json(lineage_path) or {}
     key = "source_id" if step_token == "generate" else "binary_id"
     stage_id = lineage.get(key)
     if not (isinstance(stage_id, str) and stage_id.strip()):
@@ -2293,10 +2296,22 @@ def _revoke_stage_meta(
     doc["revoked_at"] = _utc_now_iso()
     doc["revoked_by_agent_run_id"] = trigger_agent_run_id.strip()
     doc["revocation_reason"] = reason
+    # `revocation_severity` takes THIS decision's value, INCLUDING clearing it when the decision
+    # carries none. It used to be written only when in-vocabulary, which made it sticky where
+    # every sibling field is refreshed: a second revocation carrying no grade left the FIRST
+    # one's `critical` standing beside the SECOND one's findings, and the resumed repair then
+    # paired mismatched halves and chose `restart`. Every non-escalate route passes
+    # `decision.severity=None`, so that pairing was the common case rather than the corner.
+    #
+    # `last_fail_reason` is deliberately NOT cleared the same way, and the asymmetry is the
+    # point: `revocation_severity` is revocation state with exactly one writer, while
+    # `last_fail_reason` is the PHASE's own field — the verify substep and the meta authors
+    # write it too — so clearing it here would destroy a failure reason this revocation knows
+    # nothing about. It is overwritten when given and left alone otherwise, which is what this
+    # function's docstring has always said.
     if last_fail_reason is not None and last_fail_reason.strip():
         doc["last_fail_reason"] = last_fail_reason
-    if severity in REVOCATION_SEVERITIES:
-        doc["revocation_severity"] = severity
+    doc["revocation_severity"] = severity if severity in REVOCATION_SEVERITIES else None
     _write_json(meta_path, doc)
     return {
         "status": "revoked",
@@ -2327,9 +2342,12 @@ def check_phase_certified(
     That transition is the durable record that the phase was certified rather than run. It is
     what will let the completion vouch accept a node whose earlier attempt in this same
     orchestration left a `fail` step_result behind — the phase became certified afterwards and
-    was skipped, and the phase state is what says so. The vouch reads it from issue #177's
-    PR-2; nothing reads it today. Idempotent — `run_phase` may ask again after `conduct`
-    already asked.
+    was skipped, and the phase state is what says so — clause (e) of the completion vouch reads
+    it to exempt a `(node, phase)` whose earlier attempt in this orchestration left a `fail`
+    step_result. Idempotent — `run_phase` may ask again after `conduct` already asked.
+
+    NOT read-only, and that is why it is the wrong thing to probe with: it WRITES
+    `skipped_certified`. A caller that only wants the answer asks `_phase_certified`.
     """
     _require_preflight_launchable(repo_root, orchestration_id, enforce_live_probe=False)
     certified, detail = _phase_certified(repo_root, orchestration_id, node_key, step)
@@ -5750,9 +5768,13 @@ FAIL_CLOSED_REASON_CODES = {
     "retry_budget_exhausted",
     "conductor_phase_fail_closed",
     "dev_phase_rollback",
+    #   - revocation_not_landed: the conductor decided to re-derive a phase and the
+    #     revocation resolved no stage meta while the phase stayed `certified`. Continuing
+    #     would let a `--resume` skip the phase the run just decided to re-derive, so the run
+    #     stops and says so instead of spending itself arriving back where it started.
+    "revocation_not_landed",
 }
 
-# The fail_closed reason an orchestration records when a phase's failure mode is an
 PARALLEL_NODES_ENV_VAR = "ATMOFAB_ALLOW_PARALLEL_NODES"
 
 PHASE_ARTIFACT_GUARDED_PREFIXES: tuple[str, ...] = ("workspace/ir/", "workspace/pipelines/")
@@ -22251,6 +22273,17 @@ def revoke_artifact(
         "reason": "no_meta",
     }
     if meta_path is None or not meta_path.is_file():
+        # `noop` is the one answer that looks identical in the good case (validate certifies no
+        # meta; none was written yet) and the bad one (the decision did not reach the artifact).
+        # Answer the distinguishing question HERE, where it is a pure read: `_phase_certified`
+        # writes nothing. `check_phase_certified` would have been the obvious thing for the
+        # conductor to ask instead, and it is the wrong one — it TRANSITIONS the phase to
+        # `skipped_certified` whenever certified, which is precisely the state clause (e) of the
+        # completion vouch reads as an EXEMPTION. Probing through it recorded "this phase was
+        # skipped because it was certified" at the instant the conductor declared the
+        # re-derivation lost.
+        result["still_certified"] = bool(
+            _phase_certified(repo_root, orchestration_id, node_key, step_token)[0])
         return result
     revoked = _revoke_stage_meta(
         repo_root,
@@ -24035,6 +24068,23 @@ def main(argv: list[str] | None = None) -> int:
             )
         except (ValueError, RuntimeError, OSError) as exc:
             print(f"revoke-artifact: {exc}", file=sys.stderr)
+            return 1
+        # A `noop` over a phase that is STILL certified is a FAILED revocation, and the CLI is
+        # the route where that mattered most: the conductor fails closed on it, but the
+        # documented manual recipe (`docs/RUNBOOK.md` §3-1) and any other caller got
+        # `{"status": "noop"}` and exit 0 while the phase stayed certified — an operator
+        # following the recipe would then `--resume` and watch the phase be skipped. Same
+        # answer, same exit code, on both routes.
+        if result.get("status") == "noop" and result.get("still_certified"):
+            print(
+                f"revoke-artifact: resolved no stage meta for {args.node_key}/{args.step} "
+                f"({result.get('reason')}), and the phase is still certified — the "
+                "re-derivation decision did not reach the artifact, so a resume would skip "
+                "this phase. Check that the pipeline's lineage.json names the stage this "
+                "orchestration produced.",
+                file=sys.stderr,
+            )
+            print(json.dumps(result, ensure_ascii=False, indent=2))
             return 1
     elif args.command == "reset-phase":
         try:

@@ -941,13 +941,14 @@ class RevokeAndResetTest(unittest.TestCase):
     with the revocation's ANSWER decides whether a re-derivation decision can silently not
     happen."""
 
-    def _conductor(self, revoke_result, cert_after) -> _FakeConductor:
+    def _conductor(self, revoke_result, cert_after=None) -> _FakeConductor:
         c = _FakeConductor(
             repo_root=Path("/tmp/repo"), orchestration_id="orch_x",
             orchestration_agent_run_id="ORCH", llm_config=_agentic_cfg("claude"), env={},
         )
         c.calls = []
-        c.cert_fn = lambda phase: dict(cert_after)
+        if cert_after is not None:
+            c.cert_fn = lambda phase: dict(cert_after)
         real_runtime = _FakeConductor.runtime
 
         def runtime(self, args, *, input=None):
@@ -964,24 +965,30 @@ class RevokeAndResetTest(unittest.TestCase):
         revocation resolved no meta and the phase is STILL certified, the decision did not
         reach the artifact — so the next `--resume` skips the phase this run just decided to
         re-derive, and every downstream phase re-runs into the same failure. Continuing here
-        would spend a whole billed run to arrive back where it started."""
-        c = self._conductor({"status": "noop", "meta_ref": None, "reason": "no_meta"},
-                            {"certified": True})
+        would spend a whole billed run to arrive back where it started.
+
+        `still_certified` comes back ON the revocation's own answer. The conductor must NOT ask
+        `check-phase-certified`: that call WRITES `skipped_certified`, the very state clause (e)
+        of the completion vouch reads as an exemption, so probing through it would record "this
+        phase was skipped because it was certified" at the instant the decision was declared
+        lost. The assertion on `c.calls` pins that no such probe happens."""
+        c = self._conductor({"status": "noop", "meta_ref": None, "reason": "no_meta",
+                             "still_certified": True})
         buf = io.StringIO()
-        with redirect_stdout(buf), self.assertRaisesRegex(
-                RuntimeError, "re-derivation decision did not reach the artifact"):
+        with redirect_stdout(buf), self.assertRaises(wc.RevocationNotLandedError):
             c.revoke_and_reset(self._NK, "generate", "t1", "r")
         self.assertTrue(any(e.get("event") == "revoke_artifact_noop"
                             for e in [json.loads(l) for l in
                                       buf.getvalue().splitlines() if l.strip()]))
+        self.assertEqual([sub for sub, _ in c.calls], ["revoke-artifact", "reset-phase"])
 
     def test_a_noop_over_a_phase_that_is_not_certified_is_only_reported(self) -> None:
         """The legitimate half of the same word: validate certifies no meta, and a phase that
         never produced one has nothing to revoke. Neither is a failure — but both are still
         EMITTED, because `noop` is the one answer that looks identical in the good case and the
         bad one, and a run log that never mentions it cannot be read back either way."""
-        c = self._conductor({"status": "noop", "meta_ref": None, "reason": "no_meta"},
-                            {"certified": False, "reason": "ir_not_reserved"})
+        c = self._conductor({"status": "noop", "meta_ref": None, "reason": "no_meta",
+                             "still_certified": False})
         buf = io.StringIO()
         with redirect_stdout(buf):
             c.revoke_and_reset(self._NK, "validate", "t1", "r")
@@ -993,8 +1000,7 @@ class RevokeAndResetTest(unittest.TestCase):
         """A revocation that resolved a meta needs no confirmation: the runtime rewrote the
         file. Asking anyway would put a certification read on every retry route."""
         c = self._conductor({"status": "revoked", "meta_ref": "a/b/ir_meta.json",
-                             "prior_verification_status": "pass"},
-                            {"certified": True})
+                             "prior_verification_status": "pass"})
         with redirect_stdout(io.StringIO()):
             c.revoke_and_reset(self._NK, "generate", "t1", "r")
         self.assertEqual([sub for sub, _ in c.calls], ["revoke-artifact", "reset-phase"])
@@ -1002,8 +1008,7 @@ class RevokeAndResetTest(unittest.TestCase):
     def test_both_halves_run_and_the_findings_and_grade_reach_the_runtime(self) -> None:
         """The pairing itself, and the two payloads that must travel with it. `severity` on an
         argv, `findings` on stdin — a findings excerpt runs to thousands of characters."""
-        c = self._conductor({"status": "revoked", "meta_ref": "a/b/ir_meta.json"},
-                            {"certified": False})
+        c = self._conductor({"status": "revoked", "meta_ref": "a/b/ir_meta.json"})
         with redirect_stdout(io.StringIO()):
             c.revoke_and_reset(self._NK, "generate", "t1", "route_reason",
                                findings="p1 failed", severity="critical")
@@ -1013,6 +1018,78 @@ class RevokeAndResetTest(unittest.TestCase):
         self.assertEqual(revoke["--severity"], "critical")
         self.assertEqual(revoke["--last-fail-reason"], "p1 failed")
         self.assertEqual(c.calls[1][1]["--from-phase"], "generate")
+
+
+class RevocationNotLandedTerminalTest(unittest.TestCase):
+    """Where a lost re-derivation decision LANDS. The refusal is only useful if the operator
+    is told what happened: an exception escaping `conduct` unwinds to `run_workflow`'s generic
+    handler, which clobbers the status to `fail` / `conductor_error` and returns BEFORE the dev
+    `failure_analysis.json` block — losing the routing reason and the artifact the RUNBOOK tells
+    the operator to read to perform the very recovery this failure is asking for."""
+
+    def _conductor(self) -> _FakeConductor:
+        c = _FakeConductor(
+            repo_root=Path("/tmp/repo"), orchestration_id="orch_x",
+            orchestration_agent_run_id="ORCH", llm_config=_agentic_cfg("claude"), env={},
+        )
+        c.calls = []
+        real_runtime = _FakeConductor.runtime
+
+        def runtime(self, args, *, input=None):
+            out = real_runtime(self, args, input=input)
+            if args[0] == "revoke-artifact":
+                return {"status": "noop", "reason": "no_meta", "still_certified": True}
+            return out
+
+        c.runtime = runtime.__get__(c, _FakeConductor)
+        return c
+
+    def _refs(self) -> wc.NodeRefs:
+        return wc.NodeRefs(
+            node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
+            ir_id="x_1", pipeline_id="x_1", source_id="s_1", binary_id="b_1",
+            run_id="r_1", source_binary_id="b_1")
+
+    def test_every_retry_route_terminalizes_with_the_named_reason_code(self) -> None:
+        fail_judge = lambda phase, substep, n: (
+            "fail" if (phase == "validate" and substep == "judge") else "pass")
+        fail_compile_static = lambda phase, substep, n: (
+            "fail" if (phase == "compile" and substep == "static") else "pass")
+        routes = {
+            # same-phase producer reopen: compile's own gate fails and routes back to compile
+            "same-phase reopen": (
+                "prod", fail_compile_static, lambda phase, outcomes: wc.RouteDecision(
+                    "retry", target_phase="compile", repair_strategy="reuse",
+                    reason="compile_static_fail")),
+            # cross-phase reopen: validate fails and rolls back to compile (prod keeps it)
+            "cross-phase reopen (prod)": (
+                "prod", fail_judge, lambda phase, outcomes: wc.RouteDecision(
+                    "reopen", target_phase="compile", reason="judge_ir")),
+            # the same rollback in dev, which fail-fasts on the first occurrence (F1)
+            "dev cross-phase rollback": (
+                "dev", fail_judge, lambda phase, outcomes: wc.RouteDecision(
+                    "reopen", target_phase="compile", reason="judge_ir")),
+        }
+        for label, (mode, status_fn, decision_fn) in routes.items():
+            with self.subTest(route=label):
+                c = self._conductor()
+                c.workflow_mode = mode
+                c.status_fn = status_fn
+                c.decision_fn = decision_fn
+                with redirect_stdout(io.StringIO()):
+                    status = c.conduct(self._refs(), "validate")
+                self.assertEqual(status, "fail_closed")
+                terminal = [cap for sub, cap in c.calls if sub == "set-status"][-1]
+                self.assertEqual(terminal["--status"], "fail_closed")
+                self.assertEqual(terminal["--reason-code"], "revocation_not_landed",
+                                 msg=f"{label}: the reason code must survive; got {terminal}")
+                self.assertTrue(terminal["--reason-detail"],
+                                msg=f"{label}: the routing reason must survive in the detail")
+
+    def test_the_reason_code_is_in_the_runtime_allowlist(self) -> None:
+        """`set-status` refuses a fail_closed reason code outside `FAIL_CLOSED_REASON_CODES`, so
+        a terminal the conductor cannot record is a terminal the operator never sees."""
+        self.assertIn("revocation_not_landed", ort.FAIL_CLOSED_REASON_CODES)
 
 
 class SeedRepairsFromRevocationsTest(unittest.TestCase):
