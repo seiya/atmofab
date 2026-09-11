@@ -5949,9 +5949,13 @@ def merge_phase_state_for_resume(
 ) -> dict[str, Any]:
     """On `--resume-from-checkpoint`: keep `node_states` without discarding the existing `phase_state`.
 
-    Because it is a separate file from the completion information of `orchestration_checkpoint.json`, no direct merge is done.
-    Initialize only a missing `phase_state.json`; when one exists, do not overwrite `current_state` and
-    `node_states`. For audit, append `resume_enabled` to `phase_state_log.jsonl`.
+Initialize only a missing `phase_state.json`; when one exists, do not overwrite
+    `current_state` and `node_states`. For audit, append an entry to `phase_state_log.jsonl`.
+
+    Nothing is merged FROM any other file. It used to be worth saying that this state is
+    separate from `orchestration_checkpoint.json`'s completion information; issue #177 deleted
+    that ledger, so `phase_state.json` is now the only record of where a node's phases stand
+    and there is no second source to reconcile against.
     """
     _ensure_orchestration_audit_dirs(repo_root, orchestration_id)
     existing = _load_phase_state(repo_root, orchestration_id)
@@ -11762,8 +11766,14 @@ def _validate_actual_write_paths(
         # No pass-gate. An operator-approved dismissal used to skip this raise; issue #176
         # deleted it (no violation was ever dismissed — 13 recorded
         # `unauthorized_write_violation.json`, 0 with `dismissed_at`), so an unauthorized
-        # write is a leaf content failure that always fail_closes. Recovery is `reopen-phase`
-        # with the diverted arid as the trigger, or a fresh run (`docs/RUNBOOK.md` §3-1).
+        # write is a leaf content failure that always fail_closes.
+        #
+        # Recovery is a FRESH RUN (`docs/RUNBOOK.md` §3-1). `revoke-artifact` + `reset-phase`
+        # will re-derive the attributed phase and give you a corrected artifact, but this
+        # orchestration cannot reach `pass` afterwards: the diverted run keeps its
+        # `agent_graph.json` edge and no `agent_runs.jsonl` row, which the completion vouch and
+        # `--stage pre_judge` both refuse — deliberately, because the write this violation
+        # names is still on disk and nothing rolled it back.
         violation_path = _write_unauthorized_write_violation(
             repo_root,
             orchestration_id,

@@ -185,11 +185,6 @@ def _finalized(conductor) -> list[dict]:
     return [cap["--agent-run-json"] for s, cap in conductor.calls if s == "finalize-child"]
 
 
-def _superseded_reasons(conductor) -> list[str]:
-    """The `--reason` of every superseded-run tombstone, in order."""
-    return [cap["--reason"] for s, cap in conductor.calls if s == "add-superseded-runs"]
-
-
 class _Fixture(unittest.TestCase):
     KIND = "component"
     PROFILE = False

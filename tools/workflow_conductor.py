@@ -380,9 +380,11 @@ def _execute_failure_excerpt(text: str) -> str:
 
 
 # Marker of the per-test predicate failure report. Deliberately NOT the `[execute fail]` literal
-# the structural branch uses (`orchestration_runtime._EXECUTE_FAIL_MARKER`, which the dev resume
-# directive's stderr-log fallback searches for): a predicate failure is a different failure class
-# and reaches that directive through `trial_meta.json#failure_excerpt` only.
+# the structural branch uses: a predicate failure is a different failure class, and it reaches a
+# repair through `trial_meta.json#failure_excerpt` only. (It used to reach the dev resume
+# directive's stderr-log fallback, which issue #177 deleted along with the directive; what reads
+# the excerpt now is `_read_repair_findings`, and what carries it across a resume is the
+# `last_fail_reason` a revocation writes onto the artifact.)
 _VERDICT_FAIL_MARKER = "[execute fail: verdict]"
 
 
@@ -464,14 +466,15 @@ VALIDATE_EXECUTE_FAILURE_ROUTING: dict[str, tuple[str, str]] = {
 # Members are deliberately absent from `VALIDATE_EXECUTE_FAILURE_ROUTING`, so
 # `_read_repair_findings` cannot thread findings into a repair that provably cannot converge.
 #
-# They must also stay out of BOTH of `orchestration_runtime`'s dev category sets, or a `--resume`
-# in dev would issue a Generate resume directive for a condition no regeneration touches. NAME
-# THE RIGHT ONE: `conduct` maps this `fail_closed` to reason_code `conductor_phase_fail_closed`,
-# and `_derive_dev_validate_execute_resume_directive` consults
-# `_DEV_VALIDATE_EXECUTE_VERDICT_CATEGORIES` for that code —
-# `_DEV_VALIDATE_EXECUTE_REUSE_CATEGORIES` belongs to `dev_phase_rollback`, which this route
-# never produces. An earlier version of this comment cited only the latter, and the test written
-# beside it pinned only the latter too, so the set the route actually consults had no witness.
+# A `--resume` must not offer a repair for any of them either, and since issue #177 that is
+# structural rather than a second list to keep in step: a repair is seeded ONLY from a REVOKED
+# artifact (`_seed_repairs_from_revocations`), and this route revokes nothing — it terminalizes.
+# The two `orchestration_runtime` dev category sets that used to have to exclude these
+# (`_DEV_VALIDATE_EXECUTE_VERDICT_CATEGORIES` / `_DEV_VALIDATE_EXECUTE_REUSE_CATEGORIES`) are
+# deleted with the directive deriver that read them. The episode is worth keeping even though
+# the sets are gone: an earlier version of this comment cited only ONE of the two, and the test
+# written beside it pinned only that one, so the set the route actually consulted had no witness
+# — which is why the rule is now a property of the mechanism instead of a list.
 # Recovery is the operator's (install the front end / re-certify) followed by `--resume`.
 VALIDATE_EXECUTE_FAILURE_TERMINAL: frozenset[str] = frozenset(
     {"stale_dependency_ir", "static_frontend_unavailable",
@@ -1313,7 +1316,8 @@ def _parse_directive(stdout: str) -> RouteDecision | None:
 # orthogonal to reuse/discard and passes through unchanged. `target_phase` is NOT clamped by
 # severity (the LLM's rollback distance is honored as-is; conduct's dev_phase_rollback gate
 # still catches a dev cross-phase reopen). "Discard" == the existing `restart` strategy
-# (_ensure_fresh_producer_id id-rotation + reopen_phase supersede; nothing is deleted).
+# (_ensure_fresh_producer_id id-rotation + the revocation of the target's stage meta; nothing is
+# deleted, and the prior attempt's step_result is archived rather than overwritten).
 _SEVERITY_FORCED_STRATEGY: dict[str, str] = {
     "minor": "reuse",      # forced — an LLM restart is ignored
     "critical": "restart",  # forced — an LLM reuse is ignored
@@ -9783,9 +9787,10 @@ clean:
         this method exists to remove, and `0.0` turns the freshness gate off silently. What it
         costs is stated rather than defended: this runs AFTER `record_launch` and BEFORE
         `finalize_child`, so a raise here (ENOSPC, EROFS) leaves a launched child that is never
-        terminalized — the same un-vouched-orphan state `docs/ORCHESTRATION.md` §per-attempt
-        describes, needing a manual `add-superseded-runs` rather than a `--resume`. A leaf gains
-        nothing from it; what is lost is the resume. Moving the call ABOVE `record_launch` would
+        terminalized. Since issue #177 that costs LESS than it used to: an un-vouched terminal
+        arid is simply a failed attempt, so the orchestration is not wedged by it — what the
+        raise costs is this launch, and a `--resume` re-runs the phase. A leaf gains nothing
+        from it. Moving the call ABOVE `record_launch` would
         close that window and reopen a worse one, since the instant would then predate
         `record_launch`'s own writes.
         """
@@ -11886,8 +11891,11 @@ clean:
         verdict_doc = self._author_execute_verdict(refs, ir, run_diag)
         if verdict_doc.get("self_verdict") == "fail":
             # Persist the failing predicate(s) as `failure_excerpt`, symmetric with the structural
-            # branch above: a dev `--resume` after the `fail_closed` threads it into the reopened
-            # Generate as repair findings (`_derive_dev_validate_execute_resume_directive`).
+            # branch above: the dev rollback revokes Generate's artifact before terminalizing and
+            # writes this excerpt onto it as `last_fail_reason`, so the operator's `--resume`
+            # seeds the repair from the ARTIFACT (`_seed_repairs_from_revocations`) rather than
+            # from a directive in this orchestration's own record — which is what lets a COLD
+            # re-run see the findings too.
             # `failure_category` is deliberately NOT written — it keys
             # VALIDATE_EXECUTE_FAILURE_ROUTING, and classify_failure's no-verdict branch (B1) would
             # then read this run as a structural gate failure. The resume deriver takes the category
@@ -12157,25 +12165,16 @@ clean:
             # fall back to for a claude leaf: the same value, from the leaf's own output
             # instead of from outside the access boundary.
             model_override = proc.model
-            # Terminalize the attempt FIRST, and only then tombstone it. Both orderings have a
-            # cost and this one is the survivable one:
-            #   - `finalize_child` closes the child's write window: `record-agent-run` re-walks the
-            #     live workspace and diffs it against the baseline `record-launch` took, and
-            #     ANY path outside the child's write_roots is an unauthorized write. The tombstone
-            #     writes `<orch_root>/reopen/{superseded_runs.json,reopen_log.jsonl}`, which is NOT
-            #     runtime-ignored (unlike launches/ agents/ violations/), so tombstoning inside the
-            #     window would attribute the conductor's own two writes to the dying leaf: the
-            #     attempt is rejected as an unauthorized write, finalize-child exits nonzero, and
-            #     the retry this function exists to perform never launches at all. (The three
-            #     pre-existing tombstone call sites all sit outside any open child window, which is
-            #     why they never hit this.)
-            #   - tombstoning a leaf that ALSO made a genuine unauthorized write would hide it from
-            #     `_derive_unauthorized_write_resume_directive`, which skips superseded candidates
-            #     — leaving the operator in the `resume_reopen_no_valid_trigger` dead end.
-            # The residual: a host crash BETWEEN the two writes leaves a terminal, un-vouched,
-            # un-tombstoned arid, which a resume cannot repair on its own (it needs a manual
-            # `add-superseded-runs`). That window is the same one the three pre-existing tombstone
-            # sites carry, and it is two subprocess calls wide.
+            # This used to terminalize the attempt and then TOMBSTONE it, in that order, and the
+            # ordering carried a careful two-part justification. Issue #177 deleted the tombstone
+            # — a terminal arid no step_result vouches is simply a failed attempt — so there is
+            # one write here now and no ordering left to get wrong. One half of that reasoning
+            # did not go with it, and it is recorded at clause (c) of
+            # `_validate_orchestration_completion_for_pass` rather than lost: the conductor
+            # deliberately did NOT tombstone a leaf that had made a genuine unauthorized write,
+            # so that the violation stayed visible. Nothing tombstones anything now, and the
+            # vouch refuses the diverted attempt's kept edge directly, which is the same
+            # protection stated where it is enforced instead of where it was worked around.
             self.finalize_child(
                 child_arid, token, reply,
                 self._agent_run_json(refs, phase, substep, child_arid, status,
@@ -13464,12 +13463,11 @@ clean:
         # failure leaves no canonical evidence (e.g. a judge that died with no
         # semantic_review.json), so writing the step_result would crash on the
         # post_phase_complete judge gate instead of cleanly failing closed. Skipping the write
-        # leaves the attempt's already-terminalized agents without a step_result, so tombstone
-        # them (add-superseded-runs) — otherwise a later --resume (which re-runs the phase fresh)
-        # trips _validate_orchestration_completion_for_pass on the orphaned arids. Tombstone
-        # EVERY outcome arid: substep agents for substep-aware phases, or the single step-role
-        # agent for build (substep_arids is empty there, but outcomes[0] is recorded in
-        # agent_runs.jsonl and would be flagged as a step orphan).
+        # leaves the attempt's already-terminalized agents without a step_result, and since
+        # issue #177 that costs nothing to clean up: a terminal arid no step_result vouches is
+        # simply a failed attempt. It used to need a tombstone for every one of them, or a later
+        # --resume tripped `_validate_orchestration_completion_for_pass` on the orphans — which
+        # is where 17 of this file's call sites came from, and 17 places to forget one.
         transport = (next((oc for oc in outcomes if oc.leaf_returncode != 0), None)
                      if status != "pass" else None)
         if transport is not None:
@@ -13572,14 +13570,15 @@ clean:
                                    and (gate_meta or {}).get("disposition") == "escalate")
                 escalate_reason = ("validate_judge_conformance_violation"
                                    if judge_conformance_block else "validate_post_judge_unknown")
-                # Return the escalate decision WITHOUT pre-tombstoning the orphan arids:
-                # conduct() runs the diagnostician and, on a reopen directive, calls
-                # reopen_phase(trigger=this failed arid) — which NO-OPs if the trigger is already
-                # in superseded_runs.json (idempotency guard), so the trigger MUST stay live to
-                # drive the rollback. reopen_phase supersedes the whole validate attempt (incl.
-                # this trigger) as part of the upstream reopen; a fail_closed resolution is
-                # terminal (no completion vouch runs). Skip-write posture is preserved (no
-                # step_result written here).
+                # Return the escalate decision and let `conduct` run the diagnostician. The
+                # failed arid is carried on the outcome as the rollback's TRIGGER, and since
+                # issue #177 nothing can consume or neutralize it on the way: `revoke_artifact`
+                # names the phase to re-derive rather than a run to consume, so the trigger is
+                # only ever recorded as `revoked_by_agent_run_id`. (It used to matter a great
+                # deal that this path tombstoned nothing first: `reopen_phase` NO-OPed on a
+                # trigger already in `superseded_runs.json`, so pre-tombstoning here silently
+                # disarmed the rollback this return exists to reach.) Skip-write posture is
+                # preserved (no step_result written here).
                 if is_escalate and self.workflow_mode != "dev":
                     decision = RouteDecision("escalate", reason=escalate_reason)
                     return PhaseOutcome(phase, status, substep_arids, failed, decision)
@@ -14256,6 +14255,23 @@ clean:
 
             attempts[target] += 1
             if attempts[target] > MAX_ATTEMPTS_PER_PHASE:
+                # REVOKE BEFORE TERMINALIZING, for the reason the dev branch above states and
+                # this branch used to miss. An exhausted budget is still a decision that the
+                # target must be re-derived; the run simply declines to act on it again. The
+                # target's meta is `pass` at this point — the earlier retries re-derived it
+                # SUCCESSFULLY and the failure that routed here came from downstream — so
+                # without the revocation the operator's `--resume` finds it certified, skips
+                # it, and re-runs every downstream phase into the identical failure, with no
+                # findings anywhere. That is the same deadlock the dev rollback's comment
+                # names, and only this branch was left outside the rule "every retry route
+                # issues both halves".
+                trigger = outcome.failed_substeps[-1] if outcome.failed_substeps else None
+                if trigger:
+                    self.revoke_and_reset(
+                        refs.node_key, target, trigger,
+                        decision.reason or f"{target}_retry_budget_exhausted",
+                        findings=self._read_repair_findings(refs, decision.reason, phase),
+                        severity=decision.severity)
                 self.set_status("fail_closed", reason_code="retry_budget_exhausted",
                                 reason_detail=f"{target} exceeded {MAX_ATTEMPTS_PER_PHASE}")
                 return "fail_closed"

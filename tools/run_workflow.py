@@ -3992,9 +3992,12 @@ def _run_node(
             # The conductor terminalizes meta itself; report a non-pass terminal here
             # and exit nonzero (otherwise a failed run falls through to the generic ok
             # output with exit 0). In dev mode, also collect + persist
-            # `failure_analysis.json` — the documented dev-failure artifact that
-            # `init --resume-from-checkpoint` reads (`_derive_resume_directive`) to
-            # build the cross-phase reopen `resume_directive` on resume.
+            # `failure_analysis.json` — the documented dev-failure artifact the operator
+            # reads to see WHERE the run stopped and why. It is no longer an input to the
+            # resume: issue #177 deleted the directive derivation that used to read it, and a
+            # resumed run now learns what to re-derive from the artifacts themselves (a
+            # revoked stage meta and the `last_fail_reason` on it), which a COLD re-run can
+            # read too.
             if workflow_status.strip().lower() != "pass":
                 if workflow_mode == "dev":
                     analysis = _collect_failure_analysis(repo_root, orchestration_id)

@@ -10746,20 +10746,15 @@ shell_tool                       stable             true
         return (repo_root / "workspace/orchestrations/orch_001/steps"
                 / "problem__shallow_water2d__0.3.0/compile/orch_run_001")
 
-    @staticmethod
-    def _superseded_ids(repo_root: Path) -> list[str]:
-        path = (repo_root
-                / "workspace/orchestrations/orch_001/reopen/superseded_runs.json")
-        if not path.exists():
-            return []
-        return sorted(json.loads(path.read_text(encoding="utf-8"))
-                      ["superseded_agent_run_ids"])
+    def test_write_step_result_overwrite_keeps_only_the_fresh_attempts_substeps(self) -> None:
+        """The overwriting attempt's `substep_agent_run_ids` are its OWN, never a union with
+        the prior attempt's. A prior FAIL step_result's substep list is not payload-validated,
+        so it can name ids that are unrecorded or recorded for another phase, and carrying them
+        forward would make the fresh result vouch for runs it has nothing to do with.
 
-    def test_write_step_result_overwrite_does_not_tombstone_foreign_or_unrecorded_ids(self) -> None:
-        """A prior FAIL step_result's substep list is not payload-validated, so ids that
-        are unrecorded, or recorded for another phase, must never be superseded on its
-        strength (Codex finding 1): the other phase's step_result keeps vouching for its
-        own run, and an unrecorded id cannot block completion in the first place."""
+        This used to be stated as "must never be SUPERSEDED on its strength" — the prior list
+        drove a tombstone (Codex finding 1). Issue #177 deleted the tombstone; what remains is
+        the property that actually mattered, which is what the body has always asserted."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._setup_preflight_and_orch_agent(repo_root)
@@ -10778,9 +10773,10 @@ shell_tool                       stable             true
             self.assertEqual(fresh["substep_agent_run_ids"], ["fresh_compile_generate_001"])
 
     def test_write_step_result_hook_rejection_rolls_back_overwrite(self) -> None:
-        """A post_phase_complete rejection of the fresh write restores the prior
-        step_result and tombstones nothing (Codex finding 2), so a retry sees the exact
-        pre-write state."""
+        """A post_phase_complete rejection of the fresh write restores the prior step_result
+        and leaves no archive behind (Codex finding 2), so a retry sees the exact pre-write
+        state. Before issue #177 this also had to tombstone nothing; there is no tombstone
+        now, and the rollback is the whole of it."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._setup_preflight_and_orch_agent(repo_root)
@@ -10820,9 +10816,11 @@ shell_tool                       stable             true
 
     def test_write_step_result_write_failure_restores_archived_prior(self) -> None:
         """`_write_json` failing AFTER the archive rename must restore the prior
-        step_result. Otherwise result_path is gone, the next attempt's `prior_exists`
-        check finds nothing, and the prior attempt's substep arids are stranded
-        unvouched forever — the very deadlock the archiver exists to prevent."""
+        step_result. Otherwise result_path is gone and the prior attempt's record is lost
+        outright: the next attempt's `prior_exists` check finds nothing to archive, so the
+        history of what was tried has a hole in it that nothing can fill. (Before issue #177
+        it was worse than a lost record — the prior attempt's substep arids were stranded
+        unvouched and the orchestration could never reach `pass`.)"""
         from tools import orchestration_runtime as ort
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -12791,6 +12789,33 @@ class PhaseCertificationTests(unittest.TestCase):
                 ort.revoke_artifact(repo, "o1", node_key=self._NK, step="compile",
                                     reason="r", trigger_agent_run_id="t")["status"],
                 "revoked")
+
+    def test_each_step_revokes_the_meta_its_own_records_name(self) -> None:
+        """Round 1's mutation sweep left the BUILD branch of `_revocable_stage_meta_path`
+        entirely unpinned: reading `source_id` instead of `binary_id`, taking the pipeline id
+        from the compile reservation, and looking under `source/` instead of `binary/` all
+        survived. Each would point a build revocation at the GENERATE artifact — revoking a
+        phase the run never decided to re-derive while leaving the one it did decide about
+        certified, which is both halves of the failure this command exists to prevent.
+
+        Driven with per-stage ids that do not collide, so a branch that reads the wrong record
+        resolves to the wrong path rather than accidentally to the right one."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._preflight(repo)
+            refs = self._certified(repo, through="build", ir_id="ir_A",
+                                   pipeline_id="pipe_B", source_id="src_C", binary_id="bin_D")
+            expected = {"compile": refs["ir_meta"], "generate": refs["source_meta"],
+                        "build": refs["binary_meta"]}
+            for step, meta_ref in expected.items():
+                with self.subTest(step=step):
+                    result = ort.revoke_artifact(repo, "o1", node_key=self._NK, step=step,
+                                                 reason="r", trigger_agent_run_id="t")
+                    self.assertEqual(result["status"], "revoked")
+                    self.assertEqual(result["meta_ref"], meta_ref)
+            # The three refs are genuinely distinct, so the assertions above cannot be
+            # satisfied by one path standing in for another.
+            self.assertEqual(len(set(expected.values())), 3)
 
     def test_a_second_revocation_does_not_destroy_the_audit_trail(self) -> None:
         """`prior_verification_status` exists so that WHAT was revoked stays visible, not

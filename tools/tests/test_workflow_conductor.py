@@ -1127,6 +1127,16 @@ class SeedRepairsFromRevocationsTest(unittest.TestCase):
         cases = {
             "certified": {"certified": True, "revoked": False},
             "never_revoked": {"certified": False, "reason": "ir_not_reserved"},
+            # The sharp one, and the one a mutation sweep found unpinned: a phase that ended
+            # on a VERIFY fail carries `last_fail_reason` on its meta without ever having been
+            # revoked, because `_stage_meta_certification` reports that field for any meta it
+            # can read. Drop the `revoked` half of the guard and every such phase seeds a
+            # `major`/`reuse` warm repair on EVERY resume, from findings no re-derivation
+            # decision was ever made about.
+            "findings_without_a_revocation": {"certified": False,
+                                              "reason": "verification_status_not_pass",
+                                              "revoked": False,
+                                              "last_fail_reason": "verify found p3 weak"},
             "revoked_without_findings": {"certified": False, "revoked": True,
                                          "last_fail_reason": "   "},
             "revoked_with_null_findings": {"certified": False, "revoked": True,
@@ -1870,7 +1880,18 @@ class ConductRoutingTest(unittest.TestCase):
         status = c.conduct(self._refs(), "validate")
         self.assertEqual(status, "fail_closed")
         revokes = [cap for s, cap in c.calls if s == "revoke-artifact"]
-        self.assertEqual(len(revokes), wc.MAX_ATTEMPTS_PER_PHASE)
+        # MAX_ATTEMPTS_PER_PHASE reopens, each revoking the target it is about to re-derive,
+        # plus ONE MORE when the budget runs out. That last one is not bookkeeping symmetry: at
+        # that moment compile's meta is `pass` (the earlier reopens re-derived it successfully;
+        # what keeps failing is validate downstream), so terminalizing without it leaves the
+        # operator's `--resume` to find compile certified, skip it, and run the whole pipeline
+        # into the identical judge failure with no findings recorded anywhere. This branch was
+        # the one retry route outside the "every route issues both halves" rule.
+        self.assertEqual(len(revokes), wc.MAX_ATTEMPTS_PER_PHASE + 1)
+        self.assertEqual({cap["--step"] for cap in revokes}, {"compile"})
+        self.assertEqual(revokes[-1]["--reason"], "judge_ir")
+        resets = [cap for s, cap in c.calls if s == "reset-phase"]
+        self.assertEqual(len(resets), wc.MAX_ATTEMPTS_PER_PHASE + 1)
 
     def test_same_phase_retry_terminalises_without_retry_decisions(self) -> None:
         # In-place retry is intentionally not done; a same-phase "retry" decision with NO
