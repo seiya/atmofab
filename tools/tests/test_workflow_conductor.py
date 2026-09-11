@@ -7993,6 +7993,20 @@ class ResumeRecoveryTest(unittest.TestCase):
             # already-certified node has no step_result of its own).
             self.assertIsNone(
                 c._completed_producer_arid("component/spec_x@0.1.0", "build", "other/meta.json"))
+            # A FAILED attempt that declared the same artifact is not a producer either: the
+            # repair target has to be the attempt that actually published what stands
+            # (round-1 mutant M10 — the status filter had no pin). The directory name sorts
+            # BEFORE the passing one so the glob reaches it first: with the filter dropped,
+            # the failed attempt's arid is what would be returned.
+            fdir = root / "workspace" / "orchestrations" / oid / "steps" / safe / "generate" / "AFAILED"
+            fdir.mkdir(parents=True)
+            (fdir / "step_result.json").write_text(
+                json.dumps({"status": "fail", "required_outputs": [src_meta],
+                            "substep_agent_run_ids": ["BADGEN"],
+                            "executor_agent_run_id": "AFAILED"}),
+                encoding="utf-8")
+            self.assertEqual(
+                c._completed_producer_arid("component/spec_x@0.1.0", "generate", src_meta), "GEN")
 
     def test_run_phase_skip_populates_producer_arid(self) -> None:
         c = _FakeConductor(repo_root=Path("/tmp/repo"), orchestration_id="o",

@@ -12730,6 +12730,78 @@ class PhaseCertificationTests(unittest.TestCase):
                 update_orchestration_status(
                     repo_root=repo, orchestration_id="o1", status="pass")
 
+    def test_latest_meta_under_narrows_before_selecting_the_latest(self) -> None:
+        """The order is load-bearing and had no pin (round-1 mutant M1). Narrowing AFTER the
+        latest-id selection answers a different question — "the latest source, IF it happens
+        to be bound" — which reports a stale generate as certified whenever a newer unrelated
+        source exists beside it."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = self._certified(repo, through="generate")
+            # A NEWER source, bound to a different IR (e.g. a later run's, or a reopen's).
+            other = (repo / refs["pipeline_ref"] / "source" / "src_20260101_009")
+            other.mkdir(parents=True, exist_ok=True)
+            (other / "source_meta.json").write_text(json.dumps({
+                "source_id": "src_20260101_009", "verification_status": "pass",
+                "source_ir_id": "some-other-ir_20250101_001",
+                "artifact_hashes": {"nope": "sha256:" + "0" * 64}}), encoding="utf-8")
+            ok, detail = ort._phase_certified(repo, "o1", self._NK, "generate")
+            self.assertTrue(ok, detail)
+            self.assertEqual(detail["source_id"], refs["source_id"])
+
+    def test_check_phase_certified_refuses_a_binary_bound_to_a_different_ir(self) -> None:
+        """The binary binding has TWO halves and only the source half was pinned (round-1
+        mutant M16). A binary built from the same source but a different IR lineage — what a
+        Compile reopen under an unchanged pipeline produces — is not bound either."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = self._certified(repo, through="build")
+            path = repo / refs["binary_meta"]
+            doc = json.loads(path.read_text("utf-8"))
+            doc["source_ir_id"] = "some-other-ir_20250101_001"
+            path.write_text(json.dumps(doc), encoding="utf-8")
+            self.assertEqual(self._reason(repo, "build"), "binary_not_bound")
+
+    def test_check_phase_certified_names_the_clause_that_refused(self) -> None:
+        """Every refusal reason the predicate can return, each from the state that produces
+        it. The reason is what the conductor's run log and an operator read to find out WHY a
+        phase re-derived, so a reason that no state produces (or a state that produces the
+        wrong reason) is a false record."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            # node_key that is not the canonical form at all
+            ok, detail = ort._phase_certified(repo, "o1", "not-a-node-key", "compile")
+            self.assertFalse(ok)
+            self.assertEqual(detail["reason"], "node_key_invalid")
+            # reserved, but nothing under workspace/ir yet
+            self._certified(repo, through="compile")
+            shutil.rmtree(repo / "workspace" / "ir")
+            self.assertEqual(self._reason(repo, "compile"), "ir_not_found")
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = self._certified(repo, through="generate")
+            # compile reserved, generate not
+            (repo / "workspace/orchestrations/o1/reservations" / refs["safe"]
+             / "generate.json").unlink()
+            self.assertEqual(self._reason(repo, "generate"), "pipeline_not_reserved")
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = self._certified(repo, through="generate")
+            shutil.rmtree(repo / refs["pipeline_ref"])
+            self.assertEqual(self._reason(repo, "generate"), "pipeline_not_found")
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = self._certified(repo, through="compile")
+            (repo / refs["ir_meta"]).write_text("{not json", encoding="utf-8")
+            self.assertEqual(self._reason(repo, "compile"), "stage_meta_unreadable")
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = self._certified(repo, through="compile")
+            doc = json.loads((repo / refs["ir_meta"]).read_text("utf-8"))
+            doc["verification_status"] = "fail"
+            (repo / refs["ir_meta"]).write_text(json.dumps(doc), encoding="utf-8")
+            self.assertEqual(self._reason(repo, "compile"), "verification_status_not_pass")
+
     def test_check_phase_certified_refuses_a_revoked_artifact_and_reports_last_fail_reason(self) -> None:
         """Revocation is what a re-derivation decision leaves on the ARTIFACT, so it survives
         into a cold run — and it carries the findings the conductor seeds a repair from."""
