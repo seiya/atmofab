@@ -12731,6 +12731,61 @@ class PhaseCertificationTests(unittest.TestCase):
                                     reason="r", trigger_agent_run_id="t")["status"],
                 "noop")
 
+    def test_reset_phase_reaches_every_phase_downstream_of_the_target(self) -> None:
+        """The record half of a re-derivation decision. `revoke-artifact` refuses the phase
+        it names; `reset-phase` is what says the phases BELOW it are not happening either.
+        Resetting only the target would leave Build at `step_result_written` while the source
+        it was built from is about to be regenerated — a phase state describing a run that
+        cannot be the one on disk."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._preflight(repo)
+            for step in ort.STEP_KEYS_FOR_NODE_STATE:
+                ort._transition_node_step_phase_state(
+                    repo, "o1", node_key=self._NK, step=step,
+                    new_state="step_result_written", event="step_result_written")
+            result = ort.reset_phase(
+                repo, "o1", node_key=self._NK, from_phase="generate",
+                reason="validate_structural_violation", trigger_agent_run_id="t1")
+
+            self.assertEqual(result["affected_phases"], ["generate", "build", "validate"])
+            inner = (ort._load_phase_state(repo, "o1")["node_states"]
+                     [ort._node_key_to_safe(self._NK)])
+            self.assertEqual(inner["compile"], "step_result_written")
+            for step in ("generate", "build", "validate"):
+                with self.subTest(step=step):
+                    self.assertEqual(inner[step], "not_started")
+            self.assertEqual(
+                [(t["step"], t["from"]) for t in result["transitions"]],
+                [("generate", "step_result_written"), ("build", "step_result_written"),
+                 ("validate", "step_result_written")])
+
+    def test_reset_phase_records_the_routing_reason_on_every_phase_it_resets(self) -> None:
+        """The reason is the only thing that says WHY a phase went back to `not_started`;
+        an operator reading the log of a downstream phase must find it there too, not only
+        on the phase the route actually named."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._preflight(repo)
+            ort.reset_phase(repo, "o1", node_key=self._NK, from_phase="build",
+                            reason="build_dependency_stale", trigger_agent_run_id="t1")
+            log_path = ort._phase_state_log_path(repo, "o1")
+            log = [json.loads(line) for line in
+                   log_path.read_text("utf-8").splitlines() if line.strip()]
+            resets = [e for e in log if e.get("event") == "phase_reset"]
+            self.assertEqual([e.get("step") for e in resets], ["build", "validate"])
+            for entry in resets:
+                self.assertEqual(entry.get("reason"), "build_dependency_stale")
+
+    def test_reset_phase_refuses_a_step_that_is_not_a_phase(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._preflight(repo)
+            with self.assertRaises(RuntimeError) as ctx:
+                ort.reset_phase(repo, "o1", node_key=self._NK, from_phase="promote",
+                                reason="r", trigger_agent_run_id="t1")
+            self.assertIn("unsupported --from-phase", str(ctx.exception))
+
 
 class CertificationStampTests(unittest.TestCase):
     """`write_step_result` is the single host-side point that stamps a phase's certification

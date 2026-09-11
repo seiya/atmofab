@@ -14105,8 +14105,9 @@ clean:
         phases = phases_through(until_phase)
         attempts: dict[str, int] = {p: 0 for p in phases}
         pending_repair: dict[str, dict[str, str]] = {}
-        # A resume may carry a directive to reopen an already-passed phase and repair it with
-        # the findings of the failure that terminalized the prior run (dev F1 deadlock break).
+        # A phase whose artifact a prior run REVOKED is re-derived with that run's findings.
+        # The revocation is on the artifact, so this reaches a cold re-run too; it is what
+        # the `resume_directive` used to carry (dev F1 deadlock break).
         pending_repair.update(self._seed_repairs_from_revocations(refs, phases))
         idx = 0
         while idx < len(phases):

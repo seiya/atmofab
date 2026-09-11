@@ -837,6 +837,8 @@ class _FakeConductor(wc.Conductor):
         if sub == "check-phase-certified":
             # The default fake answer is "not certified", so a phase runs unless a test
             # deliberately certifies it. `check_phase_certified` never returns None.
+            if self.cert_fn is not None:
+                return self.cert_fn(captured.get("--step"))
             return {"certified": False, "reason": "ir_not_reserved"}
         if sub == "workflow-launch-check":
             return {"status": "pass"}
@@ -901,6 +903,10 @@ class _FakeConductor(wc.Conductor):
     def _write_dependency_graph(self, refs):  # type: ignore[override]
         return None
 
+    # Configurable `check-phase-certified` answer: (phase) -> dict. Default None keeps the
+    # "not certified" answer every other test in this file was written against.
+    cert_fn = None
+
     # configurable hooks (default: everything passes)
     status_fn = None  # (phase, substep, n) -> "pass"|"fail"
     decision_fn = None  # (phase, outcomes) -> RouteDecision
@@ -926,6 +932,153 @@ class _FakeConductor(wc.Conductor):
         if self.decision_fn is not None:
             return self.decision_fn(phase, outcomes)
         return super().classify_failure(refs, phase, outcomes)
+
+
+class SeedRepairsFromRevocationsTest(unittest.TestCase):
+    """`_seed_repairs_from_revocations` is the whole of what a resume carries forward about a
+    prior run's rejection — the `resume_directive` it replaced is gone. If it seeds nothing,
+    the repaired phase re-runs from the FULL prompt with no findings, which is the deadlock
+    the directive existed to break, and nothing else in the run notices."""
+
+    def _conductor(self, cert_fn) -> _FakeConductor:
+        c = _FakeConductor(
+            repo_root=Path("/tmp/repo"), orchestration_id="orch_x",
+            orchestration_agent_run_id="ORCH", llm_config=_agentic_cfg("claude"), env={},
+        )
+        c.calls = []
+        c.cert_fn = cert_fn
+        return c
+
+    @staticmethod
+    def _events(buf: io.StringIO) -> list[dict]:
+        return [json.loads(line) for line in buf.getvalue().splitlines() if line.strip()]
+
+    def _refs(self) -> wc.NodeRefs:
+        return wc.NodeRefs(
+            node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
+            ir_id="x_20260101_001", pipeline_id="x_20260101_001",
+            source_id="src_20260101_001", binary_id="bin_20260101_001",
+            run_id="run_20260101_001", source_binary_id="bin_20260101_001",
+        )
+
+    _REVOKED_GENERATE = {
+        "certified": False, "reason": "revoked", "revoked": True,
+        "last_fail_reason": "  predicate p1 failed  ",
+        "pipeline_ref": "workspace/pipelines/n/x_20260101_001",
+        "source_id": "src_20260101_001",
+    }
+
+    def test_a_revoked_artifact_seeds_a_reuse_repair_carrying_its_findings(self) -> None:
+        c = self._conductor(lambda phase:
+                            dict(self._REVOKED_GENERATE) if phase == "generate"
+                            else {"certified": False, "reason": "ir_not_reserved"})
+        buf = io.StringIO()
+        with redirect_stdout(buf), patch.object(_FakeConductor, "_completed_producer_arid",
+                                                return_value="child-7"):
+            seeded = c._seed_repairs_from_revocations(
+                self._refs(), ["compile", "generate", "build", "validate"])
+
+        self.assertEqual(list(seeded), ["generate"])
+        self.assertEqual(seeded["generate"], {
+            "issue_severity": "major",
+            "repair_strategy": "reuse",
+            "repair_target_agent_run_id": "child-7",
+            "repair_reason": "revoked_artifact_resume",
+            "repair_findings": "predicate p1 failed",
+        })
+        seeds = [e for e in self._events(buf) if e.get("event") == "revoked_repair_seeded"]
+        self.assertEqual(len(seeds), 1)
+        self.assertEqual((seeds[0]["node_key"], seeds[0]["phase"], seeds[0]["producer"]),
+                         (self._refs().node_key, "generate", "child-7"))
+
+    def test_a_cold_re_run_over_another_runs_artifact_seeds_a_full_prompt_repair(self) -> None:
+        """`_completed_producer_arid` answers `None` when THIS orchestration never ran the
+        attempt that authored the revoked artifact. The repair still carries the findings;
+        only the reuse target falls back."""
+        c = self._conductor(lambda phase:
+                            dict(self._REVOKED_GENERATE) if phase == "generate"
+                            else {"certified": False})
+        with redirect_stdout(io.StringIO()), patch.object(
+                _FakeConductor, "_completed_producer_arid", return_value=None):
+            seeded = c._seed_repairs_from_revocations(self._refs(), ["compile", "generate"])
+        self.assertEqual(seeded["generate"]["repair_target_agent_run_id"], "none")
+        self.assertEqual(seeded["generate"]["repair_findings"], "predicate p1 failed")
+
+    def test_nothing_is_seeded_without_a_revocation_that_carries_findings(self) -> None:
+        """Three shapes that must NOT seed a repair: a certified phase, an uncertified one
+        that no run revoked (the ordinary cold start), and a revocation with no finding to
+        repair from — the last because a `reuse` repair with an empty findings string tells
+        the producer to fix nothing."""
+        cases = {
+            "certified": {"certified": True, "revoked": False},
+            "never_revoked": {"certified": False, "reason": "ir_not_reserved"},
+            "revoked_without_findings": {"certified": False, "revoked": True,
+                                         "last_fail_reason": "   "},
+            "revoked_with_null_findings": {"certified": False, "revoked": True,
+                                           "last_fail_reason": None},
+        }
+        for label, answer in cases.items():
+            with self.subTest(case=label):
+                c = self._conductor(lambda phase, a=answer: dict(a))
+                buf = io.StringIO()
+                with redirect_stdout(buf), patch.object(
+                        _FakeConductor, "_completed_producer_arid", return_value="child-7"):
+                    self.assertEqual(
+                        c._seed_repairs_from_revocations(
+                            self._refs(), ["compile", "generate"]), {})
+                self.assertEqual(
+                    [e for e in self._events(buf)
+                     if e.get("event") == "revoked_repair_seeded"], [])
+
+    def test_only_the_phases_with_a_reusable_producer_are_asked(self) -> None:
+        """Build and Validate have no producer a warm repair can reuse, so a revocation
+        there is not a repair — it is a re-run, which the certification refusal already
+        causes. Asking anyway would seed a `reuse` repair against a phase whose prompt has
+        no repair form."""
+        asked: list[str] = []
+
+        def cert_fn(phase):
+            asked.append(phase)
+            return dict(self._REVOKED_GENERATE)
+
+        c = self._conductor(cert_fn)
+        with redirect_stdout(io.StringIO()), patch.object(
+                _FakeConductor, "_completed_producer_arid", return_value="a1"):
+            seeded = c._seed_repairs_from_revocations(
+                self._refs(), ["compile", "generate", "build", "validate"])
+        self.assertEqual(asked, ["compile", "generate"])
+        self.assertEqual(sorted(seeded), ["compile", "generate"])
+
+        # A run that stops at compile is not asked about generate at all.
+        asked.clear()
+        c2 = self._conductor(cert_fn)
+        with redirect_stdout(io.StringIO()), patch.object(
+                _FakeConductor, "_completed_producer_arid", return_value="a1"):
+            c2._seed_repairs_from_revocations(self._refs(), ["compile"])
+        self.assertEqual(asked, ["compile"])
+
+    def test_conduct_hands_the_seeded_repair_to_the_phase_that_re_runs(self) -> None:
+        """End to end through `conduct`: the seed must arrive at `run_phase` as that phase's
+        `repair` argument on its FIRST attempt, or the re-derivation runs blind."""
+        c = self._conductor(lambda phase:
+                            dict(self._REVOKED_GENERATE) if phase == "generate"
+                            else {"certified": False})
+        received: dict[str, object] = {}
+        real_run_phase = _FakeConductor.run_phase
+
+        def spy(self, refs, phase, repair=None):
+            received.setdefault(phase, repair)
+            return real_run_phase(self, refs, phase, repair=repair)
+
+        with redirect_stdout(io.StringIO()), \
+                patch.object(_FakeConductor, "run_phase", spy), \
+                patch.object(_FakeConductor, "_completed_producer_arid",
+                             return_value="child-7"):
+            self.assertEqual(c.conduct(self._refs(), "generate"), "pass")
+
+        self.assertIsNone(received["compile"])
+        self.assertEqual(received["generate"]["repair_reason"], "revoked_artifact_resume")
+        self.assertEqual(received["generate"]["repair_findings"], "predicate p1 failed")
 
 
 class ConductHappyPathTest(unittest.TestCase):
