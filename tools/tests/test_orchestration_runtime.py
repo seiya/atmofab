@@ -12620,6 +12620,54 @@ class PhaseCertificationTests(unittest.TestCase):
                 (refs["ir_ref"], refs["pipeline_ref"], refs["source_id"], refs["binary_id"],
                  refs["run_id"]))
 
+    def test_check_phase_certified_cli_json(self) -> None:
+        """The CLI is the conductor's only route to this predicate, so the subcommand and its
+        dispatch are driven end to end — the argparse registration and the `--step` choices
+        included (a phase the state machine does not know must be refused at the parser, not
+        inside the predicate)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._preflight(repo)
+            refs = self._certified(repo, through="generate")
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                rc = main([
+                    "check-phase-certified",
+                    "--repo-root", str(repo),
+                    "--orchestration-id", "o1",
+                    "--node-key", self._NK,
+                    "--step", "generate",
+                    "--agent-run-id", "orch_run_001",
+                ])
+            self.assertEqual(rc, 0)
+            payload = json.loads(buf.getvalue())
+            self.assertTrue(payload["certified"])
+            self.assertEqual(payload["source_id"], refs["source_id"])
+            self.assertEqual(payload["phase_state"], "skipped_certified")
+            self.assertIsNone(payload["reason"])
+
+            # The refusal shape the conductor branches on, over the same CLI.
+            ort._revoke_stage_meta(repo, repo / refs["source_meta"], reason="r",
+                                   trigger_agent_run_id="t1",
+                                   last_fail_reason="the finding")
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                main([
+                    "check-phase-certified", "--repo-root", str(repo),
+                    "--orchestration-id", "o1", "--node-key", self._NK, "--step", "generate",
+                ])
+            payload = json.loads(buf.getvalue())
+            self.assertFalse(payload["certified"])
+            self.assertEqual(payload["reason"], "revoked")
+            self.assertEqual(payload["last_fail_reason"], "the finding")
+
+            # An unknown phase is refused by the parser's own choices.
+            with self.assertRaises(SystemExit), redirect_stderr(io.StringIO()):
+                main([
+                    "check-phase-certified", "--repo-root", str(repo),
+                    "--orchestration-id", "o1", "--node-key", self._NK, "--step", "promote",
+                ])
+
     def test_check_phase_certified_refuses_a_revoked_artifact_and_reports_last_fail_reason(self) -> None:
         """Revocation is what a re-derivation decision leaves on the ARTIFACT, so it survives
         into a cold run — and it carries the findings the conductor seeds a repair from."""
