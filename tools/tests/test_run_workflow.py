@@ -14,7 +14,7 @@ import tempfile
 import textwrap
 import time
 import unittest
-from contextlib import contextmanager, redirect_stderr, redirect_stdout
+from contextlib import ExitStack, contextmanager, redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
@@ -434,7 +434,6 @@ class RunWorkflowTests(unittest.TestCase):
         invocation: dict | None = None,
         record_executor: str | None = "pure",
         pin: bool = True,
-        driver: dict | None = None,
     ) -> None:
         """Create the on-disk artifacts a resume recovers params from.
 
@@ -481,8 +480,6 @@ class RunWorkflowTests(unittest.TestCase):
             invocation.setdefault("generate_executor", record_executor)
         if invocation is not None:
             meta["invocation"] = invocation
-        if driver is not None:
-            meta["driver"] = driver
         (orch_root / "orchestration_meta.json").write_text(
             json.dumps(meta, ensure_ascii=False),
             encoding="utf-8",
@@ -1183,16 +1180,17 @@ class RunWorkflowTests(unittest.TestCase):
             self.assertEqual(out["until_phase"], "Build")
 
     def _seed_running_orchestration(
-        self, repo_root: Path, oid: str, *, verdict: str | None,
-        spec_ref: str = "spec/problem/test.md",
+        self, repo_root: Path, oid: str, *, spec_ref: str = "spec/problem/test.md",
     ) -> None:
-        """Seed a non-terminal (`running`) orchestration whose driver probes to `verdict`."""
-        driver = {"pid": 424242}
-        if verdict is not None:
-            driver["verdict"] = verdict
+        """Seed a non-terminal (`running`) orchestration.
+
+        No `driver` block and no liveness `verdict`: issue #177 deleted both, and this helper
+        kept seeding them for a probe that no longer exists — while the same PR added a test
+        pinning that `driver` is never written. What makes a `running` prior resumable now is
+        that its exclusive claim is free."""
         self._seed_resumable_orchestration(
             repo_root, oid, spec_ref=spec_ref, until_phase="Build", mode="dev",
-            backend="claude", status="running", driver=driver,
+            backend="claude", status="running",
         )
 
     def test_claim_root_is_relocatable(self) -> None:
@@ -1267,11 +1265,103 @@ class RunWorkflowTests(unittest.TestCase):
         self.assertEqual(resolved, Path("/tmp/fake-home-probe/big/claims"))
         self.assertNotIn("~", str(resolved))
 
+    def test_every_claim_degradation_says_so_instead_of_proceeding_silently(self) -> None:
+        """The claim is the SOLE concurrency gate since issue #177 deleted the driver-liveness
+        probe. A degradation that yields "proceed" is therefore not a quiet loss of defence in
+        depth — it is the absence of the only check — so each one warns.
+
+        The one that matters on a real operator machine had no witness at all before this:
+        a single `sudo python3 tools/run_workflow.py` leaves a root-owned lock file, and every
+        later run for that key then has no gate, forever, with nothing printed. Replacing that
+        `yield True` with `yield False` left the whole suite green."""
+        cases = {
+            "claim_file_unopenable": "unopenable",
+            "claim_no_fcntl": "no_fcntl",
+            "claim_root_unresolvable": "unresolvable",
+            "claim_lock_unsupported": "lock_refused",
+        }
+        for reason, shape in cases.items():
+            with self.subTest(reason=reason), tempfile.TemporaryDirectory() as tmp:
+                run_workflow._CLAIM_DEGRADATIONS_WARNED.clear()
+                repo_root = Path(tmp) / "repo"
+                repo_root.mkdir()
+                ctx = ExitStack()
+                if shape == "unresolvable":
+                    ctx.enter_context(
+                        mock.patch.dict(os.environ,
+                                        {"ATMOFAB_START_CLAIM_ROOT": "relative-is-refused"}))
+                else:
+                    ctx.enter_context(mock.patch.dict(
+                        os.environ, {"ATMOFAB_START_CLAIM_ROOT": str(Path(tmp) / "claims")}))
+                if shape == "no_fcntl":
+                    ctx.enter_context(mock.patch.object(run_workflow, "fcntl", None))
+                lock = None
+                if shape == "unopenable":
+                    lock = run_workflow._claim_lock_path(repo_root, "spec", "spec/x")
+                    lock.parent.mkdir(parents=True, exist_ok=True)
+                    lock.write_text("", encoding="utf-8")
+                    lock.chmod(0o000)
+                if shape == "lock_refused":
+                    ctx.enter_context(mock.patch.object(
+                        run_workflow.fcntl, "flock",
+                        side_effect=OSError("locking not supported here")))
+                buf = io.StringIO()
+                with ctx, redirect_stdout(buf):
+                    with run_workflow._exclusive_claim(repo_root, "spec", "spec/x") as held:
+                        pass
+                self.assertTrue(held, "a degraded claim must still let the run proceed")
+                events = [json.loads(line) for line in buf.getvalue().splitlines()
+                          if line.strip().startswith("{")]
+                degraded = [e for e in events if e.get("event") == "start_claim_degraded"]
+                self.assertEqual([e["reason"] for e in degraded], [reason],
+                                 f"{shape}: expected exactly one {reason} warning; got {events}")
+                self.assertIn("One driver per workspace is yours to enforce",
+                              degraded[0]["detail"])
+                if lock is not None:
+                    # Restored INSIDE the subTest: the tempdir is gone by cleanup time.
+                    lock.chmod(0o600)
+
+    def test_the_degradation_warning_is_said_once_not_per_acquisition(self) -> None:
+        """A closure takes a claim per node. The operator needs the fact, not a column of it."""
+        with tempfile.TemporaryDirectory() as tmp:
+            run_workflow._CLAIM_DEGRADATIONS_WARNED.clear()
+            repo_root = Path(tmp) / "repo"
+            repo_root.mkdir()
+            buf = io.StringIO()
+            with mock.patch.dict(os.environ,
+                                 {"ATMOFAB_START_CLAIM_ROOT": str(Path(tmp) / "claims")}), \
+                    mock.patch.object(run_workflow, "fcntl", None), redirect_stdout(buf):
+                for _ in range(3):
+                    with run_workflow._exclusive_claim(repo_root, "spec", "spec/x"):
+                        pass
+                # A DIFFERENT key is its own fact and warns again.
+                with run_workflow._exclusive_claim(repo_root, "orch", "o1"):
+                    pass
+            reasons = [json.loads(line)["claim_key"]
+                       for line in buf.getvalue().splitlines()
+                       if line.strip().startswith("{")
+                       and json.loads(line).get("event") == "start_claim_degraded"]
+            self.assertEqual(reasons, ["spec/x", "o1"])
+
+    def test_a_relative_claims_root_is_refused_rather_than_resolved_per_cwd(self) -> None:
+        """A relative override resolves against the CALLING PROCESS'S cwd, so two drivers
+        started from different directories take their claims on two different files and both
+        succeed — a claim that is held and serializes nothing, which is the one degradation an
+        operator cannot see from the outside. Measured before this refusal existed: two drivers,
+        two lock paths, `held=True` for both."""
+        with mock.patch.dict(os.environ, {"ATMOFAB_START_CLAIM_ROOT": "relclaims"}):
+            with self.assertRaisesRegex(ValueError, "must be an absolute path"):
+                run_workflow._start_claims_root()
+        for absolute in ("/tmp/atmofab-abs-claims", "~/atmofab-claims"):
+            with self.subTest(value=absolute), \
+                    mock.patch.dict(os.environ, {"ATMOFAB_START_CLAIM_ROOT": absolute}):
+                self.assertTrue(run_workflow._start_claims_root().is_absolute())
+
     def test_an_unresolvable_claim_root_degrades_to_proceed(self) -> None:
         """The promise the docstring makes, which the `expanduser()` broke.
 
         `_exclusive_claim` says a host where the lock cannot be taken yields True — the
-        claim strengthens the driver-liveness guard and is never a precondition for
+        claim is the concurrency gate itself since issue #177, and is never a precondition for
         running — and `_start_claims_root` and `docs/RUNBOOK.md` both said the override is
         checked by nothing. Adding `expanduser()` on this branch made that false for one
         spelling: `~account` naming no account raises `RuntimeError`, which is not
@@ -1500,6 +1590,123 @@ class RunWorkflowTests(unittest.TestCase):
             self.assertEqual(observed, [False],
                              "the claim must still be held while tmp is being removed")
 
+    def test_a_cold_run_warns_that_a_resumable_orchestration_exists(self) -> None:
+        """Inform, never prohibit. The operator asked for a cold run and gets one — what they
+        must not do is discard a resumable checkpoint without being told, because in this
+        product that checkpoint is a billed LLM run.
+
+        Lost when the driver-liveness block went (the warning lived inside
+        `_cold_start_running_guard` and was framed as part of a refusal it was not), restored
+        in the PR-3 review WITHOUT the liveness classification: the spec claim has already
+        established that no driver is running this spec, so the only question left is whether
+        something resumable exists."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed_spec_tree(repo_root)
+            for oid, status, spec in (
+                ("orch_abandoned", "running", "spec/problem/test.md"),
+                ("orch_finished", "pass", "spec/problem/test.md"),
+                ("orch_other_spec", "running", "spec/problem/other.md"),
+            ):
+                d = repo_root / "workspace" / "orchestrations" / oid
+                d.mkdir(parents=True, exist_ok=True)
+                (d / "orchestration_meta.json").write_text(
+                    json.dumps({"orchestration_id": oid, "status": status, "spec_ref": spec}),
+                    encoding="utf-8")
+
+            buf = io.StringIO()
+            original = run_workflow._runtime_command
+            run_workflow._runtime_command = lambda root, env, args: (
+                run_workflow.RuntimeResult(
+                    payload={"status": "ok", "orchestration_agent_run_id": "a1"},
+                    raw_stdout="{}"))
+            try:
+                with redirect_stdout(buf):
+                    run_workflow.main(
+                        ["spec/problem/test.md", "build", "--repo-root", str(repo_root),
+                         "--orchestration-id", "orch_fresh", "--no-run-conductor",
+                         "--stdout-format", "jsonl"])
+            finally:
+                run_workflow._runtime_command = original  # type: ignore[assignment]
+            warned = [json.loads(line) for line in buf.getvalue().splitlines()
+                      if line.strip().startswith("{")
+                      and json.loads(line).get("event") == "prior_incomplete_orchestration"]
+            self.assertEqual([e["orchestration_id"] for e in warned], ["orch_abandoned"],
+                             f"the cold path must warn about the resumable prior; got {warned}")
+
+    def test_the_resumable_prior_warning_names_the_command_and_only_the_right_runs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            for oid, status, spec in (
+                ("orch_abandoned", "running", "spec/problem/test.md"),
+                ("orch_finished", "pass", "spec/problem/test.md"),
+                ("orch_cancelled", "cancel", "spec/problem/test.md"),
+                ("orch_other_spec", "running", "spec/problem/other.md"),
+            ):
+                d = repo_root / "workspace" / "orchestrations" / oid
+                d.mkdir(parents=True, exist_ok=True)
+                (d / "orchestration_meta.json").write_text(
+                    json.dumps({"orchestration_id": oid, "status": status, "spec_ref": spec}),
+                    encoding="utf-8")
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                run_workflow._warn_about_resumable_priors(
+                    repo_root, "spec/problem/test.md", "jsonl")
+            events = [json.loads(line) for line in buf.getvalue().splitlines()
+                      if line.strip().startswith("{")]
+            warned = [e for e in events if e.get("event") == "prior_incomplete_orchestration"]
+            self.assertEqual([e["orchestration_id"] for e in warned], ["orch_abandoned"],
+                             "only a non-terminal run of THIS spec is resumable")
+            self.assertEqual(
+                warned[0]["resume_command"],
+                "python3 tools/run_workflow.py --resume --orchestration-id orch_abandoned")
+            self.assertEqual(warned[0]["orchestration_status"], "running")
+
+    def test_a_resumed_run_holds_its_orchestration_claim_for_the_whole_run(self) -> None:
+        """The single load-bearing property of the design this PR ships, and it had no witness
+        on the resume path.
+
+        `test_orchestration_claim_outlives_the_tmp_cleanup` covers the COLD path only, and
+        `test_concurrent_resume_of_one_orchestration_is_refused` takes the claim externally
+        BEFORE the run — neither observes the claim while a resumed run is in flight. Measured:
+        closing the resume claim immediately after the gate left the suite green, and in
+        production that mutation means the entire resumed run holds no orchestration claim at
+        all, because `_run_node` is told `orch_claim_held=resume_mode` and does not re-acquire.
+
+        Observed from INSIDE the run: a second acquisition of the same key must be refused.
+        `flock` denies a second acquisition on a different fd of the same file even in the same
+        process, so this is a real observation rather than a bookkeeping one."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed_spec_tree(repo_root)
+            self._seed_resumable_orchestration(
+                repo_root, "orch_resumed", spec_ref="spec/problem/test.md",
+                until_phase="Build", mode="dev", backend="claude")
+            observed: list[bool] = []
+
+            def observing_runtime(root, env, args):  # type: ignore[no-untyped-def]
+                if args and args[0] == "init":
+                    with run_workflow._exclusive_claim(
+                        repo_root, "orch", "orch_resumed"
+                    ) as free:
+                        observed.append(free)
+                return run_workflow.RuntimeResult(
+                    payload={"status": "ok", "orchestration_agent_run_id": "orch_run_001"},
+                    raw_stdout="{}")
+
+            original = run_workflow._runtime_command
+            run_workflow._runtime_command = observing_runtime  # type: ignore[assignment]
+            try:
+                with redirect_stdout(io.StringIO()):
+                    run_workflow.main(
+                        ["--resume", "--orchestration-id", "orch_resumed",
+                         "--repo-root", str(repo_root), "--no-run-conductor",
+                         "--stdout-format", "jsonl"])
+            finally:
+                run_workflow._runtime_command = original  # type: ignore[assignment]
+            self.assertEqual(observed, [False],
+                             "a resumed run must hold its orchestration claim while it runs")
+
     def test_orchestration_claim_is_keyed_to_the_orchestration(self) -> None:
         # A claim on some OTHER orchestration must not block this one.
         with tempfile.TemporaryDirectory() as tmp:
@@ -1546,18 +1753,17 @@ class RunWorkflowTests(unittest.TestCase):
             self.assertEqual(code2, 0, out2)
             self.assertIn("init", [c[0] for c in calls2])
 
-    def test_resume_claims_the_orchestration_before_probing_its_driver(self) -> None:
-        # The probe's `dead` verdict authorizes a WRITE on another run's meta
-        # (`set-status fail/driver_crashed`). If the claim came after that decision,
-        # two resumes of one corpse would both perform it — the second landing after
-        # the first had reset the meta to `running`, flipping an actively-resumed run
-        # back to `fail`, which its later claim failure cannot undo. So the refusal has
-        # to happen before any probe or terminalization.
+    def test_resume_claims_the_orchestration_before_reading_its_meta(self) -> None:
+        # The claim is taken before the meta is READ at all, and that ordering is the
+        # design: taking it IS the decision about whether anything else is driving this run,
+        # so nothing downstream has to be ordered against a probe. Before issue #177 the same
+        # ordering existed for a sharper reason — a `dead` verdict authorized a WRITE on
+        # another run's meta, and two resumes of one corpse would both perform it.
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._seed_spec_tree(repo_root)
             oid = "orch_20260101T000000Z_aaaaaaaa"
-            self._seed_running_orchestration(repo_root, oid, verdict="dead")
+            self._seed_running_orchestration(repo_root, oid)
             with run_workflow._exclusive_claim(repo_root, "orch", oid) as held:
                 self.assertTrue(held)
                 code, out, calls = self._run_main_with_fake_runtime(
@@ -5324,6 +5530,33 @@ class DependencyClosureTests(unittest.TestCase):
             self.assertEqual(last["reason"], "concurrent_orchestration_running")
             self.assertEqual(last["orchestration_id"], "orch_c_prev")
 
+    def test_closure_resume_claims_the_target_too_not_only_its_members(self) -> None:
+        """A straight coverage asymmetry over one mechanism: the per-MEMBER claim is pinned
+        above, the TARGET's was not. Measured — forcing `target_preclaimed = True` left the
+        suite green, and in production that means the warm-resumed target takes no
+        orchestration claim from the closure driver AND none from `_run_node` (which is told
+        `orch_claim_held=target_resume`), so the whole target run is unserialized."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            _seed_shape_expr_schema_into(repo_root)
+            self._seed_diamond(repo_root)
+            # `_drive_closure_raw` drives the diamond with `target_orchestration_id`
+            # "orch_target" / `target_spec_ref` "spec/problem/a", so THAT is the claim a
+            # resumed target takes.
+            self._seed_prior_member(
+                repo_root, "orch_target", "spec/problem/a", status="running")
+            with run_workflow._exclusive_claim(repo_root, "orch", "orch_target") as held:
+                self.assertTrue(held)
+                rc, _captured, stdout, calls = self._drive_closure_with_runtime(
+                    repo_root, resume=True,
+                    prior_orch_by_spec={"spec/problem/a": "orch_target"})
+            self.assertEqual(rc, 2, stdout)
+            self.assertEqual([c for c in calls if c and c[0] == "set-status"], [])
+            last = json.loads(stdout.strip().splitlines()[-1])
+            self.assertEqual(last["reason"], "concurrent_orchestration_running")
+            self.assertEqual(last.get("target_spec_ref"), "spec/problem/a")
+
+
 class StdoutTeeTests(unittest.TestCase):
     """Cover the host-side run-log tee added to run_workflow: stdout mirroring,
     best-effort IO suppression, attribute fall-through, and the open helper's
@@ -5731,31 +5964,21 @@ class StdoutFormatTests(unittest.TestCase):
             "    [warn   ] usage limit in generate.generate [wait 1] (source=probe/session): "
             "waiting 420.0s for the reset, then re-launching",
         )
-        # Driver-liveness gates. These four are the operator-visible output of the
-        # issue-#11 recovery path, and `human` is the default stdout format, so they
-        # are what an operator actually reads when a run collides with a corpse.
+        # The cold path's resumable-prior warning. `human` is the default stdout format, so
+        # this is what an operator actually reads before a cold run starts over on top of a
+        # checkpoint they could have resumed. Its three siblings from the issue-#11 recovery
+        # path (`dead_driver_terminalized`, `resume_liveness_indeterminate`, and the
+        # `liveness` field here) went with the driver-liveness probe in issue #177: their
+        # renderers outlived every producer, so this test was certifying only itself.
         self.assertEqual(
             f({"status": "info", "event": "prior_incomplete_orchestration",
                "spec_ref": "spec/x", "orchestration_id": "orch_prev",
-               "liveness": "dead",
+               "orchestration_status": "running",
                "resume_command": "python3 tools/run_workflow.py --resume "
                                  "--orchestration-id orch_prev"}),
-            "    [warn   ] prior incomplete orchestration orch_prev (driver dead) — this "
-            "cold run starts over; to continue it: python3 tools/run_workflow.py "
+            "    [warn   ] prior incomplete orchestration orch_prev is 'running' — this "
+            "cold run starts over; to continue it instead: python3 tools/run_workflow.py "
             "--resume --orchestration-id orch_prev",
-        )
-        self.assertEqual(
-            f({"status": "info", "event": "dead_driver_terminalized",
-               "orchestration_id": "orch_prev", "prior_status": "running",
-               "driver_pid": 4242, "reason_code": "driver_crashed"}),
-            "    [warn   ] driver of orch_prev (pid 4242) is gone while 'running' — "
-            "terminalized as fail/driver_crashed, resuming from its checkpoint",
-        )
-        self.assertEqual(
-            f({"status": "info", "event": "resume_liveness_indeterminate",
-               "orchestration_id": "orch_prev", "orchestration_status": "running"}),
-            "    [warn   ] orch_prev is 'running' and its driver liveness is unknown — "
-            "resuming anyway (crash reconciliations will not run)",
         )
         self.assertEqual(
             f({"status": "info", "event": "driver_interrupted",

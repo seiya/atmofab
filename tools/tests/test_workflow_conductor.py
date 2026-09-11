@@ -8487,6 +8487,18 @@ def _assert_writer_plateaus(
         "...and stay stopped: the writer is wedged on a full pipe")
 
 
+
+def _unallocatable_pid() -> int:
+    """A pid one past the kernel's ceiling: it cannot name a live process."""
+    try:
+        return int(Path("/proc/sys/kernel/pid_max").read_text(encoding="utf-8").strip()) + 1
+    except (OSError, ValueError):
+        return 4194305
+
+
+_UNALLOCATABLE_PID = _unallocatable_pid()
+
+
 class LeafSpawnTest(unittest.TestCase):
     """Codex follow-ups: honor custom llm_command; gate substep on leaf returncode."""
 
@@ -10046,6 +10058,62 @@ class LeafSpawnTest(unittest.TestCase):
         defence is the pinned id PLUS the leaf's `/proc/<pid>/stat` start ticks, the one
         identity a pid cannot carry across reuse."""
         from unittest.mock import patch
+
+    def test_pid_start_ticks_reads_a_real_identity_rather_than_always_declining(self) -> None:
+        """The identity `_terminate_leaf_process_group` proves a group id with, driven FOR REAL.
+
+        Every other test of the group teardown patches `_pid_start_ticks`, so the function
+        itself had no witness — and issue #177's PR-3 deleted the `/proc` parser it imported
+        from `run_workflow`. The import sat inside `except Exception`, so nothing raised: it
+        simply began returning None on every host, `_addressable_pgid` fell through to
+        `os.kill(pgid, 0)` (which SUCCEEDS while the leaf is alive), and the leaf's process
+        group stopped being signalled at all. The suite stayed green throughout.
+
+        Asserting only the SHAPE, because the value is the kernel's: a readable identity for a
+        live pid, `None` for one that cannot be read. That is the whole contract
+        `_addressable_pgid` branches on."""
+        import os as _os
+
+        ticks = wc._pid_start_ticks(_os.getpid())
+        if not Path("/proc/self/stat").exists():
+            self.assertIsNone(ticks)
+            return
+        self.assertIsInstance(ticks, str)
+        self.assertTrue(ticks and ticks.isdigit(),
+                        f"a live pid must have a readable start-ticks identity; got {ticks!r}")
+        # Stable for the same process, which is what makes it usable as an identity at all.
+        self.assertEqual(ticks, wc._pid_start_ticks(_os.getpid()))
+        # A pid that cannot exist has none, and asking never raises — this runs on teardown.
+        self.assertIsNone(wc._pid_start_ticks(_UNALLOCATABLE_PID))
+
+    def test_a_live_groups_identity_is_proven_before_the_group_is_signalled(self) -> None:
+        """The consequence, end to end and unpatched: with the real identity readable, a group
+        whose recorded ticks MATCH is signalled. When `_pid_start_ticks` silently degrades to
+        `None` the `os.kill(pgid, 0)` fallback returns None for a LIVE group, so this is the
+        assertion that fails the moment the identity breaks again."""
+        import os as _os
+
+        if not Path("/proc/self/stat").exists():
+            self.skipTest("requires Linux /proc")
+        signalled: list[tuple[int, int]] = []
+
+        class _Leaf:
+            pid = _os.getpid()
+            returncode = None
+
+            def wait(self, timeout=None):  # type: ignore[no-untyped-def]
+                return 0
+
+            def send_signal(self, sig):  # type: ignore[no-untyped-def]
+                signalled.append((-1, sig))
+
+        own = _os.getpid()
+        with patch.object(wc.os, "killpg", lambda pgid, sig: signalled.append((pgid, sig))), \
+                patch.object(wc, "LEAF_TERMINATE_GRACE_SECONDS", 0.01):
+            wc._terminate_leaf_process_group(
+                _Leaf(), pgid=own, pgid_start_ticks=wc._pid_start_ticks(own))
+        self.assertIn(own, [pgid for pgid, _ in signalled],
+                      "a group whose recorded identity still matches must be signalled")
 
         signalled: list[tuple[int, int]] = []
 

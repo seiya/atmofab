@@ -4947,10 +4947,21 @@ def _clear_stale_active_child_markers(
     check in `record_launch` then rejects the next launch, permanently wedging the
     documented recovery (`launch_incomplete_active_child` / `llm_launch_interrupted`).
 
-    This is only safe to call when the orchestration is being reset from a TERMINAL
-    status — a terminal status proves no child is actually running, so the markers
-    are stale by definition. Removes the legacy active-child file and every per-arid
-    marker, returning the cleared arids for audit.
+    THE PRECONDITION IS NO LONGER "the status is terminal", and the difference matters because
+    this function verifies nothing — it deletes the legacy active-child file and every per-arid
+    marker unconditionally. What has to be true is that NO DRIVER IS RUNNING THIS ORCHESTRATION,
+    and since issue #177's PR-3 that is established by the caller holding the run's EXCLUSIVE
+    CLAIM (an advisory `flock` under `~/.atmofab/start_claims/`, released by the OS when the
+    holding process dies) rather than by the recorded status. A terminal status still implies it;
+    a `running` status no longer contradicts it, which is why `resume_orchestration` now
+    reconciles a `running` prior too.
+
+    Calling it WITHOUT that claim held is the unsafe case, and it is unsafe in a specific way:
+    a live leaf loses its phase authority and its active-child marker mid-run. `docs/RUNBOOK.md`
+    §3-1 records where the claim can degrade and what that costs.
+
+    Removes the legacy active-child file and every per-arid marker, returning the cleared arids
+    for audit.
     """
     cleared: list[str] = []
     active_path = _active_child_agent_run_id_path(repo_root, orchestration_id)
@@ -5242,12 +5253,24 @@ def _reset_stale_child_running_node_steps(
     (host died mid-flight) leaves it there even after its active-child marker is
     cleared. The phase gates authorize child work when the node/step is
     `child_running` — apply-patch (`_phase_write_requires_child_running`), the MCP
-    phase gate, and `run-gate` — so a terminal-reset resume must drop that stale
-    authority, otherwise the abandoned child's capability stays phase-authorized and
-    agents reading phase_state still see the substep as running. A terminal status
-    proves no child is actually running, so any `child_running` node/step is stale →
-    reset to `not_started`; the resumed re-launch transitions it back to
-    `child_running` for the real new child. Returns the reset [{node_key_safe, step}].
+    phase gate, and `run-gate` — so a resume must drop that stale authority, otherwise the
+    abandoned child's capability stays phase-authorized and agents reading phase_state still see
+    the substep as running. Any `child_running` node/step is then stale → reset to
+    `not_started`; the resumed re-launch transitions it back to `child_running` for the real new
+    child. Returns the reset [{node_key_safe, step}].
+
+    THE PRECONDITION IS NO LONGER "the status is terminal", and the difference matters because
+    this function verifies nothing — it deletes the legacy active-child file and every per-arid
+    marker unconditionally. What has to be true is that NO DRIVER IS RUNNING THIS ORCHESTRATION,
+    and since issue #177's PR-3 that is established by the caller holding the run's EXCLUSIVE
+    CLAIM (an advisory `flock` under `~/.atmofab/start_claims/`, released by the OS when the
+    holding process dies) rather than by the recorded status. A terminal status still implies it;
+    a `running` status no longer contradicts it, which is why `resume_orchestration` now
+    reconciles a `running` prior too.
+
+    Calling it WITHOUT that claim held is the unsafe case, and it is unsafe in a specific way:
+    a live leaf loses its phase authority and its active-child marker mid-run. `docs/RUNBOOK.md`
+    §3-1 records where the claim can degrade and what that costs.
     """
     doc = _load_phase_state(repo_root, orchestration_id)
     if not isinstance(doc, dict):

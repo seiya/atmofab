@@ -2595,18 +2595,73 @@ def _join_thread(thread: threading.Thread, timeout: float) -> None:
     thread.join(timeout=timeout)
 
 
+def _parse_proc_stat(raw: str) -> tuple[str, str] | None:
+    """Extract `(state, starttime_ticks)` — fields 3 and 22 — from a `/proc/<pid>/stat` body.
+
+    Split out from the read so the parsing is directly testable against real stat
+    bodies, including the awkward ones: the comm field (2) is parenthesised and may
+    itself contain spaces and parentheses (a process can name itself `we ird) (name`),
+    so a naive `split()` misaligns every later field. Splitting AFTER the last `)` puts
+    field 3 (`state`) at index 0, hence field 22 at index 19.
+
+    Returns None on any malformed body rather than a partial answer: a non-numeric
+    starttime recorded as an identity would never compare equal again, so a live driver
+    would classify `dead` and get terminalized under a running workload.
+    """
+    close = raw.rfind(")")
+    if close < 0:
+        return None
+    fields = raw[close + 1 :].split()
+    if len(fields) < 20:
+        return None
+    state, ticks = fields[0], fields[19]
+    if not ticks.isdigit():
+        return None
+    return state, ticks
+
+
+def _read_proc_stat(pid: int) -> tuple[str, str] | None:
+    """Return `(state, starttime_ticks)` for a pid, or None if unreadable/malformed.
+
+    The start ticks paired with the pid make the recorded driver identity resistant to
+    PID reuse: a recycled pid belongs to a process that started later, so its ticks
+    differ. Both values come from ONE read so they describe the same instant. A None
+    here is reported by the probe as `unknown` rather than guessing.
+    """
+    try:
+        raw = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8", errors="replace")
+    except (OSError, ValueError):
+        return None
+    return _parse_proc_stat(raw)
+
+
+def _read_proc_starttime(pid: int) -> str | None:
+    """Field 22 (`starttime`) of `/proc/<pid>/stat` alone, for identity capture."""
+    stat = _read_proc_stat(pid)
+    return None if stat is None else stat[1]
+
+
 def _pid_start_ticks(pid: int) -> str | None:
     """`starttime` (field 22 of `/proc/<pid>/stat`) for `pid`, or None when it is not readable.
 
     The one identity a pid cannot carry across REUSE: a recycled pid belongs to a process that
-    started later, so its ticks differ. Read through `run_workflow`'s parser rather than a second
-    one here — the driver-liveness probe answers the same question about the same file, and two
-    implementations of that would drift (the comm field can contain spaces and parentheses, which
-    a naive split gets wrong). Imported lazily and defensively: this runs on teardown paths that
-    must never raise, and a host without `/proc` simply has no such identity.
+    started later, so its ticks differ. `_terminate_leaf_process_group` uses it to prove a
+    process-group id still belongs to the leaf before signalling the group.
+
+    The parser above lives HERE now. It used to be imported lazily from `run_workflow`, whose
+    driver-liveness probe read the same file — and issue #177's PR-3 deleted that probe, taking
+    the parser with it. The import sat inside `except Exception`, so nothing raised and nothing
+    failed: `_pid_start_ticks` simply began returning None on every host, `_addressable_pgid`
+    fell through to `os.kill(pgid, 0)` — which SUCCEEDS while the leaf is alive — and the leaf's
+    process group stopped being signalled at all. Measured across the two revisions: `'217680184'`
+    on `origin/main`, `None` at that commit, with a leaked grandchild losing its SIGTERM and every
+    teardown costing the full grace period. The suite stayed green because every behaviour test
+    patches this function.
+
+    Defensive by design: this runs on teardown paths that must never raise, and a host without
+    `/proc` simply has no such identity.
     """
     try:
-        from tools.run_workflow import _read_proc_starttime
         return _read_proc_starttime(pid)
     except Exception:  # noqa: BLE001 — an unreadable identity is "unknown", never an error here
         return None

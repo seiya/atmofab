@@ -14055,6 +14055,62 @@ class ResumeOrchestrationRuntimeTests(unittest.TestCase):
             init_orchestration(repo_root=repo, orchestration_id="o1")
             self.assertNotIn("driver", json.loads(meta_path.read_text("utf-8")))
 
+    def test_a_prior_that_is_neither_terminal_nor_running_is_not_reconciled(self) -> None:
+        """The NEGATIVE control of the reconcile gate, which the inversion took with it.
+
+        `reconcile` is `prior_status in IDEMPOTENT_TERMINAL_STATUSES or prior_status ==
+        "running"`. Before this PR, the `running` case was the only test standing on the False
+        side; inverting it left `reconcile = True` indistinguishable from the real condition —
+        measured, that mutation passes the whole suite. And the False side is reachable:
+        neither `init --status` nor `set-status --status` declares `choices=`, so a status
+        outside both sets is an ordinary string the runtime will store.
+
+        What the gate protects is not academic: reconciliation deletes active-child markers and
+        resets `child_running` phase authority unconditionally. A status nobody can reason about
+        must not be treated as proof that no child is live."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            init_orchestration(repo_root=repo, orchestration_id="o1", status="running")
+            _mark_dependencies_ready(repo, "o1")
+            root = repo / "workspace/orchestrations/o1"
+            meta_path = root / "orchestration_meta.json"
+            doc = json.loads(meta_path.read_text("utf-8"))
+            doc["status"] = "quiescing"          # neither terminal nor `running`
+            meta_path.write_text(json.dumps(doc), encoding="utf-8")
+            child = "live-child-arid"
+            (root / "active_child_agent_run_id.txt").write_text(child, encoding="utf-8")
+            markers = root / "active_children"
+            markers.mkdir(exist_ok=True)
+            (markers / f"{child}.txt").write_text(child, encoding="utf-8")
+
+            returned = resume_orchestration(repo, "o1")
+
+            self.assertNotIn("resumed_from_status", returned,
+                             "an unrecognised prior status must not be archived as reconciled")
+            self.assertTrue((root / "active_child_agent_run_id.txt").exists(),
+                            "markers must survive a status the gate does not recognise")
+            self.assertTrue((markers / f"{child}.txt").exists())
+
+    def test_a_resume_records_when_it_happened(self) -> None:
+        """`resumed_at` is part of `orchestration_meta.json`'s documented shape
+        (`docs/GLOSSARY.md`) and had no assertion left: its only one went with the
+        `resume_enabled` test PR-2's ledger deletion removed. Measured — deleting the write
+        passes the whole suite."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            init_orchestration(repo_root=repo, orchestration_id="o1")
+            _mark_dependencies_ready(repo, "o1")
+            self.assertNotIn(
+                "resumed_at",
+                json.loads((repo / "workspace/orchestrations/o1/orchestration_meta.json")
+                           .read_text("utf-8")))
+            returned = resume_orchestration(repo, "o1")
+            self.assertIn("resumed_at", returned)
+            on_disk = json.loads((repo / "workspace/orchestrations/o1/orchestration_meta.json")
+                                 .read_text("utf-8"))
+            self.assertEqual(on_disk["resumed_at"], returned["resumed_at"])
+            self.assertTrue(str(on_disk["resumed_at"]).endswith("Z"))
+
     def test_resume_of_a_running_orchestration_reconciles_it(self) -> None:
         # INVERTED by issue #177's PR-3. A `running` prior used to be left untouched,
         # because it might have been a LIVE driver and the thing that decided was a `/proc`

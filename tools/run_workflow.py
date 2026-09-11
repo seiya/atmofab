@@ -12,7 +12,6 @@ import re
 import shlex
 import shutil
 import signal
-import socket
 import subprocess
 import sys
 import tempfile
@@ -657,14 +656,66 @@ _FAILURE_STATUS_VALUES: frozenset[str] = frozenset(
     {"fail", "fail_closed", "blocked", "timeout", "cancel"}
 )
 
-# Statuses that make an orchestration safe to auto-select as "the latest" for
-# implicit (`--resume` without `--orchestration-id`) resume. A non-terminal status
-# (e.g. `running`) is ambiguous — it may be an active concurrent run whose shared
-# workspace/tmp/<arid> resume would clobber, or a crashed run — so implicit resume
-# refuses it and asks for an explicit id.
+# The terminal statuses, used for ONE question: "is this run already terminal, so do not
+# terminalize it again?" (`_terminalize_owned_orchestration` and the interrupt handler).
+#
+# It used to decide a second thing — whether an orchestration was safe to auto-select as the
+# latest for an implicit `--resume` — on the reasoning that a non-terminal status is ambiguous
+# between a live concurrent run and a crashed one. Issue #177's PR-3 removed that: the exclusive
+# claim answers the ambiguity directly, so implicit resume no longer filters by status at all
+# (`_find_latest_orchestration` takes the latest, whatever it is) and a `running` prior is
+# resumed rather than refused. The name is kept because these ARE the terminal statuses; what
+# changed is that "resumable" is no longer a property they decide.
 _RESUMABLE_TERMINAL_STATUSES: frozenset[str] = frozenset(
     {"pass", "fail", "fail_closed", "blocked", "timeout", "cancel"}
 )
+
+
+def _warn_about_resumable_priors(repo_root: Path, spec_ref: str, stdout_format: str) -> None:
+    """Before a COLD run starts over, say that a resumable orchestration for this spec exists.
+
+    Inform, never prohibit: the operator asked for a cold run and gets one. What they must not
+    do is discard a resumable checkpoint WITHOUT BEING TOLD — in this product that checkpoint is
+    a billed LLM run, and starting over silently is the expensive mistake.
+
+    Restored, and simplified, in issue #177's PR-3 review. `origin/main` reached this through
+    `_cold_start_running_guard`, which classified each candidate's recorded driver through
+    `/proc` and warned only on a `dead` or `unknown` verdict. That classification is deleted
+    with the probe — and it is not needed here, because the SPEC CLAIM has already established
+    that no driver is running this spec. What is left is the useful half: a non-terminal
+    orchestration for this spec exists and can be resumed instead of abandoned.
+
+    Rescanned per call rather than sampled once, because a `--with-deps` closure reaches its
+    later nodes hours after it started. Best-effort throughout: an unreadable workspace warns
+    about nothing rather than failing a run the operator asked for.
+    """
+    root = repo_root / "workspace" / "orchestrations"
+    try:
+        entries = sorted(root.iterdir()) if root.is_dir() else []
+    except OSError:
+        return
+    for entry in entries:
+        if not entry.is_dir():
+            continue
+        meta = _read_orchestration_meta(repo_root, entry.name)
+        if not isinstance(meta, dict):
+            continue
+        if str(meta.get("spec_ref") or "").strip() != spec_ref:
+            continue
+        status = str(meta.get("status") or "").strip().lower()
+        if not status or status in _RESUMABLE_TERMINAL_STATUSES:
+            continue
+        _emit_unlogged_event(
+            {
+                "status": "info",
+                "event": "prior_incomplete_orchestration",
+                "spec_ref": spec_ref,
+                "orchestration_id": entry.name,
+                "orchestration_status": status,
+                "resume_command": _resume_command_for(entry.name),
+            },
+            stdout_format,
+        )
 
 
 def _resume_command_for(orchestration_id: str) -> str:
@@ -1106,28 +1157,25 @@ def _terminalize_owned_orchestration(
     env: dict[str, str],
     orchestration_id: str,
     *,
-    init_committed: bool,
+    owned: bool,
     reason_code: str,
     detail: str,
 ) -> None:
     """Best-effort `fail` terminalization of a run THIS invocation owns, for the
     `_run_node` failure paths that return a fail envelope instead of raising.
 
-    Without it those paths leave the orchestration `running` forever: an implicit
-    `--resume` refuses a non-terminal latest and a cold re-run silently starts over,
-    discarding the checkpoint. Three guards, all of which mirror
+    Without it those paths leave the orchestration `running` forever. That costs less than it
+    used to — since issue #177 a `running` orchestration whose exclusive claim is free is
+    resumed and reconciled rather than refused — but it still leaves a run whose recorded
+    status describes something that is not happening. Three guards, all of which mirror
     `_terminalize_interrupted_orchestration` and the interrupt clause that calls it:
 
-    * **Ownership is `init_committed` alone.** It only flips when the runtime call RETURNS,
-      while the runtime writes the `running` meta well before that, so a failure inside that
-      window leaves the meta `running` and this function declines to touch it. That is the
-      deliberate trade since issue #177 deleted the `driver` block: the durable evidence used
-      to be "a meta whose `driver` names THIS process", and that identity is gone. What
-      recovers the gap is the resume path — a `running` orchestration whose exclusive claim is
-      free is resumed and reconciled, where before #177 it would have refused. The failure mode
-      the ownership check existed to prevent (terminalizing someone else's run behind a reused
-      `--orchestration-id`) is prevented by the same claim: this process could not have got
-      this far without holding it.
+    * **Ownership is `_owns_orchestration`'s answer**, passed in as `owned`. It is not a single
+      flag: the durable evidence used to be `orchestration_meta.json#driver` naming this
+      process, that identity is deleted, and `init_committed` alone cannot replace it because
+      the runtime writes the `running` meta well before its init call returns. See that
+      function for the three facts it combines and for why the exclusive claim is what makes
+      them sufficient.
     * **A more specific terminal status wins.** The runtime may have recorded e.g.
       `fail_closed` / `sandbox_enforcement_violation` just before the failure, and
       terminal→terminal is rejected anyway.
@@ -1140,7 +1188,7 @@ def _terminalize_owned_orchestration(
     OSError. The full text still reaches the operator on the caller's stdout envelope.
     """
     meta_now = _read_orchestration_meta(repo_root, orchestration_id)
-    if not init_committed:
+    if not owned:
         return
     if str(meta_now.get("status") or "").strip().lower() in _RESUMABLE_TERMINAL_STATUSES:
         return
@@ -1166,6 +1214,59 @@ def _terminalize_owned_orchestration(
         pass
 
 
+# Every degradation of `_exclusive_claim` that yields "proceed" without holding a lock, named
+# once here so the warning and the RUNBOOK cannot drift apart. Since issue #177's PR-3 the claim
+# is the SOLE concurrency gate — the driver-liveness probe behind it is gone — so a degradation
+# is no longer a quiet loss of defence in depth, it is the absence of the only check. It is still
+# not a refusal (a host that cannot lock must still be able to run), but it is no longer silent.
+_CLAIM_DEGRADATIONS: dict[str, str] = {
+    "claim_root_unresolvable": (
+        "the claims root could not be resolved (check ATMOFAB_START_CLAIM_ROOT)"
+    ),
+    "claim_no_fcntl": "this platform has no fcntl, so advisory locking is unavailable",
+    "claim_file_unopenable": (
+        "the claim lock file could not be opened — a stale root-owned file from a `sudo` run, "
+        "an unwritable or quota-exhausted home"
+    ),
+    "claim_lock_unsupported": (
+        "the filesystem refused advisory locking (some network filesystems, or a mount with "
+        "`nolock`)"
+    ),
+}
+
+_CLAIM_DEGRADATIONS_WARNED: set[tuple[str, str]] = set()
+
+
+def _warn_claim_degraded(kind: str, key: str, reason: str) -> None:
+    """Say, once per (reason, key), that this run has no concurrency gate.
+
+    Once rather than every acquisition, because a closure takes a claim per node and the
+    operator needs the fact, not a column of it. Best-effort and never raising: this runs on the
+    startup path of a process that must still be able to start.
+    """
+    token = (reason, f"{kind}:{key}")
+    if token in _CLAIM_DEGRADATIONS_WARNED:
+        return
+    _CLAIM_DEGRADATIONS_WARNED.add(token)
+    try:
+        print(json.dumps({
+            "status": "warn",
+            "event": "start_claim_degraded",
+            "reason": reason,
+            "detail": (
+                f"{_CLAIM_DEGRADATIONS.get(reason, reason)}. This run proceeds WITHOUT the "
+                "exclusive claim that serializes drivers, so nothing is stopping a second run "
+                "of this " + ("orchestration" if kind == "orch" else "spec") +
+                " from writing into the same tree. One driver per workspace is yours to "
+                "enforce here (docs/RUNBOOK.md §3-1)."
+            ),
+            "claim_kind": kind,
+            "claim_key": key,
+        }, ensure_ascii=False), flush=True)
+    except Exception:  # noqa: BLE001 - a warning must never take the run down
+        pass
+
+
 def _start_claims_root() -> Path:
     """`~/.atmofab/start_claims` — where the cold-start claim locks live.
 
@@ -1185,16 +1286,34 @@ def _start_claims_root() -> Path:
     `ATMOFAB_START_CLAIM_ROOT='~/claims'` used to become a literal `~` directory under
     the caller's working directory, because the shell does not expand inside quotes.
 
-    Nothing validates an override here — a claim that cannot be taken degrades to
-    "proceed" by design, so there is no failing closed to do. That is a statement about
-    the CALLER: `expanduser()` itself raises `RuntimeError` for a `~account` naming no
-    account, and `_exclusive_claim` catches it to keep the promise. This resolver is not
-    total either (`TODO.md` carries the item for both of them); what makes the
-    consequence different here is that the claim has a caller allowed to shrug.
+    ONE thing is validated: the override must be ABSOLUTE. A relative one resolves against
+    each process's working directory, so two drivers started from different directories would
+    take their claims on different files and both succeed — a claim that is held and serializes
+    nothing, which is the one degradation an operator cannot see. Everything else still degrades
+    to "proceed" by design (`expanduser()` raises `RuntimeError` for a `~account` naming no
+    account, and `_exclusive_claim` catches it), but that path now WARNS: since issue #177
+    deleted the driver-liveness probe there is no second gate behind this one.
     """
     override = os.environ.get(START_CLAIMS_ROOT_ENV, "").strip()
     if override:
-        return Path(override).expanduser().absolute()
+        expanded = Path(override).expanduser()
+        if not expanded.is_absolute():
+            # A RELATIVE override resolves against the CALLING PROCESS'S cwd, so two drivers
+            # started from different directories take their claims on two different files and
+            # both succeed — the claim is held, and it serializes nothing. Measured. That was
+            # survivable while the driver-liveness probe stood behind it; issue #177's PR-3
+            # deleted the probe, so it now means no gate at all, in the one shape where the
+            # operator has no way to tell (a held claim looks exactly like a working one).
+            #
+            # Refused rather than silently re-based: an override is a deliberate act, and
+            # guessing which absolute path was meant would be a second way to disagree.
+            raise ValueError(
+                f"{START_CLAIMS_ROOT_ENV} must be an absolute path; got {override!r}. A "
+                "relative claims root resolves against each process's working directory, so "
+                "two drivers started from different directories would both take 'the' claim "
+                "and neither would be serialized against the other."
+            )
+        return expanded.absolute()
     return operator_secret_root() / "start_claims"
 
 
@@ -1218,16 +1337,24 @@ def _exclusive_claim(repo_root: Path, kind: str, key: str):
 
     `kind="spec"` serializes cold starts of one spec against each other;
     `kind="orch"` serializes drivers of one orchestration — two `--resume` invocations
-    of the same run would otherwise both pass the liveness gate, both terminalize the
-    dead driver, and both `init --resume-from-checkpoint` into the SAME preserved
+    of the same run would otherwise both `init --resume` into the SAME preserved
     `orchestration_agent_run_id`, sharing one `workspace/tmp/<arid>` that either one's
     cleanup then deletes.
 
-    Yields True when the claim is held (proceed) and False when another process holds
-    it (refuse). A host where the lock cannot be taken at all (no `fcntl`, an
-    unsupported filesystem, an unwritable home, or an override this process cannot
-    resolve) yields True: the claim strengthens the driver-liveness guard, it is never a
-    precondition for running.
+    **THIS IS THE CONCURRENCY GATE, not a strengthener of one.** Issue #177's PR-3 deleted the
+    driver-liveness probe that used to stand behind it — the probe read a recorded pid through
+    `/proc` and answered `unknown` for any run started on another host, in another PID
+    namespace, or under a `hidepid` mount, and an `unknown` refused the recovery it existed to
+    enable. What replaces it is the physics of an advisory `flock`: it is held for the life of
+    the holding process and released by the OS when that process dies, so a claim that is FREE
+    is a driver that is GONE, on every host and with nothing recorded.
+
+    Yields True when the claim is held (proceed) and False when another process holds it
+    (refuse). A host where the lock cannot be taken at all (no `fcntl`, an unsupported
+    filesystem, an unwritable home, or an override this process cannot resolve) still yields
+    True — a host that cannot lock must still be able to run — but that is now the absence of
+    the ONLY check rather than the loss of one of two, so each such path calls
+    `_warn_claim_degraded` and says so. `docs/RUNBOOK.md` §3-1 carries what it costs.
 
     RESOLVING the path is inside that promise, and it did not used to be. `expanduser()`
     raises `RuntimeError` for a `~account` spelling naming no account, and
@@ -1263,9 +1390,11 @@ def _exclusive_claim(repo_root: Path, kind: str, key: str):
         # prints and persists. Found by a round-5 reviewer.
         pass
     if path is None:
+        _warn_claim_degraded(kind, key, "claim_root_unresolvable")
         yield True
         return
     handle = None
+    unopenable = False
     if fcntl is not None:
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -1276,7 +1405,10 @@ def _exclusive_claim(repo_root: Path, kind: str, key: str):
             handle = path.open("a+", encoding="utf-8")
         except OSError:
             handle = None
+            unopenable = True
     if handle is None:
+        _warn_claim_degraded(
+            kind, key, "claim_file_unopenable" if unopenable else "claim_no_fcntl")
         yield True
         return
     try:
@@ -1287,8 +1419,12 @@ def _exclusive_claim(repo_root: Path, kind: str, key: str):
             yield False
             return
         except OSError:
-            # Locking unsupported here (e.g. some network filesystems). Degrade to the
-            # driver-liveness guard alone rather than refusing to run.
+            # Locking unsupported here (e.g. some network filesystems, or a mount with
+            # `nolock`). Proceed rather than refuse — a host that cannot lock must still be
+            # able to run — but SAY SO: since issue #177 deleted the driver-liveness probe
+            # there is no second gate behind this, so proceeding here means proceeding with
+            # no concurrency check at all.
+            _warn_claim_degraded(kind, key, "claim_lock_unsupported")
             yield True
             return
         yield True
@@ -2082,7 +2218,6 @@ def _run_main(
     resume_claim = claims if claims is not None else contextlib.ExitStack()
     resume_closure_id: str | None = None
     if resume_mode:
-        explicit_id = bool(args.orchestration_id)
         orchestration_id = args.orchestration_id or _find_latest_orchestration(repo_root)
         if not orchestration_id:
             _emit_unlogged_event(
@@ -2094,20 +2229,14 @@ def _run_main(
                 args.stdout_format,
             )
             return 2
-        # A non-terminal target is ambiguous: it is either an active concurrent run
-        # (whose orchestration_agent_run_id we would share, and whose
-        # workspace/tmp/<arid> this resume's cleanup could delete) or the corpse of a
-        # driver that died without terminalizing. `orchestration_meta.json#driver` is
-        # what tells them apart, so probe it — for BOTH the implicit-latest and the
-        # explicit-id path.
-        # The claim is taken BEFORE the probe, not after it: the probe's `dead` verdict
-        # authorizes a WRITE (`set-status fail/driver_crashed`) on someone else's
-        # orchestration, and two resumes that both probed the same corpse would both
-        # perform it — the second landing after the first had already reset the meta to
-        # `running`, flipping an actively-resumed run back to `fail`. Refusing at the
-        # claim later cannot undo that write, so the decision and the write have to sit
-        # inside it. Held for the rest of this invocation, which is why `_run_node` is
-        # told not to re-acquire it.
+        # A non-terminal target used to be AMBIGUOUS — either an active concurrent run whose
+        # `orchestration_agent_run_id` and `workspace/tmp/<arid>` this resume would collide
+        # with, or the corpse of a driver that died without terminalizing — and
+        # `orchestration_meta.json#driver` was what told them apart. The claim answers it
+        # instead, and answers it first: taking the claim IS the disambiguation, so there is
+        # nothing left to probe and no write on someone else's orchestration to order against.
+        # Held for the rest of this invocation, which is why `_run_node` is told not to
+        # re-acquire it.
         if not resume_claim.enter_context(
             _exclusive_claim(repo_root, "orch", orchestration_id)
         ):
@@ -2519,6 +2648,9 @@ def _run_main(
                 _emit_unlogged_event(
                     _concurrent_cold_start_envelope(spec_ref), args.stdout_format)
                 return 2
+            # The claim proves no driver is running this spec; it proves nothing about whether
+            # a resumable checkpoint exists, so say so before starting over.
+            _warn_about_resumable_priors(repo_root, spec_ref, args.stdout_format)
             # The spec claim above is the whole cold gate since issue #177. It used to be
             # followed by a scan of this spec's other non-terminal orchestrations, probing each
             # one's recorded driver through `/proc` — which answered `unknown` for any run
@@ -2565,7 +2697,7 @@ def _run_main(
             invocation=single_node_invocation,
             stdout_format=args.stdout_format,
             # Cold: main holds the spec claim across the guard above. Resume: main
-            # holds the orchestration claim across the liveness gate. Either way
+            # holds the orchestration claim across the resume gate. Either way
             # `_run_node` must not re-acquire what this process already has.
             spec_claim_held=not resume_mode,
             orch_claim_held=resume_mode,
@@ -2720,23 +2852,10 @@ def _format_event_human(payload: dict[str, Any], *, elide_detail: bool = True) -
 
     if status == "info" and event == "prior_incomplete_orchestration":
         orch = payload.get("orchestration_id", "?")
-        liveness = payload.get("liveness", "?")
         cmd = payload.get("resume_command", "?")
         return (f"    [warn   ] prior incomplete orchestration {orch} "
-                f"(driver {liveness}) — this cold run starts over; to continue it: {cmd}")
-
-    if status == "info" and event == "dead_driver_terminalized":
-        orch = payload.get("orchestration_id", "?")
-        pid = payload.get("driver_pid", "?")
-        prior = payload.get("prior_status", "?")
-        return (f"    [warn   ] driver of {orch} (pid {pid}) is gone while '{prior}' "
-                f"— terminalized as fail/driver_crashed, resuming from its checkpoint")
-
-    if status == "info" and event == "resume_liveness_indeterminate":
-        orch = payload.get("orchestration_id", "?")
-        st = payload.get("orchestration_status", "?")
-        return (f"    [warn   ] {orch} is '{st}' and its driver liveness is unknown "
-                f"— resuming anyway (crash reconciliations will not run)")
+                f"is '{payload.get('orchestration_status', '?')}' — this cold run starts "
+                f"over; to continue it instead: {cmd}")
 
     if status == "info" and event == "driver_interrupted":
         orch = payload.get("orchestration_id", "?")
@@ -3048,7 +3167,7 @@ def _run_node(
     #   ("spec", spec_ref) — two runs of one spec (in any mix of cold and resumed)
     #     derive their `pipeline_id` from the same
     #     `workspace/pipelines/<node_key_safe>/` tree and then write into it.
-    # A caller that already holds one — it had to, to make a liveness decision about
+    # A caller that already holds one — it had to, to decide anything about
     # this orchestration or this spec without racing — says so, since re-acquiring a
     # claim this process already holds would conflict with itself.
     node_claim = contextlib.ExitStack()
@@ -3112,7 +3231,7 @@ def _run_node(
 
         if resume_mode:
             # Resume an existing orchestration: enable checkpoint resume (sets
-            # resume_enabled=true and preserves orchestration_agent_run_id) instead
+            # preserves orchestration_agent_run_id) instead
             # of re-initializing. The returned meta carries orchestration_agent_run_id.
             # Pass the resolved spec/dependency refs so meta stays in sync when they
             # were overridden on the CLI — otherwise a later implicit resume would
@@ -3276,7 +3395,7 @@ def _run_node(
             # `--orchestration-id` naming a foreign run is still left alone.
             _terminalize_owned_orchestration(
                 repo_root, env, orchestration_id,
-                init_committed=_owns_orchestration(
+                owned=_owns_orchestration(
                     repo_root, orchestration_id, init_committed=init_committed,
                     init_attempted=init_attempted, resume_mode=resume_mode,
                     meta_existed_before_init=meta_existed_before_init),
@@ -3505,7 +3624,7 @@ def _run_node(
         # so an implicit --resume refuses it and a cold re-run silently starts a new
         # orchestration from phase 1, discarding the checkpoint. Terminalizing here
         # makes the interrupted run recoverable via the normal resume path (a terminal
-        # status is what routes `init --resume-from-checkpoint` through
+        # status is what routes `init --resume` through
         # `terminal_reset`, where the crash reconciliations live).
         # `init_committed` is set when the runtime call RETURNS, but the runtime writes
         # the `running` meta well before that (several more writes and the subprocess
@@ -3543,7 +3662,7 @@ def _run_node(
         detail = f"{type(exc).__name__}: {exc}"
         _terminalize_owned_orchestration(
             repo_root, env, orchestration_id,
-            init_committed=_owns_orchestration(
+            owned=_owns_orchestration(
                 repo_root, orchestration_id, init_committed=init_committed,
                 init_attempted=init_attempted, resume_mode=resume_mode,
                 meta_existed_before_init=meta_existed_before_init),
@@ -4091,19 +4210,6 @@ def _run_with_dependency_closure(
             # (`orch` when resuming a member, `spec` when starting one cold) and refuses with
             # `concurrent_orchestration_running` if another driver holds it. That serializes
             # the closure against a competing run without probing anyone's `/proc`.
-            node_conflict = None
-            if node_conflict is not None:
-                _emit_unlogged_event(
-                    {
-                        **node_conflict,
-                        "failed_dependency_node": node_label,
-                        "spec_ref": spec_ref,
-                        "dependency_runs": dependency_runs,
-                        "target_spec_ref": target_spec_ref,
-                    },
-                    stdout_format,
-                )
-                return 2
             try:
                 dep_source_dependency_ref = _discover_source_dependency_ref(repo_root, spec_ref)
             except ValueError as exc:
@@ -4313,18 +4419,6 @@ def _run_with_dependency_closure(
             return 2
         # No liveness gate for the target node either: `_run_node` takes its own exclusive
         # claim, which is what serializes it against a competing driver.
-        target_conflict = None
-        if target_conflict is not None:
-            _emit_unlogged_event(
-                {
-                    **target_conflict,
-                    "spec_ref": target_spec_ref,
-                    "dependency_runs": dependency_runs,
-                    "target_spec_ref": target_spec_ref,
-                },
-                stdout_format,
-            )
-            return 2
         target_invocation = None if target_resume else _build_invocation_record(
             argv=raw_argv,
             spec_ref=target_spec_ref,

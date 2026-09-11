@@ -103,6 +103,8 @@ _DECLARED_ENVIRONMENT_SKIPS = {
         "the same privilege condition, from the other direction",
     "/etc/resolv.conf not resolvable on this host":
         "the host has no resolvable resolv.conf to bind-mount",
+    "requires Linux /proc":
+        "procfs is absent (non-Linux host), so a pid has no readable start-ticks identity",
     "requires POSIX signals":
         "the platform has no SIGTERM",
     "not a git checkout":
