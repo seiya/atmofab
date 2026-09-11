@@ -14148,13 +14148,20 @@ clean:
             # written before the grade was recorded carries none, and defaults to `major` the
             # way `_parse_directive` does.
             severity = cert.get("revocation_severity") or "major"
-            # The RECORDED strategy wins over the grade-derived default. Deriving it from the
-            # grade alone loses `major` + an explicit `restart`, which G5 honours: the decision
-            # said to discard the producer's context, and re-entering it as a warm `reuse` hands
-            # the repair back the session that decision distrusted. Only a revocation written
-            # before the strategy was recorded falls back to the derivation.
-            strategy = (cert.get("revocation_repair_strategy")
-                        or _SEVERITY_FORCED_STRATEGY.get(severity, "reuse"))
+            # G5's FORCED mappings win over anything recorded; only `major`, which the policy
+            # leaves to the decision, takes the recorded strategy. Reading the record first
+            # would let a `(critical, reuse)` pair on the meta turn a discard back into a warm
+            # reuse — reintroducing, by way of the field added to preserve the decision, the
+            # exact defect that field was added to fix one grade over. Nothing validates the
+            # pair on the way in (`--severity critical --repair-strategy reuse` is accepted by
+            # the CLI), so the policy is applied HERE rather than trusted from the artifact.
+            #
+            # For `major` the recorded value is the whole point: the policy defaults it to
+            # `reuse` while honouring an explicit `restart`, so the grade alone cannot say which
+            # this decision was. A revocation written before the field existed records none and
+            # falls back to the default.
+            forced = _SEVERITY_FORCED_STRATEGY.get(severity)
+            strategy = forced or cert.get("revocation_repair_strategy") or "reuse"
             seeded[phase] = {
                 "issue_severity": severity,
                 "repair_strategy": strategy,

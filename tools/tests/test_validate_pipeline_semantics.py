@@ -10409,6 +10409,35 @@ end program shallow_water2d_runner
                 msg=f"substep-parent edge must still fail closed; got: {violations}",
             )
 
+    def test_pre_judge_refuses_an_outstanding_unauthorized_write(self) -> None:
+        """Two layers, not one. Issue #177 moved the landed-write refusal from the diverted
+        child's `agent_graph.json` edge to the violation marker — the edge is pruned as an
+        orphan once `agent_runs_invalid.jsonl` no longer names the child — and moving it left
+        this gate covering nothing. Narrowing a defense is a classification, not a side effect,
+        so the marker check belongs here too: pre_judge runs long before any `set-status pass`,
+        so it stops the run before a whole Validate phase is spent on a workspace that cannot be
+        certified."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            violations = self._violations_with_removed_child(
+                repo, removed_arid="substep_run_validate_execute_001",
+                divert_removed_child_to_invalid=True)
+            self.assertFalse(
+                any("unauthorized write violation is outstanding" in v for v in violations),
+                msg=f"no marker was written; got: {violations}")
+
+            orch = repo / "workspace/orchestrations/orch_test_001"
+            (orch / "violations").mkdir(parents=True, exist_ok=True)
+            (orch / "violations" / "substep_run_validate_execute_001."
+                                   "unauthorized_write_violation.json").write_text(
+                "{}", encoding="utf-8")
+            violations2 = self._violations_with_removed_child(
+                repo, removed_arid="substep_run_validate_execute_001",
+                divert_removed_child_to_invalid=True)
+            self.assertTrue(
+                any("unauthorized write violation is outstanding" in v for v in violations2),
+                msg=f"the marker must be refused; got: {violations2}")
+
     def test_pre_judge_tolerates_an_invalid_log_child_edge(self) -> None:
         """This scan checks graph INTEGRITY. A terminal attempt whose payload was refused lives
         only in `agent_runs_invalid.jsonl` and its edge is deliberately kept; tolerating it here

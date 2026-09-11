@@ -10880,11 +10880,17 @@ def _snapshot_repo_files(
         if not path.is_file():
             continue
         rel = _normalize_rel_posix(path.relative_to(repo_root).as_posix())
-        if _should_ignore_runtime_snapshot_path(
-            rel,
-            orchestration_id=orchestration_id,
-            agent_run_id=agent_run_id,
-        ):
+        # Paths whose DELETION must be visible are recorded even though they are exempt from
+        # the ordinary diff. `_compute_changed_paths_against_baseline` filters them out of both
+        # sides so the runtime's own writes into them stay unattributed, and reads them back
+        # from the RAW baseline to detect a removal. Without this they were never in the
+        # baseline at all, so nothing could notice one going missing.
+        if not _is_undeletable_runtime_path(rel, orchestration_id) and \
+                _should_ignore_runtime_snapshot_path(
+                    rel,
+                    orchestration_id=orchestration_id,
+                    agent_run_id=agent_run_id,
+                ):
             continue
         snapshot[rel] = _compute_sha256(path)
     return snapshot
@@ -10992,8 +10998,63 @@ def _compute_changed_paths_against_baseline(
         rel
         for rel in set(before) | set(after)
         if before.get(rel) != after.get(rel)
+        # These are in the snapshot ONLY so a deletion can be seen (below). Their additions and
+        # modifications stay exempt, which is what the runtime-owned exemption is for.
+        and not _is_undeletable_runtime_path(rel, orchestration_id)
     }
+    # A runtime-owned path is exempt so the RUNTIME's own writes into it are not misattributed
+    # to whichever child's window happens to be open. It was never meant to license a child
+    # DELETING the runtime's records, and because the exemption is applied symmetrically to
+    # both sides, such a deletion was invisible — measured: removing
+    # `violations/<arid>.unauthorized_write_violation.json` and a control file together
+    # surfaced only the control.
+    #
+    # That mattered the moment the completion vouch started reading a violation record as the
+    # evidence of a landed unauthorized write: the evidence could be deleted with no trace, and
+    # the justification written for choosing that anchor ("a leaf cannot remove it quietly") was
+    # simply false. It is true now, and narrowly: only DELETIONS, and only of the prefixes
+    # nothing in this tree ever removes. `active_children/` is deliberately NOT among them —
+    # `deactivate_child` and `_clear_stale_active_child_markers` delete those markers as part of
+    # normal operation, so surfacing their deletion would wedge every ordinary run.
+    changed |= _deleted_undeletable_runtime_paths(repo_root, orchestration_id, baseline)
     return sorted(changed)
+
+
+# Runtime-owned prefixes that NOTHING in this tree ever deletes, so a path that was in the
+# write baseline and is gone at terminal validation was removed by the child. Kept separate
+# from `runtime_prefixes`: those are exempt so the runtime's WRITES are not misattributed, and
+# that exemption stays.
+UNDELETABLE_RUNTIME_PREFIXES: tuple[str, ...] = ("violations/",)
+
+
+def _is_undeletable_runtime_path(rel_posix: str, orchestration_id: str) -> bool:
+    orch_root = _normalize_rel_posix(f"workspace/orchestrations/{orchestration_id}")
+    return _normalize_rel_posix(rel_posix).startswith(
+        tuple(f"{orch_root}/{suffix}" for suffix in UNDELETABLE_RUNTIME_PREFIXES))
+
+
+def _deleted_undeletable_runtime_paths(
+    repo_root: Path,
+    orchestration_id: str,
+    baseline: dict[str, Any],
+) -> set[str]:
+    """Paths under `UNDELETABLE_RUNTIME_PREFIXES` that the baseline recorded and that are gone.
+
+    Takes the ALREADY-LOADED baseline rather than re-reading it: `_load_run_write_baseline`
+    raises when none exists, and its path depends on whether the role is a child or the
+    orchestration itself — re-deriving that here got the orchestration-role path wrong and
+    turned a missing-baseline error into nine failures in callers that had loaded it fine.
+
+    Read from the RAW baseline, before the runtime-snapshot ignore predicate is applied to
+    `before` — that filtering is what makes these invisible in the ordinary diff."""
+    orch_root = _normalize_rel_posix(f"workspace/orchestrations/{orchestration_id}")
+    prefixes = tuple(f"{orch_root}/{suffix}" for suffix in UNDELETABLE_RUNTIME_PREFIXES)
+    gone: set[str] = set()
+    for path in dict(baseline.get("files", {})):
+        rel = _normalize_rel_posix(str(path))
+        if rel.startswith(prefixes) and not (repo_root / rel).exists():
+            gone.add(rel)
+    return gone
 
 
 def _actual_changed_paths_since_baseline(
@@ -15872,9 +15933,16 @@ def _until_phase_index(repo_root: Path, orchestration_id: str) -> int:
     # bar. Falls back to `until_phase` for a record written before the high water existed.
     token = None
     if isinstance(invocation, dict):
-        token = (invocation.get("until_phase_high_water")
-                 if _normalized_until_phase(invocation.get("until_phase_high_water")) is not None
-                 else invocation.get("until_phase"))
+        high_water = _normalized_until_phase(invocation.get("until_phase_high_water"))
+        current = _normalized_until_phase(invocation.get("until_phase"))
+        # The FURTHER of the two, not "the high water if it parses". Falling back to
+        # `until_phase` when the high water is unusable would hand the pre-high-water behaviour
+        # back to anyone who can make it unusable; taking the max means an unparseable or
+        # absent high water can only ever make the bar HIGHER, never lower. A record written
+        # before the high water existed carries only `until_phase` and is unaffected.
+        reached = [STEP_KEYS_FOR_NODE_STATE.index(t)
+                   for t in (high_water, current) if t is not None]
+        token = STEP_KEYS_FOR_NODE_STATE[max(reached)] if reached else None
     if not isinstance(token, str) or token.strip().lower() not in STEP_KEYS_FOR_NODE_STATE:
         raise RuntimeError(
             "cannot mark orchestration pass: orchestration_meta.invocation.until_phase is "
@@ -15989,11 +16057,18 @@ def _validate_orchestration_completion_for_pass(
     # unauthorized-write child ("tombstoning a leaf that ALSO made a genuine unauthorized write
     # would hide it"), so the conjunction was unsatisfiable for exactly this shape.
     #
-    # Anchored on the VIOLATION RECORD rather than on the run log or the graph edge, because
-    # this is the only one of the three a leaf cannot quietly remove: `violations/` is
-    # deliberately NOT exempt from the terminal write-audit diff (`docs/ORCHESTRATION.md`
-    # §write attribution names it as a backstop), while `agent_runs_invalid.jsonl` is exempt and
-    # the graph edge is pruned as an orphan once that log no longer names the child.
+    # Anchored on the VIOLATION RECORD rather than on the run log or the graph edge, because it
+    # is the only one of the three whose REMOVAL is visible: `violations/` is listed in
+    # `UNDELETABLE_RUNTIME_PREFIXES`, so a child that deletes one surfaces in its own terminal
+    # write-audit diff. `agent_runs_invalid.jsonl` is exempt from that diff in both directions,
+    # and the graph edge is pruned as an orphan once that log no longer names the child.
+    #
+    # That visibility was ASSERTED here before it was true, and asserted in four places at once
+    # — this comment, `docs/ORCHESTRATION.md` rule 49, `docs/RUNBOOK.md` §3-1 and a test
+    # docstring. `violations/` was in `runtime_prefixes` and the exemption is applied
+    # symmetrically to both sides of the diff, so deleting a violation record left no trace at
+    # all. Measured, and then made true: the prefix is still exempt for the runtime's own writes
+    # (which is what that exemption is for) and no longer exempt for a deletion.
     #
     # There is no acknowledgement mechanism and there should not be one: the remedy is a fresh
     # orchestration over the corrected artifact, not a ledger entry that makes the taint
@@ -16028,7 +16103,7 @@ def _validate_orchestration_completion_for_pass(
     # refuse — and `agent_runs_invalid.jsonl` is one of the runtime-owned paths exempted from the
     # terminal write-audit diff, so a leaf could delete it and leave no trace.
     #
-    # The landed-write case is clause (c-2) below, anchored where the evidence cannot be removed
+    # The landed-write case is clause (c-2) ABOVE, anchored where the evidence cannot be removed
     # quietly.
     invalid_runs = _load_invalid_run_records(root)
     for idx, edge in enumerate(edges):
@@ -20031,12 +20106,20 @@ def init_orchestration(
         # phases never run. The provenance argument above is about the CLOSURE BACK-LINK, which
         # must describe the current run; what the vouch requires to have been certified is not
         # provenance and is not this invocation's to lower.
+        # The caller's own `until_phase_high_water` is DISCARDED, not merged. `invocation` is
+        # the dict `--invocation-json` supplied, so a `setdefault` here let the caller hand in
+        # its own high water and win — re-opening, through the preservation logic, the exact
+        # hole the high water was introduced to close: a run started for `validate` re-inited
+        # with `{"until_phase":"compile","until_phase_high_water":"compile"}` reached `pass`
+        # with three phases never run. This field is derived from what the orchestration has
+        # RECORDED, never supplied.
+        invocation.pop("until_phase_high_water", None)
         prior_invocation = meta.get("invocation")
         if isinstance(prior_invocation, dict):
             for key in ("until_phase_high_water", "until_phase"):
                 reached = _normalized_until_phase(prior_invocation.get(key))
                 if reached is not None:
-                    invocation.setdefault("until_phase_high_water", reached)
+                    invocation["until_phase_high_water"] = reached
                     break
         meta["invocation"] = invocation
         _record_until_phase_high_water(invocation)
@@ -22315,6 +22398,13 @@ def revoke_artifact(
         )
     meta_path = _revocable_stage_meta_path(
         repo_root, orchestration_id, node_key=node_key, step=step_token)
+    # A step that certifies NO meta (validate) is a different `noop` from one whose meta could
+    # not be resolved, and only the second is ever a failure. Telling them apart here rather
+    # than by `still_certified` is the whole difference between a clean answer and an
+    # over-refusal: validate is ALWAYS certified-and-unrevocable when it has passed, so asking
+    # "is it still certified" made the documented RUNBOOK §3-1 recipe exit 1 on a phase where
+    # the runtime's own docstring says the `noop` is the legitimate side.
+    certifies_a_meta = step_token in CERTIFYING_META_FILENAME_BY_STEP
     result: dict[str, Any] = {
         "status": "noop",
         "orchestration_id": orchestration_id,
@@ -22322,8 +22412,11 @@ def revoke_artifact(
         "step": step_token,
         "meta_ref": None,
         "prior_verification_status": None,
-        "reason": "no_meta",
+        "reason": "no_meta" if certifies_a_meta else "step_certifies_no_meta",
+        "still_certified": False,
     }
+    if not certifies_a_meta:
+        return result
     if meta_path is None or not meta_path.is_file():
         # `noop` is the one answer that looks identical in the good case (validate certifies no
         # meta; none was written yet) and the bad one (the decision did not reach the artifact).

@@ -10014,6 +10014,22 @@ def _validate_orchestration_hierarchy(
     has_substep_role = False
 
     for orchestration_dir in orchestration_dirs:
+        # An UNAUTHORIZED WRITE that landed. `--stage pre_judge` used to reach this shape
+        # through the diverted child's `agent_graph.json` edge; issue #177 moved the refusal to
+        # the violation marker, because the edge is pruned as an orphan once
+        # `agent_runs_invalid.jsonl` no longer names the child. Moving it left this gate with
+        # NOTHING covering the shape — one layer instead of two — which is a narrowing of a
+        # defense and therefore a classification, not a side effect of a refactor. The check
+        # belongs here as well as in the completion vouch: this gate runs at Validate's
+        # pre_judge, long before any `set-status pass`, so it stops the run before a whole
+        # Validate phase is spent on a workspace that cannot be certified.
+        for marker in sorted(
+                (orchestration_dir / "violations").glob("*.unauthorized_write_violation.json")
+                if (orchestration_dir / "violations").is_dir() else []):
+            violations.append(
+                f"{marker}: unauthorized write violation is outstanding; the paths it names "
+                "were written outside the child's write_roots and nothing rolled them back"
+            )
         meta_path = orchestration_dir / "orchestration_meta.json"
         graph_path = orchestration_dir / "agent_graph.json"
         runs_path = orchestration_dir / "agent_runs.jsonl"

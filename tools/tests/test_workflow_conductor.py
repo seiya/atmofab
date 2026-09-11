@@ -1167,6 +1167,13 @@ class SeedRepairsFromRevocationsTest(unittest.TestCase):
             # the producer's context" — back into a warm reuse of the session it distrusted.
             "major with an explicit restart": (("major", "restart"), "major", "restart", "none"),
             "minor": (("minor", "reuse"), "minor", "reuse", "child-7"),
+            # G5's FORCED mappings beat the record. Nothing validates the pair on the way in —
+            # `--severity critical --repair-strategy reuse` is accepted by the CLI — so a
+            # mismatched pair on the meta must not turn a discard back into a warm reuse of the
+            # session the `critical` distrusted. That is the round-1 defect, arriving by way of
+            # the very field added in round 2 to preserve the decision.
+            "critical recorded as reuse": (("critical", "reuse"), "critical", "restart", "none"),
+            "minor recorded as restart": (("minor", "restart"), "minor", "reuse", "child-7"),
             # A revocation written before either field was recorded falls back to the
             # derivation, the way `_parse_directive` defaults an absent severity.
             "ungraded and unrecorded": ((None, None), "major", "reuse", "child-7"),

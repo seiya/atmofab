@@ -12283,12 +12283,26 @@ class PhaseCertificationTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "generate is not certified"):
                     update_orchestration_status(repo_root=repo, orchestration_id="o1",
                                                status="pass")
-                # Route 2: a cold re-init that replaces the whole invocation block.
-                init_orchestration(repo_root=repo, orchestration_id="o1",
-                                   invocation={"until_phase": requested})
-                with self.assertRaisesRegex(RuntimeError, "generate is not certified"):
-                    update_orchestration_status(repo_root=repo, orchestration_id="o1",
-                                               status="pass")
+                # Route 2: a cold re-init that replaces the whole invocation block. Including
+                # one that supplies its OWN `until_phase_high_water` — `invocation` is the dict
+                # `--invocation-json` hands in, so the preservation logic must DERIVE the high
+                # water from what the orchestration recorded rather than merge the caller's. A
+                # `setdefault` let the caller win, re-opening this hole through the very logic
+                # added to close it.
+                for supplied in (None, "compile", "zzz", ""):
+                    invocation = {"until_phase": requested}
+                    if supplied is not None:
+                        invocation["until_phase_high_water"] = supplied
+                    init_orchestration(repo_root=repo, orchestration_id="o1",
+                                       invocation=invocation)
+                    meta = json.loads(
+                        (repo / "workspace/orchestrations/o1/orchestration_meta.json")
+                        .read_text("utf-8"))
+                    self.assertEqual(meta["invocation"]["until_phase_high_water"], "validate",
+                                     msg=f"supplied={supplied!r}")
+                    with self.assertRaisesRegex(RuntimeError, "generate is not certified"):
+                        update_orchestration_status(repo_root=repo, orchestration_id="o1",
+                                                   status="pass")
 
     def test_an_honest_short_run_still_passes_and_lowering_does_not_abort(self) -> None:
         """The over-refusal direction, which is why this is a high-water mark and not a refusal.
@@ -12820,11 +12834,33 @@ class PhaseCertificationTests(unittest.TestCase):
             self.assertEqual(detail["last_fail_reason"], "predicate p1 failed")
 
             # A phase that certifies no meta, and one whose meta was never written, are
-            # `noop` — there is nothing to revoke, which is not an error.
-            self.assertEqual(
-                ort.revoke_artifact(repo, "o1", node_key=self._NK, step="validate",
-                                    reason="r", trigger_agent_run_id="t")["status"],
-                "noop")
+            # `noop` — there is nothing to revoke, which is not an error. The two are
+            # DIFFERENT noops and only one can ever be a failure: `validate` certifies no meta
+            # by design, so it is always unrevocable AND (when it has passed) still certified.
+            # Answering that with `still_certified` made the documented RUNBOOK §3-1 recipe
+            # exit 1 on the one phase whose `noop` the docstring calls legitimate.
+            validate_noop = ort.revoke_artifact(repo, "o1", node_key=self._NK, step="validate",
+                                                reason="r", trigger_agent_run_id="t")
+            self.assertEqual(validate_noop["status"], "noop")
+            self.assertEqual(validate_noop["reason"], "step_certifies_no_meta")
+            self.assertFalse(validate_noop["still_certified"])
+
+    def test_the_cli_accepts_a_validate_revocation(self) -> None:
+        """The over-refusal, driven through the route the RUNBOOK recipe uses. `revoke-artifact
+        --step validate` against a passing node is the documented remedy when the attributed
+        phase is validate, and it must exit 0."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._preflight(repo)
+            self._certified(repo, through="validate")
+            err = io.StringIO()
+            with redirect_stderr(err), redirect_stdout(io.StringIO()):
+                rc = main(["revoke-artifact", "--repo-root", str(repo),
+                           "--orchestration-id", "o1", "--node-key", self._NK,
+                           "--step", "validate", "--reason", "r",
+                           "--trigger-agent-run-id", "t"])
+            self.assertEqual(rc, 0, err.getvalue())
+            self.assertNotIn("did not reach the artifact", err.getvalue())
 
     def test_revoke_artifact_is_a_noop_when_the_pipeline_has_no_lineage(self) -> None:
         """The contract stated in this function's own docstring and in
@@ -13645,7 +13681,7 @@ class CompletionVouchAttemptModelTests(unittest.TestCase):
         BECAUSE the child is in `agent_runs_invalid.jsonl`, so deleting that log prunes the edge
         and leaves the clause nothing to refuse — and that log is one of the runtime-owned paths
         EXEMPT from the terminal write-audit diff, so a leaf could delete it without trace.
-        `violations/` is deliberately not exempt. The three subTests drive that difference."""
+        `violations/` is in `UNDELETABLE_RUNTIME_PREFIXES`, so a deletion there surfaces in the deleting child's own write-audit diff. The three subTests drive that difference."""
         for label, act in (
             ("edge and log intact", None),
             # Delete the log and prune, which is what a resume does: the edge goes with it,
@@ -13680,6 +13716,56 @@ class CompletionVouchAttemptModelTests(unittest.TestCase):
                         RuntimeError, "unauthorized write violations are outstanding"):
                     update_orchestration_status(
                         repo_root=repo, orchestration_id="o1", status="pass")
+
+    def test_deleting_a_violation_record_surfaces_in_the_write_audit(self) -> None:
+        """The property the vouch's anchor RESTS on, which was asserted in four places before
+        it was true.
+
+        `violations/` is a runtime-owned prefix, exempt from the terminal write-audit diff so
+        the runtime's own writes into it are not misattributed to whichever child's window is
+        open. The exemption is applied symmetrically to both sides of the diff, so a DELETION
+        was invisible too — and the completion vouch had just started reading a violation record
+        as the evidence of a landed unauthorized write. The evidence could be removed with no
+        trace, by the leaf the evidence was about.
+
+        Now only the deletion surfaces: additions and modifications stay exempt, which is what
+        the exemption exists for. `active_children/` is deliberately NOT in
+        `UNDELETABLE_RUNTIME_PREFIXES` — `deactivate_child` removes those markers in normal
+        operation, so surfacing their removal would wedge every ordinary run."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            init_orchestration(repo_root=repo, orchestration_id="o1",
+                               invocation={"until_phase": "compile"})
+            root = repo / "workspace/orchestrations/o1"
+            (root / "violations").mkdir(parents=True, exist_ok=True)
+            violation = root / "violations" / "a1.unauthorized_write_violation.json"
+            violation.write_text("{}", encoding="utf-8")
+            control = repo / "workspace" / "ir" / "control.txt"
+            control.parent.mkdir(parents=True, exist_ok=True)
+            control.write_text("x", encoding="utf-8")
+            ort._write_run_write_baseline(repo, "o1", agent_run_id="a1")
+
+            # A deletion surfaces — and the control proves the harness can see one at all.
+            violation.unlink()
+            control.unlink()
+            self.assertEqual(
+                ort._actual_changed_paths_since_baseline(repo, "o1", agent_run_id="a1"),
+                ["workspace/ir/control.txt",
+                 "workspace/orchestrations/o1/violations/a1.unauthorized_write_violation.json"])
+
+            # A runtime WRITE into the prefix mid-window does not — the misattribution this
+            # exemption exists to prevent.
+            control.write_text("x", encoding="utf-8")
+            violation.write_text("{}", encoding="utf-8")
+            ort._write_run_write_baseline(repo, "o1", agent_run_id="a2")
+            (root / "violations" / "a2.unauthorized_write_violation.json").write_text(
+                "{}", encoding="utf-8")
+            self.assertEqual(
+                ort._actual_changed_paths_since_baseline(repo, "o1", agent_run_id="a2"), [])
+            # Nor does a modification of one already there.
+            violation.write_text('{"more": true}', encoding="utf-8")
+            self.assertEqual(
+                ort._actual_changed_paths_since_baseline(repo, "o1", agent_run_id="a2"), [])
 
     def test_other_violation_kinds_do_not_block_pass(self) -> None:
         """Only the violation whose write LANDED blocks. A
