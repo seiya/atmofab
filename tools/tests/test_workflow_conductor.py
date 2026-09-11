@@ -1101,8 +1101,8 @@ class SeedRepairsFromRevocationsTest(unittest.TestCase):
                 self.assertEqual(seeded["generate"]["issue_severity"], severity)
                 self.assertEqual(seeded["generate"]["repair_strategy"], strategy)
                 self.assertEqual(seeded["generate"]["repair_target_agent_run_id"], target)
-                seed_event = [e for e in self._events(buf)
-                              if e.get("event") == "revoked_repair_seeded"][0]
+                seed_event = next(e for e in self._events(buf)
+                                  if e.get("event") == "revoked_repair_seeded")
                 self.assertEqual((seed_event["severity"], seed_event["strategy"]),
                                  (severity, strategy))
 
