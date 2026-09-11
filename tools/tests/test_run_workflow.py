@@ -7141,8 +7141,8 @@ class SubstepEventTests(unittest.TestCase):
             def emit(self, event, **fields):
                 captured.append({"event": event, **fields})
 
-            def check_step_completed(self, *_a, **_k):
-                return None
+            def check_phase_certified(self, *_a, **_k):
+                return {"certified": False}
 
             def workflow_launch_check(self, *_a, **_k):
                 return None
@@ -7217,8 +7217,8 @@ class SubstepEventTests(unittest.TestCase):
             def emit(self, event, **fields):
                 captured.append({"event": event, **fields})
 
-            def check_step_completed(self, *_a, **_k):
-                return None
+            def check_phase_certified(self, *_a, **_k):
+                return {"certified": False}
 
             def workflow_launch_check(self, *_a, **_k):
                 return None

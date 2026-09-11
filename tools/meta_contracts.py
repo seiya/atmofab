@@ -10,6 +10,35 @@ STAGE_META_FILENAME_BY_STEP: dict[str, str] = {
     "generate": "source_meta.json",
 }
 
+# The stage meta a phase's CERTIFICATION is stamped into and read back from
+# (`_stamp_certification` / `_phase_certified`). Deliberately a SECOND mapping rather than a
+# `build` entry in `STAGE_META_FILENAME_BY_STEP`: that one drives
+# `_validate_step_result_payload`'s "a pass step_result of a substep-bearing phase must declare
+# exactly one final stage meta" rule, and build (no substeps, host-authored binary_meta) is not
+# governed by it. Adding build there would newly reject every passing build step_result.
+CERTIFYING_META_FILENAME_BY_STEP: dict[str, str] = {
+    "compile": "ir_meta.json",
+    "generate": "source_meta.json",
+    "build": "binary_meta.json",
+}
+
+# Keys a stage meta MAY carry beyond its required set. Listed (rather than merely tolerated)
+# because each is written by exactly one host writer and read by the certification predicate:
+#   - `artifact_hashes` / `source_ir_id`: stamped by `write_step_result` on pass
+#     (`_stamp_certification`), read by `_phase_certified`.
+#   - the four `revoked` / `prior_verification_status` keys: written by `revoke_artifact`.
+# `verification_status` takes one of `pass` | `fail` | `revoked`; it stays an unconstrained
+# non-empty string in the type contract because a leaf-authored meta may legitimately record a
+# phase-specific spelling, and the certification predicate compares against `pass` explicitly.
+STAGE_META_OPTIONAL_KEYS: tuple[str, ...] = (
+    "artifact_hashes",
+    "source_ir_id",
+    "prior_verification_status",
+    "revoked_at",
+    "revoked_by_agent_run_id",
+    "revocation_reason",
+)
+
 STAGE_META_COMMON_REQUIRED_KEYS: tuple[str, ...] = (
     "attempt_count",
     "verification_status",
@@ -86,4 +115,27 @@ def stage_meta_type_violations(meta_data: dict[str, Any], *, step_token: str) ->
             violations.append(
                 "requires non-empty constraint_reason when context_isolated=false"
             )
+    # The two certification keys the host stamps on pass. Type-checked here — not merely in
+    # the stamping writer — because `_phase_certified` REFUSES a phase whose hashes do not
+    # re-compute, so a structurally wrong stamp would read as a tampered deliverable and send
+    # the operator hunting for a change nobody made.
+    if "artifact_hashes" in meta_data:
+        hashes = meta_data.get("artifact_hashes")
+        if not isinstance(hashes, dict) or not hashes:
+            violations.append("artifact_hashes must be a non-empty object")
+        else:
+            bad = [
+                str(k) for k, v in hashes.items()
+                if not (isinstance(k, str) and k.strip())
+                or not (isinstance(v, str) and v.startswith("sha256:") and len(v) > len("sha256:"))
+            ]
+            if bad:
+                violations.append(
+                    "artifact_hashes values must be 'sha256:<hex>' keyed by repo-relative "
+                    f"path (offending keys: {sorted(bad)})"
+                )
+    if "source_ir_id" in meta_data:
+        source_ir_id = meta_data.get("source_ir_id")
+        if not isinstance(source_ir_id, str) or not source_ir_id.strip():
+            violations.append("source_ir_id must be non-empty string")
     return violations

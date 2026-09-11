@@ -54,7 +54,7 @@ This document defines the workflow's phase sequence, inter-phase input/output co
 3. `verdict.json` and `aggregate_verdict.json` must be derived from `tests.md` and the execution artifacts of the same `run_id`.
 4. When a phase input is insufficient, stop the relevant phase with `fail`, and forbid guessed completion.
 5. On a phase failure, an artifact file must not be artificially generated for the purpose of satisfying a downstream phase's start condition.
-6. Without an explicit specification, forbid referencing the content of existing workflow output (past `ir_id` / `pipeline_id` / `source_id` / `binary_id` / `run_id`). For an orchestration where `resume_enabled=true` is recorded in `orchestration_meta.json`, referencing the artifacts of completed steps recorded in `orchestration_checkpoint.json` is permitted.
+6. Without an explicit specification, forbid referencing the content of existing workflow output (past `ir_id` / `pipeline_id` / `source_id` / `binary_id` / `run_id`). The one exception is an artifact this `node` has `certified` (`docs/GLOSSARY.md`): the host adopts it, hands its ids to the phases that follow, and does not re-derive it. Whether it is adopted is the host's decision (`check-phase-certified`) and never a leaf's.
 7. Even when past artifacts exist under `workspace/`, forbid viewing their content and referencing them as input.
 8. Workflow execution uses, as input, only the repository-managed `spec` canonical source and the preceding artifacts generated in the relevant trial.
 9. Do not extract and complete a requirement, judgment rule, or input/output contract not defined in `docs/`, `spec/`, or the relevant trial's artifacts from the implementation under `tools/`, verification scripts, test code, or validator code.

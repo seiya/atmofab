@@ -38,6 +38,8 @@ import pytest
 import tools.llm_config as lc
 import tools.orchestration_runtime as wc_runtime
 import tools.workflow_conductor as wc
+from tools import orchestration_runtime as ort
+from tools.tests.orchestration_fixtures import certify_node
 from tools.tests.leaf_config_fixture import (
     isolated_homes_per_test_suite,
     redirect_isolated_homes_root_for_module,
@@ -811,7 +813,7 @@ class _FakeConductor(wc.Conductor):
                 captured[flag] = json.loads(args[args.index(flag) + 1])
         for flag in ("--node-key", "--step", "--agent-run-id", "--status",
                      "--from-phase", "--reason", "--trigger-agent-run-id",
-                     "--reason-code", "--reason-detail"):
+                     "--reserved-id", "--reason-code", "--reason-detail"):
             if flag in args:
                 captured[flag] = args[args.index(flag) + 1]
         if "--run-ids" in args:  # nargs="+": collect until the next --flag or end
@@ -823,8 +825,10 @@ class _FakeConductor(wc.Conductor):
                 vals.append(tok)
             captured["--run-ids"] = vals
         self.calls.append((sub, captured))
-        if sub == "check-step-completed":
-            return {}
+        if sub == "check-phase-certified":
+            # The default fake answer is "not certified", so a phase runs unless a test
+            # deliberately certifies it. `check_phase_certified` never returns None.
+            return {"certified": False, "reason": "ir_not_reserved"}
         if sub == "workflow-launch-check":
             return {"status": "pass"}
         if sub == "record-launch":
@@ -941,25 +945,25 @@ class ConductHappyPathTest(unittest.TestCase):
         self.assertEqual(status, "pass")
         subs = [s for s, _ in c.calls]
 
-        # per phase: check-step-completed, workflow-launch-check, then per substep
+        # per phase: check-phase-certified, workflow-launch-check, then per substep
         # (record-launch, [record-child-return if deterministic], finalize-child),
         # then write-step-result. Build and Validate.execute are deterministic (the
         # conductor issues their record-child-return); compile/generate/judge are leaves.
         expected = (
-            ["check-step-completed", "workflow-launch-check",
+            ["check-phase-certified", "workflow-launch-check",
              "record-launch", "finalize-child",  # compile.generate (leaf)
              "record-launch", "record-child-return", "finalize-child",  # compile.static (deterministic)
              "record-launch", "finalize-child",  # compile.verify (leaf)
              "write-step-result"]  # compile (2 leaf + 1 deterministic substep)
-            + ["check-step-completed", "workflow-launch-check",
+            + ["check-phase-certified", "workflow-launch-check",
                "record-launch", "finalize-child",  # generate.generate (leaf)
                "record-launch", "record-child-return", "finalize-child",  # generate.gate (deterministic)
                "record-launch", "finalize-child",  # generate.verify (leaf)
                "write-step-result"]  # generate (2 leaf + 1 deterministic substep)
-            + ["check-step-completed", "workflow-launch-check",
+            + ["check-phase-certified", "workflow-launch-check",
                "record-launch", "record-child-return", "finalize-child",
                "write-step-result"]  # build (1 deterministic step)
-            + ["check-step-completed", "workflow-launch-check",
+            + ["check-phase-certified", "workflow-launch-check",
                "record-launch", "record-child-return", "finalize-child",  # pre_judge (deterministic)
                "record-launch", "record-child-return", "finalize-child",  # execute (deterministic)
                "record-launch", "finalize-child",  # judge (leaf)
@@ -1013,14 +1017,15 @@ class ConductHappyPathTest(unittest.TestCase):
         for e in starts:
             self.assertEqual(e["attempt"], 1)
 
-    def test_resume_skipped_phase_reports_skipped_without_elapsed(self) -> None:
+    def test_skipped_certified_phase_reports_skipped_without_elapsed(self) -> None:
         c = self._conductor()
-        # compile is already checkpointed complete -> run_phase short-circuits.
-        c.check_step_completed = (  # type: ignore[method-assign]
-            lambda node_key, step: {"integrity": "ok", "agent_run_id": "prev"}
-            if step == "compile" else None
+        # compile's artifacts are already certified -> run_phase short-circuits. Cold or
+        # resumed makes no difference: the predicate reads the artifacts, not a ledger.
+        c.check_phase_certified = (  # type: ignore[method-assign]
+            lambda node_key, phase: {"certified": True, "ir_ref": "workspace/ir/x/ir_1"}
+            if phase == "compile" else {"certified": False}
         )
-        c._completed_producer_arid = lambda nk, ph, arid: ""  # type: ignore[method-assign]
+        c._completed_producer_arid = lambda nk, ph, ref: ""  # type: ignore[method-assign]
         buf = io.StringIO()
         with redirect_stdout(buf):
             status = c.conduct(self._refs(), "compile")
@@ -1031,6 +1036,7 @@ class ConductHappyPathTest(unittest.TestCase):
         ]
         self.assertEqual(len(completes), 1)
         self.assertEqual(completes[0]["result"], "skipped")
+        self.assertEqual(completes[0]["certified_by"], "workspace/ir/x/ir_1")
         self.assertNotIn("elapsed_seconds", completes[0])
 
     def test_run_conductor_stamps_the_spec_side_alias_not_the_operators_model(self) -> None:
@@ -1205,6 +1211,7 @@ class ConsumeResumeDirectiveTest(unittest.TestCase):
     OID = "orch_resume"
     TRIGGER = "validate-exec-fail-1"
     PRODUCER = "generate-sub-1"
+    PIPE_REF = "workspace/pipelines/component__spec_x__0.1.0/x_20260101_001"
     FINDINGS = "[execute fail]\npost_execute: missing required_raw_variables {'a1'}"
 
     def _refs(self) -> wc.NodeRefs:
@@ -1227,17 +1234,22 @@ class ConsumeResumeDirectiveTest(unittest.TestCase):
         (root / "orchestration_meta.json").write_text(json.dumps(meta), encoding="utf-8")
         sr = root / "steps" / wc.node_key_safe(self.NODE_KEY) / "generate" / "ORCH"
         sr.mkdir(parents=True, exist_ok=True)
+        # The producing attempt is found by the ARTIFACT it published, so the step_result
+        # must declare the certified source_meta among its required_outputs.
         (sr / "step_result.json").write_text(
             json.dumps({"status": "pass", "executor_agent_run_id": "ORCH",
+                        "required_outputs": [f"{self.PIPE_REF}/source/SRC/source_meta.json"],
                         "substep_agent_run_ids": [self.PRODUCER, "generate-sub-2"]}),
             encoding="utf-8")
 
+        pipe_ref = self.PIPE_REF
+
         class _C(_FakeConductor):
             def runtime(self, args, *, input=None):  # type: ignore[override]
-                if args[0] == "check-step-completed":
+                if args[0] == "check-phase-certified":
                     if not generate_completed and "generate" in args:
-                        return {}
-                    return {"integrity": "ok", "agent_run_id": "ORCH"}
+                        return {"certified": False, "reason": "source_not_bound"}
+                    return {"certified": True, "pipeline_ref": pipe_ref, "source_id": "SRC"}
                 if args[0] == "reopen-phase":
                     if reopen_raises:
                         raise RuntimeError("reopen-phase: trigger not found")
@@ -6704,6 +6716,100 @@ class NodeAllocationTest(unittest.TestCase):
         self.assertEqual({cap["--step"] for cap in reserves}, {"compile", "generate"})
 
 
+    def test_prepare_node_adopts_the_latest_certified_ir_and_its_pipeline(self) -> None:
+        """A COLD run over an already-certified node adopts the standing artifacts. Minting a
+        fresh ir_id instead would make the reservation not-latest, which the certification
+        predicate refuses — so every phase of a node that is already done would re-derive."""
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            refs_on_disk = certify_node(root, "o", "component/spec_x@0.1.0",
+                                        through="validate", reserve=False)
+            c = _FakeConductor(repo_root=root, orchestration_id="o",
+                               orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"),
+                               env={})
+            c.calls = []
+            refs = wc.prepare_node(c, "component/spec_x@0.1.0", "spec/component/spec_x")
+            self.assertEqual(refs.ir_id, refs_on_disk["ir_id"])
+            self.assertEqual(refs.pipeline_id, refs_on_disk["pipeline_id"])
+            # The stage ids come from the adopted pipeline's lineage, so the reserved roots
+            # and the ids downstream phases bind to are the ones on disk.
+            self.assertEqual(refs.source_id, refs_on_disk["source_id"])
+            self.assertEqual(refs.binary_id, refs_on_disk["binary_id"])
+            self.assertEqual(refs.run_id, refs_on_disk["run_id"])
+            reserved = {cap["--step"]: cap["--reserved-id"]
+                        for s, cap in c.calls if s == "reserve-phase-root"}
+            self.assertEqual(reserved, {"compile": refs_on_disk["ir_id"],
+                                        "generate": refs_on_disk["pipeline_id"]})
+
+    def test_prepare_node_mints_when_the_latest_ir_is_revoked(self) -> None:
+        """A revoked IR is not adopted: the re-derivation gets a fresh id and never overwrites
+        the artifact it replaces."""
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            on_disk = certify_node(root, "o", "component/spec_x@0.1.0",
+                                   through="validate", reserve=False)
+            ort._revoke_stage_meta(root, root / on_disk["ir_meta"],
+                                   reason="validate_structural_violation_ir",
+                                   trigger_agent_run_id="t1")
+            c = _FakeConductor(repo_root=root, orchestration_id="o",
+                               orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"),
+                               env={})
+            c.calls = []
+            refs = wc.prepare_node(c, "component/spec_x@0.1.0", "spec/component/spec_x")
+            self.assertNotEqual(refs.ir_id, on_disk["ir_id"])
+            self.assertNotEqual(refs.pipeline_id, on_disk["pipeline_id"])
+            self.assertTrue(refs.source_id.startswith("src_"))
+
+    def test_prepare_node_keeps_the_certified_ir_and_mints_an_unbound_pipeline(self) -> None:
+        """`lineage.json#ir_ref` is what binds a pipeline to an IR. A pipeline belonging to a
+        DIFFERENT ir_id is not adopted — adopting the latest pipeline unconditionally would
+        bind the run to another IR's source tree — but the certified IR still is, so Compile
+        stays skippable while Generate re-runs into the fresh pipeline."""
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            on_disk = certify_node(root, "o", "component/spec_x@0.1.0",
+                                   through="generate", reserve=False)
+            lineage = root / on_disk["pipeline_ref"] / "lineage.json"
+            doc = json.loads(lineage.read_text(encoding="utf-8"))
+            doc["ir_ref"] = "workspace/ir/component__spec_x__0.1.0/other_20250101_001"
+            lineage.write_text(json.dumps(doc), encoding="utf-8")
+            c = _FakeConductor(repo_root=root, orchestration_id="o",
+                               orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"),
+                               env={})
+            c.calls = []
+            refs = wc.prepare_node(c, "component/spec_x@0.1.0", "spec/component/spec_x")
+            self.assertEqual(refs.ir_id, on_disk["ir_id"])
+            self.assertNotEqual(refs.pipeline_id, on_disk["pipeline_id"])
+            self.assertTrue(refs.source_id.startswith("src_"))
+
+    def test_run_phase_skip_adopts_certified_ids_into_refs(self) -> None:
+        """A skipped phase's ids are taken from the certification, so the next phase builds
+        against the artifact that stands rather than against a freshly-minted id."""
+        c = _FakeConductor(repo_root=Path("/tmp/repo"), orchestration_id="o",
+                           orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
+        c.calls = []
+        c.check_phase_certified = lambda nk, phase: {  # type: ignore[method-assign]
+            "certified": True, "ir_ref": "workspace/ir/s/ir_9",
+            "pipeline_ref": "workspace/pipelines/s/p_9",
+            "source_id": "src_cert", "binary_id": "bin_cert", "run_id": "run_cert"}
+        refs = wc.NodeRefs(node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
+                           ir_id="x_1_001", pipeline_id="x_1_001", source_id="src_fresh",
+                           binary_id="bin_fresh", run_id="run_fresh",
+                           source_binary_id="bin_fresh")
+        for phase, field, expected in (("generate", "source_id", "src_cert"),
+                                       ("build", "binary_id", "bin_cert"),
+                                       ("validate", "run_id", "run_cert")):
+            with self.subTest(phase=phase):
+                outcome = c.run_phase(refs, phase)
+                self.assertTrue(outcome.skipped)
+                self.assertEqual(getattr(refs, field), expected)
+        # build also re-points source_binary_id (what Validate.execute runs).
+        self.assertEqual(refs.source_binary_id, "bin_cert")
+        # The reserved roots are NOT re-pointed: the predicate already refused unless they
+        # are the artifacts it evaluated.
+        self.assertEqual((refs.ir_id, refs.pipeline_id), ("x_1_001", "x_1_001"))
+
+
 class DiagnosticianTest(unittest.TestCase):
     """M4: LLM diagnostician escalation for unclassifiable failures."""
 
@@ -7804,22 +7910,25 @@ class SubstepStatusAndResumeTest(unittest.TestCase):
                 json.dumps({"reserved_ir_id": "slug_20260101_007"}), encoding="utf-8")
             (res / "generate.json").write_text(
                 json.dumps({"reserved_ir_id": "slug_20260101_009"}), encoding="utf-8")
-            ckpt = {"completed_steps": [{
+            # The host-authored lineage of the reserved pipeline is what names the stage ids
+            # this orchestration last worked on (the checkpoint ledger used to).
+            pipe = root / "workspace" / "pipelines" / safe / "slug_20260101_009"
+            pipe.mkdir(parents=True)
+            (pipe / "lineage.json").write_text(json.dumps({
                 "node_key": "component/spec_x@0.1.0",
-                "output_refs": [
-                    f"workspace/pipelines/{safe}/slug_20260101_009/source/src_20260101_003/source_meta.json",
-                    f"workspace/pipelines/{safe}/slug_20260101_009/binary/bin_20260101_004/binary_meta.json",
-                ],
-            }]}
-            (orch / "orchestration_checkpoint.json").write_text(
-                json.dumps(ckpt), encoding="utf-8")
+                "ir_ref": f"workspace/ir/{safe}/slug_20260101_007",
+                "pipeline_id": "slug_20260101_009",
+                "source_id": "src_20260101_003",
+                "binary_id": "bin_20260101_004",
+                "run_id": None,
+            }), encoding="utf-8")
             c = wc.Conductor(repo_root=root, orchestration_id=oid,
                             orchestration_agent_run_id="O", llm_config=_cfg("claude"), env={})
             refs = wc.resume_node_refs(c, "component/spec_x@0.1.0", "spec/component/spec_x")
             # ir/pipeline from THIS orchestration's reservations (not global-latest)
             self.assertEqual(refs.ir_id, "slug_20260101_007")
             self.assertEqual(refs.pipeline_id, "slug_20260101_009")
-            # source/binary from this orchestration's checkpoint outputs
+            # source/binary from this orchestration's lineage record
             self.assertEqual(refs.source_id, "src_20260101_003")
             self.assertEqual(refs.binary_id, "bin_20260101_004")
             self.assertEqual(refs.source_binary_id, "bin_20260101_004")
@@ -7861,33 +7970,42 @@ class ResumeRecoveryTest(unittest.TestCase):
             oid, safe = "o", "component__spec_x__0.1.0"
             sr_dir = root / "workspace" / "orchestrations" / oid / "steps" / safe / "generate" / "EXEC"
             sr_dir.mkdir(parents=True)
+            src_meta = f"workspace/pipelines/{safe}/p1/source/src_1/source_meta.json"
             (sr_dir / "step_result.json").write_text(
-                json.dumps({"substep_agent_run_ids": ["GEN", "VER"],
+                json.dumps({"status": "pass", "required_outputs": [src_meta],
+                            "substep_agent_run_ids": ["GEN", "VER"],
                             "executor_agent_run_id": "EXEC"}), encoding="utf-8")
             c = wc.Conductor(repo_root=root, orchestration_id=oid,
                             orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
             self.assertEqual(
-                c._completed_producer_arid("component/spec_x@0.1.0", "generate", "EXEC"), "GEN")
+                c._completed_producer_arid("component/spec_x@0.1.0", "generate", src_meta), "GEN")
             # build (no substeps) -> the step executor arid
+            bin_meta = f"workspace/pipelines/{safe}/p1/binary/bin_1/binary_meta.json"
             bdir = root / "workspace" / "orchestrations" / oid / "steps" / safe / "build" / "BLD"
             bdir.mkdir(parents=True)
             (bdir / "step_result.json").write_text(
-                json.dumps({"substep_agent_run_ids": [], "executor_agent_run_id": "BLD"}),
+                json.dumps({"status": "pass", "required_outputs": [bin_meta],
+                            "substep_agent_run_ids": [], "executor_agent_run_id": "BLD"}),
                 encoding="utf-8")
             self.assertEqual(
-                c._completed_producer_arid("component/spec_x@0.1.0", "build", "BLD"), "BLD")
+                c._completed_producer_arid("component/spec_x@0.1.0", "build", bin_meta), "BLD")
+            # An artifact no recorded attempt published: no producer (a cold re-run over an
+            # already-certified node has no step_result of its own).
+            self.assertIsNone(
+                c._completed_producer_arid("component/spec_x@0.1.0", "build", "other/meta.json"))
 
     def test_run_phase_skip_populates_producer_arid(self) -> None:
         c = _FakeConductor(repo_root=Path("/tmp/repo"), orchestration_id="o",
                            orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
         c.calls = []
-        c.check_step_completed = lambda nk, phase: ({"integrity": "ok", "agent_run_id": "EXEC"}
-                                                    if phase == "generate" else None)
-        c._completed_producer_arid = lambda nk, phase, ex: "GEN" if phase == "generate" else None
+        c.check_phase_certified = lambda nk, phase: (
+            {"certified": True, "pipeline_ref": "P", "source_id": "SRC"}
+            if phase == "generate" else {"certified": False})
+        c._completed_producer_arid = lambda nk, phase, ref: "GEN" if phase == "generate" else None
         refs = wc.NodeRefs(node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
                            ir_id="x_1_001", pipeline_id="x_1_001")
         po = c.run_phase(refs, "generate")
-        self.assertEqual(po.status, "pass")  # skipped (completed)
+        self.assertEqual(po.status, "pass")  # skipped (certified)
         self.assertEqual(c._producer_arid.get("generate"), "GEN")
 
 
