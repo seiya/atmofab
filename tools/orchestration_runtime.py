@@ -17,7 +17,6 @@ import subprocess
 import sys
 import tempfile
 import threading
-import traceback
 import types
 import uuid
 from functools import lru_cache
