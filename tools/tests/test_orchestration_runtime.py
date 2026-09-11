@@ -13999,6 +13999,62 @@ class ResumeOrchestrationRuntimeTests(unittest.TestCase):
                     # Stale cleanup marker removed so the next terminalization is clean.
                     self.assertFalse(marker.exists())
 
+    def test_resume_reconciles_the_phase_state_rather_than_only_defining_how(self) -> None:
+        """The WIRING, not the function. `reconcile_phase_state_for_resume` is pinned in both
+        directions by its own tests — the preflight inference when the file is missing, the
+        node-state normalization when it exists — and removing its CALL from
+        `resume_orchestration` left every one of them green, because they call it directly.
+        Pinned at each end and not in between.
+
+        It matters here more than most wiring: the plan for issue #177's PR-3 listed this
+        function for deletion by NAME, and what saved it was reading the body. A call site
+        nothing pins is the same deletion arriving by accident."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            init_orchestration(repo_root=repo, orchestration_id="o1")
+            _mark_dependencies_ready(repo, "o1")
+            root = repo / "workspace/orchestrations/o1"
+            # The missing-file half: a resume must CREATE the phase state, not leave the
+            # orchestration without one.
+            (root / "phase_state.json").unlink()
+            resume_orchestration(repo, "o1")
+            self.assertIsNotNone(ort._load_phase_state(repo, "o1"))
+
+            # The existing-file half: a resume must NORMALIZE node_states, filling every step
+            # key, rather than leaving a partial record the phase gates then read.
+            ort._transition_node_step_phase_state(
+                repo, "o1", node_key="component/spec_x@0.1.0", step="compile",
+                new_state="step_result_written", event="write_step_result")
+            doc = ort._load_phase_state(repo, "o1")
+            doc["node_states"]["component__spec_x__0.1.0"] = {"compile": "step_result_written"}
+            ort._write_phase_state(repo, "o1", doc)
+            resume_orchestration(repo, "o1")
+            inner = ort._load_phase_state(repo, "o1")["node_states"]["component__spec_x__0.1.0"]
+            self.assertEqual(inner["compile"], "step_result_written")
+            self.assertEqual(
+                {k: inner[k] for k in ("generate", "build", "validate")},
+                {"generate": "not_started", "build": "not_started", "validate": "not_started"})
+
+    def test_neither_init_nor_resume_records_a_driver_block(self) -> None:
+        """Issue #177 deleted `orchestration_meta.json#driver` with the liveness probe that
+        read it. Nothing reads it now, and a record nothing reads is a record that drifts —
+        a stale one was actively harmful, because a reused pid made a probe call a dead run
+        alive. Re-introducing the write is green without this."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            init_orchestration(repo_root=repo, orchestration_id="o1")
+            meta_path = repo / "workspace/orchestrations/o1/orchestration_meta.json"
+            self.assertNotIn("driver", json.loads(meta_path.read_text("utf-8")))
+            # A meta carrying one from before the deletion is DROPPED, not carried forward.
+            doc = json.loads(meta_path.read_text("utf-8"))
+            doc["driver"] = {"pid": 4242, "hostname": "old-host"}
+            meta_path.write_text(json.dumps(doc), encoding="utf-8")
+            _mark_dependencies_ready(repo, "o1")
+            resume_orchestration(repo, "o1")
+            self.assertNotIn("driver", json.loads(meta_path.read_text("utf-8")))
+            init_orchestration(repo_root=repo, orchestration_id="o1")
+            self.assertNotIn("driver", json.loads(meta_path.read_text("utf-8")))
+
     def test_resume_of_a_running_orchestration_reconciles_it(self) -> None:
         # INVERTED by issue #177's PR-3. A `running` prior used to be left untouched,
         # because it might have been a LIVE driver and the thing that decided was a `/proc`
