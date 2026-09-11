@@ -16280,6 +16280,28 @@ def _iter_step_result_paths(root: Path) -> list[Path]:
     return sorted(steps_root.glob("*/*/*/step_result.json"))
 
 
+def _reserved_node_keys(repo_root: Path, orchestration_id: str) -> list[str]:
+    """The node_keys this orchestration reserved a phase root for, read from
+    `reservations/<node_safe>/compile.json`.
+
+    `prepare_node` writes it before the first phase runs, on every route — so it is present
+    whether the phases then ran or were skipped as certified, which is what makes it the
+    right replacement for the completion vouch's old "the agent graph has edges" rule.
+    """
+    res_root = _orchestration_root(repo_root, orchestration_id) / "reservations"
+    if not res_root.is_dir():
+        return []
+    keys: list[str] = []
+    for path in sorted(res_root.glob("*/compile.json")):
+        doc = _read_json(path) if path.is_file() else None
+        if not isinstance(doc, dict):
+            continue
+        node_key = doc.get("node_key")
+        if isinstance(node_key, str) and node_key.strip():
+            keys.append(node_key.strip())
+    return keys
+
+
 def _validate_orchestration_completion_for_pass(
     repo_root: Path,
     orchestration_id: str,
@@ -16300,9 +16322,17 @@ def _validate_orchestration_completion_for_pass(
         raise RuntimeError("cannot mark orchestration pass without orchestration agent run record")
 
     graph = _load_graph(graph_path)
-    edges = graph.get("edges")
-    if not isinstance(edges, list) or not edges:
-        raise RuntimeError("cannot mark orchestration pass without agent_graph edges")
+    # An orchestration that launched no child has no edges, and since issue #177 that is a
+    # LEGITIMATE terminal state: a re-run over a node whose every phase is already certified
+    # skips all four, so nothing is launched. The edges requirement existed to refuse an
+    # orchestration that did nothing at all; what distinguishes "did nothing" from "had
+    # nothing to do" is whether a node was ever RESERVED — `prepare_node` reserves the ir and
+    # pipeline roots before the first phase, on every run, skipped or not. So the reservation
+    # is the replacement guard, and it refuses exactly what the edge rule refused.
+    if not _reserved_node_keys(repo_root, orchestration_id):
+        raise RuntimeError("cannot mark orchestration pass: no node reservations")
+    edges_obj = graph.get("edges")
+    edges = edges_obj if isinstance(edges_obj, list) else []
 
     step_result_refs_by_substep: dict[str, Path] = {}
     for result_path in _iter_step_result_paths(root):

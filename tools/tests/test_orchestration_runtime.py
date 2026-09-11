@@ -225,6 +225,30 @@ def _generate_output_refs(meta_ref: str) -> list[str]:
             meta_ref]
 
 
+
+def _seed_node_reservation(repo_root: Path, orchestration_id: str, node_key: str,
+                           *, ir_id: str = "n_20260101_001",
+                           pipeline_id: str = "n_20260101_001") -> None:
+    """The compile/generate phase-root reservations `prepare_node` writes before the first
+    phase runs. The completion vouch requires at least one (it replaced the old "the agent
+    graph has edges" rule, which a fully-skipped certified re-run cannot satisfy), so a
+    fixture that drives `set-status pass` has to carry what a real run carries."""
+    res = (repo_root / "workspace" / "orchestrations" / orchestration_id
+           / "reservations" / _node_key_to_safe_for_tests(node_key))
+    res.mkdir(parents=True, exist_ok=True)
+    for step, reserved in (("compile", ir_id), ("generate", pipeline_id)):
+        (res / f"{step}.json").write_text(json.dumps({
+            "node_key": node_key, "step": step, "reserved_ir_id": reserved,
+            "reserved_by_agent_run_id": "orch_run_001", "status": "reserved",
+        }), encoding="utf-8")
+
+
+def _node_key_to_safe_for_tests(node_key: str) -> str:
+    kind, rest = node_key.split("/", 1)
+    spec_id, version = rest.split("@", 1)
+    return f"{kind}__{spec_id}__{version}"
+
+
 def _seed_build_pass_outputs(repo_root: Path, *, binary_id: str = "bin_20260101_001") -> list[str]:
     """Put a build phase's two certifiable deliverables on disk and return the
     `required_outputs` a PASSING build step_result must declare.
@@ -2803,6 +2827,9 @@ shell_tool                       stable             true
                 spec_ref="spec/problem/shallow_water2d/controlled_spec.md",
                 source_dependency_ref="spec/problem/shallow_water2d/deps.yaml",
             )
+            _seed_node_reservation(repo_root, "orch_001", "problem/shallow_water2d@0.3.0",
+                                   ir_id="shallow-water2d_20260415_001",
+                                   pipeline_id="shallow-water2d_20260415_001")
             _mark_dependencies_ready(repo_root)
             write_preflight(
                 repo_root=repo_root,
@@ -9999,6 +10026,7 @@ shell_tool                       stable             true
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             init_orchestration(repo_root=repo_root, orchestration_id="orch_001")
+            _seed_node_reservation(repo_root, "orch_001", "problem/shallow_water2d@0.3.0")
             _mark_dependencies_ready(repo_root)
             write_preflight(
                 repo_root=repo_root,
@@ -10100,6 +10128,7 @@ shell_tool                       stable             true
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             init_orchestration(repo_root=repo_root, orchestration_id="orch_001")
+            _seed_node_reservation(repo_root, "orch_001", "problem/shallow_water2d@0.3.0")
             _mark_dependencies_ready(repo_root)
             write_preflight(
                 repo_root=repo_root,
@@ -12667,6 +12696,39 @@ class PhaseCertificationTests(unittest.TestCase):
                     "check-phase-certified", "--repo-root", str(repo),
                     "--orchestration-id", "o1", "--node-key", self._NK, "--step", "promote",
                 ])
+
+    def test_a_fully_skipped_rerun_can_be_marked_pass(self) -> None:
+        """The behaviour this branch exists for, driven through the real `set-status pass`.
+
+        A cold re-run over an already certified node launches nothing, so its agent graph has
+        no edges — which the completion vouch used to refuse outright. The replacement guard
+        is the node RESERVATION: `prepare_node` writes one on every run, skipped or not, so it
+        distinguishes "had nothing to do" from "did nothing"."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._preflight(repo)
+            self._certified(repo, through="validate")
+            for step in ("compile", "generate", "build", "validate"):
+                out = ort.check_phase_certified(
+                    repo_root=repo, orchestration_id="o1", node_key=self._NK, step=step)
+                self.assertTrue(out["certified"], out)
+            graph = json.loads(
+                (repo / "workspace/orchestrations/o1/agent_graph.json").read_text("utf-8"))
+            self.assertEqual(graph.get("edges"), [])
+
+            result = update_orchestration_status(
+                repo_root=repo, orchestration_id="o1", status="pass")
+            self.assertEqual(result["status"], "pass")
+
+    def test_an_orchestration_that_reserved_no_node_cannot_be_marked_pass(self) -> None:
+        """The other half: an orchestration that did nothing at all is still refused. This is
+        what the deleted `agent_graph edges` rule was protecting."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._preflight(repo)
+            with self.assertRaisesRegex(RuntimeError, "no node reservations"):
+                update_orchestration_status(
+                    repo_root=repo, orchestration_id="o1", status="pass")
 
     def test_check_phase_certified_refuses_a_revoked_artifact_and_reports_last_fail_reason(self) -> None:
         """Revocation is what a re-derivation decision leaves on the ARTIFACT, so it survives
@@ -32868,6 +32930,7 @@ class CompletionValidatorSupersededTest(unittest.TestCase):
         has no step_result vouch and no launch refs — what would block pass without
         the exemption."""
         init_orchestration(repo_root=repo_root, orchestration_id=oid)
+        _seed_node_reservation(repo_root, oid, self.NODE_KEY)
         root = repo_root / "workspace" / "orchestrations" / oid
         orch_arid = json.loads(
             (root / "orchestration_meta.json").read_text(encoding="utf-8")
@@ -33020,6 +33083,7 @@ class CompletionValidatorSupersededTest(unittest.TestCase):
         whether ANY fresh re-run row exists — with none, the reopened compile phase has no fresh
         vouch and the fresh-replacement rule must raise."""
         init_orchestration(repo_root=repo_root, orchestration_id=oid)
+        _seed_node_reservation(repo_root, oid, self.NODE_KEY)
         root = repo_root / "workspace" / "orchestrations" / oid
         orch_arid = json.loads(
             (root / "orchestration_meta.json").read_text(encoding="utf-8")
@@ -33090,6 +33154,7 @@ class TransportOrphanCompletionTest(unittest.TestCase):
         """orphaned validate execute(pass)+judge(fail) substeps: no step_result, no launch
         refs (what would block pass without the supersede exemption)."""
         init_orchestration(repo_root=repo_root, orchestration_id=oid)
+        _seed_node_reservation(repo_root, oid, self.NODE_KEY)
         root = repo_root / "workspace" / "orchestrations" / oid
         orch_arid = json.loads(
             (root / "orchestration_meta.json").read_text(encoding="utf-8")
