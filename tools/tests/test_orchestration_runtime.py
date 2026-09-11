@@ -12619,6 +12619,28 @@ class PhaseCertificationTests(unittest.TestCase):
             self.assertEqual(skip[0]["reason"], f"certified:{refs['ir_ref']}")
             self.assertEqual(skip[0]["agent_run_id"], "orch_run_001")
 
+    def test_the_skip_event_names_the_artifact_that_phase_adopted(self) -> None:
+        """Per PHASE, not the ir_ref every phase happens to stand on: an operator reading
+        `phase_state_log.jsonl` to see which binary a skipped Build took must not be handed
+        the IR."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._preflight(repo)
+            refs = self._certified(repo, through="validate")
+            for step in ("compile", "generate", "build", "validate"):
+                ort.check_phase_certified(repo_root=repo, orchestration_id="o1",
+                                          node_key=self._NK, step=step)
+            log = [json.loads(x) for x in (
+                repo / "workspace/orchestrations/o1/phase_state_log.jsonl"
+            ).read_text("utf-8").splitlines() if x.strip()]
+            reasons = {e["step"]: e["reason"] for e in log if e.get("event") == "skip_certified"}
+            self.assertEqual(reasons, {
+                "compile": f"certified:{refs['ir_ref']}",
+                "generate": f"certified:{refs['source_id']}",
+                "build": f"certified:{refs['binary_id']}",
+                "validate": f"certified:{refs['run_id']}",
+            })
+
     def test_check_phase_certified_certifies_on_resume(self) -> None:
         """The same fixture, after `enable_checkpoint_resume`: identical answer. The resume
         adds nothing the predicate reads, which is the property that lets one code path

@@ -22,22 +22,6 @@ CERTIFYING_META_FILENAME_BY_STEP: dict[str, str] = {
     "build": "binary_meta.json",
 }
 
-# Keys a stage meta MAY carry beyond its required set. Listed (rather than merely tolerated)
-# because each is written by exactly one host writer and read by the certification predicate:
-#   - `artifact_hashes` / `source_ir_id`: stamped by `write_step_result` on pass
-#     (`_stamp_certification`), read by `_phase_certified`.
-#   - the four `revoked` / `prior_verification_status` keys: written by `revoke_artifact`.
-# `verification_status` takes one of `pass` | `fail` | `revoked`; it stays an unconstrained
-# non-empty string in the type contract because a leaf-authored meta may legitimately record a
-# phase-specific spelling, and the certification predicate compares against `pass` explicitly.
-STAGE_META_OPTIONAL_KEYS: tuple[str, ...] = (
-    "artifact_hashes",
-    "source_ir_id",
-    "prior_verification_status",
-    "revoked_at",
-    "revoked_by_agent_run_id",
-    "revocation_reason",
-)
 
 STAGE_META_COMMON_REQUIRED_KEYS: tuple[str, ...] = (
     "attempt_count",

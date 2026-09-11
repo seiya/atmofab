@@ -2262,6 +2262,13 @@ def _revoke_stage_meta(
     }
 
 
+def _certified_by_ref(step: str, detail: dict[str, Any]) -> str:
+    """The one id that identifies what a skipped phase adopted, per phase."""
+    key = {"compile": "ir_ref", "generate": "source_id",
+           "build": "binary_id", "validate": "run_id"}[step]
+    return str(detail.get(key) or "")
+
+
 def check_phase_certified(
     repo_root: Path,
     orchestration_id: str,
@@ -2273,10 +2280,12 @@ def check_phase_certified(
     """`_phase_certified` plus its DURABLE record: a certified phase is transitioned to
     `skipped_certified` in `phase_state.json` (event `skip_certified`).
 
-    That transition is the reason the completion vouch can accept a node whose earlier
-    attempt in this same orchestration left a `fail` step_result behind: the phase became
-    certified afterwards and was skipped, and the phase state is what says so. Idempotent —
-    `run_phase` may ask again after `conduct` already asked.
+    That transition is the durable record that the phase was certified rather than run. It is
+    what will let the completion vouch accept a node whose earlier attempt in this same
+    orchestration left a `fail` step_result behind — the phase became certified afterwards and
+    was skipped, and the phase state is what says so. The vouch reads it from issue #177's
+    PR-2; nothing reads it today. Idempotent — `run_phase` may ask again after `conduct`
+    already asked.
     """
     _require_preflight_launchable(repo_root, orchestration_id, enforce_live_probe=False)
     certified, detail = _phase_certified(repo_root, orchestration_id, node_key, step)
@@ -2290,7 +2299,10 @@ def check_phase_certified(
             new_state="skipped_certified",
             event="skip_certified",
             agent_run_id=agent_run_id,
-            reason=f"certified:{detail.get('ir_ref')}",
+            # The artifact THIS phase adopted, not the IR every phase happens to stand on:
+            # an operator reading `phase_state_log.jsonl` to see which binary a skipped Build
+            # took must not be handed the ir_ref.
+            reason=f"certified:{_certified_by_ref(step_token, detail)}",
         )
     phase_state_doc = _load_phase_state(repo_root, orchestration_id) or {}
     node_states = phase_state_doc.get("node_states")

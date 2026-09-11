@@ -12710,7 +12710,7 @@ clean:
         return str(cert.get(key) or "")
 
     @staticmethod
-    def _certified_meta_ref(phase: str, cert: dict[str, Any]) -> str | None:
+    def _certified_meta_ref(phase: str, cert: dict[str, Any], node_key: str) -> str | None:
         """The certifying artifact of a skipped phase, composed from the ids
         `check-phase-certified` resolved. It is what identifies WHICH attempt produced the
         artifact this run is standing on (`_completed_producer_arid`)."""
@@ -12727,7 +12727,11 @@ clean:
             bid = cert.get("binary_id")
             return f"{pipe}/binary/{bid}/binary_meta.json" if bid else None
         rid = cert.get("run_id")
-        return f"{pipe}/runs/{rid}/validate_meta.json" if rid else None
+        # `phase_required_outputs` places the validate deliverables under the run NODE dir
+        # (`runs/<run_id>/<node_key_safe>/`), so the ref built here has to match it or no
+        # step_result ever declares it.
+        return (f"{pipe}/runs/{rid}/{node_key_safe(node_key)}/validate_meta.json"
+                if rid else None)
 
     def _completed_producer_arid(self, node_key: str, phase: str,
                                  artifact_ref: str | None) -> str | None:
@@ -13318,7 +13322,7 @@ clean:
             # (repair_strategy=reuse), so recover the attempt that authored the adopted
             # artifact — if this orchestration ran it at all.
             producer = self._completed_producer_arid(
-                node_key, phase, self._certified_meta_ref(phase, cert))
+                node_key, phase, self._certified_meta_ref(phase, cert, node_key))
             if producer:
                 self._producer_arid[phase] = producer
             return PhaseOutcome(phase, "pass", decision=RouteDecision("advance"),
@@ -14156,7 +14160,8 @@ clean:
         if not cert.get("certified"):
             return {}
         producer = self._completed_producer_arid(
-            refs.node_key, "generate", self._certified_meta_ref("generate", cert))
+            refs.node_key, "generate",
+            self._certified_meta_ref("generate", cert, refs.node_key))
         try:
             result = self.reopen_phase(refs.node_key, from_phase="generate", trigger_arid=trigger,
                                        reason="dev_resume_validate_execute_structural")

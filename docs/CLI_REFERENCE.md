@@ -72,7 +72,7 @@ For details `python3 tools/orchestration_runtime.py <sub> --help`, for the overv
 | `record-timeout` | the canonical recovery for an API stream idle timeout |
 | `orchestration-read` | the gate-mediated, audited re-read of a path **inside** the manifest (an out-of-manifest path is not granted: it records a `rule_source_violation` and fails the orchestration) |
 | `check-phase-certified` | is the phase already CERTIFIED by the artifacts on disk (stage meta `pass`, bound to the current upstream artifact, `artifact_hashes` still matching, dependency freshness holding)? The canonical skip decision, on every run — cold and resumed alike |
-| `check-step-completed` | with resume_enabled, confirm the completion of the relevant step |
+| `check-step-completed` | with resume_enabled, confirm the completion of the relevant step — SUPERSEDED as the skip decision by `check-phase-certified`, and consulted by nothing in `tools/` but its own CLI |
 
 ---
 
