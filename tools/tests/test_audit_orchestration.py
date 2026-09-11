@@ -1319,7 +1319,7 @@ class PureLeafABSummaryTest(unittest.TestCase):
     def _reserve(self, repo: Path, *, pipeline_id: str | None = None) -> None:
         """Write the pipeline reservation `prepare_node` writes before Compile runs.
 
-        This — NOT `orchestration_checkpoint.json` — is what discovery reads. The
+        This is what discovery reads. The
         checkpoint only ever carries a non-empty `pipeline_ref` for the `validate`
         step (verified against every real orchestration in-repo), so a fixture that
         hand-builds a compile/generate entry WITH a `pipeline_ref` encodes a shape
@@ -1620,7 +1620,7 @@ class PureLeafABSummaryTest(unittest.TestCase):
     def test_discovers_failed_and_rotated_source_dirs_with_no_checkpoint_at_all(self) -> None:
         # A terminally-failed generate is never checkpointed, and a cold restart
         # rotates to a fresh source dir. Discovery must find BOTH from the pipeline
-        # reservation alone — this fixture writes NO orchestration_checkpoint.json,
+        # reservation alone,
         # which is also the real shape of a generate-only run.
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
@@ -1717,9 +1717,7 @@ class PureLeafABSummaryTest(unittest.TestCase):
         # NOTHING. This fixture writes no checkpoint at all, which is that run's shape.
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
-            self._lay_out(repo)  # reservation + metas, no orchestration_checkpoint.json
-            ck = repo / "workspace" / "orchestrations" / self.ORCH / "orchestration_checkpoint.json"
-            self.assertFalse(ck.exists(), "fixture must have no checkpoint")
+            self._lay_out(repo)  # reservation + metas
             out = collect_pure_leaf_ab_summary(
                 repo, self.ORCH, {"invocation": {"generate_executor": "pure"}}
             )

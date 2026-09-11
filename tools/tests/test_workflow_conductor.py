@@ -1942,9 +1942,9 @@ class ConductRoutingTest(unittest.TestCase):
 
     def test_escalate_same_phase_build_validate_does_not_reopen(self) -> None:
         # The same-phase producer reopen is scoped to compile/generate (the only phases with a
-        # re-runnable LLM producer + reopen_phase carve-out). A diagnostician same-phase decision
-        # for validate (even with an explicit restart) must NOT fire the producer-reopen branch
-        # (which would crash reopen_phase) — it terminalizes.
+        # re-runnable LLM producer carve-out). A diagnostician same-phase decision
+        # for validate (even with an explicit restart) must NOT fire the producer-reopen
+        # branch — validate has no re-runnable producer, so it terminalizes instead.
         c = self._conductor()
         c.status_fn = lambda phase, substep, n: "fail" if (phase == "validate" and substep == "judge") else "pass"
         c.decision_fn = lambda phase, outcomes: wc.RouteDecision("escalate", reason="unclassified")
@@ -2948,9 +2948,10 @@ class TransportFailureTest(unittest.TestCase):
     def test_post_gate_unknown_escalates_in_prod(self) -> None:
         # G5: a post_judge `unknown` disposition routes to the unified escalate LLM in PROD —
         # run_phase returns a RouteDecision("escalate", reason="validate_post_judge_unknown"),
-        # writes no step_result, and does NOT fail_closed itself. It must NOT pre-tombstone the
-        # failed post_judge arid: conduct's diagnostician reopen uses it as the trigger, and
-        # reopen_phase no-ops on an already-superseded trigger, so the trigger stays live.
+        # writes no step_result, and does NOT fail_closed itself. The failed post_judge arid
+        # stays live as `conduct`'s rollback trigger. (Before issue #177 that was fragile: the
+        # trigger could be consumed by a tombstone and the reopen would then no-op. Nothing
+        # consumes a trigger now — `revoke-artifact` names the phase to re-derive, not a run.)
         import tempfile
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
@@ -2999,9 +3000,10 @@ class TransportFailureTest(unittest.TestCase):
                 self.assertIn(status, ("fail", "fail_closed"))
 
     def test_post_gate_unknown_escalate_reopens_upstream(self) -> None:
-        # G5: when the diagnostician routes an upstream REOPEN (with budget remaining), conduct
-        # must NOT terminal-tombstone — doing so would pre-supersede the reopen trigger and make
-        # reopen_phase no-op. The reopen fires; reopen_phase supersedes the attempt instead.
+        # G5: when the diagnostician routes an upstream REOPEN (with budget remaining), the
+        # rollback fires and revokes the target's artifact. (Before issue #177 this test also
+        # had to pin that nothing pre-tombstoned the trigger, because that would have made the
+        # reopen a no-op; there are no tombstones now.)
         import tempfile
         with tempfile.TemporaryDirectory() as td:
             repo, refs = Path(td), self._refs()
@@ -5299,14 +5301,12 @@ class LeafTransientRetryTest(unittest.TestCase):
                     for s, cap in c.calls if s == "record-launch"]
         self.assertEqual(launched, ["child-1", "child-2"])
         self.assertEqual(oc.agent_run_id, "child-2")
-        # the dead attempt is tombstoned: terminalized but never vouched, it would otherwise be
-        # an orphan edge that fails _validate_orchestration_completion_for_pass at the end of an
-        # otherwise-passing run
-        # Ordering: record-launch -> finalize-child -> add-superseded-runs -> next record-launch.
-        # finalize-child MUST come first (see test_tombstone_writes_are_outside_the_leafs_write_
-        # window below: the tombstone's own files land in the child's FS diff otherwise, and the
-        # dying leaf is rejected for the conductor's writes), and it must precede the next launch
-        # (the runtime fail-closes a launch while a child of this parent is still active).
+        # The dead attempt needs no tombstone since issue #177: a terminal arid no step_result
+        # vouches is simply a failed attempt, where it used to be an orphan edge that failed
+        # `_validate_orchestration_completion_for_pass` at the end of an otherwise-passing run.
+        # Ordering: record-launch -> finalize-child -> next record-launch. finalize-child must
+        # precede the next launch (the runtime fail-closes a launch while a child of this parent
+        # is still active).
         subs = [s for s, _ in c.calls]
 
     def test_recovered_retry_vouches_only_the_survivor_in_the_step_result(self) -> None:
@@ -6260,26 +6260,6 @@ class LeafTransientRetryTest(unittest.TestCase):
         # every attempt gets its own request.json (its own arid), so nothing is overwritten
         reqs = [cap["--request-json"] for s, cap in c.calls if s == "record-launch"]
         self.assertEqual([r["agent_run_id"] for r in reqs], ["child-1", "child-2"])
-
-    def test_tombstone_writes_are_outside_the_leafs_write_window(self) -> None:
-        from tools.orchestration_runtime import _should_ignore_runtime_snapshot_path as ignored
-        for path in ("workspace/orchestrations/orch_x/reopen/superseded_runs.json",
-                     "workspace/orchestrations/orch_x/reopen/reopen_log.jsonl"):
-            self.assertFalse(
-                ignored(path, orchestration_id="orch_x", agent_run_id="child-1"),
-                f"{path} is visible in a child's FS diff — the tombstone must not run inside "
-                f"a child's write window")
-        # ...and the loop honours that: no tombstone is issued between a record-launch and its
-        # matching finalize-child.
-        c = self._conductor([self._flake(), wc.ProcResult(0, "done", "")])
-        with redirect_stdout(io.StringIO()):
-            c.run_substep(self._refs(), "compile", "verify")
-        open_window = False
-        for sub, _cap in c.calls:
-            if sub == "record-launch":
-                open_window = True
-            elif sub == "finalize-child":
-                open_window = False
 
     def test_retried_judge_cannot_certify_the_dead_attempts_semantic_review(self) -> None:
         """The retry must not let a leaf that NEVER COMPLETED certify the node.

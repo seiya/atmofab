@@ -711,7 +711,7 @@ class RunWorkflowTests(unittest.TestCase):
                 wc.run_conductor = orig_rc  # type: ignore[assignment]
             self.assertTrue(captured.get("wait_usage_reset"))
 
-    def test_resume_recovers_params_and_uses_checkpoint_init(self) -> None:
+    def test_resume_recovers_params_and_uses_the_resume_init(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._seed_spec_tree(repo_root)
