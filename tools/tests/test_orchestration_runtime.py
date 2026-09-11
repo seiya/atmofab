@@ -12769,6 +12769,27 @@ class PhaseCertificationTests(unittest.TestCase):
                 repo_root=repo, orchestration_id="o1", status="pass")
             self.assertEqual(result["status"], "pass")
 
+    def test_resume_refreshes_the_recorded_until_phase(self) -> None:
+        """A resume may EXTEND the run (`--resume <spec> validate` over a run started
+        `--until-phase compile`), and the vouch reads `invocation.until_phase` to decide which
+        phases must be certified — left stale, a four-phase run is vouched against one phase
+        (security round 2, F2)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            init_orchestration(repo_root=repo, orchestration_id="o1",
+                               invocation={"until_phase": "compile", "with_deps": False})
+            enable_checkpoint_resume(repo, "o1", until_phase="validate")
+            meta = json.loads(
+                (repo / "workspace/orchestrations/o1/orchestration_meta.json").read_text("utf-8"))
+            self.assertEqual(meta["invocation"]["until_phase"], "validate")
+            self.assertIs(meta["invocation"]["with_deps"], False)
+            # A resume that does not know its end-phase leaves the record alone rather than
+            # clearing it (the over-refusal direction: a cleared record fails the vouch).
+            enable_checkpoint_resume(repo, "o1")
+            meta = json.loads(
+                (repo / "workspace/orchestrations/o1/orchestration_meta.json").read_text("utf-8"))
+            self.assertEqual(meta["invocation"]["until_phase"], "validate")
+
     def test_a_reserved_but_uncertified_node_cannot_be_marked_pass(self) -> None:
         """A reservation proves PREPARATION, not completion. With no children, no edges and no
         step_results every other loop in the vouch is empty, so without this clause an
@@ -13249,6 +13270,62 @@ class CertificationStampTests(unittest.TestCase):
             ok, detail = ort._phase_certified(repo, "o1", "component/spec_x@0.1.0", "generate")
             self.assertFalse(ok)
             self.assertEqual(detail["reason"], "source_not_bound")
+
+    def test_the_strip_runs_even_when_the_window_ends_in_an_unauthorized_write(self) -> None:
+        """The round-1 strip sat AFTER the unauthorized-write raise, so a leaf that made ONE
+        unauthorized write kept its forged certification — and that phase then read as
+        certified in this orchestration and in a fresh one (security round 2, F1). The write
+        the leaf is allowed to make (its own file pin) and the one it is not (a stray beside
+        it, whose parent is bound writable for the Write tool's temp-sibling rename) arrive in
+        the same window, so the strip has to run before the refusal, not after it."""
+        from tools.orchestration_runtime import _validate_actual_write_paths
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = certify_node(repo, "o1", through="generate")
+            meta_rel = refs["source_meta"]
+            stray_rel = f"{refs['pipeline_ref']}/source/{refs['source_id']}/stray.json"
+            arid = "substep_run_gen_verify_2"
+            init_orchestration(repo_root=repo, orchestration_id="o1")
+            self._leaf_window(repo, agent_run_id=arid, write_roots=[meta_rel],
+                              declared=[meta_rel])
+            # Inside the window the leaf authors its own meta — the allowed write — and drops
+            # one file beside it, the unauthorized one.
+            forged = json.loads((repo / meta_rel).read_text("utf-8"))
+            forged["verification_status"] = "pass"
+            (repo / meta_rel).write_text(json.dumps(forged), encoding="utf-8")
+            (repo / stray_rel).write_text("{}", encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "unauthorized write paths"):
+                _validate_actual_write_paths(repo, "o1", {
+                    "agent_run_id": arid, "agent_role": "substep", "status": "fail",
+                    "output_refs": [meta_rel]})
+
+            after = json.loads((repo / meta_rel).read_text("utf-8"))
+            self.assertNotIn("artifact_hashes", after)
+            self.assertNotIn("source_ir_id", after)
+            ok, detail = ort._phase_certified(repo, "o1", "component/spec_x@0.1.0", "generate")
+            self.assertFalse(ok)
+            self.assertEqual(detail["reason"], "source_not_bound")
+
+    def test_stamp_refuses_a_phase_declaring_more_than_one_certifying_meta(self) -> None:
+        """The `exactly one` rule (security round 2, mutant M21). With it dropped, a phase
+        declaring two metas has the FIRST one stamped silently and the second left
+        uncertified — a phase whose certification names an artifact nobody chose."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = certify_node(repo, "o1", through="generate")
+            second = f"{refs['pipeline_ref']}/source/src_20260101_002/source_meta.json"
+            (repo / second).parent.mkdir(parents=True, exist_ok=True)
+            (repo / second).write_text("{}", encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "exactly one source_meta.json"):
+                ort._stamp_certification(
+                    repo, "o1", node_key="component/spec_x@0.1.0", step="generate",
+                    required_outputs=[refs["model_ref"], refs["source_meta"], second])
+            with self.assertRaisesRegex(RuntimeError, "exactly one source_meta.json"):
+                ort._stamp_certification(
+                    repo, "o1", node_key="component/spec_x@0.1.0", step="generate",
+                    required_outputs=[refs["model_ref"]])
 
     def test_a_child_window_that_touched_no_stage_meta_strips_nothing(self) -> None:
         """The over-refusal probe: the strip is keyed on the paths the child actually

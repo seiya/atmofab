@@ -3718,6 +3718,12 @@ def _run_node(
                 "--source-dependency-ref",
                 source_dependency_ref,
             ]
+            # Refresh the recorded end-phase of THIS node to the one this resume actually
+            # runs to. A resume may extend the run (`--resume <spec> validate` over a run
+            # started `--until-phase compile`), and since issue #177 the completion vouch
+            # reads `invocation.until_phase` to decide WHICH phases must be certified — a
+            # stale record would vouch a four-phase run against one phase.
+            init_args += ["--until-phase", until_phase]
             # Refresh this node's persisted closure end-phase to the effective closure
             # until_phase, so an operator phase override survives on the dependency
             # nodes themselves (durable even if the target orchestration never starts).

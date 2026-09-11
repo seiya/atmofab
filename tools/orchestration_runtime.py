@@ -11493,6 +11493,29 @@ def _validate_actual_write_paths(
     )
     output_refs = _declared_output_refs(payload)
 
+    if actor_role in {"step", "substep"}:
+        # A certification is a HOST stamp, so it never survives a child window. The
+        # `generate.verify` leaf's write_root IS `source_meta.json`, so that leaf can author
+        # `artifact_hashes` / `source_ir_id` with perfectly correct values — and the phase
+        # would then read as certified on a later run even though it never passed. The
+        # `write-step-result` strip does not cover it: a phase that fail-closes on a leaf
+        # transport error or a validate gate returns WITHOUT writing a step_result at all,
+        # and `run_phase` consults the certification BEFORE it would rotate the producer id.
+        # Erasing the keys from whatever stage meta this child actually CHANGED closes that:
+        # after this point the keys can only have been written by a passing
+        # `write-step-result`, which runs when every child window is already closed.
+        #
+        # Placed HERE — right after the diff, before every refusal this function can raise —
+        # because the round-1 version sat after the unauthorized-write raise, and a leaf that
+        # made ONE unauthorized write (a stray file beside its own file pin, whose parent is
+        # bound writable for the Write tool's temp-sibling rename) therefore kept its forged
+        # certification. Measured end to end: that leaf's phase then read as certified in this
+        # orchestration AND in a fresh one, and the run reached `pass`.
+        for changed in actual_changed_paths:
+            base = _normalize_rel_posix(changed).rsplit("/", 1)[-1]
+            if base in set(CERTIFYING_META_FILENAME_BY_STEP.values()):
+                _strip_certification_keys(repo_root / _normalize_rel_posix(changed))
+
     if actor_role == "orchestration":
         child_excludable = _child_managed_paths_excludable_from_orchestration_diff(
             repo_root,
@@ -11771,20 +11794,6 @@ def _validate_actual_write_paths(
             + f" (violation: {violation_path})"
         )
     if actor_role in {"step", "substep"}:
-        # A certification is a HOST stamp, so it never survives a child window. The
-        # `generate.verify` leaf's write_root IS `source_meta.json`, so that leaf can author
-        # `artifact_hashes` / `source_ir_id` with perfectly correct values — and the phase
-        # would then read as certified on a later run even though it never passed. The
-        # `write-step-result` strip does not cover it: a phase that fail-closes on a leaf
-        # transport error or a validate gate returns WITHOUT writing a step_result at all,
-        # and `run_phase` consults the certification BEFORE it would rotate the producer id.
-        # Erasing the keys from whatever stage meta this child actually CHANGED closes that:
-        # after this point the keys can only have been written by a passing
-        # `write-step-result`, which runs when every child window is already closed.
-        for changed in actual_changed_paths:
-            base = _normalize_rel_posix(changed).rsplit("/", 1)[-1]
-            if base in set(CERTIFYING_META_FILENAME_BY_STEP.values()):
-                _strip_certification_keys(repo_root / _normalize_rel_posix(changed))
         # Success path: persist the managed-write snapshot.
         # NEW-M2: tmp cleanup is DEFERRED to the post-lock end-of-function
         # phase in record_agent_run (Adv-35 two-phase commit). Doing it
@@ -15279,6 +15288,7 @@ def enable_checkpoint_resume(
     spec_ref: str | None = None,
     source_dependency_ref: str | None = None,
     closure_until_phase: str | None = None,
+    until_phase: str | None = None,
     wait_usage_reset: bool = False,
     driver: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -15367,6 +15377,14 @@ def enable_checkpoint_resume(
     # Always written (not gated on truthiness) so a resume that DROPS the flag also resets it.
     if isinstance(invocation_block, dict):
         invocation_block["wait_usage_reset"] = bool(wait_usage_reset)
+    # The end-phase THIS resume runs to. A resume may EXTEND the run (`--resume <spec>
+    # validate` over a run started `--until-phase compile`), and the completion vouch reads
+    # this field to decide which phases must be certified — left stale, it would vouch a
+    # four-phase run against one phase. Refreshed only when the caller passes one, so a
+    # resume that does not know its end-phase leaves the record alone rather than clearing it.
+    if (isinstance(invocation_block, dict)
+            and isinstance(until_phase, str) and until_phase.strip()):
+        invocation_block["until_phase"] = until_phase.strip()
     prior_status = meta.get("status")
     terminal_reset = (
         isinstance(prior_status, str) and prior_status in IDEMPOTENT_TERMINAL_STATUSES
@@ -24088,6 +24106,17 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     init_parser.add_argument(
+        "--until-phase",
+        default=None,
+        help=(
+            "On --resume-from-checkpoint, refresh invocation.until_phase to the phase THIS "
+            "resume runs to. A resume may extend the run, and the completion vouch reads "
+            "that record to decide which phases must be certified — a stale one would vouch "
+            "a four-phase run against one phase. Ignored on a cold init, where the phase "
+            "comes from --invocation-json."
+        ),
+    )
+    init_parser.add_argument(
         "--closure-until-phase",
         default=None,
         help=(
@@ -24653,6 +24682,7 @@ def main(argv: list[str] | None = None) -> int:
                 spec_ref=args.spec_ref,
                 source_dependency_ref=args.source_dependency_ref,
                 closure_until_phase=getattr(args, "closure_until_phase", None),
+                until_phase=getattr(args, "until_phase", None),
                 wait_usage_reset=bool(getattr(args, "wait_usage_reset", False)),
                 driver=driver_record,
             )
