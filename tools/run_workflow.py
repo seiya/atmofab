@@ -1263,7 +1263,8 @@ def _warn_claim_degraded(kind: str, key: str, reason: str) -> None:
             "claim_kind": kind,
             "claim_key": key,
         }, ensure_ascii=False), flush=True)
-    except Exception:  # noqa: BLE001 - a warning must never take the run down
+    except Exception:  # noqa: BLE001,S110 - a warning must never take the run down, and
+        # there is nowhere to log a failure to log: this IS the reporting channel.
         pass
 
 

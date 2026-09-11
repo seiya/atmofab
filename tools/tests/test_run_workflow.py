@@ -1306,9 +1306,9 @@ class RunWorkflowTests(unittest.TestCase):
                         run_workflow.fcntl, "flock",
                         side_effect=OSError("locking not supported here")))
                 buf = io.StringIO()
-                with ctx, redirect_stdout(buf):
-                    with run_workflow._exclusive_claim(repo_root, "spec", "spec/x") as held:
-                        pass
+                with ctx, redirect_stdout(buf), \
+                        run_workflow._exclusive_claim(repo_root, "spec", "spec/x") as held:
+                    pass
                 self.assertTrue(held, "a degraded claim must still let the run proceed")
                 events = [json.loads(line) for line in buf.getvalue().splitlines()
                           if line.strip().startswith("{")]
@@ -1349,9 +1349,9 @@ class RunWorkflowTests(unittest.TestCase):
         succeed — a claim that is held and serializes nothing, which is the one degradation an
         operator cannot see from the outside. Measured before this refusal existed: two drivers,
         two lock paths, `held=True` for both."""
-        with mock.patch.dict(os.environ, {"ATMOFAB_START_CLAIM_ROOT": "relclaims"}):
-            with self.assertRaisesRegex(ValueError, "must be an absolute path"):
-                run_workflow._start_claims_root()
+        with mock.patch.dict(os.environ, {"ATMOFAB_START_CLAIM_ROOT": "relclaims"}), \
+                self.assertRaisesRegex(ValueError, "must be an absolute path"):
+            run_workflow._start_claims_root()
         for absolute in ("/tmp/atmofab-abs-claims", "~/atmofab-claims"):
             with self.subTest(value=absolute), \
                     mock.patch.dict(os.environ, {"ATMOFAB_START_CLAIM_ROOT": absolute}):

@@ -12121,8 +12121,6 @@ class PhaseCertificationTests(unittest.TestCase):
             repo = Path(tmp)
             self._preflight(repo)
             refs = self._certified(repo, through="compile")
-            meta = json.loads(
-                (repo / "workspace/orchestrations/o1/orchestration_meta.json").read_text("utf-8"))
             self.assertFalse(
                 (repo / "workspace/orchestrations/o1/orchestration_checkpoint.json").exists())
 
