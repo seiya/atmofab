@@ -5683,6 +5683,46 @@ AGENT_RUN_ROLES: frozenset[str] = frozenset({"orchestration", "step", "substep"}
 # producer context the `critical` judged untrustworthy.
 REVOCATION_SEVERITIES: frozenset[str] = frozenset({"minor", "major", "critical"})
 
+
+def _normalized_until_phase(token: Any) -> str | None:
+    """`token` as a member of `STEP_KEYS_FOR_NODE_STATE`, or None.
+
+    ONE normalizer, because the writers and the reader drifted apart the first time this was
+    fixed and the drift made the fix inert. `run_workflow.py`'s `PHASE_ORDER` is CAPITALIZED
+    (`"Validate"`), which is the spelling every real orchestration records; a comparison that
+    forgot `.lower()` therefore refused only the all-lowercase spelling — the one a test would
+    naturally use — and allowed the product's own.
+    """
+    if not isinstance(token, str):
+        return None
+    normalized = token.strip().lower()
+    return normalized if normalized in STEP_KEYS_FOR_NODE_STATE else None
+
+
+def _record_until_phase_high_water(invocation_block: dict[str, Any]) -> None:
+    """Raise `invocation.until_phase_high_water` to the furthest end-phase this orchestration
+    has ever been driven to. Never lowers it.
+
+    The completion vouch reads this rather than `until_phase`, because `until_phase` describes
+    the CURRENT invocation and every writer of it is reachable from a leaf
+    (`leaf_config/claude/settings.json` grants `Bash(python3 tools/orchestration_runtime.py *)`).
+    A run started for `validate`, re-inited or resumed `--until-phase compile`, would otherwise
+    report `pass` with three phases never run — the vouch's own bar moved by the thing it judges.
+
+    A high-water mark rather than a refusal: a `--with-deps` closure legitimately drives a
+    dependency to an earlier end-phase than a previous run did (`run_workflow` derives
+    `dep_until_phase` from the TARGET's end-phase), and refusing that would abort an honest
+    operator workflow. Lowering the current end-phase stays allowed; what cannot be lowered is
+    what the run must have CERTIFIED to call itself complete.
+    """
+    candidates = [
+        _normalized_until_phase(invocation_block.get("until_phase_high_water")),
+        _normalized_until_phase(invocation_block.get("until_phase")),
+    ]
+    reached = [STEP_KEYS_FOR_NODE_STATE.index(c) for c in candidates if c is not None]
+    if reached:
+        invocation_block["until_phase_high_water"] = STEP_KEYS_FOR_NODE_STATE[max(reached)]
+
 FAIL_CLOSED_REASON_CODES = {
     "child_agent_forbidden_by_session_policy",
     "child_agent_unavailable_on_execution_platform",
@@ -14834,20 +14874,8 @@ def enable_checkpoint_resume(
     # four-phase run against one phase. Refreshed only when the caller passes one, so a
     # resume that does not know its end-phase leaves the record alone rather than clearing it.
     #
-    # It may only EXTEND. Lowering it is the completion vouch's own bar being moved by the
-    # thing it is meant to judge: a run started for `validate`, resumed `--until-phase
-    # compile`, then vouched — every later phase uncertified and never run — reaches `pass`,
-    # and that `pass` is the final verdict the workflow reports for the operator's original
-    # request. Measured on this branch and on `origin/main` alike (so this is a pre-existing
-    # hole, not a regression of issue #177): with only `compile` certified, `set-status
-    # --status pass` is refused; after `init --resume-from-checkpoint --until-phase compile`
-    # it succeeds. A leaf may run it — `leaf_config/claude/settings.json` grants
-    # `Bash(python3 tools/orchestration_runtime.py *)` — so the `leaf shortcut` blank fills
-    # with the verdict itself, which is as far as it goes.
-    #
-    # Refusing rather than silently keeping the maximum: an operator who asks for a shorter
-    # run is asking for something this orchestration cannot now report, and being told so is
-    # the answer. A shorter run is a fresh orchestration.
+    # Lowering it is allowed and does not lower the VOUCH's bar: the completion vouch reads
+    # `until_phase_high_water`, which only ever rises. See `_record_until_phase_high_water`.
     if isinstance(until_phase, str) and until_phase.strip():
         if not isinstance(invocation_block, dict):
             # A legacy orchestration carries no `invocation` block at all. Refreshing only an
@@ -14856,21 +14884,10 @@ def enable_checkpoint_resume(
             # records one rather than requiring the operator to hand-edit the meta.
             invocation_block = {}
             meta["invocation"] = invocation_block
-        requested = until_phase.strip()
-        recorded = invocation_block.get("until_phase")
-        if (requested in STEP_KEYS_FOR_NODE_STATE
-                and isinstance(recorded, str) and recorded.strip() in STEP_KEYS_FOR_NODE_STATE
-                and STEP_KEYS_FOR_NODE_STATE.index(requested)
-                < STEP_KEYS_FOR_NODE_STATE.index(recorded.strip())):
-            raise RuntimeError(
-                f"resume: --until-phase {requested!r} is EARLIER than the end-phase this "
-                f"orchestration was started for ({recorded.strip()!r}). A resume may extend a "
-                "run, never shorten it: the completion vouch reads this field to decide which "
-                "phases must be certified, so lowering it would let the run report `pass` "
-                "without ever running the phases it was started for. Start a fresh "
-                "orchestration for a shorter run."
-            )
-        invocation_block["until_phase"] = requested
+        _record_until_phase_high_water(invocation_block)
+        invocation_block["until_phase"] = until_phase.strip()
+    if isinstance(invocation_block, dict):
+        _record_until_phase_high_water(invocation_block)
     prior_status = meta.get("status")
     terminal_reset = (
         isinstance(prior_status, str) and prior_status in IDEMPOTENT_TERMINAL_STATUSES
@@ -15777,7 +15794,14 @@ def _until_phase_index(repo_root: Path, orchestration_id: str) -> int:
     meta_path = _orchestration_root(repo_root, orchestration_id) / "orchestration_meta.json"
     meta = _read_json(meta_path) if meta_path.is_file() else None
     invocation = meta.get("invocation") if isinstance(meta, dict) else None
-    token = invocation.get("until_phase") if isinstance(invocation, dict) else None
+    # The HIGH WATER, not the current end-phase: `until_phase` describes this invocation and
+    # every writer of it is reachable from a leaf, so reading it lets the judged thing move the
+    # bar. Falls back to `until_phase` for a record written before the high water existed.
+    token = None
+    if isinstance(invocation, dict):
+        token = (invocation.get("until_phase_high_water")
+                 if _normalized_until_phase(invocation.get("until_phase_high_water")) is not None
+                 else invocation.get("until_phase"))
     if not isinstance(token, str) or token.strip().lower() not in STEP_KEYS_FOR_NODE_STATE:
         raise RuntimeError(
             "cannot mark orchestration pass: orchestration_meta.invocation.until_phase is "
@@ -15882,34 +15906,58 @@ def _validate_orchestration_completion_for_pass(
             "agent_runs.jsonl records step/substep runs (the agent tree is not traceable)"
         )
 
-    # (c) Every edge's parent AND child are recorded in `agent_runs.jsonl`.
+    # (c-2) No UNAUTHORIZED WRITE may be outstanding. `_validate_actual_write_paths` writes
+    # `violations/<arid>.unauthorized_write_violation.json` when a child's terminal filesystem
+    # diff shows paths outside its `write_roots`. That write is NOT rolled back — the files are
+    # on disk — so an orchestration that reaches `pass` over one reports a clean verdict on a
+    # workspace a leaf has already written into outside its window. That is the `leaf shortcut`
+    # class this repository defends against, and `origin/main` refused it too: its rule exempted
+    # `superseded AND invalid`, and the conductor refused ON PURPOSE to tombstone an
+    # unauthorized-write child ("tombstoning a leaf that ALSO made a genuine unauthorized write
+    # would hide it"), so the conjunction was unsatisfiable for exactly this shape.
     #
-    # A child that reached `record_agent_run` and was DIVERTED to `agent_runs_invalid.jsonl`
-    # is not tolerated here, and the reason is not bookkeeping. `record_agent_run` diverts a
-    # terminal payload for exactly one class of cause: the terminal write audit refused it —
-    # an unauthorized write outside the child's `write_roots`, an unenforced sandbox, an
-    # undeclared output. None of those is rolled back; the files the child wrote are still on
-    # disk. An orchestration that reaches `pass` over one is reporting a clean verdict on a
-    # workspace a leaf has already written into outside its window, which is the `leaf
-    # shortcut` class this repository defends against.
+    # Anchored on the VIOLATION RECORD rather than on the run log or the graph edge, because
+    # this is the only one of the three a leaf cannot quietly remove: `violations/` is
+    # deliberately NOT exempt from the terminal write-audit diff (`docs/ORCHESTRATION.md`
+    # §write attribution names it as a backstop), while `agent_runs_invalid.jsonl` is exempt and
+    # the graph edge is pruned as an orphan once that log no longer names the child.
     #
-    # This does NOT refuse the benign shape. `record_agent_run` keeps the retry path open on
-    # the SAME `agent_run_id` (that is why the diverted row goes to a separate log rather than
-    # to `agent_runs.jsonl`, where duplicate detection would refuse it), so a child that fixed
-    # its payload and re-recorded is in `agent_runs.jsonl` and passes on the line below. The
-    # only shape this refuses is the one that was diverted and never came back — an
-    # unacknowledged violation.
+    # There is no acknowledgement mechanism and there should not be one: the remedy is a fresh
+    # orchestration over the corrected artifact, not a ledger entry that makes the taint
+    # invisible. A later successful re-record under the same `agent_run_id` does not clear it —
+    # re-recording fixes the PAYLOAD, and nothing un-writes the file.
+    violations_dir = root / "violations"
+    outstanding = sorted(
+        path.name for path in violations_dir.glob("*.unauthorized_write_violation.json")
+    ) if violations_dir.is_dir() else []
+    if outstanding:
+        raise RuntimeError(
+            "cannot mark orchestration pass: unauthorized write violations are outstanding "
+            f"({', '.join(outstanding[:5])}{'...' if len(outstanding) > 5 else ''}). The paths "
+            "they name were written outside the child's write_roots and nothing rolled them "
+            "back, so this workspace cannot be certified. Repair the cause and run a fresh "
+            "orchestration (docs/RUNBOOK.md §3-1)."
+        )
+
+    # (c) Every edge's parent and child are RECORDED — in `agent_runs.jsonl`, or in
+    # `agent_runs_invalid.jsonl` for a terminal payload `record_agent_run` refused. A child in
+    # NEITHER is an arbitrarily corrupt edge and fails closed.
     #
-    # `origin/main` reached the same refusal by a different route, and by a deliberate one:
-    # its rule exempted `superseded AND invalid`, and the conductor's unauthorized-write path
-    # refused to tombstone that child on purpose ("tombstoning a leaf that ALSO made a genuine
-    # unauthorized write would hide it from `_derive_unauthorized_write_resume_directive`"),
-    # so the conjunction was unsatisfiable for it. Issue #177's first cut of this clause
-    # dropped the `superseded` half — which was the ONLY half that made the exemption
-    # unreachable — and so accepted what main refused. There is no operator escape hatch for
-    # this any more and there should not be one: an unacknowledged unauthorized write means
-    # the workspace is tainted, and the remedy is a fresh orchestration, not a bookkeeping
-    # entry that makes the taint invisible.
+    # This clause is about graph INTEGRITY and nothing else, and the distinction cost a round to
+    # get right. An earlier cut of issue #177 made it refuse the invalid-log child outright, to
+    # catch an unacknowledged unauthorized write. It caught that — and everything else diverted
+    # by the same `except ValueError`, which is far wider than the write audit: a
+    # `launch_response_not_object`, an `agent_session_id_mismatch`, a `sandbox_profile_not_found`,
+    # an empty `output_refs` on a pass payload. None of those implies a write outside the window,
+    # and each would have wedged an honest run permanently. It also did not actually close the
+    # hole: `_prune_orphan_agent_graph_edges` keeps the dangling edge only BECAUSE the child is in
+    # the invalid log, so deleting that log prunes the edge and the clause has nothing left to
+    # refuse — and `agent_runs_invalid.jsonl` is one of the runtime-owned paths exempted from the
+    # terminal write-audit diff, so a leaf could delete it and leave no trace.
+    #
+    # The landed-write case is clause (c-2) below, anchored where the evidence cannot be removed
+    # quietly.
+    invalid_runs = _load_invalid_run_records(root)
     for idx, edge in enumerate(edges):
         if not isinstance(edge, dict):
             raise RuntimeError(f"agent_graph edge must be object: index={idx}")
@@ -15920,18 +15968,10 @@ def _validate_orchestration_completion_for_pass(
                 f"agent_graph edge parent_agent_run_id missing from agent_runs.jsonl: index={idx}"
             )
         child_norm = child_id.strip() if isinstance(child_id, str) and child_id.strip() else None
-        if child_norm is None or child_norm not in runs:
-            detail = ""
-            if child_norm is not None and child_norm in _load_invalid_run_records(root):
-                detail = (
-                    "; it is in agent_runs_invalid.jsonl, so its terminal payload was refused "
-                    "(unauthorized write / unenforced sandbox / undeclared output) and never "
-                    "re-recorded. The writes it made are still on disk: start a fresh "
-                    "orchestration rather than passing over them"
-                )
+        if child_norm is None or (child_norm not in runs and child_norm not in invalid_runs):
             raise RuntimeError(
-                "agent_graph edge child_agent_run_id missing from agent_runs.jsonl: "
-                f"index={idx}{detail}"
+                "agent_graph edge child_agent_run_id missing from agent_runs.jsonl and "
+                f"agent_runs_invalid.jsonl: index={idx}"
             )
 
     # (b) Every step / substep run is terminal and its launch refs resolve. What is NO LONGER
@@ -19911,7 +19951,22 @@ def init_orchestration(
     # is supplied (an internal re-init). Real --resume goes through
     # enable_checkpoint_resume, which never re-supplies invocation and preserves it.
     if isinstance(invocation, dict) and invocation:
+        # ... but the end-phase HIGH WATER survives the overwrite. This is the second writer of
+        # `invocation.until_phase`, and it was not covered when the first was: re-initing an
+        # EXISTING orchestration with `--invocation-json '{"until_phase":"compile"}'` replaced
+        # the block wholesale and let a run started for `validate` reach `pass` with three
+        # phases never run. The provenance argument above is about the CLOSURE BACK-LINK, which
+        # must describe the current run; what the vouch requires to have been certified is not
+        # provenance and is not this invocation's to lower.
+        prior_invocation = meta.get("invocation")
+        if isinstance(prior_invocation, dict):
+            for key in ("until_phase_high_water", "until_phase"):
+                reached = _normalized_until_phase(prior_invocation.get(key))
+                if reached is not None:
+                    invocation.setdefault("until_phase_high_water", reached)
+                    break
         meta["invocation"] = invocation
+        _record_until_phase_high_water(invocation)
     # Driver liveness identity of the process that starts this run. Deliberately NOT
     # in the preservation loop above: a cold (re-)init is a NEW driver, so an omitted
     # block must DROP the stale one rather than leave a corpse's pid on a live run's

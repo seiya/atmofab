@@ -10409,19 +10409,18 @@ end program shallow_water2d_runner
                 msg=f"substep-parent edge must still fail closed; got: {violations}",
             )
 
-    def test_pre_judge_refuses_an_unacknowledged_invalid_log_child_edge(self) -> None:
-        """A terminal attempt whose payload was refused lives only in
-        `agent_runs_invalid.jsonl`, and `_prune_orphan_agent_graph_edges` keeps its edge
-        deliberately — in its own words, "so validation surfaces the invalid terminal attempt".
-        This IS that validation, so it must not be the thing that looks away.
+    def test_pre_judge_tolerates_an_invalid_log_child_edge(self) -> None:
+        """This scan checks graph INTEGRITY. A terminal attempt whose payload was refused lives
+        only in `agent_runs_invalid.jsonl` and its edge is deliberately kept; tolerating it here
+        is right because `record_agent_run` diverts on EVERY `ValueError` from terminal
+        validation — a session-id mismatch, a missing sandbox profile, an empty `output_refs` —
+        and refusing them all would wedge an honest run permanently.
 
-        `record_agent_run` diverts for one class of cause: the terminal write audit refused the
-        payload (unauthorized write, unenforced sandbox, undeclared output), and none of those
-        writes is rolled back. Issue #177's first cut of this scan tolerated the invalid-log
-        record on its own; `origin/main` had required a conjunction with
-        `reopen/superseded_runs.json`, and the conductor refused ON PURPOSE to tombstone an
-        unauthorized-write child, so that conjunction was unsatisfiable for exactly this shape.
-        Dropping the `superseded` half dropped the only half that made it unreachable."""
+        The case that must NOT pass — a landed unauthorized write — is refused by the completion
+        vouch instead, anchored on `violations/<arid>.unauthorized_write_violation.json`. That
+        anchor was chosen over this edge for two measured reasons: `violations/` is not exempt
+        from the terminal write-audit diff (this log IS), and deleting the log prunes the edge
+        as an orphan, leaving this scan nothing to refuse."""
         execute_arid = "substep_run_validate_execute_001"
         with tempfile.TemporaryDirectory() as tmp:
             violations = self._violations_with_removed_child(
@@ -10429,15 +10428,10 @@ end program shallow_water2d_runner
                 removed_arid=execute_arid,
                 divert_removed_child_to_invalid=True,
             )
-            self.assertTrue(
+            self.assertFalse(
                 self._has_dangling_edge(violations, execute_arid),
-                msg=("a child diverted to agent_runs_invalid.jsonl and never re-recorded must "
-                     f"fail the edge scan; got: {violations}"),
-            )
-            self.assertTrue(
-                any("terminal payload was refused and never re-recorded" in v
-                    for v in violations),
-                msg=f"the refusal must say WHY the edge is refused; got: {violations}",
+                msg=("a child diverted to agent_runs_invalid.jsonl must not trip the "
+                     f"dangling-edge check; got: {violations}"),
             )
 
     def test_pre_judge_still_fails_a_child_in_neither_log(self) -> None:
@@ -10474,10 +10468,12 @@ end program shallow_water2d_runner
                 divert_removed_child_to_invalid=True,
                 reparent_removed_child_to=substep_parent,
             )
-            # Both axes fire, independently.
-            self.assertTrue(
+            # The missing-child record is tolerated; the HIERARCHY invariant is not. The two
+            # must not collapse into one — a later widening of the child rule would otherwise
+            # take the hierarchy check with it silently.
+            self.assertFalse(
                 self._has_dangling_edge(violations, execute_arid),
-                msg=f"the invalid-log child edge must be refused; got: {violations}",
+                msg=f"the missing-child record should be tolerated; got: {violations}",
             )
             # ...but the substep-parent hierarchy violation must surface.
             self.assertTrue(

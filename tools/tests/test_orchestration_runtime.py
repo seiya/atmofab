@@ -12256,42 +12256,57 @@ class PhaseCertificationTests(unittest.TestCase):
                 repo_root=repo, orchestration_id="o1", status="pass")
             self.assertEqual(result["status"], "pass")
 
-    def test_a_resume_may_not_LOWER_the_recorded_until_phase(self) -> None:
-        """The other direction of the refresh above, and the reason it has to be refused.
+    def test_lowering_the_end_phase_cannot_lower_what_must_be_certified(self) -> None:
+        """The completion vouch reads `invocation.until_phase_high_water`, which only rises.
 
-        The completion vouch reads `invocation.until_phase` to decide which phases must be
-        certified, so lowering it moves the vouch's own bar. Measured: a run started for
-        `validate` with only `compile` certified is REFUSED at `set-status --status pass`;
-        after `init --resume-from-checkpoint --until-phase compile` the same call SUCCEEDS,
-        with generate / build / validate never run and never certified — and that `pass` is
-        the final verdict the workflow reports for the operator's original request.
+        Measured: a run started for `validate` with only `compile` certified is REFUSED at
+        `set-status --status pass`; before the high water existed, re-recording the end-phase as
+        `compile` made the same call SUCCEED with generate / build / validate never run. Both
+        writers of the field are reachable from a leaf
+        (`leaf_config/claude/settings.json` grants `Bash(python3 tools/orchestration_runtime.py *)`),
+        so the `leaf shortcut` blank fills with the final verdict itself.
 
-        A leaf can take this route: `leaf_config/claude/settings.json` grants
-        `Bash(python3 tools/orchestration_runtime.py *)`, so the `leaf shortcut` blank fills
-        with the verdict itself. The same measurement holds on `origin/main`, so this is a
-        pre-existing hole rather than a regression of issue #177 — it is fixed here because
-        this PR owns the vouch and clause (d) is what reads the field."""
+        DRIVEN IN THE PRODUCT'S OWN SPELLING. `run_workflow.PHASE_ORDER` is CAPITALIZED
+        (`"Validate"`), and the first version of this defense compared against the lowercase
+        vocabulary without normalizing — so it refused only the all-lowercase spelling, which is
+        the one a test reaches for, and allowed every real orchestration. The subTests below
+        exist because that fix passed its own test while being inert in production."""
+        for recorded, requested in (("Validate", "Compile"), ("validate", "compile"),
+                                    (" Validate ", "Compile"), ("Validate", "COMPILE")):
+            with self.subTest(recorded=recorded, requested=requested), \
+                    tempfile.TemporaryDirectory() as tmp:
+                repo = Path(tmp)
+                self._preflight(repo, until_phase=recorded)
+                self._certified(repo, through="compile")
+                # Route 1: the resume writer.
+                enable_checkpoint_resume(repo, "o1", until_phase=requested)
+                with self.assertRaisesRegex(RuntimeError, "generate is not certified"):
+                    update_orchestration_status(repo_root=repo, orchestration_id="o1",
+                                               status="pass")
+                # Route 2: a cold re-init that replaces the whole invocation block.
+                init_orchestration(repo_root=repo, orchestration_id="o1",
+                                   invocation={"until_phase": requested})
+                with self.assertRaisesRegex(RuntimeError, "generate is not certified"):
+                    update_orchestration_status(repo_root=repo, orchestration_id="o1",
+                                               status="pass")
+
+    def test_an_honest_short_run_still_passes_and_lowering_does_not_abort(self) -> None:
+        """The over-refusal direction, which is why this is a high-water mark and not a refusal.
+        A `--with-deps` closure derives a dependency's end-phase from the TARGET's, so it
+        legitimately drives a dependency to an earlier phase than a previous run did; aborting
+        there would break an honest operator workflow."""
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
-            self._preflight(repo, until_phase="validate")
+            self._preflight(repo, until_phase="Compile")
             self._certified(repo, through="compile")
-            with self.assertRaisesRegex(RuntimeError, "may extend a run, never shorten it"):
-                main(["init", "--repo-root", str(repo), "--orchestration-id", "o1",
-                      "--resume-from-checkpoint", "--until-phase", "compile"])
-            meta = json.loads(
-                (repo / "workspace/orchestrations/o1/orchestration_meta.json").read_text("utf-8"))
-            self.assertEqual(meta["invocation"]["until_phase"], "validate")
-            # ... and the vouch the attack was aimed at still refuses.
-            with self.assertRaisesRegex(RuntimeError, "generate is not certified"):
-                update_orchestration_status(repo_root=repo, orchestration_id="o1",
-                                           status="pass")
-
-            # Re-stating the SAME end-phase is not a lowering and must stay allowed: an
-            # ordinary `--resume` passes the end-phase it is running to every time.
-            enable_checkpoint_resume(repo, "o1", until_phase="validate")
             self.assertEqual(
-                json.loads((repo / "workspace/orchestrations/o1/orchestration_meta.json")
-                           .read_text("utf-8"))["invocation"]["until_phase"], "validate")
+                update_orchestration_status(repo_root=repo, orchestration_id="o1",
+                                           status="pass")["status"], "pass")
+            # Lowering the CURRENT end-phase is allowed; it just cannot lower the bar.
+            enable_checkpoint_resume(repo, "o1", until_phase="Compile")
+            meta = json.loads((repo / "workspace/orchestrations/o1/orchestration_meta.json")
+                              .read_text("utf-8"))
+            self.assertEqual(meta["invocation"]["until_phase_high_water"], "compile")
 
     def test_resume_refreshes_the_recorded_until_phase(self) -> None:
         """A resume may EXTEND the run (`--resume <spec> validate` over a run started
@@ -13435,22 +13450,21 @@ class CompletionVouchAttemptModelTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             self._dangle(repo, self._orch(repo), "diverted_1")
-            with self.assertRaisesRegex(RuntimeError, "missing from agent_runs.jsonl: index=1"):
+            with self.assertRaisesRegex(
+                    RuntimeError, "missing from agent_runs.jsonl and agent_runs_invalid.jsonl"):
                 update_orchestration_status(
                     repo_root=repo, orchestration_id="o1", status="pass")
 
-    def test_an_unacknowledged_diverted_child_blocks_pass(self) -> None:
-        """`record_agent_run` diverts a terminal payload to `agent_runs_invalid.jsonl` for one
-        class of cause: the terminal write audit refused it — an unauthorized write outside the
-        child's write_roots, an unenforced sandbox, an undeclared output. None of those writes
-        is rolled back, so an orchestration that reaches `pass` over one reports a clean verdict
-        on a workspace a leaf has already written into outside its window.
+    def test_a_diverted_child_is_tolerated_by_the_edge_clause(self) -> None:
+        """The edge clause is about graph INTEGRITY and nothing else.
 
-        `origin/main` refused this too, by a route that reads as bookkeeping and was not:
-        its rule exempted `superseded AND invalid`, and the conductor refused ON PURPOSE to
-        tombstone an unauthorized-write child, so the conjunction was unsatisfiable for exactly
-        this shape. Issue #177's first cut of the clause dropped the `superseded` half — the
-        only half that made the exemption unreachable — and accepted what main refused."""
+        An earlier cut of issue #177 made it refuse the invalid-log child outright, to catch an
+        unacknowledged unauthorized write. `record_agent_run` diverts on EVERY `ValueError` from
+        terminal validation, which is far wider than the write audit — a session-id mismatch, a
+        missing sandbox profile, an empty `output_refs` on a pass payload — and none of those
+        implies a write outside the window, so an honest run wedged by a bookkeeping defect
+        could never reach `pass`. The landed-write case is covered separately, and where the
+        evidence cannot be quietly removed."""
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             root = repo / "workspace/orchestrations/o1"
@@ -13458,13 +13472,82 @@ class CompletionVouchAttemptModelTests(unittest.TestCase):
             (root / "agent_runs_invalid.jsonl").write_text(
                 json.dumps({"agent_run_id": "diverted_1", "agent_role": "substep",
                             "status": "fail",
-                            "fail_reason": "unauthorized_write_paths"}) + "\n",
+                            "fail_reason": "agent_session_id_mismatch"}) + "\n",
                 encoding="utf-8")
-            with self.assertRaisesRegex(
-                    RuntimeError, "it is in agent_runs_invalid.jsonl, so its terminal payload "
-                                  "was refused"):
+            self.assertEqual(
                 update_orchestration_status(
-                    repo_root=repo, orchestration_id="o1", status="pass")
+                    repo_root=repo, orchestration_id="o1", status="pass")["status"],
+                "pass")
+
+    def test_an_outstanding_unauthorized_write_blocks_pass(self) -> None:
+        """A write that LANDED outside a child's `write_roots` is not rolled back, so an
+        orchestration that passes over one reports a clean verdict on a workspace a leaf has
+        already written into outside its window.
+
+        Anchored on the violation RECORD, and the anchor is the whole point. The first attempt
+        at this refused the diverted child's `agent_graph` edge instead, and that was reachable
+        around in one step: `_prune_orphan_agent_graph_edges` keeps the dangling edge only
+        BECAUSE the child is in `agent_runs_invalid.jsonl`, so deleting that log prunes the edge
+        and leaves the clause nothing to refuse — and that log is one of the runtime-owned paths
+        EXEMPT from the terminal write-audit diff, so a leaf could delete it without trace.
+        `violations/` is deliberately not exempt. The three subTests drive that difference."""
+        for label, act in (
+            ("edge and log intact", None),
+            # Delete the log and prune, which is what a resume does: the edge goes with it,
+            # so the edge clause has nothing left to refuse and only this clause is standing.
+            ("agent_runs_invalid.jsonl deleted, then pruned", "prune"),
+            ("no edge and no log ever written", None),
+        ):
+            with self.subTest(case=label), tempfile.TemporaryDirectory() as tmp:
+                repo = Path(tmp)
+                root = repo / "workspace/orchestrations/o1"
+                orch = self._orch(repo)
+                self._record(repo, "live_1", status="pass")
+                self._step_result(repo, executor=orch, status="pass", substeps=["live_1"])
+                if label != "no edge and no log ever written":
+                    graph = json.loads((root / "agent_graph.json").read_text("utf-8"))
+                    graph["edges"].append({"parent_agent_run_id": orch,
+                                           "child_agent_run_id": "tainted_1",
+                                           "relation_type": "launch"})
+                    (root / "agent_graph.json").write_text(json.dumps(graph), encoding="utf-8")
+                    (root / "agent_runs_invalid.jsonl").write_text(
+                        json.dumps({"agent_run_id": "tainted_1", "agent_role": "substep",
+                                    "status": "fail",
+                                    "fail_reason": "unauthorized_write_paths"}) + "\n",
+                        encoding="utf-8")
+                (root / "violations").mkdir(parents=True, exist_ok=True)
+                (root / "violations" / "tainted_1.unauthorized_write_violation.json").write_text(
+                    "{}", encoding="utf-8")
+                if act == "prune":
+                    (root / "agent_runs_invalid.jsonl").unlink()
+                    ort._prune_orphan_agent_graph_edges(repo, "o1")
+                with self.assertRaisesRegex(
+                        RuntimeError, "unauthorized write violations are outstanding"):
+                    update_orchestration_status(
+                        repo_root=repo, orchestration_id="o1", status="pass")
+
+    def test_other_violation_kinds_do_not_block_pass(self) -> None:
+        """Only the violation whose write LANDED blocks. A
+        `noncanonical_phase_write_attempt` is an attempt that was refused, a
+        `sandbox_enforcement_violation` is a launch that did not happen, and a
+        `rule_source_violation` names no write at all — none leaves bytes behind, so none is a
+        reason to refuse certification of the workspace."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            root = repo / "workspace/orchestrations/o1"
+            orch = self._orch(repo)
+            self._record(repo, "live_1", status="pass")
+            self._step_result(repo, executor=orch, status="pass", substeps=["live_1"])
+            (root / "violations").mkdir(parents=True, exist_ok=True)
+            for name in ("a.noncanonical_phase_write_attempt.json",
+                         "b.rule_source_violation.json",
+                         "c.sandbox_enforcement_violation.json",
+                         "d.phase_authority_violation.json"):
+                (root / "violations" / name).write_text("{}", encoding="utf-8")
+            self.assertEqual(
+                update_orchestration_status(
+                    repo_root=repo, orchestration_id="o1", status="pass")["status"],
+                "pass")
 
     def test_a_diverted_child_that_re_recorded_under_the_same_arid_passes(self) -> None:
         """The benign shape, and the reason the refusal above is narrow. `record_agent_run`
