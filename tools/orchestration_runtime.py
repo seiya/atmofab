@@ -20113,6 +20113,15 @@ def init_orchestration(
         # with `{"until_phase":"compile","until_phase_high_water":"compile"}` reached `pass`
         # with three phases never run. This field is derived from what the orchestration has
         # RECORDED, never supplied.
+        #
+        # NOT PINNED, and kept anyway (enforcement skill rule 1-b: "the mutation survives" is
+        # not grounds for deletion). Replacing this `pop` with `pass` leaves the suite green,
+        # and that is correct rather than a missing test: the loop below ASSIGNS rather than
+        # `setdefault`s, so a prior record with a usable phase overwrites the supplied value;
+        # and when the prior has none, `_record_until_phase_high_water` takes the max with this
+        # invocation's own `until_phase`, so a supplied value can only ever raise the bar. The
+        # `pop` is the third guard on the same property, and it is the one that states the
+        # intent — that this field is derived and not an input — so it stays.
         invocation.pop("until_phase_high_water", None)
         prior_invocation = meta.get("invocation")
         if isinstance(prior_invocation, dict):

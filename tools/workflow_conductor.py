@@ -14177,7 +14177,7 @@ clean:
         return seeded
 
     def _revoke_and_reset_or_terminalize(
-        self, refs: "NodeRefs", phase: str, trigger: str, reason: str,
+        self, refs: NodeRefs, phase: str, trigger: str, reason: str,
         *, findings: str | None, severity: str | None, repair_strategy: str | None = None,
         fallback_code: str, fallback_detail: str,
     ) -> str | None:
