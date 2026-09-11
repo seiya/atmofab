@@ -1065,6 +1065,42 @@ def _truncate_reason_detail(detail: str, limit: int = _REASON_DETAIL_LIMIT) -> s
     return f"{detail[:head]}...{detail[-tail:]}"
 
 
+def _owns_orchestration(
+    repo_root: Path,
+    orchestration_id: str,
+    *,
+    init_committed: bool,
+    init_attempted: bool,
+    resume_mode: bool,
+    meta_existed_before_init: bool,
+) -> bool:
+    """Does THIS invocation own `orchestration_id` well enough to terminalize it?
+
+    Replaces the `orchestration_meta.json#driver` block issue #177 deleted. The old evidence
+    was durable and recorded ("a meta whose driver names this process"); the new evidence is
+    three facts this process already has, and the reason they are sufficient is the exclusive
+    claim: a reused `--orchestration-id` naming a run somebody else is DRIVING is refused
+    before any of this, so the only foreign run that can reach here is one nobody is driving.
+
+      * `init_committed` — the runtime's init RETURNED. Unambiguous.
+      * otherwise, the init was ISSUED by us and a meta exists for it. The runtime writes the
+        `running` meta well before the call returns, so an init that wrote it and then failed
+        is ours; an interrupt that landed inside the call before anything was written is not,
+        and there is nothing to terminalize either way.
+      * and it is not somebody else's pre-existing orchestration: a cold start whose id
+        already had a meta before we issued init is a REUSED id. A resume is exempt — taking
+        over an existing orchestration is precisely what it does, under that orchestration's
+        own claim.
+    """
+    if init_committed:
+        return True
+    if not init_attempted:
+        return False
+    if not (resume_mode or not meta_existed_before_init):
+        return False
+    return bool(_read_orchestration_meta(repo_root, orchestration_id))
+
+
 def _terminalize_owned_orchestration(
     repo_root: Path,
     env: dict[str, str],
@@ -2980,6 +3016,18 @@ def _run_node(
     # True once init has committed this orchestration's meta — i.e. once there is a
     # `running` status that an interrupt would otherwise leave behind forever.
     init_committed = False
+    # Ownership, in place of the deleted `driver` block. `init_committed` cannot answer it
+    # alone: the runtime writes the `running` meta well before the call returns, so an init
+    # that wrote it and then failed would be owned by nobody and left `running` forever.
+    #
+    # Two facts together answer it. `init_attempted` — set BEFORE the call — says this
+    # invocation asked for this id to exist. `meta_existed_before_init` says whether there was
+    # already an orchestration there, which is what separates a fresh cold start (ours) from a
+    # reused `--orchestration-id` naming somebody else's run (not ours). A resume is ours by
+    # definition: it holds that orchestration's exclusive claim, which is the same evidence the
+    # driver block used to carry and is now checked rather than recorded.
+    init_attempted = False
+    meta_existed_before_init = False
 
     # Tee this node's stdout JSONL event stream to a timestamped run-log file
     # under the orchestration dir, so the same information (node_start, the
@@ -3135,6 +3183,14 @@ def _run_node(
             if invocation:
                 init_args += ["--invocation-json", json.dumps(invocation, ensure_ascii=False)]
         try:
+            # This invocation is now the one that asked for this orchestration id to exist,
+            # whether or not the call returns. That is the ownership evidence the deleted
+            # `driver` block used to carry, and it is SUFFICIENT since issue #177 because the
+            # exclusive claim already refused a reused `--orchestration-id` naming a run
+            # someone else is driving: we could not have reached this line otherwise.
+            init_attempted = True
+            meta_existed_before_init = bool(
+                _read_orchestration_meta(repo_root, orchestration_id))
             init_result = _runtime_command(repo_root, env, init_args).payload
             orchestration_agent_run_id = str(init_result.get("orchestration_agent_run_id", "")).strip()
             if not orchestration_agent_run_id:
@@ -3219,7 +3275,11 @@ def _run_node(
             # `init`) the ownership guard makes it a no-op, so a reused
             # `--orchestration-id` naming a foreign run is still left alone.
             _terminalize_owned_orchestration(
-                repo_root, env, orchestration_id, init_committed=init_committed,
+                repo_root, env, orchestration_id,
+                init_committed=_owns_orchestration(
+                    repo_root, orchestration_id, init_committed=init_committed,
+                    init_attempted=init_attempted, resume_mode=resume_mode,
+                    meta_existed_before_init=meta_existed_before_init),
                 reason_code="runtime_command_failed", detail=str(exc),
             )
             print(
@@ -3456,7 +3516,10 @@ def _run_node(
         # which makes it ours to terminalize. Anything else — a reused
         # `--orchestration-id` naming someone else's run, a meta we never wrote — is
         # left untouched.
-        if init_committed:
+        if _owns_orchestration(
+                repo_root, orchestration_id, init_committed=init_committed,
+                init_attempted=init_attempted, resume_mode=resume_mode,
+                meta_existed_before_init=meta_existed_before_init):
             _terminalize_interrupted_orchestration(repo_root, env, orchestration_id)
         raise
     except Exception as exc:  # noqa: BLE001 - backstop: no escape may leave `running`
@@ -3479,7 +3542,11 @@ def _run_node(
             pass
         detail = f"{type(exc).__name__}: {exc}"
         _terminalize_owned_orchestration(
-            repo_root, env, orchestration_id, init_committed=init_committed,
+            repo_root, env, orchestration_id,
+            init_committed=_owns_orchestration(
+                repo_root, orchestration_id, init_committed=init_committed,
+                init_attempted=init_attempted, resume_mode=resume_mode,
+                meta_existed_before_init=meta_existed_before_init),
             reason_code="driver_exception",
             detail=detail,
         )

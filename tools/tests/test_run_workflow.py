@@ -93,7 +93,6 @@ def tearDownModule() -> None:
         _CLAIM_ROOT_TMPDIR.cleanup()
 
 
-@contextmanager
 class RunWorkflowTests(unittest.TestCase):
     def test_collect_failure_analysis_includes_unauthorized_write_violation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
