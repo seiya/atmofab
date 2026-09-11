@@ -2031,7 +2031,7 @@ def _stamp_certification(
     step: str,
     required_outputs: Sequence[str],
 ) -> dict[str, Any] | None:
-    """Write `artifact_hashes` (and, for generate, `source_ir_id`) into the phase's stage
+    """Write `artifact_hashes` (and, for generate and build, `source_ir_id`) into the phase's stage
     meta. Returns the stamped document, or `None` for a phase that certifies no meta.
 
     Called from `write_step_result` on a `pass`, after `_validate_step_result_payload` has
@@ -16402,8 +16402,18 @@ def _validate_orchestration_completion_for_pass(
                     f"cannot mark orchestration pass: {node_key}/{phase} is not certified: "
                     f"{detail.get('reason')}"
                 )
-    edges_obj = graph.get("edges")
-    edges = edges_obj if isinstance(edges_obj, list) else []
+    # EMPTY edges is the new legitimate case; MALFORMED is not. The rule this replaced refused
+    # both together — not by detecting malformation, but because `_load_graph` NORMALIZES a
+    # corrupt graph to `{"edges": []}` and the old rule refused empty. So the raw file is what
+    # has to be read here: reading the normalization would skip the whole per-edge parent/child
+    # validation below on a record `tools/audit_orchestration.py` and `docs/ORCHESTRATION.md`
+    # read back as the run's agent tree.
+    raw_graph = _read_json(graph_path) if graph_path.is_file() else None
+    if not (isinstance(raw_graph, dict) and isinstance(raw_graph.get("edges"), list)):
+        raise RuntimeError(
+            "cannot mark orchestration pass: agent_graph.json is missing or has no `edges` list"
+        )
+    edges = graph.get("edges")
 
     step_result_refs_by_substep: dict[str, Path] = {}
     for result_path in _iter_step_result_paths(root):

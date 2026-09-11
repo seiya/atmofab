@@ -6782,6 +6782,23 @@ class NodeAllocationTest(unittest.TestCase):
             self.assertNotEqual(refs.pipeline_id, on_disk["pipeline_id"])
             self.assertTrue(refs.source_id.startswith("src_"))
 
+    def test_certified_meta_ref_matches_the_phase_contract_outputs(self) -> None:
+        """The ref is matched against a step_result's `required_outputs`, so it has to be the
+        SAME path `phase_required_outputs` declares — the validate one was wrong (it omitted
+        the `<node_key_safe>/` segment) and matched nothing (correctness round 2, F1)."""
+        refs = wc.NodeRefs(node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
+                           ir_id="x_1_001", pipeline_id="p_1_001", source_id="src_1",
+                           binary_id="bin_1", run_id="run_1", source_binary_id="bin_1")
+        cert = {"ir_ref": refs.ir_ref, "pipeline_ref": refs.pipeline_ref,
+                "source_id": refs.source_id, "binary_id": refs.binary_id,
+                "run_id": refs.run_id}
+        for phase in ("compile", "generate", "build", "validate"):
+            with self.subTest(phase=phase):
+                declared = wc.phase_required_outputs(
+                    refs, phase, exe_name="spec_x_runner", makefile_required=True)
+                ref = wc.Conductor._certified_meta_ref(phase, cert, refs.node_key)
+                self.assertIn(ref, declared)
+
     def test_run_phase_skip_adopts_certified_ids_into_refs(self) -> None:
         """A skipped phase's ids are taken from the certification, so the next phase builds
         against the artifact that stands rather than against a freshly-minted id."""
@@ -6808,6 +6825,128 @@ class NodeAllocationTest(unittest.TestCase):
         # The reserved roots are NOT re-pointed: the predicate already refused unless they
         # are the artifacts it evaluated.
         self.assertEqual((refs.ir_id, refs.pipeline_id), ("x_1_001", "x_1_001"))
+
+
+class ConductorProducedChainCertifiesTest(unittest.TestCase):
+    """The branch's central claim, checked against what the CONDUCTOR writes rather than
+    against the test fixture that mirrors it.
+
+    Every other test on this branch builds the artifact chain with `certify_node` (runtime
+    side) or stubs `check_phase_certified` (conductor side), so a divergence between what the
+    conductor's own writers emit and what `_phase_certified` reads back would fail at
+    `set-status pass` on every real run and be invisible to the suite. This drives the real
+    host writers — `_write_ir_meta`, `_write_verify_source_meta`, `_write_lineage`, the
+    binary_meta shape `_build_inproc` authors, and `phase_required_outputs` — through the real
+    `_stamp_certification`, and then asks the real predicate."""
+
+    NODE_KEY = "component/spec_x@0.1.0"
+
+    def _refs(self) -> wc.NodeRefs:
+        return wc.NodeRefs(
+            node_key=self.NODE_KEY, spec_path="spec/component/spec_x",
+            ir_id="spec-x_20260101_001", pipeline_id="spec-x_20260101_001",
+            source_id="src_20260101_001", binary_id="bin_20260101_001",
+            run_id="run_20260101_001", source_binary_id="bin_20260101_001")
+
+    def _conductor(self, root: Path) -> wc.Conductor:
+        return wc.Conductor(repo_root=root, orchestration_id="o1",
+                            orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"),
+                            env={}, workflow_mode="dev")
+
+    def test_the_hosts_own_metas_satisfy_the_certification_predicate(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            refs = self._refs()
+            c = self._conductor(root)
+            safe = wc.node_key_safe(self.NODE_KEY)
+            res = root / "workspace" / "orchestrations" / "o1" / "reservations" / safe
+            res.mkdir(parents=True)
+            for step, reserved in (("compile", refs.ir_id), ("generate", refs.pipeline_id)):
+                (res / f"{step}.json").write_text(json.dumps({
+                    "node_key": self.NODE_KEY, "step": step, "reserved_ir_id": reserved,
+                    "reserved_by_agent_run_id": "ORCH", "status": "reserved"}),
+                    encoding="utf-8")
+
+            # --- compile: the host's own ir_meta + the leaf-authored IR document
+            (root / refs.ir_ref).mkdir(parents=True, exist_ok=True)
+            (root / refs.ir_ref / "spec.ir.yaml").write_text(
+                "node_key: component/spec_x@0.1.0\n", encoding="utf-8")
+            c._write_ir_meta(refs, verification_status="pass", last_fail_reason=None,
+                             issue_severity=None, attempts=1)
+            ort._stamp_certification(
+                root, "o1", node_key=self.NODE_KEY, step="compile",
+                required_outputs=wc.phase_required_outputs(refs, "compile"))
+            ok, detail = ort._phase_certified(root, "o1", self.NODE_KEY, "compile")
+            self.assertTrue(ok, detail)
+
+            # --- generate: the host's verify projection + the leaf's sources
+            src = root / refs.source_dir() / "src"
+            src.mkdir(parents=True)
+            for name in (f"{refs.spec_id}_model.f90", f"{refs.spec_id}_runner.f90", "Makefile"):
+                (src / name).write_text(f"! {name}\n", encoding="utf-8")
+            c._write_verify_source_meta(
+                refs, {"verification_status": "pass", "issue_severity": None,
+                       "last_fail_reason": None}, attempts=1)
+            ort._stamp_certification(
+                root, "o1", node_key=self.NODE_KEY, step="generate",
+                required_outputs=wc.phase_required_outputs(refs, "generate"))
+            ok, detail = ort._phase_certified(root, "o1", self.NODE_KEY, "generate")
+            self.assertTrue(ok, detail)
+
+            # --- build: the binary_meta shape `_build_inproc` authors
+            exe = "spec_x_runner"
+            bin_dir = root / refs.binary_dir() / "bin"
+            bin_dir.mkdir(parents=True)
+            (bin_dir / exe).write_bytes(b"\x7fELF")
+            (root / refs.source_dir() / "src" / "command_log.jsonl").write_text(
+                '{"cmd": "make"}\n', encoding="utf-8")
+            (root / refs.binary_dir() / "binary_meta.json").write_text(json.dumps({
+                "binary_id": refs.binary_id, "node_key": self.NODE_KEY,
+                "pipeline_id": refs.pipeline_id, "attempt_count": 1,
+                "verification_status": "pass", "last_fail_reason": "",
+                "status": "pass", "validation_stage": "post_build",
+                "source_source_id": refs.source_id, "source_ir_id": refs.ir_id,
+                "binary_artifact_ref": f"binary/{refs.binary_id}/bin/{exe}",
+                "dependency_check": {"direct_deps": [], "resolved": "match",
+                                     "closure_bindings": []},
+            }), encoding="utf-8")
+            # `_build_inproc` writes that meta INSIDE the build child's window, so the child's
+            # terminalization strips the certification keys from it before the host stamps
+            # (the strip itself is pinned in test_orchestration_runtime; what is checked here
+            # is that the stamp puts back what the predicate reads).
+            ort._strip_certification_keys(root / refs.binary_dir() / "binary_meta.json")
+            ort._stamp_certification(
+                root, "o1", node_key=self.NODE_KEY, step="build",
+                required_outputs=wc.phase_required_outputs(refs, "build", exe_name=exe))
+            ok, detail = ort._phase_certified(root, "o1", self.NODE_KEY, "build")
+            self.assertTrue(ok, detail)
+            # Validate.execute APPENDS to Build's command log; Build must stay certified.
+            with (root / refs.source_dir() / "src" / "command_log.jsonl").open(
+                    "a", encoding="utf-8") as fh:
+                fh.write('{"cmd": "make test"}\n')
+            self.assertTrue(ort._phase_certified(root, "o1", self.NODE_KEY, "build")[0])
+
+            # --- validate: the run-node artifacts the deterministic substeps author
+            run_node = root / refs.run_node_dir()
+            run_node.mkdir(parents=True)
+            (run_node / "trial_meta.json").write_text(json.dumps({
+                "run_id": refs.run_id, "node_key": self.NODE_KEY,
+                "pipeline_id": refs.pipeline_id, "source_source_id": refs.source_id,
+                "source_binary_id": refs.source_binary_id, "status": "pass"}),
+                encoding="utf-8")
+            (run_node / "aggregate_verdict.json").write_text(json.dumps({
+                "node_key": self.NODE_KEY, "run_id": refs.run_id,
+                "aggregate_verdict": "pass"}), encoding="utf-8")
+            c._write_run_node_meta(refs, "post_judge_meta.json", {
+                "run_id": refs.run_id, "node_key": self.NODE_KEY,
+                "pipeline_id": refs.pipeline_id, "status": "pass",
+                "validation_stage": "pre_judge", "failure_category": None,
+                "failure_excerpt": None, "violations": [], "disposition": None})
+            ok, detail = ort._phase_certified(root, "o1", self.NODE_KEY, "validate")
+            self.assertTrue(ok, detail)
+            self.assertEqual(
+                (detail["source_id"], detail["binary_id"], detail["run_id"]),
+                (refs.source_id, refs.binary_id, refs.run_id))
 
 
 class DiagnosticianTest(unittest.TestCase):

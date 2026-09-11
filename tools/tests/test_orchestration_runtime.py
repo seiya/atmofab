@@ -12790,6 +12790,29 @@ class PhaseCertificationTests(unittest.TestCase):
                 (repo / "workspace/orchestrations/o1/orchestration_meta.json").read_text("utf-8"))
             self.assertEqual(meta["invocation"]["until_phase"], "validate")
 
+    def test_the_vouch_refuses_a_malformed_edges_record(self) -> None:
+        """EMPTY edges is the new legitimate case; MALFORMED is not. The rule this replaced
+        refused both together, and reading a non-list as "no edges" would skip the whole
+        per-edge parent/child validation on a record the audit tool reads back as the run's
+        agent tree (correctness round 2, F4)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._preflight(repo)
+            self._certified(repo, through="validate")
+            graph_path = repo / "workspace/orchestrations/o1/agent_graph.json"
+            for bad in ('{"edges": "boom"}', "{}", '{"edges": null}'):
+                with self.subTest(graph=bad):
+                    graph_path.write_text(bad, encoding="utf-8")
+                    with self.assertRaisesRegex(
+                            RuntimeError, "missing or has no `edges` list"):
+                        update_orchestration_status(
+                            repo_root=repo, orchestration_id="o1", status="pass")
+            graph_path.write_text('{"edges": []}', encoding="utf-8")
+            self.assertEqual(
+                update_orchestration_status(
+                    repo_root=repo, orchestration_id="o1", status="pass")["status"],
+                "pass")
+
     def test_a_reserved_but_uncertified_node_cannot_be_marked_pass(self) -> None:
         """A reservation proves PREPARATION, not completion. With no children, no edges and no
         step_results every other loop in the vouch is empty, so without this clause an
@@ -13326,6 +13349,38 @@ class CertificationStampTests(unittest.TestCase):
                 ort._stamp_certification(
                     repo, "o1", node_key="component/spec_x@0.1.0", step="generate",
                     required_outputs=[refs["model_ref"]])
+
+    def test_stamp_refuses_an_unreadable_certifying_meta(self) -> None:
+        """For BUILD this raise is the meta's only reader: `STAGE_META_FILENAME_BY_STEP` has
+        no build entry, so `_validate_step_meta_payload` never opens `binary_meta.json`.
+        Without it a corrupt one takes a PASSING build step_result and the phase is then never
+        certifiable — `set-status pass` refuses the run forever with `binary_not_bound`
+        (correctness round 2, mutant X11)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = certify_node(repo, "o1", through="build")
+            (repo / refs["binary_meta"]).write_text("{not json", encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "cannot read .*binary_meta.json"):
+                ort._stamp_certification(
+                    repo, "o1", node_key="component/spec_x@0.1.0", step="build",
+                    required_outputs=[refs["exe_ref"], refs["binary_meta"]])
+            (repo / refs["binary_meta"]).write_text("[]", encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "is not a JSON object"):
+                ort._stamp_certification(
+                    repo, "o1", node_key="component/spec_x@0.1.0", step="build",
+                    required_outputs=[refs["exe_ref"], refs["binary_meta"]])
+
+    def test_stamp_refuses_a_phase_declaring_only_its_own_meta(self) -> None:
+        """A phase whose `required_outputs` carry no hashable deliverable would be stamped
+        with an empty `artifact_hashes`, which the predicate refuses — so the phase would be
+        permanently uncertifiable instead of failing here (correctness round 2, mutant X12)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = certify_node(repo, "o1", through="compile")
+            with self.assertRaisesRegex(RuntimeError, "no hashable deliverable"):
+                ort._stamp_certification(
+                    repo, "o1", node_key="component/spec_x@0.1.0", step="compile",
+                    required_outputs=[refs["ir_meta"]])
 
     def test_a_child_window_that_touched_no_stage_meta_strips_nothing(self) -> None:
         """The over-refusal probe: the strip is keyed on the paths the child actually
