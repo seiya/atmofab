@@ -1433,12 +1433,15 @@ TOOLS: dict[str, Tool] = {
                     "type": "array",
                     "items": {"type": "string"},
                     "description": (
-                        "Extra build-tool arguments. Each element must ASSIGN a make "
-                        "variable (NAME=value); the name must not be one make reads as a "
-                        "redirection of what is executed (SHELL, MAKE, MAKEFILES, "
-                        "MAKEFLAGS, LD_*, PATH, ...), and the value must carry no "
-                        "character the make recipe's shell acts on, because it is "
-                        "interpolated there unquoted. Applies to every caller."
+                        "Extra build-tool arguments. Under build_system=make each "
+                        "element must ASSIGN a make variable (NAME=value), because make "
+                        "reads anything else as a switch it applies before the control "
+                        "file; other build systems take their own switches. For every "
+                        "build system: an assignment must not name something make reads "
+                        "as a redirection of what is executed (SHELL, MAKE, MAKEFILES, "
+                        "MAKEFLAGS, LD_*, PATH, ...), and no element may carry a "
+                        "character a shell acts on, because make interpolates a value "
+                        "into the recipe unquoted. Applies to every caller."
                     ),
                 },
                 "timeout_sec": {"type": "integer", "minimum": 1},

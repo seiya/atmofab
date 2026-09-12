@@ -2013,6 +2013,81 @@ class SchemaMinimumsAreEnforcedTests(unittest.TestCase):
                     getattr(self.mod, f"tool_{tool}")(args)
 
 
+class ServedSchemaDescribesWhatIsEnforcedTests(unittest.TestCase):
+    """`compile_project`'s served descriptions, driven against the rules they describe.
+
+    `mcp_servers/tools/*.json` exists for only two tools, so `ToolSchemaDocumentParityTests`
+    compares a document to the served schema for those two and `compile_project`'s
+    descriptions are coupled to NOTHING. That is how they went on advertising the retired
+    allowlist to every client through PR-2 — "Refused under an orchestration", "only
+    assignments to OBJDIR, BINDIR, RUNDIR, BIN, SPEC, CASES are accepted" — and it is how the
+    `extra_args` text drifted again one commit after it was corrected, still saying every
+    element must be a make assignment after that rule was scoped to make.
+
+    Coupled by DRIVING: each row runs the real validator, asserts it refuses (so the row
+    cannot pass by describing a rule that is gone), and then asserts the served description
+    names the rule. The code is the authority; the description is checked against it."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.mod = _load_server_module()
+
+    def _description(self, tool: str, argument: str) -> str:
+        return self.mod.TOOLS[tool].input_schema["properties"][argument]["description"]
+
+    def test_every_argv_refusal_is_described_where_the_caller_reads_it(self) -> None:
+        rows = (
+            ("target", {"target": "--eval=$(shell id)"}, "not open with -"),
+            ("target", {"target": "a b"}, "whitespace"),
+            ("extra_args", {"extra_args": ["--release"]}, "ASSIGN a make variable"),
+            ("extra_args", {"extra_args": ["SHELL=/tmp/x"]}, "redirection of what is executed"),
+            ("extra_args", {"extra_args": ["X=a; id"]}, "character a shell acts on"),
+        )
+        for argument, payload, phrase in rows:
+            with self.subTest(argument=argument, payload=payload):
+                # (1) the rule is REALLY enforced — otherwise the description below would be
+                # describing something that no longer happens, which is the whole defect.
+                with self.assertRaises(ValueError):
+                    self.mod._validate_build_argv_overrides(
+                        payload.get("target"), payload.get("extra_args", []),
+                        "compile_project", build_system="make")
+                # (2) and the client is told.
+                self.assertIn(phrase, self._description("compile_project", argument))
+
+    def test_no_served_description_names_a_retired_mechanism(self) -> None:
+        # Derived from what the server REFUSES as retired, plus the phrase the two deleted
+        # modes were spelled with. A description naming one of these is describing a contract
+        # this server no longer implements.
+        retired = tuple(self.mod._RETIRED_ARGUMENTS) + (
+            "under an orchestration", "Under an orchestration", "allowlist")
+        for name, tool in self.mod.TOOLS.items():
+            for argument, spec in tool.input_schema.get("properties", {}).items():
+                description = spec.get("description", "")
+                for token in retired:
+                    with self.subTest(tool=name, argument=argument, token=token):
+                        self.assertNotIn(token, description)
+
+    def test_every_declared_minimum_is_covered_by_the_row_that_drives_them(self) -> None:
+        # The other half of "the schema is advisory": a declared minimum the code does not
+        # hold is the same defect in the other direction. `SchemaMinimumsAreEnforcedTests`
+        # derives its subject from the schema and drives each; this row pins that the two
+        # derivations see the SAME set, so a new bounded argument cannot be added to the
+        # schema and skipped there by a derivation that quietly narrowed.
+        declared = {
+            (name, argument)
+            for name, tool in self.mod.TOOLS.items()
+            for argument, spec in tool.input_schema.get("properties", {}).items()
+            if spec.get("type") == "integer" and "minimum" in spec
+        }
+        self.assertTrue(declared, "no integer minimum in any served schema")
+        driven = {
+            (tool, argument)
+            for tool, argument, _minimum
+            in SchemaMinimumsAreEnforcedTests._bounded_properties(self)
+        }
+        self.assertEqual(declared, driven)
+
+
 class ToolSchemaDocumentParityTests(unittest.TestCase):
     """`mcp_servers/tools/*.json` must say what the served schema says.
 
