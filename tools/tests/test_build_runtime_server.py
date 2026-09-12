@@ -743,6 +743,41 @@ class BuildArgvOverrideTests(unittest.TestCase):
                         target, [], "compile_project")
                 self.assertIn("must be a build goal, not a switch", str(ctx.exception))
 
+    def test_an_assignment_spelled_as_the_target_is_refused_too(self) -> None:
+        """The same rule as `extra_args`, because make cannot tell the two apart.
+
+        `make -jN SHELL=./evil` is an assignment whether the caller put that string in
+        `target` or in `extra_args` — a positional argument containing `=` is never a goal
+        to make. The first version of this class drove eight switch spellings and NONE of
+        them carried an `=`, so when the target rule was widened from a name allowlist to a
+        metacharacter refusal (neither set holds `=`), the whole execution-redirect denylist
+        became reachable one argument over and the suite stayed green.
+        """
+        for target in ("SHELL=./evil", "MAKEFLAGS=-n", "MAKEFILES=/tmp/evil.mk",
+                       "LD_PRELOAD=/tmp/x.so", "PATH=/tmp", "MAKE=/tmp/x"):
+            with self.subTest(target=target, build_system="make"):
+                with self.assertRaises(ValueError) as ctx:
+                    self.mod._validate_build_argv_overrides(
+                        target, [], "compile_project", build_system="make")
+                self.assertIn("redirect execution", str(ctx.exception))
+            # And on a build system that does not read a positional assignment at all,
+            # the name rule still applies — it is about what is EXECUTED, not about make.
+            with self.subTest(target=target, build_system="cargo"):
+                with self.assertRaises(ValueError) as ctx:
+                    self.mod._validate_build_argv_overrides(
+                        target, [], "compile_project", build_system="cargo")
+                self.assertIn("redirect execution", str(ctx.exception))
+
+    def test_an_ordinary_assignment_as_a_make_target_is_refused_as_a_misplacement(
+        self,
+    ) -> None:
+        # Not dangerous, but not a goal either: make would silently set the variable and
+        # build the default target, so the caller's build is not the one they asked for.
+        with self.assertRaises(ValueError) as ctx:
+            self.mod._validate_build_argv_overrides(
+                "OBJDIR=/repo/obj", [], "compile_project", build_system="make")
+        self.assertIn("not a variable assignment", str(ctx.exception))
+
     def test_a_real_build_goal_is_still_accepted(self) -> None:
         # Across the build systems `_build_command` serves, not just make: a gradle task
         # path, an npm script name and a meson typed target all carry `:`, and a make

@@ -235,10 +235,50 @@ def _build_syntax_source_re() -> re.Pattern[str]:
 
 
 #: The build systems whose command line takes a VARIABLE ASSIGNMENT and interpolates its
-#: value into a shell recipe. For every other build system an `extra_args` element is an
-#: ordinary switch (`cargo build --release`, `mvn -DskipTests`), which reaches no shell:
-#: this server runs argv directly, with no `shell=True` anywhere.
+#: value into a shell recipe. `make` is also the build system the WORKFLOW uses, so it is
+#: the one command line this repository composes rather than the operator: the shape rule
+#: is here to catch a defect in that composition.
+#:
+#: The ground is NOT "a switch is harmless elsewhere", which was the first version of this
+#: comment and is false for two of the eleven: `cmake` forwards `extra_args` to the native
+#: tool after `--`, and `ninja` reads `-f` as its build file and `-t` as a subtool. It is
+#: that outside the workflow the caller is the OPERATOR, who chose the argv and owns the
+#: machine — defending them against their own switches is out of scope
+#: (`AGENTS.md` §Development premises), and refusing them makes the tool unusable for the
+#: build systems its own schema advertises. The two rules that are NOT about argv shape —
+#: no execution-redirecting assignment, no character a shell acts on — apply to every
+#: build system and to `target` as well, because those catch a composition defect rather
+#: than bound a caller.
 _ASSIGNMENT_ARGV_BUILD_SYSTEMS = frozenset({"make"})
+
+
+def _is_execution_redirecting_assignment(element: str) -> bool:
+    """``NAME=value`` whose NAME make reads as a redirection of what is EXECUTED."""
+    if "=" not in element:
+        return False
+    name = element.split("=", 1)[0].strip().upper()
+    return (name in _UNSAFE_ASSIGNMENT_NAMES
+            or name.startswith(_UNSAFE_ENV_OVERRIDE_PREFIXES))
+
+
+def _refuse_execution_redirecting_assignments(
+    elements: list[str], tool_name: str, where: str
+) -> None:
+    """One rule, asked of EVERY caller-chosen argv element — whichever argument carries it.
+
+    `target` and `extra_args` land on the same command line, so make cannot tell them apart:
+    `make -jN SHELL=./evil` is an assignment whether the caller put that string in `target`
+    or in `extra_args`. Refusing it in one argument and accepting it in the other guards
+    nothing, which is the sentence this module has now had to learn twice — once for the
+    env/argv pair, and once for the target/extra_args pair, where widening the target rule
+    from a name allowlist to a metacharacter refusal dropped `=` out of both sets.
+    """
+    offending = sorted(e for e in elements if _is_execution_redirecting_assignment(e))
+    if offending:
+        raise ValueError(
+            f"{tool_name} does not accept {where} that redirect execution: "
+            + ", ".join(offending)
+        )
 
 
 def _validate_build_argv_overrides(
@@ -291,6 +331,15 @@ def _validate_build_argv_overrides(
                 f"{tool_name} target must be a build goal, not a switch: refused "
                 f"{resolved_target} (it carries whitespace or a character the shell acts on)"
             )
+        _refuse_execution_redirecting_assignments(
+            [resolved_target], tool_name, "a target")
+        if build_system in _ASSIGNMENT_ARGV_BUILD_SYSTEMS and "=" in resolved_target:
+            raise ValueError(
+                f"{tool_name} target must be a build goal, not a variable assignment: "
+                f"refused {resolved_target} (make reads a positional NAME=value as an "
+                "assignment, never as a goal; pass it in extra_args, where the assignment "
+                "rules apply)"
+            )
     if build_system in _ASSIGNMENT_ARGV_BUILD_SYSTEMS:
         offending = [
             arg for arg in extra_args
@@ -302,16 +351,7 @@ def _validate_build_argv_overrides(
                 f"{tool_name} accepts only make variable assignments (NAME=value) in "
                 "extra_args; refused: " + ", ".join(offending)
             )
-    redirecting = sorted(
-        arg for arg in extra_args
-        if (name := arg.split("=", 1)[0].strip().upper()) in _UNSAFE_ASSIGNMENT_NAMES
-        or name.startswith(_UNSAFE_ENV_OVERRIDE_PREFIXES)
-    )
-    if redirecting:
-        raise ValueError(
-            f"{tool_name} does not accept extra_args that redirect execution: "
-            + ", ".join(redirecting)
-        )
+    _refuse_execution_redirecting_assignments(extra_args, tool_name, "extra_args")
     unsafe = sorted(
         arg for arg in extra_args
         if set(arg.split("=", 1)[1] if "=" in arg else arg) & _SHELL_ACTIVE_CHARS
@@ -1423,8 +1463,10 @@ TOOLS: dict[str, Tool] = {
                 "target": {
                     "type": "string",
                     "description": (
-                        "Build goal. Must not open with - (that is a switch) and must "
-                        "carry no whitespace or character the shell acts on. Refused for "
+                        "Build goal. Must not open with - (that is a switch), must "
+                        "carry no whitespace or character the shell acts on, and must "
+                        "not be a variable assignment -- make reads a positional "
+                        "NAME=value as an assignment, never as a goal. Refused for "
                         "every caller."
                     ),
                 },
