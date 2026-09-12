@@ -1080,6 +1080,92 @@ class NoOrchestrationDirRecordsALeafWriteAuthorityTests(unittest.TestCase):
                             "the host workflow hook log is missing")
 
 
+
+class SandboxViolationReasonsAreStatedWhereTheyAreAuditedTests(unittest.TestCase):
+    """The `violations/` writer set, derived from the code and compared against the documents.
+
+    This fact has now been written wrong TWICE: PR-2 said `violations/` has "two writers" and
+    named a dead one, and PR-2's round-1 correction said "ONE live writer, at record-launch"
+    and dropped the four at `record_agent_run`. Both times every statement site agreed with
+    the others and none agreed with the code, which is what the skill's coupling rule is for.
+
+    It matters because bwrap is now the ONLY thing confining a leaf: the four terminal reasons
+    are the record that it was in force, and an auditor who greps for the launch one alone
+    reads their absence as clean.
+
+    Coupled by MEMBERS, derived from the CODE (the `reason` argument at every
+    `_write_sandbox_enforcement_violation` call site, read by AST) and compared against the
+    documents — never the reverse, and the count comes from the same derivation."""
+
+    REPO_ROOT: ClassVar[Path] = Path(__file__).resolve().parent.parent.parent
+    AUDIENCE: ClassVar[tuple[str, ...]] = (
+        "docs/WORKSPACE_LAYOUT.md",
+        "skills/workflow-audit-claude/SKILL.md",
+        "skills/workflow-audit-codex/SKILL.md",
+    )
+
+    def _reasons(self) -> dict[str, str]:
+        """{reason: enclosing function name} for every call site, from the source."""
+        path = Path(ort.__file__)
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        enclosing: dict[int, str] = {}
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                for child in ast.walk(node):
+                    if isinstance(child, ast.Call) and isinstance(child.func, ast.Name) \
+                            and child.func.id == "_write_sandbox_enforcement_violation":
+                        enclosing[child.lineno] = node.name
+        out: dict[str, str] = {}
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                    and node.func.id == "_write_sandbox_enforcement_violation"):
+                continue
+            reason = next((kw.value.value for kw in node.keywords
+                           if kw.arg == "reason" and isinstance(kw.value, ast.Constant)), None)
+            self.assertIsInstance(reason, str,
+                                  f"a call site at line {node.lineno} passes a non-literal "
+                                  "reason; this derivation cannot see it")
+            out[reason] = enclosing.get(node.lineno, "?")
+        return out
+
+    def test_the_derivation_finds_the_call_sites_at_all(self) -> None:
+        # Self-test: a rename of the writer makes every row below vacuously true otherwise.
+        self.assertTrue(hasattr(ort, "_write_sandbox_enforcement_violation"))
+        self.assertGreaterEqual(len(self._reasons()), 2,
+                                "fewer than two reasons found; the derivation is measuring "
+                                "the wrong thing and every assertion below is vacuous")
+
+    def test_both_subcommands_still_write_one(self) -> None:
+        # The shape of the finding: a count taken from ONE function reads as the whole set.
+        functions = set(self._reasons().values())
+        self.assertEqual(functions, {"record_launch", "record_agent_run"})
+
+    def test_every_reason_is_named_in_every_document_that_audits_them(self) -> None:
+        reasons = self._reasons()
+        for rel in self.AUDIENCE:
+            path = self.REPO_ROOT / rel
+            text = path.read_text(encoding="utf-8")
+            for reason in sorted(reasons):
+                with self.subTest(document=rel, reason=reason):
+                    self.assertIn(reason, text,
+                                  f"{rel} describes `violations/` without naming {reason!r}; "
+                                  "an auditor reading it greps for the wrong set")
+
+    def test_no_document_names_a_reason_the_code_does_not_write(self) -> None:
+        # The other direction: a reason retired in the code must not survive as an audit step.
+        reasons = set(self._reasons())
+        pattern = re.compile(r"`?(sandbox_[a-z_]+)`?")
+        for rel in self.AUDIENCE:
+            text = (self.REPO_ROOT / rel).read_text(encoding="utf-8")
+            for candidate in set(pattern.findall(text)):
+                if not candidate.startswith("sandbox_") or candidate in {
+                    "sandbox_profiles", "sandbox_runtime", "sandbox_enforced",
+                    "sandbox_profile_ref", "sandbox_enforcement_violation",
+                }:
+                    continue
+                with self.subTest(document=rel, token=candidate):
+                    self.assertIn(candidate, reasons)
+
 class InprocBodiesCallTheServerWithoutATokenTests(unittest.TestCase):
     """The conductor's own deterministic bodies call the build-runtime server as the host
     process they are, not as a leaf holding a grant.

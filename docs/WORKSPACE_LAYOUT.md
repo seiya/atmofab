@@ -78,9 +78,15 @@ workspace/
 │       │   └── <agent_run_id>                     (the cleanup-completion marker of record-timeout etc.)
 │       │
 │       └── violations/                          (created only when one occurs — nothing
-│           └── <id>.json                            pre-creates it since issue #171 PR-2;
-│                                                    a sandbox-enforcement failure at
-│                                                    record-launch is the live writer)
+│           └── <id>.json                            pre-creates it since issue #171 PR-2.
+│                                                    One writer, sandbox enforcement, five
+│                                                    reasons: sandbox_profile_build_failed
+│                                                    at record-launch, and
+│                                                    sandbox_runtime_not_bwrap /
+│                                                    sandbox_not_enforced /
+│                                                    sandbox_profile_missing /
+│                                                    sandbox_profile_not_found at
+│                                                    record-agent-run)
 │
 ├── tmp/
 │   └── <agent_run_id>/                            each agent's allowed_tmp_root (referenced directly by literal path)

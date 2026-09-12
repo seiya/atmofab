@@ -5878,11 +5878,17 @@ def _ensure_orchestration_audit_dirs(repo_root: Path, orchestration_id: str) -> 
     root = _orchestration_root(repo_root, orchestration_id)
     # ONE directory. Four more were created here unconditionally — `access_policies/`,
     # `access_logs/`, `violations/` and `capabilities/` — and three of them now have no
-    # writer at all (issue #171 PR-2). `violations/` has exactly ONE live writer, a
-    # sandbox-enforcement failure at `record-launch`. (`_reject_noncanonical_phase_write`
-    # writes there too and has no caller — dead at `origin/main` as well, owned by the
-    # `TODO.md` entry on the dead apply_patch gate cluster; it is not a second writer.)
-    # It is deliberately NOT pre-created:
+    # writer at all (issue #171 PR-2). `violations/` has ONE live writer FUNCTION,
+    # `_write_sandbox_enforcement_violation`, reached from FIVE call sites: one in
+    # `record_launch` (the sandbox profile could not be built) and four in `record_agent_run`
+    # (`sandbox_runtime_not_bwrap`, `sandbox_not_enforced`, `sandbox_profile_missing`,
+    # `sandbox_profile_not_found`). Counting it as "one, at record-launch" is wrong and was
+    # written twice — by PR-2 and again by its round-1 correction — so the count is derived
+    # here by name: grep `_write_sandbox_enforcement_violation`. Since bwrap is the only
+    # confinement left, those four are the last record that it was actually in force.
+    # (`_reject_noncanonical_phase_write` writes to the same directory and has no caller —
+    # dead at `origin/main` as well, owned by the `TODO.md` entry on the dead apply_patch gate
+    # cluster; it is not a live writer.) The directory is deliberately NOT pre-created:
     # an empty `violations/` is a record that something is expected to write there, and the
     # completion criterion for this change is that a clean run leaves neither the directory
     # nor its contents. `_write_json` creates the parent when a violation actually happens.
