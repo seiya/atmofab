@@ -13658,10 +13658,14 @@ def _required_launch_prompt_markers(request_payload: dict[str, Any]) -> list[str
         if isinstance(substep, str) and substep.strip():
             det.append("Target substep:")
         return det
-    # Neither shape: no third prompt exists since Z4 (issue #171), and the renderer refuses
-    # such a request outright. Returning no markers here would make a hand-assembled payload
-    # skip marker checking entirely, so this is the honest empty rather than a permission —
-    # the caller's `if not required_markers` arm is what keeps a self-prompt (no step) working.
+    # Neither shape: no third prompt exists since Z4 (issue #171). The renderer refuses to
+    # RENDER one — but `prepare_launch_request_payload` force-renders only when
+    # `pure or not explicit_prompt_present`, so a caller that supplies `launch_prompt_full`
+    # itself never reaches the renderer, and the earlier wording here ("the renderer refuses
+    # such a request outright") was false on exactly that path. What answers for it is the
+    # caller: `_validate_launch_prompt_text`'s `if not required_markers` arm applies an
+    # identity floor when a step is declared, and returns only for the self-prompt (no step).
+    # This empty is therefore the honest "no template to preserve", not a permission.
     return []
 
 
@@ -13728,10 +13732,43 @@ def _validate_launch_prompt_text(request_payload: dict[str, Any], prompt_text: s
             )
     required_markers = _required_launch_prompt_markers(request_payload)
     if not required_markers:
-        # Even when no template markers are required (e.g. orchestration
-        # agent self-prompts), still apply the gate-allowlist lint when
-        # step/substep are declared — this is the canonical recurrence-
-        # prevention guard for Issue 1.
+        # An empty marker set means one of two things, and they must not share an exit.
+        # (a) NO STEP: the orchestration agent's own self-prompt, rendered from no template,
+        #     with nothing to preserve. That is what this early return was written for.
+        # (b) A STEP that is NEITHER deterministic NOR pure. Since Z4 (issue #171) there is no
+        #     third shape and `_render_launch_prompt_template` refuses to render one — but a
+        #     caller that supplies `launch_prompt_full` ITSELF is never rendered for
+        #     (`prepare_launch_request_payload` force-renders only when `pure or not
+        #     explicit_prompt_present`), so this validator is the only thing in front of an
+        #     arbitrary prompt body on a real step. Returning silently there is a fail-OPEN,
+        #     measured by the round-1 review: on `origin/main` the agentic marker set applied
+        #     to any step and refused it; here nothing did.
+        #
+        # The floor below is what replaces it, and it is a FLOOR rather than a refusal
+        # deliberately. This is a HOST-defect guard — `launch_prompt_full` is supplied by the
+        # conductor, and no leaf holds a write path to a launch request — so the proportionate
+        # answer is that a prompt must at least identify the run it belongs to, which every
+        # shape's prompt carries and an arbitrary body does not. Refusing outright was tried
+        # and rejected in the same round: it also refuses a `build` record written before the
+        # deterministic marker existed, which this validator still has to be able to read.
+        step = request_payload.get("step")
+        if isinstance(step, str) and step.strip():
+            identity_floor = [
+                f"Target node_key: {request_payload.get('node_key', '')}",
+                f"orchestration_id: {request_payload.get('orchestration_id', '')}",
+                f"agent_run_id: {request_payload.get('agent_run_id', '')}",
+            ]
+            missing_identity_floor = [
+                line for line in identity_floor if line not in prompt_text]
+            if missing_identity_floor:
+                raise ValueError(
+                    "launch prompt does not identify its own run (missing/mismatched: "
+                    + "; ".join(missing_identity_floor)
+                    + f"). The request declares step={step!r} "
+                    f"substep={request_payload.get('substep')!r} and is neither deterministic "
+                    "nor pure, so there is no template marker set to check it against; since "
+                    "Z4 (issue #171) a launch is one of those two shapes, and this floor is "
+                    "all that is left to check a hand-supplied prompt body with")
         return
     missing_markers = [marker for marker in required_markers if marker not in prompt_text]
     if missing_markers:

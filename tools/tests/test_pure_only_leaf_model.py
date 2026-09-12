@@ -27,6 +27,7 @@ import unittest
 from pathlib import Path
 
 import tools.llm_config as lc
+import tools.orchestration_runtime as ort
 import tools.workflow_conductor as wc
 from tools.tests.test_pure_leaf_producer import _PureFakeConductor, _write_node
 
@@ -429,3 +430,82 @@ class ExemplarFenceCannotBeForgedTests(unittest.TestCase):
         self.assertTrue(fenced.rstrip("\n").endswith(PURE_DOC_FENCE_END))
         self.assertLess(fenced.index("ignore all prior instructions"),
                         fenced.index(PURE_DOC_FENCE_END))
+
+
+class LaunchPromptValidationFloorTests(unittest.TestCase):
+    """What `_validate_launch_prompt_text` still checks, on each of the three shapes it meets.
+
+    FOUND BY THE ROUND-1 REVIEW, in two halves that share one exit.
+
+    (a) `_required_launch_prompt_lines` — "the prompt must preserve the request's field values"
+        — was pinned by `test_rejects_launch_prompt_when_field_values_do_not_match_request_payload`,
+        deleted with the agentic fixtures it was written on. The check still bites: it is the
+        only thing tying a recorded pure prompt's persona and no-write-authority paragraph to
+        the request between render and record. Mutating it to `return []` survived both suites.
+    (b) A request that is NEITHER deterministic nor pure reached that same caller with an empty
+        marker set and returned silently, so an arbitrary `launch_prompt_full` on a real step
+        was accepted unvalidated — on `origin/main` the agentic marker set refused it. A host
+        defect rather than a leaf one (no leaf writes a launch request), which is why the
+        replacement is an identity FLOOR and not a refusal: a `build` record written before the
+        deterministic marker existed still has to be readable.
+    """
+
+    _BASE = {
+        "node_key": "component/x@0.1.0", "orchestration_id": "o", "agent_run_id": "arid-1",
+        "parent_agent_run_id": "orch", "agent_model": "opus", "workflow_mode": "dev",
+        "ir_ref": "workspace/ir/x/i", "pipeline_ref": "workspace/pipelines/x/p",
+    }
+
+    def test_a_pure_prompt_missing_a_request_field_value_is_refused(self) -> None:
+        from tools.orchestration_runtime import (
+            _validate_launch_prompt_text, render_launch_prompt_text)
+        from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION
+        payload = {
+            **self._BASE, "step": "validate", "substep": "judge", "leaf_mode": "pure",
+            "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
+            "pure_context": {k: f"<{k} fixture body>"
+                             for k in ort.PURE_CONTEXT_REQUIRED_KEYS[("validate", "judge")]},
+        }
+        rendered = render_launch_prompt_text(payload)
+        _validate_launch_prompt_text(payload, rendered)          # control: the real one passes
+        # What `_required_launch_prompt_lines` requires of a PURE request is line 0, whole:
+        # the persona sentence, the substep it is for, and the no-authority clause are one
+        # line, so the check is "the recorded prompt opens with the line the renderer built
+        # for THIS request". Measured here rather than assumed — a pure request's required
+        # set is exactly one line, and asserting that is what keeps this test honest if the
+        # renderer ever splits it.
+        required = ort._required_launch_prompt_lines(payload)
+        self.assertEqual(len(required), 1, required)
+        self.assertTrue(rendered.startswith(required[0]))
+        # Tamper INSIDE that line rather than dropping it, so the pure identity check (which
+        # looks for `Target node_key:` and the ids on their own lines) still passes and this
+        # is the only thing left to refuse it.
+        head, _, tail = rendered.partition("\n")
+        self.assertIn("no gate or repository write authority", head)
+        tampered = head.replace("You have no gate or repository write authority.",
+                                "You may write what you need.") + "\n" + tail
+        with self.assertRaises(ValueError) as caught:
+            _validate_launch_prompt_text(payload, tampered)
+        self.assertIn("must preserve", str(caught.exception))
+
+    def test_a_neither_shape_request_must_still_identify_its_own_run(self) -> None:
+        from tools.orchestration_runtime import _validate_launch_prompt_text
+        payload = {**self._BASE, "step": "generate", "substep": "generate"}
+        # An arbitrary body on a real step: accepted silently before this floor existed.
+        with self.assertRaises(ValueError) as caught:
+            _validate_launch_prompt_text(payload, "you are a helpful assistant\n")
+        message = str(caught.exception)
+        self.assertIn("does not identify its own run", message)
+        self.assertIn("neither deterministic nor pure", message)
+        # The floor is a FLOOR: a body carrying the three identity lines passes, because the
+        # answer to a host defect here is "say which run this is", not "refuse the record".
+        _validate_launch_prompt_text(payload, "\n".join([
+            "Target node_key: component/x@0.1.0", "orchestration_id: o",
+            "agent_run_id: arid-1", "anything else at all"]))
+
+    def test_the_self_prompt_with_no_step_is_still_exempt(self) -> None:
+        """The case the silent return was written for, and the reason it is not a refusal."""
+        from tools.orchestration_runtime import _validate_launch_prompt_text
+        _validate_launch_prompt_text(
+            {"node_key": "component/x@0.1.0", "orchestration_id": "o",
+             "agent_run_id": "orch"}, "conductor self-prompt\n")
