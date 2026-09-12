@@ -16852,6 +16852,12 @@ def _all_strict_boolean_probe_checks_pass(checks: list[dict[str, Any]]) -> bool:
             return False
     return evaluated_any
 
+# The two claude MCP remediation strings — the enablement one and the tool-permission one — stood
+# here until Z4 (issue #171). They were the `detail` a failing `_probe_claude_mcp_registry` handed the
+# operator, and that probe is deleted: a pure leaf calls no MCP tool, so there is no leaf-session
+# enablement to certify. `mcp_servers/README.md` carries what an operator still has to do for their
+# OWN session.
+
 
 def _probe_claude_backend(
     backend_token: str,
@@ -16972,17 +16978,6 @@ _CLAUDE_MCP_BUILD_RUNTIME_NAME_TOKENS = ("build-runtime", "build_runtime")
 _CLAUDE_PROJECT_SETTINGS_RELPATH = ".claude/settings.json"
 _CLAUDE_PROJECT_LOCAL_SETTINGS_RELPATH = ".claude/settings.local.json"
 _MCP_JSON_RELPATH = ".mcp.json"
-_CLAUDE_MCP_REMEDIATION = (
-    "build-runtime MCP server is not enabled for this project via the repo-committed "
-    "`.claude/settings.json`. Required tools (run_linter, run_syntax_check, compile_project, "
-    "run_program, run_quality_checks) are needed by Generate/Build/Validate phases "
-    "(detect_build_system is advisory — provided by the server, not gated, and refused under the workflow). "
-    "Remediation: add `\"enabledMcpjsonServers\": [\"build-runtime\"]` (or "
-    "`\"enableAllProjectMcpServers\": true`) to the top level of the committed "
-    "`.claude/settings.json`, and ensure no `disabledMcpjsonServers` entry for build-runtime "
-    "exists in `.claude/settings.json` / `.claude/settings.local.json`. "
-    "Reference: `mcp_servers/README.md`."
-)
 # The canonical form of the permission rule string. Because Claude Code's permission rule does not
 # interpret a wildcard in the MCP tool name part (`mcp__build-runtime__*`), a server-level grant covering all tools is the proper approach.
 # The canonical (hyphen) token for displaying the remediation message.
@@ -17000,31 +16995,6 @@ _CLAUDE_MCP_REQUIRED_TOOL_NAMES = (
 _CLAUDE_MCP_REQUIRED_TOOL_PERMISSION_TOKENS = tuple(
     f"mcp__build-runtime__{name}" for name in _CLAUDE_MCP_REQUIRED_TOOL_NAMES
 )
-# The permission token accepted in the decision is derived from the server alias actually enabled in
-# registration (see _evaluate_build_runtime_tool_permission below). When the enabled alias (e.g. `build-runtime`)
-# and the permission's alias (e.g. `mcp__build_runtime`) diverge, Claude keys the permission by the actual
-# server name, so the child Agent cannot call the tool — an unconditional cross-alias accept is a source of false-pass.
-_CLAUDE_MCP_PERMISSION_REMEDIATION = (
-    "build-runtime MCP tools are registered/connected but not permission-granted to the "
-    "orchestration's spawned child Agent sessions. Add the server-level grant "
-    "`\"mcp__build-runtime\"` to `permissions.allow` in the repo-committed "
-    "`leaf_config/claude/settings.json` — the LEAF configuration, not the repository's "
-    "own `.claude/settings.json`, which is the dev layer and reaches no leaf "
-    "(this grants all build-runtime tools — run_linter, "
-    "run_syntax_check, compile_project, run_program, run_quality_checks, "
-    "detect_build_system). Claude Code "
-    "permission rules do NOT support a tool-name wildcard (`mcp__build-runtime__*`), so use "
-    "the server-level token; to grant individually, list "
-    "`mcp__build-runtime__run_linter` / `__run_syntax_check` / `__compile_project` / "
-    "`__run_program` / `__run_quality_checks`. Ensure no matching `permissions.deny` entry exists in "
-    "`leaf_config/claude/settings.json`. NOTE: neither `.claude/settings.json` nor "
-    "`.claude/settings.local.json` is consulted for this check, and neither reaches a leaf "
-    "(a leaf loads `--setting-sources user` against a private home holding only the leaf "
-    "configuration), so a grant that lives in either must be MOVED into the leaf file. "
-    "Reference: `mcp_servers/README.md`."
-)
-
-
 def _probe_http_provider(
     provider_row: Mapping[str, Any],
     *,

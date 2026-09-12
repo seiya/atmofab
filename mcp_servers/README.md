@@ -78,7 +78,7 @@ sync test that required the dev layer to be a superset of it.
 }
 ```
 
-To temporarily disable it in a personal environment, place `"disabledMcpjsonServers": ["build-runtime"]` in `.claude/settings.local.json` (the preflight detects this opt-out and makes it `status=fail`). It stops the run at the gate; it does not subtract anything from a leaf, which calls no MCP tool.
+To temporarily disable it in a personal environment, place `"disabledMcpjsonServers": ["build-runtime"]` in `.claude/settings.local.json`. That is a statement about the OPERATOR's own session: the preflight check that read it and made the run `status=fail` went with `_probe_claude_mcp_registry` in Z4 (issue #171), so it no longer stops a run — and it subtracts nothing from a leaf, which calls no MCP tool. What it does affect is the conductor's own in-process MCP calls, which run in the operator's environment.
 
 ### Cursor: `.cursor/mcp.json`
 

@@ -1138,38 +1138,13 @@ shell_tool                       stable             true
                 encoding="utf-8",
             )
 
-    def test_the_permission_remedy_points_at_the_layer_the_gate_reads(self) -> None:
-        """A refusal is only closed if the instruction it gives converges.
-
-        This string is the ONLY guidance an operator gets when
-        `claude_mcp_build_runtime_permission_granted` fails, and the most likely reason it
-        fails is a grant sitting in `.claude/settings.local.json` — the file Claude Code
-        writes on an interactive "always allow". While the gate read that file, naming it was
-        correct; now that neither the gate nor a leaf loads it, naming it as somewhere the
-        grant may live sends the operator to do something that cannot work.
-
-        Pins the PROPERTY, not the wording: the file the gate actually reads must be named
-        as the place to add the grant, and any layer the gate does NOT read may appear only
-        alongside a statement that it is not consulted.
-
-        Read on the HALF of the message that gives the instruction, not on the whole
-        string: this message states two rules — where to add the grant, and which layers
-        are ignored — and `leaf_config/claude/settings.json` is a substring of neither
-        naively-checkable half. A whole-string `assertIn` for the leaf path would also be
-        satisfied by the sentence that merely mentions the dev layer, which is the pin
-        failing open in the direction this test exists to catch."""
-        from tools.orchestration_runtime import _CLAUDE_MCP_PERMISSION_REMEDIATION as msg
-        instruction, _, ignored = msg.partition("NOTE:")
-        self.assertIn("leaf_config/claude/settings.json", instruction,
-                      "the remedy must name the layer the gate reads as where to add the grant")
-        for ignored_layer in (".claude/settings.json", ".claude/settings.local.json"):
-            if ignored_layer in ignored:
-                self.assertIn("is consulted", ignored,
-                              "the remedy names an ignored layer without saying it is ignored")
-        # The dev layer may be MENTIONED in the instruction half only to disclaim it.
-        if ".claude/settings.json" in instruction:
-            self.assertIn("not the repository's own", instruction,
-                          "the instruction half names the dev layer without disclaiming it")
+    # `test_the_permission_remedy_points_at_the_layer_the_gate_reads` stood here until Z4
+    # (issue #171). It pinned that `_CLAUDE_MCP_PERMISSION_REMEDIATION` — the only guidance an
+    # operator got when `claude_mcp_build_runtime_permission_granted` failed — named the settings
+    # layer the GATE actually reads, so the instruction converged instead of sending the operator
+    # to a file nothing loads. Both the check and the remediation string are deleted: a pure leaf
+    # calls no MCP tool, so there is no leaf-session grant to certify and no refusal to remedy.
+    # What an operator still has to do for their OWN session is `mcp_servers/README.md`'s.
 
     def test_probe_execution_platform_uses_explicit_agent_command(self) -> None:
         seen = {"command": ""}

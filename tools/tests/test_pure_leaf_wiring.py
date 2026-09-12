@@ -1404,8 +1404,15 @@ class PureRenderTests(unittest.TestCase):
         # sentences replaced by the revocation chain). Each was read before re-taking: all of
         # them route on `dev_verify_major` / `dev_verify_critical` and assign nothing, and
         # `docs/RUNBOOK.md` is not a leaf surface at all — it is swept as a growth bound.
+        # Re-taken a FOURTH time, for issue #171's round 1: the sentence naming
+        # `skills/workflow-compile-verify/SKILL.md` as what makes an unconfirmable dependency a
+        # `dependency compile missing` fail now names the HOST mechanism that actually refuses
+        # it before a leaf launches (`_verify_dependency_readiness` / `workflow-launch-check`),
+        # because that SKILL is deleted and the rule it stated was the host's already. READ
+        # before re-approving: the line still routes on `dev_verify_major` /
+        # `dev_verify_critical` and assigns no severity to anything.
         "docs/RUNBOOK.md: - Recovery from a **`conductor_phase_fail_closed` whose `rea"
-        " #ce3cf072ca6f",
+        " #4f8aa234c4e9",
         # The two verifier `SKILL`s' routing lines stood here until Z4 (issue #171). Both files
         # are deleted with the agentic leaf: a pure leaf reads no `SKILL`, so the lines are not
         # on a leaf-read surface any more and there is nothing left to allowlist.
