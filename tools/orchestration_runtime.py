@@ -12758,11 +12758,18 @@ def _sanitize_exemplar_body(text: str) -> str:
     source content cannot FORGE or prematurely close the data fence. The source is
     leaf-authored (an LLM wrote the certified `.f90`) and a Fortran comment / string can legally
     contain the literal `--- BEGIN EXEMPLAR ` / `--- END EXEMPLAR ` prefix; without this, such a
-    line would (a) close the fence early so the trailing source renders as LIVE prompt text
-    (prompt-injection surface), and (b) truncate `_strip_exemplar_regions` so the leaked tail is
-    scanned by the gate-allowlist lint (a fail-close DoS vector for an unrelated node). Breaking
-    the exact prefix token (space→hyphen) defeats both the renderer fence, the startswith scan,
-    and `_EXEMPLAR_REGION_RE` while leaving the comment human-legible."""
+    line would close the fence early and the trailing source would render as LIVE prompt text
+    to the leaf reading it — a prompt-injection surface, and the reason this function exists.
+    Breaking the exact prefix token (space->hyphen) defeats the renderer fence while leaving the
+    comment human-legible.
+
+    It had a SECOND reason until Z4 (issue #171): an early close also truncated
+    `_strip_exemplar_regions`, so the leaked tail was scanned by the gate-allowlist lint and a
+    `validate_pipeline_semantics --stage` string in it fail-closed the launch of an unrelated
+    node. That lint, `_strip_exemplar_regions` and `_EXEMPLAR_REGION_RE` are all deleted; the
+    injection half is untouched, and is what
+    `test_pure_only_leaf_model.HostDefectRefusalsTests` now pins, the round-1 review having
+    found that the deleted lint took the only pin with it."""
     return (text.replace(_EXEMPLAR_BEGIN_PREFIX, "--- BEGIN-EXEMPLAR ")
                 .replace(_EXEMPLAR_END_PREFIX, "--- END-EXEMPLAR "))
 
@@ -13108,19 +13115,21 @@ def _is_pure_launch_request(request_payload: dict[str, Any]) -> bool:
 def _sanitize_pure_doc_body(text: str) -> str:
     """Neutralize any embedded pure-doc fence marker in an inlined document body so an
     untrusted document (tests.md, the IR, the bundle under review) cannot FORGE or prematurely
-    close the data fence. Mirrors `_sanitize_exemplar_body`: an early close would (a) render the
-    document tail as live prompt text (injection surface) and (b) truncate the gate-allowlist
-    scan carve-out so a `validate_pipeline_semantics --stage` string in the leaked tail
-    fail-closes the launch. Breaking the exact marker token leaves the body human-legible."""
+    close the data fence. Mirrors `_sanitize_exemplar_body`: an early close renders the document
+    tail as live prompt text, which is an injection surface on the one span of a pure prompt the
+    host does not author. (It had the same second reason as that function — truncating the
+    gate-allowlist scan carve-out — and that lint is deleted in Z4, issue #171.) Breaking the
+    exact marker token leaves the body human-legible."""
     return (text.replace(PURE_DOC_FENCE_BEGIN, PURE_DOC_FENCE_BEGIN.replace("BEGIN", "BEGIN-"))
                 .replace(PURE_DOC_FENCE_END, PURE_DOC_FENCE_END.replace("END", "END-")))
 
 
 def _fence_pure_doc(text: str) -> str:
-    """Wrap an inlined pure-context document in the data-only fence (sanitized body). The
-    fenced region is what the gate-allowlist scan carve-out (`_gate_allowlist_scan_text`)
-    removes before linting, so an untrusted document that legitimately mentions a gate command
-    is never mistaken for a leaf instruction."""
+    """Wrap an inlined pure-context document in the data-only fence (sanitized body). The fence
+    tells the leaf that everything between the markers is DATA — the one span of its prompt the
+    host did not author — and the sanitized body is what keeps the document from closing it
+    early. (The fenced region was also the gate-allowlist scan's carve-out, which is what
+    `_gate_allowlist_scan_text` removed before linting; that lint is deleted in Z4, issue #171.)"""
     return "\n".join([PURE_DOC_FENCE_BEGIN, _sanitize_pure_doc_body(text).rstrip("\n"),
                       PURE_DOC_FENCE_END])
 
