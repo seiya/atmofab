@@ -130,8 +130,12 @@ _UNSAFE_ENV_OVERRIDE_PREFIXES = ("LD_", "DYLD_")
 # with: it replaces the interpreter of every recipe line, which is arbitrary execution rather
 # than a redirected compiler. `make SHELL=./evil all` runs `./evil` (measured, GNU Make 4.3).
 # `MAKE` is here and not in the env set because make exports it to sub-makes as the command
-# to re-invoke itself with.
-_UNSAFE_ASSIGNMENT_NAMES = frozenset(_UNSAFE_ENV_OVERRIDE_KEYS | {"SHELL", "MAKE"})
+# to re-invoke itself with, and `SHELLFLAGS` because make's own spelling is the SPECIAL
+# variable `.SHELLFLAGS`, which supplies the arguments `SHELL` is invoked with — measured:
+# `make '.SHELLFLAGS=-c touch /tmp/x;' all` runs `touch`. The leading dot is normalised off
+# before the lookup, so both spellings are covered.
+_UNSAFE_ASSIGNMENT_NAMES = frozenset(
+    _UNSAFE_ENV_OVERRIDE_KEYS | {"SHELL", "SHELLFLAGS", "MAKE"})
 
 # The make recipe interpolates a make variable's value unquoted (`cd $(RUNDIR) &&
 # $(BINDIR)/$(BIN) --cases $(SPEC) $(CASES)`), so a value carrying a character that
@@ -252,6 +256,24 @@ def _build_syntax_source_re() -> re.Pattern[str]:
 _ASSIGNMENT_ARGV_BUILD_SYSTEMS = frozenset({"make"})
 
 
+def _is_shell_assignment(element: str) -> bool:
+    """``NAME!=<command>`` — make's SHELL ASSIGNMENT, which executes its value.
+
+    Not a spelling of a name: an OPERATOR, and the danger is the operator. `FOO!=touch
+    /tmp/x` runs `touch /tmp/x` while make reports the build as succeeding, whatever `FOO`
+    is called, so no name denylist can reach it. Measured on GNU Make 4.3:
+
+        make 'FOO!=touch /tmp/mk2/PWN' all   ->  "REAL"   and /tmp/mk2/PWN exists
+
+    A first version of this module's normalisation stripped `!` as if it were part of the
+    name, which turned an arbitrary-execution operator into a lookup that could never
+    match. Refused on EVERY build system: `cmake` forwards `extra_args` to the native tool
+    after `--`, so a make command line is reachable from more than `build_system=make`.
+    """
+    head = element.split("=", 1)[0] if "=" in element else ""
+    return head.rstrip().endswith("!")
+
+
 def _is_execution_redirecting_assignment(element: str) -> bool:
     """``NAME=value`` whose NAME make reads as a redirection of what is EXECUTED.
 
@@ -273,7 +295,7 @@ def _is_execution_redirecting_assignment(element: str) -> bool:
     """
     if "=" not in element:
         return False
-    name = element.split("=", 1)[0].strip().rstrip(":+!?").strip().upper()
+    name = element.split("=", 1)[0].strip().rstrip(":+!?").strip().lstrip(".").upper()
     return (name in _UNSAFE_ASSIGNMENT_NAMES
             or name.startswith(_UNSAFE_ENV_OVERRIDE_PREFIXES))
 
@@ -290,6 +312,12 @@ def _refuse_execution_redirecting_assignments(
     env/argv pair, and once for the target/extra_args pair, where widening the target rule
     from a name allowlist to a metacharacter refusal dropped `=` out of both sets.
     """
+    executing = sorted(e for e in elements if _is_shell_assignment(e))
+    if executing:
+        raise ValueError(
+            f"{tool_name} does not accept a shell assignment (NAME!=command) in {where}: "
+            "make EXECUTES its value; refused " + ", ".join(executing)
+        )
     offending = sorted(e for e in elements if _is_execution_redirecting_assignment(e))
     if offending:
         raise ValueError(
@@ -357,6 +385,11 @@ def _validate_build_argv_overrides(
                 "assignment, never as a goal; pass it in extra_args, where the assignment "
                 "rules apply)"
             )
+    # The two rules that hold for EVERY build system run FIRST, so the refusal a caller
+    # reads names the strongest reason rather than whichever rule happened to be checked
+    # first: `FOO!=touch /tmp/x` is arbitrary execution, not a malformed make assignment,
+    # and reporting it as the latter is how round 4 came to believe it was handled.
+    _refuse_execution_redirecting_assignments(extra_args, tool_name, "extra_args")
     if build_system in _ASSIGNMENT_ARGV_BUILD_SYSTEMS:
         offending = [
             arg for arg in extra_args
@@ -368,7 +401,6 @@ def _validate_build_argv_overrides(
                 f"{tool_name} accepts only make variable assignments (NAME=value) in "
                 "extra_args; refused: " + ", ".join(offending)
             )
-    _refuse_execution_redirecting_assignments(extra_args, tool_name, "extra_args")
     unsafe = sorted(
         arg for arg in extra_args
         if set(arg.split("=", 1)[1] if "=" in arg else arg) & _SHELL_ACTIVE_CHARS
@@ -1498,10 +1530,12 @@ TOOLS: dict[str, Tool] = {
                         "element must ASSIGN a make variable (NAME=value), because make "
                         "reads anything else as a switch it applies before the control "
                         "file; other build systems take their own switches. For every "
-                        "build system: an assignment must not name something make reads "
-                        "as a redirection of what is executed (SHELL, MAKE, MAKEFILES, "
-                        "MAKEFLAGS, LD_*, PATH, ...), and no element may carry a "
-                        "character a shell acts on, because make interpolates a value "
+                        "build system: no element may use make's shell assignment "
+                        "(NAME!=command), which EXECUTES its value whatever the name is; "
+                        "an assignment must not name something make reads as a "
+                        "redirection of what is executed (SHELL, .SHELLFLAGS, MAKE, "
+                        "MAKEFILES, MAKEFLAGS, LD_*, PATH, ...); and no element may carry "
+                        "a character a shell acts on, because make interpolates a value "
                         "into the recipe unquoted. Applies to every caller."
                     ),
                 },

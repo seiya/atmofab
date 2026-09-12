@@ -630,6 +630,47 @@ class BuildArgvOverrideTests(unittest.TestCase):
                     self._check([f"{name}=/tmp/x"])
                 self.assertIn("redirect execution", str(ctx.exception))
 
+    def test_a_shell_assignment_is_refused_whatever_the_variable_is_called(self) -> None:
+        """`NAME!=command` EXECUTES its value. The operator is the danger, not the name.
+
+        Measured on GNU Make 4.3: `make 'FOO!=touch /tmp/mk2/PWN' all` prints the recipe's
+        own output and creates the file — the build reports success while an arbitrary
+        command has run. No name denylist can reach this, because `FOO` is not on one and
+        never will be.
+
+        Round 4 mistook `!` for part of a NAME spelling and stripped it before the lookup,
+        which turned an arbitrary-execution operator into a comparison that could never
+        match. Under `make` the assignment-SHAPE rule hid it; `cmake` forwards `extra_args`
+        to the native tool after `--`, so a make command line is reachable from more than
+        `build_system=make` and there it was live."""
+        for build_system in ("make", "cmake", "ninja", "cargo", "maven"):
+            for element in ("FOO!=touch /tmp/x", "X!=id", "harmless_name!=whoami",
+                            "SHELL!=id", "A !=id"):
+                with self.subTest(build_system=build_system, element=element):
+                    with self.assertRaises(ValueError) as ctx:
+                        self.mod._validate_build_argv_overrides(
+                            None, [element], "compile_project",
+                            build_system=build_system)
+                    self.assertIn("shell assignment", str(ctx.exception))
+
+    def test_the_shell_flags_variable_is_refused_in_both_spellings(self) -> None:
+        # `.SHELLFLAGS` is make's special variable for the arguments `SHELL` is invoked
+        # with; measured, `make '.SHELLFLAGS=-c touch /tmp/x;' all` runs `touch`. The dotted
+        # spelling is the real one and the undotted is what a caller is likely to write, so
+        # the leading dot is normalised off and both are refused.
+        for element in (".SHELLFLAGS=-c id;", "SHELLFLAGS=-c id;", ".shellflags=-c"):
+            with self.subTest(element=element):
+                with self.assertRaises(ValueError) as ctx:
+                    self.mod._validate_build_argv_overrides(
+                        None, [element], "compile_project", build_system="cargo")
+                self.assertIn("redirect execution", str(ctx.exception))
+
+    def test_an_ordinary_dotted_variable_is_not_swallowed(self) -> None:
+        # The dot normalisation must not refuse a legitimate name that happens to start
+        # with one; only the denylisted stems are refused.
+        self.mod._validate_build_argv_overrides(
+            None, [".SOMETHING_ELSE=1"], "compile_project", build_system="cargo")
+
     def test_the_name_rule_alone_closes_every_spelling_make_honours(self) -> None:
         """Self-sufficiency, measured against GNU Make 4.3 rather than assumed.
 
@@ -643,10 +684,9 @@ class BuildArgvOverrideTests(unittest.TestCase):
         the hole would be closed by two rules each covering half of it. That is the shape
         that has reopened three times on this branch."""
         for spelling in ("SHELL=./evil", "SHELL:=./evil", "SHELL::=./evil",
-                         "SHELL+=./evil", "SHELL!=./evil", " SHELL=./evil",
+                         "SHELL+=./evil", " SHELL=./evil",
                          "SHELL =./evil", "shell=./evil",
-                         "LD_PRELOAD:=/tmp/x.so", "MAKEFILES+=/tmp/evil.mk",
-                         "MAKESHELL!=/tmp/x"):
+                         "LD_PRELOAD:=/tmp/x.so", "MAKEFILES+=/tmp/evil.mk"):
             with self.subTest(spelling=spelling):
                 self.assertTrue(
                     self.mod._is_execution_redirecting_assignment(spelling))
@@ -655,7 +695,7 @@ class BuildArgvOverrideTests(unittest.TestCase):
         # The other half of the same claim, through the real validator on a build system
         # where nothing else would catch it.
         for spelling in ("SHELL:=./evil", "SHELL::=./evil", "SHELL+=./evil",
-                         "SHELL!=./evil", " SHELL=./evil"):
+                         " SHELL=./evil"):
             with self.subTest(spelling=spelling):
                 with self.assertRaises(ValueError) as ctx:
                     self.mod._validate_build_argv_overrides(
