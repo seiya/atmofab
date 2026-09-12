@@ -691,11 +691,17 @@ class BuildArgvOverrideTests(unittest.TestCase):
                 with self.assertRaises(ValueError) as ctx:
                     self.mod._validate_build_argv_overrides(
                         target, [], "compile_project")
-                self.assertIn("build goal name", str(ctx.exception))
+                self.assertIn("must be a build goal, not a switch", str(ctx.exception))
 
     def test_a_real_build_goal_is_still_accepted(self) -> None:
+        # Across the build systems `_build_command` serves, not just make: a gradle task
+        # path, an npm script name and a meson typed target all carry `:`, and a make
+        # pattern goal carries `%`. A first version of this rule spelled an allowlist of
+        # name characters and refused all four — an allowlist over a grammar this server
+        # does not own answers a question it cannot know.
         for target in ("all", "clean", "sw2d_runner", "build/libcore.a", "lib.so.1",
-                       "x86_64-target", "c++filt"):
+                       "x86_64-target", "c++filt", ":app:assembleDebug", "build:prod",
+                       "lib.so:shared_library", "%.o", "install-strip"):
             with self.subTest(target=target):
                 self.assertEqual(
                     self.mod._validate_build_argv_overrides(
@@ -728,7 +734,7 @@ class BuildArgvOverrideWiringTests(unittest.TestCase):
         self,
     ) -> None:
         cases = (
-            ("target", {"target": "--eval=$(shell id)"}, "build goal name"),
+            ("target", {"target": "--eval=$(shell id)"}, "must be a build goal, not a switch"),
             ("extra_args", {"extra_args": ["--eval=$(shell id)"]},
              "make variable assignments"),
             ("value", {"extra_args": ["CASES=a; id"]},

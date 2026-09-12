@@ -209,13 +209,20 @@ def _validate_env_overrides(env: Any, tool_name: str) -> None:
 _MAKE_ASSIGNMENT_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 # `target` reaches the build tool's argv POSITIONALLY for every build system here
 # (`make -jN <target>`, `ninja -jN <target>`, `cmake --build . --target <target>`), so it
-# is the same surface `extra_args` is and takes the same answer: a build GOAL is a name,
-# and anything that opens with `-` is a switch make reads before the certified Makefile.
-# The orchestrated arm refused a target outright until Z4 (issue #171) because the caller
-# might be a leaf; no leaf reaches this server, but the rule that kept `--eval=$(shell
-# ...)` off the command line was doing a second job — catching a defect in a caller this
-# repository writes — and that job is not retired, so it applies to every caller now.
-_BUILD_TARGET_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_./+-]*$")
+# is the same surface `extra_args` is: anything that opens with `-` is a SWITCH the build
+# tool reads before the certified control file, and a metacharacter is a command rather
+# than a name. The orchestrated arm refused a target outright until Z4 (issue #171) because
+# the caller might be a leaf; no leaf reaches this server, but the rule that kept
+# `--eval=$(shell ...)` off the command line was doing a second job — catching a defect in
+# a caller this repository writes — and that job is not retired, so it applies to every
+# caller now.
+#
+# Stated as what is REFUSED rather than as an allowlist of name characters. A first attempt
+# spelled the allowlist and refused real goals across the build systems this server serves:
+# `:app:assembleDebug` (gradle), `build:prod` (an npm script), `lib.so:shared_library`
+# (meson), `%.o` (a make pattern goal). None of those is dangerous, and an allowlist over a
+# grammar this server does not own answers a question it cannot know.
+_TARGET_REFUSED_CHARS = _SHELL_ACTIVE_CHARS | set(" ")
 
 
 def _build_syntax_source_re() -> re.Pattern[str]:
@@ -266,11 +273,17 @@ def _validate_build_argv_overrides(
     if not isinstance(extra_args, list) or not all(isinstance(a, str) for a in extra_args):
         raise ValueError(f"{tool_name} extra_args must be an array of strings")
     resolved_target = target.strip() if isinstance(target, str) and target.strip() else None
-    if resolved_target is not None and not _BUILD_TARGET_RE.match(resolved_target):
-        raise ValueError(
-            f"{tool_name} target must be a build goal name (letters, digits, _ . / + -, "
-            f"not opening with -): refused {resolved_target}"
-        )
+    if resolved_target is not None:
+        if resolved_target.startswith("-"):
+            raise ValueError(
+                f"{tool_name} target must be a build goal, not a switch: refused "
+                f"{resolved_target}"
+            )
+        if set(resolved_target) & _TARGET_REFUSED_CHARS:
+            raise ValueError(
+                f"{tool_name} target must be a build goal, not a switch: refused "
+                f"{resolved_target} (it carries whitespace or a character the shell acts on)"
+            )
     offending = [
         arg for arg in extra_args
         if "=" not in arg
@@ -1397,8 +1410,9 @@ TOOLS: dict[str, Tool] = {
                 "target": {
                     "type": "string",
                     "description": (
-                        "Build goal name: letters, digits and _ . / + -, not opening "
-                        "with -. A switch is refused, whoever the caller is."
+                        "Build goal. Must not open with - (that is a switch) and must "
+                        "carry no whitespace or character the shell acts on. Refused for "
+                        "every caller."
                     ),
                 },
                 "jobs": {"type": "integer", "minimum": 1},
