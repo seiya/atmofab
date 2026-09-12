@@ -14,13 +14,16 @@ is left mid-launch:
 The conductor is a plain Python process with no host/parent session, but each
 leaf is launched with its ``agent_run_id`` pinned as the Claude session id
 (``claude --session-id <arid>``), so the dangling child's OWN transcript is
-directly addressable as ``<projects-root>/<slug>/<arid>.jsonl`` — since issue #63 the
-orchestration's private home first, then the operator's ``~/.claude``. That private home
-is DURABLE since issue #64 (``~/.atmofab/homes/<orchestration_id>/claude``); it is still
-machine-local, and it is still removable, but by an operator running
-``tools/prune_workflow_homes.py`` rather than by a ``/tmp`` sweep or a ``~/.claude``
-cleanup. Every "when it is still there" below reads against that, not against a directory
-that disappears on its own. Its last activity, the dead-air before
+directly addressable as ``<projects-root>/<slug>/<arid>.jsonl`` — the operator's
+``~/.claude/projects``, which since Z4 (issue #171) is the only root there is. A
+``pure-function leaf`` is prepared no private ``CLAUDE_CONFIG_DIR``, so it writes where every
+other claude session writes. Issue #63 had put an AGENTIC leaf's transcript in the
+orchestration's private home and issue #64 made that home durable
+(``~/.atmofab/homes/<orchestration_id>/claude``); that leaf is deleted, the home is no longer
+prepared, and a transcript written under one before the cut is not reachable from here —
+recorded as an accepted loss, and the files are still on disk for
+``tools/prune_workflow_homes.py``. Every "when it is still there" below now reads against a
+``~/.claude`` an operator may clean. Its last activity, the dead-air before
 the abort, and any final API error are the decisive evidence for whether the
 launch was a retryable transport blip or a hang; this module recovers them from
 that transcript when it is still on disk. It can also aggregate leaf token usage
@@ -429,12 +432,11 @@ class LeafTranscriptMatch(NamedTuple):
     """Where a leaf transcript was found, not just which file it is.
 
     ``projects_root`` is the root returned by ``claude_leaf_projects_roots`` that
-    actually held the hit. The operator's ``~/.claude/projects`` answers for TWO live
-    cases, not only for history: a PURE leaf is prepared no private home at all (only
-    the agentic shape gets one, issue #63), so it writes there on a current run, and so
-    does an agentic run recorded before that move. The path itself is self-describing,
-    which is why no label is attached to it: labelling would mean duplicating the
-    resolver's internal knowledge of which home is which.
+    actually held the hit. Since Z4 (issue #171) there is exactly one, the operator's
+    ``~/.claude/projects``: a pure leaf is prepared no private home, so it writes where every
+    claude session writes. The field is KEPT rather than dropped — it says where the search
+    landed, which an incident has to state whether or not there is a choice, and a second root
+    reappearing would otherwise arrive unrecorded.
     """
 
     path: Path
@@ -451,12 +453,11 @@ def _locate_leaf_transcript(child_arid: str, repo_root: Path,
     — no host/parent session is involved. Mirrors the wildcard-slug lookup in
     ``workflow_conductor._claude_session_resumable`` so a leaf that ran under a
     slightly different cwd slug is still found; the arid (a uuid) is unique, so the
-    wildcard cannot collide across projects. Both the orchestration's private home
-    (issue #63) and the operator's ``~/.claude`` are searched, through the canonical
-    ``claude_leaf_projects_roots`` resolver — a PURE leaf writes there on a current
-    run, and a run predating the private home must stay auditable. Returns WHICH root
-    held the hit alongside the path, because an incident record that says only "found"
-    cannot tell an agentic leaf's private-home hit from an operator-home one.
+    wildcard cannot collide across projects. The operator's ``~/.claude`` is searched,
+    through the canonical ``claude_leaf_projects_roots`` resolver — since Z4 (issue #171)
+    the only root, because a pure leaf is prepared no private home. Returns WHICH root held
+    the hit alongside the path: an incident record that says only "found" cannot say where it
+    looked, and the resolver is the one place a second root would come back.
     """
     arid = str(child_arid or "").strip()
     if not arid:
@@ -484,8 +485,10 @@ def _claude_projects_dir(repo_root: Path, orchestration_id: str | None = None) -
     except OSError:
         abs_root = repo_root
     slug = str(abs_root).replace("/", "-")
-    # First root wins: the orchestration's private home when it has one, else the
-    # operator's `~/.claude`. Same resolver as every other transcript consumer.
+    # First root wins. There is one since Z4 (issue #171) — the operator's `~/.claude` — and
+    # this still reads it through the shared resolver rather than spelling the path, so a
+    # second root returning is picked up here without an edit. Same resolver as every other
+    # transcript consumer.
     return claude_leaf_projects_roots(repo_root, orchestration_id)[0] / slug
 
 
@@ -957,8 +960,15 @@ def build_launch_incident(
         child["matched_projects_root"] = str(match.projects_root)
     else:
         child = {"found": False,
-                 "reason": "no leaf transcript located (private home pruned, or "
-                           "~/.claude cleaned)"}
+                 # OPERATOR-FACING (`audit_orchestration` prints it), so it must name a place
+                 # that was actually searched. It said "private home pruned" until Z4 (issue
+                 # #171) removed that root — pointing an operator at a directory this function
+                 # does not look in. A pre-Z4 agentic run's transcript IS under one, and is
+                 # unreachable from here; that is the accepted loss the module docstring
+                 # records, and naming it is how an operator diagnosing an old run learns it.
+                 "reason": "no leaf transcript located under ~/.claude/projects (cleaned, or "
+                           "a pre-Z4 agentic run whose transcript is in the orchestration's "
+                           "private home, which is no longer searched)"}
 
     abort_marker = None
     if child.get("found"):
