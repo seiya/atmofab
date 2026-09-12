@@ -7708,7 +7708,7 @@ clean:
             rec["launch_prompt_text"], self._child_env(child_arid, entry), entry,
             session_id=child_arid,
             resume_session_id=(resume_session_id if warm else None),
-            child_arid=child_arid, pure=True,
+            child_arid=child_arid,
             timeout_context={"node_key": node_key, "step": phase,
                              "substep": substep or "", "agent_run_id": child_arid})
         self._persist_leaf_output(child_arid, proc)

@@ -12,7 +12,6 @@ import copy
 import errno
 import glob
 import io
-import hashlib
 import json
 import os
 import queue
@@ -51,7 +50,6 @@ from tools.tests.llm_samples import sample_config_with as _cfg
 # SUBJECT is the shared agentic leaf loop: since issue #168 four of the five LLM leaves
 # dispatch to a pure loop on an unrestricted claude/codex entry, so naming `compile.verify`
 # no longer reaches the agentic loop by itself.
-from tools.tests.llm_samples import agentic_only_config as _agentic_cfg
 
 
 def setUpModule() -> None:
@@ -345,71 +343,46 @@ class ReuseResumeAndFindingsTest(unittest.TestCase):
                 self.assertIsNone(c._resolve_reuse_resume(repair, "generate", "generate"))
             self.assertIn("resume_session_unavailable", emitted)
 
-    def test_a_leaf_session_is_looked_for_in_the_orchestrations_private_home(self) -> None:
-        """Warm resume must follow the transcript, which issue #63 moved.
+    def test_a_leaf_session_is_looked_for_in_the_operators_home(self) -> None:
+        """Warm resume must follow the transcript, and there is ONE place it can be.
 
-        The transcript of an agentic claude leaf is written under the private
-        CLAUDE_CONFIG_DIR, not the operator's `~/.claude`. A probe still pointing at
-        the operator home finds nothing and answers False for every session — which is
-        not an error anywhere, just a silent, permanent downgrade of every reuse repair
-        to a cold launch. The control half (an operator-home-only session) is what
-        distinguishes "searches the private home" from "searches everything".
+        `--resume` is served from the launching process's `CLAUDE_CONFIG_DIR`. A pure leaf
+        sets none — `--safe-mode` refuses every settings layer, so `record_launch` prepares no
+        private home for it — and its `--session-id` transcript is therefore written to, and
+        served from, the operator's `~/.claude/projects`.
+
+        This row used to have two halves, because the AGENTIC leaf wrote under the private
+        `CLAUDE_CONFIG_DIR` issue #63 gave it: a probe pointing at the wrong one of the two
+        answered False for every session, which is not an error anywhere — just a silent,
+        permanent downgrade of every reuse repair to a cold launch. Z4 (issue #171) deleted
+        that home with that leaf, so the resolver takes no `pure` argument and there is no
+        second root to get wrong. What is left to pin is that it searches the operator's home
+        and answers False for a session that is not there.
         """
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td) / "repo"
             repo.mkdir()
-            private_home = Path(td) / "private_home"
             operator_home = Path(td) / "operator_home"
             meta_dir = repo / "workspace" / "orchestrations" / "o"
             meta_dir.mkdir(parents=True)
-            (meta_dir / "orchestration_meta.json").write_text(
-                json.dumps({"claude_workflow_home": str(private_home)}), encoding="utf-8")
+            (meta_dir / "orchestration_meta.json").write_text("{}", encoding="utf-8")
 
-            in_private = private_home / "projects" / "-some-slug"
-            in_private.mkdir(parents=True)
-            (in_private / "sess-private.jsonl").write_text("{}\n", encoding="utf-8")
             in_operator = operator_home / ".claude" / "projects" / "-some-slug"
             in_operator.mkdir(parents=True)
             (in_operator / "sess-operator.jsonl").write_text("{}\n", encoding="utf-8")
+            # A session under a directory that is NOT the operator's projects root: the
+            # control that separates "searches the operator's home" from "searches anything".
+            elsewhere = Path(td) / "elsewhere" / "projects" / "-some-slug"
+            elsewhere.mkdir(parents=True)
+            (elsewhere / "sess-elsewhere.jsonl").write_text("{}\n", encoding="utf-8")
 
             c = _FakeConductor(repo_root=repo, orchestration_id="o",
                                orchestration_agent_run_id="ORCH",
                                llm_config=_cfg("claude"), env={})
             with mock.patch.dict(os.environ, {"HOME": str(operator_home)}, clear=False):
-                # AGENTIC: the private home is the one its launch will use.
-                self.assertTrue(c._claude_session_resumable("sess-private", pure=False))
-                # ...and a session in the OPERATOR's home is not resumable BY AN
-                # AGENTIC launch, which sets CLAUDE_CONFIG_DIR to the private home
-                # and would resume at a home that never held it.
-                self.assertFalse(c._claude_session_resumable("sess-operator", pure=False))
-                self.assertFalse(c._claude_session_resumable("sess-absent", pure=False))
-
-                # PURE is the mirror image, and getting it wrong is the expensive
-                # direction: a pure leaf is given NO private home, so it writes and
-                # resumes in the operator's. Asserting the agentic answer for both
-                # shapes silently retired warm resume for every pure repair turn.
-                self.assertTrue(c._claude_session_resumable("sess-operator", pure=True))
-                self.assertFalse(c._claude_session_resumable("sess-private", pure=True))
-
-    def test_no_private_home_means_nothing_is_resumable(self) -> None:
-        """Before any claude leaf has launched there is no home to resume into."""
-        with tempfile.TemporaryDirectory() as td:
-            repo = Path(td) / "repo"
-            (repo / "workspace" / "orchestrations" / "o").mkdir(parents=True)
-            (repo / "workspace" / "orchestrations" / "o"
-             / "orchestration_meta.json").write_text("{}", encoding="utf-8")
-            operator_home = Path(td) / "operator_home"
-            proj = operator_home / ".claude" / "projects" / "-slug"
-            proj.mkdir(parents=True)
-            (proj / "sess-old.jsonl").write_text("{}\n", encoding="utf-8")
-            c = _FakeConductor(repo_root=repo, orchestration_id="o",
-                               orchestration_agent_run_id="ORCH",
-                               llm_config=_cfg("claude"), env={})
-            with mock.patch.dict(os.environ, {"HOME": str(operator_home)}, clear=False):
-                self.assertFalse(c._claude_session_resumable("sess-old", pure=False))
-                # A PURE launch never wanted a private home, so the same session is
-                # resumable for it — "no private home" is not "nothing is resumable".
-                self.assertTrue(c._claude_session_resumable("sess-old", pure=True))
+                self.assertTrue(c._claude_session_resumable("sess-operator"))
+                self.assertFalse(c._claude_session_resumable("sess-elsewhere"))
+                self.assertFalse(c._claude_session_resumable("sess-absent"))
 
     def test_resolve_reuse_resume_none_for_restart_strategy(self) -> None:
         # restart stays cold (no resume) to avoid anchoring on the defective reasoning — this
@@ -718,22 +691,21 @@ class _StdinSink:
         return self.written
 
 
-def _seed_leaf_mcp_config(repo_root: Path) -> bytes:
-    """Write the MCP configuration an agentic claude leaf is launched with into a scratch
-    repo, and return its bytes.
 
-    `record_launch` hashes `wc.CLAUDE_LEAF_MCP_CONFIG` (the file the leaf argv names) into
-    the launch record and FAILS CLOSED when it is unreadable, so a real `Conductor` over a
-    bare temporary directory has nothing to hash. The real checkout has this file committed;
-    a scratch repo without it is the fixture that is wrong, not the code. Callers that want
-    the hash assert against the returned bytes rather than a literal digest.
+def _pure_leaf_tail() -> list[str]:
+    """The tail EVERY claude leaf argv carries: the pure-function flag set, then `-p`.
+
+    Derived from `pure_leaf.pure_leaf_flags()` rather than written out, because that set is
+    the contract and a literal here would only have to be edited to match it. What the goldens
+    that splat this pin is the HEAD — the command prefix and the per-entry `--model` /
+    `--effort` — and that nothing follows the `-p`.
+
+    Until Z4 (issue #171) the tail these goldens carried was the AGENTIC one:
+    `--setting-sources user --strict-mcp-config --mcp-config .mcp.json
+    --disable-slash-commands --tools <hook-covered allowlist> --output-format json`.
     """
-    path = repo_root / wc.CLAUDE_LEAF_MCP_CONFIG
-    data = json.dumps({"mcpServers": {"build-runtime": {
-        "command": "python3", "args": ["./mcp_servers/build_runtime_server.py"]}}},
-        indent=2).encode("utf-8")
-    path.write_bytes(data)
-    return data
+    from tools.pure_leaf import pure_leaf_flags
+    return [*pure_leaf_flags(), "-p"]
 
 
 class _FakeConductor(wc.Conductor):
@@ -760,16 +732,10 @@ class _FakeConductor(wc.Conductor):
     def _resolve_evidence(self, rel):
         return self.__dict__.setdefault("evidence", {})[rel.rsplit("/", 1)[-1]]
 
-    _MCP_CONFIG_BYTES = b'{"mcpServers": {"build-runtime": {}}}'
-
-    def _read_launch_config_bytes(self, ref):  # type: ignore[override]
-        """Serve the launch-config bytes from memory, for the reason above: these
-        fakes pin a `repo_root` that does not exist, so the real read would fail on
-        every launch. The argv derivation and the recorded field shape stay live —
-        only the read is faked. The real read (and its fail-closed OSError) is driven
-        against a real Conductor by `LeafEntryThreadingTests` /
-        `LaunchPayloadFileTransportTests`."""
-        return self._MCP_CONFIG_BYTES
+    # `_read_launch_config_bytes` was faked here until Z4 (issue #171): `_launch_setting_surface`
+    # read and hashed the leaf's `.mcp.json`, and these fakes pin a `repo_root` that does not
+    # exist. A pure leaf is launched with `--strict-mcp-config` and NO configuration, so there
+    # is nothing to read.
 
     def runtime(self, args, *, input=None):  # type: ignore[override]
         sub = args[0]
@@ -859,6 +825,127 @@ class _FakeConductor(wc.Conductor):
     def read_case_ids(self, refs):  # type: ignore[override]
         return ()
 
+    # --- the LLM leaf, faked at the loop rather than at the process -------------------
+    #
+    # Until Z4 (issue #171) these tests reached the leaf through the AGENTIC arm of
+    # `run_substep`, which this fake drove by stubbing `spawn_leaf` and
+    # `determine_substep_status` — and by narrowing the sample configuration away from
+    # `pure` (`llm_samples.agentic_only_config`) so the dispatch took that arm. Both are
+    # gone: the pure loops are the only ones left, and they assemble a node's whole closed
+    # context from disk before they ever launch, which no fake `repo_root` has.
+    #
+    # So the LOOP is what is faked, not the process. `_fake_pure_leaf_substep` performs the
+    # same bookkeeping sequence the real pure loops do — record-launch, spawn, persist,
+    # record-child-return, status, finalize-child, and the REAL `_pure_transient_retry` — so
+    # every phase-level assertion in this file (call order, vouched arids, retry counts,
+    # routing) still observes the sequence it was written against. What it does not do is
+    # assemble a context or validate a returned document; those are `test_pure_leaf_*.py`.
+    # Every node this fake runs has the DEFAULT bundle shape. The real `_bundle_shape` reads
+    # the node's IR off disk, and these fixtures pin a `repo_root` that does not exist — so it
+    # would answer None and `run_substep` would fail every `generate` pair closed
+    # (`node_has_no_bundle_shape`) before reaching a loop at all. Which shape a node HAS is
+    # `_bundle_shape`'s own subject and is pinned where that function lives.
+    def _bundle_shape(self, refs):  # type: ignore[override]
+        return "m3c"
+
+    def _run_pure_producer_substep(self, refs, phase, substep, repair=None,  # type: ignore[override]
+                                   resolved_dependencies=(), spec=None,
+                                   dependency_surface=()):
+        return self._fake_pure_leaf_substep(refs, phase, substep, repair)
+
+    def _run_pure_reviewer_substep(self, refs, phase, substep,  # type: ignore[override]
+                                   resolved_dependencies=(), spec=None):
+        return self._fake_pure_leaf_substep(refs, phase, substep, None)
+
+    def _fake_pure_leaf_substep(self, refs, phase, substep, repair):
+        entry = self.entry_for(phase, substep)
+        # The warm-reopen decision, in the shape the real producer loop makes it: a `reuse`
+        # repair resolves the producer's session and the FIRST attempt resumes it when the
+        # transcript is still there, otherwise the turn is cold.
+        resume_session_id = None
+        if repair and str(repair.get("repair_strategy", "")).strip() == "reuse":
+            # The resolver already answers "resumable or None" — it consults the provider's
+            # `warm_resume` capability and the transcript itself — so its answer is taken as
+            # given here rather than re-checked. The real loop asks `_pure_session_resumable`
+            # a second time for the codex home-generation case, which no fake reaches.
+            resume_session_id = self._resolve_reuse_resume(repair, phase, substep)
+        retries = 0
+        usage_waits = 0
+        spent = 0.0
+        while True:
+            child_arid = self.new_agent_run_id()
+            request = wc.build_launch_request(
+                refs, step=phase, substep=substep,
+                orchestration_id=self.orchestration_id,
+                orchestration_agent_run_id=self.orchestration_agent_run_id,
+                child_agent_run_id=child_arid,
+                agent_model=entry.model, workflow_mode=self.workflow_mode,
+                repair=repair, warm_resume=resume_session_id is not None, pure_leaf=True)
+            rec = self.record_launch(child_arid, request, entry)
+            launched_at = self._launch_instant(child_arid)
+            started = time.monotonic()
+            proc = self.spawn_leaf(
+                rec["launch_prompt_text"], self._child_env(child_arid, entry), entry,
+                session_id=child_arid, resume_session_id=resume_session_id,
+                child_arid=child_arid,
+                timeout_context={"node_key": refs.node_key, "step": phase,
+                                 "substep": substep or "", "agent_run_id": child_arid})
+            self._persist_leaf_output(child_arid, proc)
+            # NO `record-child-return`: `finalize_child` runs the whole sequence for a leaf,
+            # and only the DETERMINISTIC arm plays the child-return itself (there is no leaf
+            # to send one). The real pure loops call it nowhere, and neither does this.
+            token = self.read_parent_return_token(child_arid)
+            status, output_refs = self.determine_substep_status(
+                refs, phase, substep, request["allowed_output_paths"],
+                min_mtime=launched_at)
+            result_summary = None
+            infra_error = None
+            if proc.returncode != 0:
+                status = "fail"
+                result_summary = self._leaf_failure_summary(proc)
+                infra_error = wc._leaf_infra_error(proc)
+            elif status != "pass":
+                result_summary = f"substep_fail: {phase}" + (f".{substep}" if substep else "")
+            reply = (f"status: {status}\noutput_refs: {len(output_refs)}"
+                     f"\nleaf rc={proc.returncode}")
+            if result_summary:
+                reply += f"\nresult_summary: {result_summary}"
+            usage_row = wc._leaf_usage_row(
+                proc, entry, deterministic=self._is_deterministic_substep(phase, substep))
+            self.finalize_child(
+                child_arid, token, reply,
+                self._agent_run_json(refs, phase, substep, child_arid, status,
+                                     output_refs, result_summary, entry=entry,
+                                     agent_model_override=proc.model, usage=usage_row,
+                                     resume_mode=proc.resume_mode))
+            elapsed = max(0.0, time.monotonic() - started)
+            # `--wait-usage-reset`: a transport death carrying a resolvable usage-limit reset
+            # is waited out in place and the SAME turn re-launched, exactly as the real pure
+            # loops do it. Neither the attempt count nor the resume target moves — a wait is
+            # not a repair turn.
+            if infra_error is not None and infra_error[0] == "llm_usage_limit":
+                plan = self._usage_reset_wait_plan(
+                    proc, usage_waits, entry=entry, node_key=refs.node_key, step=phase,
+                    substep=substep, dead_agent_run_id=child_arid, evidence=infra_error[1],
+                    allow_envelope=entry.provider == "claude_cli")
+                if plan is not None:
+                    self._wait_for_usage_reset(
+                        node_key=refs.node_key, step=phase, substep=substep,
+                        dead_agent_run_id=child_arid, wait_seconds=plan.wait_seconds,
+                        reset_epoch=plan.reset_epoch, reset_source=plan.reset_source,
+                        window=plan.window, wait_attempt=usage_waits + 1)
+                    usage_waits += 1
+                    continue
+            if proc.returncode != 0 and self._pure_transient_retry(
+                    refs=refs, phase=phase, substep=substep, infra_error=infra_error,
+                    child_arid=child_arid, retries_done=retries,
+                    elapsed_s=elapsed, spent_s=spent):
+                spent += elapsed
+                retries += 1
+                continue
+            return wc.SubstepOutcome(child_arid, status, output_refs, proc.returncode,
+                                     infra_error, retries + usage_waits + 1)
+
     # A no-op DAG readiness check so the fake's pre_judge substep passes by default (a real
     # _judge_pre_spawn_dag_block would read a nonexistent IR under the fake repo_root).
     def _judge_pre_spawn_dag_block(self, refs):  # type: ignore[override]
@@ -910,7 +997,7 @@ class RevokeAndResetTest(unittest.TestCase):
     def _conductor(self, revoke_result, cert_after=None) -> _FakeConductor:
         c = _FakeConductor(
             repo_root=Path("/tmp/repo"), orchestration_id="orch_x",
-            orchestration_agent_run_id="ORCH", llm_config=_agentic_cfg("claude"), env={},
+            orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={},
         )
         c.calls = []
         if cert_after is not None:
@@ -996,7 +1083,7 @@ class RevocationNotLandedTerminalTest(unittest.TestCase):
     def _conductor(self) -> _FakeConductor:
         c = _FakeConductor(
             repo_root=Path("/tmp/repo"), orchestration_id="orch_x",
-            orchestration_agent_run_id="ORCH", llm_config=_agentic_cfg("claude"), env={},
+            orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={},
         )
         c.calls = []
         real_runtime = _FakeConductor.runtime
@@ -1067,7 +1154,7 @@ class SeedRepairsFromRevocationsTest(unittest.TestCase):
     def _conductor(self, cert_fn) -> _FakeConductor:
         c = _FakeConductor(
             repo_root=Path("/tmp/repo"), orchestration_id="orch_x",
-            orchestration_agent_run_id="ORCH", llm_config=_agentic_cfg("claude"), env={},
+            orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={},
         )
         c.calls = []
         c.cert_fn = cert_fn
@@ -1272,7 +1359,7 @@ class ConductHappyPathTest(unittest.TestCase):
             repo_root=Path("/tmp/repo"),
             orchestration_id="orch_x",
             orchestration_agent_run_id="ORCH",
-            llm_config=_agentic_cfg("claude"),
+            llm_config=_cfg("claude"),
             env={},
         )
         c.calls = []
@@ -1550,9 +1637,20 @@ class ConductHappyPathTest(unittest.TestCase):
         self.assertIn(status, ("fail", "fail_closed"))
         self.assertEqual(c.calls[-1][0], "set-status")
         self.assertIn(c.calls[-1][1]["--status"], ("fail", "fail_closed"))
-        # only the first phase (compile) should have been attempted
+        # only the first phase (compile) is ever attempted — the run never advances.
+        #
+        # The COUNT is the phase's own retry budget, not one: a pure `compile.generate` that
+        # fails routes as `compile_document_fail` with a cold restart
+        # (`classify_failure`'s Z1 branch), so the phase is re-run until
+        # `MAX_ATTEMPTS_PER_PHASE` is spent and only then terminalises. This row used to see
+        # exactly one step_result because the fixture's leaf was AGENTIC: that branch is
+        # guarded by `_pure_leaf_substep`, so the failure fell through to the verify-severity
+        # gate, escalated, and the diagnostician's empty answer fail-closed on the first
+        # attempt. Z4 (issue #171) made every leaf pure, so the repair budget this fixture
+        # always had is now actually spent.
         steps = [cap.get("--step") for s, cap in c.calls if s == "write-step-result"]
-        self.assertEqual(steps, ["compile"])
+        self.assertEqual(set(steps), {"compile"})
+        self.assertEqual(len(steps), wc.MAX_ATTEMPTS_PER_PHASE + 1, steps)
 
 
 class ConductRoutingTest(unittest.TestCase):
@@ -1561,7 +1659,7 @@ class ConductRoutingTest(unittest.TestCase):
     def _conductor(self) -> _FakeConductor:
         c = _FakeConductor(
             repo_root=Path("/tmp/repo"), orchestration_id="orch_x",
-            orchestration_agent_run_id="ORCH", llm_config=_agentic_cfg("claude"), env={},
+            orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={},
         )
         c.calls = []
         return c
@@ -1981,7 +2079,7 @@ class DevPhaseRollbackTest(unittest.TestCase):
     def _conductor(self, mode: str = "dev") -> _FakeConductor:
         c = _FakeConductor(
             repo_root=Path("/tmp/repo"), orchestration_id="orch_x",
-            orchestration_agent_run_id="ORCH", llm_config=_agentic_cfg("claude"), env={},
+            orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={},
             workflow_mode=mode,
         )
         c.calls = []
@@ -2114,7 +2212,7 @@ class TransportFailureTest(unittest.TestCase):
 
     def _conductor(self) -> "_FakeConductor":
         c = self._C(repo_root=Path("/tmp/repo"), orchestration_id="orch_x",
-                    orchestration_agent_run_id="ORCH", llm_config=_agentic_cfg("claude"), env={})
+                    orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
         c.calls = []
         return c
 
@@ -2730,7 +2828,7 @@ class TransportFailureTest(unittest.TestCase):
         # write-step-result (orch_20260702T041436Z_a901797b). No tombstone here: the escalate
         # trigger must stay live for a possible upstream reopen.
         c = self._C(repo_root=Path("/tmp/repo"), orchestration_id="orch_x",
-                    orchestration_agent_run_id="ORCH", llm_config=_agentic_cfg("claude"), env={},
+                    orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={},
                     workflow_mode="prod")
         c.calls = []
         c.status_fn = lambda phase, substep, n: (
@@ -2804,7 +2902,7 @@ class TransportFailureTest(unittest.TestCase):
             def _judge_pre_spawn_dag_block(self, refs):  # type: ignore[override]
                 return "dependency closure not built+validated ... missing ['component/dep']"
         c = _C(repo_root=Path("/tmp/repo"), orchestration_id="orch_x",
-               orchestration_agent_run_id="ORCH", llm_config=_agentic_cfg("claude"), env={})
+               orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
         c.calls = []
         oc = c.run_phase(self._refs(), "validate")
         self.assertEqual(oc.status, "fail")
@@ -2833,7 +2931,7 @@ class TransportFailureTest(unittest.TestCase):
                 def _judge_pre_spawn_dag_block(self, r):  # type: ignore[override]
                     return None
             c = _C(repo_root=repo, orchestration_id="orch_x",
-                   orchestration_agent_run_id="ORCH", llm_config=_agentic_cfg("claude"), env={})
+                   orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
             c.calls = []
             c.pre_judge_meta_fn = lambda n: {
                 "status": "fail", "failure_category": "pre_judge_dag_incomplete",
@@ -2865,7 +2963,7 @@ class TransportFailureTest(unittest.TestCase):
                     return None  # keep run_id stable so the seeded run-node dir is read back
 
             c = _C(repo_root=repo, orchestration_id="orch_x",
-                   orchestration_agent_run_id="ORCH", llm_config=_agentic_cfg("claude"), env={})
+                   orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
             c.calls = []
             rn = repo / refs.run_node_dir()
             rn.mkdir(parents=True, exist_ok=True)
@@ -2894,7 +2992,7 @@ class TransportFailureTest(unittest.TestCase):
             def _ensure_fresh_producer_id(self, r, phase):  # type: ignore[override]
                 return None
         c = _C(repo_root=repo, orchestration_id="orch_x",
-               orchestration_agent_run_id="ORCH", llm_config=_agentic_cfg("claude"), env={})
+               orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
         c.workflow_mode = mode
         c.calls = []
         rn = repo / self._refs().run_node_dir()
@@ -2980,7 +3078,7 @@ class TransportFailureTest(unittest.TestCase):
                 def _ensure_fresh_producer_id(self, r, phase):  # type: ignore[override]
                     return None
             c = _C(repo_root=repo, orchestration_id="orch_x",
-                   orchestration_agent_run_id="ORCH", llm_config=_agentic_cfg("claude"), env={})
+                   orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
             c.workflow_mode = "prod"
             c.calls = []
             rn = repo / refs.run_node_dir()
@@ -3031,7 +3129,7 @@ class TransportFailureTest(unittest.TestCase):
                     def _ensure_fresh_producer_id(self, r, phase):  # type: ignore[override]
                         return None
                 c = _C(repo_root=repo, orchestration_id="orch_x",
-                       orchestration_agent_run_id="ORCH", llm_config=_agentic_cfg("claude"), env={})
+                       orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
                 c.workflow_mode = "prod"
                 c.calls = []
                 c.judge_semantic_decision_value = "pass"
@@ -3055,7 +3153,7 @@ class TransportFailureTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             repo, refs = Path(td), self._refs()
             c = wc.Conductor(repo_root=repo, orchestration_id="orch_x",
-                             orchestration_agent_run_id="ORCH", llm_config=_agentic_cfg("claude"), env={})
+                             orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
             rn = repo / refs.run_node_dir()
             rn.mkdir(parents=True, exist_ok=True)
             self.assertEqual(c._judge_semantic_decision(refs), "")  # missing file
@@ -3078,7 +3176,7 @@ class TransportFailureTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             repo, refs = Path(td), self._refs()
             c = wc.Conductor(repo_root=repo, orchestration_id="orch_x",
-                             orchestration_agent_run_id="ORCH", llm_config=_agentic_cfg("claude"), env={})
+                             orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
             ir_dir = repo / refs.ir_ref
             ir_dir.mkdir(parents=True, exist_ok=True)
             (ir_dir / "spec.ir.yaml").write_text(json.dumps({"case": {"test_case_set": [
@@ -3094,7 +3192,7 @@ class TransportFailureTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             repo, refs = Path(td), self._refs()
             c = _FakeConductor(repo_root=repo, orchestration_id="orch_x",
-                               orchestration_agent_run_id="ORCH", llm_config=_agentic_cfg("claude"), env={})
+                               orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
             rn = repo / refs.run_node_dir()
             rn.mkdir(parents=True, exist_ok=True)
             (rn / "post_judge_meta.json").write_text(
@@ -3126,7 +3224,7 @@ class TransportFailureTest(unittest.TestCase):
                     return None
 
             c = _C(repo_root=repo, orchestration_id="orch_x",
-                   orchestration_agent_run_id="ORCH", llm_config=_agentic_cfg("claude"), env={})
+                   orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
             c.calls = []
             rn = repo / refs.run_node_dir()
             rn.mkdir(parents=True, exist_ok=True)
@@ -3196,7 +3294,7 @@ class ValidateGateReasonFromMetaTest(unittest.TestCase):
         # Z3 default) would end it at `pure_context_assembly_failed` in a temp repo that carries
         # none of the documents the judge is handed — the gate substeps would never be reached.
         c = self._C(repo_root=repo, orchestration_id="orch_x",
-                    orchestration_agent_run_id="ORCH", llm_config=_agentic_cfg("claude"), env={})
+                    orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
         c.calls = []
         if meta is not None:
             setattr(c, f"{substep}_meta_fn", lambda n, m=meta: m)
@@ -3286,7 +3384,7 @@ class ValidateGateReasonFromMetaTest(unittest.TestCase):
         import tempfile
         with tempfile.TemporaryDirectory() as td:
             c = self._C(repo_root=Path(td), orchestration_id="orch_x",
-                        orchestration_agent_run_id="ORCH", llm_config=_agentic_cfg("claude"), env={})
+                        orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
             c.calls = []
             c.pre_judge_meta_fn = lambda n: {"status": "pass", "failure_category": None}
             c.status_fn = lambda phase, sub, n: (
@@ -3299,7 +3397,7 @@ class ValidateGateReasonFromMetaTest(unittest.TestCase):
         # all). The terminal reason is the escalate reason; the tombstone keeps the gate reason.
         with tempfile.TemporaryDirectory() as td:
             c = self._C(repo_root=Path(td), orchestration_id="orch_x",
-                        orchestration_agent_run_id="ORCH", llm_config=_agentic_cfg("claude"),
+                        orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"),
                         env={}, workflow_mode="dev")
             c.calls = []
             c.post_judge_meta_fn = lambda n: {"status": "fail",
@@ -3323,7 +3421,7 @@ class ValidateGateReasonFromMetaTest(unittest.TestCase):
         import tempfile
         with tempfile.TemporaryDirectory() as td:
             c = self._C(repo_root=Path(td), orchestration_id="orch_x",
-                        orchestration_agent_run_id="ORCH", llm_config=_agentic_cfg("claude"),
+                        orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"),
                         env={}, workflow_mode="dev")
             c.calls = []
             c.pre_judge_meta_fn = lambda n: {"status": "fail",
@@ -3345,7 +3443,7 @@ class ValidateGateReasonFromMetaTest(unittest.TestCase):
         import tempfile
         with tempfile.TemporaryDirectory() as td:
             c = self._C(repo_root=Path(td), orchestration_id="orch_x",
-                        orchestration_agent_run_id="ORCH", llm_config=_agentic_cfg("claude"),
+                        orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"),
                         env={}, workflow_mode="dev")
             c.calls = []
             c.judge_semantic_decision_value = "pass"  # decision != "fail" -> conformance block
@@ -3376,7 +3474,7 @@ class ValidateGateReasonFromMetaTest(unittest.TestCase):
         def _drive(td: str, substep: str, meta: dict | None) -> wc.PhaseOutcome:
             consulted.clear()
             c = _T(repo_root=Path(td), orchestration_id="orch_x",
-                   orchestration_agent_run_id="ORCH", llm_config=_agentic_cfg("claude"), env={})
+                   orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
             c.calls = []
             if meta is not None:
                 setattr(c, f"{substep}_meta_fn", lambda n, m=meta: m)
@@ -3417,7 +3515,7 @@ class ValidateGateReasonFromMetaTest(unittest.TestCase):
                 with tempfile.TemporaryDirectory() as td:
                     c = self._C(repo_root=Path(td), orchestration_id="orch_x",
                                 orchestration_agent_run_id="ORCH",
-                                llm_config=_agentic_cfg("claude"), env={})
+                                llm_config=_cfg("claude"), env={})
                     c.calls = []
                     setattr(c, f"{substep}_meta_fn", lambda n, pl=payload: pl)
                     c.status_fn = lambda phase, sub, n, want=substep: (
@@ -4708,7 +4806,7 @@ class UsageProbeRunnerTests(unittest.TestCase):
         return json.dumps(doc)
 
     def test_the_probe_runs_the_leafs_own_executable_with_the_usage_command(self) -> None:
-        """Same base as `leaf_command` / `_ensure_codex_feature_cache`: a `command:` wrapper is
+        """Same base as `leaf_command`: a `command:` wrapper is
         what the leaf will run, so a hardcoded `claude` here would probe a different binary. And it
         is the HOST that runs it — no bwrap, because there is no untrusted prompt (the argv is a
         constant), which is the entire reason the response needs no anti-forgery clauses."""
@@ -5185,11 +5283,11 @@ class LeafEnvSpawnSiteGuardTest(unittest.TestCase):
         sites = self._sites()
         # A count assertion so the guard cannot pass by finding nothing: if the call
         # spelling changes (a helper, a different receiver), this fails and is re-read
-        # rather than going quietly vacuous. TWO: the agentic launch in `run_substep`, and
-        # `_spawn_pure_turn` — the one site every PURE launch goes through, shared by the two
-        # pure loops and, since issue #169, by the escalate diagnostician. It was four before
-        # those three inlined their own launch block.
-        self.assertEqual(len(sites), 2, "spawn_leaf call sites changed; re-read the guard")
+        # rather than going quietly vacuous. ONE since Z4 (issue #171): `_spawn_pure_turn`,
+        # the site every launch goes through — the two pure loops and the escalate
+        # diagnostician. It was two (the agentic launch in `run_substep` was the other), and
+        # four before those three inlined their own launch block.
+        self.assertEqual(len(sites), 1, "spawn_leaf call sites changed; re-read the guard")
         import ast
         for node in sites:
             with self.subTest(line=node.lineno):
@@ -5225,7 +5323,7 @@ class LeafTransientRetryTest(unittest.TestCase):
         def _write_lineage(self, refs):  # type: ignore[override]
             return []
 
-        def _resolve_reuse_resume(self, repair, phase, substep, pure=False):  # type: ignore[override]
+        def _resolve_reuse_resume(self, repair, phase, substep):  # type: ignore[override]
             return self.resume_target
 
         def spawn_leaf(self, prompt_text, child_env, entry=None, **kwargs):  # type: ignore[override]
@@ -5240,7 +5338,7 @@ class LeafTransientRetryTest(unittest.TestCase):
 
     def _conductor(self, procs: list, repo: Path | None = None, **kw) -> "_C":
         c = self._C(repo_root=repo or Path("/tmp/repo"), orchestration_id="orch_x",
-                    orchestration_agent_run_id="ORCH", llm_config=_agentic_cfg("claude"), env={}, **kw)
+                    orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={}, **kw)
         c.calls, c.procs, c.slept, c.spawns = [], procs, [], []
         return c
 
@@ -5371,24 +5469,29 @@ class LeafTransientRetryTest(unittest.TestCase):
         self.assertIn("[attempts=2]", oc.decision.reason)     # ...and the launch count is honest
         self.assertLessEqual(len(oc.decision.reason), 200)
 
-    def test_run_substep_resolves_its_resume_as_an_agentic_launch(self) -> None:
-        """Driven through the REAL `run_substep`, on the value that arrives.
+    def test_run_substep_resolves_its_resume_through_the_one_resolver(self) -> None:
+        """Driven through the REAL `run_substep`, on the call that arrives.
 
-        A pure substep has already returned above this point, so the agentic
-        constant is the correct one — but it is still a live decision: flip it and
-        the resolver looks in the operator's home instead of the private one, and
-        every agentic reuse repair silently goes cold. Nothing observed it
-        (measured: that mutation survived), and the test that claimed to had
-        computed the argument itself instead of driving the production path.
+        This row used to pin the resolver's `pure=` ARGUMENT: there were two homes a claude
+        transcript could be in, and passing the wrong constant sent every reuse repair looking
+        in the operator's home instead of the orchestration's private one — a mutation that
+        survived everything else. Z4 (issue #171) deleted the private home with the agentic
+        leaf, so `_claude_session_resumable` has one root and the argument is gone; what is
+        left to pin is that the substep resolves its resume through the resolver at all rather
+        than deciding for itself.
         """
-        seen: list[bool] = []
+        seen: list = []
         c = self._conductor([wc.ProcResult(0, "ok", "")])
         c._resolve_reuse_resume = (  # type: ignore[assignment]
-            lambda repair, phase, substep, pure=None: seen.append(pure))
-        c.run_substep(self._refs(), "compile", "verify",
+            lambda repair, phase, substep: seen.append((phase, substep)) or None)
+        # A PRODUCER pair: `run_substep` threads a repair into the producer loop, which is
+        # where a warm reopen is decided. A reviewer is not given one — it repairs inside its
+        # own loop rather than across substep invocations — so driving `compile.verify` here
+        # would observe nothing, which is what it did before Z4 (issue #171) reached it.
+        c.run_substep(self._refs(), "generate", "generate",
                       repair={"repair_strategy": "reuse",
                               "repair_target_agent_run_id": "child-1"})
-        self.assertEqual(seen, [False])
+        self.assertEqual(seen, [("generate", "generate")])
 
     def test_usage_limit_is_never_retried(self) -> None:
         """A usage limit is a HARD STOP lasting hours. Retrying it burns the budget in seconds
@@ -5526,61 +5629,6 @@ class LeafTransientRetryTest(unittest.TestCase):
         "type": "result", "is_error": True, "api_error_status": 429, "num_turns": 1,
         "result": "You've hit your session limit · resets 5:50pm (Asia/Tokyo)",
         "terminal_reason": "api_error"})
-
-    def test_the_agentic_loop_never_unwraps_an_envelope(self) -> None:
-        """WIRING pin for `allow_envelope`. `run_substep` runs AGENTIC leaves — a pure substep is
-        dispatched away before this loop — and by the time their output reaches here it is the
-        model's own text: an agentic claude leaf IS launched with `--output-format json` since
-        issue #47, but `_unwrap_agentic_envelope` lifted the answer out at the capture boundary,
-        and a codex/HTTP leaf never had an envelope. So a JSON line on this stdout is MODEL-written
-        and its `is_error` / `api_error_status` keys prove nothing. Passing `True` here would let a
-        leaf that crashed for an unrelated reason park the run for hours, with the 200-char ceiling
-        applied to the inner text instead of its whole output. The stdout below is the CLI's real
-        abort envelope, so only the call site's argument separates arming from declining."""
-        now = 1_784_878_725.0
-        # The same bytes DO arm once unwrapping is allowed — so this test fails if the wiring flips,
-        # not because the envelope is unresolvable.
-        self.assertIsNotNone(
-            wc._sole_content_usage_limit_line(self._ABORT_ENVELOPE, allow_envelope=True))
-        c = self._conductor([wc.ProcResult(1, self._ABORT_ENVELOPE, "")], wait_usage_reset=True)
-        events: list = []
-        c.emit = lambda event, **f: events.append((event, f))  # type: ignore[assignment]
-        with mock.patch.object(wc.time, "time", return_value=now):
-            oc = c.run_substep(self._refs(), "compile", "verify")
-        self.assertEqual(len(c.spawns), 1)                 # no relaunch
-        self.assertEqual(c.slept, [])                      # no wait
-        self.assertEqual(oc.infra_error[0], "llm_usage_limit")  # still classified (fail_closed)
-        declined = [f for e, f in events if e == "leaf_usage_limit_wait_declined"]
-        self.assertEqual([f["reason"] for f in declined], ["no_reset_time"])
-        # The decline must name the dead leaf and quote what it decided from — a bare reason is
-        # what made the stderr-only bug take two rounds to find.
-        self.assertEqual(declined[0]["dead_agent_run_id"], "child-1")
-        self.assertIn("session limit", declined[0]["evidence"])
-        self.assertLessEqual(len(declined[0]["evidence"]), 160)
-
-    def test_the_capture_boundary_hands_this_loop_the_arming_bare_line(self) -> None:
-        """The other half: the CLI's abort still ARMS the wait, because `_unwrap_agentic_envelope`
-        turns the envelope the CLI now writes into the bare line this loop has always armed on.
-        Without the unwrap this exact death would decline (the test above), so `--wait-usage-reset`
-        would be inert for every agentic leaf — the same bug, one layer in, that admitting only the
-        bare shape once caused for the pure loops."""
-        now = 1_784_878_725.0        # 2026-07-24 16:38 JST; the envelope says 17:50 JST
-        entry = _cfg("claude").entry_for("compile", "verify")
-        captured = wc._unwrap_agentic_envelope(
-            wc.ProcResult(1, self._ABORT_ENVELOPE, ""), entry, pure=False)
-        self.assertEqual(captured.stdout,
-                         "You've hit your session limit · resets 5:50pm (Asia/Tokyo)")
-        c = self._conductor([captured, wc.ProcResult(0, "done", "")], wait_usage_reset=True)
-        events: list = []
-        c.emit = lambda event, **f: events.append((event, f))  # type: ignore[assignment]
-        with mock.patch.object(wc.time, "time", return_value=now):
-            oc = c.run_substep(self._refs(), "compile", "verify")
-        self.assertEqual(oc.status, "pass")
-        self.assertEqual(len(c.spawns), 2)                 # waited, then relaunched in place
-        self.assertEqual(c.slept, [4395.0])                # 1h11m15s to the reset + 120s margin
-        waits = [f for e, f in events if e == "leaf_usage_limit_wait"]
-        self.assertEqual([f["dead_agent_run_id"] for f in waits], ["child-1"])
-        self.assertEqual(waits[0]["reset_source"], "scrape_human")
 
     def test_real_cli_shape_on_stdout_arms_the_wait(self) -> None:
         """REGRESSION (the opted-in E2E that still fail_closed): the real `claude -p` reports a usage
@@ -6243,11 +6291,21 @@ class LeafTransientRetryTest(unittest.TestCase):
             rundir.mkdir(parents=True, exist_ok=True)
 
             class _C(self._C):
-                # the REAL freshness-aware status resolver, not the fake's blanket "pass"
+                # The FRESHNESS rule, applied the way the pure judge applies it: a review is
+                # accepted only when it was (re)written during THIS attempt's window. Until Z4
+                # (issue #171) this row delegated to `Conductor.determine_substep_status`,
+                # whose `validate.judge` branch did the same comparison; that branch went with
+                # the agentic loop (the resolver is deterministic-only now and REFUSES an LLM
+                # pair), and the rule it carried lives in the pure judge loop, which this fake
+                # stands in for.
                 def determine_substep_status(self, refs, phase, substep, allowed,
                                              min_mtime=0.0):  # type: ignore[override]
-                    return wc.Conductor.determine_substep_status(
-                        self, refs, phase, substep, allowed, min_mtime=min_mtime)
+                    review = repo / refs.run_node_dir() / "semantic_review.json"
+                    if not review.is_file() or review.stat().st_mtime < min_mtime:
+                        return "fail", []
+                    doc = json.loads(review.read_text(encoding="utf-8"))
+                    decision = str(doc.get("decision") or "").strip().lower()
+                    return ("pass" if decision == "pass" else "fail"), []
 
                 def spawn_leaf(self, prompt_text, child_env, entry=None, **kwargs):  # type: ignore[override]
                     self.spawns.append(dict(kwargs))
@@ -6259,11 +6317,11 @@ class LeafTransientRetryTest(unittest.TestCase):
                     # attempt 2: a cold leaf finds the file already there and writes nothing
                     return wc.ProcResult(0, "nothing to do", "")
 
-            # The AGENTIC judge: this row is about the shared leaf loop's retry leaving a dead
-            # attempt's artifact behind, and the pure judge does not reach that loop at all.
-            # Its own freshness branch is pinned in `test_pure_leaf_judge.py`.
+            # The judge's retry leaving a dead attempt's artifact behind. The loop is the pure
+            # one since Z4 (issue #171); its own end-to-end freshness branch is pinned in
+            # `test_pure_leaf_judge.py`, and what this row adds is the RETRY around it.
             c = _C(repo_root=repo, orchestration_id="orch_x",
-                   orchestration_agent_run_id="ORCH", llm_config=_agentic_cfg("claude"), env={})
+                   orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
             c.calls, c.procs, c.slept, c.spawns = [], [], [], []
             with redirect_stdout(io.StringIO()):
                 oc = c.run_substep(refs, "validate", "judge")
@@ -6278,7 +6336,7 @@ class LeafTransientRetryTest(unittest.TestCase):
                 return wc.ProcResult(0, "re-authored", "")
 
             c2 = _C(repo_root=repo, orchestration_id="orch_x",
-                    orchestration_agent_run_id="ORCH", llm_config=_agentic_cfg("claude"), env={})
+                    orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
             c2.calls, c2.procs, c2.slept, c2.spawns = [], [], [], []
             c2.spawn_leaf = _reauthoring_judge  # type: ignore[assignment]
             self.assertEqual(c2.run_substep(refs, "validate", "judge").status, "pass")
@@ -7115,7 +7173,7 @@ class DiagnosticianTest(unittest.TestCase):
         oid = f"o{type(self)._conductor_seq}"
         c = _FakeConductor(
             repo_root=self._repo_root(oid), orchestration_id=oid,
-            orchestration_agent_run_id="ORCH", llm_config=_agentic_cfg("claude"), env={},
+            orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={},
         )
         c.calls = []
         return c
@@ -7676,10 +7734,10 @@ class DiagnosticianTest(unittest.TestCase):
                            orchestration_agent_run_id="O", env={},
                            llm_config=_cfg("codex", agent_model="gpt-5.6-sol"))
         with self.assertRaises(wc.SandboxEnforcementError) as caught:
-            c.leaf_command(c.entry_for(None, None), pure=True)
+            c.leaf_command(c.entry_for(None, None))
         self.assertIn("session_id", str(caught.exception))
         # ...and the ordinary call, the one both production callers make, still works.
-        argv = c.leaf_command(c.entry_for(None, None), session_id="child-1", pure=True)
+        argv = c.leaf_command(c.entry_for(None, None), session_id="child-1")
         self.assertIn("child-1", "\x00".join(argv))
 
     def test_each_escalation_of_a_phase_is_a_fresh_conversation(self) -> None:
@@ -8547,25 +8605,19 @@ class LeafSpawnTest(unittest.TestCase):
         model = kw.pop("agent_model", "opus")
         command = kw.pop("llm_command", "")
         provider = "claude_cli" if backend == "claude" else "codex_cli"
-        # `capabilities:` drops `pure` and keeps the rest, because these tests drive the shared
-        # AGENTIC leaf loop through `compile.verify`, which since issue #168 runs the pure loop on
-        # an unrestricted entry. Only `pure` goes: narrowing to `[agentic]` would also drop
-        # `warm_resume`, a different capability the agentic loop's own slim repair is gated on.
-        # The narrowing is the config file's own key (see
-        # `tools/tests/llm_samples.agentic_only_config`), not a test-only back door.
-        keep = sorted(lc.PROVIDER_CAPABILITIES[provider] - {lc.CAP_PURE})
-        # The narrowing goes on the LEAVES, not on `defaults`: `defaults` also runs the escalate
-        # diagnostician, which is a pure leaf since issue #169, so a document whose `defaults`
-        # drops `pure` is refused at load (`llm_config_defaults_not_pure`).
+        # No `capabilities:` narrowing. These tests used to drop `pure` so that
+        # `compile.verify` took the shared AGENTIC leaf loop; since Z4 (issue #171) there is
+        # no such loop, `pure` is a hard requirement of every LLM leaf, and a document that
+        # drops it does not load at all. The entries are therefore plain, which is also what
+        # the shipped samples look like.
+        body = f"defaults:\n  provider: {provider}\nphases:\n"
         phases: dict[str, list[str]] = {}
         for step, substep in sorted(lc.LLM_LEAF_SUBSTEPS):
             phases.setdefault(step, []).append(substep)
-        body = f"defaults:\n  provider: {provider}\nphases:\n"
         for step, substeps in phases.items():
             body += f"  {step}:\n    substeps:\n"
             for substep in substeps:
-                body += (f"      {substep}:\n        provider: {provider}\n"
-                         f"        capabilities: [{', '.join(keep)}]\n")
+                body += f"      {substep}:\n        provider: {provider}\n"
         cfg = lc.apply_defaults_overrides(
             _config_from_text(body), model=model, command=command)
         base = dict(repo_root=Path("/tmp/repo"), orchestration_id="o",
@@ -8583,148 +8635,41 @@ class LeafSpawnTest(unittest.TestCase):
         """The read end of a pipe carrying `text` and then EOF — the common case."""
         return self._stream(("write", text), **kw).reader
 
+    @staticmethod
+    def _claude_argv(*prefix: str) -> list[str]:
+        """The WHOLE claude leaf argv, derived from `pure_leaf_flags()`.
+
+        Derived rather than written out because that set is the contract — a flag added to or
+        dropped from it is a change to what the leaf can do, and a literal here would just have
+        to be edited to match. What the goldens below pin is the SHAPE around it: the command
+        prefix, then the flags, then a trailing `-p` with nothing after it.
+
+        There is one claude argv since Z4 (issue #171). The `--setting-sources user
+        --strict-mcp-config --mcp-config .mcp.json --disable-slash-commands --tools <allowlist>`
+        form these goldens carried was the AGENTIC launch.
+        """
+        from tools.pure_leaf import pure_leaf_flags
+        return [*prefix, *pure_leaf_flags(), "-p"]
+
     def test_leaf_command_honors_custom_llm_command(self) -> None:
         c = self._c(backend="claude", llm_command="mywrap --model Z")
-        self.assertEqual(c.leaf_command(), ["mywrap", "--model", "Z", "--setting-sources", "user", "--strict-mcp-config", "--mcp-config", ".mcp.json", "--disable-slash-commands", "--tools", "Bash,Edit,Glob,Grep,Read,Write", "--output-format", "json", "-p"])
+        self.assertEqual(c.leaf_command(), self._claude_argv("mywrap", "--model", "Z"))
         c2 = self._c(backend="codex", llm_command="codexwrap --x", agent_model="gpt-5.6-sol")
-        self.assertEqual(c2.leaf_command(), ["codexwrap", "--x", "exec", "--model", "gpt-5.6-sol", "--dangerously-bypass-hook-trust", "--json", "-"])
+        argv = c2.leaf_command(session_id="a")
+        self.assertEqual(argv[:5],
+                         ["codexwrap", "--x", "exec", "--model", "gpt-5.6-sol"])
+        self.assertEqual(argv[-2:], ["--json", "-"])
 
     def test_leaf_command_defaults_to_backend(self) -> None:
-        self.assertEqual(self._c(backend="claude").leaf_command(), ["claude", "--setting-sources", "user", "--strict-mcp-config", "--mcp-config", ".mcp.json", "--disable-slash-commands", "--tools", "Bash,Edit,Glob,Grep,Read,Write", "--output-format", "json", "-p"])
-        self.assertEqual(
-            self._c(backend="codex", agent_model="gpt-5.6-sol").leaf_command(),
-            ["codex", "exec", "--model", "gpt-5.6-sol", "--dangerously-bypass-hook-trust", "--json", "-"],
-        )
-
-    def test_claude_agentic_leaf_is_launched_with_only_hook_validated_tools(self) -> None:
-        """The read boundary is hook-enforced, and the hook can only validate a tool
-        whose payload names what it touches. Since issue #71 the leaf therefore gets an
-        ALLOWLIST: the tools the `PreToolUse` matchers cover, and nothing else.
-
-        The expected set is COMPUTED from the matcher coverage rather than written out
-        a second time. A literal here would go stale in the safe-looking direction —
-        it would keep passing while a matcher was deleted from the coverage table (the
-        table itself is pinned to the committed leaf configuration by
-        `ClaudeLeafConfigProbeTests`, which is the independent source). What is pinned
-        here is the DERIVATION: the argv value is exactly the hook-covered set.
-
-        The full-argv goldens above carry the literal `Bash,Edit,Glob,Grep,Read,Write`,
-        so the two together are a cross-check: a change to the coverage table that is
-        not intended to change what a leaf can do fails there.
-        """
-        from tools.orchestration_runtime import _CLAUDE_HOOK_MATCHER_COVERAGE
-        argv = self._c(backend="claude").leaf_command()
-        self.assertIn("--tools", argv)
-        value = argv[argv.index("--tools") + 1]
-        self.assertEqual(set(value.split(",")), _CLAUDE_HOOK_MATCHER_COVERAGE["PreToolUse"])
-        # ORDER and SPELLING, so the value the roster probe reproduces is one string:
-        # comma-joined with no spaces, sorted, no empty member.
-        self.assertEqual(value, ",".join(sorted(_CLAUDE_HOOK_MATCHER_COVERAGE["PreToolUse"])))
-        # The denylist it replaced must be gone from EVERY argv, not merely unused: a
-        # `--disallowedTools` left behind would subtract from the allowlist (the two
-        # compose as an intersection, measured on CLI 2.1.238) and silently disarm a
-        # tool the read boundary assumes the leaf has.
-        c = self._c(backend="claude")
-        for other in (c.leaf_command(),
-                      c.leaf_command(pure=True),
-                      self._c(backend="codex", agent_model="gpt-5.6-sol").leaf_command()):
-            self.assertNotIn("--disallowedTools", other)
-        self.assertFalse(hasattr(wc, "CLAUDE_LEAF_DISALLOWED_TOOLS"))
-        # The flag is a claude leaf-launch property, not a codex one.
-        codex_argv = self._c(backend="codex", agent_model="gpt-5.6-sol").leaf_command()
-        self.assertNotIn("--tools", codex_argv)
-
-    def test_pure_and_agentic_claude_leaves_carry_different_tools_values(self) -> None:
-        """Both branches now pass `--tools`, and the VALUES are what separate them.
-
-        A pure leaf passes the empty string — the CLI's spelling for "no tools at all" —
-        and an agentic one a non-empty list. Asserting only that the flag is present
-        would be satisfied by either branch emitting the other's value, which is a
-        one-token edit that either strips an agentic leaf of the tools its skill needs
-        or hands a pure leaf the full hook-covered set.
-        """
-        c = self._c(backend="claude")
-        pure = c.leaf_command(pure=True)
-        agentic = c.leaf_command()
-        self.assertEqual(pure[pure.index("--tools") + 1], "")
-        self.assertNotEqual(agentic[agentic.index("--tools") + 1], "")
-
-    def test_the_roster_probe_argv_is_the_agentic_leaf_argv(self) -> None:
-        """DUAL READ (issue #71). `orchestration_runtime.claude_leaf_roster_probe_argv`
-        spells the agentic launch a second time, because the preflight roster check must
-        measure the tools the LEAF gets and the import runs one way (conductor → runtime),
-        so it cannot call `leaf_command`.
-
-        FULL EQUALITY, not "contains `--tools`". Every element of this argv can move the
-        roster the CLI composes — `--setting-sources` decides which settings layer's
-        permissions and hooks load, `--strict-mcp-config`/`--mcp-config` decide the MCP
-        half of the roster outright, `--disable-slash-commands` drops a tool — so a probe
-        that drifted in any of them would certify a tool set no leaf is launched with, and
-        report `pass` while doing it. This test module is the one place that can import
-        both sides; `references/dual-read-pairs.md` records the pair.
-
-        The executable is the one element deliberately outside the comparison: the probe
-        takes the resolved command prefix from its caller, which is what makes it certify
-        a configured wrapper rather than the bare binary.
-        """
-        from tools.orchestration_runtime import claude_leaf_roster_probe_argv
-        argv = self._c(backend="claude").leaf_command()
-        self.assertEqual(claude_leaf_roster_probe_argv([argv[0]]), argv)
-        # And with a wrapper command, which is the case the executable carve-out exists
-        # for: everything after the prefix must still match.
-        wrapped = self._c(backend="claude", llm_command="mywrap --model Z").leaf_command()
-        self.assertEqual(claude_leaf_roster_probe_argv(["mywrap", "--model", "Z"]), wrapped)
-        # PER-LAUNCH FLAGS, which the docstring above says are "absent by construction".
-        # That sentence was credited to this test while the test called `leaf_command()`
-        # with no arguments twice, so nothing here observed them at all. Each variant must
-        # differ from the probe argv by EXACTLY its own flags — a leaf-launch flag that
-        # started moving the tool set would then show up as a token this comparison does
-        # not account for, rather than as a probe that certifies a different argv.
-        probe = claude_leaf_roster_probe_argv(["claude"])
-        base = self._c(backend="claude")
-        declared = wc.Conductor(
-            repo_root=Path("/tmp/repo"), orchestration_id="o",
-            orchestration_agent_run_id="O", env={},
-            llm_config=_config_from_text(
-                "defaults:\n  provider: claude_cli\n  model: haiku\n  effort: xhigh\n"))
-        for extra, argv in (
-            (["--session-id", "a"], base.leaf_command(session_id="a")),
-            (["--resume", "b", "--fork-session", "--session-id", "a"],
-             base.leaf_command(session_id="a", resume_session_id="b")),
-            (["--model", "haiku", "--effort", "xhigh"],
-             declared.leaf_command(declared.entry_for(None, None))),
-        ):
-            remainder = list(argv)
-            for token in extra:
-                remainder.remove(token)
-            self.assertEqual(remainder, probe, msg=argv)
-
-    def test_claude_agentic_leaf_argv_closes_user_setting_sources(self) -> None:
-        """Issue #63 step 1. An agentic claude leaf used to inherit the OPERATOR's
-        `~/.claude` whole — model, effort, permission grants, skills, plugins, plugin
-        hooks, and any MCP server their configuration carries. None of that is declared by
-        this repository, recorded by the run, or reproducible from its artifacts.
-
-        Four flags close it, and each is asserted for what it must be, not merely that it
-        is present: the setting source is exactly `user` — which under the private
-        `CLAUDE_CONFIG_DIR` the profile sets means the repo's own SHA-pinned
-        `leaf_config/claude/settings.json`, NOT the operator's `~/.claude` — and the MCP
-        configuration is the committed file, paired with `--strict-mcp-config` so it
-        REPLACES the ambient server set instead of adding to it. (This docstring said
-        `project` while the assertion below said `user`; the assertion was right.)
-        """
-        argv = self._c(backend="claude").leaf_command()
-        self.assertEqual(argv[argv.index("--setting-sources") + 1], "user")
-        self.assertIn("--strict-mcp-config", argv)
-        self.assertEqual(argv[argv.index("--mcp-config") + 1], wc.CLAUDE_LEAF_MCP_CONFIG)
-        self.assertEqual(wc.CLAUDE_LEAF_MCP_CONFIG, ".mcp.json")
-        self.assertIn("--disable-slash-commands", argv)
-        # Not a codex or a pure property: both have their own closure story
-        # (`--ignore-rules` / an orchestration-private CODEX_HOME; `pure_leaf_flags`).
-        for other in (self._c(backend="codex", agent_model="gpt-5.6-sol").leaf_command(),
-                      self._c(backend="claude").leaf_command(pure=True)):
-            for flag in ("--setting-sources", "--mcp-config"):
-                self.assertNotIn(flag, other)
+        self.assertEqual(self._c(backend="claude").leaf_command(), self._claude_argv("claude"))
+        # A codex launch AUTHORS its output schema keyed by the child's id, so it is given
+        # one; `leaf_command` refuses a codex launch without it rather than falling back to a
+        # shared path two concurrent launches would collide on.
+        argv = self._c(backend="codex", agent_model="gpt-5.6-sol").leaf_command(session_id="a")
+        self.assertEqual(argv[:4], ["codex", "exec", "--model", "gpt-5.6-sol"])
+        self.assertEqual(argv[argv.index("--sandbox") + 1], "read-only")
+        self.assertEqual(argv[-2:], ["--json", "-"])
+        self.assertNotIn("--dangerously-bypass-hook-trust", argv)
 
     def test_every_variadic_flag_on_the_claude_leaf_argv_is_terminated(self) -> None:
         """A variadic flag keeps consuming tokens until an OPTION token, so a value not
@@ -8738,21 +8683,16 @@ class LeafSpawnTest(unittest.TestCase):
         eat is a bare word, which is one more reason the prompt rides stdin rather than
         returning as a positional argument.
 
-        Covers the PURE argv too: `--tools` is variadic as well, and it is the pure branch
-        that carries it (with an empty-string value, which is not an option token).
+        There is ONE claude argv since Z4 (issue #171) — the pure one — and `--tools` is the
+        variadic flag it carries, with an empty-string value, which is not an option token and
+        so is exactly the shape this hazard is about. `--setting-sources` and `--mcp-config`
+        were the other two and went with the agentic launch.
         """
-        # `--setting-sources` is documented as single-valued rather than variadic, and it is
-        # included DELIBERATELY: the hazard this test guards is "a value not followed by an
-        # option token", which is a property of the argv, not of the flag's arity. Leaving it
-        # out left a hole — a bare word inserted after `project` was caught only by the argv
-        # equality goldens, never by the guard written for exactly that hazard.
-        variadic = ("--setting-sources", "--mcp-config", "--tools")
+        variadic = ("--tools",)
         c = self._c(backend="claude")
         argvs = [c.leaf_command(),
                  c.leaf_command(session_id="a"),
-                 c.leaf_command(session_id="a", resume_session_id="b"),
-                 c.leaf_command(pure=True),
-                 c.leaf_command(session_id="a", resume_session_id="b", pure=True)]
+                 c.leaf_command(session_id="a", resume_session_id="b")]
         for argv in argvs:
             self.assertEqual(argv[-1], "-p", msg=argv)
             for i, token in enumerate(argv):
@@ -8792,15 +8732,9 @@ class LeafSpawnTest(unittest.TestCase):
             wc._variadic_values(
                 ["c", "--mcp-config", "a.json", "-p", "--mcp-config", "b.json", "c.json"],
                 "--mcp-config"), ["a.json", "b.json", "c.json"])
-        # ...while an OVERRIDING option reports its last value, not its first.
-        self.assertEqual(
-            wc._effective_option_value(
-                ["c", "--setting-sources", "user", "--setting-sources", "project"],
-                "--setting-sources"), "project")
-        self.assertIsNone(wc._effective_option_value(["c", "-p"], "--setting-sources"))
-        # a trailing flag with no value must not IndexError
-        self.assertIsNone(
-            wc._effective_option_value(["c", "--setting-sources"], "--setting-sources"))
+        # `_effective_option_value` — the OVERRIDING-option reader, which answered with the
+        # LAST occurrence — was tested here too until Z4 (issue #171). Its only caller read
+        # `--setting-sources` off an agentic argv; both are gone.
         # a SHORT option terminates it too — the `--`-only rule over-read here
         self.assertEqual(
             wc._variadic_values(["c", "--mcp-config", "a.json", "-p"], "--mcp-config"),
@@ -8817,33 +8751,39 @@ class LeafSpawnTest(unittest.TestCase):
         c = self._c(backend="claude")
         self.assertEqual(
             c.leaf_command(session_id="arid-1"),
-            ["claude", "--session-id", "arid-1", "--setting-sources", "user", "--strict-mcp-config", "--mcp-config", ".mcp.json", "--disable-slash-commands", "--tools", "Bash,Edit,Glob,Grep,Read,Write", "--output-format", "json", "-p"],
+            self._claude_argv("claude", "--session-id", "arid-1"),
         )
-        # codex has no per-session flag; session_id is ignored.
-        self.assertEqual(
-            self._c(backend="codex", agent_model="gpt-5.6-sol").leaf_command(session_id="arid-1"),
-            ["codex", "exec", "--model", "gpt-5.6-sol", "--dangerously-bypass-hook-trust", "--json", "-"],
-        )
+        # codex has no per-session flag: the id decides the OUTPUT SCHEMA path and reaches the
+        # argv only there.
+        argv = self._c(backend="codex",
+                       agent_model="gpt-5.6-sol").leaf_command(session_id="arid-1")
+        self.assertNotIn("--session-id", argv)
+        self.assertIn("arid-1", argv[argv.index("--output-schema") + 1])
 
     def test_leaf_command_reuse_resume_forks_producer_session(self) -> None:
         c = self._c(backend="claude")
         self.assertEqual(
             c.leaf_command(session_id="new-arid", resume_session_id="producer-arid"),
-            ["claude", "--resume", "producer-arid", "--fork-session",
-             "--session-id", "new-arid", "--setting-sources", "user", "--strict-mcp-config", "--mcp-config", ".mcp.json", "--disable-slash-commands", "--tools", "Bash,Edit,Glob,Grep,Read,Write", "--output-format", "json", "-p"],
+            self._claude_argv("claude", "--resume", "producer-arid", "--fork-session",
+                              "--session-id", "new-arid"),
         )
 
     def test_codex_resume_pins_the_same_host_model(self) -> None:
         c = self._c(backend="codex", agent_model="gpt-5.6-sol")
-        self.assertEqual(
-            c.leaf_command(resume_session_id="thread-123"),
-            ["codex", "exec", "resume", "--model", "gpt-5.6-sol", "thread-123",
-             "--dangerously-bypass-hook-trust", "--json", "-"],
-        )
+        argv = c.leaf_command(session_id="new-arid", resume_session_id="thread-123")
+        self.assertEqual(argv[:6],
+                         ["codex", "exec", "resume", "--model", "gpt-5.6-sol", "thread-123"])
+        self.assertEqual(argv[-2:], ["--json", "-"])
+        self.assertNotIn("--dangerously-bypass-hook-trust", argv)
+        # `exec resume` takes no `--sandbox`; the read-only policy is re-pinned through the
+        # `--config` override both subcommands share.
+        self.assertNotIn("--sandbox", argv)
+        self.assertIn('sandbox_mode="read-only"',
+                      [argv[i + 1] for i, tok in enumerate(argv) if tok == "--config"])
 
     def test_codex_leaf_rejects_generic_model_alias(self) -> None:
         with self.assertRaisesRegex(ValueError, "explicit model slug"):
-            self._c(backend="codex", agent_model="codex").leaf_command()
+            self._c(backend="codex", agent_model="codex").leaf_command(session_id="a")
 
     # --- codex JSONL stream handling -----------------------------------------
 
@@ -9483,7 +9423,7 @@ class LeafSpawnTest(unittest.TestCase):
     def test_nonzero_leaf_exit_fails_substep(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             c = _FakeConductor(repo_root=Path(tmp), orchestration_id="o",
-                               orchestration_agent_run_id="ORCH", llm_config=_agentic_cfg("claude"), env={})
+                               orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
             c.calls = []
             c.status_fn = lambda phase, substep, n: "pass"  # artifacts claim pass
             # leaf crashed (e.g. token limit), emitting a diagnostic to stderr
@@ -9514,7 +9454,7 @@ class LeafSpawnTest(unittest.TestCase):
     def test_set_status_reason_code_names_leaf_transport(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             c = _FakeConductor(repo_root=Path(tmp), orchestration_id="o",
-                               orchestration_agent_run_id="ORCH", llm_config=_agentic_cfg("claude"), env={})
+                               orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
             c.calls = []
             c.spawn_leaf = lambda prompt, env, entry=None, **kw: wc.ProcResult(1, "", "boom")
             refs = wc.NodeRefs(node_key="component/spec_x@0.1.0",
@@ -9529,7 +9469,7 @@ class LeafSpawnTest(unittest.TestCase):
     def test_leaf_stdout_persisted_on_success(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             c = _FakeConductor(repo_root=Path(tmp), orchestration_id="o",
-                               orchestration_agent_run_id="ORCH", llm_config=_agentic_cfg("claude"), env={})
+                               orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
             c.calls = []
             c.spawn_leaf = lambda prompt, env, entry=None, **kw: wc.ProcResult(0, "all good", "")
             refs = wc.NodeRefs(node_key="component/spec_x@0.1.0",
@@ -9554,7 +9494,7 @@ class LeafSpawnTest(unittest.TestCase):
             with tempfile.TemporaryDirectory() as tmp:
                 c = _FakeConductor(repo_root=Path(tmp), orchestration_id="o",
                                    orchestration_agent_run_id="ORCH",
-                                   llm_config=_agentic_cfg("claude"), env=env)
+                                   llm_config=_cfg("claude"), env=env)
                 c.calls = []
 
                 def spawn(prompt, env_, entry=None, **kw):
@@ -9587,7 +9527,7 @@ class LeafSpawnTest(unittest.TestCase):
         cap: dict = {}
         with tempfile.TemporaryDirectory() as tmp:
             c = _FakeConductor(repo_root=Path(tmp), orchestration_id="o",
-                               orchestration_agent_run_id="ORCH", llm_config=_agentic_cfg("claude"), env={})
+                               orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
             c.calls = []
 
             def spawn(prompt, env_, entry=None, **kw):
@@ -9622,7 +9562,7 @@ class LeafSpawnTest(unittest.TestCase):
                 # `render_bwrap_command` fails closed on an env-less profile: under
                 # `--clearenv` the leaf would get NO environment at all.
                 "env": {"PATH": "/usr/bin:/bin", "TMPDIR": str(ws_tmp)},
-                "read_roots": [], "write_roots": [],
+                "read_roots": [], "write_roots": [], "readonly": True,
                 "runtime_ro_bind_paths": [], "runtime_rw_bind_paths": [],
             }), encoding="utf-8")
 
@@ -9657,17 +9597,14 @@ class LeafSpawnTest(unittest.TestCase):
                 self.assertEqual(captured["argv"][0], "bwrap")
                 self.assertIn("claude", captured["argv"])
                 self.assertIn("--", captured["argv"])
-                # Issue #63 step 1: the configuration-closing flags survive the WRAPPING.
-                # Asserted on what `Popen` is actually handed, not on `leaf_command`'s
-                # return, because that is the only list the CLI ever sees — a wrapper that
-                # reordered or dropped a tail would leave the unit golden green.
+                # The configuration-closing flags survive the WRAPPING. Asserted on what
+                # `Popen` is actually handed, not on `leaf_command`'s return, because that is
+                # the only list the CLI ever sees — a wrapper that reordered or dropped a tail
+                # would leave the unit golden green. The set is the pure one since Z4 (issue
+                # #171); issue #63's `--setting-sources user --strict-mcp-config --mcp-config
+                # .mcp.json --disable-slash-commands` was the agentic launch's.
                 wrapped = captured["argv"]
-                self.assertEqual(
-                    wrapped[wrapped.index("--setting-sources"):
-                            wrapped.index("--setting-sources") + 6],
-                    ["--setting-sources", "user", "--strict-mcp-config",
-                     "--mcp-config", wc.CLAUDE_LEAF_MCP_CONFIG,
-                     "--disable-slash-commands"])
+                self.assertEqual(wrapped[-len(_pure_leaf_tail()):], _pure_leaf_tail())
                 # Own process group, exactly as the codex leaf already had: the timeout
                 # path signals the GROUP, and under bwrap the direct child is the wrapper.
                 self.assertIs(captured["popen_kwargs"].get("start_new_session"), True)
@@ -9686,9 +9623,6 @@ class LeafSpawnTest(unittest.TestCase):
                     self._c(repo_root=repo, env={}).spawn_leaf(
                         "P", {"HOME": "/h"}, session_id="A", child_arid="A").timed_out, False)
                 # codex backend is also wrapped (it gets a profile + sandbox_enforced too).
-                # Certify the codex hooks feature so _ensure_codex_feature_cache passes and
-                # spawn_leaf reaches the bwrap-wrapping path under test (the cert itself has
-                # dedicated coverage elsewhere).
                 captured.clear()
                 from unittest.mock import patch
                 # One pair per launch: a pipe is read to EOF once, and this block spawns
@@ -9712,12 +9646,11 @@ class LeafSpawnTest(unittest.TestCase):
                         return None
                     def terminate(self):  # type: ignore[no-untyped-def]
                         return None
-                with patch("tools.hooks.codex_feature.codex_hooks_feature_enabled",
-                           return_value=(True, "hooks=true")), patch.object(wc.subprocess, "Popen", _FakePopen):
+                with patch.object(wc.subprocess, "Popen", _FakePopen):
                     c_codex = self._c(repo_root=repo, backend="codex", env={})
                     c_codex._register_codex_thread = lambda *args: None  # type: ignore[method-assign]
                     c_codex.spawn_leaf(
-                        "P", {"HOME": "/h"}, child_arid="A")
+                        "P", {"HOME": "/h"}, session_id="A", child_arid="A")
                 self.assertEqual(captured["argv"][0], "bwrap")
                 self.assertIn("codex", captured["argv"])
                 # Same on the codex path: stdin pipe requested, prompt off argv (argv ends
@@ -9765,7 +9698,7 @@ class LeafSpawnTest(unittest.TestCase):
                 # `render_bwrap_command` fails closed on an env-less profile: under
                 # `--clearenv` the leaf would get NO environment at all.
                 "env": {"PATH": "/usr/bin:/bin", "TMPDIR": str(ws_tmp)},
-                "read_roots": [], "write_roots": [],
+                "read_roots": [], "write_roots": [], "readonly": True,
                 "runtime_ro_bind_paths": [], "runtime_rw_bind_paths": [],
             }), encoding="utf-8")
 
@@ -9798,7 +9731,7 @@ class LeafSpawnTest(unittest.TestCase):
             "workspace_tmp_rw_abs": str(ws_tmp),
             # see the sibling fixtures: an env-less profile no longer renders.
             "env": {"PATH": "/usr/bin:/bin", "TMPDIR": str(ws_tmp)},
-            "read_roots": [], "write_roots": [],
+            "read_roots": [], "write_roots": [], "readonly": True,
             "runtime_ro_bind_paths": [], "runtime_rw_bind_paths": [],
         }), encoding="utf-8")
         return repo
@@ -10517,7 +10450,6 @@ class LeafSpawnTest(unittest.TestCase):
             c = self._c(repo_root=Path("/tmp"), backend="codex", agent_model="gpt-5.6-sol",
                         env={}, llm_command=f"python3 {script}")
             c._bwrap_enabled = lambda: False  # type: ignore[method-assign]
-            c._ensure_codex_feature_cache = lambda *a, **k: None  # type: ignore[method-assign]
             c._register_codex_thread = lambda *a: None  # type: ignore[method-assign]
             with patch.object(wc, "_leaf_timeout_seconds", lambda: 30), \
                     patch.object(wc, "LEAF_STREAM_QUEUE_MAX_CHARS", limit), \
@@ -10551,7 +10483,6 @@ class LeafSpawnTest(unittest.TestCase):
             c = self._c(repo_root=Path("/tmp"), backend="codex", agent_model="gpt-5.6-sol",
                         env={}, llm_command=f"python3 {script}")
             c._bwrap_enabled = lambda: False  # type: ignore[method-assign]
-            c._ensure_codex_feature_cache = lambda *a, **k: None  # type: ignore[method-assign]
             c._register_codex_thread = lambda *a: None  # type: ignore[method-assign]
             # As on the claude twin: the budget must cover real interpreter startup.
             with patch.object(wc, "_leaf_timeout_seconds", lambda: 1.0), \
@@ -10748,7 +10679,6 @@ class LeafSpawnTest(unittest.TestCase):
                     c = self._c(repo_root=repo, backend=backend, env={},
                                 agent_model="gpt-5.6-sol")
                     c._register_codex_thread = lambda *a: None  # type: ignore[method-assign]
-                    c._ensure_codex_feature_cache = lambda *a, **k: None  # type: ignore[method-assign]
                     with patch.object(wc.subprocess, "Popen", _WedgedPopen), \
                             patch.object(wc.os, "getpgid", _getpgid), \
                             patch.object(wc.os, "killpg", _killpg), \
@@ -10756,7 +10686,11 @@ class LeafSpawnTest(unittest.TestCase):
                             patch.object(wc, "LEAF_STREAM_POLL_SECONDS", 0.01), \
                             patch.object(wc, "_leaf_timeout_seconds", lambda: 0.02), \
                             redirect_stdout(io.StringIO()):
-                        proc = c.spawn_leaf("P", {"HOME": "/h"}, child_arid="A")
+                        # `session_id=child_arid` as every production launch does: a codex
+                        # leaf authors its output schema keyed by the child's id and refuses a
+                        # launch given none.
+                        proc = c.spawn_leaf("P", {"HOME": "/h"}, child_arid="A",
+                                            session_id="A")
                 self.assertIs(proc.timed_out, True)
                 # The PINNED pid, not the (unresolvable) live lookup, and not the no-op
                 # direct-child fallback.
@@ -11065,7 +10999,6 @@ class LeafSpawnTest(unittest.TestCase):
             repo = self._profile_repo(tmp)
             c = self._c(repo_root=repo, backend="codex", agent_model="gpt-5.6-sol", env={})
             c._register_codex_thread = lambda *a: None  # type: ignore[method-assign]
-            c._ensure_codex_feature_cache = lambda *a, **k: None  # type: ignore[method-assign]
             # The cap is patched rather than set through the env var, which parses whole
             # seconds only; the waits below are real.
             with patch.object(wc.subprocess, "Popen", _WedgedPopen), \
@@ -11075,7 +11008,8 @@ class LeafSpawnTest(unittest.TestCase):
                     patch.object(wc, "LEAF_TERMINATE_GRACE_SECONDS", 0.5), \
                     redirect_stdout(out):
                 proc = c.spawn_leaf(
-                    "P", {"HOME": "/h"}, child_arid="A", resume_session_id="thread-1",
+                    "P", {"HOME": "/h"}, child_arid="A", session_id="A",
+                    resume_session_id="thread-1",
                     timeout_context={"node_key": "component/spec_x@0.1.0", "step": "compile",
                                      "substep": "generate", "agent_run_id": "A"})
         self.assertEqual(signalled[0], (424242, signal.SIGTERM))
@@ -13155,7 +13089,7 @@ class FailSummaryContractTest(unittest.TestCase):
         import tools.orchestration_runtime as rt
         with tempfile.TemporaryDirectory() as tmp:
             c = _FakeConductor(repo_root=Path(tmp), orchestration_id="o",
-                               orchestration_agent_run_id="ORCH", llm_config=_agentic_cfg("claude"), env={})
+                               orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
             c.calls = []
             c.status_fn = status_fn
             c.spawn_leaf = lambda prompt, env, entry=None, **kw: proc
@@ -13590,7 +13524,9 @@ class BuildLaunchRequestResolvedDependenciesTest(unittest.TestCase):
             [p for p in cs_outs if p.endswith("/compile_static_meta.json")], cs_outs)
         self.assertEqual(len(cs_outs), 1)
         # compile.static is deterministic -> empty must-read (no leaf reads the NL spec/tests).
-        self.assertEqual(cs_req["skill_must_read_refs"], "")
+        # No `skill_must_read_refs` at all since Z4 (issue #171): no launch force-reads a
+        # document, so the builder emits the key nowhere rather than emitting it empty.
+        self.assertNotIn("skill_must_read_refs", cs_req)
         # compile.generate authors the IR (spec.ir.yaml) + ir_meta.json.
         gen_outs = self._build("compile", "generate", ())["allowed_output_paths"]
         self.assertTrue(any(p.endswith("/spec.ir.yaml") for p in gen_outs))
@@ -13600,9 +13536,12 @@ class BuildLaunchRequestResolvedDependenciesTest(unittest.TestCase):
         ver_outs = self._build("compile", "verify", ())["allowed_output_paths"]
         self.assertEqual([p for p in ver_outs if p.endswith("/ir_meta.json")], ver_outs)
         self.assertFalse(any(p.endswith("/spec.ir.yaml") for p in ver_outs))
-        # but verify still READS spec.ir.yaml to check it (must-read, not a write target).
-        self.assertIn("/spec.ir.yaml",
-                      self._build("compile", "verify", ())["skill_must_read_refs"])
+        # Verify still READS spec.ir.yaml to check it, but not through a must-read list: it is
+        # a PURE leaf, and the host inlines the IR into its prompt as `ir_document`
+        # (`PURE_CONTEXT_REQUIRED_KEYS[("compile", "verify")]`). The delivery moved with the
+        # leaf model in Z4 (issue #171); what stays true is that the IR is not a write target.
+        from tools.orchestration_runtime import PURE_CONTEXT_REQUIRED_KEYS
+        self.assertIn("ir_document", PURE_CONTEXT_REQUIRED_KEYS[("compile", "verify")])
 
 
 class SnapshotDeliverableGapTest(unittest.TestCase):
@@ -15096,9 +15035,12 @@ class PureLeafSubstepPredicateTests(unittest.TestCase):
             node_key=f"component/{self.SID}@0.1.0", spec_path=f"spec/component/{self.SID}",
             ir_id="i1", pipeline_id="p1", source_id="s1", binary_id="b1")
 
-    def _conductor(self, repo: Path, backend: str) -> _FakeConductor:
-        return _FakeConductor(repo_root=repo, orchestration_id="o",
-                              orchestration_agent_run_id="ORCH", llm_config=_cfg(backend), env={})
+    def _conductor(self, repo: Path, backend: str) -> wc.Conductor:
+        """A REAL conductor: `_bundle_shape` is this class's subject, and `_FakeConductor`
+        stubs it (its `repo_root` is usually synthetic). The IR is on disk here, so the real
+        reader has something to read."""
+        return wc.Conductor(repo_root=repo, orchestration_id="o",
+                            orchestration_agent_run_id="ORCH", llm_config=_cfg(backend), env={})
 
     def test_claude_m3c_generate_substeps_are_pure(self) -> None:
         # (a) claude + M3c: both generate LLM substeps are pure, and so are both compile LLM
@@ -15120,20 +15062,42 @@ class PureLeafSubstepPredicateTests(unittest.TestCase):
             # against the tests, which every node kind has.
             self.assertTrue(c._pure_leaf_substep(refs, "validate", "judge"))
 
-    def test_a_capability_restricted_entry_keeps_its_leaf_agentic(self) -> None:
-        """The operator-facing escape, and the mechanism the issue #168 A/B baseline arm uses:
-        an entry whose `capabilities:` drops `pure` runs the agentic loop even on a pair that has
-        been migrated. Without this the predicate could be read as keyed on the pair alone."""
+    def test_the_predicate_no_longer_reads_the_entrys_capability(self) -> None:
+        """It is keyed on the pair and the node's SHAPE, and on nothing about the provider.
+
+        This row used to be `test_a_capability_restricted_entry_keeps_its_leaf_agentic`: an
+        entry whose `capabilities:` dropped `pure` fell through to the agentic loop, which was
+        the operator-facing escape and the mechanism issue #168's A/B baseline arm used. Z4
+        (issue #171) removed the loop, made `pure` a hard requirement at configuration LOAD,
+        and took the capability test out of the predicate — because reading it here would
+        answer False for a mis-configured entry and report the node as SHAPELESS, which is a
+        false diagnosis of the operator's actual error.
+
+        Asserted by construction rather than by inspection: the predicate is driven with a
+        conductor whose entries hold only `pure`, and with one whose entries hold the
+        provider's whole declared set, and the answers must be identical."""
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = self._refs()
             WriteRunnerTest._write_consumer_ir(self, repo, refs, infra=1)
-            c = _FakeConductor(repo_root=repo, orchestration_id="o",
-                               orchestration_agent_run_id="ORCH",
-                               llm_config=_agentic_cfg("claude"), env={})
+            wide = self._conductor(repo, "claude")
+            narrow = wc.Conductor(
+                repo_root=repo, orchestration_id="o", orchestration_agent_run_id="ORCH",
+                env={}, llm_config=lc.load_llm_config(self._write_config(
+                    repo, "defaults:\n  provider: claude_cli\n  capabilities: [pure]\n")))
             for phase, substep in sorted(lc.LLM_LEAF_SUBSTEPS):
-                self.assertFalse(c._pure_leaf_substep(refs, phase, substep),
-                                 msg=f"{phase}.{substep}")
+                self.assertEqual(
+                    narrow._pure_leaf_substep(refs, phase, substep),
+                    wide._pure_leaf_substep(refs, phase, substep),
+                    msg=f"{phase}.{substep}")
+                self.assertTrue(narrow._pure_leaf_substep(refs, phase, substep),
+                                msg=f"{phase}.{substep}")
+
+    @staticmethod
+    def _write_config(repo: Path, text: str) -> Path:
+        path = repo / "llm.yaml"
+        path.write_text(text, encoding="utf-8")
+        return path
 
     def test_codex_m3c_uses_sandboxed_structured_pure_leaf(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -16854,42 +16818,35 @@ class DeterministicBuildTest(unittest.TestCase):
             self.assertFalse((repo / refs.run_node_dir() / "trial_meta.json").exists())
 
 
-class GateRoutingIsStatedToTheLeafTests(unittest.TestCase):
-    """Couple the LEAF-READ statement of the gate's routing rule to the code that decides it.
+class GateRoutingTerminalCategoryTests(unittest.TestCase):
+    """The gate's host-attribution verdict, pinned in the code that answers it.
 
-    WHY A CHECK AND NOT DISCIPLINE. Issue #112 changed what a `Generate.gate` finding does to a
-    run, and the same sentence — "a finding re-runs `Generate.generate`" — is stated in five
-    places. Three of them were left false, across two review rounds, each found by a different
-    reviewer: `docs/ORCHESTRATION.md`, then this SKILL, then
-    `docs/backends/linter/fortitude/RULES.md` and a second `docs/RUNBOOK.md` entry. That is the
-    threshold at which discipline has already lost, and the audience decides which site is
-    checked first: `AGENTS.md` §Project Local Skills makes `SKILL.md` the canonical execution
-    procedure, and it is delivered INTO the leaf's launch prompt, while none of the documents
-    reaches a leaf at all.
+    This class was `GateRoutingIsStatedToTheLeafTests` and coupled that verdict to the SENTENCE
+    a leaf reads. Issue #112 changed what a `Generate.gate` finding does to a run, the same
+    sentence was stated in five places, and three were left false across two review rounds —
+    the threshold at which discipline has already lost. The audience decided which site was
+    checked: `skills/workflow-generate-generate/SKILL.md`, because it was delivered INTO the
+    leaf's launch prompt while none of the documents reached a leaf at all.
 
-    THE BOUND IS NARROW ON PURPOSE. Only leaf-read files, and within them only a bullet that
-    states the GATE's rerun. Plenty of other prose says "a finding warm-resumes
-    `Generate.generate`" about a specific gate over the leaf's OWN model source — the checks-ABI
-    gate, the `!$omp` floor, the signature gate — where the sentence is unconditionally true.
-    Requiring the qualification there would be over-refusal, which is this repository's recorded
-    default error direction; the bound is self-tested below.
+    Z4 (issue #171) deleted that SKILL with the agentic leaf, and the coupling has no target.
+    The honest accounting, because "the rule now reaches nobody" is the defect this repository
+    names (`atmofab-enforcement-change` surface 12) and has to be ruled out rather than assumed:
 
-    WHAT IT REQUIRES is a token DERIVED FROM THE CODE: the failure category the gate answers when
-    a finding belongs to the host. The first version required the control file's BASENAME instead
-    — which reads better to a leaf, and is a technology spelling that `docs/BACKEND_BOUNDARY.md`
-    forbids the neutral core to gain; the token ratchet refused it, correctly. So the contract
-    names the files neutrally ("the build control file", "the runner glue") and names the CATEGORY
-    exactly. The coupling is: if you tell a leaf the gate hands findings back, name the verdict it
-    will get instead.
+      * the statement was ALREADY dead for production. Every in-tree node's `generate.generate`
+        has run pure since issue #169, and a pure leaf reads no SKILL — so no live leaf had
+        received this sentence for some time before Z4;
+      * and it is not needed by the leaf that replaced it. The rule says what the gate's verdict
+        DOES: a leaf-attributed finding comes back as a repair turn, a host-attributed one
+        (`host_rendered_lint_findings`) terminalizes. A pure leaf does not run the gate and
+        cannot act on either branch — when the first happens it is re-launched with the findings
+        inlined, and when the second happens it is not re-launched at all. There is no decision
+        the sentence informs.
+
+    What remains is the CODE half, which was always the authority ("the rule is defined in the
+    CODE; this file is checked against it, never the reverse"), and it is what this class keeps.
     """
 
-    #: Files a workflow leaf actually receives. Deliberately not "every document that mentions
-    #: the routing" — see the class docstring.
-    _LEAF_READ_SITES = ("skills/workflow-generate-generate/SKILL.md",)
-
-    #: The lint attribution's host-side verdict. Spelled here AND checked against the code below,
-    #: so a rename of the category breaks this row instead of silently decoupling it from the
-    #: contract it is meant to hold.
+    #: The lint attribution's host-side verdict.
     _HOST_CATEGORY = "host_rendered_lint_findings"
 
     def test_the_category_this_row_couples_on_is_the_one_the_code_answers(self) -> None:
@@ -16918,56 +16875,6 @@ class GateRoutingIsStatedToTheLeafTests(unittest.TestCase):
         starts = [m.start() for m in self._ITEM_START.finditer(text)] + [len(text)]
         items = [text[a:b] for a, b in zip(starts, starts[1:])]
         return [it for it in items if self._GATE_RERUN.search(it)]
-
-    def test_every_leaf_read_statement_of_the_gate_rerun_names_the_host_authored_files(
-            self) -> None:
-        repo = Path(__file__).resolve().parents[2]
-        checked = 0
-        for rel in self._LEAF_READ_SITES:
-            text = (repo / rel).read_text(encoding="utf-8")
-            hits = self._items_stating_the_rule(text)
-            self.assertTrue(
-                hits, f"{rel}: no statement of the gate's rerun found at all — either the "
-                      f"contract stopped telling the leaf what the gate does (say so and delete "
-                      f"this row) or the wording moved and this pattern no longer reaches it")
-            for hit in hits:
-                checked += 1
-                self.assertIn(
-                    self._HOST_CATEGORY, hit,
-                    f"{rel}: this bullet tells the leaf a gate finding comes back to it, without "
-                    f"saying what happens when it does not. A finding in a file "
-                    f"`Conductor._host_rendered_src_names` puts on the host side terminalizes the "
-                    f"node as {self._HOST_CATEGORY!r} (issue #112), and the leaf is never handed "
-                    f"it. Name that category in THIS bullet; a mention elsewhere in the file does "
-                    f"not reach a leaf reading this one.")
-        self.assertGreaterEqual(checked, 2, "the leaf contract states this rule twice; if it "
-                                            "now states it fewer times, say why here")
-
-    def test_the_bound_does_not_sweep_in_a_gate_this_rule_does_not_govern(self) -> None:
-        """SELF-TEST OF THE BOUND, both directions.
-
-        A bullet about a finding in the leaf's OWN source must not be demanded the exception —
-        that is the over-refusing direction. And the pattern must actually match the shape it
-        claims to, or the row above passes by matching nothing."""
-        governed = ("- On a lint or syntax finding the conductor re-runs `Generate.generate` "
-                    "(warm resume) so you fix the flagged source.")
-        not_governed = ("- A drift in the published signatures warm-resumes `Generate.generate` "
-                        "so the same leaf fixes its own model source.")
-        self.assertTrue(self._GATE_RERUN.search(governed))
-        self.assertIsNone(self._GATE_RERUN.search(not_governed))
-
-    def test_restoring_the_unqualified_wording_fails_the_check(self) -> None:
-        """The mutation for a prose pin is the sentence it refuses, run through the check.
-
-        Anchored on the wording that stood before issue #112, byte for byte, so this row pins
-        that the check catches THAT sentence rather than that today's sentence survives."""
-        pre_112 = ("- **`static lint` … NOT yours to run.** On a lint or syntax finding the "
-                   "conductor re-runs `Generate.generate` (warm resume) so you fix the flagged "
-                   "source.")
-        hits = self._items_stating_the_rule(pre_112)
-        self.assertEqual(len(hits), 1)
-        self.assertNotIn(self._HOST_CATEGORY, hits[0])
-
 
 class DeterministicLintTest(unittest.TestCase):
     """The generate.gate lint checker (_gate_lint_check) runs in-process: it returns the `lint`
@@ -18564,41 +18471,6 @@ class DeterministicStaticTest(unittest.TestCase):
             self.assertEqual(meta["status"], "fail")
             self.assertEqual(meta["failure_category"], "workspace_root_violation")
 
-    def test_generate_verify_requires_fresh_source_meta_scoped(self) -> None:
-        # generate.verify (pure semantic pass post-G1) must RE-AUTHOR source_meta.json this
-        # attempt to pass; a no-op verify reading a stale verification_status=pass from
-        # generate.generate must NOT pass. The freshness gate is scoped to source_meta.json ONLY:
-        # generate.verify's allowed_output_paths also lists the producer sources (model/runner.f90)
-        # it does not rewrite, so a STALE source must NOT cause a false-fail when source_meta is fresh.
-        import os
-        import tempfile
-        with tempfile.TemporaryDirectory() as td:
-            repo = Path(td)
-            refs = self._refs()
-            src = repo / refs.source_dir()
-            (src / "src").mkdir(parents=True, exist_ok=True)
-            model = src / "src" / f"{refs.spec_id}_model.f90"
-            model.write_text("module m\nend module\n", encoding="utf-8")
-            # Make the producer source OLD so it would fail a whole-set freshness check.
-            os.utime(model, (1_000.0, 1_000.0))
-            meta_path = src / "source_meta.json"
-            # Contract-conformant meta: this test isolates the FRESHNESS gate, and the
-            # stage-meta contract gate (a separate pass condition) must not be what fails it.
-            meta_path.write_text(json.dumps(_conformant_stage_meta()), encoding="utf-8")
-            c = self._conductor(repo)
-            allowed = [f"{refs.source_dir()}/src/{refs.spec_id}_model.f90",
-                       f"{refs.source_dir()}/source_meta.json"]
-            mtime = meta_path.stat().st_mtime
-            # Fresh source_meta + STALE source -> pass (gate scoped to source_meta, ignores source).
-            self.assertEqual(
-                c.determine_substep_status(refs, "generate", "verify", allowed,
-                                           min_mtime=mtime - 100)[0], "pass")
-            # Stale source_meta (no-op verify) -> fail.
-            self.assertEqual(
-                c.determine_substep_status(refs, "generate", "verify", allowed,
-                                           min_mtime=mtime + 100)[0], "fail")
-
-
 class DeterministicGateTest(unittest.TestCase):
     """generate.gate unions the lint / syntax / static checkers into ONE gate_meta.json
     (_gate_inproc). These tests drive the REAL writer (mocking only the underlying tools /
@@ -18970,35 +18842,6 @@ class DeterministicCompileStaticTest(unittest.TestCase):
                              ("retry", "compile", "reuse"))
             self.assertTrue(d.reason.startswith("compile_static_"))
 
-    def test_compile_verify_requires_fresh_ir_meta(self) -> None:
-        # compile.verify is a pure-semantic pass whose sole deliverable is ir_meta.json. It must
-        # RE-AUTHOR ir_meta this attempt to pass; a no-op verify that reads a stale
-        # verification_status=pass left by Compile.generate (the IR author) must NOT pass — the
-        # freshness gate (mtime >= this substep's launch time) enforces "an inspect-only verify
-        # that writes nothing cannot terminate pass".
-        import tempfile
-        with tempfile.TemporaryDirectory() as td:
-            repo = Path(td)
-            refs = self._refs()
-            self._seed(repo, refs)
-            c = self._conductor(repo)
-            meta_path = repo / refs.ir_ref / "ir_meta.json"
-            # Contract-conformant meta: this test isolates the FRESHNESS gate, and the
-            # stage-meta contract gate (a separate pass condition) must not be what fails it.
-            meta_path.write_text(json.dumps(_conformant_stage_meta()), encoding="utf-8")
-            paths = [refs.ir_ref + "/ir_meta.json"]
-            mtime = meta_path.stat().st_mtime
-            # Fresh: ir_meta was (re)authored at/after the substep launch -> pass.
-            self.assertEqual(
-                c.determine_substep_status(refs, "compile", "verify", paths,
-                                           min_mtime=mtime - 100)[0], "pass")
-            # Stale: a no-op verify did not rewrite ir_meta (its mtime predates this substep's
-            # launch) -> fail, even though verification_status is still "pass".
-            self.assertEqual(
-                c.determine_substep_status(refs, "compile", "verify", paths,
-                                           min_mtime=mtime + 100)[0], "fail")
-
-
 class PostJudgeClassifierTest(unittest.TestCase):
     """G4: post_judge severity classification of free-text `--stage pre_judge` violations."""
 
@@ -19070,7 +18913,7 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
     def _conductor(self, repo: Path) -> "wc.Conductor":
         return wc.Conductor(repo_root=repo, orchestration_id="t",
                             orchestration_agent_run_id="x",
-                            llm_config=_agentic_cfg("claude"), env={})
+                            llm_config=_cfg("claude"), env={})
 
     def _refs(self) -> wc.NodeRefs:
         return wc.NodeRefs(
@@ -19093,35 +18936,6 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
             json.dumps({"per_test": per_test}), encoding="utf-8")
         (rn / "semantic_review.json").write_text(
             json.dumps({"decision": decision}), encoding="utf-8")
-
-    # -- determine_substep_status: judge (semantic_review only), pre/post_judge (meta) --
-    def test_determine_judge_passes_on_semantic_decision_only(self) -> None:
-        import tempfile
-        with tempfile.TemporaryDirectory() as td:
-            repo, refs = Path(td), self._refs()
-            c = self._conductor(repo)
-            # R2: the judge authors semantic_review.json only; verdict.json is host-authored
-            # at execute (and is ∈ {pass,xfail} whenever the judge runs). So the judge passes
-            # iff semantic_review.decision == "pass", regardless of per_test.
-            self._seed_judge(repo, refs,
-                             per_test=[{"test_id": "t1", "status": "pass"}], decision="pass")
-            self.assertEqual(
-                c.determine_substep_status(refs, "validate", "judge", [])[0], "pass")
-            # an all-xfail execute verdict still passes the judge on a pass decision
-            self._seed_judge(repo, refs,
-                             per_test=[{"test_id": "t1", "status": "xfail"}], decision="pass")
-            self.assertEqual(
-                c.determine_substep_status(refs, "validate", "judge", [])[0], "pass")
-            # a semantic_review fail -> judge fail (independent of the execute verdict)
-            self._seed_judge(repo, refs,
-                             per_test=[{"test_id": "t1", "status": "pass"}], decision="fail")
-            self.assertEqual(
-                c.determine_substep_status(refs, "validate", "judge", [])[0], "fail")
-            # a missing/empty decision -> judge fail (a judge that produced no clear verdict)
-            self._seed_judge(repo, refs,
-                             per_test=[{"test_id": "t1", "status": "pass"}], decision="")
-            self.assertEqual(
-                c.determine_substep_status(refs, "validate", "judge", [])[0], "fail")
 
     # -- G6: _author_derived_validate_artifacts (conductor-authored aggregate/summary/meta) --
     def _seed_verdict(self, repo: Path, refs: wc.NodeRefs, per_test: list,
@@ -19697,126 +19511,6 @@ class ExecutePromoterTest(unittest.TestCase):
                        "cases": [{"case_id": "a", "verdict": {"overall": "fail"}}]}
             status2 = c._author_quality_check(node, run_diag, qc_diag, "R", "Q", "make_test", 1)
             self.assertEqual(status2, "fail")
-class CodexFeatureCacheTest(unittest.TestCase):
-    """The conductor host-certifies the codex hooks feature into a leaf-unwritable cache
-    (orchestration-dir root) before launching codex leaves, so the in-sandbox hook reads a
-    value it cannot forge. No-op for claude; probed once per orchestration."""
-
-    def _conductor(self, repo: Path, backend: str, llm_command: str = "",
-                   env: dict | None = None) -> wc.Conductor:
-        return wc.Conductor(repo_root=repo, orchestration_id="orch_cfc",
-                            orchestration_agent_run_id="ORCH",
-                            llm_config=_cfg(backend, llm_command=llm_command),
-                            env=env if env is not None else {})
-
-    def test_codex_probes_once_and_writes_unwritable_cache(self) -> None:
-        from unittest.mock import patch
-        from tools.hooks.codex_feature import codex_feature_cache_path
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            (repo / "workspace" / "orchestrations" / "orch_cfc").mkdir(parents=True)
-            c = self._conductor(repo, "codex")
-            with patch("tools.hooks.codex_feature.codex_hooks_feature_enabled",
-                       return_value=(True, "hooks=true")) as probe:
-                c._ensure_codex_feature_cache()
-                c._ensure_codex_feature_cache()  # memoized -> still one probe
-            self.assertEqual(probe.call_count, 1)
-            # bare backend -> probe the bare `codex` executable
-            self.assertEqual(probe.call_args.kwargs["command"], ["codex"])
-            path = codex_feature_cache_path(repo_root=repo, orchestration_id="orch_cfc")
-            self.assertTrue(path.is_file())
-            # the cache must NOT live under the leaf-writable hooks/ (or audit/) bind
-            self.assertNotIn("/hooks/", str(path))
-            self.assertNotIn("/audit/", str(path))
-            doc = json.loads(path.read_text(encoding="utf-8"))
-            self.assertIs(doc["enabled"], True)
-
-    def test_codex_probe_uses_the_configured_command(self) -> None:
-        # A configured `command:` wrapper must be probed verbatim (same prefix the leaf
-        # runs via leaf_command), not the hardcoded `codex` — else the host certifies a
-        # different executable than the leaf will use.
-        from unittest.mock import patch
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            (repo / "workspace" / "orchestrations" / "orch_cfc").mkdir(parents=True)
-            c = self._conductor(repo, "codex", llm_command="codexwrap --profile x")
-            with patch("tools.hooks.codex_feature.codex_hooks_feature_enabled",
-                       return_value=(True, "hooks=true")) as probe:
-                c._ensure_codex_feature_cache()
-            self.assertEqual(probe.call_args.kwargs["command"], ["codexwrap", "--profile", "x"])
-
-    def test_codex_fails_closed_when_hooks_not_certified(self) -> None:
-        # hooks=false / probe error → the leaf's hooks would not fire, so the in-sandbox
-        # fail-closed read never happens. The conductor must fail closed BEFORE launch
-        # (SandboxEnforcementError → conduct terminalizes as sandbox_enforcement_violation),
-        # and must NOT memoize (so a retry cannot degrade into an allow).
-        from unittest.mock import patch
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            (repo / "workspace" / "orchestrations" / "orch_cfc").mkdir(parents=True)
-            c = self._conductor(repo, "codex")
-            with patch("tools.hooks.codex_feature.codex_hooks_feature_enabled",
-                       return_value=(False, "hooks=false")):
-                with self.assertRaises(wc.SandboxEnforcementError):
-                    c._ensure_codex_feature_cache()
-            self.assertFalse(getattr(c, "_codex_feature_cache_written", False))
-
-    def test_certification_fails_closed_before_record_launch(self) -> None:
-        # The cert runs at the top of run_substep, BEFORE record_launch — so a fail-closed
-        # cert never orphans a recorded launch (phantom child_running active run).
-        from unittest.mock import patch
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            (repo / "workspace" / "orchestrations" / "orch_cfc").mkdir(parents=True)
-            c = self._conductor(repo, "codex")
-
-            def _boom_record_launch(*a, **k):
-                raise AssertionError("record_launch ran before codex cert")
-
-            c.record_launch = _boom_record_launch  # type: ignore[assignment]
-            refs = wc.NodeRefs(
-                node_key="component/x@0.1.0", spec_path="spec/component/x",
-                ir_id="i", pipeline_id="p", source_id="s", binary_id="b",
-                run_id="r", source_binary_id="b")
-            with patch("tools.hooks.codex_feature.codex_hooks_feature_enabled",
-                       return_value=(False, "hooks=false")):
-                # SandboxEnforcementError (cert), NOT AssertionError (record_launch) —
-                # proves the cert short-circuits before the launch is recorded.
-                with self.assertRaises(wc.SandboxEnforcementError):
-                    c.run_substep(refs, "compile", "generate")
-
-    def test_codex_disabled_requirement_opt_out_does_not_fail_closed(self) -> None:
-        # With ATMOFAB_REQUIRE_CODEX_HOOKS_FEATURE=0 (same opt-out the hook honours), an
-        # uncertified feature is recorded but does NOT fail closed.
-        from unittest.mock import patch
-        from tools.hooks.codex_feature import codex_feature_cache_path
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            (repo / "workspace" / "orchestrations" / "orch_cfc").mkdir(parents=True)
-            c = self._conductor(repo, "codex",
-                                env={"ATMOFAB_REQUIRE_CODEX_HOOKS_FEATURE": "0"})
-            with patch("tools.hooks.codex_feature.codex_hooks_feature_enabled",
-                       return_value=(False, "hooks=false")):
-                c._ensure_codex_feature_cache()  # no raise
-            self.assertTrue(getattr(c, "_codex_feature_cache_written", False))
-            doc = json.loads(codex_feature_cache_path(
-                repo_root=repo, orchestration_id="orch_cfc").read_text(encoding="utf-8"))
-            self.assertIs(doc["enabled"], False)
-
-    def test_claude_backend_is_noop(self) -> None:
-        from unittest.mock import patch
-        from tools.hooks.codex_feature import codex_feature_cache_path
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            (repo / "workspace" / "orchestrations" / "orch_cfc").mkdir(parents=True)
-            c = self._conductor(repo, "claude")
-            with patch("tools.hooks.codex_feature.codex_hooks_feature_enabled",
-                       side_effect=AssertionError("claude must not probe codex")):
-                c._ensure_codex_feature_cache()
-            path = codex_feature_cache_path(repo_root=repo, orchestration_id="orch_cfc")
-            self.assertFalse(path.is_file())
-
-
 _INCIDENT_DICT_REASON = {
     "violated_convention": "inert_dependency_call",
     "target_artifact": "src/model.f90",
@@ -19833,7 +19527,17 @@ class VerifyMetaSchemaGateTests(unittest.TestCase):
     The warm-resume mini-loop that used to re-author the meta in place was deleted by issue
     #176 — no run ever reached it (0 `verify_meta_schema_warm_resume` events in any run_log
     since it landed at `e75db4e`), and the pure-leaf transition made it structurally
-    unreachable besides. The gate itself is what remains, and it is what these pin."""
+    unreachable besides.
+
+    ONE HALF OF THE GATE REMAINS, and it is the half these pin. It used to be two: a
+    contract-violating meta failed the verify SUBSTEP (a branch of
+    `determine_substep_status`), and `classify_failure` then refused to route it by its own
+    severity. Z4 (issue #171) made `determine_substep_status` deterministic-only, and the
+    substep half went with it — no leaf authors a stage meta any more. A pure verify returns a
+    verdict DOCUMENT, the host validates it (`verify_verdict_violations`) and writes the meta
+    itself, so a violating meta is a HOST defect rather than something a leaf can produce.
+    The routing half still runs and still refuses to trust such a meta's fields, which is what
+    catches a host defect that does happen."""
 
     def _refs(self) -> wc.NodeRefs:
         return wc.NodeRefs(
@@ -19912,58 +19616,13 @@ class VerifyMetaSchemaGateTests(unittest.TestCase):
                 return ("pass" if ok else "fail"), ["out.json"]
 
         c = _C(repo_root=repo, orchestration_id="orch_x",
-               orchestration_agent_run_id="ORCH", llm_config=_agentic_cfg("claude"), env={})
+               orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
         c.calls = []
         c._current_substep = None
         c.verify_runs = state
         return c
 
     # -- 3b: the choke point (real gate) ------------------------------------------------
-
-    def test_verify_with_type_invalid_meta_fails_even_when_status_pass(self) -> None:
-        # A verify cannot certify its phase with a schema-violating meta, even when it declares
-        # verification_status=pass — the violation would be persisted and become unrepairable.
-        for phase, meta_name, ref_attr in (("generate", "source_meta.json", "source_dir"),
-                                           ("compile", "ir_meta.json", "ir_ref")):
-            with self.subTest(phase=phase), tempfile.TemporaryDirectory() as td:
-                repo, refs = Path(td), self._refs()
-                path = self._write_meta(
-                    repo, refs, phase,
-                    _conformant_stage_meta("pass", last_fail_reason=_INCIDENT_DICT_REASON))
-                c = wc.Conductor(repo_root=repo, orchestration_id="o",
-                                 orchestration_agent_run_id="ORCH",
-                                 llm_config=_cfg("claude"), env={})
-                ref_dir = getattr(refs, ref_attr)
-                allowed = [f"{ref_dir() if callable(ref_dir) else ref_dir}/{meta_name}"]
-                mtime = path.stat().st_mtime
-                self.assertEqual(
-                    c.determine_substep_status(refs, phase, "verify", allowed,
-                                               min_mtime=mtime - 100)[0], "fail")
-                # Same meta with a plain-string reason and a pass status -> pass (the gate
-                # rejects the TYPE violation, not the presence of a reason).
-                path.write_text(json.dumps(_conformant_stage_meta("pass")), encoding="utf-8")
-                self.assertEqual(
-                    c.determine_substep_status(refs, phase, "verify", allowed,
-                                               min_mtime=path.stat().st_mtime - 100)[0], "pass")
-
-    def test_pass_status_meta_missing_key_fails_verify_instead_of_crashing(self) -> None:
-        # A pass-status meta with a MISSING required key used to reach write_step_result and
-        # raise ValueError there (crashing the conductor). It now fails the verify gate, and
-        # `classify_failure` escalates the phase as `generate_fail_meta_schema`.
-        with tempfile.TemporaryDirectory() as td:
-            repo, refs = Path(td), self._refs()
-            meta = _conformant_stage_meta("pass")
-            meta.pop("debug_mode")
-            path = self._write_meta(repo, refs, "generate", meta)
-            c = wc.Conductor(repo_root=repo, orchestration_id="o",
-                             orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
-            allowed = [f"{refs.source_dir()}/source_meta.json"]
-            self.assertEqual(
-                c.determine_substep_status(refs, "generate", "verify", allowed,
-                                           min_mtime=path.stat().st_mtime - 100)[0], "fail")
-            self.assertEqual(
-                c._stage_meta_contract_findings(refs, "generate"),
-                ["source_meta.json missing required key 'debug_mode'"])
 
     def test_contract_findings_empty_when_meta_absent(self) -> None:
         # An absent meta is an ordinary verify failure (the leaf wrote nothing), NOT this
@@ -20094,8 +19753,6 @@ class LeafEntryThreadingTests(unittest.TestCase):
         """
         d = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, d, True)
-        # `record_launch` also hashes the leaf's MCP configuration out of this root.
-        _seed_leaf_mcp_config(Path(d))
         return Path(d)
 
     def _config_text(self, text: str) -> lc.LlmConfig:
@@ -20133,9 +19790,9 @@ class LeafEntryThreadingTests(unittest.TestCase):
         DECLARE a model and an effort, so both reach the CLI."""
         c = self._configured("claude")
         self.assertEqual(c.leaf_command(c.entry_for("validate", "judge")),
-                         ["claude", "--model", "opus", "--effort", "medium", "--setting-sources", "user", "--strict-mcp-config", "--mcp-config", ".mcp.json", "--disable-slash-commands", "--tools", "Bash,Edit,Glob,Grep,Read,Write", "--output-format", "json", "-p"])
+                         ["claude", "--model", "opus", "--effort", "medium", *_pure_leaf_tail()])
         k = self._configured("codex")
-        judge = k.leaf_command(k.entry_for("validate", "judge"))
+        judge = k.leaf_command(k.entry_for("validate", "judge"), session_id="arid-1")
         self.assertEqual(judge[:4], ["codex", "exec", "--model", "gpt-5.6-sol"])
         self.assertIn('model_reasoning_effort="medium"', judge)
         self.assertEqual(judge[-2:], ["--json", "-"])
@@ -20150,10 +19807,10 @@ class LeafEntryThreadingTests(unittest.TestCase):
                 "defaults:\n  provider: claude_cli\n"
                 "phases:\n  validate:\n    substeps:\n      judge:\n        model: haiku\n"))
         judge = c.leaf_command(c.entry_for("validate", "judge"))
-        self.assertEqual(judge, ["claude", "--model", "haiku", "--setting-sources", "user", "--strict-mcp-config", "--mcp-config", ".mcp.json", "--disable-slash-commands", "--tools", "Bash,Edit,Glob,Grep,Read,Write", "--output-format", "json", "-p"])
+        self.assertEqual(judge, ["claude", "--model", "haiku", *_pure_leaf_tail()])
         # ...and only that leaf.
         self.assertEqual(c.leaf_command(c.entry_for("generate", "generate")),
-                         ["claude", "--setting-sources", "user", "--strict-mcp-config", "--mcp-config", ".mcp.json", "--disable-slash-commands", "--tools", "Bash,Edit,Glob,Grep,Read,Write", "--output-format", "json", "-p"])
+                         ["claude", *_pure_leaf_tail()])
 
     def test_a_model_declared_at_defaults_reaches_every_leaf(self) -> None:
         c = wc.Conductor(
@@ -20162,7 +19819,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
                 "defaults:\n  provider: claude_cli\n  model: haiku\n"))
         for phase, substep in sorted(lc.LLM_LEAF_SUBSTEPS):
             self.assertEqual(c.leaf_command(c.entry_for(phase, substep)),
-                             ["claude", "--model", "haiku", "--setting-sources", "user", "--strict-mcp-config", "--mcp-config", ".mcp.json", "--disable-slash-commands", "--tools", "Bash,Edit,Glob,Grep,Read,Write", "--output-format", "json", "-p"], msg=f"{phase}.{substep}")
+                             ["claude", "--model", "haiku", *_pure_leaf_tail()], msg=f"{phase}.{substep}")
 
     def test_a_configured_effort_reaches_each_providers_own_surface(self) -> None:
         """The three surfaces are genuinely different — a claude flag, a codex config
@@ -20175,8 +19832,8 @@ class LeafEntryThreadingTests(unittest.TestCase):
                 "        provider: codex_cli\n        model: gpt-5.6-sol\n"
                 "        effort: ultra\n"))
         self.assertEqual(c.leaf_command(c.entry_for("compile", "verify")),
-                         ["claude", "--effort", "xhigh", "--setting-sources", "user", "--strict-mcp-config", "--mcp-config", ".mcp.json", "--disable-slash-commands", "--tools", "Bash,Edit,Glob,Grep,Read,Write", "--output-format", "json", "-p"])
-        judge = c.leaf_command(c.entry_for("validate", "judge"))
+                         ["claude", "--effort", "xhigh", *_pure_leaf_tail()])
+        judge = c.leaf_command(c.entry_for("validate", "judge"), session_id="arid-1")
         self.assertIn('model_reasoning_effort="ultra"', judge)
         # `--config`, the spelling `CODEX_EXEC_RESUME_REQUIRED_FLAGS` certifies by name.
         self.assertIn("--config", judge)
@@ -20194,9 +19851,8 @@ class LeafEntryThreadingTests(unittest.TestCase):
         # The pure codex branch writes its output schema under the leaf's own agent_run_id, so
         # a `pure=True` argv needs one (issue #169 removed the shared fallback filename two
         # concurrent launches could have collided on).
-        for argv in (c.leaf_command(entry),
-                     c.leaf_command(entry, resume_session_id="t1"),
-                     c.leaf_command(entry, session_id="t2", resume_session_id="t1", pure=True)):
+        for argv in (c.leaf_command(entry, session_id="t2"),
+                     c.leaf_command(entry, session_id="t2", resume_session_id="t1")):
             self.assertIn('model_reasoning_effort="xhigh"', argv)
 
     def test_an_absent_effort_says_nothing(self) -> None:
@@ -20205,7 +19861,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
             repo_root=Path("/tmp/repo"), orchestration_id="o", orchestration_agent_run_id="O",
             env={}, llm_config=self._config_text("defaults:\n  provider: claude_cli\n"))
         self.assertEqual(c.leaf_command(c.entry_for("compile", "verify")),
-                         ["claude", "--setting-sources", "user", "--strict-mcp-config", "--mcp-config", ".mcp.json", "--disable-slash-commands", "--tools", "Bash,Edit,Glob,Grep,Read,Write", "--output-format", "json", "-p"])
+                         ["claude", *_pure_leaf_tail()])
 
     def test_an_undeclared_model_is_still_left_unpinned(self) -> None:
         """The repo's long-standing rule: a model the FILE did not declare — one applied as a
@@ -20220,7 +19876,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
         entry = c.entry_for("validate", "judge")
         self.assertEqual(entry.model, "opus")
         self.assertFalse(entry.model_declared)
-        self.assertEqual(c.leaf_command(entry), ["claude", "--setting-sources", "user", "--strict-mcp-config", "--mcp-config", ".mcp.json", "--disable-slash-commands", "--tools", "Bash,Edit,Glob,Grep,Read,Write", "--output-format", "json", "-p"])
+        self.assertEqual(c.leaf_command(entry), ["claude", *_pure_leaf_tail()])
 
     # --- capability predicates replace the backend tests --------------------------------
 
@@ -20235,7 +19891,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
             repo_root=Path("/tmp/repo"), orchestration_id="o", orchestration_agent_run_id="O",
             env={}, llm_config=self._config_text(
                 "defaults:\n  provider: claude_cli\n"
-                "  capabilities: [agentic, pure, warm_resume, mcp_tools]\n"))
+                "  capabilities: [pure, warm_resume, mcp_tools]\n"))
         rows, meta = restricted._run_usage_probe(restricted.entry_for("validate", "judge"))
         self.assertIsNone(rows)
         self.assertEqual(meta["outcome"], "backend_unsupported")
@@ -20244,7 +19900,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
         c = wc.Conductor(
             repo_root=Path("/tmp/repo"), orchestration_id="o", orchestration_agent_run_id="O",
             env={}, llm_config=self._config_text(
-                "defaults:\n  provider: claude_cli\n  capabilities: [agentic, pure]\n"))
+                "defaults:\n  provider: claude_cli\n  capabilities: [pure]\n"))
         self.assertFalse(c._pure_session_resumable("sess-1", c.entry_for("generate", "verify")))
 
     def test_warm_resume_is_refused_and_reported_when_the_capability_is_absent(self) -> None:
@@ -20252,25 +19908,32 @@ class LeafEntryThreadingTests(unittest.TestCase):
         c = wc.Conductor(
             repo_root=Path("/tmp/repo"), orchestration_id="o", orchestration_agent_run_id="O",
             env={}, llm_config=self._config_text(
-                "defaults:\n  provider: claude_cli\n  capabilities: [agentic, pure]\n"))
+                "defaults:\n  provider: claude_cli\n  capabilities: [pure]\n"))
         c.emit = lambda event, **f: emitted.append({"event": event, **f})  # type: ignore
         repair = {"repair_strategy": "reuse", "repair_target_agent_run_id": "prior-arid"}
         self.assertIsNone(c._resolve_reuse_resume(repair, "generate", "generate"))
         self.assertEqual([e["event"] for e in emitted], ["resume_session_unavailable"])
 
-    def test_pure_dispatch_follows_the_pure_capability(self) -> None:
-        # The narrowing is on the LEAF, not on `defaults`: `defaults` also runs the escalate
-        # diagnostician, a pure leaf since issue #169, so a document whose `defaults` drops
-        # `pure` is refused at load.
-        c = wc.Conductor(
-            repo_root=Path("/tmp/repo"), orchestration_id="o", orchestration_agent_run_id="O",
-            env={}, llm_config=self._config_text(
+    def test_the_pure_capability_is_required_at_load_not_at_dispatch(self) -> None:
+        """WHERE the `pure` requirement is enforced, since Z4 (issue #171).
+
+        It used to be a DISPATCH question: `_pure_leaf_substep` read the entry's capability, and
+        an entry narrowed away from `pure` fell through to the agentic loop — which is what this
+        row drove. There is no second loop, so the requirement moved to configuration LOAD,
+        where an operator can read the refusal, and the dispatch stopped reading the capability
+        (reading it there would answer False for a mis-configured entry and report the node as
+        shapeless — a false diagnosis of what is wrong).
+
+        Both halves are asserted: the document is refused by name, and the dispatch on a valid
+        one is True regardless.
+        """
+        with self.assertRaises(lc.LlmConfigError) as ctx:
+            self._config_text(
                 "defaults:\n  provider: claude_cli\n"
                 "phases:\n  generate:\n    substeps:\n      generate:\n"
-                "        provider: claude_cli\n        capabilities: [agentic]\n"))
-        c._conductor_authors_makefile = lambda refs: True   # type: ignore[assignment]
-        c._conductor_authors_runner = lambda refs: True     # type: ignore[assignment]
-        self.assertFalse(c._pure_leaf_substep(None, "generate", "generate"))
+                "        provider: claude_cli\n        capabilities: [warm_resume]\n")
+        self.assertEqual(ctx.exception.rule,
+                         "llm_config_capability_insufficient_for_substep")
         c2 = self._configured("claude", model="opus")
         c2._conductor_authors_makefile = lambda refs: True  # type: ignore[assignment]
         c2._conductor_authors_runner = lambda refs: True    # type: ignore[assignment]
@@ -20364,198 +20027,65 @@ class LeafEntryThreadingTests(unittest.TestCase):
         c.record_launch(arid, request, entry)
         return recorded[-1]
 
-    def test_record_launch_records_setting_surface_and_mcp_config_sha256(self) -> None:
+    def test_record_launch_records_the_tool_set_the_leaf_came_up_with(self) -> None:
         """What a leaf's configuration was closed to is recoverable from no other artifact.
 
-        The persisted `sandbox_command` renders `command_argv=[backend_command]` alone, so
-        the real spawn argv is written down nowhere; and `orchestration_meta.json#
-        repo_revision` carries `{commit, dirty}`, from which the bytes of a dirty-tree
-        `.mcp.json` cannot be reconstructed. Hence the value AND the hash, on the precedent
-        of `codex_hooks_sha256`.
+        The persisted `sandbox_command` renders `command_argv=[backend_command]` alone, so the
+        real spawn argv is written down nowhere — and the tool set is the enforcement boundary
+        a later audit of "could this leaf have done that" turns on.
 
-        The expected digest is computed here from the same bytes the fixture wrote, never
-        copied in as a literal: a literal would pin today's file rather than the property
-        that the record describes the file that was actually there.
+        ONE field since Z4 (issue #171). `claude_setting_sources` and the `mcp_config` list (a
+        `{ref, sha256}` per configuration, on the precedent of `codex_hooks_sha256`) described
+        surfaces the agentic launch had: a settings layer and a server set. A pure leaf takes
+        `--safe-mode` and `--strict-mcp-config` with no configuration, so there is nothing to
+        name and nothing to hash.
         """
         repo = self._scratch_repo_root()
-        data = _seed_leaf_mcp_config(repo)
         c = wc.Conductor(
             repo_root=repo, orchestration_id="o", orchestration_agent_run_id="O",
             env={}, llm_config=self._config_text(
                 "defaults:\n  provider: claude_cli\n  model: opus\n"
                 "phases:\n  validate:\n    substeps:\n      judge:\n"
                 "        provider: codex_cli\n        model: gpt-5.6-sol\n"))
-        agentic = self._record_launch_response(
+        claude = self._record_launch_response(
             c, "arid-1", {}, c.entry_for("generate", "generate"))
-        self.assertEqual(agentic["claude_setting_sources"], "user")
-        # WHICH tools the leaf came up with (issue #71). Computed from the coverage table,
-        # not transcribed, for the same reason the digest below is computed.
-        from tools.orchestration_runtime import _CLAUDE_HOOK_MATCHER_COVERAGE
-        self.assertEqual(agentic["claude_tools"],
-                         [",".join(sorted(_CLAUDE_HOOK_MATCHER_COVERAGE["PreToolUse"]))])
-        self.assertEqual(agentic["mcp_config"],
-                         [{"ref": ".mcp.json",
-                           "sha256": hashlib.sha256(data).hexdigest()}])
+        # `[""]` — the CLI's spelling for "no tools at all" — which is the honest description
+        # of the argv rather than an absence indistinguishable from a codex leaf's.
+        self.assertEqual(claude["claude_tools"], [""])
+        self.assertNotIn("claude_setting_sources", claude)
+        self.assertNotIn("mcp_config", claude)
 
-        # EVERY OCCURRENCE of the flag, not the first. A configured `command:` prefix may
-        # carry its own `--tools` — the case `_variadic_values`' docstring cites for
-        # `--mcp-config` — and the CLI UNIONS the two (measured on 2.1.238: a prefix naming
-        # `Monitor` puts `Monitor` in the roster; the conductor's flag does NOT win).
-        # Reading only the first occurrence would record the prefix's value as what the
-        # leaf came up with, a false record of the very fact this field carries. Measured:
-        # `argv[argv.index("--tools") + 1]` left the whole file green before this.
-        prefixed = wc.Conductor(
+        # A codex leaf launches through a different argv, which names no `--tools` at all.
+        codex = self._record_launch_response(
+            c, "arid-2", {}, c.entry_for("validate", "judge"))
+        self.assertNotIn("claude_tools", codex)
+
+    def test_a_command_prefix_carrying_a_tools_flag_is_recorded_as_the_cli_reads_it(self) -> None:
+        """An entry's `command:` is a wrapper "with any flags", so it can already carry a flag
+        the conductor also appends; the argv then holds two, and which is in force is the CLI's
+        rule, not ours. For `--tools` it ACCUMULATES — measured on 2.1.238, a prefix naming
+        `Monitor` puts `Monitor` in the roster and the conductor's own flag does not win — so
+        the record must carry BOTH occurrences in argv order.
+
+        Reading it with `argv.index()` recorded the operator's occurrence alone, which is a
+        false record of what the leaf came up with. This row used to cover `--setting-sources`
+        (which OVERRIDES, last wins) and `--mcp-config` (which accumulates) as well; both left
+        the argv with the agentic launch in Z4 (issue #171), and `--tools` is the flag the pure
+        argv still carries."""
+        repo = self._scratch_repo_root()
+        c = wc.Conductor(
             repo_root=repo, orchestration_id="o", orchestration_agent_run_id="O",
             env={}, llm_config=self._config_text(
                 "defaults:\n  provider: claude_cli\n"
                 "  command: claude --tools Monitor\n"))
-        prefixed_surface = self._record_launch_response(
-            prefixed, "arid-5", {}, prefixed.entry_for("generate", "generate"))
-        self.assertEqual(prefixed_surface["claude_tools"],
-                         ["Monitor", ",".join(sorted(_CLAUDE_HOOK_MATCHER_COVERAGE["PreToolUse"]))])
-
-        # A codex leaf launches through a different argv, which names neither flag.
-        codex = self._record_launch_response(
-            c, "arid-2", {}, c.entry_for("validate", "judge"))
-        self.assertNotIn("claude_setting_sources", codex)
-        self.assertNotIn("claude_tools", codex)
-        self.assertNotIn("mcp_config", codex)
-
-        # A PURE claude leaf likewise: `pure_leaf_flags` carries no `--setting-sources` and
-        # no `--mcp-config`, and the mode is read off the REQUEST, the same field the
-        # runtime keys the pure transport on.
-        from tools.pure_leaf import PURE_LEAF_MODE
-        pure = self._record_launch_response(
-            c, "arid-3", {"leaf_mode": PURE_LEAF_MODE},
-            c.entry_for("generate", "generate"))
-        self.assertNotIn("claude_setting_sources", pure)
-        self.assertNotIn("mcp_config", pure)
-        # `--tools` IS on the pure argv, with the empty value, and the record says so: the
-        # field distinguishes "launched with no tools" from "not a claude CLI leaf at all",
-        # which the codex assertion above is the other half of.
-        self.assertEqual(pure["claude_tools"], [""])
-
-        # An HTTP leaf launches NO CLI and has no argv at all — `leaf_command` refuses a
-        # non-spawnable provider outright, which `spawn_leaf` avoids by returning on the same
-        # predicate. Nothing about settings layers or an MCP configuration file is true of
-        # one, so it is recorded about nothing rather than about "".
-        http = wc.Conductor(
-            repo_root=repo, orchestration_id="o", orchestration_agent_run_id="O",
-            env={}, llm_config=self._config_text(
-                "defaults:\n  provider: claude_cli\n  model: opus\n"
-                "phases:\n  generate:\n    substeps:\n      generate:\n"
-                "        provider: openai_compatible\n"
-                "        base_url: http://localhost:8000/v1\n"
-                "        api_key_env: ATMOFAB_TEST_HTTP_KEY\n"
-                "        model: local-coder\n"))
-        http_entry = http.entry_for("generate", "generate")
-        self.assertTrue(http_entry.is_http)
-        response = self._record_launch_response(http, "arid-http", {}, http_entry)
-        self.assertNotIn("claude_setting_sources", response)
-        self.assertNotIn("mcp_config", response)
-
-        # THE point of hashing: different bytes, different record.
-        (repo / ".mcp.json").write_bytes(data + b"\n")
-        again = self._record_launch_response(
-            c, "arid-4", {}, c.entry_for("generate", "generate"))
-        self.assertNotEqual(again["mcp_config"][0]["sha256"],
-                            agentic["mcp_config"][0]["sha256"])
-        self.assertEqual(again["mcp_config"][0]["sha256"],
-                         hashlib.sha256(data + b"\n").hexdigest())
-
-    def test_the_recorded_setting_sources_is_the_argv_token(self) -> None:
-        """The recorded VALUE must be the token the argv carries, not the constant that
-        happens to be on it today.
-
-        Hardcoding `"project"` here satisfied every other test in the suite (a surviving
-        mutation), because the argv and the constant agree in production — and the failure it
-        hides is the precise one this field exists to catch: a leaf launched with `user`
-        still in its setting sources, recorded as if it had not been. So the check has to
-        make argv and constant DISAGREE. Sibling of
-        `test_the_recorded_mcp_config_refs_are_the_argv_tokens`; the ref list was pinned one
-        round earlier and this half was left behind, which is why they now sit together."""
-        repo = self._scratch_repo_root()
-        c = wc.Conductor(
-            repo_root=repo, orchestration_id="o", orchestration_agent_run_id="O",
-            env={}, llm_config=self._config_text("defaults:\n  provider: claude_cli\n"))
-        entry = c.entry_for("generate", "generate")
-        argv = ["user,project" if t == "user" else t for t in c.leaf_command(entry)]
-        self.assertIn("user,project", argv)
-        c.leaf_command = lambda *a, **kw: list(argv)      # type: ignore[assignment]
-        response = self._record_launch_response(c, "arid-1", {}, entry)
-        self.assertEqual(response["claude_setting_sources"], "user,project")
-
-    def test_a_command_prefix_carrying_the_same_flags_is_recorded_as_the_cli_reads_it(self) -> None:
-        """An entry's `command:` is a wrapper "with any flags", so it can already carry
-        `--setting-sources` / `--mcp-config`; the conductor then appends its own AFTER it and
-        the argv holds two of each. Which one is in force is the CLI's rule, not ours, and it
-        differs per flag — measured on 2.1.234:
-
-          --setting-sources  OVERRIDES. `project` then `nonsense` is rejected for `nonsense`;
-                             `nonsense` then `project` runs. The LAST occurrence wins, so the
-                             conductor's own is always the effective one.
-          --mcp-config       ACCUMULATES. `<ok>` then `<missing>` fails on the missing file,
-                             so BOTH are loaded.
-
-        Reading either with `argv.index()` recorded the operator's occurrence: a setting
-        source that was never in force, and an `mcp_config` list missing the repository's own
-        `.mcp.json` — which also meant the fail-closed read never hashed the file it exists to
-        guarantee. Found by Codex after four subagent rounds missed it."""
-        repo = self._scratch_repo_root()
-        other = repo / "wrapper.mcp.json"
-        other.write_bytes(b'{"mcpServers": {"wrapper": {}}}')
-        c = wc.Conductor(
-            repo_root=repo, orchestration_id="o", orchestration_agent_run_id="O",
-            env={}, llm_config=self._config_text(
-                "defaults:\n  provider: claude_cli\n"
-                "  command: claude --setting-sources user --mcp-config wrapper.mcp.json\n"))
         entry = c.entry_for("generate", "generate")
         argv = c.leaf_command(entry)
-        self.assertEqual(argv.count("--setting-sources"), 2, argv)
-        self.assertEqual(argv.count("--mcp-config"), 2, argv)
+        self.assertEqual(argv.count("--tools"), 2, argv)
 
         response = self._record_launch_response(
             c, "arid-1", {"step": "generate", "substep": "generate"}, entry)
-        # the EFFECTIVE source, which is the conductor's trailing one
-        self.assertEqual(response["claude_setting_sources"], "user")
-        # BOTH configurations, in argv order, each hashed from its own bytes
-        self.assertEqual([e["ref"] for e in response["mcp_config"]],
-                         ["wrapper.mcp.json", wc.CLAUDE_LEAF_MCP_CONFIG])
-        self.assertEqual(
-            [e["sha256"] for e in response["mcp_config"]],
-            [hashlib.sha256((repo / n).read_bytes()).hexdigest()
-             for n in ("wrapper.mcp.json", wc.CLAUDE_LEAF_MCP_CONFIG)])
-
-        # ...and the fail-closed read covers the LATER occurrence too, which the
-        # first-occurrence read skipped entirely.
-        (repo / wc.CLAUDE_LEAF_MCP_CONFIG).unlink()
-        with self.assertRaises(OSError) as caught:
-            c.record_launch("arid-2", {"step": "generate", "substep": "generate"}, entry)
-        self.assertIn(wc.CLAUDE_LEAF_MCP_CONFIG, caught.exception.args[0])
-
-    def test_the_recorded_mcp_config_refs_are_the_argv_tokens(self) -> None:
-        """The recorded `ref` must be the token the argv carries, not the constant that
-        happens to be on it today. Hardcoding `.mcp.json` in the record satisfied every other
-        test (a surviving mutation), because the argv and the constant agree in production —
-        so the check has to make them disagree."""
-        repo = self._scratch_repo_root()
-        c = wc.Conductor(
-            repo_root=repo, orchestration_id="o", orchestration_agent_run_id="O",
-            env={}, llm_config=self._config_text("defaults:\n  provider: claude_cli\n"))
-        entry = c.entry_for("generate", "generate")
-        (repo / "other.json").write_bytes(b'{"mcpServers": {}}')
-        (repo / "third.json").write_bytes(b'{"mcpServers": {"x": {}}}')
-        argv = [t if t != wc.CLAUDE_LEAF_MCP_CONFIG else "other.json"
-                for t in c.leaf_command(entry)]
-        argv.insert(argv.index("other.json") + 1, "third.json")
-        c.leaf_command = lambda *a, **kw: list(argv)     # type: ignore[assignment]
-        response = self._record_launch_response(c, "arid-1", {}, entry)
-        self.assertEqual([e["ref"] for e in response["mcp_config"]],
-                         ["other.json", "third.json"])
-        self.assertEqual(
-            [e["sha256"] for e in response["mcp_config"]],
-            [hashlib.sha256((repo / n).read_bytes()).hexdigest()
-             for n in ("other.json", "third.json")])
+        # BOTH values, in argv order: the operator's, then the conductor's empty one.
+        self.assertEqual(response["claude_tools"], ["Monitor", ""])
 
     def test_the_defaults_entry_fallback_still_records_the_surface(self) -> None:
         """`record_launch`'s `entry` is optional, and the helper falls back to the `defaults`
@@ -20572,8 +20102,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
             env={}, llm_config=self._config_text("defaults:\n  provider: claude_cli\n"))
         response = self._record_launch_response(
             c, "arid-1", {"step": "generate", "substep": "generate"}, None)
-        self.assertEqual(response["claude_setting_sources"], "user")
-        self.assertEqual(response["mcp_config"][0]["ref"], wc.CLAUDE_LEAF_MCP_CONFIG)
+        self.assertEqual(response["claude_tools"], [""])
 
     def test_a_deterministic_substep_records_no_argv_it_never_ran(self) -> None:
         """A deterministic substep goes through `record_launch` like any other and then runs
@@ -20586,7 +20115,6 @@ class LeafEntryThreadingTests(unittest.TestCase):
         succeed. Driven over the conductor's own `SUBSTEPS` table filtered by the predicate,
         so a deterministic substep added later is covered without editing this test."""
         repo = self._scratch_repo_root()
-        (repo / wc.CLAUDE_LEAF_MCP_CONFIG).unlink()
         c = wc.Conductor(
             repo_root=repo, orchestration_id="o", orchestration_agent_run_id="O",
             env={}, llm_config=self._config_text("defaults:\n  provider: claude_cli\n"))
@@ -20607,75 +20135,15 @@ class LeafEntryThreadingTests(unittest.TestCase):
             response = self._record_launch_response(
                 c, f"arid-{phase}-{substep}", {"step": phase, "substep": substep or ""},
                 c.entry_for("generate", "generate"))
-            self.assertNotIn("claude_setting_sources", response, msg=f"{phase}.{substep}")
-            self.assertNotIn("mcp_config", response, msg=f"{phase}.{substep}")
-        # ...and an LLM substep in the same repo still fails closed, so the check above is the
-        # deterministic branch and not the file merely being optional.
-        with self.assertRaises(OSError):
-            c.record_launch("arid-llm", {"step": "generate", "substep": "generate"},
-                            c.entry_for("generate", "generate"))
-
-    def test_the_fail_closed_read_precedes_every_launch_side_effect(self) -> None:
-        """The unreadable-`.mcp.json` raise has to fire before anything is written down.
-
-        `record_launch` writes an evidence file and then asks the runtime to issue the
-        capability token, the manifests and the sandbox profile. If the read moved after any
-        of that, an environment fault would leave a half-built launch behind for a leaf that
-        never starts. The current order is right and nothing pinned it (a surviving mutation
-        that moved the call after the evidence write kept the suite green).
-
-        Pinned on the OBSERVABLE consequence — no evidence file, no runtime call — rather
-        than on statement order, so a rearrangement that keeps the property passes."""
-        repo = self._scratch_repo_root()
-        (repo / wc.CLAUDE_LEAF_MCP_CONFIG).unlink()
-        c = wc.Conductor(
-            repo_root=repo, orchestration_id="o", orchestration_agent_run_id="O",
-            env={}, llm_config=self._config_text("defaults:\n  provider: claude_cli\n"))
-        calls: list[list[str]] = []
-        c.runtime = lambda argv, *, input=None: (calls.append(list(argv)) or {})   # type: ignore[assignment]
-        with self.assertRaises(OSError):
-            c.record_launch("arid-1", {"step": "generate", "substep": "generate"},
-                            c.entry_for("generate", "generate"))
-        self.assertEqual(calls, [], "the runtime was asked to record a launch that failed")
-        launches = repo / "workspace" / "orchestrations" / "o" / "launches"
-        self.assertEqual(sorted(p.name for p in launches.iterdir()) if launches.exists()
-                         else [], [])
-
-    def test_record_launch_fails_closed_on_a_malformed_mcp_config(self) -> None:
-        """Readable is not usable, and the refusal argues about usable.
-
-        Under `--strict-mcp-config` this file is the leaf's whole server set, and the CLI
-        refuses to start on one it cannot read as a configuration, so such a file produces
-        exactly the tool-less leaf the missing-file branch refuses to launch.
-
-        The line is the CLI'S OWN SCHEMA, measured on 2.1.234: a non-object, and an object
-        without an `mcpServers` record, both give "Invalid MCP configuration"; a well-formed
-        one with NO servers is accepted and must not be refused here. Well-formed JSON alone
-        was not enough — `{}` and `[]` parse and are still rejected by the CLI. Requiring the
-        file to define `build-runtime` would be the other error: pinning the result this repo
-        happens to have rather than the rule, and refusing a legitimate future server set."""
-        repo = self._scratch_repo_root()
-        c = wc.Conductor(
-            repo_root=repo, orchestration_id="o", orchestration_agent_run_id="O",
-            env={}, llm_config=self._config_text("defaults:\n  provider: claude_cli\n"))
-        entry = c.entry_for("generate", "generate")
-        for bad in (b"", b"{", b'{"mcpServers": ', b"\xff\xfe not utf-8",
-                    # valid JSON the CLI still refuses: measured on 2.1.234, each of these
-                    # gives "Invalid MCP configuration" rather than starting a leaf.
-                    b"{}", b"[]", b"123", b'"a string"', b'{"mcpServers": []}',
-                    b'{"mcpServers": null}'):
-            (repo / wc.CLAUDE_LEAF_MCP_CONFIG).write_bytes(bad)
-            c.runtime = lambda argv, *, input=None: {}                          # type: ignore[assignment]
-            with self.assertRaises(OSError, msg=repr(bad)) as caught:
-                c.record_launch("arid-1", {"step": "generate", "substep": "generate"}, entry)
-            self.assertIn(".mcp.json", str(caught.exception))
-        # A well-formed file that simply declares no server is NOT refused here: "which
-        # servers are declared" is the preflight's question, and pinning a name here would
-        # pin today's result instead of the rule.
-        (repo / wc.CLAUDE_LEAF_MCP_CONFIG).write_bytes(b'{"mcpServers": {}}')
-        response = self._record_launch_response(
-            c, "arid-2", {"step": "generate", "substep": "generate"}, entry)
-        self.assertEqual(response["mcp_config"][0]["ref"], ".mcp.json")
+            self.assertNotIn("claude_tools", response, msg=f"{phase}.{substep}")
+        # ...and an LLM substep in the same repo DOES record one, so the check above is the
+        # deterministic branch rather than the field having gone away. (This used to be a
+        # fail-closed `.mcp.json` read the deterministic launch had to be spared; that read
+        # went with the agentic argv in Z4, issue #171, so the control is the field itself.)
+        llm = self._record_launch_response(
+            c, "arid-llm", {"step": "generate", "substep": "generate"},
+            c.entry_for("generate", "generate"))
+        self.assertEqual(llm["claude_tools"], [""])
 
     def test_record_launch_does_not_write_a_stray_codex_schema(self) -> None:
         """Re-deriving the argv must not have side effects of its own.
@@ -20702,30 +20170,6 @@ class LeafEntryThreadingTests(unittest.TestCase):
         owned = sorted(p.name for p in tmp_root.iterdir()) if tmp_root.exists() else []
         self.assertNotIn("codex-pure-schema", owned)
 
-    def test_record_launch_fails_closed_when_argv_mcp_config_is_unreadable(self) -> None:
-        """Under `--strict-mcp-config` that file is the leaf's ENTIRE MCP server set, so an
-        unreadable one launches a leaf with no build-runtime — which cannot compile, run or
-        lint, and dies later having burned its retry budget on a failure that belongs to the
-        conductor/environment, not to it. `record_launch` is the earliest point at which the
-        file is certainly needed and it is before the child window opens, so the read is
-        allowed to raise; the message names the ref and the remedy."""
-        repo = self._scratch_repo_root()
-        (repo / wc.CLAUDE_LEAF_MCP_CONFIG).unlink()
-        c = wc.Conductor(
-            repo_root=repo, orchestration_id="o", orchestration_agent_run_id="O",
-            env={}, llm_config=self._config_text("defaults:\n  provider: claude_cli\n"))
-        c.runtime = lambda argv, *, input=None: {}                                 # type: ignore[assignment]
-        with self.assertRaises(OSError) as caught:
-            c.record_launch("arid-1", {}, c.entry_for("generate", "generate"))
-        # Read the message THIS code composes (`args[0]`), not `str(exception)`: the chained
-        # FileNotFoundError interpolates the full path, which already contains ".mcp.json",
-        # so asserting on the joined text passes even if the composed message never names the
-        # ref. That is an assertion satisfied for a different reason than its name claims.
-        composed = caught.exception.args[0]
-        self.assertNotIsInstance(caught.exception, FileNotFoundError)
-        self.assertIn(wc.CLAUDE_LEAF_MCP_CONFIG, composed)
-        self.assertIn("mcp_servers/README.md", composed)
-
     def test_the_recorded_setting_surface_is_derived_from_the_argv(self) -> None:
         """Not from the constants `leaf_command` used. Re-reading `CLAUDE_LEAF_MCP_CONFIG`
         here would be a second declaration of the same fact, and a launch path that stopped
@@ -20739,13 +20183,12 @@ class LeafEntryThreadingTests(unittest.TestCase):
             repo_root=repo, orchestration_id="o", orchestration_agent_run_id="O",
             env={}, llm_config=self._config_text("defaults:\n  provider: claude_cli\n"))
         entry = c.entry_for("generate", "generate")
-        stripped = [t for t in c.leaf_command(entry)
-                    if t not in ("--setting-sources", "user", "--mcp-config",
-                                 wc.CLAUDE_LEAF_MCP_CONFIG)]
+        argv = c.leaf_command(entry)
+        stripped = [tok for i, tok in enumerate(argv)
+                    if tok != "--tools" and argv[i - 1] != "--tools"]
         c.leaf_command = lambda *a, **kw: list(stripped)            # type: ignore[assignment]
         response = self._record_launch_response(c, "arid-1", {}, entry)
-        self.assertNotIn("claude_setting_sources", response)
-        self.assertNotIn("mcp_config", response)
+        self.assertNotIn("claude_tools", response)
 
     def test_the_codex_finalize_row_survives_a_populated_session_index(self) -> None:
         """`_agent_run_json`'s codex branch walks the session index; its loop variable used to
@@ -20797,7 +20240,10 @@ class LeafEntryThreadingTests(unittest.TestCase):
                 guarded[name] = (
                     99 if param.kind is inspect.Parameter.KEYWORD_ONLY
                     else position - 1)          # -1 for `self`
-        self.assertGreaterEqual(len(guarded), 15, msg=sorted(guarded))
+        # 14, down from 15: `_unwrap_agentic_envelope` was an entry-taking module function
+        # until Z4 (issue #171) deleted it with the agentic capture boundary. A FLOOR rather
+        # than an equality, so the guard grows with the conductor.
+        self.assertGreaterEqual(len(guarded), 14, msg=sorted(guarded))
         src = (Path(wc.__file__)).read_text(encoding="utf-8")
         offenders = []
         for node in ast.walk(ast.parse(src)):
@@ -20934,7 +20380,6 @@ class LaunchPayloadFileTransportTests(unittest.TestCase):
     BIG = "x" * 200_000
 
     def _conductor(self, repo_root: Path) -> wc.Conductor:
-        _seed_leaf_mcp_config(repo_root)
         c = wc.Conductor(repo_root=repo_root, orchestration_id="orch_payload_file",
                          orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
         c.seen: list[tuple[list[str], str | None]] = []                # type: ignore[attr-defined]
@@ -21067,382 +20512,6 @@ class LaunchPayloadFileTransportTests(unittest.TestCase):
             self.assertEqual(seen.get("input"), "")
 
 
-class AgenticEnvelopeUnwrapTests(unittest.TestCase):
-    """Issue #47: an agentic `claude` leaf is launched with `--output-format json` so its cost
-    and resolved model are readable in-boundary — and its answer is lifted back out of the
-    envelope at the capture boundary, because `stdout` is also this repository's diagnostic
-    channel and several consumers only work on the model's plain text.
-
-    The envelope bytes below are a REAL capture (`claude -p --disallowedTools … --output-format
-    json`, 2026-08-07 — that argv's tool flag has since become `--tools`, issue #71, which does
-    not bear on the envelope's shape), not a hand-built shape: key order, the `[1m]`-suffixed `modelUsage` key,
-    the absent top-level `model`, and the two-model accounting are all as the CLI writes them.
-    """
-
-    _ENVELOPE = json.dumps({
-        "type": "result", "is_error": False, "num_turns": 3, "session_id": "child-1",
-        "result": "done", "total_cost_usd": 0.065739,
-        "usage": {"input_tokens": 2, "output_tokens": 4,
-                  "cache_read_input_tokens": 14278, "cache_creation_input_tokens": 5849,
-                  "server_tool_use": {"web_search_requests": 0}},
-        "modelUsage": {
-            "claude-opus-5[1m]": {"inputTokens": 2, "outputTokens": 4,
-                                  "cacheReadInputTokens": 14278,
-                                  "cacheCreationInputTokens": 5849, "costUSD": 0.0521},
-            "claude-haiku-4-5-20251001": {"inputTokens": 6, "outputTokens": 480,
-                                          "cacheReadInputTokens": 13000,
-                                          "cacheCreationInputTokens": 0, "costUSD": 0.0136},
-        },
-    })
-
-    def _entry(self, backend: str = "claude"):
-        return _cfg(backend).entry_for("compile", "verify")
-
-    def test_the_answer_is_lifted_out_and_the_envelope_is_what_gets_persisted(self) -> None:
-        proc = wc._unwrap_agentic_envelope(
-            wc.ProcResult(0, self._ENVELOPE, "err"), self._entry(), pure=False)
-        self.assertEqual(proc.stdout, "done")           # what every consumer reads
-        self.assertEqual(proc.persist_stdout, self._ENVELOPE)   # what the log keeps
-        self.assertEqual(proc.stderr, "err")
-        self.assertEqual(proc.returncode, 0)
-
-    def test_the_recorded_model_is_the_key_the_cli_actually_writes(self) -> None:
-        """`_resolve_model` returns the single `modelUsage` KEY when there is no top-level
-        `model`, and the real CLI's key carries its context-window suffix. Recording
-        `claude-opus-5` would be a value the CLI never wrote."""
-        proc = wc._unwrap_agentic_envelope(
-            wc.ProcResult(0, json.dumps({"type": "result", "result": "x", "modelUsage": {
-                "claude-opus-5[1m]": {"inputTokens": 1}}}), ""),
-            self._entry(), pure=False)
-        self.assertEqual(proc.model, "claude-opus-5[1m]")
-
-    def test_usage_is_summed_across_every_model_the_leaf_ran(self) -> None:
-        """The top-level `usage` is the PRIMARY model's row; `modelUsage` is the accounting
-        `total_cost_usd` is computed from. Measured across the 136 result envelopes recorded in
-        this repository, taking `usage` alone loses a median 25.8% of the tokens (max 43.7%) —
-        so the row would report a cost that includes tokens it does not show."""
-        proc = wc._unwrap_agentic_envelope(
-            wc.ProcResult(0, self._ENVELOPE, ""), self._entry(), pure=False)
-        self.assertEqual(proc.usage, {
-            "input_tokens": 2 + 6, "output_tokens": 4 + 480,
-            "cache_read_input_tokens": 14278 + 13000,
-            "cache_creation_input_tokens": 5849 + 0,
-            "total_tokens": 8 + 484 + 27278 + 5849,
-            "usage_source": "cli_result_envelope", "cost_usd": 0.065739})
-        # The top-level `usage` alone would have reported 20,133 — 40% short of the tokens
-        # `total_cost_usd` was billed for.
-        self.assertNotEqual(proc.usage["total_tokens"], 2 + 4 + 14278 + 5849)
-
-    def test_an_envelope_without_usable_modelusage_falls_back_and_drops_the_cost(self) -> None:
-        """`modelUsage` is a REQUIRED key in both of the CLI's envelope variants, so falling
-        back to the top-level `usage` always means the per-model accounting was unreadable —
-        never that this is a complete single-model envelope. The tokens are still reported
-        (they are real), but `total_cost_usd` covers models they do not, and pairing the two
-        is a silently wrong bill."""
-        for label, envelope in (
-                ("empty modelUsage", {"type": "result", "result": "x", "total_cost_usd": 0.41,
-                                      "modelUsage": {},
-                                      "usage": {"input_tokens": 11, "output_tokens": 22}}),
-                ("unreadable row", {"type": "result", "result": "x", "total_cost_usd": 0.41,
-                                    "modelUsage": {"claude-opus-5[1m]": "not-a-row"},
-                                    "usage": {"input_tokens": 11, "output_tokens": 22}}),
-                ("no modelUsage", {"type": "result", "result": "x", "total_cost_usd": 0.41,
-                                   "usage": {"input_tokens": 11, "output_tokens": 22}})):
-            with self.subTest(label):
-                proc = wc._unwrap_agentic_envelope(
-                    wc.ProcResult(0, json.dumps(envelope), ""), self._entry(), pure=False)
-                self.assertEqual(proc.usage["total_tokens"], 33)
-                self.assertNotIn("cost_usd", proc.usage)
-
-    def test_a_row_missing_a_token_class_makes_the_sum_partial(self) -> None:
-        """An ABSENT class is unknown, not zero. Counting the row as complete would spend the
-        difference: the full `total_cost_usd` would ride a sum that never saw that model's
-        cached input. Distinct from the uncountable-value case below — `.get()` returns
-        `None` for both, so only a rule keyed on "all four counted" closes them together."""
-        proc = wc._unwrap_agentic_envelope(
-            wc.ProcResult(0, json.dumps({
-                "type": "result", "result": "x", "total_cost_usd": 0.41,
-                "usage": {"input_tokens": 2, "output_tokens": 4},
-                # The incomplete row FIRST, and a complete one after it: `partial` has to
-                # accumulate across rows, not describe the last one. Every other partial pin
-                # here puts the bad row last, where dropping the accumulation still passes.
-                "modelUsage": {"claude-haiku-4-5-20251001": {"inputTokens": 6},
-                               "claude-opus-5[1m]": {
-                                   "inputTokens": 2, "outputTokens": 4,
-                                   "cacheReadInputTokens": 0,
-                                   "cacheCreationInputTokens": 0}}}), ""),
-            self._entry(), pure=False)
-        self.assertEqual(proc.usage["total_tokens"], 2 + 4 + 6)
-        self.assertNotIn("cost_usd", proc.usage)
-
-    def test_a_row_that_counts_some_classes_and_not_others_makes_the_sum_partial(self) -> None:
-        """The hole a per-ROW rule does not close: a row that contributed a real count still
-        leaves a hole for the class whose value was PRESENT but uncountable (a negative, a
-        float, a flag). The sibling above catches the ABSENT-class spelling of the same hole;
-        this is its present-but-unusable twin, and without either the full `total_cost_usd`
-        rides a sum missing one model's output tokens."""
-        proc = wc._unwrap_agentic_envelope(
-            wc.ProcResult(0, json.dumps({
-                "type": "result", "result": "x", "total_cost_usd": 0.41,
-                "usage": {"input_tokens": 2, "output_tokens": 4},
-                "modelUsage": {"claude-opus-5[1m]": {"inputTokens": 2, "outputTokens": 4},
-                               "claude-haiku-4-5-20251001": {"inputTokens": 6,
-                                                             "outputTokens": True}}}), ""),
-            self._entry(), pure=False)
-        self.assertEqual(proc.usage["total_tokens"], 2 + 4 + 6)
-        self.assertNotIn("cost_usd", proc.usage)
-
-    def test_a_success_envelope_with_an_empty_result_is_an_empty_answer(self) -> None:
-        """The CLI writes `subtype: "success", result: ""` on its deferred-tool and zero-turn
-        paths. That is an empty ANSWER, and the variants are disjoint (a success envelope
-        carries no `errors`), so there is nothing else to render. Falling back to the raw
-        envelope here would hand the classifier and the failure summary the accounting block —
-        the document this unwrap exists to keep away from them."""
-        envelope = json.dumps({"type": "result", "subtype": "success", "is_error": False,
-                               "result": "", "deferred_tool_use": {"id": "t", "name": "Bash"},
-                               "total_cost_usd": 0.01, "usage": {"input_tokens": 1},
-                               "modelUsage": {"claude-opus-5[1m]": {"inputTokens": 1}}})
-        proc = wc._unwrap_agentic_envelope(
-            wc.ProcResult(0, envelope, ""), self._entry(), pure=False)
-        self.assertEqual(proc.stdout, "")
-        self.assertEqual(proc.persist_stdout, envelope)   # the evidence is still on disk
-        self.assertEqual(proc.usage["total_tokens"], 1)
-
-    def test_a_row_that_carries_no_counts_makes_the_sum_partial(self) -> None:
-        """The hole this closes: a row that IS a dict but reports nothing countable
-        contributes zero to the sum while leaving it looking complete — so the full
-        `total_cost_usd` would ride a token count missing that model entirely."""
-        proc = wc._unwrap_agentic_envelope(
-            wc.ProcResult(0, json.dumps({
-                "type": "result", "result": "x", "total_cost_usd": 0.41,
-                "usage": {"input_tokens": 2, "output_tokens": 4},
-                "modelUsage": {"claude-opus-5[1m]": {"inputTokens": 2, "outputTokens": 4},
-                               "claude-haiku-4-5-20251001": {"inputTokens": None}}}), ""),
-            self._entry(), pure=False)
-        self.assertEqual(proc.usage["total_tokens"], 6)
-        self.assertNotIn("cost_usd", proc.usage)
-
-    def test_a_retryable_death_keeps_its_tag_through_the_capture(self) -> None:
-        """The reason the unwrap exists. `_classify_leaf_infra_error` matches LINE BY LINE and
-        most of its patterns are anchored to a line's start or end, so inside a single-line
-        envelope an `Overloaded` matches nothing: the tag is lost, `llm_overloaded` never
-        reaches `_RETRYABLE_LEAF_INFRA_TAGS`, and a transient death fails the phase closed
-        instead of being re-launched."""
-        envelope = json.dumps({"type": "result", "is_error": True, "api_error_status": 529,
-                               "terminal_reason": "api_error",
-                               "result": "API Error: Overloaded"})
-        raw = wc.ProcResult(1, envelope, "")
-        self.assertIsNone(wc._leaf_infra_error(raw))                      # enveloped: no tag
-        captured = wc._unwrap_agentic_envelope(raw, self._entry(), pure=False)
-        self.assertEqual(wc._leaf_infra_error(captured)[0], "llm_overloaded")
-        self.assertIn("llm_overloaded", wc._RETRYABLE_LEAF_INFRA_TAGS)
-
-    def test_a_routing_directive_survives_the_capture(self) -> None:
-        """`escalate` reads the diagnostician's directive with `_last_json_object`, which takes
-        the LAST balanced top-level object — the envelope itself, if it were still wrapped. Every
-        escalation would then route `fail_closed` as unparsable."""
-        directive = '{"action": "reopen", "target_phase": "compile", "reason": "diag_ir"}'
-        envelope = json.dumps({"type": "result", "is_error": False,
-                               "result": f"analysis\n{directive}"})
-        self.assertIsNone(wc._parse_directive(envelope))                  # enveloped: no route
-        captured = wc._unwrap_agentic_envelope(
-            wc.ProcResult(0, envelope, ""), self._entry(), pure=False)
-        self.assertEqual(wc._parse_directive(captured.stdout).action, "reopen")
-
-    def test_an_error_variant_envelope_is_rendered_as_lines_not_passed_through(self) -> None:
-        """The CLI writes TWO envelope families and only one has a `result`: the error
-        variants (`error_during_execution`, `error_max_turns`, …) carry `errors: [...]`
-        instead. That is exactly when the message matters, so passing the envelope through
-        would put the accounting block in `result_summary` and leave the line-anchored
-        classifier with nothing to match — the defect this whole unwrap exists to prevent,
-        surviving on the CLI's own failure path."""
-        envelope = json.dumps({
-            "type": "result", "is_error": True, "subtype": "error_during_execution",
-            "terminal_reason": "api_error", "num_turns": 4, "total_cost_usd": 0.41,
-            "usage": {"input_tokens": 1, "output_tokens": 2},
-            "modelUsage": {"claude-opus-5[1m]": {"inputTokens": 1, "outputTokens": 2}},
-            # `Overloaded` ALONE, because the classifier pattern for it is `^\s*overloaded\s*$`
-            # — start-anchored, like its `^\s*api error\b` catch-all and the usage-limit
-            # lead-in. A message that also matches an unanchored alternative would pass this
-            # test whatever the rendering did to the start of the line.
-            "errors": ["Overloaded"]})
-        proc = wc._unwrap_agentic_envelope(
-            wc.ProcResult(1, envelope, ""), self._entry(), pure=False)
-        # The subtype gets its OWN LINE: prefixing the message with `error_during_execution: `
-        # puts every start-anchored pattern out of reach (measured), which is a retryable
-        # death failing the run closed and a quota stop that never arms the wait.
-        self.assertEqual(proc.stdout, "error_during_execution\nOverloaded")
-        self.assertEqual(wc._leaf_infra_error(proc)[0], "llm_overloaded")
-        self.assertIn("llm_overloaded", wc._RETRYABLE_LEAF_INFRA_TAGS)
-        self.assertEqual(proc.persist_stdout, envelope)   # the record keeps everything
-        self.assertEqual(proc.usage["total_tokens"], 3)   # ...and the cost is still taken
-
-    def test_a_truncated_envelope_keeps_its_evidence_and_says_it_has_no_usage(self) -> None:
-        """A capture cut at `LEAF_RAW_STDOUT_CAPTURE_MAX_CHARS`, or a SIGKILL landing
-        mid-write, leaves an envelope that will not parse. Blanking it would destroy the only
-        evidence of what the leaf was doing, so the raw prefix stays — the residual is that
-        the line-oriented consumers see a JSON fragment, which is the lesser loss. The usage
-        side is unambiguous: nothing was read, so the row says `unavailable`."""
-        proc = wc._unwrap_agentic_envelope(
-            wc.ProcResult(1, self._ENVELOPE[:200], ""), self._entry(), pure=False)
-        self.assertEqual(proc.stdout, self._ENVELOPE[:200])
-        self.assertIsNone(proc.usage)
-        row = wc._leaf_usage_row(proc, self._entry())
-        self.assertEqual(row["status"], "unavailable")
-
-    def test_the_primary_model_is_resolved_even_when_a_helper_model_ran(self) -> None:
-        """The ordinary shape: no top-level `model` and TWO `modelUsage` rows (a helper model
-        alongside the one that answered). Of the 136 result envelopes recorded in this
-        repository, none carries a top-level `model` and 78 carry two rows — so without
-        resolving the primary from the `usage` block those leaves record no exact model at
-        all and fall back to the launch request's unpinned alias."""
-        proc = wc._unwrap_agentic_envelope(
-            wc.ProcResult(0, self._ENVELOPE, ""), self._entry(), pure=False)
-        # `usage` in the fixture is the opus row, so opus is the model that answered.
-        self.assertEqual(proc.model, "claude-opus-5[1m]")
-
-    def test_a_model_written_json_document_is_not_mistaken_for_an_envelope(self) -> None:
-        """`parse_result_envelope` says only that stdout was a JSON object — not that the CLI
-        wrote it. An operator's configured `command:` wrapper that does not emit the envelope
-        leaves the MODEL's own answer on stdout, and a substep whose answer is a JSON document
-        with a `result` key would then have its answer silently replaced by that field. The
-        CLI-authored `type: "result"` is what separates them, exactly as
-        `_cli_abort_envelope_result` gates on the CLI's own keys."""
-        answer = json.dumps({"result": "pass", "usage": {"input_tokens": 9},
-                             "modelUsage": {"whatever": {"inputTokens": 9}}})
-        proc = wc.ProcResult(0, answer, "")
-        self.assertIs(wc._unwrap_agentic_envelope(proc, self._entry(), pure=False), proc)
-
-    def test_a_pure_leaf_is_never_unwrapped(self) -> None:
-        """The pure loops parse the envelope themselves and read `is_error` / `parse_error` off
-        it — the contract that makes a malformed pure reply repairable rather than silently
-        empty. Unwrapping under them would hand the validators a bare document with no way to
-        tell a CLI error from a model one."""
-        proc = wc.ProcResult(0, self._ENVELOPE, "")
-        self.assertIs(wc._unwrap_agentic_envelope(proc, self._entry(), pure=True), proc)
-
-    def test_a_non_claude_leaf_and_an_unparsable_stdout_are_left_alone(self) -> None:
-        for label, proc, entry in (
-                ("codex", wc.ProcResult(0, self._ENVELOPE, ""), self._entry("codex")),
-                ("prose", wc.ProcResult(0, "just text", ""), self._entry()),
-                ("empty", wc.ProcResult(-9, "", "killed"), self._entry())):
-            with self.subTest(label):
-                self.assertIs(wc._unwrap_agentic_envelope(proc, entry, pure=False), proc)
-
-    def test_an_envelope_whose_result_is_not_a_string_keeps_its_stdout(self) -> None:
-        """An unrecognised envelope must not cost the diagnostic evidence it contains."""
-        envelope = json.dumps({"type": "result", "result": None,
-                               "usage": {"input_tokens": 3, "output_tokens": 4}})
-        proc = wc._unwrap_agentic_envelope(
-            wc.ProcResult(1, envelope, ""), self._entry(), pure=False)
-        self.assertEqual(proc.stdout, envelope)
-        self.assertEqual(proc.usage["total_tokens"], 7)   # ...and the numbers are still taken
-
-
-class SpawnLeafCaptureBoundaryTest(unittest.TestCase):
-    """The unwrap has to happen where the leaf is CAPTURED, not at one consumer: `spawn_leaf` is
-    the single place a claude leaf's output enters the conductor, and every consumer downstream
-    (classifier, failure summary, escalate's directive parser, the usage-limit scrape) reads
-    `ProcResult.stdout` from it."""
-
-    # All four token classes in the row, as every recorded envelope writes them: a row
-    # missing a class is an incomplete sum, and the capture would then drop `cost_usd`.
-    ENVELOPE = json.dumps({"type": "result", "is_error": False, "result": "the answer",
-                           "total_cost_usd": 0.5,
-                           "modelUsage": {"claude-opus-5[1m]": {
-                               "inputTokens": 7, "outputTokens": 9,
-                               "cacheReadInputTokens": 0, "cacheCreationInputTokens": 0}}})
-
-    def test_a_leaf_killed_after_answering_is_unwrapped_on_the_timeout_path_too(self) -> None:
-        """`spawn_leaf` has TWO returns. A leaf that answered and was then killed for a leaked
-        pipe-holder takes the timeout one, and it carries the same envelope — so leaving that
-        return unwrapped would lose the usage, the model, and the classifiable stdout for
-        exactly the deaths an operator most needs to read."""
-        streams = [_ScriptedStream((("write", self.ENVELOPE),)), _ScriptedStream((("write", ""),))]
-        for stream in streams:
-            self.addCleanup(stream.release)
-
-        class _Popen:
-            def __init__(self, *a, **kw):
-                self.pid = 4242
-                self.returncode = None
-                self.stdin = io.BytesIO()
-                self.stdout, self.stderr = streams[0].reader, streams[1].reader
-
-            def wait(self, timeout=None):
-                raise subprocess.TimeoutExpired("claude", timeout or 0.01)
-
-            def poll(self):
-                return None
-
-        cfg = _cfg("claude")
-        c = wc.Conductor(repo_root=Path("/tmp/repo"), orchestration_id="o",
-                         orchestration_agent_run_id="ORCH", llm_config=cfg, env={})
-        with patch.object(wc.subprocess, "Popen", _Popen), \
-                patch.object(wc.Conductor, "_bwrap_enabled", lambda self: False), \
-                patch.object(wc, "_leaf_timeout_seconds", lambda: 0.05), \
-                patch.object(wc, "LEAF_TERMINATE_GRACE_SECONDS", 0.01), \
-                patch.object(wc.os, "getpgid", lambda pid: 4242), \
-                patch.object(wc.os, "killpg", lambda pgid, sig: None), \
-                redirect_stdout(io.StringIO()):
-            proc = c.spawn_leaf("P", {"HOME": "/h"}, cfg.entry_for("compile", "verify"),
-                                session_id="A", child_arid="A")
-        self.assertIs(proc.timed_out, True)
-        self.assertEqual(proc.stdout, "the answer")
-        self.assertEqual(proc.persist_stdout, self.ENVELOPE)
-        self.assertEqual(proc.usage["total_tokens"], 16)
-
-    def test_the_persisted_log_is_the_envelope_not_the_lifted_answer(self) -> None:
-        """`dialogs/leaf.stdout.log` is the operator's record and `docs/RUNBOOK.md` sends them
-        to it, so it must keep what the CLI actually wrote — the envelope, with the usage and
-        cost blocks — even though every in-process consumer reads the lifted text."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            c = wc.Conductor(repo_root=repo, orchestration_id="o",
-                             orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"),
-                             env={})
-            proc = wc._unwrap_agentic_envelope(
-                wc.ProcResult(0, self.ENVELOPE, ""),
-                _cfg("claude").entry_for("compile", "verify"), pure=False)
-            c._persist_leaf_output("A", proc)
-            log = (repo / "workspace" / "orchestrations" / "o" / "agents" / "A" / "dialogs"
-                   / "leaf.stdout.log")
-            self.assertEqual(log.read_text(encoding="utf-8"), self.ENVELOPE)
-
-    def test_the_capture_returns_the_answer_with_the_envelope_alongside(self) -> None:
-        streams = [_ScriptedStream((("write", self.ENVELOPE),)), _ScriptedStream((("write", ""),))]
-        for stream in streams:
-            self.addCleanup(stream.release)
-
-        class _Popen:
-            """A leaf that answers with a CLI result envelope on real pipes and exits 0."""
-
-            def __init__(self, *a, **kw):
-                self.pid = 4242
-                self.returncode = 0
-                self.stdin = io.BytesIO()
-                self.stdout, self.stderr = streams[0].reader, streams[1].reader
-
-            def wait(self, timeout=None):
-                return 0
-
-            def poll(self):
-                return 0
-
-        cfg = _cfg("claude")
-        c = wc.Conductor(repo_root=Path("/tmp/repo"), orchestration_id="o",
-                         orchestration_agent_run_id="ORCH", llm_config=cfg, env={})
-        with patch.object(wc.subprocess, "Popen", _Popen), \
-                patch.object(wc.Conductor, "_bwrap_enabled", lambda self: False):
-            proc = c.spawn_leaf("P", {"HOME": "/h"}, cfg.entry_for("compile", "verify"),
-                                session_id="A", child_arid="A")
-        self.assertEqual(proc.stdout, "the answer")
-        self.assertEqual(proc.persist_stdout, self.ENVELOPE)
-        self.assertEqual(proc.model, "claude-opus-5[1m]")
-        self.assertEqual(proc.usage["total_tokens"], 16)
-        self.assertEqual(proc.usage["cost_usd"], 0.5)
-
-
 class LeafUsageRecordingTests(unittest.TestCase):
     """Issue #47: every launch records what it cost, or says why it cannot.
 
@@ -21471,7 +20540,7 @@ class LeafUsageRecordingTests(unittest.TestCase):
 
     def _conductor(self, proc: wc.ProcResult, backend: str = "claude") -> "_C":
         c = self._C(repo_root=Path("/tmp/repo"), orchestration_id="orch_x",
-                    orchestration_agent_run_id="ORCH", llm_config=_agentic_cfg(backend), env={})
+                    orchestration_agent_run_id="ORCH", llm_config=_cfg(backend), env={})
         c.calls, c.proc = [], proc
         return c
 
@@ -21532,9 +20601,7 @@ class LeafUsageRecordingTests(unittest.TestCase):
         # Patched to CERTIFIED rather than opted out with
         # `ATMOFAB_REQUIRE_CODEX_HOOKS_FEATURE=0`, because the opt-out is a different behaviour
         # (recorded, not fail-closed) and this row should traverse the path a real launch takes.
-        with patch("tools.hooks.codex_feature.codex_hooks_feature_enabled",
-                   return_value=(True, "hooks=true")):
-            c.run_substep(self._refs(), "compile", "verify")
+        c.run_substep(self._refs(), "compile", "verify")
         usage = self._row(c)["usage"]
         self.assertEqual(usage["total_tokens"], 30)
         self.assertEqual(usage["usage_source"], "codex_turn_event")
