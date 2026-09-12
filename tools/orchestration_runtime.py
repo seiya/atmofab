@@ -5174,8 +5174,9 @@ def _write_orphan_launch_tombstones(
     without a marker, a later manual inspection / audit tool cannot distinguish them
     from a genuine protocol violation (a launched child that vanished). The tombstone
     records that the runtime intentionally pruned the orphan during recovery. It lives
-    under `launches/` (already baseline-exempt via the runtime prefix in
-    `_should_ignore_runtime_snapshot_path`), so writing it never contaminates a diff.
+    under `launches/`. (Until PR-2 of issue #171 this placement also mattered because the
+    terminal write-diff exempted the runtime prefix; that diff is gone with the leaf's write
+    authority, so the placement is now only about where an auditor looks.)
     Idempotent: an existing tombstone is overwritten with the same content.
 
     Candidates are derived from the DURABLE residual launch artifacts
@@ -7115,9 +7116,10 @@ def _mandatory_phase_outputs_for_launch(
 
     Restricted to the ``execute`` substep: only execute writes ``raw/`` evidence,
     and the ``judge`` contract rejects ``raw/`` paths — injecting there would make
-    ``_matches_phase_contract`` raise. Mirrors
-    ``_mandatory_file_tool_pins_for_launch``: returns paths to be merged into
-    ``allowed`` only when missing; never raises.
+    ``_matches_phase_contract`` raise. It mirrored
+    ``_mandatory_file_tool_pins_for_launch``, which produced the file-tool pins a leaf's
+    Edit/Write grant needed and went with that grant in issue #171 PR-2: returns paths to be
+    merged into ``allowed`` only when missing; never raises.
     """
     step_token = str(request_payload.get("step") or "").strip().lower()
     substep_token = str(request_payload.get("substep") or "").strip().lower()
@@ -7522,9 +7524,10 @@ def _allowed_output_paths_for_launch(
     # generate per skills/workflow-generate-generate, compile_project per
     # docs/workflow/phases/phase_03_build.md, run_program /
     # run_quality_checks per docs/workflow/phases/phase_04_validate.md). If
-    # the canonical log path is not pre-listed in allowed_output_paths,
-    # record-agent-run rejects it as `unauthorized_write_violation` and
-    # fail_closes the orchestration.
+    # the canonical log path is not pre-listed in allowed_output_paths, the phase's
+    # declared outputs and its actual ones disagree, which `post_<phase>` structural
+    # validation refuses. (It was record-agent-run that refused it, as an
+    # `unauthorized_write_violation`, until issue #171 PR-2 retired that audit.)
     # Single-namespace enforcement for generate/build/validate steps:
     # require listed paths under `<pipeline_ref>/<phase>/` to use exactly one
     # `<source_id>` / `<binary_id>` / `<run_id>`. Otherwise the step could
@@ -8496,9 +8499,12 @@ def render_bwrap_command(
             # so certified artifacts sharing the dir (spec.ir.yaml / src/ / the host-authored
             # verdict.json) keep their physical write protection: bwrap applies binds in order,
             # later-overriding-earlier, so these ro-binds win over the parent rw-bind. Only NEW
-            # entries (the temp sibling, or a stray write) are physically creatable, and a stray
-            # is caught by the terminal FS-diff (single-file authorization by write_roots
-            # containment) + the output-manifest hook. Net: the atomic-write mechanism works,
+            # entries (the temp sibling, or a stray write) are physically creatable. A stray was
+            # caught by the terminal FS-diff plus the output-manifest hook, BOTH OF WHICH ARE
+            # DELETED (issue #171 PR-2) — so this branch's compensating control is gone with
+            # them. It is unreachable rather than fixed: `build_readonly_bwrap_profile` is the
+            # only profile builder left and hardcodes `write_roots: []`, so no pin reaches here.
+            # Same standing as `runtime_rw_file_paths` below. Net: the atomic-write mechanism works,
             # while the narrowing's guarantee (a verify/judge leaf cannot mutate a same-dir
             # certified artifact) is preserved. runtime_rw_file_paths (e.g. a cross-phase MCP
             # log) are rw-bound later and override any sibling ro-bind here.
@@ -14942,8 +14948,10 @@ def record_launch(
             # Default an ABSENT build_system to "make" to mirror the conductor's
             # `str(toolchain.build_system or "make")` default. Previously the key was set only
             # when build_system resolved to a non-empty string, so a missing build_system left
-            # it unset -> `_mandatory_file_tool_pins_for_launch` saw bs_norm="" and skipped the
-            # Makefile pin, while the conductor still listed/required the Makefile for a
+            # it unset -> the Makefile pin was skipped (by `_mandatory_file_tool_pins_for_launch`,
+            # deleted with the leaf's file-tool grant in issue #171 PR-2; the same default now
+            # feeds `_allowed_output_paths_for_launch`),
+            # while the conductor still listed/required the Makefile for a
             # non-host-authored generate node -> a launch that proceeds without authorizing the
             # extensionless Makefile. The project is make-only (Conductor._require_make_build_system
             # hard-fails non-make) and real compile-produced IR always carries an explicit

@@ -2907,7 +2907,7 @@ def _validate_makefile_test_no_relink(
                 f"binary via a non-relinking recipe guard "
                 f"'test -x $(BINDIR)/$(BIN) || {{ echo \"error: ...\" >&2; exit 1; }}' "
                 f"with no build prerequisite, so Validate.execute does not write into "
-                f"the read-only-bound binary/ (unauthorized_write_violation -> fail_closed)"
+                f"the read-only-bound binary/ (EROFS -> the phase fails)"
             )
 
         # Recipe relink: an inline (`; ...`) or tab-indented recipe line that
@@ -2925,7 +2925,7 @@ def _validate_makefile_test_no_relink(
                     f"fail-closed guard "
                     f"'test -x $(BINDIR)/$(BIN) || {{ echo \"error: ...\" >&2; exit 1; }}' "
                     f"so Validate.execute does not write into the read-only-bound "
-                    f"binary/ (unauthorized_write_violation -> fail_closed)"
+                    f"binary/ (EROFS -> the phase fails)"
                 )
                 break
 
@@ -12517,9 +12517,10 @@ def _catalog_controlled_spec_path(repo_root: Path, kind: str, spec_id: str) -> s
     malformed registry from turning every surface gate into a crash; the registry has its own
     validation elsewhere.
 
-    Read from ``spec/registry/spec_catalog.yaml``, which is operator-authored and outside every
-    write root ``_write_roots_for_launch`` hands a leaf except the ``promote`` step's, so a
-    `compile.generate` leaf cannot make this answer agree with a document it wrote."""
+    Read from ``spec/registry/spec_catalog.yaml``, which is operator-authored and which no leaf
+    can write: since Z4 (issue #171) a leaf has no repository write authority at all — the host
+    writes every artifact from the document the leaf returns — so a `compile.generate` leaf
+    cannot make this answer agree with a document it wrote."""
     catalog = repo_root / "spec" / "registry" / "spec_catalog.yaml"
     if not _is_readable_file(catalog):
         return None
@@ -12659,7 +12660,9 @@ def _validate_published_surface(
     # WHOSE DOCUMENT IS THIS. Everything below compares the IR against `cs_path`, and until issue
     # #153 round 5 the only thing asked of that path was that it be readable — while `meta.
     # source_refs.controlled_spec` is authored by the `compile.generate` LEAF and `<ir_ref>/` is
-    # that leaf's entire write root (`orchestration_runtime._write_roots_for_launch`). So the leaf
+    # where everything that leaf produces lands. (It was that leaf's declared write root until
+    # PR-2 of issue #171; the host writes the tree now, from the document the leaf returns, which
+    # moves nothing here: the CONTENT is still the leaf's.) So the leaf
     # could write its own §5/§5.1 beside the IR, name it here, and the ABI pin became a comparison
     # of the leaf's document with the leaf's IR. MEASURED: an IR publishing a one-argument
     # operation against a spec pinning four takes 1 violation with the real ref and 0 with a decoy.

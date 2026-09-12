@@ -2158,8 +2158,10 @@ def _run_main(
     # repo_root allows, so every module imported from here on (notably the conductor's
     # lazy build_runtime_server / tools.hooks.lint_evidence during compile.static / generate.gate)
     # compiles into workspace/.pycache/ instead of mcp_servers/__pycache__/ etc. Those in-repo
-    # writes land in a child window's FS-diff and are misattributed as unauthorized_write_violation
-    # — the defect this prevents. base_env's PYTHONDONTWRITEBYTECODE (set below) cannot do this
+    # writes used to land in a child window's FS-diff and be misattributed as an
+    # unauthorized write (issue #171 PR-2 deleted that diff); what they still are is bytecode
+    # littering the source tree of a checkout every structural check reads.
+    # base_env's PYTHONDONTWRITEBYTECODE (set below) cannot do this
     # job: it governs SUBPROCESSES only, and sys.dont_write_bytecode is fixed at interpreter start.
     #
     # The prefix is a LITERAL on purpose: importing orchestration_runtime here to read its
@@ -2576,9 +2578,10 @@ def _run_main(
     # Prevent Python from writing *.pyc / __pycache__ bytecode under tools/.
     # Without this, any `python3 tools/orchestration_runtime.py` call made by
     # the orchestration agent (or child subprocesses) generates
-    # tools/__pycache__/orchestration_runtime.cpython-<ver>.pyc, which is not
-    # in any agent's output_manifest and triggers unauthorized_write_violation
-    # at record-agent-run terminal validation.  Setting this in the shared env
+    # tools/__pycache__/orchestration_runtime.cpython-<ver>.pyc. That used to be
+    # refused at record-agent-run as an unauthorized write (the output manifest and
+    # the terminal diff both went with issue #171 PR-2); it is still bytecode in the
+    # source tree of a checkout every structural check reads.  Setting this in the shared env
     # dict ensures it propagates to: (a) _runtime_command() subprocesses,
     # (b) the orchestration agent launch subprocess, and (c) any grandchild
     # `python3 tools/...` invocations the agent makes.
@@ -3086,11 +3089,11 @@ def _open_run_log(repo_root: Path, orchestration_id: str) -> Any:
     """Open a fresh timestamped run-log file under the orchestration dir.
 
     The name is `run_<UTC timestamp>_<uuid8>.jsonl` so repeated runs against the
-    same orchestration_id (notably `--resume`) never collide. The `run_logs/`
-    prefix is exempt from the runtime write-snapshot
-    (`_should_ignore_runtime_snapshot_path`), so this host-side write never
-    contaminates a leaf's terminal write-diff. Returns the open file object, or
-    None if it could not be created (logging is best-effort)."""
+    same orchestration_id (notably `--resume`) never collide. (The prefix was
+    exempt from the runtime write-snapshot until PR-2 of issue #171, so that this
+    host-side write was not attributed to a leaf; there is no terminal write-diff
+    to contaminate any more.) Returns the open file object, or None if it could
+    not be created (logging is best-effort)."""
     try:
         run_logs_dir = (
             repo_root / "workspace" / "orchestrations" / orchestration_id / "run_logs"

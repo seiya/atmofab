@@ -1624,8 +1624,10 @@ def build_launch_request(
             # Deterministic in-process gate: the conductor authors gate_meta.json (the single
             # freshness-gated deliverable, unioning the lint / syntax / static checkers). The
             # lint and syntax checkers both append to the canonical src/command_log.jsonl, so it
-            # MUST be listed — otherwise the gate child's FS-diff write-attribution would flag
-            # those appends as unauthorized writes. The host-authored lint / syntax evidence
+            # MUST be listed: the substep DECLARES what it produces, which is what
+            # `post_generate` validates the phase root against. (Until issue #171 PR-2 the
+            # listing also had to satisfy the gate child's FS-diff write-attribution, which
+            # would otherwise have flagged those appends.) The host-authored lint / syntax evidence
             # (pipeline-root, leaf-non-writable) is NOT a leaf output and is intentionally
             # omitted from allowed_output_paths. The static checker (validate_pipeline_semantics
             # --stage post_generate + validate_workspace_root) writes nothing beyond gate_meta.
@@ -9407,10 +9409,11 @@ clean:
         with an arid it has already been called with does re-stamp in place; no production path
         does.)
 
-        Placement: the child's bookkeeping dir, whose whole subtree
-        `_should_ignore_runtime_snapshot_path` exempts from the terminal write-diff — the same
-        standing that lets `_persist_leaf_output` write `dialogs/*.log` inside the child window
-        without the write being attributed to the leaf. It is written and read HERE, before the
+        Placement: the child's bookkeeping dir — the same place `_persist_leaf_output` writes
+        `dialogs/*.log`. (Both used to need the terminal write-diff's runtime-prefix exemption
+        so a host write inside the child window was not attributed to the leaf; PR-2 of issue
+        #171 deleted that diff with the leaf's write authority.) It is written and read HERE,
+        before the
         leaf is spawned, so a leaf that can reach the path cannot move the instant it is judged
         against.
 
@@ -12676,7 +12679,8 @@ clean:
         # R1/M3c-β: for a physics node with a harness dependency the conductor host-renders
         # src/<spec_id>_runner.f90 (glue over the certified harness plumbing + the leaf-authored
         # <spec_id>_checks.f90), BEFORE the substeps run — so, like the Makefile, the write is
-        # outside the substep FS-diff window (no write-attribution regression) and re-renders on
+        # the host's own and is never mistaken for a leaf's (it was outside the substep FS-diff
+        # window while that diff existed; issue #171 PR-2 deleted it) and re-renders on
         # each attempt after the source_id rotate (_ensure_fresh_producer_id, above). An
         # unresolvable/unbuilt harness, a harness-interface drift (signature pin), or an
         # unrenderable IR is a fail_closed precondition (operator --resume), NOT a Generate retry.
