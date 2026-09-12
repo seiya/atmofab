@@ -173,6 +173,15 @@ _MAKE_ASSIGNMENT_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 # them: it splits words in the recipe, but `CASES` is a word LIST by contract and a
 # checkout path may legitimately hold one.
 _SHELL_ACTIVE_CHARS = set("\t\n\r;&|$`'\"\\<>()*?[]{}~#!")
+# `target` reaches the build tool's argv POSITIONALLY for every build system here
+# (`make -jN <target>`, `ninja -jN <target>`, `cmake --build . --target <target>`), so it
+# is the same surface `extra_args` is and takes the same answer: a build GOAL is a name,
+# and anything that opens with `-` is a switch make reads before the certified Makefile.
+# The orchestrated arm refused a target outright until Z4 (issue #171) because the caller
+# might be a leaf; no leaf reaches this server, but the rule that kept `--eval=$(shell
+# ...)` off the command line was doing a second job — catching a defect in a caller this
+# repository writes — and that job is not retired, so it applies to every caller now.
+_BUILD_TARGET_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_./+-]*$")
 
 
 def _build_syntax_source_re() -> re.Pattern[str]:
@@ -189,18 +198,22 @@ def _validate_build_argv_overrides(
 ) -> str | None:
     """Constrain the caller-chosen part of the build argv; return the target to use.
 
-    `extra_args` is appended to the build tool's command line, where a make assignment
-    overrides even a hard assignment in the Makefile. Two rules, applied to every call:
-    an element must ASSIGN a make variable — which is what keeps `--eval=$(shell ...)`
-    and every other switch out — and its value must not carry a character the recipe's
-    shell acts on.
+    Both halves of the caller-chosen argv are constrained, because both land on the same
+    command line. `extra_args` is appended to it, where a make assignment overrides even
+    a hard assignment in the Makefile: an element must ASSIGN a make variable — which is
+    what keeps `--eval=$(shell ...)` and every other switch out — and its value must not
+    carry a character the recipe's shell acts on. `target` is placed positionally on the
+    same line (`make -jN <target>`), so a `target` that opens with `-` is that same
+    switch by another argument, and it must be a build GOAL name.
 
     ONE mode since Z4 (issue #171), like `_validate_env_overrides` above and for the same
-    reason. The orchestrated arm also held an allowlist of six variable NAMES and a
-    containment rule on the four whose value is a path; both bounded a leaf's grant, and
-    no leaf reaches this server. The structural rules stay because they catch the second
-    defended class — a defect in a caller this repository writes — and they now cover the
-    standalone call, which had no `extra_args` check at all.
+    reason. The orchestrated arm held THREE further things: an allowlist of six variable
+    NAMES, a containment rule on the four whose value is a path, and an outright refusal
+    of any `target`. The first two bounded a leaf's grant and no leaf reaches this server,
+    so they are retired. The third is not retired but GENERALIZED: refusing every target
+    was a grant bound, while refusing a SWITCH spelled as a target catches the second
+    defended class — a defect in a caller this repository writes — and so applies to every
+    caller, including the standalone one, which had no check on either half before.
 
     The validated `target` is returned so the string that was checked is the string that
     runs.
@@ -210,6 +223,11 @@ def _validate_build_argv_overrides(
     if not isinstance(extra_args, list) or not all(isinstance(a, str) for a in extra_args):
         raise ValueError(f"{tool_name} extra_args must be an array of strings")
     resolved_target = target.strip() if isinstance(target, str) and target.strip() else None
+    if resolved_target is not None and not _BUILD_TARGET_RE.match(resolved_target):
+        raise ValueError(
+            f"{tool_name} target must be a build goal name (letters, digits, _ . / + -, "
+            f"not opening with -): refused {resolved_target}"
+        )
     offending = [
         arg for arg in extra_args
         if "=" not in arg
@@ -1326,8 +1344,8 @@ TOOLS: dict[str, Tool] = {
                 "target": {
                     "type": "string",
                     "description": (
-                        "Build target name. Refused under an orchestration — the build "
-                        "is the Makefile's default goal."
+                        "Build goal name: letters, digits and _ . / + -, not opening "
+                        "with -. A switch is refused, whoever the caller is."
                     ),
                 },
                 "jobs": {"type": "integer", "minimum": 1},
@@ -1335,11 +1353,10 @@ TOOLS: dict[str, Tool] = {
                     "type": "array",
                     "items": {"type": "string"},
                     "description": (
-                        "Extra build-tool arguments. Under an orchestration only "
-                        "assignments to OBJDIR, BINDIR, RUNDIR, BIN, SPEC, CASES are "
-                        "accepted; a path value must be absolute and resolve inside "
-                        "the repository and a name value must be an identifier, because "
-                        "every value reaches the make recipe's shell unquoted."
+                        "Extra build-tool arguments. Each element must ASSIGN a make "
+                        "variable (NAME=value), and the value must carry no character "
+                        "the make recipe's shell acts on, because it is interpolated "
+                        "there unquoted. Applies to every caller."
                     ),
                 },
                 "timeout_sec": {"type": "integer", "minimum": 1},

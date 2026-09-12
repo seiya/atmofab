@@ -619,6 +619,83 @@ class BuildArgvOverrideTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.mod._validate_build_argv_overrides(7, [], "compile_project")
 
+    def test_a_switch_spelled_as_the_target_is_refused_too(self) -> None:
+        # `_build_command` places the target POSITIONALLY on the same line the
+        # `extra_args` rule guards (`make -jN <target>`), so refusing a switch in one
+        # half and accepting it in the other guards nothing. Until Z4 the orchestrated
+        # arm refused every target and the standalone arm checked neither half.
+        for target in ("--eval=$(shell touch /tmp/x)", "-f/tmp/Makefile",
+                       "--load-average=8", "-j24", "all; id", "$(shell id)",
+                       "a b", "-"):
+            with self.subTest(target=target):
+                with self.assertRaises(ValueError) as ctx:
+                    self.mod._validate_build_argv_overrides(
+                        target, [], "compile_project")
+                self.assertIn("build goal name", str(ctx.exception))
+
+    def test_a_real_build_goal_is_still_accepted(self) -> None:
+        for target in ("all", "clean", "sw2d_runner", "build/libcore.a", "lib.so.1",
+                       "x86_64-target", "c++filt"):
+            with self.subTest(target=target):
+                self.assertEqual(
+                    self.mod._validate_build_argv_overrides(
+                        target, [], "compile_project"),
+                    target,
+                )
+
+
+class BuildArgvOverrideWiringTests(unittest.TestCase):
+    """The argv rules are REACHED by the handler, not merely defined beside it.
+
+    `_validate_env_overrides` has such a witness (`test_denylisted_keys_are_refused_by_
+    every_env_accepting_tool`); its argv twin had only direct-call tests, so deleting the
+    single call site at `tool_compile_project` left the suite green."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.mod = _load_server_module()
+
+    def setUp(self) -> None:
+        self.project_dir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.project_dir, ignore_errors=True)
+
+    def _args(self, **extra) -> dict:
+        args: dict = {"project_dir": str(self.project_dir), "build_system": "make"}
+        args.update(extra)
+        return args
+
+    def test_the_handler_refuses_a_switch_in_either_half_before_running_anything(
+        self,
+    ) -> None:
+        cases = (
+            ("target", {"target": "--eval=$(shell id)"}, "build goal name"),
+            ("extra_args", {"extra_args": ["--eval=$(shell id)"]},
+             "make variable assignments"),
+            ("value", {"extra_args": ["CASES=a; id"]},
+             "reach the make recipe's shell"),
+        )
+        for label, payload, message in cases:
+            with self.subTest(half=label):
+                with mock.patch.object(
+                    self.mod, "_run_command",
+                    return_value={"ok": True, "return_code": 0,
+                                  "stdout": "", "stderr": ""},
+                ) as run_command:
+                    with self.assertRaises(ValueError) as ctx:
+                        self.mod.tool_compile_project(self._args(**payload))
+                self.assertIn(message, str(ctx.exception))
+                run_command.assert_not_called()
+
+    def test_the_validated_target_is_the_string_that_runs(self) -> None:
+        with mock.patch.object(
+            self.mod, "_run_command",
+            return_value={"ok": True, "return_code": 0, "stdout": "", "stderr": ""},
+        ) as run_command:
+            self.mod.tool_compile_project(self._args(target="  sw2d_runner  "))
+        argv = run_command.call_args.kwargs["command"]
+        self.assertIn("sw2d_runner", argv)
+        self.assertNotIn("  sw2d_runner  ", argv)
+
 
 class RetiredArgumentTests(unittest.TestCase):
     """`capability_token` is refused, not ignored.
