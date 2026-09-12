@@ -517,33 +517,6 @@ def _collect_noncanonical_write_violations(repo_root: Path, orchestration_id: st
     return collected
 
 
-def _collect_unauthorized_write_violations(repo_root: Path, orchestration_id: str) -> list[dict[str, Any]]:
-    orch_root = repo_root / "workspace" / "orchestrations" / orchestration_id
-    violations_root = orch_root / "violations"
-    if not violations_root.is_dir():
-        return []
-    collected: list[dict[str, Any]] = []
-    for path in sorted(violations_root.glob("*.unauthorized_write_violation.json")):
-        payload = _read_json_if_exists(path)
-        if not isinstance(payload, dict):
-            continue
-        unauthorized_obj = payload.get("unauthorized_paths")
-        unauthorized_paths = (
-            [str(item).strip() for item in unauthorized_obj if isinstance(item, str) and str(item).strip()]
-            if isinstance(unauthorized_obj, list)
-            else []
-        )
-        collected.append(
-            {
-                "violation_ref": str(path.relative_to(repo_root)),
-                "agent_run_id": str(payload.get("agent_run_id") or "").strip(),
-                "reason_code": "unauthorized_write_violation",
-                "attempted_paths": unauthorized_paths,
-            }
-        )
-    return collected
-
-
 def _collect_failure_analysis(repo_root: Path, orchestration_id: str) -> dict[str, Any]:
     orch_root = repo_root / "workspace" / "orchestrations" / orchestration_id
     meta_path = orch_root / "orchestration_meta.json"
@@ -612,9 +585,15 @@ def _collect_failure_analysis(repo_root: Path, orchestration_id: str) -> dict[st
         for p in sorted(orch_root.glob("launch_incident.runtime.*.json"))
     ]
 
+    # `unauthorized_write_violations` was the second source here until issue #171 PR-2.
+    # Its writer was the terminal FS-diff, which compared a leaf's actual writes against
+    # the capability's `write_roots`; a pure leaf has no write authority to exceed (the
+    # host writes every artifact), so the diff and the marker it wrote are both gone. The
+    # reader survived one round longer and reported `[]` on every failed run — which reads
+    # as MEASURED CLEAN rather than NOT MEASURED, the same false record PR-2 deleted the
+    # equivalent readers in `validate_pipeline_semantics` and `audit_orchestration` for.
     noncanonical_write_violations = _collect_noncanonical_write_violations(repo_root, orchestration_id)
-    unauthorized_write_violations = _collect_unauthorized_write_violations(repo_root, orchestration_id)
-    write_contract_violations = [*noncanonical_write_violations, *unauthorized_write_violations]
+    write_contract_violations = list(noncanonical_write_violations)
     recommended_retry_decisions: list[dict[str, Any]] = []
     for violation in write_contract_violations:
         target_run = str(violation.get("agent_run_id") or "").strip()
@@ -644,7 +623,6 @@ def _collect_failure_analysis(repo_root: Path, orchestration_id: str) -> dict[st
         "failed_agent_run": failed_run,
         "failed_step_results": failed_step_results,
         "noncanonical_write_violations": noncanonical_write_violations,
-        "unauthorized_write_violations": unauthorized_write_violations,
         "recommended_retry_decisions": recommended_retry_decisions,
         "launch_reply_tail": launch_reply_tail,
         "agent_summary_tail": agent_summary_tail,

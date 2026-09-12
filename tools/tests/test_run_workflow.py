@@ -94,33 +94,33 @@ def tearDownModule() -> None:
 
 
 class RunWorkflowTests(unittest.TestCase):
-    def test_collect_failure_analysis_includes_unauthorized_write_violation(self) -> None:
+    def test_collect_failure_analysis_reports_no_unauthorized_write_field(self) -> None:
+        """The field went with its writer (issue #171 PR-2 retired the terminal FS-diff).
+
+        Asserted as ABSENT rather than deleted silently: it reported `[]` on every failed
+        run for one round after the marker stopped being written, and an empty list in a
+        failure report reads as "measured clean", not as "not measured"."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             _seed_shape_expr_schema_into(repo_root)
             orch_root = repo_root / "workspace" / "orchestrations" / "orch_vio"
-            violations = orch_root / "violations"
-            violations.mkdir(parents=True, exist_ok=True)
+            (orch_root / "violations").mkdir(parents=True, exist_ok=True)
             (orch_root / "orchestration_meta.json").write_text(
                 json.dumps({"orchestration_id": "orch_vio", "status": "fail"}, ensure_ascii=False),
                 encoding="utf-8",
             )
-            (violations / "run_001.unauthorized_write_violation.json").write_text(
-                json.dumps(
-                    {
-                        "agent_run_id": "run_001",
-                        "unauthorized_paths": ["workspace/pipelines/x/test3.tmp"],
-                    },
-                    ensure_ascii=False,
-                ),
+            # Plant the marker the deleted diff used to write. Nothing reads it now, so it
+            # must not resurface in the report on the strength of a leftover file.
+            (orch_root / "violations" / "run_001.unauthorized_write_violation.json").write_text(
+                json.dumps({"agent_run_id": "run_001",
+                            "unauthorized_paths": ["workspace/pipelines/x/test3.tmp"]},
+                           ensure_ascii=False),
                 encoding="utf-8",
             )
             analysis = run_workflow._collect_failure_analysis(repo_root, "orch_vio")
-            self.assertEqual(len(analysis.get("unauthorized_write_violations", [])), 1)
-            decisions = analysis.get("recommended_retry_decisions", [])
-            self.assertTrue(isinstance(decisions, list) and decisions)
-            self.assertEqual(decisions[0].get("repair_strategy"), "restart")
-            self.assertIn("unauthorized_write_violation", str(decisions[0].get("repair_reason")))
+            self.assertNotIn("unauthorized_write_violations", analysis)
+            self.assertEqual(analysis.get("recommended_retry_decisions"), [])
+            self.assertFalse(hasattr(run_workflow, "_collect_unauthorized_write_violations"))
 
     def test_collect_failure_analysis_excludes_superseded_nonpass_runs(self) -> None:
         """A terminal-nonpass agent_run that a *later* same-(node,step,substep) run
