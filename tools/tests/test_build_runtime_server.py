@@ -710,11 +710,21 @@ class BuildArgvOverrideTests(unittest.TestCase):
         self.assertFalse(self.mod._is_execution_redirecting_assignment("all"))
 
     def test_the_assignment_name_rule_is_not_weaker_than_the_env_rule(self) -> None:
-        # Derived, not restated: every name the env half refuses must also be refused as an
-        # assignment. The reverse does not hold — SHELL and MAKE matter only on the argv side.
+        """Every name the env half REFUSES is refused as an assignment too.
+
+        Driven through both validators rather than compared as sets: `_UNSAFE_ASSIGNMENT_NAMES`
+        is DEFINED as `_UNSAFE_ENV_OVERRIDE_KEYS | {...}`, so a set comparison is a tautology
+        no mutation of either set can redden — it reads as the pin that keeps the argv half
+        from falling behind the env half and pins nothing. What can actually diverge is the
+        two code paths: one may stop consulting its set, or normalise differently."""
         for name in sorted(self.mod._UNSAFE_ENV_OVERRIDE_KEYS):
             with self.subTest(name=name):
-                self.assertIn(name, self.mod._UNSAFE_ASSIGNMENT_NAMES)
+                with self.assertRaises(ValueError):
+                    self.mod._validate_env_overrides({name: "/tmp/x"}, "compile_project")
+                with self.assertRaises(ValueError):
+                    self.mod._validate_build_argv_overrides(
+                        None, [f"{name}=/tmp/x"], "compile_project",
+                        build_system="cargo")
 
     def test_a_non_make_build_system_may_pass_its_own_switches(self) -> None:
         """The assignment SHAPE rule belongs to make, and only to make.
@@ -2179,12 +2189,24 @@ class ServedSchemaDescribesWhatIsEnforcedTests(unittest.TestCase):
         # this server no longer implements.
         retired = tuple(self.mod._RETIRED_ARGUMENTS) + (
             "under an orchestration", "Under an orchestration", "allowlist")
+        scanned = 0
         for name, tool in self.mod.TOOLS.items():
             for argument, spec in tool.input_schema.get("properties", {}).items():
-                description = spec.get("description", "")
+                description = spec.get("description")
+                # A property with no description states nothing and so names nothing
+                # retired; skipped rather than compared against the empty string, which
+                # would make the row read as covering 58 properties when it covers the
+                # ones that actually say something. The rule a missing description COULD
+                # silence — a description that must state an enforced rule — is owned by
+                # the row above, which asserts the phrase is present.
+                if not description:
+                    continue
+                scanned += 1
                 for token in retired:
                     with self.subTest(tool=name, argument=argument, token=token):
                         self.assertNotIn(token, description)
+        self.assertGreater(scanned, 0, "no served property carries a description; this "
+                                       "row compared nothing")
 
     def test_every_declared_minimum_is_covered_by_the_row_that_drives_them(self) -> None:
         # The other half of "the schema is advisory": a declared minimum the code does not
