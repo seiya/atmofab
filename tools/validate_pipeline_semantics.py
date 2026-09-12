@@ -10496,8 +10496,12 @@ def _validate_orchestration_hierarchy(
                                                 f"mcp_permissions must be [] (got {cap_doc.get('mcp_permissions')!r})"
                                             )
                                     # (3) The read manifest must be DENY-ALL (empty
-                                    # allowed_read_roots — the enforcing allowlist for a leaf that
-                                    # reads no file) and the sandbox must be the READ-ONLY profile
+                                    # allowed_read_roots — the RECORD of a leaf authorized to read
+                                    # no file; it was the enforcing allowlist while a hook read it
+                                    # for the codex leaf, and Z4 (issue #171) deleted that layer,
+                                    # so this audit now checks that the record says the right
+                                    # thing rather than that something refused a read)
+                                    # and the sandbox must be the READ-ONLY profile
                                     # (readonly + write_roots==[]). Auditing these here catches a
                                     # pure launch mistakenly provisioned through the generic
                                     # (writable/read-granting) record-launch path even though the

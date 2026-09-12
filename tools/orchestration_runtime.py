@@ -9486,13 +9486,23 @@ def build_access_policy_payload(
 
     if _is_pure_launch_request(request_payload):
         # A pure leaf receives its whole context inlined in the prompt body and is authorized to
-        # read NO repository file. The policy is an ALLOWLIST: an EMPTY `allowed_read_roots` is
-        # what denies every hook-mediated read (a path not under any allowed root is rejected) —
-        # that empty allow-set is the enforcing mechanism. `denied_read_roots: ["."]` is an
-        # explicit audit statement of intent, not the enforcer (the read matcher's containment
-        # check does not treat "." as a repo-wide prefix). Claude is tool-free; Codex's hooks
-        # enforce the empty allow-set, and the read-only bwrap profile remains the write-defense
-        # in depth. No gate services either — the pure leaf invokes no validator gate.
+        # read NO repository file. The policy is an ALLOWLIST, and an EMPTY `allowed_read_roots`
+        # states that authorization; `denied_read_roots: ["."]` is an explicit statement of the
+        # same intent. No gate services either — a pure leaf invokes no validator gate.
+        #
+        # WHAT ENFORCES IT, and the asymmetry that is open (round-1 review of issue #171). For
+        # CLAUDE the answer is structural: `--tools ""` leaves the model no read to make, so the
+        # policy below is a record of a boundary the launch shape already closes. For CODEX it
+        # is currently NOTHING. That provider's pure leaf is a `codex exec --sandbox read-only`
+        # session — tool-BEARING, as this module says at `_spawn_pure_turn` — and until Z4 the
+        # empty allow-set here was enforced on it by the leaf hook layer
+        # (`leaf_config/codex/hooks.json`'s `PreToolUse` matcher, SHA-pinned into the isolated
+        # CODEX_HOME and trusted with `--dangerously-bypass-hook-trust`). Z4 deleted that layer
+        # on the premise that a pure leaf issues no tool call, which is true of claude and false
+        # of codex. The read-only bwrap profile still closes WRITES, and it ro-binds the whole
+        # repository, so a codex pure leaf can READ it. `TODO.md` carries the entry, the
+        # candidate fix (bind only what the launch needs — the `--output-schema` file — instead
+        # of the checkout) and the measurement that fix needs.
         pure_body = {
             "agent_run_id": agent_run_id.strip(),
             "node_key": node_key.strip(),
@@ -18376,10 +18386,15 @@ def record_launch(
                 if codex_isolation is not None:
                     profile_kwargs = codex_isolation_profile_kwargs(codex_isolation)
                 if is_pure:
-                    # Read-only sandbox: repo bound ro, NO write_roots, no file pins. The pure leaf
-                    # has no repository write authority. Claude is tool-free, while Codex's
-                    # structured-output approximation remains tool-bearing in a read-only sandbox;
-                    # bwrap ensures neither can write an artifact from the child window.
+                    # Read-only sandbox: repo bound ro, NO write_roots, no file pins. The pure
+                    # leaf has no repository write authority. Claude is tool-free, while Codex's
+                    # structured-output approximation remains tool-bearing in a read-only
+                    # sandbox; bwrap ensures neither can write an artifact from the child
+                    # window. It does NOT close reads for the codex side — the repository is
+                    # bound ro and is therefore readable by that leaf's tools. Until Z4 the leaf
+                    # hook layer refused those reads against the empty `allowed_read_roots`
+                    # (`build_access_policy_payload`'s pure arm carries the accounting);
+                    # nothing does now, and `TODO.md` carries the entry.
                     profile = build_readonly_bwrap_profile(
                         repo_root=repo_root,
                         orchestration_id=orchestration_id,
