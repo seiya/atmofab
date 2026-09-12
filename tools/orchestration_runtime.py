@@ -6863,22 +6863,6 @@ def pre_orchestration_start(
     return {"status": "pass", "hook": "pre_orchestration_start", **detail}
 
 
-def _launch_ir_ref_for_agent(
-    repo_root: Path, orchestration_id: str, agent_run_id: str
-) -> str | None:
-    req_path = _orchestration_root(repo_root, orchestration_id) / "launches" / f"{agent_run_id.strip()}.request.json"
-    if not req_path.is_file():
-        return None
-    try:
-        doc = _read_json(req_path)
-    except (OSError, json.JSONDecodeError):
-        return None
-    if not isinstance(doc, dict):
-        return None
-    pr = doc.get("ir_ref")
-    return pr.strip() if isinstance(pr, str) and pr.strip() else None
-
-
 # A per-substep write_root file pin interpolates `run_id` / `source_id` directly into a
 # repo-relative path, so the id is constrained to an explicit allowlist rather than a denylist:
 # only `[A-Za-z0-9_-]` (the superset of the canonical `_RUN_ID_RE` / `_SOURCE_ID_RE` forms).
@@ -6924,30 +6908,6 @@ def _orchestration_holds_launch_record(
         / "launches"
         / f"{agent_run_id.strip()}.request.json"
     ).is_file()
-
-
-def _require_safe_gate_ids(
-    orchestration_id: str, agent_run_id: str, gate_label: str
-) -> None:
-    """Both gate ids must be plain path tokens.
-
-    They are interpolated into the paths every artifact a gate trusts is read from — the
-    orchestration root, `launches/<arid>.response.json`, the capability file, and the
-    audit log the gate appends to. A separator or a `..` in either relocates the whole
-    check to a directory the caller can write, so the capability it validates against
-    becomes one the caller authored. Same predicate the write_root pins use, for the
-    same reason.
-    """
-    # The raw value, not a stripped copy: `_orchestration_root` builds the path from
-    # what the caller sent, so the string that is checked has to be the string that is
-    # used.
-    for label, value in (("orchestration_id", orchestration_id),
-                         ("agent_run_id", agent_run_id)):
-        if not _is_safe_path_id(str(value)):
-            raise RuntimeError(
-                f"{gate_label}: {label} must be a plain [A-Za-z0-9_-] token "
-                f"(got {value!r})"
-            )
 
 
 def control_file_host_authored(build_system: str | None, language: str | None) -> bool:
@@ -8675,17 +8635,6 @@ def _build_artifact_hashes(
     return hashes
 
 
-def _declared_output_refs(payload: dict[str, Any]) -> list[str]:
-    output_refs_obj = payload.get("output_refs")
-    if not isinstance(output_refs_obj, list):
-        return []
-    return [
-        _normalize_rel_posix(item)
-        for item in output_refs_obj
-        if isinstance(item, str) and item.strip()
-    ]
-
-
 def _is_host_pycache_redirect_write(rel_path: str) -> bool:
     """True if `rel_path` is under the in-process conductor host's redirected bytecode cache
     (``workspace/.pycache/``; see _HOST_PYCACHE_REDIRECT_PREFIX and run_workflow.py).
@@ -8709,17 +8658,6 @@ def _is_host_pycache_redirect_write(rel_path: str) -> bool:
     temp files too; a suffix filter would spuriously flag them.
     """
     return _repo_path_under_prefix(_normalize_rel_posix(rel_path), _HOST_PYCACHE_REDIRECT_PREFIX)
-
-
-def _orchestration_allowed_write_roots(orchestration_id: str) -> list[str]:
-    # Host bytecode cache under workspace/.pycache/ (the sys.pycache_prefix host redirect) was
-    # handled by the broad _is_host_pycache_redirect_write exemption in the terminal write audit,
-    # which issue #171 PR-2 deleted along with the audit. A per-orch workspace/.pycache/<orch_id>/
-    # entry here was therefore never reached (and never matched a real cache path anyway: the prefix mirrors the absolute
-    # source path, not an <orch_id> subdir), so it is intentionally omitted.
-    return [
-        _with_trailing_slash(_normalize_rel_posix(f"workspace/orchestrations/{orchestration_id}")),
-    ]
 
 
 def _is_runtime_audit_artifact_path(orchestration_id: str, rel_path: str) -> bool:
@@ -8875,94 +8813,6 @@ def _cleanup_agent_tmp_root(
         # 0-byte benign file that `validate_workspace_root` tolerates, so it is
         # left in place (bounded accumulation under session-scoped scratch).
         return not target.exists()
-
-
-def _expected_host_evidence_rel_path(
-    repo_root: Path,
-    orchestration_id: str,
-    *,
-    agent_run_id: str,
-    cap_doc: dict[str, Any],
-    write_roots: list[str],
-    substep: str,
-    evidence_dirname: str,
-) -> str | None:
-    """The single host-authored generate.gate certificate path that is exempt from
-    write-attribution: ``<pipeline_ref>/<evidence_dirname>/<source_id>.json``
-    (``lint_evidence/`` for the gate's lint checker, ``syntax_evidence/`` for its syntax
-    checker; the merged Generate.gate substep writes BOTH, so ``substep`` is ``"gate"`` for
-    each).
-
-    Returns None (no exemption -> the write is flagged, fail-closed) unless the actor is the
-    matching deterministic generate substep AND both the pipeline root and a safe bare
-    ``source_id`` resolve. The exemption is bound to this EXACT file (not the whole evidence
-    directory) so an unexpected/stale sibling under that dir is still rejected. ``source_id``
-    is read from the host-authored, leaf-non-writable launch request
-    (``build_launch_request`` records it for every generate launch), so a sandboxed leaf
-    cannot influence it."""
-    if str(cap_doc.get("step") or "").strip().lower() != "generate":
-        return None
-    if str(cap_doc.get("substep") or "").strip().lower() != substep:
-        return None
-    # A generate substep's outputs sit under <pipeline_ref>/source/; the pipeline root is its
-    # parent. Derive it rather than re-deriving pipeline_ref elsewhere.
-    pipe_prefix: str | None = None
-    for root in write_roots:
-        if root.endswith("source/"):
-            pipe_prefix = root[: -len("source/")]
-            break
-    if not pipe_prefix:
-        return None
-    req_path = (
-        repo_root / "workspace" / "orchestrations" / orchestration_id
-        / "launches" / f"{agent_run_id}.request.json"
-    )
-    if not req_path.exists():
-        return None
-    doc = _read_json(req_path)
-    if not isinstance(doc, dict):
-        return None
-    sid_obj = doc.get("source_id")
-    if not isinstance(sid_obj, str):
-        return None
-    sid = sid_obj.strip()
-    # Reject anything that is not a bare, traversal-free component so a malformed source_id
-    # cannot widen the exempt path outside the evidence dir (mirrors lint_evidence._safe_component).
-    if not sid or sid in {".", ".."} or "/" in sid or "\\" in sid or "\x00" in sid:
-        return None
-    return _normalize_rel_posix(f"{pipe_prefix}{evidence_dirname}/{sid}.json")
-
-
-def _expected_lint_evidence_rel_path(
-    repo_root: Path,
-    orchestration_id: str,
-    *,
-    agent_run_id: str,
-    cap_doc: dict[str, Any],
-    write_roots: list[str],
-) -> str | None:
-    return _expected_host_evidence_rel_path(
-        repo_root, orchestration_id,
-        agent_run_id=agent_run_id, cap_doc=cap_doc, write_roots=write_roots,
-        substep="gate", evidence_dirname="lint_evidence",
-    )
-
-
-def _expected_syntax_evidence_rel_path(
-    repo_root: Path,
-    orchestration_id: str,
-    *,
-    agent_run_id: str,
-    cap_doc: dict[str, Any],
-    write_roots: list[str],
-) -> str | None:
-    return _expected_host_evidence_rel_path(
-        repo_root, orchestration_id,
-        agent_run_id=agent_run_id, cap_doc=cap_doc, write_roots=write_roots,
-        substep="gate", evidence_dirname="syntax_evidence",
-    )
-
-
 
 
 def _preflight_path(repo_root: Path, orchestration_id: str) -> Path:
@@ -10408,19 +10258,6 @@ def build_launch_prompt_text(request_payload: dict[str, Any]) -> str:
     return _render_launch_prompt_template(request_payload).split("\n\n", 1)[0]
 
 
-def _merge_unique_refs(*ref_groups: list[str]) -> list[str]:
-    merged: list[str] = []
-    seen: set[str] = set()
-    for group in ref_groups:
-        for ref in group:
-            token = ref.strip()
-            if not token or token in seen:
-                continue
-            merged.append(token)
-            seen.add(token)
-    return merged
-
-
 def render_launch_prompt_text(request_payload: dict[str, Any]) -> str:
     return _render_launch_prompt_template(request_payload)
 
@@ -11708,15 +11545,15 @@ def _validate_launch_request_payload(request_payload: dict[str, Any]) -> None:
     # The shape question is asked of ONE function, `_required_launch_prompt_markers`: an empty
     # marker set on a real step IS "neither deterministic nor pure" (its own comment says so),
     # so the two refusals cannot answer differently.
-    if isinstance(step, str) and step.strip():
-        if not _required_launch_prompt_markers(request_payload):
-            raise ValueError(
-                f"launch request declares step={step!r} "
-                f"substep={request_payload.get('substep')!r} and is neither deterministic nor "
-                "pure. Since Z4 (issue #171) a launch is one of those two shapes: set "
-                "`deterministic: true` for a conductor in-process substep, or `leaf_mode: "
-                '"pure"` with a `pure_context` for an LLM leaf'
-            )
+    if (isinstance(step, str) and step.strip()
+            and not _required_launch_prompt_markers(request_payload)):
+        raise ValueError(
+            f"launch request declares step={step!r} "
+            f"substep={request_payload.get('substep')!r} and is neither deterministic nor "
+            "pure. Since Z4 (issue #171) a launch is one of those two shapes: set "
+            "`deterministic: true` for a conductor in-process substep, or `leaf_mode: "
+            '"pure"` with a `pure_context` for an LLM leaf'
+        )
     if not is_verify_substep:
         return
     # Every verify leaf is pure since Z4 (issue #171), and a pure request's skill fields are
