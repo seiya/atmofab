@@ -286,3 +286,86 @@ class CodexLeafHasNoHookLayerTests(unittest.TestCase):
             self.assertFalse((home / "hooks.json").exists())
             self.assertNotIn("hooks", iso)
             self.assertNotIn("hooks_sha256", iso)
+
+
+class HostDefectRefusalsTests(unittest.TestCase):
+    """The three refusals the Z4 cut put where an agentic fall-through used to be.
+
+    FOUND BY THE ROUND-0 MUTATION SWEEP, not by review: each of these three replaced a branch
+    that used to lead somewhere, and deleting the refusal left the whole suite green. None is
+    reachable from the conductor — that is the point of them, and it is also why nothing was
+    driving them. `.claude/skills/atmofab-enforcement-change` rule 1-b says a surviving mutant
+    is grounds for a pin, never for deletion, so they are kept and pinned here.
+
+    Each is a HOST defect rather than a leaf one: the leaf cannot reach any of these three, and
+    what they defend against is a future caller assembling a request the cut made impossible
+    and getting a vacuous answer instead of a stop.
+    """
+
+    def test_determine_substep_status_refuses_an_llm_pair(self) -> None:
+        """It answers for deterministic substeps only.
+
+        Before Z4 the tail here was a generic "did the declared outputs get written" check,
+        which for an LLM pair asked about an `allowed_output_paths` that is empty — and an
+        empty set of required files is vacuously satisfied, so the honest-looking answer was
+        `pass`. The mutation that restores that generic tail (`status = "pass"`) survived the
+        whole conductor suite.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            c = _PureFakeConductor(
+                repo_root=repo, orchestration_id="o", orchestration_agent_run_id="orch",
+                env={"ATMOFAB_TEST_KEY": "sk-test"},
+                llm_config=_config_on("claude_cli", repo))
+            refs = wc.NodeRefs(
+                node_key="component/x@0.1.0", spec_path="spec/component/x",
+                ir_id="x_1", pipeline_id="x_1", source_id="src_1", binary_id="bin_1",
+                run_id="run_1", source_binary_id="bin_1")
+            for phase, substep in sorted(lc.LLM_LEAF_SUBSTEPS):
+                with self.subTest(pair=f"{phase}.{substep}"):
+                    with self.assertRaises(ValueError) as caught:
+                        c.determine_substep_status(refs, phase, substep, [], "arid-1")
+                    self.assertIn("deterministic substeps only", str(caught.exception))
+                    self.assertIn(f"{phase}.{substep}", str(caught.exception))
+
+    def test_a_request_that_is_neither_shape_renders_no_prompt(self) -> None:
+        """There is no third leaf model to render for.
+
+        The mutation that routes such a request to the DETERMINISTIC renderer survived: it
+        produces a syntactically valid prompt carrying the deterministic sentinel, which every
+        marker check downstream then accepts. That is the fail-open this refusal exists to
+        stop — a leaf-step launch wearing a deterministic prompt.
+        """
+        from tools.orchestration_runtime import _render_launch_prompt_template
+        payload = {
+            "node_key": "component/x@0.1.0", "step": "generate", "substep": "generate",
+            "orchestration_id": "o", "agent_run_id": "arid-1",
+            "parent_agent_run_id": "orch", "agent_model": "opus",
+        }
+        with self.assertRaises(ValueError) as caught:
+            _render_launch_prompt_template(payload)
+        message = str(caught.exception)
+        self.assertIn("neither deterministic nor pure", message)
+        # The message names the pair, because the caller's defect is which request it built.
+        self.assertIn("'generate'", message)
+
+    def test_a_pure_request_naming_no_template_is_refused_by_name(self) -> None:
+        """A named `ValueError`, not the bare `KeyError` the dict lookup would raise.
+
+        The mutation that downgrades it to `KeyError` survived. It matters because
+        `prepare_launch_request_payload` force-renders BEFORE it validates, so this is the
+        first thing a malformed pure request meets: a bare `KeyError('pure ...')` reaches the
+        operator as a traceback naming a dict, and the named refusal reaches them as the
+        step / substep / shape that has no template.
+        """
+        from tools.orchestration_runtime import _render_pure_launch_prompt
+        payload = {
+            "node_key": "component/x@0.1.0", "step": None, "substep": "generate",
+            "orchestration_id": "o", "agent_run_id": "arid-1", "leaf_mode": "pure",
+            "pure_context": {"a": "b"},
+        }
+        with self.assertRaises(ValueError) as caught:
+            _render_pure_launch_prompt(payload)
+        message = str(caught.exception)
+        self.assertIn("names no rendered prompt", message)
+        self.assertIn("step=None", message)
