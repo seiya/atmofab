@@ -13680,6 +13680,105 @@ class ExtractSubroutineInterfaceTests(unittest.TestCase):
         self.assertEqual(len(out["arguments"]), len(out["argument_order"]))
 
 
+class ClaudeSequentialLaunchTests(unittest.TestCase):
+    """One child at a time on the claude backend, refused at the SECOND launch.
+
+    `active_children/<arid>.txt` guards the other three sides of the lifecycle —
+    `record-child-return`, `deactivate-child`, `record-timeout` all refuse while a child
+    is live — and `active_child_agent_run_id.txt` is the launch side. It is the only
+    thing that stops a conductor bug from running two claude leaves against one
+    orchestration, where both write the same phase root and the second's record silently
+    describes the first's files.
+
+    Its test went with the capability-gate deletion in PR-2 (the old
+    `test_record_launch_claude_creates_active_child_file_and_rejects_parallel_launch`),
+    and the guard has nothing to do with that gate: `if backend_token == "claude" and
+    False:` left the full suite green, and the only remaining occurrence of "sequential
+    violation" anywhere in the tree was a COMMENT.
+
+    The refusal is also a fail_closed, not just a raise — the orchestration is in a state
+    no caller can reason about, so the status has to say so."""
+
+    def _launch(self, repo_root: Path, arid: str) -> None:
+        record_launch(
+            repo_root=repo_root,
+            orchestration_id="orch_seq_001",
+            parent_agent_run_id="orch_run_seq_001",
+            child_agent_run_id=arid,
+            request_payload=_launch_request_body(arid),
+            response_payload={
+                "agent_run_id": arid,
+                "backend": "claude",
+                "started_at": "2026-05-09T08:00:00Z",
+                **_spawn_response_payload(arid),
+            },
+        )
+
+    def _init(self, repo_root: Path) -> None:
+        init_orchestration(
+            repo_root=repo_root,
+            orchestration_id="orch_seq_001",
+            spec_ref="spec/problem/shallow_water2d/controlled_spec.md",
+            source_dependency_ref="spec/problem/shallow_water2d/deps.yaml",
+        )
+        _mark_dependencies_ready(repo_root, "orch_seq_001")
+        write_preflight(
+            repo_root=repo_root,
+            orchestration_id="orch_seq_001",
+            payload={
+                "status": "pass",
+                "backend": "claude",
+                "sandbox_runtime": "bwrap",
+                "sandbox_enforced": True,
+                "can_launch_step_agents": True,
+                "can_launch_substep_agents": True,
+                "feature_states": {"multi_agent": True, "hooks": True},
+                "checks": [
+                    {"name": "multi_agent_enabled", "pass": True},
+                    {"name": "hooks_enabled", "pass": True},
+                    {"name": "codex_home_writable", "pass": True},
+                    {"name": "sandbox_bwrap_available", "pass": True},
+                    {"name": "sandbox_bwrap_userns", "pass": True},
+                ],
+            },
+        )
+
+    def test_the_first_launch_records_the_active_child(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._init(repo_root)
+            self._launch(repo_root, "substep_run_seq_001")
+            from tools.orchestration_runtime import _active_child_agent_run_id_path
+            active = _active_child_agent_run_id_path(repo_root, "orch_seq_001")
+            self.assertTrue(active.is_file())
+            self.assertEqual(active.read_text(encoding="utf-8").strip(),
+                             "substep_run_seq_001")
+
+    def test_a_second_launch_while_a_child_is_live_is_refused_and_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._init(repo_root)
+            self._launch(repo_root, "substep_run_seq_001")
+            with self.assertRaisesRegex(RuntimeError, "sequential violation"):
+                self._launch(repo_root, "substep_run_seq_002")
+            meta = json.loads(
+                (repo_root / "workspace" / "orchestrations" / "orch_seq_001"
+                 / "orchestration_meta.json").read_text(encoding="utf-8"))
+            self.assertEqual(meta.get("status"), "fail_closed")
+            self.assertEqual(meta.get("reason_code"),
+                             "parallel_nodes_not_explicitly_allowed")
+
+    def test_the_refusal_names_the_child_that_is_still_running(self) -> None:
+        # The operator's next move is to find that leaf, so the id is the message.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._init(repo_root)
+            self._launch(repo_root, "substep_run_seq_001")
+            with self.assertRaises(RuntimeError) as ctx:
+                self._launch(repo_root, "substep_run_seq_002")
+            self.assertIn("substep_run_seq_001", str(ctx.exception))
+
+
 class RecordTimeoutTests(unittest.TestCase):
     """Fix 5: record-timeout is the canonical recovery for child Agent stream timeouts."""
 
