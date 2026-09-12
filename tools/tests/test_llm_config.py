@@ -11,11 +11,11 @@ wrong:
 2. **Every named rejection rule fires, exactly once, on its own input.** The rule name is the
    operator's search key, so a rule that silently changed name (or was shadowed by an earlier
    check) is a real regression.
-3. **The mirror tables still mirror.** `LLM_LEAF_SUBSTEPS` /
-   `MCP_REQUIRED_LLM_SUBSTEPS` are copies of facts owned by the conductor and the runtime.
-   Each guard derives the original BEHAVIORALLY (running the conductor predicate, reading the
-   runtime table) rather than re-asserting the same literal, so moving the original reds the
-   test instead of leaving two agreeing-but-wrong copies.
+3. **The mirror tables still mirror.** `LLM_LEAF_SUBSTEPS` is a copy of a fact owned by the
+   conductor. Its guard derives the original BEHAVIORALLY (running the conductor predicate)
+   rather than re-asserting the same literal, so moving the original reds the test instead of
+   leaving two agreeing-but-wrong copies. `MCP_REQUIRED_LLM_SUBSTEPS` was the second such
+   table and went with the MCP capability gate (issue #171 PR-2), along with its guard.
 """
 
 from __future__ import annotations
@@ -559,10 +559,12 @@ class CapabilityTests(_Tmp):
         it and an entry narrowed away from it is refused by name — on every pair, not on the
         one this test happened to pick.
 
-        The second half is what makes the first enforceable rather than advisory: `agentic` is
-        no longer a capability the vocabulary knows, so a configuration still spelling it is
-        refused at `capabilities:` parse time rather than resolving to a transport that no
-        longer exists. (`mcp_tools` is retired with the MCP gate in PR-2, not here.)"""
+        The second half is what makes the first enforceable rather than advisory: neither
+        `agentic` nor `mcp_tools` is a capability the vocabulary knows any more, so a
+        configuration still spelling one is refused at `capabilities:` parse time rather than
+        resolving to a transport or a grant that no longer exists. Both are asserted, because
+        PR-2 retired `mcp_tools` while pinning only `agentic`, and re-adding `mcp_tools` to
+        `KNOWN_CAPABILITIES` was silent."""
         for phase, substep in sorted(lc.LLM_LEAF_SUBSTEPS):
             err = self.assert_rule(
                 "llm_config_capability_insufficient_for_substep",
@@ -573,14 +575,16 @@ class CapabilityTests(_Tmp):
             # Not "agentic OR pure": there is no second transport to fall back to, and a
             # message offering one is the shape this row exists to keep out.
             self.assertNotIn("agentic", str(err), msg=f"{phase}.{substep}")
-        err = self.assert_rule(
-            "llm_config_invalid_field",
-            "defaults:\n  provider: claude_cli\n"
-            "  capabilities: [agentic, pure]\n")
-        self.assertIn("agentic", str(err))
-        self.assertNotIn("agentic", lc.KNOWN_CAPABILITIES)
-        for provider, caps in lc.PROVIDER_CAPABILITIES.items():
-            self.assertNotIn("agentic", caps, msg=provider)
+        for retired in ("agentic", "mcp_tools"):
+            with self.subTest(capability=retired):
+                err = self.assert_rule(
+                    "llm_config_invalid_field",
+                    "defaults:\n  provider: claude_cli\n"
+                    f"  capabilities: [{retired}, pure]\n")
+                self.assertIn(retired, str(err))
+                self.assertNotIn(retired, lc.KNOWN_CAPABILITIES)
+                for provider, caps in lc.PROVIDER_CAPABILITIES.items():
+                    self.assertNotIn(retired, caps, msg=provider)
 
     def test_every_declared_provider_validates_for_the_compile_leaves(self) -> None:
         """Issue #168's completion criterion: whichever provider this repository declares can be
