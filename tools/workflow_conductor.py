@@ -1752,7 +1752,7 @@ def build_launch_request(
     # comment used to describe — `allowed_file_tool_paths` into the output-manifest write guard, the
     # bwrap `write_roots` pinned to that same stage-meta file, and the terminal FS-diff reading those
     # narrowed roots — are ALL DELETED (Z4, issue #171 PR-2): a verify leaf is pure, holds no tool,
-    # and authors nothing — `allowed_output_paths` is set to `[]` twenty lines below, on the pure
+    # and authors nothing — `allowed_output_paths` is set to `[]` thirty lines below, on the pure
     # branch, and `_validate_pure_launch_request_payload` REFUSES a pure request whose list is
     # non-empty. So the narrowing above is dead for both verify substeps, which are pure; it
     # survives for a deterministic launch, where `_allowed_output_paths_for_launch` checks the
