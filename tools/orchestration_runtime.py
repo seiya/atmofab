@@ -13271,8 +13271,10 @@ def _render_pure_launch_prompt(request_payload: dict[str, Any]) -> str:
     # The exemplar used to be exempt here, "stripped wholesale by the scan carve-out" — the
     # gate-allowlist lint's `_strip_exemplar_regions`, deleted in Z4 (issue #171). The round-2
     # security review found the exemption outliving its reason, and measured the consequence: a
-    # certified sibling's `.f90` carrying the literal PURE markers renders straight through into
-    # a `generate.generate` prompt, 7 END markers against 6 BEGIN. `_sanitize_exemplar_body`
+    # certified sibling's SOURCE carrying the literal PURE markers renders straight through into
+    # a `generate.generate` prompt, 7 END markers against 6 BEGIN. (Written without the language's
+    # file suffix on purpose: this module is `neutral core`, and the sentence needs no more than
+    # "a source file the previous producer authored" to be true.) `_sanitize_exemplar_body`
     # already breaks the EXEMPLAR markers in that same body for the identical reason, so the two
     # tokens are now treated alike rather than one being defended and the other argued away.
     subs["dependency_facts"] = _sanitize_pure_doc_body(_build_dependency_facts(request_payload))

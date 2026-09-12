@@ -27,6 +27,7 @@ import re
 import tempfile
 import unittest
 from pathlib import Path
+from typing import ClassVar
 
 import tools.llm_config as lc
 import tools.orchestration_runtime as ort
@@ -512,7 +513,7 @@ class LaunchPromptValidationFloorTests(unittest.TestCase):
         deterministic marker existed still has to be readable.
     """
 
-    _BASE = {
+    _BASE: ClassVar[dict[str, str]] = {
         "node_key": "component/x@0.1.0", "orchestration_id": "o", "agent_run_id": "arid-1",
         "parent_agent_run_id": "orch", "agent_model": "opus", "workflow_mode": "dev",
         "ir_ref": "workspace/ir/x/i", "pipeline_ref": "workspace/pipelines/x/p",
@@ -598,7 +599,7 @@ class PureAndPromptMustAgreeTests(unittest.TestCase):
     persisted record and IS pinned there; the runtime half was not.
     """
 
-    _DET = {
+    _DET: ClassVar[dict[str, object]] = {
         "node_key": "component/x@0.1.0", "step": "build", "deterministic": True,
         "orchestration_id": "o", "agent_run_id": "arid-1", "parent_agent_run_id": "orch",
         "agent_model": "deterministic", "workflow_mode": "dev",
@@ -619,7 +620,7 @@ class PureAndPromptMustAgreeTests(unittest.TestCase):
     def test_a_pure_request_prompt_must_open_with_the_sentinel(self) -> None:
         from tools.orchestration_runtime import (
             _validate_launch_prompt_text, render_launch_prompt_text)
-        from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION, PURE_PROMPT_SENTINEL
+        from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION
         payload = {
             "node_key": "component/x@0.1.0", "step": "validate", "substep": "judge",
             "orchestration_id": "o", "agent_run_id": "arid-1", "parent_agent_run_id": "orch",
