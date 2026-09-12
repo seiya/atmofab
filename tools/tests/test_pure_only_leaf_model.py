@@ -23,6 +23,7 @@ guard, is what they are written to catch.
 from __future__ import annotations
 
 import ast
+import json
 import re
 import tempfile
 import unittest
@@ -32,6 +33,12 @@ from typing import ClassVar
 import tools.llm_config as lc
 import tools.orchestration_runtime as ort
 import tools.workflow_conductor as wc
+from tools.tests.test_build_runtime_server import _load_server_module
+from tools.tests.test_orchestration_runtime import (
+    _launch_request_body,
+    _mark_dependencies_ready,
+    _spawn_response_payload,
+)
 from tools.tests.test_pure_leaf_producer import _PureFakeConductor, _write_node
 
 # One block per declared provider, in the `capabilities`-free form an operator writes. The set
@@ -854,3 +861,372 @@ class NoInlinedDocumentDescribesADeletedTransportTests(unittest.TestCase):
         # ... and a DATED mention is a record, not an instruction.
         self.assertEqual([], self._offending_lines(
             "an agentic leaf read this until Z4 (issue #171) deleted it"))
+
+
+# ======================================================================================
+# PR-2 of Z4: the records nobody reads.
+#
+# PR-1 removed the leaf that held tools. The enforcement records built FOR that leaf —
+# the capability token, the write-root document, the read/output manifests, the write
+# baseline and its FS-diff, the leaf-facing `run-gate` / `orchestration-read`
+# subcommands — outlived it by one PR. Every one of them answers a question about what a
+# leaf is ALLOWED to write, and a pure leaf writes nothing: the host writes every
+# artifact, the profile is read-only, and `write_roots` is empty by construction.
+#
+# The four classes below are the round-0 pins of that deletion. They are here, beside the
+# PR-1 pins, because they state the SAME property from four sides — a launch records no
+# write authority, the conductor's own bodies need no token to call the server, the
+# server has one validation mode, and the hierarchy validator no longer asks for records
+# nothing writes.
+# ======================================================================================
+
+def _seed_launchable(repo_root: Path, orchestration_id: str) -> None:
+    """An orchestration `record_launch` will accept: meta, readiness, live preflight."""
+    ort.init_orchestration(
+        repo_root=repo_root,
+        orchestration_id=orchestration_id,
+        spec_ref="spec/problem/shallow_water2d/controlled_spec.md",
+        source_dependency_ref="spec/problem/shallow_water2d/deps.yaml",
+    )
+    _mark_dependencies_ready(repo_root, orchestration_id)
+    ort.write_preflight(
+        repo_root=repo_root,
+        orchestration_id=orchestration_id,
+        payload={
+            "status": "pass", "backend": "claude", "sandbox_runtime": "bwrap",
+            "sandbox_enforced": True, "can_launch_step_agents": True,
+            "can_launch_substep_agents": True,
+            "feature_states": {"multi_agent": True},
+            "checks": [
+                {"name": "multi_agent_enabled", "pass": True},
+                {"name": "sandbox_bwrap_available", "pass": True},
+                {"name": "sandbox_bwrap_userns", "pass": True},
+            ],
+        },
+    )
+
+
+class NoOrchestrationDirRecordsALeafWriteAuthorityTests(unittest.TestCase):
+    """After both launch shapes have been recorded, the orchestration directory holds no
+    document that grants, bounds, or audits a leaf's writes.
+
+    The list is not a sample: it is every record the enforcement complex produced, named
+    one by one, so deleting a writer and leaving its directory behind is a failure and so
+    is re-introducing one. What must SURVIVE is named beside it — the read-only sandbox
+    profile, which is the one document that still decides something, and the launch record
+    itself.
+    """
+
+    #: Every path the retired complex wrote under `workspace/orchestrations/<oid>/`.
+    #: Directory entries are checked for ABSENCE, not emptiness: an empty directory is a
+    #: record that a writer is expected, and `_ensure_orchestration_audit_dirs` created
+    #: these unconditionally, so emptiness would pass while the mechanism is still wired.
+    RETIRED_RECORDS: ClassVar[tuple[str, ...]] = (
+        "capabilities",
+        "output_manifests",
+        "read_manifests",
+        "access_policies",
+        "access_logs",
+        "violations",
+        "gates",
+        "hooks/native_hook_events.jsonl",
+        "orchestration_run_write_baseline.json",
+    )
+    #: Three of the entries above are absent under THIS fixture even before the deletion,
+    #: because nothing here reaches their writer: `gates/` is written by the `run-gate`
+    #: subcommand, `hooks/native_hook_events.jsonl` by the leaf hook layer PR-1 already
+    #: deleted, and `managed_write_snapshot.json` by a managed child's deactivation. They
+    #: are listed anyway — the property is "no such record exists", and a row that is
+    #: already true is the row that catches a writer coming back. Measured, not assumed:
+    #: the other seven DO exist on the commit this test was written against.
+    #: The same, per agent run (`<oid>/agents/<arid>/`).
+    RETIRED_AGENT_RECORDS: ClassVar[tuple[str, ...]] = (
+        "run_write_baseline.json",
+        "managed_write_snapshot.json",
+        "deactivate_snapshot.json",
+    )
+
+    def _run_both_launch_shapes(self, repo_root: Path) -> tuple[str, str, str]:
+        """Record one PURE CLI launch and one DETERMINISTIC launch. Returns
+        `(orchestration_id, pure_arid, deterministic_arid)`."""
+        oid = "orch_to_001"
+        _seed_launchable(repo_root, oid)
+        pure_arid = "substep_run_pure_001"
+        ort.record_launch(
+            repo_root=repo_root,
+            orchestration_id=oid,
+            parent_agent_run_id="orch_run_to_001",
+            child_agent_run_id=pure_arid,
+            request_payload={**_launch_request_body(pure_arid), "orchestration_id": oid},
+            response_payload={
+                "agent_run_id": pure_arid, "backend": "claude",
+                "started_at": "2026-05-09T08:00:00Z",
+                **_spawn_response_payload(pure_arid),
+            },
+        )
+        # A Claude launch holds the active-child marker until the child returns; the
+        # conductor clears it with `finalize-child`. Both shapes are needed here, so the
+        # first is deactivated the way a real run does before the second is recorded.
+        token = ort._parent_return_token_path(
+            repo_root, oid, pure_arid).read_text(encoding="utf-8").strip()
+        ort.record_child_return(repo_root=repo_root, orchestration_id=oid,
+                                agent_run_id=pure_arid, return_token=token)
+        ort.deactivate_child_agent(repo_root=repo_root, orchestration_id=oid,
+                                   child_run_id=pure_arid)
+        det_arid = "substep_run_det_001"
+        ort.record_launch(
+            repo_root=repo_root,
+            orchestration_id=oid,
+            parent_agent_run_id="orch_run_to_001",
+            child_agent_run_id=det_arid,
+            request_payload={
+                **_launch_request_body(det_arid, deterministic=True),
+                "orchestration_id": oid,
+            },
+            response_payload={
+                "agent_run_id": det_arid, "backend": "claude",
+                "started_at": "2026-05-09T08:00:00Z",
+                **_spawn_response_payload(det_arid),
+            },
+        )
+        return oid, pure_arid, det_arid
+
+    def test_no_record_of_a_leaf_write_authority_is_written(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            repo_root = Path(td)
+            oid, pure_arid, det_arid = self._run_both_launch_shapes(repo_root)
+            root = repo_root / "workspace" / "orchestrations" / oid
+            for rel in self.RETIRED_RECORDS:
+                self.assertFalse(
+                    (root / rel).exists(),
+                    f"{rel} still exists under the orchestration root: a leaf write "
+                    "authority is still being recorded")
+            for arid in (pure_arid, det_arid):
+                for rel in self.RETIRED_AGENT_RECORDS:
+                    self.assertFalse(
+                        (root / "agents" / arid / rel).exists(),
+                        f"agents/{arid}/{rel} still exists")
+
+    def test_the_pure_cli_launch_still_records_its_readonly_profile(self) -> None:
+        """The half that must NOT go: the sandbox profile is the document that decides
+        what the leaf can reach, and `spawn_leaf` refuses a launch without it."""
+        with tempfile.TemporaryDirectory() as td:
+            repo_root = Path(td)
+            oid, pure_arid, det_arid = self._run_both_launch_shapes(repo_root)
+            root = repo_root / "workspace" / "orchestrations" / oid
+            profile_path = root / "sandbox_profiles" / f"{pure_arid}.json"
+            self.assertTrue(profile_path.is_file(), "the pure CLI leaf lost its profile")
+            profile = json.loads(profile_path.read_text(encoding="utf-8"))
+            self.assertIs(profile.get("readonly"), True)
+            self.assertEqual(profile.get("write_roots"), [])
+            # The deterministic substep spawns no process, so it has no profile at all.
+            self.assertFalse((root / "sandbox_profiles" / f"{det_arid}.json").exists())
+
+    def test_the_launch_record_itself_survives(self) -> None:
+        """The deletion is of AUTHORITY records, not of the orchestration's own history."""
+        with tempfile.TemporaryDirectory() as td:
+            repo_root = Path(td)
+            oid, pure_arid, _det = self._run_both_launch_shapes(repo_root)
+            root = repo_root / "workspace" / "orchestrations" / oid
+            for suffix in ("request.json", "response.json", "prompt.txt"):
+                self.assertTrue((root / "launches" / f"{pure_arid}.{suffix}").is_file(),
+                                f"launches/{pure_arid}.{suffix} is missing")
+            # The HOST-side hook log (`_append_workflow_hook_log`) is not a leaf record:
+            # the conductor writes it about its own decisions, and it is the one thing
+            # under `hooks/` that survives the leaf hook layer.
+            self.assertTrue((root / "hooks" / "workflow_hooks.jsonl").is_file(),
+                            "the host workflow hook log is missing")
+
+
+class InprocBodiesCallTheServerWithoutATokenTests(unittest.TestCase):
+    """The conductor's own deterministic bodies call the build-runtime server as the host
+    process they are, not as a leaf holding a grant.
+
+    The capability token existed so the server could tell a leaf's call from a forgery. No
+    leaf calls the server any more — a pure leaf has no tools and no MCP config at all — so
+    the only caller left is the conductor, in its own process, and what it owes the server
+    is ATTRIBUTION (which orchestration, which agent run) rather than authority.
+
+    Derived from the source rather than listed: every `tool_*` call in
+    `tools/workflow_conductor.py` is found by AST, including the ones whose arguments arrive
+    through a `**spread` of a dict bound earlier in the same function (`_execute_inproc`
+    passes its ids that way, and a sweep that missed the spread would report that body as
+    carrying nothing at all)."""
+
+    CONDUCTOR: ClassVar[Path] = Path(wc.__file__)
+    #: The methods that reach the server. Compared as a SET so a body that stops calling
+    #: it — or a new one that starts — is a failure rather than a quietly narrower sweep.
+    #: The name is the INNERMOST enclosing function, so two of them are nested helpers:
+    #: `_probe` (inside `_gate_lint_check`, the host/leaf attribution re-run) and
+    #: `_sub_check` (inside `_gate_syntax_check`, the per-source attribution re-run). Both
+    #: certify nothing, which is why they carry no `command_log_path` — but they are still
+    #: calls into the server and the attribution rule is the same for them.
+    #: `_compile_static_inproc` reaches the server through `_gate_lint_check` /
+    #: `_gate_syntax_check` rather than a body of its own.
+    CALLING_METHODS: ClassVar[frozenset[str]] = frozenset({
+        "_build_inproc",            # compile_project
+        "_gate_lint_check",         # run_linter          (generate.gate, compile.static)
+        "_probe",                   # run_linter          (attribution re-run)
+        "_gate_syntax_check",       # run_syntax_check    (generate.gate, compile.static)
+        "_sub_check",               # run_syntax_check    (attribution re-run)
+        "_execute_inproc",          # run_program + run_quality_checks
+    })
+
+    @staticmethod
+    def _dict_keys(node: ast.AST, scope: ast.AST) -> list[str] | None:
+        """The literal keys of a call's argument dict, following one level of `**name`
+        where `name` is bound to a dict literal in the enclosing function."""
+        if not isinstance(node, ast.Dict):
+            return None
+        keys: list[str] = []
+        for key, value in zip(node.keys, node.values):
+            if isinstance(key, ast.Constant) and isinstance(key.value, str):
+                keys.append(key.value)
+                continue
+            if key is not None:
+                return None  # a computed key: the sweep cannot answer for this call
+            if not isinstance(value, ast.Name):
+                return None
+            bound = None
+            for stmt in ast.walk(scope):
+                if (isinstance(stmt, ast.Assign) and len(stmt.targets) == 1
+                        and isinstance(stmt.targets[0], ast.Name)
+                        and stmt.targets[0].id == value.id
+                        and isinstance(stmt.value, ast.Dict)):
+                    bound = stmt.value
+            if bound is None:
+                return None
+            for k in bound.keys:
+                if not (isinstance(k, ast.Constant) and isinstance(k.value, str)):
+                    return None
+                keys.append(k.value)
+        return keys
+
+    def _calls(self) -> list[tuple[str, str, int, list[str]]]:
+        """`(method, tool, lineno, argument keys)` for every `tool_*` call."""
+        tree = ast.parse(self.CONDUCTOR.read_text(encoding="utf-8"))
+        found: list[tuple[str, str, int, list[str]]] = []
+        for func in ast.walk(tree):
+            if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for node in ast.walk(func):
+                if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                        and node.func.id.startswith("tool_")):
+                    continue
+                # Only count the call in its INNERMOST enclosing function.
+                inner = any(
+                    isinstance(other, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    and other is not func
+                    and node in set(ast.walk(other))
+                    for other in ast.walk(func))
+                if inner:
+                    continue
+                keys = self._dict_keys(node.args[0] if node.args else None, func)
+                self.assertIsNotNone(
+                    keys, f"{func.name}:{node.lineno} passes arguments this sweep cannot "
+                          "read; the pin would silently cover nothing")
+                found.append((func.name, node.func.id, node.lineno, keys or []))
+        return found
+
+    def test_every_server_call_carries_attribution_and_no_capability_token(self) -> None:
+        calls = self._calls()
+        self.assertTrue(calls, "no tool_* call found: the sweep resolved nothing")
+        for method, tool, lineno, keys in calls:
+            where = f"{method}:{lineno} -> {tool}"
+            self.assertIn("orchestration_id", keys, f"{where} is unattributed")
+            self.assertIn("agent_run_id", keys, f"{where} is unattributed")
+            self.assertNotIn("capability_token", keys,
+                             f"{where} still presents a capability token")
+
+    def test_the_set_of_bodies_that_reach_the_server_is_the_recorded_one(self) -> None:
+        self.assertEqual(self.CALLING_METHODS, {m for m, _t, _l, _k in self._calls()})
+
+    def test_the_conductor_does_not_spell_capability_token_at_all(self) -> None:
+        """The plumbing too, not only the call sites: the token was threaded through six
+        signatures and read from `capabilities/<arid>.json`, a file PR-2 stops writing."""
+        text = self.CONDUCTOR.read_text(encoding="utf-8")
+        offending = [f"{n}: {line.strip()}"
+                     for n, line in enumerate(text.splitlines(), 1)
+                     if "capability_token" in line or "cap_token" in line]
+        self.assertEqual([], offending)
+
+
+class ServerHasOneValidationModeTests(unittest.TestCase):
+    """`mcp_servers/build_runtime_server.py` validates a call one way.
+
+    It had two. The orchestrated mode was an ALLOWLIST — only the make variables the
+    workflow declares, no `target`, `repo_root` pinned to the server's own checkout —
+    switched on by an `orchestration_id` argument and by two environment variables, and it
+    existed because the caller might be a leaf holding a grant it should not be able to
+    widen. The standalone mode was a DENYLIST, for the operator's own session.
+
+    No leaf reaches this server after Z4: a pure leaf launches with `--tools ""` and
+    `--strict-mcp-config` and has no MCP configuration at all. The only caller under a run
+    is the conductor, in the host process. So the allowlist defends nothing, and what is
+    left is the denylist — applied to EVERY call, which is a widening of the standalone
+    mode, not a narrowing of the orchestrated one.
+
+    The four rows below are the cases that used to answer differently on each side."""
+
+    MODES: ClassVar[tuple[tuple[str, dict[str, object], dict[str, str]], ...]] = (
+        ("standalone", {}, {}),
+        ("attributed", {"orchestration_id": "orch_x", "agent_run_id": "arid_x"}, {}),
+        ("workflow-env", {}, {"ATMOFAB_WORKFLOW_MODE": "1"}),
+        ("workflow-env+attributed",
+         {"orchestration_id": "orch_x", "agent_run_id": "arid_x"},
+         {"ATMOFAB_WORKFLOW_MODE": "1", "ATMOFAB_ORCHESTRATION_ID": "orch_x"}),
+    )
+
+    def setUp(self) -> None:
+        self.server = _load_server_module()
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.project = Path(self._tmp.name)
+
+    def _call(self, extra: dict[str, object], env: dict[str, str]) -> object:
+        from unittest import mock
+        args = {"project_dir": str(self.project), "language": "fortran",
+                "build_system": "make", "timeout_sec": 5, **extra}
+        with mock.patch.dict("os.environ", env, clear=False):
+            return self.server.tool_compile_project(args)
+
+    def _refusal(self, extra: dict[str, object], env: dict[str, str]) -> str:
+        with self.assertRaises(ValueError) as caught:
+            self._call(extra, env)
+        return str(caught.exception)
+
+    def test_an_execution_redirecting_env_override_is_refused_in_every_mode(self) -> None:
+        for name, attribution, env in self.MODES:
+            for key in ("LD_PRELOAD", "MAKEFLAGS"):
+                with self.subTest(mode=name, key=key):
+                    message = self._refusal(
+                        {**attribution, "env": {key: "x"}}, env)
+                    self.assertIn(key, message)
+
+    def test_a_non_assignment_extra_arg_is_refused_in_every_mode(self) -> None:
+        for name, attribution, env in self.MODES:
+            with self.subTest(mode=name):
+                message = self._refusal(
+                    {**attribution, "extra_args": ["--eval=$(shell id)"]}, env)
+                self.assertIn("--eval", message)
+
+    def test_the_workflow_environment_decides_nothing(self) -> None:
+        """The two variables `tools/run_workflow.py` sets reached this server through the
+        leaf's declared environment and switched the mode. They are still set — the
+        conductor puts them on the leaf environment and `AGENTS.md` documents them — and
+        this server no longer reads them: an unattributed call is served, and `repo_root`
+        is no longer required to be the server's own checkout."""
+        env = {"ATMOFAB_WORKFLOW_MODE": "1", "ATMOFAB_ORCHESTRATION_ID": "orch_x"}
+        result = self._call({"repo_root": str(self.project)}, env)
+        self.assertIsInstance(result, dict)
+        self.assertIn("return_code", result)  # make ran (and failed: no Makefile)
+
+    def test_the_conductors_own_build_arguments_still_pass(self) -> None:
+        """The positive control. `_build_inproc` passes OBJDIR / BINDIR / BIN assignments
+        and attribution; a mode collapse that refused them would break every build."""
+        obj = self.project / "obj"
+        obj.mkdir()
+        result = self._call(
+            {"orchestration_id": "orch_x", "agent_run_id": "arid_x",
+             "extra_args": [f"OBJDIR={obj}", f"BINDIR={obj}", "BIN=spec_runner"]}, {})
+        self.assertIsInstance(result, dict)

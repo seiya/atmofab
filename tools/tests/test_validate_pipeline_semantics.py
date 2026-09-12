@@ -24076,6 +24076,86 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
                     and "prompt_contract_version:" in v
                     for v in violations))
 
+    # ----------------------------------------------------------------------------------
+    # PR-2 of Z4 (issue #171): the records this sweep used to demand are no longer written.
+    #
+    # Three of the five checks above ask about a document the enforcement complex produced
+    # for a leaf that could write: the output manifest's ABSENCE, the capability's
+    # `pure_readonly` / empty `write_roots` / empty `mcp_permissions`, and the read
+    # manifest's deny-all `allowed_read_roots`. None of them is enforced by anything — the
+    # hook layer that read the manifests went in PR-1 — so each is a record checked against
+    # itself, and PR-2 stops writing all three.
+    #
+    # What must SURVIVE is the pair that describes something real: the sandbox profile
+    # (`readonly`, `write_roots == []`), which the kernel enforces through bwrap, and the
+    # terminal row's `output_refs == []`, which is the claim the host's own bundle writer
+    # contradicts if it is wrong.
+    # ----------------------------------------------------------------------------------
+
+    def _make_pr2_pure(self, repo_root: Path) -> None:
+        """The pure record as PR-2 writes it: no capability, no manifests, no audit dirs."""
+        import shutil
+        self._make_pure(repo_root)
+        orch_root = self._orch_root(repo_root)
+        for name in ("capabilities", "read_manifests", "output_manifests",
+                     "access_policies", "access_logs", "violations", "gates"):
+            shutil.rmtree(orch_root / name, ignore_errors=True)
+
+    def test_hierarchy_validator_ignores_absent_record_dirs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._build_tree(repo_root)
+            self._make_pr2_pure(repo_root)
+            self.assertEqual(self._pure_violations(repo_root), [])
+
+    def test_the_readonly_sandbox_profile_is_still_required_without_them(self) -> None:
+        """The surviving half, checked on the SAME workspace the row above passes on — so a
+        deletion that silenced the pure audit altogether fails here."""
+        for mutation, expected in (
+            ({"readonly": False}, "must be readonly"),
+            ({"write_roots": ["workspace/"]}, "write_roots must be []"),
+        ):
+            with self.subTest(mutation=sorted(mutation)), \
+                    tempfile.TemporaryDirectory() as tmp:
+                    repo_root = Path(tmp)
+                    self._build_tree(repo_root)
+                    self._make_pr2_pure(repo_root)
+                    sbx = (self._orch_root(repo_root) / "sandbox_profiles"
+                           / f"{self._ARID}.json")
+                    doc = json.loads(sbx.read_text(encoding="utf-8"))
+                    doc.update(mutation)
+                    sbx.write_text(json.dumps(doc), encoding="utf-8")
+                    self.assertTrue(
+                        any(expected in v for v in self._pure_violations(repo_root)),
+                        self._pure_violations(repo_root))
+
+    def test_a_pure_pass_row_must_still_declare_no_output_refs_without_them(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._build_tree(repo_root)
+            self._make_pr2_pure(repo_root)
+            runs = self._orch_root(repo_root) / "agent_runs.jsonl"
+            lines = []
+            forged = False
+            for line in runs.read_text(encoding="utf-8").splitlines():
+                if line.strip():
+                    row = json.loads(line)
+                    if row.get("agent_run_id") == self._ARID:
+                        row["output_refs"] = ["workspace/forged.txt"]
+                        forged = True
+                    line = json.dumps(row, ensure_ascii=False)
+                lines.append(line)
+            self.assertTrue(forged, "the pure row was not found in agent_runs.jsonl")
+            runs.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            # NOT `_pure_violations`: that filter matches "pure launch", and this arm's
+            # message opens "pure pass row". Reading the whole list is also what makes the
+            # row a real pin — the mutated workspace must produce this violation and no
+            # other, so a deletion that silences the arm shows up either way.
+            violations = validate(repo_root=repo_root, workspace_root="workspace",
+                                  require_orchestration=True)
+            self.assertTrue(
+                any("output_refs of exactly []" in v for v in violations), violations)
+
 
 class DirectExecutionBootstrapTests(unittest.TestCase):
     """The `except ModuleNotFoundError` import block, which only runs when this module is
