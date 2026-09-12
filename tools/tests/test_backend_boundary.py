@@ -143,11 +143,10 @@ _SCANNED_GLOBS = (
     (".", "README.md"),
     (".", "AGENTS.md"),
     (".", "CLAUDE.md"),
-    # The committed leaf launch configuration (issue #63). In scope by
-    # `docs/BACKEND_BOUNDARY.md` §Scope, which lists it; every other §Scope bullet
-    # maps 1:1 to a glob here, and a token added under `leaf_config/` was unmeasured
-    # while the document said it was in scope.
-    ("leaf_config", "**/*.json"),
+    # `("leaf_config", "**/*.json")` — the committed leaf launch configuration (issue #63) —
+    # was scanned here until Z4 (issue #171) deleted the directory with the agentic leaf. Its
+    # §Scope bullet went in the same change, which is what the row below checks: every glob
+    # here maps 1:1 to a §Scope bullet, in both directions.
     # The dependency declaration and the CI workflow (issue #161). Same reason as the two root
     # documents above and as `mcp_servers/`'s declaration files: these are where `linter`-,
     # `compiler`- and `language`-axis names are spelled, and an install line is exactly the kind

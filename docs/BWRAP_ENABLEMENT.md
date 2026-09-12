@@ -66,7 +66,7 @@ The run must reach `orchestration_meta.json` `status=pass` with a real
 `python3 tools/audit_orchestration.py <orchestration_id>` summarizes per-run cost and
 status for a quick read.
 
-## Codex session and hook criteria
+## Codex session criteria
 
 For a Codex run, confirm that every leaf launch has a distinct `thread.started` event before a
 tool request, and that `session_run_index.json`, `launches/<agent_run_id>.response.json`, and the
@@ -114,12 +114,14 @@ The whole JSONL event stream of each Codex leaf is kept at
 where a failed Codex leaf is diagnosed.
 
 For every Codex orchestration, the host creates an isolated `CODEX_HOME` outside the repository.
-It contains only a SHA-256-verified copy of this repository's `leaf_config/codex/hooks.json` (issue #102 moved it there from `.codex/hooks.json`, which is now the DEV layer); the original
-home contributes only `auth.json` as a read-only bwrap bind. Its `config.toml` marks the repository
-project `untrusted`, preventing the project hook layer from being loaded a second time. Therefore
-`--dangerously-bypass-hook-trust` applies only to that verified user-level hook source, never to
-ambient user or plugin hooks. The same isolated home is reused by `codex exec resume` for the
-orchestration's thread state.
+The original home contributes only `auth.json`, as a read-only bwrap bind. Its `config.toml` marks
+the repository project `untrusted`, so the project hook layer is not loaded. The same isolated home
+is reused by `codex exec resume` for the orchestration's thread state.
+
+It carried one more thing until Z4 ([issue #171](https://github.com/seiya/atmofab/issues/171)): a
+SHA-256-verified copy of `leaf_config/codex/hooks.json`, the leaf hook source, launched with
+`--dangerously-bypass-hook-trust` so that copy — and nothing ambient — was trusted. A pure leaf
+makes no tool call, so there is no hook to run, no flag to pass, and no hook source to verify.
 
 ## 3. If it fails
 

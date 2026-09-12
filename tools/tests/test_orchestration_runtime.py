@@ -14288,9 +14288,16 @@ class TestPhase1RuleSourceAudit(unittest.TestCase):
                 _FIX_PIPE_REF.rstrip("/") + "/",
                 policy.get("allowed_read_roots", []),
             )
-            self.assertIn(
-                "skills/workflow-compile-generate/SKILL.md/",
-                policy.get("allowed_read_roots", []),
+            # A `skill_ref` used to be normalized into `allowed_read_roots` so the leaf could
+            # read the SKILL it was told to read. Z4 (issue #171) deleted that merge with the
+            # leaf that held a Read tool, so the roots are exactly the five below plus the
+            # capability file — asserted as a SET rather than by membership, because the
+            # defect this row guards against is a root reappearing, not one going missing.
+            self.assertEqual(
+                sorted(policy.get("allowed_read_roots", [])),
+                sorted(["docs/", "spec/", "workspace/tmp/substep_p1_001/",
+                        _FIX_IR_REF.rstrip("/") + "/", _FIX_PIPE_REF.rstrip("/") + "/",
+                        "workspace/orchestrations/orch_001/capabilities/substep_p1_001.json"]),
             )
             self.assertEqual(
                 policy.get("allowed_gate_services"),
@@ -14481,70 +14488,11 @@ class TestPhase1RuleSourceAudit(unittest.TestCase):
             self.assertFalse(log_entry.get("denied_match"))
             self.assertEqual(log_entry.get("path"), "plans/outside.txt")
 
-    def test_phase2_orchestration_read_allows_skill_ref_path(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            (repo_root / "skills" / "workflow-compile-generate").mkdir(parents=True, exist_ok=True)
-            (repo_root / "skills" / "workflow-compile-generate" / "SKILL.md").write_text(
-                "# workflow-compile-generate\n", encoding="utf-8"
-            )
-            init_orchestration(repo_root=repo_root, orchestration_id="orch_001")
-            _mark_dependencies_ready(repo_root)
-            write_preflight(
-                repo_root=repo_root,
-                orchestration_id="orch_001",
-                payload={
-                    "status": "pass",
-                    "sandbox_runtime": "bwrap",
-                    "sandbox_enforced": True,
-                    "can_launch_step_agents": True,
-                    "can_launch_substep_agents": True,
-                    "feature_states": {"multi_agent": True, "hooks": True},
-                    "checks": [{"name": "multi_agent_enabled", "pass": True}, {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
-                },
-            )
-            record_launch(
-                repo_root=repo_root,
-                orchestration_id="orch_001",
-                parent_agent_run_id="orch_run_001",
-                child_agent_run_id="child_p1r",
-                request_payload={
-                    "agent_model": "claude-opus-4-8",
-                    "agent_run_id": "child_p1r",
-                    "agent_role": "substep",
-                    "node_key": "problem/shallow_water2d@0.3.0",
-                    "step": "compile",
-                    "substep": "generate",
-                    "orchestration_id": "orch_001",
-                    "parent_agent_run_id": "orch_run_001",
-                    "ir_ref": _FIX_IR_REF,
-                    "pipeline_ref": _FIX_PIPE_REF,
-                    "dependency_ref": _FIX_COMPILE_STEP_DEP_REF,
-                    "skill_name": "workflow-compile-generate",
-                    "skill_ref": "skills/workflow-compile-generate/SKILL.md",
-                    "skill_must_read_refs": "",
-                    "allowed_output_paths": [
-                        f"{_FIX_IR_REF}/spec.ir.yaml",
-                        f"{_FIX_IR_REF}/ir_meta.json",
-                    ],
-                    "launch_prompt_full": _substep_launch_prompt(
-                        "problem/shallow_water2d@0.3.0",
-                        "compile",
-                        "generate",
-                        "child_p1r",
-                    ),
-                },
-                response_payload={"agent_run_id": "child_p1r", **_spawn_response_payload("sess_p1r")},
-            )
-            out = log_orchestration_read(
-                repo_root=repo_root,
-                orchestration_id="orch_001",
-                agent_run_id="child_p1r",
-                read_path="skills/workflow-compile-generate/SKILL.md",
-            )
-            self.assertTrue(out.get("file_exists"))
-            self.assertEqual(out.get("read_path"), "skills/workflow-compile-generate/SKILL.md")
-            self.assertIn("workflow-compile-generate", str(out.get("content")))
+    # `test_phase2_orchestration_read_allows_skill_ref_path` stood here until Z4 (issue #171).
+    # It pinned that `run-gate orchestration_read` accepted the launch's own `skill_ref` path,
+    # because `_write_read_access_manifest` merged that ref into `allowed_read_roots`. Both the
+    # merge and the SKILL are deleted: no leaf reads a document, and a caller-supplied string
+    # no longer widens a read grant.
 
     def test_phase2_orchestration_read_rejects_when_read_manifest_is_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -28830,89 +28778,32 @@ class TerseResultProjectionTests(unittest.TestCase):
 
 
 class ChildContextDocSizeTests(unittest.TestCase):
-    """Regression guard: the files each child step/substep LLM leaf FORCE-READS after
-    launch (its SKILL + AGENT_CONTRACT + phase_01 for Compile + RUNNER_OUTPUT_CONTRACT
-    for Validate.judge and non-M3c runner-authoring Generate — see leaf_contract_doc_refs)
-    are resident every child
-    turn, and child subagents are the majority of a node's token cost (their cache_read
-    scales with this floor × turns × children). Cap the per-child doc floor to catch
-    re-bloat. Only force-read files are guarded — a doc that left the leaf must-read set
-    (WORKFLOW_CORE, phase_02/03/04, PERF, MCP) no longer enters child context, so its
-    size is unguarded. Ceilings sit just above current sizes; raising one needs an
-    explicit justification."""
+    """Regression guard: the documents the host INLINES into a leaf's launch prompt are
+    resident for every turn of that leaf, and the leaves are the majority of a node's token
+    cost. Cap the per-leaf doc floor to catch re-bloat. Ceilings sit just above current
+    sizes; raising one needs an explicit justification.
+
+    The QUESTION is unchanged since Z4 (issue #171); the mechanism under it is not. A leaf
+    used to FORCE-READ these files off disk (`leaf_contract_doc_refs`), and the cost was the
+    same. Now no leaf reads anything: `Conductor._build_pure_*_context` reads the file and
+    inlines it, which is why a document that reaches no `pure_context` value is unguarded
+    here however large — WORKFLOW_CORE.md, phase_02/03/04, PERFORMANCE_DIAGNOSTICS.md and
+    MCP_COMMAND_LOG_PLACEMENT.md are all in that position, as they were before."""
 
     REPO_ROOT = Path(__file__).resolve().parents[2]
 
     # path -> byte ceiling (current size + small headroom)
-    # Size ceilings apply ONLY to files the LLM leaf force-reads (they land in the
-    # child's cold-start context, so their size is a real cost). A file that is not
-    # a leaf must-read is NOT guarded here, however large — its size does not affect
-    # leaf context. After the leaf-must-read restructure
-    # (docs/design/leaf_must_read_restructure.md) the leaf-read files are:
-    #   - AGENT_CONTRACT.md          (every leaf)
-    #   - RUNNER_OUTPUT_CONTRACT.md  (validate.judge + non-M3c runner-authoring generate; M3d)
-    #   - CHECKS_MODULE_CONTRACT.md  (generate.generate / generate.verify — §1-4 the M3c
-    #                                 checks ABI, §5 the Fortran gate guards of ANY node)
-    #   - phase_01_compile.md        (compile.generate / compile.verify — IR schema)
-    #   - skills/workflow-<step>-<substep>/SKILL.md  (each read by its own substep leaf)
-    # WORKFLOW_CORE.md, phase_02/03/04, PERFORMANCE_DIAGNOSTICS.md, and
-    # MCP_COMMAND_LOG_PLACEMENT.md left the leaf must-read set, so their ceilings
-    # were removed (they stay readable under docs/ but no longer enter leaf context).
-    # Build / Validate.execute are deterministic (no SKILL, no leaf), so only the
-    # 5 core LLM-substep SKILLs are guarded.
+    # The guarded set, and where each one enters a prompt (Z4, issue #171):
+    #   - RUNNER_OUTPUT_CONTRACT.md  (`runner_output_contract_document`: the `harness` shape's
+    #                                 producer and reviewer, whole; the pure judge, sliced)
+    #   - CHECKS_MODULE_CONTRACT.md  (§1-4 as `checks_module_contract_document` to the `m3c`
+    #                                 reviewer and the compile producer's ABI slice; §5 as
+    #                                 `gate_guards_document` to the `harness` producer)
+    #   - phase_01_compile.md        (`phase_contract_document`: both compile leaves, whole)
+    # The five phase `SKILL`s were guarded here and are deleted: no leaf reads one.
+    # `AGENT_CONTRACT.md` was the every-leaf entry and is deleted with them — it was the
+    # single common leaf must-read, and a pure leaf has no must-read set.
     _CEILINGS = {
-        # AGENT_CONTRACT is the single common leaf contract; it absorbed
-        # WORKFLOW_CORE.md's leaf-actionable invariants + stage-meta keys + the
-        # command_log placement one-liner (bumped 16800->17400 for that).
-        # Bumped 17400->17600: the G7 sidecar note (Compile.generate must not write
-        # the conductor-authored <ir_ref>/dependency_graph.json; it authors only the
-        # IR's node_key + direct_deps) — deterministic_followups.md G7.
-        # Bumped 17600->17800: R2 (G8) — verdict.json / aggregate_verdict.json are now
-        # conductor-derived (verdict at execute from test_predicates + diagnostics), not
-        # leaf-authored; the artifact-authoring norm is updated to say so.
-        # Bumped 17800->18300: R5 (M2) — the past-artifact-reference prohibition gains the
-        # conductor-injected `Certified exemplar` exception (host-selected prior art, not a
-        # spontaneous filesystem read).
-        # Bumped 18300->18800: the <stage>_meta.json VALUE TYPES are now stated for the leaf
-        # (last_fail_reason a single plain string or null, never an object). The types existed
-        # only in gate code, so a verify leaf authoring a structured incident dict was writing
-        # an unrepairable artifact it had never been told was invalid. E2E #4
-        # (orch_20260712T014005Z_e02a2d4d, validate.execute post_execute_violation).
-        # Raised for issue #71: `Glob`'s `pattern` is now validated like its `path`, and a
-        # leaf that does not know that meets a refusal — or, worse, an empty result — it
-        # cannot diagnose. That is the one class of text this file exists to carry.
-        #
-        # NO BYTE ARITHMETIC IN THIS COMMENT, deliberately. The delta was written here
-        # three times and was wrong three times (190 for a 150 bump, then 150 for a 200
-        # bump), each time in the commit that claimed to have corrected the previous one.
-        # The rule is what matters and does not rot: a ceiling exists to catch RE-BLOAT,
-        # so it sits far enough above the file to admit an ordinary sentence and low enough
-        # to notice a section. `wc -c` is one command away for anyone who wants the number.
-        # Raised again in round 11: at 19000 the file sat 14 bytes below the ceiling, which
-        # is the tripwire this very comment says a ceiling must not be — the rule was
-        # written and then not applied to the number beside it.
-        # Raised again for issue #77: a gate result now survives its command as a file in
-        # the leaf's own tmp root, and a leaf that is not told the path cannot use it — the
-        # same "meets a refusal it cannot diagnose" class the paragraph above names. The
-        # rule from round 11 applies to the number as well as to the sentence: at 19200 the
-        # file again sat a few dozen bytes below its ceiling, which is a tripwire rather
-        # than a re-bloat catch, so the headroom is restored along with the raise.
-        # Raised a third time in round 1 of that issue's review, and the reason is the
-        # SENTENCE, not the ceiling: the copy is only rewritten by a run that completes, so
-        # a leaf reading it after a refused re-run gets the previous verdict. Telling the
-        # leaf to check `args_json` / `evaluated_at`, and that the command result is
-        # authoritative for the attempt it just made, is what stops that shortcut — the
-        # most expensive place in the repository to add a sentence, and the only one where
-        # this one works. 19700 then left ~100 bytes, a tripwire again by the same rule.
-        # Bumped 20100->20170 (issue #148): the verify-family routing sentence now names both
-        # phase rubrics, `Compile.verify` having gained one. Measured 20018; 20100 left 82 B.
-        # Bumped for issue #177: `prepare_node` may hand a leaf an `ir_ref` an EARLIER run
-        # produced and this one adopted, and the past-artifact prohibition in this file is the
-        # leaf-actionable statement of the rule. Without the qualifier a leaf can read its own
-        # contract as forbidding the input it was handed and stop with `fail` — an
-        # over-refusal delivered as prose, which is why it belongs in the file every leaf
-        # force-reads rather than only in `docs/workflow/WORKFLOW_CORE.md`.
-        "docs/AGENT_CONTRACT.md": 20400,
         # Consolidated runner-output contract (was duplicated across phase_02/04 +
         # PERF §2/§6); M3d: a validate.judge-only leaf must-read (generate dropped it).
         # Bumped 7600->8100: §3 disambiguated the guard-case snapshot rule (declared

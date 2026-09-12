@@ -67,15 +67,15 @@ def _provider_command_base(entry: ResolvedLeafEntry) -> list[str]:
     """The argv prefix a CLI leaf is launched through: the entry's configured wrapper command
     (with any flags) if it has one, else the bare backend binary name.
 
-    ONE definition, because FOUR places have to agree about it or they certify/probe/confine a
-    different executable than the leaf runs: `leaf_command`, `_ensure_codex_feature_cache`
-    (which certifies the codex hooks feature of that binary), `record_launch`'s
+    ONE definition, because THREE places have to agree about it or they probe/confine a
+    different executable than the leaf runs: `leaf_command`, `record_launch`'s
     `backend_command` (which decides the CLI binary the sandbox profile binds, so it is the
-    one that CONFINES rather than probes), and the host-side `/usage` probe. The count was
-    written as three and listed four for a while, one of them the read-only diagnostician's
-    in-process bwrap profile, which issue #169 deleted — that leaf's profile is the runtime's
-    now, built from this same `backend_command`, which is why the third entry matters more
-    since #169 rather than less."""
+    one that CONFINES rather than probes), and the host-side `/usage` probe. A fourth,
+    `_ensure_codex_feature_cache`, certified the codex hooks feature of that binary and went
+    with the leaf hook layer in Z4 (issue #171). The count has been wrong here before — written
+    as three while four were listed, one of them the read-only diagnostician's in-process bwrap
+    profile, which issue #169 deleted (that leaf's profile is the runtime's now, built from this
+    same `backend_command`). Re-count the list when you change it; nothing compares the two."""
     base = shlex.split(entry.command) if entry.command.strip() else []
     return base or [entry.backend_token]
 
@@ -188,10 +188,12 @@ SUBSTEPS: dict[str, tuple[str | None, ...]] = {
     #     non-physics integrity blocker -> fail_closed (no judge has run).
     #   - execute    (Conductor._execute_inproc):    unchanged binary run + evidence capture.
     #   - judge      (LLM leaf):                      a semantic pass holding neither a gate
-    #     nor an MCP grant (ALLOWED_VALIDATE_PIPELINE_STAGES[(validate,judge)] == frozenset()).
-    #     Since Z3 (issue #169) it holds no TOOLS either — it is a pure leaf in the Z2 sense,
-    #     which is a different and stronger claim than the "pure semantic pass" this comment
-    #     used to make, and the reason that older phrase is gone from these three lines.
+    #     nor an MCP grant. Since Z3 (issue #169) it holds no TOOLS either — it is a pure
+    #     leaf, which is a different and stronger claim than the "pure semantic pass" this
+    #     comment used to make, and the reason that older phrase is gone from these three
+    #     lines. Z4 (issue #171) made it the only claim there is to make: no leaf holds a
+    #     tool, and the per-substep gate-allowlist map this line used to cite is deleted
+    #     with the agentic prompt it constrained.
     #   - post_judge (Conductor._post_judge_inproc):  runs `validate_pipeline_semantics
     #     --stage pre_judge` (the gate the judge leaf used to own) and CLASSIFIES the
     #     violation severity. Both graded classes — leaf/judge-authored conformance and
@@ -11742,7 +11744,8 @@ clean:
 
         The argv base is `leaf_command`'s (the entry's `command:` wrapper if configured, else the bare
         backend), so the probe interrogates the executable the LEAF actually uses rather than a
-        hardcoded `claude` — the same reasoning as `_ensure_codex_feature_cache`.
+        hardcoded `claude` — the same reasoning the codex feature probe used before Z4
+        (issue #171) deleted it.
 
         The `result` is trusted ONLY when the envelope proves it came from the BUILT-IN `/usage`
         slash command, not from a model turn. `--output-format json -p /usage` on the real CLI
@@ -12237,8 +12240,8 @@ clean:
     #     `--stage pre_judge` and record `post_judge_meta.json` with a severity `disposition`;
     #     both graded classes (leaf/judge-authored conformance, and integrity) are
     #     fail_closed; an unknown one escalates.
-    # The judge leaf itself invokes no validator gate (ALLOWED_VALIDATE_PIPELINE_STAGES for
-    # all three of pre_judge/judge/post_judge == frozenset()), so it holds no gate at all.
+    # The judge leaf itself invokes no validator gate — it holds no shell to invoke one with,
+    # and all three of pre_judge / judge / post_judge run their gates in the conductor.
 
     def _judge_pre_spawn_dag_block(self, refs: NodeRefs) -> str | None:
         """Pre-spawn Validate.judge dependency-DAG readiness (multi-node closures only).

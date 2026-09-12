@@ -70,10 +70,6 @@
       "CLAUDE.md"
     ],
     [
-      "leaf_config",
-      "**/*.json"
-    ],
-    [
       ".",
       "requirements*.txt"
     ],

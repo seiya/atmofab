@@ -64,14 +64,11 @@ environment the suite runs in, because those are IMPORTED rather than executed. 
 Steps 1, 2, 3 and 5 all read machine-local state, and each is checked before the first billed leaf — though not all by the same mechanism. Step 1 fail-fasts when `tools/run_workflow.py` starts, before an orchestration exists — with one reason code per family (`missing_required_cli_tools` / `missing_required_python_modules` / `missing_required_host_tools`); steps 2, 3 and 5 are `preflight.json` checks. One requirement is outside both and is called out where it lives: the Codex credential is checked when the first leaf is prepared, not at any gate (`docs/RUNBOOK.md` §0-3).
 
 ## Configuration layers
-Two sessions run against this checkout, and they load disjoint configuration. An operator's own interactive session loads the DEV layer; a workflow leaf loads the LEAF layer and nothing else. Since issue #102 that disjointness reaches the HOOK as well as the file: the DEV rows name `tools/hooks/dev_cli.py`, which applies `tools/hooks/operator_safety.py` and `tools/hooks/dev_session_hygiene.py` and nothing else (`docs/HOOKS.md` is canonical for which of the two a leaf also gets), and the LEAF rows name `tools/hooks/cli.py`, which fails closed when it cannot name an orchestration. `docs/HOOKS.md` is canonical for the split.
+ONE session reads configuration from this checkout: the operator's own interactive one, which loads the DEV layer. A workflow leaf loads nothing. Two sessions used to, and the layers were kept disjoint down to the hook entrypoint (issue #102); Z4 ([issue #171](https://github.com/seiya/atmofab/issues/171)) removed the second one — a `pure-function leaf` launches under `--safe-mode` with no tools, which refuses every settings layer and leaves no tool call for a hook to judge, so the LEAF rows (`leaf_config/`, `tools/hooks/cli.py`, the leaf's `.mcp.json`) are deleted rather than disjoint. `docs/HOOKS.md` is canonical for what the DEV layer does.
 
 | file | layer | read by | tracked |
 |---|---|---|---|
-| `leaf_config/claude/settings.json` | LEAF | a workflow leaf, as the sole settings layer of a host-prepared private configuration directory | yes |
-| `leaf_config/codex/hooks.json` | LEAF | a workflow leaf, through a digest-verified copy in the isolated home | yes |
 | `.codex/hooks.json` | DEV | an operator's own interactive codex session, as the project hook layer | yes |
-| `.mcp.json` | LEAF | a workflow leaf, named explicitly at launch | yes |
 | `.claude/settings.json` | DEV | an operator's own interactive session | yes |
 | `.claude/settings.local.json` | DEV | the same session, per operator | no |
 | `.claude/skills/` | DEV | the same session | yes |
@@ -82,8 +79,8 @@ Two sessions run against this checkout, and they load disjoint configuration. An
 Three consequences worth stating explicitly:
 
 - **A permission or hook the workflow depends on goes in a committed file.** The untracked local files exist for one operator's scratch; a grant that lives only there works on one machine and nowhere else. When both a tracked and an untracked file could hold a setting, the tracked one is the answer.
-- **The leaf layer is the owner when a setting appears in both.** Edit the leaf file first; a synchronization test requires the dev layer to carry every leaf permission GRANT, so an operator can reproduce what a leaf does. It requires nothing of the hooks any more except that the two layers stay APART: since issue #102 they name different entrypoints and share no command, while the dev layer may carry hooks of its own. Equality was tried and refused: it forbade adding any operator-convenience hook to the file whose purpose is the operator's session.
-- **A workflow leaf reads none of the repository's top-level instruction documents.** `CLAUDE.md`, `AGENTS.md`, and the dev skills are the DEV layer. A leaf's contract arrives through its launch prompt: `docs/AGENT_CONTRACT.md` plus the phase `SKILL` under `skills/`. A rule a leaf must follow therefore has to land in one of those, never here.
+- **There is no second layer to keep in step.** The rule that stood here — edit the leaf file first, and a synchronization test requires the dev layer to carry every leaf permission GRANT — had both halves in the LEAF layer Z4 deleted. What is left is one file per backend, for the operator.
+- **A workflow leaf reads no document, and no instruction file of any kind.** `CLAUDE.md`, `AGENTS.md`, and the dev skills are the DEV layer; a leaf holds no tool with which to read them or anything else. Its contract is the launch prompt the host renders for it (`tools/prompt_templates/pure_*.txt`) plus the documents the host INLINES into that prompt. A rule a leaf must follow therefore has to land in a pure template, or in a document one of `Conductor._build_pure_*_context` inlines — never here.
 
 ## Repository environment
 Facts about this repository that decide how an operator's own session should be configured. They are stated here because a session-level safety configuration is per-user and per-machine, so this repository cannot hold the configuration itself — only the material an operator builds one from.

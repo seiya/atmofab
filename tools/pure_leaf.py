@@ -62,13 +62,13 @@ PURE_SYSTEM_PROMPT = (
 MAX_BUNDLE_REPAIR_TURNS = 2
 
 # The first line of every host-rendered pure launch prompt (`-p` body). The host anchors pure
-# detection on this being the very first line (`startswith`, mirroring the slim-repair
-# `SLIM_REPAIR_PROMPT_SENTINEL` anchor), so a non-pure prompt that merely mentions the string
-# inside its body never reads as pure, and a pure request whose prompt does not open with it is
-# rejected. Defined HERE (not duplicated at each call site like the slim sentinel) so
-# `orchestration_runtime.py` and `validate_pipeline_semantics.py` import the ONE literal — the
-# pure prompt templates pin their line 0 against it via a parity test, closing the drift hole the
-# slim sentinel's copy-paste leaves open. A change here is a prompt-contract change (bump
+# detection on this being the very first line (`startswith`), so a prompt that merely mentions
+# the string inside its body never reads as pure, and a pure request whose prompt does not open
+# with it is rejected. Defined HERE, once, so `orchestration_runtime.py` and
+# `validate_pipeline_semantics.py` import the ONE literal — the pure prompt templates pin their
+# line 0 against it via a parity test. The slim-repair sentinel, whose anchor this mirrored, was
+# COPIED into each module instead; it survives in the validator alone, for the pre-Z4 records it
+# still has to classify (issue #171). A change here is a prompt-contract change (bump
 # `PURE_PROMPT_CONTRACT_VERSION`).
 PURE_PROMPT_SENTINEL = "Pure-function leaf turn (host-mediated)"
 
@@ -159,14 +159,15 @@ def pure_leaf_flags() -> list[str]:
                             which is how the host reads `result` / `model` / `usage`
                             without touching the session transcript (~/.claude is not read).
 
-    ASYMMETRY WITH THE AGENTIC PATH, deliberate and unchanged by issue #63: a pure leaf
-    takes NO `--setting-sources` and gets NO private `CLAUDE_CONFIG_DIR`. It does not need
-    one — `--safe-mode` already refuses every settings layer, and preparing a home would
-    record a configuration surface the leaf never reads. The consequence is that an
-    operator's `~/.claude` can still decide an UNPINNED pure leaf's model, which the
-    agentic path closed; that asymmetry is recorded in
-    `orchestration_runtime.default_agent_model_for_backend` and is why both paths treat
-    the model stamp as a prediction the result envelope corrects.
+    WHAT THIS SET DOES NOT DO, and it is deliberate: a pure leaf takes NO
+    `--setting-sources` and gets NO private `CLAUDE_CONFIG_DIR`. It does not need one —
+    `--safe-mode` already refuses every settings layer, and preparing a home would record a
+    configuration surface the leaf never reads. The consequence is that an operator's
+    `~/.claude` can still decide an UNPINNED leaf's model. The agentic path closed that with
+    a private home, and until Z4 (issue #171) this was an ASYMMETRY between the two; it is
+    now simply the behaviour, recorded in
+    `orchestration_runtime.default_agent_model_for_backend`, and the reason the model stamp
+    is treated as a prediction the result envelope corrects.
 
     `--session-id`, the warm-repair `--resume <arid> --fork-session`, and the trailing `-p`
     are added by `Conductor.leaf_command` around this set. `-p` takes no prompt argument:

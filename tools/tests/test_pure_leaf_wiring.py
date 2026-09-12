@@ -908,9 +908,6 @@ class PureRenderTests(unittest.TestCase):
     _RUBRIC_POINTER_SURFACES = (
         ("docs/workflow/WORKFLOW_CORE.md", "A `minor` finding is never left unaddressed",
          ("compile", "generate")),
-        ("docs/AGENT_CONTRACT.md",
-         "A verify-family finding always sets `verification_status=fail`",
-         ("compile", "generate")),
         ("docs/GLOSSARY.md", "The 3 values `minor` / `major` / `critical` are used.",
          ("compile", "generate")),
         ("docs/ORCHESTRATION.md", "The conductor routes a verify finding by `issue_severity`",
@@ -991,7 +988,6 @@ class PureRenderTests(unittest.TestCase):
         self.assertEqual(
             {(rel, steps) for rel, _s, steps in self._RUBRIC_POINTER_SURFACES},
             {("docs/workflow/WORKFLOW_CORE.md", ("compile", "generate")),
-             ("docs/AGENT_CONTRACT.md", ("compile", "generate")),
              ("docs/GLOSSARY.md", ("compile", "generate")),
              ("docs/ORCHESTRATION.md", ("compile", "generate")),
              },
@@ -999,7 +995,8 @@ class PureRenderTests(unittest.TestCase):
             "Every statement of the routing must reach BOTH rubrics, because a reader of the "
             "routing does not learn from it which phase's rule to look for. The two verify "
             "`SKILL`s were the phase-SCOPED members here until Z4 (issue #171) deleted them "
-            "with the agentic leaf that read them.")
+            "with the agentic leaf that read them, and `docs/AGENT_CONTRACT.md` — the single "
+            "common leaf must-read — went in the same change.")
         for rel, sentence, steps in self._RUBRIC_POINTER_SURFACES:
             with self.subTest(surface=rel):
                 text = (repo_root / rel).read_text(encoding="utf-8")
@@ -1292,11 +1289,11 @@ class PureRenderTests(unittest.TestCase):
     # `phase_02` was bounded to §2-2 while its §Generate-executor prose named `Compile.verify`'s
     # V2 `major` while recounting the `pure-5` carve-out; issue #148 removed that value, so the
     # bound is gone and the whole document is read. `AGENT_CONTRACT.md` and
-    # `CHECKS_MODULE_CONTRACT.md` are here because `leaf_contract_doc_refs("generate", …)`
-    # force-reads both on either branch, and the checks contract is ALSO inlined into the pure
-    # prompt — a severity written there reaches every reviewer on both transports;
-    # `phase_01_compile.md` is here because `leaf_contract_doc_refs("compile")` force-reads it
-    # whole.
+    # `CHECKS_MODULE_CONTRACT.md` is here because it is inlined into the pure prompt — a
+    # severity written there reaches every `m3c` reviewer and the `harness` producer;
+    # `phase_01_compile.md` because both compile leaves receive it whole. `AGENT_CONTRACT.md`
+    # was a member until Z4 (issue #171), force-read by every leaf; it is deleted with the
+    # transport, and its one allowlisted routing line went with it.
     _SEVERITY_ASSIGNMENT_SURFACES = (
         ("docs/workflow/phases/phase_02_generate.md", None, None),
         ("docs/workflow/phases/phase_01_compile.md", None, None),
@@ -1326,7 +1323,6 @@ class PureRenderTests(unittest.TestCase):
         # `SKILL` does, and issue #143's leftover was in exactly that position.
         ("tools/prompt_templates/pure_generate_generate.txt", None, None),
         ("tools/prompt_templates/pure_bundle_repair.txt", None, None),
-        ("docs/AGENT_CONTRACT.md", None, None),
         ("docs/workflow/CHECKS_MODULE_CONTRACT.md", None, None),
         # Round 5 found the tuple short of its own docstring twice over.
         # `RUNNER_OUTPUT_CONTRACT.md` is force-read by every non-M3c `generate` leaf, and
@@ -1394,37 +1390,15 @@ class PureRenderTests(unittest.TestCase):
         # standing in for the rubric.
         "tools/prompt_templates/pure_escalate_diagnose.txt: Output contract (routing directive)"
         ": one JSON object with th #7a7143f90f63",
-        # Both digests changed in issue #148: each line gained the `Compile.verify` pointer.
-        # The RUNBOOK digest changed again in issue #176: the deleted transport deriver left
-        # this routing sentence naming three derivers instead of four. It still routes on
-        # `dev_verify_major` / `dev_verify_critical` and assigns nothing.
-        # And again in issue #168, READ before re-taking: the bullet gained a paragraph naming
-        # the pure `compile.generate` producer's declaration exit as a SECOND source of this
-        # reason_detail on `Compile` — what the HOST writes to `ir_meta.json`, and that
-        # `classify_failure` declines the document routing table for `compile_declared_fail`
-        # and falls through to the same severity gate. That is routing prose about the
-        # conductor, and no verify leaf is told to grade anything by it. The first draft of
-        # that paragraph DID spell `issue_severity: "major"`, which this gate caught: the
-        # value the host writes is named by its RULE — the grade the phase rubric gives a
-        # finding whose subject is an input — with `docs/ORCHESTRATION.md` cited as canonical
-        # for the write and for the literal, so the paragraph adds no severity literal to this
-        # surface. `docs/RUNBOOK.md` is NOT force-read: `leaf_contract_doc_refs` never returns
-        # it, and it reaches a leaf only as a citation in a `SKILL`'s closed judgment-rule list
-        # — `workflow-compile-verify/SKILL.md:25` for the leaf this paragraph is ABOUT, and
-        # `workflow-generate-verify/SKILL.md:18` as the tuple's own comment above records. An
-        # earlier version of these lines said "force-reads", which overstates this gate's
-        # reach and contradicts that comment.
-        # Re-taken a SECOND time in the same issue's round 2: the paragraph now says the grade
-        # is FIXED rather than chosen per finding, and states the consequence — this route can
-        # produce only one of the two reason_details. Neither clause names a severity value;
-        # the line still matches the pattern through the mentions it already had.
-        "docs/AGENT_CONTRACT.md: - A verify-family finding always sets `verification_status=f"
-        " #12a92add46ae",
-        # Re-taken a THIRD time, for issue #177: the paragraph's `resume_directive` sentences
-        # were replaced by the revocation chain (`revoke-artifact` writes the finding as
-        # `last_fail_reason`, and that is what seeds a repair). Read before re-approving: the
-        # new text names `revoke-artifact` and the reason_detail literals and assigns no
-        # severity — the line still matches the pattern only through the mentions it had.
+        # `docs/AGENT_CONTRACT.md`'s verify-family routing line stood here until Z4 (issue
+        # #171). The file is deleted with the agentic leaf, so the line is on no surface.
+        # The RUNBOOK digest below changed in issue #176 (the deleted transport deriver left
+        # the routing sentence naming three derivers instead of four), again in issue #168
+        # (the pure `compile.generate` producer's declaration exit as a second source of the
+        # reason_detail on `Compile`), and a third time for issue #177 (the `resume_directive`
+        # sentences replaced by the revocation chain). Each was read before re-taking: all of
+        # them route on `dev_verify_major` / `dev_verify_critical` and assign nothing, and
+        # `docs/RUNBOOK.md` is not a leaf surface at all — it is swept as a growth bound.
         "docs/RUNBOOK.md: - Recovery from a **`conductor_phase_fail_closed` whose `rea"
         " #ce3cf072ca6f",
         # The two verifier `SKILL`s' routing lines stood here until Z4 (issue #171). Both files

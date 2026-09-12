@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """One DEV-ONLY hook policy: an agent session must not wait by sleeping.
 
-Separate from `tools/hooks/operator_safety.py` on purpose. That module holds the policies
-applied from BOTH entrypoints (`CLAUDE.md` §hooks: "what they do share is
-`tools/hooks/operator_safety.py`, applied deliberately from both"), and this rule belongs to
-neither a workflow leaf nor the operator's checkout — it is about how an AGENT SESSION spends
-wall-clock and process table. `tools/hooks/dev_cli.py` imports it; nothing on the leaf path does,
-and nothing should: a leaf that sleeps wastes its own budget and gets no closer to reporting its
-task done, which `AGENTS.md` §Development premises puts out of the defended set.
+Separate from `tools/hooks/operator_safety.py` on purpose. That module's subject is the
+operator's own checkout; this rule's subject is how an AGENT SESSION spends wall-clock and
+process table. Both were applied from the DEV entrypoint and only this one was DEV-only, back
+when a leaf-facing entrypoint existed (deleted in Z4, issue #171): a leaf that sleeps wastes its
+own budget and gets no closer to reporting its task done, which `AGENTS.md` §Development premises
+puts out of the defended set. The distinction is worth keeping even with one entrypoint left,
+because it is the reason each rule exists.
 
 **The incident.** A review subagent, whose launch prompt said in as many words "create only waits
 whose exit condition can be satisfied, and no background polling", polled a background job with

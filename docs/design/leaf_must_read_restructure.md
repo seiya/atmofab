@@ -1,6 +1,12 @@
 # Leaf must-read restructuring plan
 
-Status: **implemented** — 2026-06-26 (full `tools/tests` pytest green, the one
+Status: **superseded by Z4 ([issue #171](https://github.com/seiya/atmofab/issues/171))** — no
+leaf force-reads a document, because no leaf holds a tool with which to read one. A document
+reaches a leaf only where `Conductor._build_pure_*_context` inlines it into the launch prompt,
+and `docs/AGENT_SKILLS.md` §Requirements is canonical for where a leaf-actionable rule goes now.
+The body below is the record of the restructure as it shipped, and is not rewritten.
+
+Status when it shipped: **implemented** — 2026-06-26 (full `tools/tests` pytest green, the one
 pre-existing env-dependent `test_spawn_leaf_wraps_in_bwrap` codex-hooks failure
 aside; billed E2E attempt-1 check pending, see §9).
 

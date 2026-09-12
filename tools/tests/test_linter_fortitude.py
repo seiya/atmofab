@@ -604,10 +604,9 @@ class ProseCouplingTests(unittest.TestCase):
     # Z4 (issue #171): `skills/workflow-generate-verify/SKILL.md` is deleted with the agentic
     # leaf and the two reviewer templates take its place, so they are listed here — a template
     # reaches a leaf before anything else does, which is the whole reason this row is wider than
-    # the regioned ones. `docs/AGENT_CONTRACT.md` stays: it is still force-read by nothing, and
-    # is listed for the same reason `controlled_spec.md` is — it is text a leaf can be handed.
+    # the regioned ones. `docs/AGENT_CONTRACT.md` is deleted in the same change and leaves the
+    # list with no replacement: it was the every-leaf force-read, and no leaf force-reads.
     _LEAF_READ_FILES = tuple(path for path, _a, _l, _o in _SITES) + (
-        "docs/AGENT_CONTRACT.md",
         "docs/workflow/RUNNER_OUTPUT_CONTRACT.md",
         "tools/prompt_templates/pure_generate_verify.txt",
         "tools/prompt_templates/pure_generate_verify_harness.txt",

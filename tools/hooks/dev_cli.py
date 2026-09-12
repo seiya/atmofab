@@ -1,33 +1,26 @@
 #!/usr/bin/env python3
-"""Hook entrypoint for an OPERATOR's interactive session (the DEV layer).
+"""THE hook entrypoint: an OPERATOR's interactive session (the DEV layer).
 
-`.claude/settings.json` and `.codex/hooks.json` register this; a workflow leaf never
-reaches it and it never reaches a leaf policy. The leaf entrypoint is
-`tools/hooks/cli.py`, whose settings sources are `leaf_config/claude/settings.json` and
-`leaf_config/codex/hooks.json`. Issue #102 separated the two; before it, one entrypoint
-served both and told them apart by the environment.
+`.claude/settings.json` and `.codex/hooks.json` register this, and nothing else registers
+a hook. There was a second, leaf-facing entrypoint (`tools/hooks/cli.py`, registered by
+`leaf_config/`); issue #102 separated the two, and Z4 (issue #171) deleted the leaf one
+with the agentic leaf — a `pure-function leaf` makes no tool call, so no hook can fire on
+its behalf and none needs to.
 
-**This module imports the standard library and `tools.hooks.operator_safety`, and
-nothing else. Keep it that way.** The operator's session runs the working-tree copy of
-its own hook, so anything this file imports can refuse the operator out of the session
-they are editing in — measured 2026-08-26, when a half-applied edit to
-`tools/hooks/cli.py` made every tool call in an interactive session fail and the session
-had to be repaired from outside. That is the whole reason this file duplicates a little
-protocol encoding instead of importing the adapters;
-`tools/tests/test_hooks_dev_cli.py` pins its output against the real adapters so the two
-cannot drift silently.
+**This module imports the standard library and its two rule modules, and nothing else.
+Keep it that way.** The operator's session runs the working-tree copy of its own hook, so
+anything this file imports can refuse the operator out of the session they are editing in
+— measured 2026-08-26, when a half-applied edit to the leaf entrypoint made every tool
+call in an interactive session fail and the session had to be repaired from outside. That
+is the whole reason this file encodes the backends' block protocol itself instead of
+importing a shared adapter; `tools/tests/test_hooks_dev_cli.py` pins its output so the
+encodings cannot drift from what each CLI expects.
 
 What it enforces is two stdlib-only rule modules and nothing else.
 `tools/hooks/operator_safety.py` guards the operator's own checkout (the hard-reset
-command, the verify-bypass flags in dev mode) and is applied from the LEAF path too.
-`tools/hooks/dev_session_hygiene.py` is DEV-ONLY and guards the session's own process table:
-an agent session must not wait by sleeping. Everything else in `tools/hooks/` decides
-what a LEAF may do and does not apply to the operator, who owns the machine.
-
-The two modules stay separate because their AUDIENCES differ, not for tidiness. A leaf
-that sleeps gets no closer to reporting its task done, so `AGENTS.md` §Development
-premises puts it out of the defended set; importing the hygiene rule on the leaf path
-would be a refusal that buys nothing.
+command, the verify-bypass flags in dev mode). `tools/hooks/dev_session_hygiene.py` guards
+the session's own process table: an agent session must not wait by sleeping. They stay
+separate modules because they answer different questions, not for tidiness.
 """
 
 from __future__ import annotations

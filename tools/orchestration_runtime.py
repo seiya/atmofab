@@ -4497,11 +4497,12 @@ SUPPORTED_PROVIDER_TOKENS = frozenset(SUPPORTED_BACKENDS) | _HTTP_PROVIDER_TOKEN
 # mistakes an operator actually makes).
 _HTTP_PREFLIGHT_SKIP_REACHABILITY_ENV = "ATMOFAB_HTTP_PREFLIGHT_SKIP_REACHABILITY"
 
-# Child agent `skill_must_read_refs`: split workflow spec (see docs/workflow/).
-# WORKFLOW_CORE.md is no longer a leaf must-read (its leaf-actionable invariants
-# + stage-meta keys live in AGENT_CONTRACT.md); it stays readable under docs/, so
-# no module constant points at it. Canonical rationale:
-# docs/design/leaf_must_read_restructure.md.
+# The documents the HOST inlines into a pure launch prompt (see docs/workflow/). No leaf
+# reads one off disk since Z4 (issue #171): `skill_must_read_refs` is declared empty on every
+# launch and `docs/AGENT_CONTRACT.md`, which carried the leaf-actionable invariants and the
+# stage-meta keys, is deleted — `docs/workflow/WORKFLOW_CORE.md` §"Workflow common invariants"
+# and §"Stage meta keys" are canonical for both, for the host. Canonical rationale for the
+# restructure this ended: docs/design/leaf_must_read_restructure.md.
 # Consolidated runner-output contract. Read by Validate.judge (§1/§3 are what it
 # recomputes against the runner's emitted diagnostics.json / raw evidence) and by a
 # runner-authoring Generate leaf. M3d node-aware: an M3c PHYSICS generate leaf drops it
@@ -5724,7 +5725,7 @@ DIAGNOSE_LAUNCH_PAIRS: frozenset[tuple[str, str]] = frozenset(
 # docs/ORCHESTRATION.md (the capability table), docs/CLI_REFERENCE.md (record-agent-run).
 #
 # Named once because the terminal write audit keys on membership: a role outside this
-# set made `_validate_actual_write_paths` — the FS-diff attribution docs/AGENT_CONTRACT.md
+# set made `_validate_actual_write_paths` — the FS-diff attribution docs/ORCHESTRATION.md
 # calls authoritative — return without validating, and `record_agent_run` accepted any
 # string at all, so a misspelling silently disabled it.
 #
@@ -9512,16 +9513,11 @@ def build_access_policy_payload(
         _with_trailing_slash(_normalize_rel_posix(ir_ref)),
         _with_trailing_slash(_normalize_rel_posix(pipeline_ref)),
     ]
-    skill_must_read_refs = _split_skill_refs(request_payload.get("skill_must_read_refs"))
-    skill_ref = request_payload.get("skill_ref")
-    if isinstance(skill_ref, str) and skill_ref.strip():
-        skill_must_read_refs = _merge_unique_refs([skill_ref.strip()], skill_must_read_refs)
-    skill_allowed_roots = [
-        _with_trailing_slash(_normalize_rel_posix(ref))
-        for ref in skill_must_read_refs
-        if isinstance(ref, str) and ref.strip()
-    ]
-    allowed_read_roots = _merge_unique_refs(allowed_read_roots, skill_allowed_roots)
+    # The request's `skill_ref` / `skill_must_read_refs` used to be normalized into
+    # `allowed_read_roots` here, so an agentic leaf could read what it was told to read. Both
+    # fields are contractually EMPTY on every launch since Z4 (issue #171) — a pure leaf reads
+    # no document and a deterministic substep has no leaf — so the merge is deleted rather than
+    # left as a dead arm: it was the one place a caller-supplied string widened a read grant.
     orchestration_id_val = str(request_payload.get("orchestration_id", "")).strip()
     if orchestration_id_val:
         cap_file = (
@@ -13673,253 +13669,15 @@ def _required_launch_prompt_lines(request_payload: dict[str, Any]) -> list[str]:
     ]
 
 
-# Issue 1 of the recurrence-prevention plan: per-(step, substep) allowed
-# `validate_pipeline_semantics --stage <X>` invocations. Canonical source:
-# `docs/workflow/LAUNCH_PROMPT_REFERENCE.md` "substep ↔
-# allowed validator gate correspondence table". `record-launch` rejects any launch
-# prompt where an actionable invocation line targets a stage outside the
-# substep's allow-set. Override with env `ATMOFAB_ENFORCE_GATE_ALLOWLIST=0`
-# for emergency rollback.
-#
-# Two canonical invocation forms are detected (Codex review round 2 P2):
-#   (a) Direct CLI:   `python3 tools/validate_pipeline_semantics.py
-#                      --stage <X> ...`
-#   (b) run-gate:     `python3 tools/orchestration_runtime.py run-gate
-#                      --gate validate_pipeline_semantics ...
-#                      --args-json '{"stage": "<X>", ...}'`
-#
-# Negative-constraint prose ("do not run `validate_pipeline_semantics
-# --stage compile`") is not flagged: each line is pre-filtered for
-# actionable markers (`python3` / `tools/...py` / `--gate
-# validate_pipeline_semantics`) before stage extraction.
-# Invocation-presence detectors (do NOT capture stage). Each match marks
-# the START of an actionable `validate_pipeline_semantics` invocation.
-# Stage extraction is then performed in a windowed lookahead so multi-line
-# commands (with `\` continuation or wrapped --args-json) are handled
-# correctly (Codex review round 7 P1).
-#
-# The direct-CLI invocation form requires the `.py` suffix AND a
-# `python3` token on the same line. The run-gate form requires the
-# `--gate validate_pipeline_semantics` argument PLUS a `python3` token on
-# the same line or in the immediately preceding lines (covering Bash
-# backslash-continued invocations). Both checks ensure narrative
-# mentions of `validate_pipeline_semantics.py` in documentation prose are
-# never flagged.
-_DIRECT_INVOCATION_RE = re.compile(r"validate_pipeline_semantics\.py\b")
-_RUN_GATE_INVOCATION_RE = re.compile(r"--gate\s+validate_pipeline_semantics\b")
-_PYTHON3_INVOCATION_TOKEN_RE = re.compile(r"python3\b")
-
-# Stage value extractors. Each produces a single capturing group with the
-# stage token. The patterns use a permissive lookahead body so they
-# tolerate wrapped commands (line continuations / multiline JSON args);
-# the caller bounds the search window before invoking these patterns.
-_DIRECT_STAGE_RE = re.compile(
-    r"validate_pipeline_semantics\.py\b.*?--stage\s+(\w+)",
-    re.DOTALL,
-)
-# Tolerate the shell double-quoted form where JSON quotes are
-# backslash-escaped (e.g. `--args-json "{\"stage\":\"compile\"}"`) in
-# addition to the single-quoted form (`--args-json '{"stage":...}'`).
-# The optional `\\?` before each quote captures the escape character
-# when present. Codex review round 15 P1.
-_RUN_GATE_STAGE_RE = re.compile(
-    r"--gate\s+validate_pipeline_semantics\b.*?"
-    r"\\?[\"']stage\\?[\"']\s*:\s*\\?[\"'](\w+)\\?[\"']",
-    re.DOTALL,
-)
-
-# Default stage assumed when an actionable validate_pipeline_semantics
-# invocation omits `--stage` / `"stage"` — mirrors the argparse default
-# in `tools/validate_pipeline_semantics.py`. Used only when no stage is
-# discoverable in the post-invocation window (Codex review round 4 P1).
-_VALIDATE_PIPELINE_DEFAULT_STAGE = "full"
-
-# Lookahead window (in characters) used when scanning for `--stage` /
-# `"stage"` after an invocation marker. Bounded so a far-away invocation
-# elsewhere in the prompt cannot accidentally satisfy a later one.
-_STAGE_LOOKAHEAD_BYTES = 500
-
-# Lookback window (in characters) used to detect that an invocation
-# (direct `validate_pipeline_semantics.py` reference or `--gate
-# validate_pipeline_semantics` argument) was actually launched by a
-# `python3 ...` command spread over preceding lines via Bash
-# backslash-continuation. Applies to both invocation forms (Codex review
-# round 8 P2).
-_INVOCATION_PYTHON3_LOOKBACK_BYTES = 300
-
-# Negation markers — when any appears on the same line as an invocation
-# marker the line is treated as descriptive prose (e.g. "do not run X")
-# and skipped (Codex review round 7 P2).
-_NEGATION_MARKERS: tuple[str, ...] = (
-    "do not ",
-    "don't ",
-    "do not.",
-    "should not ",
-    "shouldn't ",
-    "must not ",
-    "mustn't ",
-    "forbidden",
-    "ng:",
-)
-
-
-def _line_around(text: str, position: int) -> tuple[int, int, str]:
-    """Return `(line_start, line_end, line)` for the line containing
-    character `position` in `text`."""
-    line_start = text.rfind("\n", 0, position) + 1
-    line_end = text.find("\n", position)
-    if line_end == -1:
-        line_end = len(text)
-    return line_start, line_end, text[line_start:line_end]
-
-
-def _has_negation_marker(line: str) -> bool:
-    lower = line.lower()
-    return any(marker in lower for marker in _NEGATION_MARKERS)
-
-
-def _find_stage_near_invocation(
-    text: str,
-    invocation_start: int,
-    stage_re: re.Pattern[str],
-) -> str | None:
-    """Search for a stage value in the window beginning at
-    `invocation_start`. The window terminates at the earliest of:
-    `_STAGE_LOOKAHEAD_BYTES` chars, a paragraph break (`\\n\\n`), or the
-    next invocation marker of either form. Returns the matched stage
-    token or None."""
-    end = min(len(text), invocation_start + _STAGE_LOOKAHEAD_BYTES)
-    paragraph_break = text.find("\n\n", invocation_start)
-    if paragraph_break != -1 and paragraph_break < end:
-        end = paragraph_break
-    for next_re in (_DIRECT_INVOCATION_RE, _RUN_GATE_INVOCATION_RE):
-        m = next_re.search(text, invocation_start + 1)
-        if m and m.start() < end:
-            end = m.start()
-    window = text[invocation_start:end]
-    match = stage_re.search(window)
-    if match is None:
-        return None
-    return match.group(1)
-
-# Allowed `--stage` values per (step, substep). Authoritative sources:
-# `tools/validate_pipeline_semantics.py` argparse choices = {`compile`,
-# `post_generate`, `post_build`, `post_execute`, `pre_judge`, `full`} (see
-# also `docs/CLI_REFERENCE.md`). A substep absent from this map is
-# unconstrained — only substeps where the workflow explicitly forbids
-# `validate_pipeline_semantics` invocation or restricts the stage are
-# listed.
-ALLOWED_VALIDATE_PIPELINE_STAGES: dict[tuple[str, str], frozenset[str]] = {
-    # Strict per-substep mapping. Authoritative source: the "substep ↔
-    # allowed validator gate correspondence table" in
-    # `docs/workflow/LAUNCH_PROMPT_REFERENCE.md`. Each
-    # substep is restricted to the single canonical `--stage` it owns;
-    # cross-substep / `full` invocations are rejected at `record-launch`
-    # because they widen the substep's responsibility surface beyond the
-    # recurrence-prevention contract. (The broader per-step allow-set for
-    # `write-step-result`'s `validation_stage` field is a separate
-    # recording-layer contract; the launch-prompt layer enforced here is
-    # strictly per-substep.)
-    #
-    # Compile.generate / Generate.generate must not invoke
-    # `validate_pipeline_semantics` at all — that responsibility lies with
-    # the corresponding verify substep. This was the exact pattern that
-    # triggered the original `noncanonical_phase_write_attempt` failure.
-    ("compile", "generate"): frozenset(),
-    # compile.static is a deterministic in-process substep (no leaf, no
-    # validate_pipeline_semantics invocation); the empty set keeps the table total. The
-    # `--stage compile` gate (plus workspace_root) that compile.verify
-    # used to own now runs in the conductor's compile.static substep
-    # (Conductor._compile_static_inproc), so compile.verify is a pure LLM semantic pass (the
-    # spec-cross-reference invariants V1/V3/V5) that invokes no validator gate.
-    ("compile", "static"): frozenset(),
-    ("compile", "verify"): frozenset(),
-    ("generate", "generate"): frozenset(),
-    # generate.gate is a deterministic in-process substep (no leaf, no validate_pipeline_semantics
-    # leaf invocation — its static checker runs the gates via direct subprocess); the empty set
-    # keeps the table total so a lookup for it never KeyErrors. The post_generate gate that
-    # generate.verify used to own now runs in the conductor's generate.gate static checker
-    # (Conductor._gate_static_check), so generate.verify is a pure LLM semantic pass that
-    # invokes no validator gate.
-    ("generate", "gate"): frozenset(),
-    ("generate", "verify"): frozenset(),
-    ("build", ""): frozenset({"post_build"}),
-    ("validate", "execute"): frozenset({"post_execute"}),
-    # validate's judge region is a deterministic-LLM-deterministic sandwich; only the LLM
-    # judge is a leaf, and it invokes NO validator gate. pre_judge and post_judge are
-    # deterministic in-process substeps (no leaf) that run their gates via direct subprocess,
-    # so all three map to frozenset() (keeps the table total; _build_gate_runbook emits no
-    # gate line). The `--stage pre_judge` gate the judge leaf used to own now runs in
-    # Conductor._pre_judge_inproc (pre-spawn DAG readiness) + Conductor._post_judge_inproc
-    # (post-return gate + severity classification, authoring post_judge_meta.json).
-    ("validate", "pre_judge"): frozenset(),
-    ("validate", "judge"): frozenset(),
-    ("validate", "post_judge"): frozenset(),
-    # The escalate diagnostician invokes no validator gate either. The pairs are listed so the
-    # gate-allowlist lint (`_lint_launch_prompt_gate_allowlist`) has a set to compare against:
-    # an unknown pair is skipped there, which would leave the diagnostician's prompt unscanned.
-    **{pair: frozenset() for pair in sorted(DIAGNOSE_LAUNCH_PAIRS)},
-}
-
-
-def _iter_validate_pipeline_invocations(prompt_text: str) -> list[str]:
-    """Yield the stage targeted by each actionable
-    `validate_pipeline_semantics` invocation in `prompt_text`. Both
-    canonical invocation forms (direct CLI and `run-gate --args-json`) are
-    supported. The list ordering is unspecified.
-
-    An invocation is recognized only when:
-      - The direct-CLI marker `validate_pipeline_semantics.py` (or the
-        run-gate marker `--gate validate_pipeline_semantics`) appears on
-        a line that also contains `python3` (or the run-gate marker is
-        preceded by `python3` within `_RUN_GATE_LOOKBACK_BYTES`, covering
-        Bash backslash-continued multi-line commands), AND
-      - The line containing the marker has no negation marker (e.g.
-        "do not run …", "forbidden", "must not") — such lines are treated
-        as documentation prose (Codex review round 7 P2).
-
-    For each accepted invocation the stage is extracted from a bounded
-    forward window so wrapped `--args-json '{"stage": ...}'` blocks are
-    parsed correctly (Codex review round 7 P1). When no stage can be
-    found the validator's argparse default (`full`) is reported, ensuring
-    omitted-stage invocations are still subjected to the allow-set check
-    (Codex review round 4 P1).
-    """
-    stages: list[str] = []
-
-    def _python3_visible(marker_start: int, line_start: int, line: str) -> bool:
-        """Return True when a `python3` token is on the marker's line OR
-        within `_INVOCATION_PYTHON3_LOOKBACK_BYTES` chars before the
-        marker (covering Bash backslash-continuation). Codex review
-        round 8 P2 — same lookback applies to both invocation forms."""
-        if _PYTHON3_INVOCATION_TOKEN_RE.search(line):
-            return True
-        lookback_start = max(0, line_start - _INVOCATION_PYTHON3_LOOKBACK_BYTES)
-        preceding = prompt_text[lookback_start:marker_start]
-        return _PYTHON3_INVOCATION_TOKEN_RE.search(preceding) is not None
-
-    # Direct-CLI form: invocation marker + python3 (same line or lookback)
-    # + stage extractor.
-    for m in _DIRECT_INVOCATION_RE.finditer(prompt_text):
-        line_start, _, line = _line_around(prompt_text, m.start())
-        if not _python3_visible(m.start(), line_start, line):
-            continue
-        if _has_negation_marker(line):
-            continue
-        stage = _find_stage_near_invocation(prompt_text, m.start(), _DIRECT_STAGE_RE)
-        stages.append(stage if stage else _VALIDATE_PIPELINE_DEFAULT_STAGE)
-
-    # run-gate form: same `python3`-visibility rule (line or lookback).
-    for m in _RUN_GATE_INVOCATION_RE.finditer(prompt_text):
-        line_start, _, line = _line_around(prompt_text, m.start())
-        if not _python3_visible(m.start(), line_start, line):
-            continue
-        if _has_negation_marker(line):
-            continue
-        stage = _find_stage_near_invocation(prompt_text, m.start(), _RUN_GATE_STAGE_RE)
-        stages.append(stage if stage else _VALIDATE_PIPELINE_DEFAULT_STAGE)
-
-    return stages
+# The per-(step, substep) allowed `validate_pipeline_semantics --stage` map, and the scanner
+# that read a rendered prompt for an actionable invocation of one, stood here until Z4
+# (issue #171). Both existed because an AGENTIC leaf ran the gate itself out of its prompt:
+# `_lint_launch_prompt_gate_allowlist` refused a launch whose prompt named a stage outside
+# that substep's allow-set, and `ATMOFAB_ENFORCE_GATE_ALLOWLIST=0` was its rollback. A pure
+# leaf holds no shell and invokes nothing; every gate is run by the conductor in its own
+# process, per `docs/workflow/phases/phase_0{1,2,4}_*.md`. The prose half went with them:
+# `docs/workflow/LAUNCH_PROMPT_REFERENCE.md`'s "substep <-> allowed validator gate
+# correspondence table", which this map was the code side of.
 
 
 def _validate_launch_prompt_text(request_payload: dict[str, Any], prompt_text: str) -> None:
@@ -14084,18 +13842,6 @@ def _evaluate_reply_budget(
             f"line, output_refs, and a few lines of rationale; full detail belongs in the child's artifacts."
         )
     return info
-
-
-def _split_skill_refs(value: Any) -> list[str]:
-    if isinstance(value, str):
-        return [item.strip() for item in value.split(",") if item.strip()]
-    if isinstance(value, list):
-        refs: list[str] = []
-        for item in value:
-            if isinstance(item, str) and item.strip():
-                refs.append(item.strip())
-        return refs
-    return []
 
 
 def _node_key_to_safe(node_key: str) -> str:
@@ -20966,8 +20712,9 @@ def main(argv: list[str] | None = None) -> int:
         "ir_ref (workspace/ir/<node_key_safe>/<ir_id>), "
         "pipeline_ref (workspace/pipelines/<node_key_safe>/<pipeline_id> -- required for ALL "
         "phases including Plan; reserve via reserve-phase-root --step generate if not yet created), "
-        "dependency_ref (phase rule: Plan => spec/.../deps.yaml; Generate+ => workspace phase root), "
-        "skill_name, skill_ref. "
+        "dependency_ref (phase rule: Plan => spec/.../deps.yaml; Generate+ => workspace phase root). "
+        "skill_name / skill_ref / skill_must_read_refs are NOT required and must be empty: no leaf "
+        "reads a SKILL (issue #171). "
         "For step/substep launch, one of allowed_output_paths|required_outputs|output_refs must be provided "
         "as file-path list; runtime validates each path against phase contract outputs and capability write_roots. "
         "allowed_file_tool_paths is optional and, when provided, must be a file-path list included in allowed_output_paths. "
