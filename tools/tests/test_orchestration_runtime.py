@@ -26168,6 +26168,7 @@ class BackendRuntimeBindPathsTests(unittest.TestCase):
         self.addCleanup(shutil.rmtree, d, True)
         home = d / "home"
         home.mkdir()
+        files_seen = 0
         for btype in ("claude", "codex"):
             with self.subTest(backend_type=btype):
                 with mock.patch.dict(os.environ, {"HOME": str(home)}):
@@ -26177,6 +26178,7 @@ class BackendRuntimeBindPathsTests(unittest.TestCase):
                 for cred_file in cred_files:
                     cred_file.parent.mkdir(parents=True, exist_ok=True)
                     cred_file.write_text("{}", encoding="utf-8")
+                files_seen += len(cred_files)
                 _ro, rw = self._paths(btype, btype, home)
                 # Every path the canonical resolver names is bound, and nothing outside
                 # the operator's home is: the set is derived, not spelled a second time.
@@ -26186,6 +26188,35 @@ class BackendRuntimeBindPathsTests(unittest.TestCase):
                     self.assertIn(str(cred_file), rw)
                 for entry in rw:
                     self.assertTrue(entry.startswith(str(home)), entry)
+        # The FILE half is the one that can go vacuous: `codex` legitimately declares no
+        # auth file, so `for cred_file in cred_files` is an empty loop there and would be
+        # an empty loop everywhere if the resolver stopped returning files at all — the
+        # rows above would still pass. Not asserted per backend (that would re-spell which
+        # backend has one); asserted over the union, which is the claim that matters: the
+        # auth file exists somewhere and is bound.
+        self.assertGreater(files_seen, 0,
+                           "no backend declares a credential FILE; the assertions above "
+                           "looped over nothing and this pin covers only the dirs")
+
+    def test_the_backend_data_dir_is_bound_ro_for_claude(self) -> None:
+        """The third thing this function produces, and the one the class first missed.
+
+        The `claude` CLI reads `~/.local/share/claude` at startup, outside every system dir
+        `_runtime_ro_bind_paths` covers and outside the credential home. The class was
+        written because `return ([], [])` left the full suite green; it closed the rw
+        credential set and the install dir and not this, so a third of the subject stayed
+        exactly as unpinned as before. `grep -rn "local/share/claude"` over the tree found
+        this path in the implementation and nowhere else."""
+        d = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d, True)
+        home = d / "home"
+        data_dir = home / ".local" / "share" / "claude"
+        data_dir.mkdir(parents=True)
+        ro, _rw = self._paths("claude", "claude", home)
+        self.assertIn(str(data_dir), ro)
+        # Keyed on the TYPE like the rw set: a codex leaf has no claude data dir to read.
+        ro_codex, _ = self._paths("codex", "codex", home)
+        self.assertNotIn(str(data_dir), ro_codex)
 
     def test_the_rw_set_is_keyed_on_the_type_not_on_the_command_string(self) -> None:
         # A `command:` wrapper resolves to the wrapper binary, so reading the command
