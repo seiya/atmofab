@@ -234,8 +234,15 @@ def _build_syntax_source_re() -> re.Pattern[str]:
     return re.compile(rf"^[A-Za-z0-9_][A-Za-z0-9_.+-]*\.({suffixes})$", re.IGNORECASE)
 
 
+#: The build systems whose command line takes a VARIABLE ASSIGNMENT and interpolates its
+#: value into a shell recipe. For every other build system an `extra_args` element is an
+#: ordinary switch (`cargo build --release`, `mvn -DskipTests`), which reaches no shell:
+#: this server runs argv directly, with no `shell=True` anywhere.
+_ASSIGNMENT_ARGV_BUILD_SYSTEMS = frozenset({"make"})
+
+
 def _validate_build_argv_overrides(
-    target: Any, extra_args: Any, tool_name: str
+    target: Any, extra_args: Any, tool_name: str, *, build_system: str = "make"
 ) -> str | None:
     """Constrain the caller-chosen part of the build argv; return the target to use.
 
@@ -284,16 +291,17 @@ def _validate_build_argv_overrides(
                 f"{tool_name} target must be a build goal, not a switch: refused "
                 f"{resolved_target} (it carries whitespace or a character the shell acts on)"
             )
-    offending = [
-        arg for arg in extra_args
-        if "=" not in arg
-        or not _MAKE_ASSIGNMENT_NAME_RE.match(arg.split("=", 1)[0])
-    ]
-    if offending:
-        raise ValueError(
-            f"{tool_name} accepts only make variable assignments (NAME=value) in "
-            "extra_args; refused: " + ", ".join(offending)
-        )
+    if build_system in _ASSIGNMENT_ARGV_BUILD_SYSTEMS:
+        offending = [
+            arg for arg in extra_args
+            if "=" not in arg
+            or not _MAKE_ASSIGNMENT_NAME_RE.match(arg.split("=", 1)[0])
+        ]
+        if offending:
+            raise ValueError(
+                f"{tool_name} accepts only make variable assignments (NAME=value) in "
+                "extra_args; refused: " + ", ".join(offending)
+            )
     redirecting = sorted(
         arg for arg in extra_args
         if (name := arg.split("=", 1)[0].strip().upper()) in _UNSAFE_ASSIGNMENT_NAMES
@@ -306,11 +314,11 @@ def _validate_build_argv_overrides(
         )
     unsafe = sorted(
         arg for arg in extra_args
-        if set(arg.split("=", 1)[1]) & _SHELL_ACTIVE_CHARS
+        if set(arg.split("=", 1)[1] if "=" in arg else arg) & _SHELL_ACTIVE_CHARS
     )
     if unsafe:
         raise ValueError(
-            f"{tool_name} extra_args values reach the make recipe's shell: refused "
+            f"{tool_name} extra_args carry a character a shell acts on: refused "
             + ", ".join(unsafe)
         )
     return resolved_target
@@ -799,7 +807,6 @@ def tool_compile_project(args: dict[str, Any]) -> dict[str, Any]:
     if env is not None and not isinstance(env, dict):
         raise ValueError("env must be an object")
     _validate_env_overrides(env, "compile_project")
-    target = _validate_build_argv_overrides(target, extra_args, "compile_project")
 
     build_system = args.get("build_system")
     if build_system:
@@ -811,6 +818,10 @@ def tool_compile_project(args: dict[str, Any]) -> dict[str, Any]:
         raise ValueError(
             "build_system must be a standard dependency-aware build tool"
         )
+    # Resolved FIRST, because the argv rules differ by build system: only make reads an
+    # `extra_args` element as a variable assignment interpolated into a shell recipe.
+    target = _validate_build_argv_overrides(
+        target, extra_args, "compile_project", build_system=build_system)
 
     if language in FORTRAN_C_FAMILY and build_system not in {
         "make",

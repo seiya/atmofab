@@ -637,6 +637,56 @@ class BuildArgvOverrideTests(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertIn(name, self.mod._UNSAFE_ASSIGNMENT_NAMES)
 
+    def test_a_non_make_build_system_may_pass_its_own_switches(self) -> None:
+        """The assignment SHAPE rule belongs to make, and only to make.
+
+        `_build_command` serves eleven build systems and the rule was applied to all of
+        them, so `cargo build --release` and `mvn -DskipTests` were refused as "not a make
+        variable assignment". Nothing runs through a shell here — this server never passes
+        `shell=True` — so a switch is not dangerous for a build tool that does not read one
+        as an extra makefile. `origin/main`'s standalone arm had no `extra_args` check at
+        all, so this was a capability PR-2 narrowed without saying so."""
+        for build_system, args in (
+            ("cargo", ["--release"]),
+            ("maven", ["-DskipTests"]),
+            ("gradle", ["-Pflag=1"]),
+            ("ninja", ["-v"]),
+        ):
+            with self.subTest(build_system=build_system):
+                self.mod._validate_build_argv_overrides(
+                    None, args, "compile_project", build_system=build_system)
+
+    def test_the_other_two_rules_still_apply_to_every_build_system(self) -> None:
+        # What does NOT depend on the build system: a metacharacter anywhere in the element,
+        # and an assignment to a name that redirects what is executed.
+        for build_system in ("make", "cargo", "maven", "gradle", "ninja", "cmake"):
+            with self.subTest(build_system=build_system, rule="metacharacter"):
+                with self.assertRaises(ValueError) as ctx:
+                    self.mod._validate_build_argv_overrides(
+                        None, ["X=a; id"], "compile_project", build_system=build_system)
+                self.assertIn("carry a character a shell acts on", str(ctx.exception))
+            with self.subTest(build_system=build_system, rule="redirect"):
+                with self.assertRaises(ValueError) as ctx:
+                    self.mod._validate_build_argv_overrides(
+                        None, ["SHELL=/tmp/x"], "compile_project",
+                        build_system=build_system)
+                self.assertIn("redirect execution", str(ctx.exception))
+
+    def test_the_handler_resolves_the_build_system_before_it_checks_the_argv(self) -> None:
+        # The order is load-bearing: the rules differ by build system, so validating first
+        # applies make's rule to every caller — which is the defect this row is about.
+        project_dir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, project_dir, ignore_errors=True)
+        with mock.patch.object(
+            self.mod, "_run_command",
+            return_value={"ok": True, "return_code": 0, "stdout": "", "stderr": ""},
+        ) as run_command:
+            self.mod.tool_compile_project({
+                "project_dir": str(project_dir), "build_system": "cargo",
+                "extra_args": ["--release"],
+            })
+        run_command.assert_called_once()
+
     def test_the_names_that_are_deliberately_still_accepted(self) -> None:
         # The recorded residue, pinned so "what is open" cannot drift into prose alone: a name
         # a Makefile merely READS is not refused, because bounding those means an allowlist and
@@ -651,7 +701,7 @@ class BuildArgvOverrideTests(unittest.TestCase):
             with self.subTest(value=value):
                 with self.assertRaises(ValueError) as ctx:
                     self._check([f"CASES={value}"])
-                self.assertIn("reach the make recipe's shell", str(ctx.exception))
+                self.assertIn("carry a character a shell acts on", str(ctx.exception))
 
     def test_every_assignment_is_checked_not_just_the_last(self) -> None:
         with self.assertRaises(ValueError) as ctx:
@@ -738,7 +788,7 @@ class BuildArgvOverrideWiringTests(unittest.TestCase):
             ("extra_args", {"extra_args": ["--eval=$(shell id)"]},
              "make variable assignments"),
             ("value", {"extra_args": ["CASES=a; id"]},
-             "reach the make recipe's shell"),
+             "carry a character a shell acts on"),
         )
         for label, payload, message in cases:
             with self.subTest(half=label):
