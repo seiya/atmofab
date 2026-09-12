@@ -332,10 +332,14 @@ for e in entries:
         key = f"{e.get('node_key')}::{e.get('step')}"
         counter[key] += 1
 
-# the number of actually-launched agents (those whose record-launch succeeded and a capability exists)
-caps = list(pathlib.Path(f"workspace/orchestrations/{orch_id}/capabilities").glob("*.json"))
+# the number of actually-launched agents (those whose record-launch succeeded). Read from
+# `launches/<arid>.request.json`, NOT from `capabilities/` — that directory was the source
+# until issue #171 PR-2 deleted it, and a glob over a directory that cannot exist returns []
+# for every step, which makes `expected` 1 everywhere and prints a false `RETRY xN` on every
+# node that launched anything.
+launches = list(pathlib.Path(f"workspace/orchestrations/{orch_id}/launches").glob("*.request.json"))
 launched_per_step: Counter = Counter()
-for p in caps:
+for p in launches:
     obj = json.loads(p.read_text())
     key = f"{obj.get('node_key')}::{obj.get('step')}"
     launched_per_step[key] += 1
@@ -349,47 +353,19 @@ for key, cnt in counter.items():
 EOF
 ```
 
-#### 5-b. Gate failures and re-execution counts
+#### 5-b. Gate failures and re-execution counts — RETIRED
 
-When `hook=pre_command_execute` and the same `gate` appears multiple times in `workflow_hooks.jsonl`, a fix loop after a gate failure has occurred.
-
-```bash
-python3 - <<'EOF'
-import json
-from collections import Counter
-
-orch_id = "<orchestration_id>"
-path = f"workspace/orchestrations/{orch_id}/hooks/workflow_hooks.jsonl"
-counter = Counter()
-with open(path) as f:
-    for line in f:
-        obj = json.loads(line.strip())
-        if obj.get("hook") == "pre_command_execute" and obj.get("gate"):
-            key = f"{obj['gate']}::{obj.get('step')}"
-            counter[key] += 1
-
-for key, cnt in counter.items():
-    if cnt > 1:
-        print(f"GATE RETRY x{cnt}: {key}")
-EOF
-```
-
-For the actual gate-failure content, read `gates/<agent_run_id>/<gate_name>.json` and confirm the `violations` field.
-
-```bash
-ls workspace/orchestrations/<orch_id>/gates/
-# confirm all gate results per agent_run_id
-python3 -c "
-import json, pathlib, sys
-orch_id = '<orchestration_id>'
-for p in sorted(pathlib.Path(f'workspace/orchestrations/{orch_id}/gates').rglob('*.json')):
-    obj = json.loads(p.read_text())
-    if obj.get('status') != 'pass':
-        print(p)
-        print(json.dumps(obj, ensure_ascii=False, indent=2))
-        print()
-"
-```
+This step counted repeated `gate` values on `hook=pre_command_execute` rows of
+`workflow_hooks.jsonl` to spot a fix loop after a gate failure. **Nothing writes that
+hook any more**: it belonged to the LEAF hook layer, which went with the agentic leaf in
+Z4 ([issue #171](https://github.com/seiya/atmofab/issues/171)) — a pure leaf holds no
+tool, so there is no tool call for a hook to judge. The file survives and is the HOST's
+own log; the events it still carries are `pre_orchestration_start`, `pre_phase_launch`,
+`pre_agent_launch`, `pre_phase_complete`, `post_phase_complete` and `reply_over_budget`.
+Running the old query returns nothing on every run, which reads as "no gate loop" and
+is not a measurement. Use the deterministic gates' own records instead —
+`gate_meta.json` under `source/<source_id>/` for `Generate.gate`, and the per-attempt
+rows in `agent_runs.jsonl` — to see whether a phase re-ran.
 
 #### 5-c. Confirm sandbox violations
 
