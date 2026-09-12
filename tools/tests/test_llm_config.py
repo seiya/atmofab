@@ -522,7 +522,7 @@ class ProviderCapabilityTableTests(unittest.TestCase):
         # `| provider | backend token |` let a second table headed `| provider | backend |`
         # sit in the same document unnoticed, which is how a stale copy comes back.
         starts = [i for i, line in enumerate(lines)
-                  if line.strip().startswith("| provider |")]
+                  if line.strip().replace(" ", "").startswith("|provider|")]
         self.assertEqual(len(starts), 1,
                          f"{self.TABLE_DOC.name}: expected exactly one provider table, "
                          f"found {len(starts)}")
@@ -553,6 +553,15 @@ class ProviderCapabilityTableTests(unittest.TestCase):
     def test_every_cell_agrees_with_the_capability_authority(self) -> None:
         rows = self._rows()
         columns = [cell.strip("`") for cell in rows[0][2:]]
+        # A DUPLICATE ROW is the row-granular twin of the duplicate table this anchor
+        # already refuses: a stale `claude_cli` row above the real one is silently
+        # overwritten by `documented[provider] = ...`, and the stale copy — which is what
+        # a reader's eye lands on first — goes unchecked. Counted before it is built.
+        providers = [row[0].strip("`") for row in rows[2:]]
+        self.assertEqual(len(providers), len(set(providers)),
+                         f"the provider table lists a provider twice: {providers}")
+        self.assertEqual(len(providers), len(lc.PROVIDER_CAPABILITIES),
+                         "the table and PROVIDER_CAPABILITIES have different row counts")
         documented = {}
         for row in rows[2:]:
             provider = row[0].strip("`")

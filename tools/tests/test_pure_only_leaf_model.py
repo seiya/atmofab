@@ -1115,6 +1115,27 @@ class SandboxViolationReasonsAreStatedWhereTheyAreAuditedTests(unittest.TestCase
                     if isinstance(child, ast.Call) and isinstance(child.func, ast.Name) \
                             and child.func.id == "_write_sandbox_enforcement_violation":
                         enclosing[child.lineno] = node.name
+        # An ALIAS defeats a call-shape search: `_w = _write_sandbox_enforcement_violation`
+        # then `_w(...)` is an `ast.Call` on a different name, and the derivation returns the
+        # five it can see while a sixth reason reaches `violations/` unnamed by any document.
+        # Measured green against this class before this guard existed. So every LOAD of the
+        # name must be the `func` of a call: a reference that is not refuses the run rather
+        # than narrowing it.
+        called_at = {
+            id(node.func) for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+            and node.func.id == "_write_sandbox_enforcement_violation"
+        }
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
+                    and node.id == "_write_sandbox_enforcement_violation"
+                    and id(node) not in called_at):
+                self.fail(
+                    f"line {node.lineno}: the writer is referenced without being called "
+                    "(an alias, a decorator, a dict of handlers?). This derivation reads "
+                    "call sites only and cannot see through that, so it would report a "
+                    "narrower set than the code writes. Call it directly, or teach this "
+                    "derivation the new shape.")
         out: dict[str, str] = {}
         for node in ast.walk(tree):
             if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
