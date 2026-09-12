@@ -167,15 +167,18 @@ class SpawnLeafRequiresAReadonlyProfileTests(unittest.TestCase):
             env={"ATMOFAB_TEST_KEY": "sk-test"},
             llm_config=_config_on("claude_cli", tmp))
 
-    def _write_profile(self, child_arid: str, readonly: bool) -> None:
+    def _write_profile(self, child_arid: str, readonly: bool | None) -> None:
+        """`readonly=None` writes the key out ENTIRELY — the absent-key case, which is a
+        different input from `False` and is what the round-1 review found undriven."""
         d = self.repo / "workspace" / "orchestrations" / "o" / "sandbox_profiles"
         d.mkdir(parents=True, exist_ok=True)
         import json
-        (d / f"{child_arid}.json").write_text(
-            json.dumps({"orchestration_id": "o", "agent_run_id": child_arid,
-                        "sandbox_runtime": "bwrap", "repo_root": str(self.repo),
-                        "tmp_dir": str(self.repo / "tmp"), "readonly": readonly}),
-            encoding="utf-8")
+        body = {"orchestration_id": "o", "agent_run_id": child_arid,
+                "sandbox_runtime": "bwrap", "repo_root": str(self.repo),
+                "tmp_dir": str(self.repo / "tmp")}
+        if readonly is not None:
+            body["readonly"] = readonly
+        (d / f"{child_arid}.json").write_text(json.dumps(body), encoding="utf-8")
 
     def test_a_writable_profile_is_refused(self) -> None:
         c = self._conductor()
@@ -183,6 +186,21 @@ class SpawnLeafRequiresAReadonlyProfileTests(unittest.TestCase):
         with self.assertRaises(wc.SandboxEnforcementError) as ctx:
             wc.Conductor.spawn_leaf(c, "PROMPT", {}, c.entry_for("generate", "generate"),
                                     child_arid="child-rw")
+        self.assertIn("read-only", str(ctx.exception))
+
+    def test_a_profile_with_no_readonly_key_at_all_is_refused(self) -> None:
+        """ABSENT is not the same input as `False`, and the guard must refuse both.
+
+        FOUND BY THE ROUND-1 SECURITY REVIEW as a surviving mutant: relaxing the guard to
+        `profile.get("readonly", True) is not True` — which reads an absent key as read-only —
+        survived every test, because nothing built a profile without the key. The production
+        code already fails closed; what was missing is the case that says so.
+        """
+        c = self._conductor()
+        self._write_profile("child-nokey", readonly=None)
+        with self.assertRaises(wc.SandboxEnforcementError) as ctx:
+            wc.Conductor.spawn_leaf(c, "PROMPT", {}, c.entry_for("generate", "generate"),
+                                    child_arid="child-nokey")
         self.assertIn("read-only", str(ctx.exception))
 
     def test_a_missing_profile_is_refused(self) -> None:

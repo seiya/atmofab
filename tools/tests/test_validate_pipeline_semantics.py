@@ -24014,6 +24014,31 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
                 any("read manifest allowed_read_roots must be []" in v
                     for v in self._pure_violations(repo_root)))
 
+    def test_pure_record_read_manifest_with_the_key_absent_is_flagged(self) -> None:
+        """ABSENT is a different input from a non-empty list, and both must be caught.
+
+        FOUND BY THE ROUND-1 SECURITY REVIEW as a surviving mutant: relaxing this arm to
+        `not in ([], None)` — which reads an absent `allowed_read_roots` as compliant — survived
+        the whole file, because every case here mutated the VALUE and none removed the key. A
+        truncated or hand-crafted record is the shape that arrives with it missing, and the
+        production code already refuses it; what was missing is the case that says so. The
+        CORRECTION to the finding as reported: it named this arm AND the capability's
+        `mcp_permissions` arm above. Only this one was undriven —
+        `test_pure_record_omitted_mcp_permissions_flagged` already pops that key and kills the
+        same mutation there, verified by running it. One gap, not two.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._build_tree(repo_root)
+            self._make_pure(repo_root)
+            rman_path = self._orch_root(repo_root) / "read_manifests" / f"{self._ARID}.json"
+            rman = json.loads(rman_path.read_text(encoding="utf-8"))
+            rman.pop("allowed_read_roots", None)
+            rman_path.write_text(json.dumps(rman), encoding="utf-8")
+            self.assertTrue(
+                any("read manifest allowed_read_roots must be []" in v
+                    for v in self._pure_violations(repo_root)))
+
     def test_pure_record_writable_sandbox_profile_flagged(self) -> None:
         # A pure launch provisioned through the generic (writable/non-readonly) sandbox path
         # must be caught.
