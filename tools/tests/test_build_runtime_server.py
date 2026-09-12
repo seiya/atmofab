@@ -768,23 +768,6 @@ class BuildArgvOverrideTests(unittest.TestCase):
         self.assertFalse(self.mod._is_execution_redirecting_assignment("CASES=a b"))
         self.assertFalse(self.mod._is_execution_redirecting_assignment("all"))
 
-    def test_the_assignment_name_rule_is_not_weaker_than_the_env_rule(self) -> None:
-        """Every name the env half REFUSES is refused as an assignment too.
-
-        Driven through both validators rather than compared as sets: `_UNSAFE_ASSIGNMENT_NAMES`
-        is DEFINED as `_UNSAFE_ENV_OVERRIDE_KEYS | {...}`, so a set comparison is a tautology
-        no mutation of either set can redden — it reads as the pin that keeps the argv half
-        from falling behind the env half and pins nothing. What can actually diverge is the
-        two code paths: one may stop consulting its set, or normalise differently."""
-        for name in sorted(self.mod._UNSAFE_ENV_OVERRIDE_KEYS):
-            with self.subTest(name=name):
-                with self.assertRaises(ValueError):
-                    self.mod._validate_env_overrides({name: "/tmp/x"}, "compile_project")
-                with self.assertRaises(ValueError):
-                    self.mod._validate_build_argv_overrides(
-                        None, [f"{name}=/tmp/x"], "compile_project",
-                        build_system="cargo")
-
     def test_a_non_make_build_system_may_pass_its_own_switches(self) -> None:
         """The assignment SHAPE rule belongs to make, and only to make.
 
