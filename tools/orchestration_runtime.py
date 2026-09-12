@@ -5799,8 +5799,10 @@ def _record_until_phase_high_water(invocation_block: dict[str, Any]) -> None:
     has ever been driven to. Never lowers it.
 
     The completion vouch reads this rather than `until_phase`, because `until_phase` describes
-    the CURRENT invocation and every writer of it is reachable from a leaf
-    (`leaf_config/claude/settings.json` grants `Bash(python3 tools/orchestration_runtime.py *)`).
+    the CURRENT invocation and every writer of it WAS reachable from a leaf, which held a
+    `Bash(python3 tools/orchestration_runtime.py *)` grant until Z4 (issue #171). The reason
+    survives the grant: `until_phase` still describes one invocation, and the vouch must not
+    read a bar the run itself can move.
     A run started for `validate`, re-inited or resumed `--until-phase compile`, would otherwise
     report `pass` with three phases never run — the vouch's own bar moved by the thing it judges.
 
@@ -9713,7 +9715,8 @@ LEAF_ENV_PATH_DEFAULT = "/usr/bin:/bin"
 # on that whether or not it holds, because the inventory moves: it was false when written
 # (`ATMOFAB_MISSING_ORCHESTRATION_ID_POLICY` was seeded into every leaf by
 # `run_workflow.py` and read by nothing) and issue #82 has since given that very name a
-# reader in `tools/hooks/cli.py`. A justification that has to be re-measured whenever a
+# reader in the leaf hook entrypoint (itself since deleted — Z4, issue #171, which moves the
+# inventory a THIRD time and is exactly the point). A justification that has to be re-measured whenever a
 # reader is added or dropped is what this comment is refusing. (2) "the namespace is
 # repo-owned, so nothing an
 # operator put in the environment lands inside it" — also false, and by one command:
@@ -10275,8 +10278,8 @@ def _profile_child_env(child_env: Mapping[str, str] | None, *,
         # different questions and must not share an answer. Here the source is the
         # BUILDING process's own environment, so a per-launch id in it belongs to
         # whatever launched that process — for a `record-launch` run from inside a leaf
-        # (documented in `docs/CLI_REFERENCE.md`, granted by
-        # `leaf_config/claude/settings.json`) that is the PARENT's id, and under the
+        # (documented in `docs/CLI_REFERENCE.md`, and granted to an agentic leaf until Z4 —
+        # issue #171 — by `leaf_config/claude/settings.json`) that is the PARENT's id, and under the
         # workflow `run_workflow.py` puts `ATMOFAB_ORCHESTRATION_ID` in every node's
         # environment, so it is present essentially always. Those values are STALE, not
         # a contradiction: overwrite them with the ids this profile is actually for.

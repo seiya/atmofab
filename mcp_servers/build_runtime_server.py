@@ -273,8 +273,9 @@ def _validate_env_overrides(
     unquoted, so a value carrying a shell metacharacter is a command, not a value.
 
     Refusing names the key instead of dropping it silently, so a mistake and an attack
-    are both visible in the caller's result. `tools/hooks/cli.py` refuses a `VAR=value`
-    prefix on a Bash command for the same reason.
+    are both visible in the caller's result. The leaf hook entrypoint refused a `VAR=value`
+    prefix on a Bash command for the same reason, until Z4 (issue #171) deleted it with the
+    leaf that held a Bash tool.
 
     Call this on the raw `env` argument, before the server composes its own additions
     (`OMP_*` for run_program, `PYTHONPATH` for the pytest preset) — those are the
