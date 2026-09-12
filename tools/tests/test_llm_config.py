@@ -518,10 +518,14 @@ class ProviderCapabilityTableTests(unittest.TestCase):
         # Anchor on the header, which names the two non-capability columns. Text that
         # PRECEDES the rule and is byte-identical in the wording being refused: a table that
         # loses a capability column still opens `| provider | backend token |`.
+        # Anchored on the first column alone, not on the header's full text: anchoring on
+        # `| provider | backend token |` let a second table headed `| provider | backend |`
+        # sit in the same document unnoticed, which is how a stale copy comes back.
         starts = [i for i, line in enumerate(lines)
-                  if line.strip().startswith("| provider | backend token |")]
+                  if line.strip().startswith("| provider |")]
         self.assertEqual(len(starts), 1,
-                         f"{self.TABLE_DOC.name}: expected exactly one provider table")
+                         f"{self.TABLE_DOC.name}: expected exactly one provider table, "
+                         f"found {len(starts)}")
         rows = []
         for line in lines[starts[0]:]:
             stripped = line.strip()
@@ -529,6 +533,13 @@ class ProviderCapabilityTableTests(unittest.TestCase):
                 break
             rows.append([cell.strip() for cell in stripped.strip("|").split("|")])
         self.assertGreater(len(rows), 2, "table has a header but no provider rows")
+        # RAGGEDNESS is the escape `zip` leaves open in both directions: a row missing its
+        # last cell silently drops that capability's claim, and a row with an extra cell
+        # resurrects a column the header no longer has. Checked before any `zip` runs.
+        widths = {len(row) for row in rows}
+        self.assertEqual(len(widths), 1,
+                         f"the provider table is ragged (row widths {sorted(widths)}); a "
+                         "short or long row makes the cell comparison read the wrong column")
         return rows
 
     def test_the_columns_are_exactly_the_known_capabilities(self) -> None:
