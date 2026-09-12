@@ -10416,11 +10416,12 @@ end program shallow_water2d_runner
         validation — a session-id mismatch, a missing sandbox profile, an empty `output_refs` —
         and refusing them all would wedge an honest run permanently.
 
-        The case that must NOT pass — a landed unauthorized write — is refused by the completion
-        vouch instead, anchored on `violations/<arid>.unauthorized_write_violation.json`. That
-        anchor was chosen over this edge for two measured reasons: `violations/` is not exempt
-        from the terminal write-audit diff (this log IS), and deleting the log prunes the edge
-        as an orphan, leaving this scan nothing to refuse."""
+        The case that used to justify the OTHER half of this reasoning — a landed unauthorized
+        write, refused by the completion vouch's clause (c) and anchored on
+        `violations/<arid>.unauthorized_write_violation.json` rather than on this edge — no
+        longer exists: issue #171 PR-2 deleted the write audit, the marker and that clause,
+        because a pure leaf has no write authority to exceed. The tolerance above stands on
+        the divert list alone, and every member of it leaves nothing behind."""
         execute_arid = "substep_run_validate_execute_001"
         with tempfile.TemporaryDirectory() as tmp:
             violations = self._violations_with_removed_child(
@@ -15015,9 +15016,10 @@ class MakefileTestInvokesCasesTest(unittest.TestCase):
 class MakefileTestNoRelinkTest(unittest.TestCase):
     """post_generate gate: the `test`/`check` target must use a non-relinking
     fail-closed guard and must not recurse into make. A relinking guard in
-    Validate.execute writes into the read-only-bound binary/ and escalates a
-    binary-name/availability mismatch into an unauthorized_write_violation ->
-    fail_closed (orch_20260619T113225Z_f48fe14b)."""
+    Validate.execute writes into the read-only-bound binary/, which turns a
+    binary-name/availability mismatch into an EROFS mid-phase
+    (orch_20260619T113225Z_f48fe14b; it was an unauthorized_write_violation ->
+    fail_closed until issue #171 PR-2 retired the write audit)."""
 
     def _run(
         self,

@@ -10776,11 +10776,14 @@ def _validate_orchestration_hierarchy(
                     # tolerated HERE, because this scan checks graph integrity and the divert
                     # covers far more than the write audit (a session-id mismatch, a missing
                     # sandbox profile, an empty `output_refs`). The landed-write case — an
-                    # outstanding `violations/<arid>.unauthorized_write_violation.json` — is
-                    # refused by the completion vouch, anchored on a path that is NOT exempt
-                    # from the terminal write-audit diff and does not disappear when this edge
-                    # is pruned. Mirrors clause (c) of
-                    # `_validate_orchestration_completion_for_pass`.
+                    # outstanding `violations/<arid>.unauthorized_write_violation.json` — used
+                    # to be refused by the completion vouch's clause (c), anchored on a path
+                    # that the terminal write-audit diff did not exempt and that survived the
+                    # pruning of this edge. THAT WHOLE ROUTE IS GONE with issue #171 PR-2: a
+                    # pure leaf has no write authority to exceed, so there is no diff, no
+                    # marker and no clause (c). What the divert still covers is the list above,
+                    # none of which leaves bytes behind — which is why tolerating the edge is
+                    # still right, and now for the simpler reason.
                     #
                     # As with the in-flight exemption above, this tolerates ONLY the
                     # missing-child record. The parent role is known from agent_runs.jsonl and

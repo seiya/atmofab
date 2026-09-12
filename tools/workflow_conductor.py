@@ -8681,9 +8681,11 @@ clean:
         phase repair to the producer at index 0 — so there is no external seed to accept.)
 
         The finalize-before-write ordering is load-bearing for the same reason as the producer:
-        the pure capability's empty write_roots make any write inside the child window an
-        unauthorized write, so the host closes the window (finalize_child) before it authors the
-        verdict projection and the per-attempt record."""
+        the host must not author the verdict projection or the per-attempt record while the
+        child window is open, or the record describes a window it is itself inside. (Until
+        issue #171 PR-2 the same ordering was ALSO what kept the host's write out of the
+        terminal FS-diff, the pure capability's empty write_roots making any write in the
+        window an unauthorized one; that diff is gone and the ordering is not.)"""
         from tools.pure_leaf import (
             extract_json_document,
             MAX_BUNDLE_REPAIR_TURNS, RESPONSE_TRUNCATED, RESPONSE_UNPARSEABLE)
@@ -9887,8 +9889,10 @@ clean:
 
         result = tool_compile_project({
             "project_dir": str(src_dir),
-            # The MCP orchestration gate resolves the orchestration root from repo_root
-            # (defaulting to project_dir); pass our repo_root so it finds the capability.
+            # `repo_root` is accepted and unused by the server since issue #171 PR-2 (it
+            # anchored the retired capability gate's evidence); passed because the served
+            # schema still declares it and it is the one place the call records which
+            # checkout it belongs to.
             "repo_root": str(self.repo_root),
             "language": language,
             "build_system": build_system,

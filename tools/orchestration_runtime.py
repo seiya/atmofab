@@ -17528,7 +17528,9 @@ def main(argv: list[str] | None = None) -> int:
         description=(
             "Append one agent run record to agent_runs.jsonl. "
             "For step/substep roles also writes agent.result.json and agent.summary.txt, "
-            "and validates that output_refs lie within the capability write_roots."
+            "and validates that output_refs lie within the phase contract outputs "
+            "(they were checked against the capability write_roots too until issue #171 "
+            "PR-2, which deleted the capability document)."
         ),
     )
     run_parser.add_argument("--repo-root", required=True)
