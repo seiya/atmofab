@@ -4503,21 +4503,24 @@ _HTTP_PREFLIGHT_SKIP_REACHABILITY_ENV = "ATMOFAB_HTTP_PREFLIGHT_SKIP_REACHABILIT
 # stage-meta keys, is deleted — `docs/workflow/WORKFLOW_CORE.md` §"Workflow common invariants"
 # and §"Stage meta keys" are canonical for both, for the host. Canonical rationale for the
 # restructure this ended: docs/design/leaf_must_read_restructure.md.
-# Consolidated runner-output contract. Read by Validate.judge (§1/§3 are what it
-# recomputes against the runner's emitted diagnostics.json / raw evidence) and by a
-# runner-authoring Generate leaf. M3d node-aware: an M3c PHYSICS generate leaf drops it
-# (it authors model+checks, host-rendered runner); a NON-M3c generate leaf (the
-# infrastructure self-test) keeps it — its runner's spec cites §4. See
-# leaf_contract_doc_refs.
+# Consolidated runner-output contract, INLINED into the prompts that need it: §1/§3 to the
+# pure `validate.judge` (what it recomputes against the runner's emitted diagnostics.json /
+# raw evidence), and whole to the `harness` shape's producer and reviewer — the
+# runner-authoring leaf. An `m3c` physics producer does not receive it (it authors
+# model+checks over a host-rendered runner) and takes `CHECKS_MODULE_CONTRACT.md` instead.
+# The node-aware SELECTION used to be `leaf_contract_doc_refs`, deleted with the force-read
+# set in Z4 (issue #171); `Conductor._build_pure_*_context` makes the same choice now.
 RUNNER_OUTPUT_CONTRACT_REF = "docs/workflow/RUNNER_OUTPUT_CONTRACT.md"
 # R1/M3c-β: the fixed-ABI contract for a physics node's `<spec_id>_checks.f90`
-# (the leaf-authored callbacks the host-rendered runner drives). A leaf must-read
-# for every `generate` LLM leaf (its SKILL branches on whether the node is M3c);
-# NOT read by validate.judge (it never sees the checks source).
+# (the leaf-authored callbacks the host-rendered runner drives). Reaches every `generate`
+# leaf INLINED, each half to the leaf it binds — §1-4 to the `m3c` reviewer, §5 to the
+# `harness` producer; it was a force-read must-read whose SKILL branched on the node kind
+# until Z4 (issue #171). NOT given to validate.judge (it never sees the checks source).
 CHECKS_MODULE_CONTRACT_REF = "docs/workflow/CHECKS_MODULE_CONTRACT.md"
-# Canonical step -> phase-doc map. Of these, only `compile` is a leaf must-read
-# (see leaf_contract_doc_refs); the rest are retained as the canonical reference
-# mapping (phase docs stay readable under docs/, just not force-read by leaves).
+# Canonical step -> phase-doc map. Of these, only `compile` reaches a leaf — inlined whole
+# into both compile prompts as `phase_contract_document`; it was the one force-read phase doc
+# before Z4 (issue #171) and the selection lived in `leaf_contract_doc_refs`. The rest are the
+# canonical reference mapping (readable under docs/, reaching no leaf).
 WORKFLOW_PHASE_DOC_BY_STEP: dict[str, str] = {
     "compile": "docs/workflow/phases/phase_01_compile.md",
     "generate": "docs/workflow/phases/phase_02_generate.md",
@@ -6728,8 +6731,9 @@ def _normalized_agent_role(value: Any) -> str:
     Every reader that DECIDES on the field normalizes this way, and the two chokepoints
     canonicalize the payload itself so the rest cannot disagree. Not every reader does it
     for itself, and an earlier version of this docstring wrongly claimed they all did:
-    `_build_task_card` and `_write_allowed_output_manifest` use `.strip()` with no
-    `.lower()`, and `init_orchestration` / `_rewrite_orchestration_run_row` compare
+    `_write_allowed_output_manifest` uses `.strip()` with no `.lower()` (so did
+    `_build_task_card`, deleted with the agentic prompt in Z4, issue #171), and
+    `init_orchestration` / `_rewrite_orchestration_run_row` compare
     `.strip()`-only against `"orchestration"`. That is exactly why canonicalizing at the
     chokepoints — rather than trusting each reader — is what closes the family.
     """
@@ -13130,10 +13134,11 @@ PURE_CONTEXT_REQUIRED_KEYS_BY_SHAPE: dict[tuple[str, str, str], tuple[str, ...]]
 def _is_pure_launch_request(request_payload: dict[str, Any]) -> bool:
     """True when this launch is a Z2 pure-function leaf turn (`leaf_mode == "pure"`).
 
-    An ABSENT `leaf_mode` is the legacy agentic path (every existing caller); this predicate is
-    the single gate that steers a request into the pure renderer / marker set / record-launch
-    branch. `_is_slim_repair_request` now returns False for a pure request, so pure and slim are
-    mutually exclusive predicates (dispatch order is defensive, not load-bearing); deterministic
+    An ABSENT `leaf_mode` was the legacy agentic path; since Z4 (issue #171) it means a
+    DETERMINISTIC substep or a malformed request, and this predicate is the single gate that
+    steers a request into the pure renderer / marker set / record-launch branch. (Slim and pure
+    were made mutually exclusive predicates for the same reason, and the slim side lives on only
+    in `validate_pipeline_semantics`, for records written before the cut.) Deterministic
     and pure are likewise mutually exclusive (enforced at validation). Delegates to
     `pure_leaf.is_pure_request` — the single detection source shared with the validator."""
     return _pure_leaf_is_pure_request(request_payload)
@@ -13520,13 +13525,14 @@ def render_launch_prompt_text(request_payload: dict[str, Any]) -> str:
 def prepare_launch_request_payload(request_payload: dict[str, Any]) -> dict[str, Any]:
     payload = dict(request_payload)
     # Canonicalize agent_role FIRST — before anything below renders the launch prompt.
-    # This function force-renders `launch_prompt_full`, and that render embeds
-    # `_build_task_card`, which reads the role with `.strip()` and NO `.lower()`. Doing the
-    # canonicalization only in `_validate_launch_request_payload` (which record_launch
-    # calls AFTER this function) fixed nothing: the prompt had already been rendered from
-    # `"SUBSTEP"` and shipped without its Task Card, while the persisted request recorded
-    # `"substep"` — leaving the durable record positively disagreeing with the prompt it
-    # accompanies. Normalization only: an unknown or absent role is left exactly as it is
+    # The episode: this function force-renders `launch_prompt_full`, and the AGENTIC render
+    # embedded `_build_task_card`, which read the role with `.strip()` and NO `.lower()`.
+    # Canonicalizing only in `_validate_launch_request_payload` (which record_launch calls
+    # AFTER this function) fixed nothing: the prompt had already been rendered from `"SUBSTEP"`
+    # and shipped without its Task Card, while the persisted request recorded `"substep"` —
+    # a durable record positively disagreeing with the prompt beside it. That renderer is
+    # deleted (Z4, issue #171) and the ORDER is kept: it is the general rule, and the next
+    # renderer to read a request field before validation gets it for free. Normalization only: an unknown or absent role is left exactly as it is
     # for the validator to REJECT, so this can never turn a bad role into an accepted one.
     _role_raw = payload.get("agent_role")
     _role_respelled = False
@@ -14568,7 +14574,8 @@ def _validate_pure_launch_request_payload(request_payload: dict[str, Any]) -> No
     # re-inlining them is redundant. A `restart` (or any non-reuse) repair has no such session,
     # and the cold fallback renderer needs the context re-inlined, so it is NOT exempt: require
     # `repair_strategy == "reuse"` alongside warm_resume + findings, or the context stays
-    # mandatory. Mirrors `_is_slim_repair_request`'s (warm + reuse + findings) shape.
+    # mandatory. The same (warm + reuse + findings) shape the slim repair turn used, which is
+    # why `validate_pipeline_semantics` still classifies the two apart on a pre-Z4 record.
     warm = bool(request_payload.get("warm_resume"))
     reuse = str(request_payload.get("repair_strategy", "")).strip() == "reuse"
     findings = str(request_payload.get("repair_findings", "")).strip()
@@ -14635,8 +14642,8 @@ def _validate_launch_request_payload(request_payload: dict[str, Any]) -> None:
     # THE agent_role chokepoint. SIX readers disagreed about an unrecognized role, named
     # here in full because an earlier version of this comment said "six" and then listed
     # five: (1) `build_capability_document` INFERRED it; (2) `_allowed_output_paths_for_launch`,
-    # (3) `_validate_child_write_contract_preflight` and (4) `_build_task_card` SKIPPED
-    # their work; (5) `record_launch` itself fell back to the step-derived kind, or to the
+    # (3) `_validate_child_write_contract_preflight` and (4) `_build_task_card` (deleted in Z4,
+    # issue #171) SKIPPED their work; (5) `record_launch` itself fell back to the step-derived kind, or to the
     # literal "unknown" for the session-run-index row; and (6) `workflow_conductor.
     # _register_codex_thread` defaulted to "substep" when re-reading the persisted request.
     # Requiring the field here, at the one place every launch passes through, is what makes
@@ -19084,8 +19091,14 @@ def record_agent_run(
                     and _launch_backend.strip().lower() in _HTTP_PROVIDER_TOKENS)
                 # A DETERMINISTIC substep (Z4, issue #171) runs in the conductor's own process
                 # for the same structural reason, and `record_launch` marks it the same way:
-                # `leaf_transport: "in_process"` with no profile. The exemption is read off the
-                # host-authored launch RESPONSE, never off the row.
+                # `leaf_transport: "in_process"` with no profile. Both documents the exemption
+                # reads are HOST-AUTHORED and outside every write root: the launch response,
+                # and — since the conjunct below — the launch request, reached through the row's
+                # `launch_request_ref`. That ref is the row's, so the row does participate; what
+                # `_validate_step_or_substep_launch_refs` checks of it is that the target
+                # exists, not that it is the canonical path for this arid. Nothing a leaf writes
+                # is read here, which is the property that matters, and the round-2 review is
+                # why this says so precisely rather than "never off the row".
                 #
                 # TWO conditions, symmetric with the HTTP arm above, which requires the
                 # transport string AND a genuine provider token. The round-1 review found this

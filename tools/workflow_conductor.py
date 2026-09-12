@@ -1044,9 +1044,10 @@ def _checks_contract_gate_guards_section(text: str) -> str:
     of any `Generate` node — naming the model, the checks module, and the hand-authored runner
     of an `infrastructure` node's self-test — and it carries the rules of the deterministic
     `Generate.gate` lint and syntax checkers, which are this REPOSITORY's rule set rather than
-    the language's. The agentic leaf received it as a force-read must-read
-    (`orchestration_runtime.leaf_contract_doc_refs`, whose docstring names this very leaf as the
-    reason not to gate that injection on the node's shape). A pure leaf force-reads nothing, so
+    the language's. The agentic leaf received it as a force-read must-read, from a
+    selector whose docstring named this very leaf as the reason not to gate that injection on
+    the node's shape (`orchestration_runtime.leaf_contract_doc_refs`, deleted with the force-read
+    set in Z4 — issue #171). A pure leaf force-reads nothing, so
     making that leaf pure (issue #169) cut the only carrier those rules had — found by a
     round-3 disclosure review that rendered the prompt and looked for them. Inlining the section
     is also what keeps the rules out of a `neutral core` template
@@ -6489,8 +6490,8 @@ clean:
         author against. Here there is no host-rendered runner and no checks module: the leaf
         authors the executable entry itself, so what takes the runner's place is the contract
         that entry's OUTPUT must satisfy — `docs/workflow/RUNNER_OUTPUT_CONTRACT.md`, verbatim
-        and whole, which is what the agentic runner-authoring leaf force-read
-        (`leaf_contract_doc_refs`, the non-M3c branch). Whole, not sliced: every section of it
+        and whole, which is what the agentic runner-authoring leaf force-read (the non-M3c
+        branch of `leaf_contract_doc_refs`, deleted with that leaf in Z4 — issue #171). Whole, not sliced: every section of it
         governs a leaf that writes the program, where the judge (which reads §1+§3) only reads
         the output afterwards.
 
