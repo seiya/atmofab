@@ -35,7 +35,8 @@ from tools.hooks.dev_session_hygiene import polling_wait_violation
 from tools.hooks.operator_safety import operator_safety_violation
 
 # The event spellings that carry a command. Both backends' names, normalized the way
-# `tools/hooks/common.py::normalize_hook_event_name` does, but spelled here so this
+# `tools/hooks/common.py::normalize_hook_event_name` did before issue #171 PR-2 deleted that
+# module with the leaf hook layer, but spelled here so this
 # module keeps its import boundary.
 _PRE_COMMAND_EVENTS = frozenset({"pretooluse", "pre_tool_use", "precommandexecute"})
 _PERMISSION_REQUEST_EVENTS = frozenset({"permissionrequest", "permission_request"})
