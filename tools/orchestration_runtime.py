@@ -8368,6 +8368,12 @@ def render_bwrap_command(
         for w in profile.get("write_roots", [])
         if isinstance(w, str) and w.strip()
     ]
+    # UNREACHABLE IN PRODUCTION, like the `write_roots` file-pin branch above and
+    # `runtime_rw_file_paths` below: `build_readonly_bwrap_profile` is the only profile
+    # builder left and it emits `"read_roots": []` (the repository is ro-bound whole, so a
+    # per-path read grant has nothing to add). Kept because `render_bwrap_command` takes a
+    # profile dict from its caller and a test may hand it one; the exemption below describes
+    # a leaf that writes, and no leaf does since issue #171 PR-2.
     for rel in profile.get("read_roots", []):
         if not isinstance(rel, str) or not rel.strip():
             continue

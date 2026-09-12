@@ -394,7 +394,9 @@ _ENV_PROPERTY_SCHEMA: dict[str, Any] = {
         "Environment overrides for the command. Keys that redirect execution (LD_*, "
         "DYLD_*, PATH, PYTHONPATH, BASH_ENV, ENV, IFS, COMPILER_PATH, "
         "GCC_EXEC_PREFIX, LIBRARY_PATH, MAKEFLAGS, GNUMAKEFLAGS, MAKEFILES, "
-        "MAKESHELL) are refused."
+        "MAKESHELL) are refused, and so is any VALUE carrying a character a shell "
+        "acts on -- make imports an environment name as a make variable and the "
+        "recipe interpolates it unquoted."
     ),
 }
 
