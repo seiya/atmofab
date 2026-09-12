@@ -630,6 +630,42 @@ class BuildArgvOverrideTests(unittest.TestCase):
                     self._check([f"{name}=/tmp/x"])
                 self.assertIn("redirect execution", str(ctx.exception))
 
+    def test_the_name_rule_alone_closes_every_spelling_make_honours(self) -> None:
+        """Self-sufficiency, measured against GNU Make 4.3 rather than assumed.
+
+        With a `SHELL` that prints instead of running the recipe, `SHELL=./evil`,
+        `SHELL:=./evil`, `SHELL+=./evil` and ` SHELL=./evil` all execute `./evil` as every
+        recipe line's interpreter; `SHELL?=` does not, because SHELL is already set.
+
+        The predicate is driven DIRECTLY here, not through the validator, because under
+        `make` the assignment-SHAPE rule refuses the flavour spellings first — so driving
+        the validator would report green while the name rule itself still missed them, and
+        the hole would be closed by two rules each covering half of it. That is the shape
+        that has reopened three times on this branch."""
+        for spelling in ("SHELL=./evil", "SHELL:=./evil", "SHELL+=./evil",
+                         " SHELL=./evil", "SHELL =./evil", "shell=./evil",
+                         "LD_PRELOAD:=/tmp/x.so", "MAKEFILES+=/tmp/evil.mk"):
+            with self.subTest(spelling=spelling):
+                self.assertTrue(
+                    self.mod._is_execution_redirecting_assignment(spelling))
+
+    def test_the_name_rule_reaches_a_build_system_with_no_shape_rule(self) -> None:
+        # The other half of the same claim, through the real validator on a build system
+        # where nothing else would catch it.
+        for spelling in ("SHELL:=./evil", "SHELL+=./evil", " SHELL=./evil"):
+            with self.subTest(spelling=spelling):
+                with self.assertRaises(ValueError) as ctx:
+                    self.mod._validate_build_argv_overrides(
+                        None, [spelling], "compile_project", build_system="cargo")
+                self.assertIn("redirect execution", str(ctx.exception))
+
+    def test_an_ordinary_variable_keeps_its_flavour_operators(self) -> None:
+        # The normalisation must not swallow a legitimate name: only the flavour
+        # operators and surrounding space come off, and only from the NAME.
+        self.assertFalse(self.mod._is_execution_redirecting_assignment("OBJDIR:=/repo/obj"))
+        self.assertFalse(self.mod._is_execution_redirecting_assignment("CASES=a b"))
+        self.assertFalse(self.mod._is_execution_redirecting_assignment("all"))
+
     def test_the_assignment_name_rule_is_not_weaker_than_the_env_rule(self) -> None:
         # Derived, not restated: every name the env half refuses must also be refused as an
         # assignment. The reverse does not hold — SHELL and MAKE matter only on the argv side.

@@ -253,10 +253,22 @@ _ASSIGNMENT_ARGV_BUILD_SYSTEMS = frozenset({"make"})
 
 
 def _is_execution_redirecting_assignment(element: str) -> bool:
-    """``NAME=value`` whose NAME make reads as a redirection of what is EXECUTED."""
+    """``NAME=value`` whose NAME make reads as a redirection of what is EXECUTED.
+
+    The name is normalised the way MAKE reads it, not the way the string is spelled.
+    Measured against GNU Make 4.3 with a `SHELL` that prints instead of running the
+    recipe: `SHELL=./evil`, `SHELL:=./evil`, `SHELL+=./evil` and ` SHELL=./evil` all
+    execute `./evil` as every recipe line's interpreter; only `SHELL?=` does not, because
+    `SHELL` is already set. So the flavour operators and surrounding space are stripped
+    before the lookup.
+
+    Without that, this predicate misses `SHELL:=` and the only thing refusing it is the
+    make-ONLY assignment-shape rule — two rules each covering half of one hole, which is
+    the shape that has reopened three times on this branch. One rule, self-sufficient.
+    """
     if "=" not in element:
         return False
-    name = element.split("=", 1)[0].strip().upper()
+    name = element.split("=", 1)[0].strip().rstrip(":+?").strip().upper()
     return (name in _UNSAFE_ASSIGNMENT_NAMES
             or name.startswith(_UNSAFE_ENV_OVERRIDE_PREFIXES))
 
