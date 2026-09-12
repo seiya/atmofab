@@ -615,6 +615,34 @@ class BuildArgvOverrideTests(unittest.TestCase):
                     self._check([arg])
                 self.assertIn("make variable assignments", str(ctx.exception))
 
+    def test_an_execution_redirecting_name_is_refused_as_an_assignment_too(self) -> None:
+        """The NAME rule, which must not be weaker than the env twin's.
+
+        A make COMMAND-LINE assignment overrides even a hard assignment in the Makefile, so
+        this surface carries more authority than the environment — the canonical document says
+        so. PR-2 deleted the argv-side name allowlist with the leaf's grant and its round-1
+        correction made only the VALUE rule symmetric, so `SHELL=./evil` — the interpreter of
+        every recipe line — was accepted here while `MAKESHELL` was refused one argument over.
+        """
+        for name in sorted(self.mod._UNSAFE_ASSIGNMENT_NAMES) + ["LD_PRELOAD", "DYLD_LIBRARY_PATH"]:
+            with self.subTest(name=name):
+                with self.assertRaises(ValueError) as ctx:
+                    self._check([f"{name}=/tmp/x"])
+                self.assertIn("redirect execution", str(ctx.exception))
+
+    def test_the_assignment_name_rule_is_not_weaker_than_the_env_rule(self) -> None:
+        # Derived, not restated: every name the env half refuses must also be refused as an
+        # assignment. The reverse does not hold — SHELL and MAKE matter only on the argv side.
+        for name in sorted(self.mod._UNSAFE_ENV_OVERRIDE_KEYS):
+            with self.subTest(name=name):
+                self.assertIn(name, self.mod._UNSAFE_ASSIGNMENT_NAMES)
+
+    def test_the_names_that_are_deliberately_still_accepted(self) -> None:
+        # The recorded residue, pinned so "what is open" cannot drift into prose alone: a name
+        # a Makefile merely READS is not refused, because bounding those means an allowlist and
+        # an allowlist bounds a grant no caller holds any more.
+        self._check(["FC=/usr/bin/gfortran", "CFLAGS=-O2", "OBJDIR=/repo/obj"])
+
     def test_a_value_that_reaches_the_recipe_shell_is_refused(self) -> None:
         # The host-authored Makefile interpolates an assignment unquoted into a recipe
         # line, so a metacharacter in a value is a command rather than a value.

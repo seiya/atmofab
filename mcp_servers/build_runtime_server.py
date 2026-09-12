@@ -124,6 +124,15 @@ _UNSAFE_ENV_OVERRIDE_KEYS = frozenset({
 })
 _UNSAFE_ENV_OVERRIDE_PREFIXES = ("LD_", "DYLD_")
 
+# The SAME names, refused as a make command-line ASSIGNMENT. A command-line assignment
+# overrides even a hard assignment in the Makefile, so this surface carries MORE authority
+# than the environment, not less — and `SHELL=` is not the `FC` class it was first grouped
+# with: it replaces the interpreter of every recipe line, which is arbitrary execution rather
+# than a redirected compiler. `make SHELL=./evil all` runs `./evil` (measured, GNU Make 4.3).
+# `MAKE` is here and not in the env set because make exports it to sub-makes as the command
+# to re-invoke itself with.
+_UNSAFE_ASSIGNMENT_NAMES = frozenset(_UNSAFE_ENV_OVERRIDE_KEYS | {"SHELL", "MAKE"})
+
 # The make recipe interpolates a make variable's value unquoted (`cd $(RUNDIR) &&
 # $(BINDIR)/$(BIN) --cases $(SPEC) $(CASES)`), so a value carrying a character that
 # line's shell or make acts on is a command rather than a value. A space is not one of
@@ -157,14 +166,14 @@ def _validate_env_overrides(env: Any, tool_name: str) -> None:
     exactly as a command-line assignment would be. Refusing it in one half and accepting
     it in the other guards nothing.
 
-    What the retired allowlist did and this does NOT: bound the NAMES. `FC` is not an
-    execution-redirecting name, and make imports it as the variable a certified
-    Makefile's compiler comes from. That is a real gap and it is recorded rather than
-    closed, because closing it means an allowlist, an allowlist bounds a caller's GRANT,
+    What the retired allowlist did and this does NOT: bound the names a MAKEFILE reads. `FC`
+    is not an execution-redirecting name, and make imports it as the variable a certified
+    build control file's compiler comes from. That is a real gap and it is recorded rather
+    than closed, because closing it means an allowlist, an allowlist bounds a caller's GRANT,
     and there is no longer a caller whose grant needs bounding: no leaf reaches this
     server, and the conductor passes a fixed six-key dict it composes itself. A denylist
     over names does not terminate, which is why this one covers only the names that
-    redirect what is EXECUTED rather than what a Makefile reads.
+    redirect what is EXECUTED rather than what a build control file reads.
 
     Call this on the raw `env` argument, before the server composes its own additions
     (`OMP_*` for run_program, `PYTHONPATH` for the pytest preset) — those are the
@@ -226,10 +235,19 @@ def _validate_build_argv_overrides(
     Both halves of the caller-chosen argv are constrained, because both land on the same
     command line. `extra_args` is appended to it, where a make assignment overrides even
     a hard assignment in the Makefile: an element must ASSIGN a make variable — which is
-    what keeps `--eval=$(shell ...)` and every other switch out — and its value must not
-    carry a character the recipe's shell acts on. `target` is placed positionally on the
-    same line (`make -jN <target>`), so a `target` that opens with `-` is that same
-    switch by another argument, and it must be a build GOAL name.
+    what keeps `--eval=$(shell ...)` and every other switch out — its NAME must not be one
+    make reads as a redirection of what is executed, and its value must not carry a character
+    the recipe's shell acts on. `target` is placed positionally on the same line (`make -jN
+    <target>`), so a `target` that opens with `-` is that same switch by another argument, and
+    it must be a build GOAL name.
+
+    The NAME rule is the twin of `_validate_env_overrides`'s denylist and must not be weaker,
+    because an assignment on the command line overrides even a hard assignment in the Makefile
+    while an environment name does not. `SHELL=./evil` replaces the interpreter of every recipe
+    line; `MAKEFILES=` reads an attacker's makefile before the certified one; `MAKEFLAGS=-n`
+    makes the build execute nothing and still answer rc 0, which is a PASS over a binary that
+    was never built. The round-1 fix made only the VALUE rule symmetric and named `FC` —
+    the weakest member — as the residue, which understated what was open.
 
     ONE mode since Z4 (issue #171), like `_validate_env_overrides` above and for the same
     reason. The orchestrated arm held THREE further things: an allowlist of six variable
@@ -262,6 +280,16 @@ def _validate_build_argv_overrides(
         raise ValueError(
             f"{tool_name} accepts only make variable assignments (NAME=value) in "
             "extra_args; refused: " + ", ".join(offending)
+        )
+    redirecting = sorted(
+        arg for arg in extra_args
+        if (name := arg.split("=", 1)[0].strip().upper()) in _UNSAFE_ASSIGNMENT_NAMES
+        or name.startswith(_UNSAFE_ENV_OVERRIDE_PREFIXES)
+    )
+    if redirecting:
+        raise ValueError(
+            f"{tool_name} does not accept extra_args that redirect execution: "
+            + ", ".join(redirecting)
         )
     unsafe = sorted(
         arg for arg in extra_args
@@ -1379,9 +1407,11 @@ TOOLS: dict[str, Tool] = {
                     "items": {"type": "string"},
                     "description": (
                         "Extra build-tool arguments. Each element must ASSIGN a make "
-                        "variable (NAME=value), and the value must carry no character "
-                        "the make recipe's shell acts on, because it is interpolated "
-                        "there unquoted. Applies to every caller."
+                        "variable (NAME=value); the name must not be one make reads as a "
+                        "redirection of what is executed (SHELL, MAKE, MAKEFILES, "
+                        "MAKEFLAGS, LD_*, PATH, ...), and the value must carry no "
+                        "character the make recipe's shell acts on, because it is "
+                        "interpolated there unquoted. Applies to every caller."
                     ),
                 },
                 "timeout_sec": {"type": "integer", "minimum": 1},
