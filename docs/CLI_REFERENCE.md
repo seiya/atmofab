@@ -109,7 +109,7 @@ Call it **before launching the leaf**: it runs the live preflight and builds the
 | `ir_ref` | yes | `workspace/ir/<node_key_safe>/<ir_id>` (required in all phases including the Compile phase) |
 | `pipeline_ref` | yes | `workspace/pipelines/<node_key_safe>/<pipeline_id>` (required even in the Compile phase. If not yet generated, reserve it first with `reserve-phase-root --step generate`) |
 | `dependency_ref` | yes | Compile: `spec/.../deps.yaml`, from Generate onward: the phase root in workspace |
-| `skill_name` | no — must be EMPTY | no leaf reads a `SKILL` since Z4 ([issue #171](https://github.com/seiya/atmofab/issues/171)); a non-empty value is refused on a pure launch. No `skills/workflow-<step>/` directory exists any more |
+| `skill_name` | no — must be EMPTY | no leaf reads a `SKILL` since Z4 ([issue #171](https://github.com/seiya/atmofab/issues/171)); a non-empty value is refused on a pure launch. The `skills/workflow-<step>[-<substep>]/` directories a CORE phase would name are gone; what remains under `skills/` is the operator flows — the two audits, the spec input check, the timing audit, and the reserved `promote` / `tune` procedures, which an operator reads and no leaf is handed |
 | `skill_ref` | no — must be EMPTY | same |
 | `allowed_output_paths` or `required_outputs` or `output_refs` | one required for step/substep | the list of write-permitted paths |
 | `allowed_file_tool_paths` | accepted and IGNORED | it named the paths a leaf's `Edit` / `Write` grant covered; no leaf holds either tool, and nothing reads the field since [issue #171](https://github.com/seiya/atmofab/issues/171) PR-2 |
