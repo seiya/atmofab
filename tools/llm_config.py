@@ -25,9 +25,8 @@ nowhere (`llm_config_capability_insufficient_for_substep`). Neither is a
 Stdlib + PyYAML only, and deliberately importing nothing from `tools.orchestration_runtime` /
 `tools.workflow_conductor`: both of those import (or will import) this module, and the
 mirror-table drift guards in `tools/tests/test_llm_config.py` import all three to compare them.
-The tables duplicated here (`LLM_LEAF_SUBSTEPS`, `MCP_REQUIRED_LLM_SUBSTEPS`) are guarded
-copies, not independent opinions: each has a test that fails if the conductor/runtime original
-moves.
+The table duplicated here (`LLM_LEAF_SUBSTEPS`) is a guarded copy, not an independent
+opinion: a test fails if the conductor/runtime original moves.
 
 Rejections are NAMED. `LlmConfigError.rule` carries a stable identifier (`llm_config_*`) that
 callers surface verbatim, because a config the operator wrote by hand is exactly the place
@@ -114,25 +113,26 @@ def _is_loopback(host: str) -> bool:
 #                and with it the `agentic` capability that selected it.
 #   warm_resume  a finished leaf session can be reopened for a repair turn carrying the prior
 #                context (claude `--resume --fork-session`, codex `exec resume`).
-#   mcp_tools    the leaf can be granted build-runtime MCP tools.
 #   usage_probe  the provider answers a host-side `/usage` probe, which is how a run waits out
 #                a usage-limit reset instead of failing (see docs/RUNBOOK.md).
 CAP_PURE = "pure"
 CAP_WARM_RESUME = "warm_resume"
-CAP_MCP_TOOLS = "mcp_tools"
 CAP_USAGE_PROBE = "usage_probe"
 
-# `agentic` is deliberately absent rather than accepted-and-ignored: a configuration still
-# spelling it is refused at `capabilities:` parse time, where the operator can read why, rather
-# than resolving to a transport that no longer exists.
+# `agentic` and `mcp_tools` are deliberately absent rather than accepted-and-ignored: a
+# configuration still spelling either is refused at `capabilities:` parse time, where the
+# operator can read why, rather than resolving to a transport or a grant that no longer
+# exists. `mcp_tools` said a leaf could be granted build-runtime MCP tools; no leaf holds a
+# tool since Z4 (issue #171), and PR-2 of that issue retired the capability gate the grant
+# was spent at.
 KNOWN_CAPABILITIES: frozenset[str] = frozenset({
-    CAP_PURE, CAP_WARM_RESUME, CAP_MCP_TOOLS, CAP_USAGE_PROBE,
+    CAP_PURE, CAP_WARM_RESUME, CAP_USAGE_PROBE,
 })
 
 # THE capability authority. A config may restrict a provider's set; it may never exceed it.
 PROVIDER_CAPABILITIES: Mapping[str, frozenset[str]] = {
-    "claude_cli": frozenset({CAP_PURE, CAP_WARM_RESUME, CAP_MCP_TOOLS, CAP_USAGE_PROBE}),
-    "codex_cli": frozenset({CAP_PURE, CAP_WARM_RESUME, CAP_MCP_TOOLS}),
+    "claude_cli": frozenset({CAP_PURE, CAP_WARM_RESUME, CAP_USAGE_PROBE}),
+    "codex_cli": frozenset({CAP_PURE, CAP_WARM_RESUME}),
     # HTTP providers: one request, one response. No session to reopen, no tools to grant, and
     # no `/usage` endpoint in the shape the probe speaks.
     "openai_compatible": frozenset({CAP_PURE}),
@@ -190,13 +190,6 @@ LLM_LEAF_SUBSTEPS: frozenset[tuple[str, str]] = frozenset({
     ("validate", "judge"),
 })
 
-# LLM leaves that hold a build-runtime MCP grant. EMPTY today — every non-empty key of
-# `orchestration_runtime._MCP_TOOL_GRANTS_BY_SUBSTEP` is a deterministic in-process body, not
-# an LLM leaf. Kept as a table (rather than assumed empty) so that granting an LLM leaf a tool
-# automatically starts requiring `mcp_tools` of whatever provider is configured for it;
-# guarded by `test_mcp_required_llm_substeps_matches_runtime`.
-MCP_REQUIRED_LLM_SUBSTEPS: frozenset[tuple[str, str]] = frozenset()
-
 # Phases that own at least one LLM leaf. `build` is deliberately absent: it is contractually
 # deterministic, so naming it in a config is an operator error, not a no-op.
 LLM_LEAF_PHASES: frozenset[str] = frozenset(p for p, _ in LLM_LEAF_SUBSTEPS)
@@ -210,8 +203,6 @@ def required_capabilities(phase: str, substep: str) -> frozenset[str]:
     caps: set[str] = set()
     if (phase, substep) in LLM_LEAF_SUBSTEPS:
         caps.add(CAP_PURE)
-    if (phase, substep) in MCP_REQUIRED_LLM_SUBSTEPS:
-        caps.add(CAP_MCP_TOOLS)
     return frozenset(caps)
 
 

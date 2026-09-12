@@ -514,7 +514,7 @@ class LeafTranscriptRootTests(unittest.TestCase):
         """The COUNT, not just the first entry. `_claude_projects_dir` takes the FIRST root, so
         a second root reintroduced ahead of this one would send every audit somewhere a pure
         leaf never writes, and a reader that only checked `roots[0]` would not see it."""
-        from tools.hooks.common import claude_leaf_projects_roots
+        from tools.operator_private_root import claude_leaf_projects_roots
         with tempfile.TemporaryDirectory() as td:
             repo, _slug = self._repo_and_slug(td)
             operator = Path(td) / "operator"

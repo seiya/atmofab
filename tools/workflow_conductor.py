@@ -1942,8 +1942,8 @@ LEAF_STREAM_ABANDONED_MARKER = (
 # right default: a wrongly killed leaf costs ONE resumable fail_closed, while no cap at all costs
 # unbounded wall-clock that nothing in the event stream reports.
 #
-# A per-substep table (the `_MCP_TOOL_GRANTS_BY_SUBSTEP` shape) is future work: one cap already
-# bounds the damage, and per-substep numbers need per-substep evidence this repo does not have yet.
+# A per-substep table is future work: one cap already bounds the damage, and per-substep numbers
+# need per-substep evidence this repo does not have yet.
 LEAF_TIMEOUT_DEFAULT_SECONDS = 7200  # 2h
 # Ceiling for the env override: a sanity bound on an operator-settable value, pinned to the
 # largest deadline the `select`-based waits in `subprocess` accept (they select with an
@@ -4435,13 +4435,13 @@ class Conductor:
         return thread
 
     def _bwrap_enabled(self) -> bool:
-        """bwrap leaf sandboxing is unconditionally MANDATORY (Phase-2; Linux+bwrap
-        only). The FS-diff write-authorization model (`_validate_actual_write_paths`
-        authorizes a leaf write purely by write_roots containment) is only sound while
-        bwrap actually confines each leaf to its write_roots, so there is no opt-out: a
-        host that cannot sandbox the leaf fails closed at launch rather than running
-        unconfined (an unconfined leaf + FS-diff would authorize writes anywhere). The
-        method is retained as a single seam for the call sites; it always returns True."""
+        """bwrap leaf sandboxing is unconditionally MANDATORY (Phase-2; Linux+bwrap only).
+
+        Since issue #171 PR-2 it is the ONLY thing that confines a leaf: the terminal FS-diff
+        that audited a leaf's writes after the fact is deleted, so an unconfined leaf would be
+        unconfined and unaudited both. A host that cannot sandbox the leaf therefore fails
+        closed at launch rather than running it. The method is retained as a single seam for
+        the call sites; it always returns True."""
         return True
 
     def _http_history_key(self, timeout_context: dict[str, str] | None) -> tuple[str, str]:
@@ -7802,12 +7802,14 @@ clean:
         written as `spec.ir.yaml` + `ir_meta.json` + `compile_generate_meta.json`). Nothing below
         names either.
 
-        The finalize-before-write ordering is load-bearing: the pure capability's empty
-        write_roots make ANY write inside the child window an unauthorized write
-        (`_validate_actual_write_paths`), so the host must close the window (finalize_child)
-        before it writes files[] / codegen_bundle.json / bundle_meta.json / Makefile. Reversing
-        the order attributes the host writes to the dying leaf and fails closed — pinned by a
-        conformance test."""
+        The finalize-before-write ordering is kept, and its REASON changed with issue #171
+        PR-2. It used to be load-bearing against the terminal FS-diff: the pure capability's
+        empty write_roots made any write inside the child window an unauthorized write, so
+        writing before `finalize_child` attributed the HOST's writes to the dying leaf and
+        failed the run closed. That audit is deleted. What the ordering still buys is that the
+        artifacts appear only once the leaf is recorded as finished, so a reader never sees a
+        deliverable attributed to a window that is still open — and a leaf cannot be resumed
+        into a tree the host has already rewritten. Pinned by a conformance test."""
         from tools.pure_leaf import (
             extract_json_document, MAX_BUNDLE_REPAIR_TURNS,
             RESPONSE_TRUNCATED, RESPONSE_UNPARSEABLE)
@@ -9688,15 +9690,6 @@ clean:
                 or (phase == "generate" and substep == "gate")
                 or (phase == "compile" and substep == "static"))
 
-    def _capability_token(self, child_arid: str) -> str:
-        path = (self.repo_root / "workspace" / "orchestrations" / self.orchestration_id
-                / "capabilities" / f"{child_arid}.json")
-        cap = _read_json(path) or {}
-        token = str(cap.get("capability_token", "")).strip()
-        if not token:
-            raise RuntimeError(f"deterministic step: missing capability_token at {path}")
-        return token
-
     def _resolve_exe_name(self, refs: NodeRefs) -> str:
         """The canonical execution binary basename: `<spec_id>_runner`.
 
@@ -9746,21 +9739,20 @@ clean:
         """Run a non-LLM substep body in-process and return a ProcResult shaped like a
         leaf's (returncode 0 == clean conductor run; a content failure such as a
         compile error is still rc 0 and routed via binary_meta.failure_category).
-        A nonzero rc means a conductor-side/MCP-gate failure -> transport fail_closed."""
+        A nonzero rc means a conductor-side/MCP failure -> transport fail_closed."""
         try:
-            cap_token = self._capability_token(child_arid)
             if phase == "build":
-                out = self._build_inproc(refs, child_arid, cap_token)
+                out = self._build_inproc(refs, child_arid)
             elif phase == "validate" and substep == "pre_judge":
-                out = self._pre_judge_inproc(refs, child_arid, cap_token)
+                out = self._pre_judge_inproc(refs, child_arid)
             elif phase == "validate" and substep == "post_judge":
-                out = self._post_judge_inproc(refs, child_arid, cap_token)
+                out = self._post_judge_inproc(refs, child_arid)
             elif phase == "validate" and substep == "execute":
-                out = self._execute_inproc(refs, child_arid, cap_token)
+                out = self._execute_inproc(refs, child_arid)
             elif phase == "generate" and substep == "gate":
-                out = self._gate_inproc(refs, child_arid, cap_token)
+                out = self._gate_inproc(refs, child_arid)
             elif phase == "compile" and substep == "static":
-                out = self._compile_static_inproc(refs, child_arid, cap_token)
+                out = self._compile_static_inproc(refs, child_arid)
             else:
                 raise RuntimeError(f"no deterministic body for {phase}.{substep}")
         except Exception as exc:  # noqa: BLE001 - surfaced as transport failure
@@ -9856,7 +9848,7 @@ clean:
             staged.append(binding)
         return staged
 
-    def _build_inproc(self, refs: NodeRefs, child_arid: str, cap_token: str) -> dict[str, str]:
+    def _build_inproc(self, refs: NodeRefs, child_arid: str) -> dict[str, str]:
         """Deterministic Build: in-process compile_project + binary_meta + post_build gate."""
         import sys as _sys
         mcp_dir = str(self.repo_root / "mcp_servers")
@@ -9905,7 +9897,6 @@ clean:
             "capture_limit": _FULL_CAPTURE_LIMIT,
             "orchestration_id": self.orchestration_id,
             "agent_run_id": child_arid,
-            "capability_token": cap_token,
         })
         ok = bool(result.get("ok"))
         # return_code is None on a subprocess timeout; treat that as a build failure.
@@ -10026,8 +10017,7 @@ clean:
                 stderr += "\n[post_build gate fail]\n" + gate.stdout + gate.stderr
         return {"returncode": 0, "stdout": stdout, "stderr": stderr}
 
-    def _gate_inproc(self, refs: NodeRefs, child_arid: str,
-                     cap_token: str) -> dict[str, str]:
+    def _gate_inproc(self, refs: NodeRefs, child_arid: str) -> dict[str, str]:
         """Deterministic Generate.gate: run the three source checkers (lint, syntax, static) as
         a single unioned substep and author ONE gate_meta.json. Replaces the former
         lint/syntax/static substeps so a source with defects in several classes gets ONE warm
@@ -10053,12 +10043,12 @@ clean:
         determine_substep_status reads gate_meta.gate_status. The DRIFT GUARD
         (test_mcp_grant_table_matches_conductor_call_sites) walks the `self._gate_*_check(` calls
         BELOW to derive this substep's gated-tool set, so keep them as explicit method calls."""
-        lint = self._gate_lint_check(refs, child_arid, cap_token)
-        syntax = self._gate_syntax_check(refs, child_arid, cap_token)
+        lint = self._gate_lint_check(refs, child_arid)
+        syntax = self._gate_syntax_check(refs, child_arid)
         lint_ok = lint.get("status") == "pass"
         syntax_ok = syntax.get("status") == "pass"
         if lint_ok and syntax_ok:
-            static = self._gate_static_check(refs, child_arid, cap_token)
+            static = self._gate_static_check(refs, child_arid)
         else:
             # Skip static: its post_generate certifier hard-fails on non-ok lint/syntax evidence,
             # so it could only echo the failure already recorded above.
@@ -10165,7 +10155,7 @@ clean:
                 raise RuntimeError(f"generate.gate lint check: {reason}")
 
     def _attribute_lint_findings(
-        self, refs: NodeRefs, child_arid: str, cap_token: str, preset: str,
+        self, refs: NodeRefs, child_arid: str, preset: str,
         whole_dir_excerpts: list[str],
     ) -> tuple[str, str | None]:
         """Which SIDE of `src/` a failing lint run's findings are on (issue #112).
@@ -10262,7 +10252,6 @@ clean:
                 "capture_limit": _FULL_CAPTURE_LIMIT,
                 "orchestration_id": self.orchestration_id,
                 "agent_run_id": child_arid,
-                "capability_token": cap_token,
             })
             # A probe that could not JUDGE is not evidence about either side. The classifier is
             # the same one the main run went through, so a refused invocation here raises to a
@@ -10310,8 +10299,7 @@ clean:
                 "reproducible. Refusing rather than blaming the leaf (issue #112).\n"
                 + _tail("\n".join(whole_dir_excerpts)))
 
-    def _gate_lint_check(self, refs: NodeRefs, child_arid: str,
-                         cap_token: str) -> dict[str, Any]:
+    def _gate_lint_check(self, refs: NodeRefs, child_arid: str) -> dict[str, Any]:
         """Generate.gate lint checker: in-process run_linter over source/<id>/src/, plus a
         host-side (leaf-non-writable) lint evidence certificate. Returns the `lint` section of
         gate_meta (status / preset / language / run_linter / failure_category / failure_excerpt);
@@ -10352,7 +10340,6 @@ clean:
             "capture_limit": _FULL_CAPTURE_LIMIT,
             "orchestration_id": self.orchestration_id,
             "agent_run_id": child_arid,
-            "capability_token": cap_token,
         })
 
         # Normalize single vs mixed (2 sub-runs) into a uniform run_linter entry list.
@@ -10401,7 +10388,7 @@ clean:
             # directory output is passed in so the unattributed arm can quote what it could not
             # place; nothing here reads it to decide anything.
             failure_category, failure_excerpt = self._attribute_lint_findings(
-                refs, child_arid, cap_token, preset, excerpts)
+                refs, child_arid, preset, excerpts)
 
         # Host-side, leaf-non-writable certificate the post_generate validator certifies
         # against. The evidence keys (preset/command_id/command_log_ref) are exactly what
@@ -10430,8 +10417,7 @@ clean:
             "failure_excerpt": failure_excerpt,
         }
 
-    def _gate_syntax_check(self, refs: NodeRefs, child_arid: str,
-                           cap_token: str) -> dict[str, Any]:
+    def _gate_syntax_check(self, refs: NodeRefs, child_arid: str) -> dict[str, Any]:
         """Generate.gate syntax checker: in-process run_syntax_check (a real compiler
         front-end, gfortran -fsyntax-only) over the staged node + dependency-closure
         sources, plus a host-side (leaf-non-writable) syntax evidence certificate. Returns the
@@ -10583,7 +10569,6 @@ clean:
                         "capture_limit": _FULL_CAPTURE_LIMIT,
                         "orchestration_id": self.orchestration_id,
                         "agent_run_id": child_arid,
-                        "capability_token": cap_token,
                     })
                 except SyntaxSourceNameError as exc:
                     # A source name the tool refuses (an option-shaped `-o.f90`, a
@@ -10662,7 +10647,6 @@ clean:
                             "capture_limit": _FULL_CAPTURE_LIMIT,
                             "orchestration_id": self.orchestration_id,
                             "agent_run_id": child_arid,
-                            "capability_token": cap_token,
                         })
 
                     # Attribution step 1 — is the INVOCATION itself viable? `std` comes from
@@ -10854,8 +10838,7 @@ clean:
             "failure_excerpt": failure_excerpt,
         }
 
-    def _gate_static_check(self, refs: NodeRefs, child_arid: str,
-                           cap_token: str) -> dict[str, Any]:
+    def _gate_static_check(self, refs: NodeRefs, child_arid: str) -> dict[str, Any]:
         """Generate.gate static checker: run the purely-static post_generate gates that the
         verify leaf used to own (so verify is now a pure LLM semantic G1-G7 pass reached only
         on a deterministically-clean source). Returns the `static` section of gate_meta (status /
@@ -10939,8 +10922,7 @@ clean:
             "skipped_reason": None,
         }
 
-    def _compile_static_inproc(self, refs: NodeRefs, child_arid: str,
-                               cap_token: str) -> dict[str, str]:
+    def _compile_static_inproc(self, refs: NodeRefs, child_arid: str) -> dict[str, str]:
         """Deterministic Compile.static: run the purely-static IR gates the verify leaf used to
         own (so verify is now a semantic pass holding no gate — the spec-cross-reference invariants
         V1/V3/V5 — reached only on a deterministically-clean IR). Runs, in the same order/idiom
@@ -11174,7 +11156,7 @@ clean:
         """repo-root-relative POSIX path for canonical refs."""
         return str(path.relative_to(self.repo_root)).replace("\\", "/")
 
-    def _execute_inproc(self, refs: NodeRefs, child_arid: str, cap_token: str) -> dict[str, Any]:
+    def _execute_inproc(self, refs: NodeRefs, child_arid: str) -> dict[str, Any]:
         """Deterministic Validate.execute: in-process run_program + run_quality_checks,
         promote the runner's primary evidence to the canonical run node dir, author the
         agent-owned metadata (snapshot_schema/quality_check/trial_meta/stdout/stderr),
@@ -11230,9 +11212,10 @@ clean:
             if _prev.exists():
                 _prev.unlink()
 
+        # Attribution only: the server records both ids in `command_log.jsonl` and
+        # decides nothing from them (the capability gate went with issue #171).
         gate_args = {"orchestration_id": self.orchestration_id,
-                     "agent_run_id": child_arid, "capability_token": cap_token,
-                     # so the MCP orchestration gate resolves the right orchestration root
+                     "agent_run_id": child_arid,
                      "repo_root": str(self.repo_root)}
 
         # 1. run_program (primary evidence) — include spec.ir.yaml.case per phase_04 §4-1.
@@ -12253,8 +12236,7 @@ clean:
         path.write_text(
             json.dumps(meta, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
-    def _pre_judge_inproc(self, refs: NodeRefs, child_arid: str,
-                          cap_token: str) -> dict[str, str]:
+    def _pre_judge_inproc(self, refs: NodeRefs, child_arid: str) -> dict[str, str]:
         """Deterministic Validate.pre_judge: the pre-spawn dependency-DAG readiness gate,
         promoted from a run_phase pre-loop branch to a recorded substep at index 0. Runs
         BEFORE execute so a --with-deps closure that is not built+validated in its own
@@ -12494,8 +12476,7 @@ clean:
             "judge_command_ref": f"{refs.run_node_dir()}/semantic_review.json",
         })
 
-    def _post_judge_inproc(self, refs: NodeRefs, child_arid: str,
-                           cap_token: str) -> dict[str, str]:
+    def _post_judge_inproc(self, refs: NodeRefs, child_arid: str) -> dict[str, str]:
         """Deterministic Validate.post_judge: FIRST author the derived artifacts
         (`_author_derived_validate_artifacts` — G6: aggregate_verdict/summary/validate_meta),
         then run `validate_pipeline_semantics --stage pre_judge` (the gate the judge leaf

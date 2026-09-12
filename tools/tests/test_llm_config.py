@@ -516,11 +516,11 @@ class CapabilityTests(_Tmp):
         cfg = lc.load_llm_config(self.write(
             "defaults:\n"
             "  provider: claude_cli\n"
-            "  capabilities: [pure, mcp_tools]\n"))
+            "  capabilities: [pure, usage_probe]\n"))
         entry = cfg.entry_for("validate", "judge")
         self.assertTrue(entry.supports(lc.CAP_PURE))
+        self.assertTrue(entry.supports(lc.CAP_USAGE_PROBE))
         self.assertFalse(entry.supports(lc.CAP_WARM_RESUME))
-        self.assertFalse(entry.supports(lc.CAP_USAGE_PROBE))
 
     def test_http_provider_on_a_pure_leaf_is_accepted(self) -> None:
         for substep in ("generate", "verify"):
@@ -1390,11 +1390,6 @@ class MirrorTableDriftTests(unittest.TestCase):
             [("compile", "generate"), ("compile", "verify"),
              ("generate", "generate"), ("generate", "verify"),
              ("validate", "judge")])
-
-    def test_mcp_required_llm_substeps_matches_runtime(self) -> None:
-        granted = {key for key, tools in ort._MCP_TOOL_GRANTS_BY_SUBSTEP.items() if tools}
-        self.assertEqual(granted & set(lc.LLM_LEAF_SUBSTEPS),
-                         set(lc.MCP_REQUIRED_LLM_SUBSTEPS))
 
     def test_backend_tokens_cover_the_legacy_supported_backends(self) -> None:
         cli_tokens = {lc.PROVIDER_BACKEND_TOKENS[p] for p in lc.CLI_PROVIDERS}

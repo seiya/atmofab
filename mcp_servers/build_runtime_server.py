@@ -49,33 +49,19 @@ def _disable_bytecode_writes() -> None:
 
 
 @lru_cache(maxsize=1)
-def _load_orchestration_runtime() -> Any:
-    """Load `tools/orchestration_runtime.py` without requiring `tools` as a package."""
-    root = Path(__file__).resolve().parent.parent
-    path = root / "tools" / "orchestration_runtime.py"
-    _disable_bytecode_writes()
-    import importlib.util
-
-    spec = importlib.util.spec_from_file_location("orchestration_runtime", path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"cannot load orchestration runtime from {path}")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-@lru_cache(maxsize=1)
 def _backend_registry() -> Any:
     """Load `tools/backends/registry.py`, the one door to a backend package.
 
-    A DOTTED import, unlike `_load_orchestration_runtime`'s file-location load: the registry
-    resolves a backend by importing its dotted module path, so `tools` has to be importable as a
-    package here rather than merely readable as a file. `tools/` is a namespace package, so the
+    A DOTTED import: the registry resolves a backend by importing its dotted module path, so
+    `tools` has to be importable as a package here rather than merely readable as a file.
+    (This module used to carry a second, file-location loader for
+    `tools/orchestration_runtime.py`, whose one consumer was the orchestration capability
+    gate — retired in issue #171.) `tools/` is a namespace package, so the
     checkout root on `sys.path` is all that takes; the bootstrap mirrors
     `tools/validate_pipeline_semantics.py`'s.
 
-    The registry is stdlib-only and imports no sibling at module level, so this costs no more
-    than the file-location load above and introduces no cycle (`tools/host_prerequisites.py`
+    The registry is stdlib-only and imports no sibling at module level, so it is cheap and
+    introduces no cycle (`tools/host_prerequisites.py`
     imports THIS module; this module imports the registry; the registry imports nothing).
     """
     _disable_bytecode_writes()
@@ -90,72 +76,31 @@ def _backend_registry() -> Any:
     return registry
 
 
-_WORKFLOW_MODE_ENV_VARS = ("ATMOFAB_WORKFLOW_MODE", "ATMOFAB_ORCHESTRATION_ID")
+def _refuse_retired_arguments(args: dict[str, Any], tool_name: str) -> None:
+    """Refuse an argument this server used to gate on and no longer reads.
 
+    `capability_token` named a secret in `capabilities/<agent_run_id>.json`, which the
+    orchestration gate compared against the launch record before serving a call. The gate
+    existed because the caller might be a LEAF holding a grant it should not be able to
+    widen; since Z4 (issue #171) no leaf reaches this server at all — a pure leaf launches
+    with `--tools ""` and `--strict-mcp-config` and carries no MCP configuration — so the
+    only caller under a run is the conductor, in the host process, and what it owes the
+    server is attribution rather than authority.
 
-def _workflow_mode_env_signal() -> str | None:
-    """The workflow environment variable that puts this server under a run, if any.
-
-    `tools/run_workflow.py` sets `ATMOFAB_WORKFLOW_MODE=1` in the node environment and
-    the conductor adds `ATMOFAB_ORCHESTRATION_ID` per child. Both reach the leaf's CLI —
-    and the MCP server it spawns — because they are on the leaf's DECLARED environment
-    (`ATMOFAB_*` is allowlisted by prefix — the prefix itself lives in
-    `orchestration_runtime.LEAF_ENV_ALLOWED_PREFIXES`, not in the exact-name
-    `LEAF_ENV_ALLOWLIST` beside it, which an earlier version of this sentence cited) and the bwrap profile `--setenv`s each one after `--clearenv`; it is
-    no longer a pass-through. Measured under the stripped environment: the server comes
-    up and answers identically to a full-environment control. Read
-    `os.environ` on every call — tests substitute the environment per case, so a cached
-    answer would be wrong.
+    Refused rather than ignored: a caller still sending one is running against a contract
+    this server no longer implements, and reading it as a no-op would serve the call as if
+    the check had passed.
     """
-    for name in _WORKFLOW_MODE_ENV_VARS:
-        value = os.environ.get(name, "").strip()
-        if not value:
-            continue
-        if name == "ATMOFAB_WORKFLOW_MODE" and value == "0":
-            continue
-        return name
-    return None
+    offending = sorted(key for key in _RETIRED_ARGUMENTS if key in args)
+    if offending:
+        raise ValueError(
+            f"{tool_name} no longer accepts " + ", ".join(offending)
+            + ": the orchestration capability gate was retired in issue #171; pass "
+              "orchestration_id / agent_run_id for attribution instead"
+        )
 
 
-def _maybe_enforce_orchestration_mcp_gate(
-    *,
-    tool_name: str,
-    project_dir: str,
-    args: dict[str, Any],
-) -> None:
-    """When `orchestration_id` is set, require launch + capability token + phase_state.
-
-    Under the workflow the argument itself is mandatory: omitting it would otherwise
-    buy an unattributed call with no capability, no role/phase check, and no audit
-    record, which is the whole gate. Outside a run (no workflow environment) the server
-    stays usable standalone, where there is no orchestration to attribute a call to.
-    """
-    orch_raw = args.get("orchestration_id")
-    if not _is_orchestrated_call(args):
-        signal = _workflow_mode_env_signal()
-        if signal is not None:
-            raise ValueError(
-                f"{tool_name} requires orchestration_id under the workflow "
-                f"({signal} is set in this server's environment)"
-            )
-        return
-    orch_id = str(orch_raw).strip()
-    agent_raw = args.get("agent_run_id")
-    cap_raw = args.get("capability_token")
-    if agent_raw is None or not str(agent_raw).strip():
-        raise ValueError(f"{tool_name} requires agent_run_id when orchestration_id is set")
-    if cap_raw is None or not str(cap_raw).strip():
-        raise ValueError(f"{tool_name} requires capability_token when orchestration_id is set")
-    repo_root = _repo_root_for_call(args, project_dir)
-    rt = _load_orchestration_runtime()
-    rt.validate_mcp_build_tool_invocation(
-        repo_root,
-        orchestration_id=orch_id,
-        agent_run_id=str(agent_raw).strip(),
-        capability_token=str(cap_raw).strip(),
-        tool_name=tool_name,
-        mcp_args=args,
-    )
+_RETIRED_ARGUMENTS = ("capability_token",)
 
 
 def _bounded_int(raw: Any, default: int, minimum: int, name: str) -> int:
@@ -167,75 +112,6 @@ def _bounded_int(raw: Any, default: int, minimum: int, name: str) -> int:
         raise ValueError(f"{name} must be >= {minimum} (got {value})")
     return value
 
-
-def _server_checkout_root() -> Path:
-    """The checkout this server file lives in — `<root>/mcp_servers/this_file.py`.
-
-    The same anchor `_load_orchestration_runtime` uses to find the runtime it enforces
-    with."""
-    return Path(__file__).resolve().parent.parent
-
-
-def _repo_root_for_call(args: dict[str, Any], project_dir: str) -> Path:
-    """The root a call's paths are judged against.
-
-    One spelling, shared by the capability gate and by every containment check, so the
-    root a capability is validated at is the root its paths are measured from. Only an
-    ABSENT `repo_root` falls back to `project_dir`: a present but empty value is a
-    value, and reading it as an omission in one place and not the other would let the
-    caller choose its own containment root.
-
-    Under the workflow the root must be this server's own checkout. Everything the gate
-    trusts — preflight, phase_state, the launch record, the capability file — is read
-    from under this path, so a caller that names its own root brings its own evidence:
-    a leaf can write a whole orchestration tree in the scratch directory the agent
-    contract grants it (`workspace/tmp/<agent_run_id>`, rw-bound, reachable through the
-    sanctioned `python3 workspace/tmp/...` route), point `repo_root` at it, and hold a
-    capability it wrote itself. Outside a run there is no orchestration to anchor, and
-    the server is a general tool for its operator."""
-    raw = args.get("repo_root")
-    root = Path(str(raw if raw is not None else project_dir)).resolve()
-    signal = _workflow_mode_env_signal()
-    if signal is not None and root != _server_checkout_root():
-        raise ValueError(
-            "repo_root must be this server's own checkout under the workflow "
-            f"({signal} is set in this server's environment); got {str(root)!r}, "
-            f"expected {str(_server_checkout_root())!r}"
-        )
-    return root
-
-
-def _is_orchestrated_call(args: dict[str, Any]) -> bool:
-    """Whether this call is attributed to an orchestration.
-
-    The predicate is the gate's, spelled the same way: only `None` and a blank string
-    are absent. Reading any falsy value as absent instead would hand a call the gate
-    validated (`orchestration_id` of `0` or `False` becomes the id `"0"` / `"False"`)
-    the rules meant for an unattributed one."""
-    raw = args.get("orchestration_id")
-    return raw is not None and bool(str(raw).strip())
-
-
-# The make variables `Validate.execute` passes to the make_test re-run (canonical:
-# docs/workflow/phases/phase_04_validate.md), which are also the only assignments
-# `compile_project` accepts in `extra_args`. Adding a key here is adding a way to
-# influence a certified build, so it belongs with the phase contract that needs it.
-_MAKE_VARIABLE_ALLOWLIST = frozenset(
-    {"OBJDIR", "BINDIR", "RUNDIR", "BIN", "SPEC", "CASES"}
-)
-
-# Which tools may carry any of them at all. The workflow passes `env` to exactly one
-# tool; for the other four an empty allowlist says so, rather than advertising make
-# variables that mean nothing to a linter or a syntax check.
-_ORCHESTRATED_ENV_KEYS_BY_TOOL: dict[str, frozenset[str]] = {
-    # Build passes these on the make command line (`extra_args`), not in the
-    # environment, so `compile_project` accepts no caller `env` either.
-    "compile_project": frozenset(),
-    "run_quality_checks": _MAKE_VARIABLE_ALLOWLIST,
-    "run_program": frozenset(),
-    "run_linter": frozenset(),
-    "run_syntax_check": frozenset(),
-}
 
 _UNSAFE_ENV_OVERRIDE_KEYS = frozenset({
     "BASH_ENV", "ENV", "IFS", "PATH", "PYTHONPATH",
@@ -249,53 +125,30 @@ _UNSAFE_ENV_OVERRIDE_KEYS = frozenset({
 _UNSAFE_ENV_OVERRIDE_PREFIXES = ("LD_", "DYLD_")
 
 
-def _validate_env_overrides(
-    env: Any, tool_name: str, *, orchestrated: bool, repo_root: Path
-) -> None:
-    """Constrain caller-supplied environment overrides.
+def _validate_env_overrides(env: Any, tool_name: str) -> None:
+    """Refuse an environment override that redirects what the command executes.
 
     Every tool here except `run_program` (whose `command` is caller-chosen argv by
     design) constrains argv to a fixed preset or a build-tool invocation, and the
-    environment goes around that constraint. Listing what to keep out does not finish:
-    each program these tools run reads its own configuration from the environment. The
-    loader takes `LD_PRELOAD`, the gcc driver
-    takes `COMPILER_PATH` to find the front end it execs, make takes `MAKEFLAGS` as
-    command-line switches and imports any other name as a make variable, so `FC` alone
-    redirects a certified Makefile's compiler. Enumerating those names is a list that
-    grows by one every time someone reads it.
+    environment goes around that constraint: the loader takes `LD_PRELOAD`, the gcc
+    driver takes `COMPILER_PATH` to find the front end it execs, and make takes
+    `MAKEFLAGS` as command-line switches.
 
-    So under an orchestration only the keys the workflow declares are accepted, and
-    every other key is refused whether or not anyone has thought of it. Outside an
-    orchestration the denylist applies: the operator chose the argv, so the check is
-    there to catch a mistake, not to confine the caller.
-
-    The accepted keys' VALUES are checked too: they reach the make recipe's shell
-    unquoted, so a value carrying a shell metacharacter is a command, not a value.
-
-    Refusing names the key instead of dropping it silently, so a mistake and an attack
-    are both visible in the caller's result. The leaf hook entrypoint refused a `VAR=value`
-    prefix on a Bash command for the same reason, until Z4 (issue #171) deleted it with the
-    leaf that held a Bash tool.
+    ONE mode since Z4 (issue #171). There were two: an ALLOWLIST of the make variables
+    the workflow declares, switched on by an `orchestration_id` argument or by the
+    workflow environment variables, and this denylist for everything else. The allowlist
+    existed because the caller might be a LEAF whose grant it had to bound; no leaf
+    reaches this server any more (`--tools ""`, `--strict-mcp-config`, no MCP
+    configuration at all), so the only caller under a run is the conductor in the host
+    process, and the allowlist bounded nobody. What survives is the denylist, which
+    catches a mistake rather than confining a caller — and it now applies to the
+    conductor's calls too, which it did not before.
 
     Call this on the raw `env` argument, before the server composes its own additions
     (`OMP_*` for run_program, `PYTHONPATH` for the pytest preset) — those are the
     server's own decisions and are not caller-controlled.
     """
     if not env:
-        return
-    if orchestrated:
-        # Exact names: `objdir` is a different environment variable, and accepting it
-        # would leave the make_test re-run on the Makefile's own default.
-        allowed = _ORCHESTRATED_ENV_KEYS_BY_TOOL.get(tool_name, frozenset())
-        offending = sorted(str(key) for key in env if str(key) not in allowed)
-        if offending:
-            permitted = ", ".join(sorted(allowed)) or "none"
-            raise ValueError(
-                f"{tool_name} accepts only these env overrides under an orchestration "
-                f"({permitted}); refused: " + ", ".join(offending)
-            )
-        _refuse_unsafe_values(
-            [(str(k), str(v)) for k, v in env.items()], tool_name, "env", repo_root)
         return
     offending = sorted(
         str(key)
@@ -310,19 +163,16 @@ def _validate_env_overrides(
         )
 
 
-# The declared make variables split by what their value IS: four name a location, two
-# name what to run and which cases to run. A path is checked mainly by where it lands
-# rather than by its spelling, so a checkout path holding a non-ASCII character stays
-# usable.
-_ORCHESTRATED_PATH_VALUE_KEYS = frozenset({"OBJDIR", "BINDIR", "RUNDIR", "SPEC"})
-# The recipe interpolates every one of them unquoted (`cd $(RUNDIR) &&
-# $(BINDIR)/$(BIN) --cases $(SPEC) $(CASES)`), so no value may carry a character that
-# line's shell or make acts on — whitespace included, since it splits the words, and
-# `#`, which ends a make line. A checkout whose own path holds one of these is not
-# usable under the workflow; that is a real constraint on where a repository lives,
-# stated in mcp_servers/README.md.
-_SHELL_ACTIVE_CHARS = set(" \t\n\r;&|$`'\"\\<>()*?[]{}~#!")
-_MAKE_NAME_VALUE_RE = re.compile(r"^[A-Za-z0-9_.][A-Za-z0-9_.+-]*$")
+# A build-tool command line takes a make VARIABLE ASSIGNMENT and nothing else. The name
+# is what decides: `--eval=$(shell ...)` and `--load-average=8` both carry an `=`, and
+# make reads them as switches that run before the certified Makefile is read at all.
+_MAKE_ASSIGNMENT_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+# The make recipe interpolates an assignment's value unquoted (`cd $(RUNDIR) &&
+# $(BINDIR)/$(BIN) --cases $(SPEC) $(CASES)`), so a value carrying a character that
+# line's shell or make acts on is a command rather than a value. A space is not one of
+# them: it splits words in the recipe, but `CASES` is a word LIST by contract and a
+# checkout path may legitimately hold one.
+_SHELL_ACTIVE_CHARS = set("\t\n\r;&|$`'\"\\<>()*?[]{}~#!")
 
 
 def _build_syntax_source_re() -> re.Pattern[str]:
@@ -334,116 +184,51 @@ def _build_syntax_source_re() -> re.Pattern[str]:
     return re.compile(rf"^[A-Za-z0-9_][A-Za-z0-9_.+-]*\.({suffixes})$", re.IGNORECASE)
 
 
-def _refuse_unsafe_values(
-    values: list[tuple[str, str]], tool_name: str, kind: str, repo_root: Path
-) -> None:
-    """Refuse an accepted key whose VALUE would carry more than a value.
-
-    A path value must be absolute and land inside the repository — the value names
-    where the build writes and what it runs, and `BINDIR` alone points the recipe at any
-    executable on the machine. Absolute because a relative one has no single base: make
-    reads `OBJDIR` from its own working directory and `BINDIR` / `SPEC` from wherever
-    `cd $(RUNDIR)` left it, so a check here would be measuring a different path from the
-    one that runs. `BIN` must be one identifier — it is a command name, and a space in
-    it appends an argument to the runner — and `CASES` a space-separated list of them.
-    No value may carry a character the recipe's shell acts on.
-
-    An empty value is refused rather than skipped, for every key the recipe uses as a
-    path or a command name. Make imports it as a variable that IS set, so `?=` does not
-    restore the default: `RUNDIR=` turns `cd $(RUNDIR)` into a bare `cd`, which lands in
-    the home directory, and `$(OBJDIR)/x` into an absolute path at the root. Only
-    `CASES` may be empty — an empty case list is a list.
-
-    Takes pairs rather than a mapping: two assignments to the same key both reach the
-    command line, so both are checked.
-    """
-    offending: list[str] = []
-    for key, value in values:
-        if not value:
-            if key != "CASES":
-                offending.append(f"{key}=")
-            continue
-        if set(value) & _SHELL_ACTIVE_CHARS - {" "}:
-            offending.append(f"{key}={value}")
-        elif key in _ORCHESTRATED_PATH_VALUE_KEYS:
-            candidate = Path(value)
-            resolved = candidate.resolve()
-            if (" " in value or not candidate.is_absolute()
-                    or (resolved != repo_root and repo_root not in resolved.parents)):
-                offending.append(f"{key}={value}")
-        elif key == "CASES":
-            if not all(_MAKE_NAME_VALUE_RE.match(word) for word in value.split(" ") if word):
-                offending.append(f"{key}={value}")
-        elif not _MAKE_NAME_VALUE_RE.match(value):
-            offending.append(f"{key}={value}")
-    if offending:
-        message = (
-            f"{tool_name} {kind} values reach the make recipe's shell: a path must be "
-            "absolute and inside the repository, a name must be an identifier, and only "
-            "CASES may be empty; refused: "
-            + ", ".join(sorted(offending))
-        )
-        # A refusal caused by the CHECKOUT's own path (a space, a parenthesis) reads as a
-        # complaint about a value the caller composed correctly, so name the real cause —
-        # but only for the keys whose value is derived from that path, or the clause
-        # explains a refusal it did not cause.
-        offending_keys = {item.split("=", 1)[0] for item in offending}
-        if (offending_keys & _ORCHESTRATED_PATH_VALUE_KEYS
-                and set(str(repo_root)) & _SHELL_ACTIVE_CHARS):
-            message += (
-                f". The repository path itself ({str(repo_root)!r}) contains a character "
-                "this rule refuses, so no value derived from it can pass — the checkout "
-                "has to live somewhere without one"
-            )
-        raise ValueError(message)
-
-
 def _validate_build_argv_overrides(
-    target: Any, extra_args: Any, tool_name: str, *, orchestrated: bool, repo_root: Path
+    target: Any, extra_args: Any, tool_name: str
 ) -> str | None:
     """Constrain the caller-chosen part of the build argv; return the target to use.
 
-    `target` and `extra_args` are appended to the build tool's command line, and for
-    make a command-line assignment overrides even a hard assignment in the Makefile —
-    more authority than the environment. `FC=/tmp/x` there replaces the compiler a
-    certified Makefile invokes, and `--eval=$(shell ...)` runs before the Makefile is
-    read at all.
+    `extra_args` is appended to the build tool's command line, where a make assignment
+    overrides even a hard assignment in the Makefile. Two rules, applied to every call:
+    an element must ASSIGN a make variable — which is what keeps `--eval=$(shell ...)`
+    and every other switch out — and its value must not carry a character the recipe's
+    shell acts on.
 
-    So under an orchestration the same declared set governs the argv as governs the
-    environment: an `extra_args` element must assign one of those make variables and its
-    value must be a value. `target` is refused outright — Build names no target, and a
-    target is a way to run whatever the Makefile's other rules do under a grant that
-    covers compiling. Outside an orchestration the operator chose the argv already.
+    ONE mode since Z4 (issue #171), like `_validate_env_overrides` above and for the same
+    reason. The orchestrated arm also held an allowlist of six variable NAMES and a
+    containment rule on the four whose value is a path; both bounded a leaf's grant, and
+    no leaf reaches this server. The structural rules stay because they catch the second
+    defended class — a defect in a caller this repository writes — and they now cover the
+    standalone call, which had no `extra_args` check at all.
 
-    The validated `target` is returned so the string that was checked is the string
-    that runs.
+    The validated `target` is returned so the string that was checked is the string that
+    runs.
     """
     if target is not None and not isinstance(target, str):
         raise ValueError(f"{tool_name} target must be a string")
     if not isinstance(extra_args, list) or not all(isinstance(a, str) for a in extra_args):
         raise ValueError(f"{tool_name} extra_args must be an array of strings")
     resolved_target = target.strip() if isinstance(target, str) and target.strip() else None
-    if not orchestrated:
-        return resolved_target
-    if resolved_target is not None:
-        raise ValueError(
-            f"{tool_name} does not accept a target under an orchestration "
-            f"(got {resolved_target!r}); the build is the Makefile's default goal"
-        )
-    permitted = sorted(_MAKE_VARIABLE_ALLOWLIST)
     offending = [
         arg for arg in extra_args
-        if "=" not in arg or arg.split("=", 1)[0] not in _MAKE_VARIABLE_ALLOWLIST
+        if "=" not in arg
+        or not _MAKE_ASSIGNMENT_NAME_RE.match(arg.split("=", 1)[0])
     ]
     if offending:
         raise ValueError(
-            f"{tool_name} accepts only assignments to these make variables in "
-            f"extra_args under an orchestration ({', '.join(permitted)}); refused: "
-            + ", ".join(offending)
+            f"{tool_name} accepts only make variable assignments (NAME=value) in "
+            "extra_args; refused: " + ", ".join(offending)
         )
-    _refuse_unsafe_values(
-        [(arg.split("=", 1)[0], arg.split("=", 1)[1]) for arg in extra_args],
-        tool_name, "extra_args", repo_root)
+    unsafe = sorted(
+        arg for arg in extra_args
+        if set(arg.split("=", 1)[1]) & _SHELL_ACTIVE_CHARS
+    )
+    if unsafe:
+        raise ValueError(
+            f"{tool_name} extra_args values reach the make recipe's shell: refused "
+            + ", ".join(unsafe)
+        )
     return resolved_target
 
 
@@ -510,66 +295,42 @@ DEPENDENCY_AWARE_BUILD_SYSTEMS = {
     "poetry",
 }
 
-def _env_property_schema(tool_name: str) -> dict[str, Any]:
-    """The `env` argument as the tool actually accepts it.
-
-    The three tools the workflow passes no `env` to accept none under an orchestration,
-    so their schema says that rather than listing make variables that mean nothing to a
-    linter or a syntax check."""
-    if not _ORCHESTRATED_ENV_KEYS_BY_TOOL.get(tool_name):
-        return {
-            "type": "object",
-            "additionalProperties": {"type": "string"},
-            "description": (
-                "Environment overrides for the command. Under an orchestration this "
-                "tool accepts none. Standalone, keys that redirect execution (LD_*, "
-                "DYLD_*, PATH, PYTHONPATH, BASH_ENV, ENV, IFS, COMPILER_PATH, "
-                "GCC_EXEC_PREFIX, LIBRARY_PATH, MAKEFLAGS, GNUMAKEFLAGS, MAKEFILES, "
-                "MAKESHELL) are refused."
-            ),
-        }
-    return dict(_MAKE_VARIABLE_ENV_SCHEMA)
-
-
-_MAKE_VARIABLE_ENV_SCHEMA: dict[str, Any] = {
+_ENV_PROPERTY_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": {"type": "string"},
     "description": (
-        "Environment overrides for the command. Under an orchestration only the "
-        "exact keys OBJDIR, BINDIR, RUNDIR, BIN, SPEC, CASES are accepted, a path "
-        "value must be absolute and resolve inside the repository, a name value must "
-        "be an identifier, and only CASES may be empty; any other key is refused. Standalone, keys that redirect execution (LD_*, "
+        "Environment overrides for the command. Keys that redirect execution (LD_*, "
         "DYLD_*, PATH, PYTHONPATH, BASH_ENV, ENV, IFS, COMPILER_PATH, "
         "GCC_EXEC_PREFIX, LIBRARY_PATH, MAKEFLAGS, GNUMAKEFLAGS, MAKEFILES, "
         "MAKESHELL) are refused."
     ),
 }
 
-_ORCHESTRATION_GATE_PROPERTIES: dict[str, Any] = {
+# Attribution, not authority. `capability_token` used to sit here beside them and name a
+# secret the orchestration gate checked; the gate was retired in issue #171 and the
+# argument is now refused outright (`_refuse_retired_arguments`), so a caller written
+# against the old contract fails instead of being served as if it had passed.
+_ATTRIBUTION_PROPERTIES: dict[str, Any] = {
     "orchestration_id": {
         "type": "string",
         "description": (
-            "Required under the workflow (ATMOFAB_ORCHESTRATION_ID set, or "
-            "ATMOFAB_WORKFLOW_MODE set to a non-empty value other than 0, in the "
-            "server's environment): "
-            "with agent_run_id and capability_token it enforces preflight, record-launch "
-            "artifacts, phase_state child_running, and capability permissions. Omitting "
-            "it is refused, not exempted."
+            "Optional. The orchestration this call belongs to. Recorded in the "
+            "command log entry so a command can be traced back to the run that issued "
+            "it; it decides nothing about what this server will execute."
         ),
     },
     "agent_run_id": {
         "type": "string",
-        "description": "Child agent_run_id that owns the capability token.",
-    },
-    "capability_token": {
-        "type": "string",
-        "description": "Secret from workspace/orchestrations/<id>/capabilities/<agent_run_id>.json.",
+        "description": (
+            "Optional. The agent run this call belongs to, recorded in the command log "
+            "entry beside orchestration_id."
+        ),
     },
     "repo_root": {
         "type": "string",
         "description": (
-            "Repository root containing workspace/orchestrations/. Omit to use "
-            "project_dir; an empty value is not an omission."
+            "Repository root. Optional and unused by this server since issue #171; "
+            "accepted so an existing caller keeps working."
         ),
     },
 }
@@ -643,43 +404,6 @@ def _resolve_command_log_path(project_dir: str, command_log_path: str | None) ->
     return base_dir / raw_path
 
 
-def _validate_orchestrated_paths(
-    command_log_path: Any, args: dict[str, Any], project_dir: str, tool_name: str
-) -> None:
-    """Keep the working directory and the command log inside the repository.
-
-    The log path is a caller-chosen path that `_append_command_log` creates directories
-    for and appends to, so it is a write, and the only placement rule the phase gate
-    carries covers `run_program` at Validate. Under an orchestration a write belongs
-    inside the checkout the capability is scoped to; the conductor's own paths (the node
-    directory, `workspace/tmp/<agent_run_id>/...`) all are.
-    """
-    if not _is_orchestrated_call(args):
-        return
-    root = _repo_root_for_call(args, project_dir)
-    # project_dir is the subprocess cwd and the base a relative log path resolves
-    # against, so it belongs inside the same root the capability was validated at.
-    # A relative project_dir has two bases: the gate resolves it against repo_root, and
-    # `_run_command` hands it to the subprocess, which resolves it against the server's
-    # own working directory. Refuse rather than check one and run the other.
-    if not Path(project_dir).is_absolute():
-        raise ValueError(
-            f"{tool_name} project_dir must be an absolute path under an orchestration "
-            f"(got {project_dir!r})"
-        )
-    for label, candidate in (
-        ("project_dir", Path(project_dir).resolve()),
-        *(() if command_log_path is None else
-          (("command_log_path",
-            _resolve_command_log_path(project_dir, str(command_log_path)).resolve()),)),
-    ):
-        if root != candidate and root not in candidate.parents:
-            raise ValueError(
-                f"{tool_name} {label} must stay under the repository root under an "
-                f"orchestration (got {str(candidate)!r})"
-            )
-
-
 def _path_to_ref(path: Path) -> str | None:
     repo_root = Path.cwd().resolve()
     try:
@@ -696,6 +420,24 @@ def _append_command_log(log_path: Path, entry: dict[str, Any]) -> None:
         stream.write("\n")
 
 
+def _attribution(args: dict[str, Any]) -> dict[str, str]:
+    """The run this call belongs to, as the command log records it.
+
+    Both fields are optional and neither decides anything: the server runs the same
+    command with them, without them, and with any value in them. They are here so a line
+    in `command_log.jsonl` can be traced back to the orchestration and agent run that
+    issued it — which is what the retired capability gate produced as a SIDE EFFECT of
+    checking a token, and the only part of it anything downstream reads
+    (`docs/workflow/MCP_COMMAND_LOG_PLACEMENT.md`).
+    """
+    out: dict[str, str] = {}
+    for key in ("orchestration_id", "agent_run_id"):
+        raw = args.get(key)
+        if raw is not None and str(raw).strip():
+            out[key] = str(raw).strip()
+    return out
+
+
 def _run_command(
     command: list[str],
     cwd: str,
@@ -704,6 +446,7 @@ def _run_command(
     env: dict[str, str] | None,
     capture_limit: int,
     command_log_path: str | None,
+    attribution: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     if not command:
         raise ValueError("command must not be empty")
@@ -758,6 +501,7 @@ def _run_command(
             "env_override_keys": sorted(env.keys()) if env else [],
             "ok": result["ok"],
             "return_code": result["return_code"],
+            **(attribution or {}),
         }
         _append_command_log(log_path, entry)
         result["command_id"] = command_id
@@ -794,6 +538,7 @@ def _run_command(
             "ok": result["ok"],
             "return_code": result["return_code"],
             "error": result["error"],
+            **(attribution or {}),
         }
         _append_command_log(log_path, entry)
         result["command_id"] = command_id
@@ -933,18 +678,14 @@ def build_system_executable(build_system: str) -> str:
 
 def tool_detect_build_system(args: dict[str, Any]) -> dict[str, Any]:
     project_dir = str(args.get("project_dir", "."))
-    # Advisory and capability-free — it runs nothing and no substep is granted it — but
-    # it does report which of eleven marker files exist in any directory it is pointed
-    # at, and the resolved path of that directory. Under the workflow that is a read
-    # outside the boundary the read manifest draws, with no command log to attribute it,
-    # so the tool is refused there rather than gated.
-    signal = _workflow_mode_env_signal()
-    if signal is not None:
-        raise ValueError(
-            "detect_build_system is not available under the workflow "
-            f"({signal} is set in this server's environment); the build system comes "
-            "from the IR's toolchain, not from marker files"
-        )
+    # Advisory and capability-free: it runs nothing, and it reports which of eleven
+    # marker files exist in the directory it is pointed at. It used to be REFUSED when
+    # the workflow environment variables were set, because a leaf could reach it and the
+    # read was outside the boundary the read manifest drew. No leaf reaches this server
+    # since Z4 (issue #171), and the conductor does not call this tool at all — the build
+    # system comes from the IR's toolchain — so the refusal guarded nothing and the
+    # server is a general tool for its operator again.
+    _refuse_retired_arguments(args, "detect_build_system")
     language = str(args.get("language", "")).strip().lower()
     recommended = _recommended_build_system(project_dir, language)
     return {
@@ -957,11 +698,7 @@ def tool_detect_build_system(args: dict[str, Any]) -> dict[str, Any]:
 
 def tool_compile_project(args: dict[str, Any]) -> dict[str, Any]:
     project_dir = str(args.get("project_dir", "."))
-    _maybe_enforce_orchestration_mcp_gate(
-        tool_name="compile_project",
-        project_dir=project_dir,
-        args=args,
-    )
+    _refuse_retired_arguments(args, "compile_project")
     language = str(args.get("language", "")).strip().lower()
     target = args.get("target")
     # The served schema declares these minimums; an MCP argument schema is advisory, so
@@ -973,28 +710,16 @@ def tool_compile_project(args: dict[str, Any]) -> dict[str, Any]:
     command_log_path = args.get("command_log_path")
     if command_log_path is not None and not isinstance(command_log_path, str):
         raise ValueError("command_log_path must be a string")
-    _validate_orchestrated_paths(command_log_path, args, project_dir, "compile_project")
     extra_args = args.get("extra_args", [])
     env = args.get("env")
     if env is not None and not isinstance(env, dict):
         raise ValueError("env must be an object")
-    _validate_env_overrides(
-        env, "compile_project", orchestrated=_is_orchestrated_call(args),
-        repo_root=_repo_root_for_call(args, project_dir))
-    target = _validate_build_argv_overrides(
-        target, extra_args, "compile_project", orchestrated=_is_orchestrated_call(args),
-        repo_root=_repo_root_for_call(args, project_dir))
+    _validate_env_overrides(env, "compile_project")
+    target = _validate_build_argv_overrides(target, extra_args, "compile_project")
 
     build_system = args.get("build_system")
     if build_system:
         build_system = str(build_system).strip().lower()
-    elif _is_orchestrated_call(args):
-        # Under an orchestration the phase gate reads an omitted build_system as make
-        # (as record_launch does for an IR that omits toolchain.build_system), so
-        # detecting one from marker files here would run a build the gate never saw:
-        # a project_dir without a Makefile but with a CMakeLists.txt was the bypass.
-        # The workflow is make-only, so make is also the right answer.
-        build_system = "make"
     else:
         build_system = _recommended_build_system(project_dir, language)["build_system"]
 
@@ -1022,6 +747,7 @@ def tool_compile_project(args: dict[str, Any]) -> dict[str, Any]:
         env=env,
         capture_limit=capture_limit,
         command_log_path=command_log_path,
+        attribution=_attribution(args),
     )
     result["language"] = language or None
     result["build_system"] = build_system
@@ -1030,17 +756,12 @@ def tool_compile_project(args: dict[str, Any]) -> dict[str, Any]:
 
 def tool_run_program(args: dict[str, Any]) -> dict[str, Any]:
     project_dir = str(args.get("project_dir", "."))
-    _maybe_enforce_orchestration_mcp_gate(
-        tool_name="run_program",
-        project_dir=project_dir,
-        args=args,
-    )
+    _refuse_retired_arguments(args, "run_program")
     timeout_sec = _bounded_int(args.get("timeout_sec"), 3600, 1, "timeout_sec")
     capture_limit = _bounded_int(args.get("capture_limit"), 120000, 1000, "capture_limit")
     command_log_path = args.get("command_log_path")
     if command_log_path is not None and not isinstance(command_log_path, str):
         raise ValueError("command_log_path must be a string")
-    _validate_orchestrated_paths(command_log_path, args, project_dir, "run_program")
     env = args.get("env")
     target_class = _resolve_target_class(args)
     threads_per_rank = _parse_threads_per_rank(args)
@@ -1050,9 +771,7 @@ def tool_run_program(args: dict[str, Any]) -> dict[str, Any]:
     command = [str(item) for item in command]
     if env is not None and not isinstance(env, dict):
         raise ValueError("env must be an object")
-    _validate_env_overrides(
-        env, "run_program", orchestrated=_is_orchestrated_call(args),
-        repo_root=_repo_root_for_call(args, project_dir))
+    _validate_env_overrides(env, "run_program")
 
     run_env: dict[str, str] | None
     if env is None:
@@ -1077,6 +796,7 @@ def tool_run_program(args: dict[str, Any]) -> dict[str, Any]:
         env=run_env,
         capture_limit=capture_limit,
         command_log_path=command_log_path,
+        attribution=_attribution(args),
     )
     result["target_class"] = target_class
     result["threads_per_rank"] = threads_per_rank
@@ -1091,23 +811,16 @@ def tool_run_program(args: dict[str, Any]) -> dict[str, Any]:
 
 def tool_run_quality_checks(args: dict[str, Any]) -> dict[str, Any]:
     project_dir = str(args.get("project_dir", "."))
-    _maybe_enforce_orchestration_mcp_gate(
-        tool_name="run_quality_checks",
-        project_dir=project_dir,
-        args=args,
-    )
+    _refuse_retired_arguments(args, "run_quality_checks")
     timeout_sec = _bounded_int(args.get("timeout_sec"), 1800, 1, "timeout_sec")
     capture_limit = _bounded_int(args.get("capture_limit"), 120000, 1000, "capture_limit")
     command_log_path = args.get("command_log_path")
     if command_log_path is not None and not isinstance(command_log_path, str):
         raise ValueError("command_log_path must be a string")
-    _validate_orchestrated_paths(command_log_path, args, project_dir, "run_quality_checks")
     env = args.get("env")
     if env is not None and not isinstance(env, dict):
         raise ValueError("env must be an object")
-    _validate_env_overrides(
-        env, "run_quality_checks", orchestrated=_is_orchestrated_call(args),
-        repo_root=_repo_root_for_call(args, project_dir))
+    _validate_env_overrides(env, "run_quality_checks")
     preset = str(args.get("preset", "make_test"))
 
     presets: dict[str, list[str]] = {
@@ -1152,6 +865,7 @@ def tool_run_quality_checks(args: dict[str, Any]) -> dict[str, Any]:
         env=run_env,
         capture_limit=capture_limit,
         command_log_path=command_log_path,
+        attribution=_attribution(args),
     )
     result["preset"] = preset
     return result
@@ -1259,23 +973,16 @@ def tool_run_linter(args: dict[str, Any]) -> dict[str, Any]:
     This is not compile_project and does not route through build_system.
     """
     project_dir = str(args.get("project_dir", "."))
-    _maybe_enforce_orchestration_mcp_gate(
-        tool_name="run_linter",
-        project_dir=project_dir,
-        args=args,
-    )
+    _refuse_retired_arguments(args, "run_linter")
     timeout_sec = _bounded_int(args.get("timeout_sec"), 1800, 1, "timeout_sec")
     capture_limit = _bounded_int(args.get("capture_limit"), 120000, 1000, "capture_limit")
     command_log_path = args.get("command_log_path")
     if command_log_path is not None and not isinstance(command_log_path, str):
         raise ValueError("command_log_path must be a string")
-    _validate_orchestrated_paths(command_log_path, args, project_dir, "run_linter")
     env = args.get("env")
     if env is not None and not isinstance(env, dict):
         raise ValueError("env must be an object")
-    _validate_env_overrides(
-        env, "run_linter", orchestrated=_is_orchestrated_call(args),
-        repo_root=_repo_root_for_call(args, project_dir))
+    _validate_env_overrides(env, "run_linter")
     preset = str(args.get("preset", DEFAULT_LINT_PRESET)).strip().lower()
 
     if "command" in args:
@@ -1299,6 +1006,7 @@ def tool_run_linter(args: dict[str, Any]) -> dict[str, Any]:
             env=run_env,
             capture_limit=capture_limit,
             command_log_path=command_log_path,
+            attribution=_attribution(args),
         )
         for sub in sub_presets
     ]
@@ -1499,23 +1207,16 @@ def tool_run_syntax_check(args: dict[str, Any]) -> dict[str, Any]:
     (the mandatory gfortran stage) is the caller's policy, not this tool's.
     """
     project_dir = str(args.get("project_dir", "."))
-    _maybe_enforce_orchestration_mcp_gate(
-        tool_name="run_syntax_check",
-        project_dir=project_dir,
-        args=args,
-    )
+    _refuse_retired_arguments(args, "run_syntax_check")
     timeout_sec = _bounded_int(args.get("timeout_sec"), 1800, 1, "timeout_sec")
     capture_limit = _bounded_int(args.get("capture_limit"), 120000, 1000, "capture_limit")
     command_log_path = args.get("command_log_path")
     if command_log_path is not None and not isinstance(command_log_path, str):
         raise ValueError("command_log_path must be a string")
-    _validate_orchestrated_paths(command_log_path, args, project_dir, "run_syntax_check")
     env = args.get("env")
     if env is not None and not isinstance(env, dict):
         raise ValueError("env must be an object")
-    _validate_env_overrides(
-        env, "run_syntax_check", orchestrated=_is_orchestrated_call(args),
-        repo_root=_repo_root_for_call(args, project_dir))
+    _validate_env_overrides(env, "run_syntax_check")
     compiler = str(args.get("compiler", MANDATORY_SYNTAX_COMPILER)).strip().lower()
     std = str(args.get("std", "f2008")).strip().lower()
     openmp = bool(args.get("openmp", False))
@@ -1586,6 +1287,7 @@ def tool_run_syntax_check(args: dict[str, Any]) -> dict[str, Any]:
         env=run_env,
         capture_limit=capture_limit,
         command_log_path=command_log_path,
+        attribution=_attribution(args),
     )
     return result | {
         "compiler": compiler,
@@ -1618,7 +1320,7 @@ TOOLS: dict[str, Tool] = {
         input_schema={
             "type": "object",
             "properties": {
-                "project_dir": {"type": "string", "description": "Absolute path under an orchestration."},
+                "project_dir": {"type": "string", "description": "Directory the command runs in."},
                 "language": {"type": "string"},
                 "build_system": {"type": "string"},
                 "target": {
@@ -1646,12 +1348,11 @@ TOOLS: dict[str, Tool] = {
                     "type": "string",
                     "description": (
                         "JSONL path for command logs. Relative paths are resolved "
-                        "from project_dir; under an orchestration the path must stay "
-                        "under the repository root."
+                        "from project_dir."
                     ),
                 },
-                "env": _env_property_schema("compile_project"),
-                **_ORCHESTRATION_GATE_PROPERTIES,
+                "env": _ENV_PROPERTY_SCHEMA,
+                **_ATTRIBUTION_PROPERTIES,
             },
             "required": ["project_dir"],
         },
@@ -1667,7 +1368,7 @@ TOOLS: dict[str, Tool] = {
         input_schema={
             "type": "object",
             "properties": {
-                "project_dir": {"type": "string", "description": "Absolute path under an orchestration."},
+                "project_dir": {"type": "string", "description": "Directory the command runs in."},
                 "command": {"type": "array", "items": {"type": "string"}},
                 "timeout_sec": {"type": "integer", "minimum": 1},
                 "capture_limit": {"type": "integer", "minimum": 1000},
@@ -1675,8 +1376,7 @@ TOOLS: dict[str, Tool] = {
                     "type": "string",
                     "description": (
                         "JSONL path for command logs. Relative paths are resolved "
-                        "from project_dir; under an orchestration the path must stay "
-                        "under the repository root."
+                        "from project_dir."
                     ),
                 },
                 "target_class": {"type": "string"},
@@ -1689,8 +1389,8 @@ TOOLS: dict[str, Tool] = {
                     "additionalProperties": True,
                 },
                 "threads_per_rank": {"type": "integer", "minimum": 1},
-                "env": _env_property_schema("run_program"),
-                **_ORCHESTRATION_GATE_PROPERTIES,
+                "env": _ENV_PROPERTY_SCHEMA,
+                **_ATTRIBUTION_PROPERTIES,
             },
             "required": ["project_dir", "command"],
         },
@@ -1705,7 +1405,7 @@ TOOLS: dict[str, Tool] = {
         input_schema={
             "type": "object",
             "properties": {
-                "project_dir": {"type": "string", "description": "Absolute path under an orchestration."},
+                "project_dir": {"type": "string", "description": "Directory the command runs in."},
                 "preset": {"type": "string", "default": "make_test"},
                 "timeout_sec": {"type": "integer", "minimum": 1},
                 "capture_limit": {"type": "integer", "minimum": 1000},
@@ -1713,12 +1413,11 @@ TOOLS: dict[str, Tool] = {
                     "type": "string",
                     "description": (
                         "JSONL path for command logs. Relative paths are resolved "
-                        "from project_dir; under an orchestration the path must stay "
-                        "under the repository root."
+                        "from project_dir."
                     ),
                 },
-                "env": _env_property_schema("run_quality_checks"),
-                **_ORCHESTRATION_GATE_PROPERTIES,
+                "env": _ENV_PROPERTY_SCHEMA,
+                **_ATTRIBUTION_PROPERTIES,
             },
             "required": ["project_dir"],
         },
@@ -1733,7 +1432,7 @@ TOOLS: dict[str, Tool] = {
         input_schema={
             "type": "object",
             "properties": {
-                "project_dir": {"type": "string", "description": "Absolute path under an orchestration."},
+                "project_dir": {"type": "string", "description": "Directory the command runs in."},
                 "preset": {
                     "type": "string",
                     "default": "fortitude",
@@ -1745,12 +1444,11 @@ TOOLS: dict[str, Tool] = {
                     "type": "string",
                     "description": (
                         "JSONL path for command logs. Relative paths are resolved "
-                        "from project_dir; under an orchestration the path must stay "
-                        "under the repository root."
+                        "from project_dir."
                     ),
                 },
-                "env": _env_property_schema("run_linter"),
-                **_ORCHESTRATION_GATE_PROPERTIES,
+                "env": _ENV_PROPERTY_SCHEMA,
+                **_ATTRIBUTION_PROPERTIES,
             },
             "required": ["project_dir"],
         },
@@ -1766,7 +1464,7 @@ TOOLS: dict[str, Tool] = {
         input_schema={
             "type": "object",
             "properties": {
-                "project_dir": {"type": "string", "description": "Absolute path under an orchestration."},
+                "project_dir": {"type": "string", "description": "Directory the command runs in."},
                 "compiler": {
                     "type": "string",
                     "default": "gfortran",
@@ -1797,12 +1495,11 @@ TOOLS: dict[str, Tool] = {
                     "type": "string",
                     "description": (
                         "JSONL path for command logs. Relative paths are resolved "
-                        "from project_dir; under an orchestration the path must stay "
-                        "under the repository root."
+                        "from project_dir."
                     ),
                 },
-                "env": _env_property_schema("run_syntax_check"),
-                **_ORCHESTRATION_GATE_PROPERTIES,
+                "env": _ENV_PROPERTY_SCHEMA,
+                **_ATTRIBUTION_PROPERTIES,
             },
             "required": ["project_dir"],
         },

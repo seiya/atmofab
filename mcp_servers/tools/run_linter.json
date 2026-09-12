@@ -6,7 +6,7 @@
     "properties": {
       "project_dir": {
         "type": "string",
-        "description": "Absolute path under an orchestration."
+        "description": "Directory the command runs in."
       },
       "preset": {
         "type": "string",
@@ -23,30 +23,26 @@
       },
       "command_log_path": {
         "type": "string",
-        "description": "JSONL path for command logs. Relative paths are resolved from project_dir; under an orchestration the path must stay under the repository root."
+        "description": "JSONL path for command logs. Relative paths are resolved from project_dir."
       },
       "env": {
         "type": "object",
         "additionalProperties": {
           "type": "string"
         },
-        "description": "Environment overrides for the command. Under an orchestration this tool accepts none. Standalone, keys that redirect execution (LD_*, DYLD_*, PATH, PYTHONPATH, BASH_ENV, ENV, IFS, COMPILER_PATH, GCC_EXEC_PREFIX, LIBRARY_PATH, MAKEFLAGS, GNUMAKEFLAGS, MAKEFILES, MAKESHELL) are refused."
+        "description": "Environment overrides for the command. Keys that redirect execution (LD_*, DYLD_*, PATH, PYTHONPATH, BASH_ENV, ENV, IFS, COMPILER_PATH, GCC_EXEC_PREFIX, LIBRARY_PATH, MAKEFLAGS, GNUMAKEFLAGS, MAKEFILES, MAKESHELL) are refused."
       },
       "orchestration_id": {
         "type": "string",
-        "description": "Required under the workflow (ATMOFAB_ORCHESTRATION_ID set, or ATMOFAB_WORKFLOW_MODE set to a non-empty value other than 0, in the server's environment): with agent_run_id and capability_token it enforces preflight, record-launch artifacts, phase_state child_running, and capability permissions. Omitting it is refused, not exempted."
+        "description": "Optional. The orchestration this call belongs to. Recorded in the command log entry so a command can be traced back to the run that issued it; it decides nothing about what this server will execute."
       },
       "agent_run_id": {
         "type": "string",
-        "description": "Child agent_run_id that owns the capability token."
-      },
-      "capability_token": {
-        "type": "string",
-        "description": "Secret from workspace/orchestrations/<id>/capabilities/<agent_run_id>.json."
+        "description": "Optional. The agent run this call belongs to, recorded in the command log entry beside orchestration_id."
       },
       "repo_root": {
         "type": "string",
-        "description": "Repository root containing workspace/orchestrations/. Omit to use project_dir; an empty value is not an omission."
+        "description": "Repository root. Optional and unused by this server since issue #171; accepted so an existing caller keeps working."
       }
     },
     "required": [

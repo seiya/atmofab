@@ -62,7 +62,6 @@ try:
     # prompt templates, and this validator cannot drift (a parity test still pins template
     # line 0 against it). pure_leaf is stdlib-only, so importing it here introduces no cycle.
     from tools.pure_leaf import (
-        PURE_CAPABILITY_MODE,
         PURE_PROMPT_CONTRACT_VERSION,
         PURE_PROMPT_SENTINEL,
         is_pure_request as _pure_leaf_is_pure_request,
@@ -100,7 +99,6 @@ except ModuleNotFoundError:  # pragma: no cover - import bootstrap for direct CL
         normalize_raw_evidence_artifact as _normalize_raw_evidence_artifact,
     )
     from tools.pure_leaf import (
-        PURE_CAPABILITY_MODE,
         PURE_PROMPT_CONTRACT_VERSION,
         PURE_PROMPT_SENTINEL,
         is_pure_request as _pure_leaf_is_pure_request,
@@ -10019,22 +10017,13 @@ def _validate_orchestration_hierarchy(
     has_substep_role = False
 
     for orchestration_dir in orchestration_dirs:
-        # An UNAUTHORIZED WRITE that landed. `--stage pre_judge` used to reach this shape
-        # through the diverted child's `agent_graph.json` edge; issue #177 moved the refusal to
-        # the violation marker, because the edge is pruned as an orphan once
-        # `agent_runs_invalid.jsonl` no longer names the child. Moving it left this gate with
-        # NOTHING covering the shape — one layer instead of two — which is a narrowing of a
-        # defense and therefore a classification, not a side effect of a refactor. The check
-        # belongs here as well as in the completion vouch: this gate runs at Validate's
-        # pre_judge, long before any `set-status pass`, so it stops the run before a whole
-        # Validate phase is spent on a workspace that cannot be certified.
-        for marker in sorted(
-                (orchestration_dir / "violations").glob("*.unauthorized_write_violation.json")
-                if (orchestration_dir / "violations").is_dir() else []):
-            violations.append(
-                f"{marker}: unauthorized write violation is outstanding; the paths it names "
-                "were written outside the child's write_roots and nothing rolled them back"
-            )
+        # An outstanding UNAUTHORIZED WRITE marker was refused here until PR-2 of issue #171.
+        # Its only writer was the terminal FS-diff (`_validate_actual_write_paths`), deleted
+        # with the per-agent write baseline it ran against: a pure leaf holds no write
+        # authority, so the diff measured the host's own writes against a grant the host is not
+        # bound by. Nothing writes the marker, so nothing can be outstanding, and a check that
+        # can only ever pass is worse than no check — it reads as coverage. The COMPLETION
+        # VOUCH carried the same refusal and loses it for the same reason.
         meta_path = orchestration_dir / "orchestration_meta.json"
         graph_path = orchestration_dir / "agent_graph.json"
         runs_path = orchestration_dir / "agent_runs.jsonl"
@@ -10451,86 +10440,15 @@ def _validate_orchestration_hierarchy(
                                             f"{runs_path}:line {idx + 1} pure launch prompt must "
                                             f"carry {expected_version_line!r}"
                                         )
-                                    # (2) A pure launch writes no output manifest — its ABSENCE is
-                                    # the mock-green tripwire (a record-launch that skipped the pure
-                                    # write-authorization branch would leave one). And the
-                                    # capability must be the truthful zero-authority record
-                                    # (mode=pure_readonly, write_roots==[], mcp_permissions==[]).
-                                    om_path = (
-                                        orchestration_dir / "output_manifests" / f"{run_id}.json"
-                                    )
-                                    if om_path.exists():
-                                        violations.append(
-                                            f"{runs_path}:line {idx + 1} pure launch must NOT have "
-                                            f"an output manifest ({om_path.name} exists)"
-                                        )
-                                    cap_path = (
-                                        orchestration_dir / "capabilities" / f"{run_id}.json"
-                                    )
-                                    cap_doc = None
-                                    if cap_path.is_file():
-                                        try:
-                                            cap_doc = _read_json(cap_path)
-                                        except json.JSONDecodeError:
-                                            cap_doc = None
-                                    if not isinstance(cap_doc, dict):
-                                        violations.append(
-                                            f"{runs_path}:line {idx + 1} pure launch capability "
-                                            f"missing/unreadable ({cap_path.name})"
-                                        )
-                                    else:
-                                        if str(cap_doc.get("mode", "")).strip() != PURE_CAPABILITY_MODE:
-                                            violations.append(
-                                                f"{runs_path}:line {idx + 1} pure launch capability "
-                                                f"mode must be {PURE_CAPABILITY_MODE!r} (got {cap_doc.get('mode')!r})"
-                                            )
-                                        if cap_doc.get("write_roots") != []:
-                                            violations.append(
-                                                f"{runs_path}:line {idx + 1} pure launch capability "
-                                                f"write_roots must be [] (got {cap_doc.get('write_roots')!r})"
-                                            )
-                                        # A pure leaf invokes no gate/MCP, so its capability must
-                                        # carry an EXPLICIT empty mcp_permissions list (part of the
-                                        # zero-authority record the producer always emits). No
-                                        # `get` default: absence (a truncated/hand-crafted record)
-                                        # and a non-list value must be flagged too — only a present
-                                        # `[]` is compliant. Mirrors the write_roots check above.
-                                        if cap_doc.get("mcp_permissions") != []:
-                                            violations.append(
-                                                f"{runs_path}:line {idx + 1} pure launch capability "
-                                                f"mcp_permissions must be [] (got {cap_doc.get('mcp_permissions')!r})"
-                                            )
-                                    # (3) The read manifest must be DENY-ALL (empty
-                                    # allowed_read_roots — the RECORD of a leaf authorized to read
-                                    # no file; it was the enforcing allowlist while a hook read it
-                                    # for the codex leaf, and Z4 (issue #171) deleted that layer,
-                                    # so this audit now checks that the record says the right
-                                    # thing rather than that something refused a read)
-                                    # and the sandbox must be the READ-ONLY profile
-                                    # (readonly + write_roots==[]). Auditing these here catches a
-                                    # pure launch mistakenly provisioned through the generic
-                                    # (writable/read-granting) record-launch path even though the
-                                    # capability/output-manifest signals looked pure.
-                                    rman_path = (
-                                        orchestration_dir / "read_manifests" / f"{run_id}.json"
-                                    )
-                                    rman_doc = None
-                                    if rman_path.is_file():
-                                        try:
-                                            rman_doc = _read_json(rman_path)
-                                        except json.JSONDecodeError:
-                                            rman_doc = None
-                                    if not isinstance(rman_doc, dict):
-                                        violations.append(
-                                            f"{runs_path}:line {idx + 1} pure launch read manifest "
-                                            f"missing/unreadable ({rman_path.name})"
-                                        )
-                                    elif rman_doc.get("allowed_read_roots") != []:
-                                        violations.append(
-                                            f"{runs_path}:line {idx + 1} pure launch read manifest "
-                                            f"allowed_read_roots must be [] (deny-all; got "
-                                            f"{rman_doc.get('allowed_read_roots')!r})"
-                                        )
+                                    # (2) and (3) — the OUTPUT MANIFEST's absence, the CAPABILITY's
+                                    # `mode: pure_readonly` / `write_roots: []` / `mcp_permissions: []`, and the
+                                    # READ MANIFEST's deny-all `allowed_read_roots` — were audited here until PR-2
+                                    # of issue #171. Each read a document `record-launch` wrote FOR a leaf and
+                                    # nothing enforced: the hook layer that read the manifests went with the
+                                    # agentic leaf in PR-1, leaving three records checked only against themselves.
+                                    # None of the three is written now. What survives is (4) and (5) below — the
+                                    # sandbox profile, which bwrap enforces, and the terminal row's `output_refs`,
+                                    # which the host's own bundle writer would contradict if it were wrong.
                                     # (4) The sandbox profile. A pure leaf launched as a CHILD
                                     # PROCESS must have one, read-only and write-root-free. An
                                     # HTTP pure leaf (issue #28) is answered from the conductor's

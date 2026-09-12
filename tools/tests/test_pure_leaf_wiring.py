@@ -31,8 +31,6 @@ import tools.orchestration_runtime as ort
 import tools.workflow_conductor as wc
 import tools.validate_pipeline_semantics as vps
 from tools.orchestration_runtime import (
-    build_access_policy_payload,
-    build_capability_document,
     init_orchestration,
     record_launch,
     write_preflight,
@@ -2719,65 +2717,6 @@ class PureRenderTests(unittest.TestCase):
 
 
 # ======================================================================================
-# B10 / B11: access policy + capability builders
-# ======================================================================================
-class PureCapabilityTests(unittest.TestCase):
-    def test_access_policy_pure_denies_all_reads(self) -> None:
-        policy = build_access_policy_payload(agent_run_id="ar_x", request_payload=_pure_request())
-        self.assertEqual(policy["allowed_read_roots"], [])
-        self.assertEqual(policy["denied_read_roots"], ["."])
-        self.assertEqual(policy["allowed_gate_services"], [])
-
-    def test_capability_pure_readonly_shape(self) -> None:
-        cap = build_capability_document(
-            agent_run_id="ar_x", orchestration_id="orch_001", request_payload=_pure_request(),
-        )
-        self.assertEqual(cap["mode"], "pure_readonly")
-        self.assertEqual(cap["write_roots"], [])
-        self.assertEqual(cap["mcp_permissions"], [])
-
-    def test_capability_builder_rejects_empty_write_roots_unless_pure(self) -> None:
-        # Non-pure step/substep still fail-closed on empty write_roots.
-        non_pure = _pure_request()
-        del non_pure["leaf_mode"]
-        # Force empty write_roots by using a role with no write scope is hard here; instead
-        # assert the pure path is the ONLY one that yields empty write_roots without raising.
-        cap = build_capability_document(
-            agent_run_id="ar_x", orchestration_id="orch_001", request_payload=_pure_request(),
-        )
-        self.assertEqual(cap["write_roots"], [])
-        # A non-pure generate substep gets a non-empty write_roots (no raise, not empty).
-        cap2 = build_capability_document(
-            agent_run_id="ar_y", orchestration_id="orch_001", request_payload=non_pure,
-        )
-        self.assertNotEqual(cap2["write_roots"], [])
-        self.assertNotIn("mode", cap2)
-
-    def test_capability_builder_raises_on_empty_write_roots_for_nonpure(self) -> None:
-        # Directly pin the empty-write_roots fail-closed guard for a NON-pure step/substep: with
-        # _write_roots_for_launch forced empty, build_capability_document must raise
-        # capability_invalid_empty_write_roots. (Without this the whole guard could be deleted
-        # and every other test would stay green — only the `not pure` clause is otherwise
-        # covered.)
-        non_pure = _pure_request()
-        del non_pure["leaf_mode"]
-        with patch.object(ort, "_write_roots_for_launch", return_value=[]):
-            with self.assertRaises(ValueError) as ctx:
-                build_capability_document(
-                    agent_run_id="ar_z", orchestration_id="orch_001", request_payload=non_pure,
-                )
-        self.assertIn("capability_invalid_empty_write_roots", str(ctx.exception))
-        # The pure path with the SAME forced-empty helper still succeeds (it never calls the
-        # helper — write_roots is [] by construction) and is exempt from the guard.
-        with patch.object(ort, "_write_roots_for_launch", return_value=[]):
-            cap = build_capability_document(
-                agent_run_id="ar_z2", orchestration_id="orch_001", request_payload=_pure_request(),
-            )
-        self.assertEqual(cap["write_roots"], [])
-        self.assertEqual(cap["mode"], "pure_readonly")
-
-
-# ======================================================================================
 # B9 + plan-fix-1: record_launch writes-and-skips, baseline, empty-write_roots fail-closed
 # ======================================================================================
 class PureRecordLaunchTests(unittest.TestCase):
@@ -2821,19 +2760,16 @@ class PureRecordLaunchTests(unittest.TestCase):
             self._launch(repo_root)
             base = repo_root / "workspace/orchestrations/orch_001"
             arid = "ar_pure_child_001"
-            # WRITES: capability (pure_readonly / empty write_roots), denied-all read manifest,
-            # read-only sandbox profile.
-            cap = json.loads((base / "capabilities" / f"{arid}.json").read_text())
-            self.assertEqual(cap["mode"], "pure_readonly")
-            self.assertEqual(cap["write_roots"], [])
-            rman = json.loads((base / "read_manifests" / f"{arid}.json").read_text())
-            self.assertEqual(rman["allowed_read_roots"], [])
-            self.assertTrue(rman["denied_read_roots"])
+            # WRITES: the read-only sandbox profile, which is the one document about this
+            # launch that still decides something (bwrap enforces it).
             profile = json.loads((base / "sandbox_profiles" / f"{arid}.json").read_text())
             self.assertTrue(profile.get("readonly"))
             self.assertEqual(profile.get("write_roots"), [])
-            # SKIPS: output manifest is never written.
-            self.assertFalse((base / "output_manifests" / f"{arid}.json").exists())
+            # SKIPS: the capability, the read manifest and the output manifest are not
+            # written at all since issue #171 PR-2 — each described an authority a pure leaf
+            # does not hold, and nothing read them.
+            for retired in ("capabilities", "read_manifests", "output_manifests"):
+                self.assertFalse((base / retired).exists(), retired)
 
     def test_record_launch_writes_the_diagnosticians_read_only_profile(self) -> None:
         """The escalate diagnostician's sandbox profile.
@@ -2874,11 +2810,6 @@ class PureRecordLaunchTests(unittest.TestCase):
                     (base / "sandbox_profiles" / f"{arid}.json").read_text())
                 self.assertTrue(profile.get("readonly"))
                 self.assertEqual(profile.get("write_roots"), [])
-                cap = json.loads((base / "capabilities" / f"{arid}.json").read_text())
-                self.assertEqual(cap["mode"], "pure_readonly")
-                self.assertEqual(cap["write_roots"], [])
-                rman = json.loads((base / "read_manifests" / f"{arid}.json").read_text())
-                self.assertEqual(rman["allowed_read_roots"], [])
                 # NO claude private home, and that is the pure branch's own rule rather than
                 # an omission: a pure claude leaf takes no settings layer at all
                 # (`--safe-mode`, no tools, no hooks), so preparing one would record a
@@ -2888,38 +2819,6 @@ class PureRecordLaunchTests(unittest.TestCase):
                 meta = json.loads((base / "orchestration_meta.json").read_text())
                 self.assertNotIn("claude_workflow_home", meta)
                 self.assertNotIn("CLAUDE_CONFIG_DIR", profile.get("env") or {})
-
-    def test_record_launch_pure_still_writes_baseline_and_index(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._launch(repo_root)
-            base = repo_root / "workspace/orchestrations/orch_001"
-            # FS-diff baseline + session-run-index are unconditional.
-            baseline = ort._load_run_write_baseline(repo_root, "orch_001")
-            self.assertIsInstance(baseline, dict)
-            index_path = base / "session_run_index.json"
-            self.assertTrue(index_path.is_file())
-            self.assertIn("ar_pure_child_001", index_path.read_text())
-
-    def test_pure_child_window_write_fails_closed(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._launch(repo_root)
-            # Simulate a write from inside the pure child window: create a repo file after the
-            # baseline was taken. With write_roots=[] the containment rule must flag it.
-            forged = repo_root / "workspace" / "pipelines" / _NODE_SAFE / "forged.txt"
-            forged.parent.mkdir(parents=True, exist_ok=True)
-            forged.write_text("leaf tried to write", encoding="utf-8")
-            with self.assertRaises(ValueError):
-                ort._validate_actual_write_paths(
-                    repo_root,
-                    "orch_001",
-                    {
-                        "agent_role": "substep",
-                        "agent_run_id": "ar_pure_child_001",
-                        "status": "pass",
-                    },
-                )
 
 
 # ======================================================================================
@@ -2935,13 +2834,12 @@ class PureValidatePipelineTests(unittest.TestCase):
     def test_pure_predicate_shared_single_source(self) -> None:
         # Both modules delegate to pure_leaf.is_pure_request (single detection source), so they
         # cannot disagree about what "pure" is.
-        from tools.pure_leaf import is_pure_request, PURE_LEAF_MODE, PURE_CAPABILITY_MODE
+        from tools.pure_leaf import is_pure_request, PURE_LEAF_MODE
         for payload in ({"leaf_mode": "pure"}, {"leaf_mode": "  PURE "}, {"leaf_mode": "agentic"},
                         {}, {"leaf_mode": None}):
             self.assertEqual(ort._is_pure_launch_request(payload), is_pure_request(payload))
             self.assertEqual(vps._launch_request_is_pure(payload), is_pure_request(payload))
         self.assertEqual(PURE_LEAF_MODE, "pure")
-        self.assertEqual(PURE_CAPABILITY_MODE, "pure_readonly")
 
     def test_pure_marker_set_matches_orchestration_runtime(self) -> None:
         prepared = ort.prepare_launch_request_payload(_pure_request("generate"))

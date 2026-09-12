@@ -1,109 +1,28 @@
-#!/usr/bin/env python3
-"""Host-side helpers that survived the leaf hook layer.
+"""The operator-private root (`~/.atmofab`) and the backend homes under it.
 
-Until Z4 (issue #171) this module was the shared body of `tools/hooks/cli.py`, the in-sandbox
-hook a leaf ran on every tool call: the Bash read-target extractor, the write policy, the
-auto-read invariant, the protected-root guard. No leaf holds a tool any more — every LLM
-substep is a pure function with no shell — so the hook and its body went, and what is left is
-the handful of helpers whose consumers were never the hook at all.
+ONE place resolves `~/.atmofab` and each relocatable subtree beneath it, because the side
+that CREATES a tree there and the side that names it elsewhere must agree: issue #132 is what
+happens without that — the root was spelled four times and only one spelling was the guard's.
 
-Its callers are `tools/orchestration_runtime.py`, `tools/run_workflow.py` and
-`tools/orchestration_diagnostics.py`. The file keeps its name and location for this change
-only; PR-2 of issue #171 moves the operator-private-root half to `tools/operator_private_root.py`
-and deletes what is left.
+This file is what is left of `tools/hooks/common.py`, which was the shared body of the
+in-sandbox leaf hook (`tools/hooks/cli.py`): the Bash read-target extractor, the write policy,
+the auto-read invariant, the protected-root guard. Z4 (issue #171) retired the leaf that held
+tools, so the hook and its body went; these resolvers stayed because their consumers were
+never the hook. PR-2 of that issue moved them here and deleted the old module, so the name no
+longer says "hook" about code no hook runs.
+
+Its readers are `tools/orchestration_runtime.py` (the bwrap profile's credential binds and the
+isolated backend homes), `tools/run_workflow.py` (the exclusive start claim) and
+`tools/orchestration_diagnostics.py` (locating a leaf's own transcript).
+
+Stdlib only, and imported at module level by all three.
 """
 
 from __future__ import annotations
 
 import os
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 
-def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-
-def validate_pipeline_semantics_stage(*, step_key: str, args_json: dict[str, Any]) -> str:
-    """Validate `validate_pipeline_semantics` stage input for a step capability."""
-    allowed_by_step: dict[str, frozenset[str]] = {
-        "compile": frozenset({"compile", "full"}),
-        "generate": frozenset({"post_generate", "post_build", "full"}),
-        "build": frozenset({"post_build", "full"}),
-        "validate": frozenset({"post_execute", "pre_judge", "full"}),
-    }
-    stage = args_json.get("stage") or args_json.get("--stage")
-    if not isinstance(stage, str) or not stage.strip():
-        raise ValueError(
-            "pre_command_execute hook: validate_pipeline_semantics requires args_json.stage "
-            "(or --stage) as non-empty string"
-        )
-    stage_l = stage.strip().lower()
-    allowed = allowed_by_step.get(step_key)
-    if allowed is not None and stage_l not in allowed:
-        raise ValueError(
-            "pre_command_execute hook: validate_pipeline_semantics "
-            f"--stage {stage_l!r} not permitted for capability step={step_key!r} "
-            f"(allowed={sorted(allowed)})"
-        )
-
-    if stage_l == "pre_judge":
-        for key, val in args_json.items():
-            key_s = str(key).lower().replace("_", "-")
-            if "allow-missing-orchestration" in key_s or "allow-missing-llm-review" in key_s:
-                if val is True or val == 1:
-                    raise ValueError(
-                        "pre_command_execute hook: pre_judge forbids allow-missing-orchestration "
-                        "and allow-missing-llm-review"
-                    )
-                if isinstance(val, str) and val.strip().lower() in {"true", "1", "yes"}:
-                    raise ValueError(
-                        "pre_command_execute hook: pre_judge forbids allow-missing-orchestration "
-                        "and allow-missing-llm-review"
-                    )
-    return stage_l
-
-def _normalize_rel_posix(path_token: str) -> str:
-    """Normalize repo-relative path into stable POSIX token."""
-    token = path_token.strip().replace("\\", "/").lstrip("/")
-    while "//" in token:
-        token = token.replace("//", "/")
-    return token.rstrip("/")
-
-# Extensionless filenames permitted under a directory allowlist entry.
-# Build-control names (makefile, gnumakefile) are intentionally excluded — they must be
-# declared as explicit file pins to prevent undeclared command-execution injection.
-_ALLOWED_EXTENSIONLESS_BYPRODUCT_NAMES: frozenset[str] = frozenset({
-    "readme", "license", "changelog", "authors", "install", "notice", "copying",
-})
-
-# True compiler byproducts — created directly by the compiler as subprocess output.
-# Terminal validation accepts these under a directory allowlist as confined build output.
-# (NOTE: the legacy "gate provenance / gate_changed_paths" terminal model is gone —
-# Phase-2 authorizes step/substep writes by write_roots-containment of the FS-diff.
-# See docs/ORCHESTRATION.md.)
-_COMPILER_BYPRODUCT_EXTENSIONS: frozenset[str] = frozenset({".mod", ".o", ".a"})
-
-# Allowlist of extensions permitted under a directory allowlist entry via the
-# Edit/Write file tools. Restricted to source code only.
-#
-# Excluded (must use explicit file pins):
-#   - Build control files (.mk, .cmake, .toml, .cfg, .ini, .nml) — can alter downstream
-#     build behaviour or inject arbitrary commands via CMakeLists.txt / Makefile fragments.
-#   - Structured data/documents (.json, .yaml, .xml, .csv, .md, .txt, etc.) — undeclared
-#     data injection is unauditable and can poison downstream steps.
-#   - Compiler byproducts (.mod, .o, .a) — created directly by the compiler as subprocess
-#     output, never via Edit/Write. File-tool writes of these extensions are blocked here;
-#     terminal validation also rejects them unless they land under the step's write_roots —
-#     agents must clean up build artefacts before record-agent-run.
-#
-# Extensionless files are gated by _ALLOWED_EXTENSIONLESS_BYPRODUCT_NAMES.
-# Everything else is rejected (fail-closed).
-_ALLOWED_BYPRODUCT_EXTENSIONS: frozenset[str] = frozenset({
-    # Fortran source — primary intended output of the generate step
-    ".f90", ".f", ".f95", ".f03", ".f08", ".fpp",
-    # C/C++ source — primary intended output of the generate step
-    ".c", ".h", ".cpp", ".hpp", ".cc", ".hh", ".cxx", ".inc",
-})
 
 def _home_dir() -> Path:
     """The host home directory, read the same way the bwrap profile reads it."""

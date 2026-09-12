@@ -66,7 +66,7 @@ of them all.
   would reach it with nothing written near the sources at all.
 * An in-source `# noqa` comment suppresses whatever it names. The leaf authors the source — but
   only in the world this preset becomes reachable in: measured against
-  `tools/hooks/common.py`'s `_ALLOWED_BYPRODUCT_EXTENSIONS`, a leaf cannot write a `.py` file
+  the leaf write policy's `_ALLOWED_BYPRODUCT_EXTENSIONS`, a leaf could not write a `.py` file
   today at all, so this closure is a future-leaf-side one rather than a reachable `leaf shortcut`.
   Registering a `python` language backend is what makes it reachable, and it would have to widen
   that frozenset to do so.

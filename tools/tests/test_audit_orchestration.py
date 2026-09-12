@@ -22,15 +22,9 @@ from tools.tests.test_orchestration_diagnostics import (
 )
 from tools.audit_orchestration import (
     audit,
-    collect_allow_auto_approve_stats,
-    collect_fix_hint_stats,
-    collect_policy_block_counts,
-    collect_fail_closed_timeline,
     collect_agent_run_summary,
     collect_token_cost_summary,
     collect_pure_leaf_ab_summary,
-    detect_suspicious_benign_volume,
-    split_substantive_and_benign,
     _render_markdown,
     _render_pure_leaf_ab,
     _render_pure_leaf_row,
@@ -56,80 +50,6 @@ def _make_block(policy: str, command: str = "cmd", fix_hint: dict | None = None)
         "audit_detail": audit_detail,
         "ts": "2026-05-09T00:00:00Z",
     }
-
-
-class CollectPolicyBlockCountsTests(unittest.TestCase):
-    def test_counts_by_policy(self) -> None:
-        blocks = [
-            _make_block("read_manifest_read_guard"),
-            _make_block("read_manifest_read_guard"),
-            _make_block("output_manifest_write_guard"),
-        ]
-        result = collect_policy_block_counts(blocks)
-        self.assertEqual(result["read_manifest_read_guard"], 2)
-        self.assertEqual(result["output_manifest_write_guard"], 1)
-
-    def test_empty_blocks(self) -> None:
-        self.assertEqual(collect_policy_block_counts([]), {})
-
-    def test_unknown_policy_when_no_audit_detail(self) -> None:
-        blocks = [{"action": "block", "ts": "2026-05-09T00:00:00Z"}]
-        result = collect_policy_block_counts(blocks)
-        self.assertIn("unknown", result)
-
-    def test_legacy_policy_id_aggregates_under_current_id(self) -> None:
-        # Audit-log continuity: a historical record carrying the pre-rename id
-        # (enforce_guarded_apply_patch) must count under the current id so the two
-        # do not split into separate buckets in retrospective aggregation.
-        blocks = [
-            _make_block("enforce_guarded_apply_patch"),
-            _make_block("forbid_unauthorized_file_write"),
-        ]
-        result = collect_policy_block_counts(blocks)
-        self.assertEqual(result["forbid_unauthorized_file_write"], 2)
-        self.assertNotIn("enforce_guarded_apply_patch", result)
-
-
-class SplitSubstantiveAndBenignTests(unittest.TestCase):
-    def test_auto_read_expected_block_is_benign(self) -> None:
-        blocks = [
-            _make_block("auto_read_expected_block"),
-            _make_block("auto_read_expected_block"),
-            _make_block("read_manifest_read_guard"),
-        ]
-        substantive, benign = split_substantive_and_benign(blocks)
-        self.assertEqual(len(benign), 2)
-        self.assertEqual(len(substantive), 1)
-        self.assertEqual(
-            (substantive[0].get("audit_detail") or {}).get("policy"),
-            "read_manifest_read_guard",
-        )
-
-    def test_audit_separates_benign_blocks(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            orch_id = "orch_separation"
-            orch_root = Path(tmp) / "workspace" / "orchestrations" / orch_id
-            (orch_root / "hooks").mkdir(parents=True)
-            _write_jsonl(
-                orch_root / "hooks" / "native_hook_events.jsonl",
-                [
-                    _make_block("auto_read_expected_block"),
-                    _make_block("auto_read_expected_block"),
-                    _make_block("read_manifest_read_guard"),
-                    _make_block("output_manifest_write_guard"),
-                ],
-            )
-            result = audit(Path(tmp), orch_id)
-        self.assertEqual(result["benign_block_count"], 2)
-        self.assertEqual(result["substantive_block_count"], 2)
-        # Substantive policies appear in main counts
-        self.assertIn("read_manifest_read_guard", result["policy_block_counts"])
-        # Benign policies do NOT appear in main counts
-        self.assertNotIn("auto_read_expected_block", result["policy_block_counts"])
-        # They appear in the dedicated benign bucket
-        self.assertEqual(
-            result["benign_policy_block_counts"]["auto_read_expected_block"], 2
-        )
 
 
 def _usage_rec(inp: int, out: int, cr: int, cc: int) -> dict:
@@ -607,267 +527,6 @@ class TokenCostSummaryTests(unittest.TestCase):
         self.assertIn("claude projects dir missing", joined)
 
 
-class DetectSuspiciousBenignVolumeTests(unittest.TestCase):
-    """Regression: explicit (post-startup) reads of allowlisted paths must NOT
-    be silently aggregated into the benign bucket — operators need visibility."""
-
-    def _make_benign(self, agent_id: str) -> dict:
-        return {
-            "action": "block",
-            "agent_run_id": agent_id,
-            "audit_detail": {"policy": "auto_read_expected_block"},
-        }
-
-    def test_below_budget_not_flagged(self) -> None:
-        # Expected platform startup: at most ~6 reads
-        blocks = [self._make_benign("agent_a") for _ in range(6)]
-        flagged = detect_suspicious_benign_volume(blocks)
-        self.assertEqual(flagged, [])
-
-    def test_above_budget_flagged(self) -> None:
-        # 50 reads of MEMORY.md from one orchestration agent → suspicious
-        blocks = [self._make_benign("agent_a") for _ in range(50)]
-        flagged = detect_suspicious_benign_volume(blocks)
-        self.assertEqual(len(flagged), 1)
-        self.assertEqual(flagged[0]["agent_run_id"], "agent_a")
-        self.assertEqual(flagged[0]["policy"], "auto_read_expected_block")
-        self.assertEqual(flagged[0]["count"], 50)
-
-    def test_per_agent_threshold(self) -> None:
-        # Two agents, only one over budget
-        blocks = [self._make_benign("agent_a") for _ in range(50)]
-        blocks.extend(self._make_benign("agent_b") for _ in range(3))
-        flagged = detect_suspicious_benign_volume(blocks)
-        self.assertEqual(len(flagged), 1)
-        self.assertEqual(flagged[0]["agent_run_id"], "agent_a")
-
-    def test_reads_agent_run_id_from_audit_detail(self) -> None:
-        """Regression: hook's `auto_read_expected_block` puts agent_run_id in
-        `audit_detail`, not top-level. The detector must look there so blocks
-        are not aggregated under <unknown>."""
-        blocks = [
-            {
-                "action": "block",
-                # No top-level agent_run_id — must come from audit_detail
-                "audit_detail": {
-                    "policy": "auto_read_expected_block",
-                    "agent_run_id": "agent_x",
-                },
-            }
-            for _ in range(50)
-        ]
-        flagged = detect_suspicious_benign_volume(blocks)
-        self.assertEqual(len(flagged), 1)
-        self.assertEqual(flagged[0]["agent_run_id"], "agent_x")
-
-    def test_audit_surfaces_suspicious_volume(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            orch_id = "orch_susp"
-            orch_root = Path(tmp) / "workspace" / "orchestrations" / orch_id
-            (orch_root / "hooks").mkdir(parents=True)
-            blocks = [
-                {
-                    "action": "block",
-                    "agent_run_id": "run_orch",
-                    "audit_detail": {"policy": "auto_read_expected_block"},
-                }
-                for _ in range(50)
-            ]
-            _write_jsonl(orch_root / "hooks" / "native_hook_events.jsonl", blocks)
-            result = audit(Path(tmp), orch_id)
-        self.assertEqual(len(result["suspicious_benign_volume"]), 1)
-        self.assertEqual(result["suspicious_benign_volume"][0]["agent_run_id"], "run_orch")
-        # Markdown rendering surfaces the warning
-        md = _render_markdown(result)
-        self.assertIn("Suspicious benign-block volume", md)
-
-
-class CollectFixHintStatsTests(unittest.TestCase):
-    def test_hint_present_counted(self) -> None:
-        blocks = [
-            _make_block("output_manifest_write_guard", fix_hint={"next_command": "do this"}),
-        ]
-        stats = collect_fix_hint_stats(blocks)
-        self.assertEqual(stats["hint_present"].get("output_manifest_write_guard"), 1)
-        self.assertNotIn("output_manifest_write_guard", stats["hint_absent"])
-
-    def test_hint_absent_counted(self) -> None:
-        blocks = [_make_block("forbid_python_inline_write")]
-        stats = collect_fix_hint_stats(blocks)
-        self.assertEqual(stats["hint_absent"].get("forbid_python_inline_write"), 1)
-
-    def test_note_only_hint_counts_as_present(self) -> None:
-        """A read block outside allowed_read_roots has no command that works, so
-        it carries `note` instead of `next_command` — counting it as "no hint"
-        reported a docs gap that does not exist."""
-        blocks = [_make_block("read_manifest_read_guard", fix_hint={"note": "re-issue"})]
-        stats = collect_fix_hint_stats(blocks)
-        self.assertEqual(stats["hint_present"].get("read_manifest_read_guard"), 1)
-        self.assertNotIn("read_manifest_read_guard", stats["hint_absent"])
-
-    def test_repeated_search_detected_without_a_command(self) -> None:
-        """Grep/Glob blocks carry `path`/`pattern`, not `command`; a search
-        retried in a loop is exactly what this aggregation exists to surface."""
-        block = {
-            "action": "block",
-            "tool_name": "Grep",
-            "payload_summary": {"session_id": "sess_1", "path": "tools", "pattern": "def foo"},
-            "audit_detail": {
-                "policy": "read_manifest_read_guard",
-                "agent_run_id": "run_1",
-                "fix_hint": {"note": "re-issue"},
-            },
-            "ts": "2026-05-09T00:00:00Z",
-        }
-        stats = collect_fix_hint_stats([dict(block), dict(block), dict(block)])
-        self.assertEqual(
-            stats["repeated"]["read_manifest_read_guard"],
-            ["run_1::Grep::tools::def foo"] * 2,
-        )
-
-    def test_repeat_key_is_scoped_to_the_agent(self) -> None:
-        """Two agents blocked once each on the same target is not a retry —
-        reporting it accuses an agent of ignoring a hint it never saw."""
-
-        def block(agent_run_id: str, **summary) -> dict:
-            return {
-                "action": "block",
-                "tool_name": "Grep",
-                "payload_summary": dict(session_id=f"s-{agent_run_id}", **summary),
-                "audit_detail": {
-                    "policy": "read_manifest_read_guard",
-                    "agent_run_id": agent_run_id,
-                    "fix_hint": {"note": "re-issue"},
-                },
-            }
-
-        two_agents = [block("run_a", path="tools", pattern="x"),
-                      block("run_b", path="tools", pattern="x")]
-        self.assertEqual(collect_fix_hint_stats(two_agents)["repeated"], {})
-
-        one_agent_twice = [block("run_a", path="tools", pattern="x")] * 2
-        self.assertEqual(
-            collect_fix_hint_stats([dict(b) for b in one_agent_twice])["repeated"],
-            {"read_manifest_read_guard": ["run_a::Grep::tools::x"]},
-        )
-
-    def test_repeated_command_detected(self) -> None:
-        blocks = [
-            _make_block("forbid_tools_direct_read", command="cat tools/foo.py"),
-            _make_block("forbid_tools_direct_read", command="cat tools/foo.py"),
-        ]
-        stats = collect_fix_hint_stats(blocks)
-        self.assertIn("forbid_tools_direct_read", stats["repeated"])
-        self.assertEqual(len(stats["repeated"]["forbid_tools_direct_read"]), 1)
-
-
-class CollectFailClosedTimelineTests(unittest.TestCase):
-    def test_no_fail_closed(self) -> None:
-        result = collect_fail_closed_timeline([], [])
-        self.assertIsNone(result["fail_closed_at"])
-        self.assertEqual(result["last_events"], [])
-
-    def test_returns_last_5_events(self) -> None:
-        phase_log = [{"event": "set_status", "to": "fail_closed", "ts": "2026-05-09T01:00:00Z"}]
-        hook_events = [
-            {"action": "block", "ts": f"2026-05-09T00:0{i}:00Z", "audit_detail": {"policy": f"p{i}"}}
-            for i in range(8)
-        ]
-        result = collect_fail_closed_timeline(hook_events, phase_log, n=5)
-        self.assertEqual(result["fail_closed_at"], "2026-05-09T01:00:00Z")
-        self.assertEqual(len(result["last_events"]), 5)
-
-    def test_events_are_ordered_before_fail_ts(self) -> None:
-        phase_log = [{"to": "fail_closed", "ts": "2026-05-09T00:05:00Z"}]
-        hook_events = [
-            {"action": "block", "ts": "2026-05-09T00:03:00Z", "audit_detail": {}},
-            {"action": "allow", "ts": "2026-05-09T00:06:00Z", "audit_detail": {}},
-        ]
-        result = collect_fail_closed_timeline(hook_events, phase_log, n=5)
-        # Only event before or at fail_ts
-        self.assertEqual(len(result["last_events"]), 1)
-
-    def test_orders_by_parsed_timestamp_not_file_order(self) -> None:
-        """Regression: hook events appended out-of-order (multiple hook
-        processes) must still be sliced by parsed timestamp before the
-        fail_closed cutoff. The previous file-order logic could surface the
-        wrong commands as the events leading up to fail_closed."""
-        phase_log = [{"to": "fail_closed", "ts": "2026-05-09T00:05:00Z"}]
-        # File order is (late, early1, early2, after) but chronological order
-        # before fail_closed is early1 < early2 < late.
-        hook_events = [
-            {"action": "block", "ts": "2026-05-09T00:04:30Z", "audit_detail": {"policy": "late"}},
-            {"action": "block", "ts": "2026-05-09T00:00:30Z", "audit_detail": {"policy": "early1"}},
-            {"action": "block", "ts": "2026-05-09T00:01:00Z", "audit_detail": {"policy": "early2"}},
-            {"action": "allow", "ts": "2026-05-09T00:06:00Z", "audit_detail": {"policy": "after"}},
-        ]
-        result = collect_fail_closed_timeline(hook_events, phase_log, n=2)
-        # Last 2 by time, not by file position
-        policies = [e["policy"] for e in result["last_events"]]
-        self.assertEqual(policies, ["early2", "late"])
-
-    def test_unparseable_timestamps_surfaced_not_dropped(self) -> None:
-        """Regression: events with malformed timestamps must NOT be silently
-        dropped from `last_events`. They should appear in the timeline and
-        be counted via `unparseable_timestamp_count`."""
-        phase_log = [{"to": "fail_closed", "ts": "2026-05-09T00:05:00Z"}]
-        hook_events = [
-            {"action": "block", "ts": "2026-05-09T00:04:30Z", "audit_detail": {"policy": "p1"}},
-            {"action": "block", "ts": "BAD-TIMESTAMP", "audit_detail": {"policy": "malformed"}},
-        ]
-        result = collect_fail_closed_timeline(hook_events, phase_log, n=5)
-        self.assertEqual(result["unparseable_timestamp_count"], 1)
-        policies = [e["policy"] for e in result["last_events"]]
-        # Both events appear (parseable first, unparseable appended at end)
-        self.assertIn("p1", policies)
-        self.assertIn("malformed", policies)
-
-    def test_unparseable_timestamps_trigger_data_integrity_warning(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            orch_id = "orch_bad_ts"
-            orch_root = Path(tmp) / "workspace" / "orchestrations" / orch_id
-            (orch_root / "hooks").mkdir(parents=True)
-            _write_jsonl(orch_root / "phase_state_log.jsonl", [
-                {"to": "fail_closed", "ts": "2026-05-09T00:05:00Z"},
-            ])
-            _write_jsonl(orch_root / "hooks" / "native_hook_events.jsonl", [
-                {"action": "block", "ts": "BAD-TS", "audit_detail": {"policy": "x"}},
-            ])
-            result = audit(Path(tmp), orch_id)
-        self.assertTrue(result["data_integrity_warning"])
-        self.assertEqual(result["unparseable_timestamp_count"], 1)
-
-    def test_handles_z_and_offset_timestamps(self) -> None:
-        """Both `Z` (UTC) and explicit offset timestamps must parse correctly."""
-        phase_log = [{"to": "fail_closed", "ts": "2026-05-09T00:05:00+00:00"}]
-        hook_events = [
-            {"action": "block", "ts": "2026-05-09T00:04:30Z", "audit_detail": {"policy": "p1"}},
-        ]
-        result = collect_fail_closed_timeline(hook_events, phase_log, n=5)
-        self.assertEqual(len(result["last_events"]), 1)
-        self.assertEqual(result["last_events"][0]["policy"], "p1")
-
-    def test_picks_latest_fail_closed_when_multiple(self) -> None:
-        # Regression: multiple fail_closed transitions (reopen + re-fail) should
-        # use the LATEST timestamp, not the first.
-        phase_log = [
-            {"to": "fail_closed", "ts": "2026-05-09T00:01:00Z"},
-            {"to": "running", "ts": "2026-05-09T00:02:00Z"},
-            {"to": "fail_closed", "ts": "2026-05-09T00:05:00Z"},
-        ]
-        hook_events = [
-            {"action": "block", "ts": "2026-05-09T00:00:30Z", "audit_detail": {"policy": "early"}},
-            {"action": "block", "ts": "2026-05-09T00:04:30Z", "audit_detail": {"policy": "late"}},
-            {"action": "allow", "ts": "2026-05-09T00:06:00Z", "audit_detail": {}},
-        ]
-        result = collect_fail_closed_timeline(hook_events, phase_log, n=5)
-        self.assertEqual(result["fail_closed_at"], "2026-05-09T00:05:00Z")
-        # Both pre-fail blocks should be included (under the latest fail_ts cutoff)
-        policies = [e.get("policy") for e in result["last_events"]]
-        self.assertIn("early", policies)
-        self.assertIn("late", policies)
-
-
 class CollectAgentRunSummaryTests(unittest.TestCase):
     def test_status_counts(self) -> None:
         runs = [
@@ -903,97 +562,18 @@ class CollectAgentRunSummaryTests(unittest.TestCase):
         self.assertIn("r1", result["missing_finished_at"])
 
 
-class CollectAllowAutoApproveStatsTests(unittest.TestCase):
-    """Aggregation for visualizing `action=allow_auto_approve` events."""
-
-    def _make_allow_auto(self, tool_name: str) -> dict:
-        return {
-            "action": "allow_auto_approve",
-            "tool_name": tool_name,
-            "audit_detail": {"policy": "output_manifest_write_allow", "tool_name": tool_name},
-            "ts": "2026-05-09T00:00:00Z",
-        }
-
-    def test_empty_events_returns_zero_total(self) -> None:
-        result = collect_allow_auto_approve_stats([])
-        self.assertEqual(result, {"total": 0, "by_tool": {}})
-
-    def test_ignores_non_allow_auto_approve_actions(self) -> None:
-        events = [
-            {"action": "allow", "tool_name": "Read"},
-            {"action": "block", "tool_name": "Write"},
-            self._make_allow_auto("Write"),
-        ]
-        result = collect_allow_auto_approve_stats(events)
-        self.assertEqual(result["total"], 1)
-        self.assertEqual(result["by_tool"], {"Write": 1})
-
-    def test_aggregates_by_tool_name_and_sorts_by_count(self) -> None:
-        events = [
-            self._make_allow_auto("Write"),
-            self._make_allow_auto("Write"),
-            self._make_allow_auto("Write"),
-            self._make_allow_auto("Edit"),
-        ]
-        result = collect_allow_auto_approve_stats(events)
-        self.assertEqual(result["total"], 4)
-        self.assertEqual(list(result["by_tool"].keys()), ["Write", "Edit"])
-        self.assertEqual(result["by_tool"]["Write"], 3)
-        self.assertEqual(result["by_tool"]["Edit"], 1)
-
-    def test_falls_back_to_audit_detail_tool_name_when_top_level_missing(self) -> None:
-        events = [
-            {
-                "action": "allow_auto_approve",
-                "audit_detail": {"tool_name": "Write"},
-            }
-        ]
-        result = collect_allow_auto_approve_stats(events)
-        self.assertEqual(result["by_tool"], {"Write": 1})
-
-    def test_unknown_tool_when_no_tool_name_anywhere(self) -> None:
-        events = [{"action": "allow_auto_approve"}]
-        result = collect_allow_auto_approve_stats(events)
-        self.assertEqual(result["by_tool"], {"unknown": 1})
-
-
 class AuditIntegrationTests(unittest.TestCase):
     """audit() end-to-end with a small fixture workspace."""
 
     def _build_fixture(self, tmp: str, orch_id: str) -> None:
+        """A minimal orchestration record. It carried a `hooks/native_hook_events.jsonl`
+        with six blocks and three auto-approvals until PR-2 of issue #171: the audit's whole
+        hook-event half — per-policy block counts, the benign split, the `fix_hint` report,
+        the auto-approve count and the five events before `fail_closed` — is deleted with the
+        leaf hook layer that produced the file."""
         root = Path(tmp)
         orch_root = root / "workspace" / "orchestrations" / orch_id
-        hooks_dir = orch_root / "hooks"
-        hooks_dir.mkdir(parents=True)
-
-        hook_events = [
-            _make_block("read_manifest_read_guard", "cat tools/x.py"),
-            _make_block("read_manifest_read_guard", "cat tools/y.py"),
-            _make_block("read_manifest_read_guard", "cat tools/z.py"),
-            _make_block("read_manifest_read_guard", "cat tools/z.py"),
-            _make_block("read_manifest_read_guard", "cat tools/z.py"),
-            _make_block("output_manifest_write_guard", fix_hint={"next_command": "guarded-apply-patch ..."}),
-            {"action": "allow", "tool_name": "Read", "ts": "2026-05-09T00:10:00Z"},
-            {
-                "action": "allow_auto_approve",
-                "tool_name": "Write",
-                "audit_detail": {"policy": "output_manifest_write_allow", "tool_name": "Write"},
-                "ts": "2026-05-09T00:06:00Z",
-            },
-            {
-                "action": "allow_auto_approve",
-                "tool_name": "Write",
-                "audit_detail": {"policy": "output_manifest_write_allow", "tool_name": "Write"},
-                "ts": "2026-05-09T00:07:00Z",
-            },
-            {
-                "action": "allow_auto_approve",
-                "tool_name": "Edit",
-                "audit_detail": {"policy": "output_manifest_write_allow", "tool_name": "Edit"},
-                "ts": "2026-05-09T00:08:00Z",
-            },
-        ]
-        _write_jsonl(hooks_dir / "native_hook_events.jsonl", hook_events)
+        orch_root.mkdir(parents=True)
 
         phase_log = [
             {"event": "set_status", "to": "fail_closed", "ts": "2026-05-09T00:10:00Z"},
@@ -1013,17 +593,15 @@ class AuditIntegrationTests(unittest.TestCase):
             result = audit(Path(tmp), orch_id)
 
         self.assertEqual(result["orchestration_id"], orch_id)
-        self.assertEqual(result["total_blocks"], 6)
-        self.assertEqual(result["policy_block_counts"]["read_manifest_read_guard"], 5)
-        self.assertEqual(result["policy_block_counts"]["output_manifest_write_guard"], 1)
-        self.assertEqual(result["fix_hint_stats"]["hint_present"]["output_manifest_write_guard"], 1)
-        self.assertEqual(result["fix_hint_stats"]["hint_absent"]["read_manifest_read_guard"], 5)
-        self.assertIsNotNone(result["fail_closed_timeline"]["fail_closed_at"])
+        self.assertEqual(result["fail_closed_at"], "2026-05-09T00:10:00Z")
         self.assertEqual(result["agent_run_summary"]["status_counts"]["pass"], 1)
         self.assertEqual(result["agent_run_summary"]["status_counts"]["fail"], 1)
-        aa = result["allow_auto_approve_stats"]
-        self.assertEqual(aa["total"], 3)
-        self.assertEqual(aa["by_tool"], {"Write": 2, "Edit": 1})
+        # The retired keys are GONE, not zeroed: a reader that still asks for one gets a
+        # KeyError rather than a clean negative over a file nothing writes.
+        for retired in ("total_hook_events", "total_blocks", "policy_block_counts",
+                        "fix_hint_stats", "fail_closed_timeline",
+                        "allow_auto_approve_stats", "suspicious_benign_volume"):
+            self.assertNotIn(retired, result)
 
     def test_audit_renders_markdown_without_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1031,25 +609,8 @@ class AuditIntegrationTests(unittest.TestCase):
             self._build_fixture(tmp, orch_id)
             result = audit(Path(tmp), orch_id)
         md = _render_markdown(result)
-        self.assertIn("REPEATED ERROR PATTERN", md)
-        self.assertIn("read_manifest_read_guard", md)
-        self.assertIn("fail_closed", md)
-        self.assertIn("Auto-approved Write/Edit", md)
-        self.assertIn("Total: 3", md)
-
-    def test_audit_markdown_omits_auto_approve_section_when_zero(self) -> None:
-        """Section is suppressed when no allow_auto_approve events fired."""
-        with tempfile.TemporaryDirectory() as tmp:
-            orch_id = "orch_no_auto_approve"
-            orch_root = Path(tmp) / "workspace" / "orchestrations" / orch_id
-            (orch_root / "hooks").mkdir(parents=True)
-            _write_jsonl(
-                orch_root / "hooks" / "native_hook_events.jsonl",
-                [_make_block("read_manifest_read_guard")],
-            )
-            result = audit(Path(tmp), orch_id)
-        self.assertEqual(result["allow_auto_approve_stats"]["total"], 0)
-        md = _render_markdown(result)
+        self.assertIn("fail_closed at:", md)
+        self.assertNotIn("Policy block counts", md)
         self.assertNotIn("Auto-approved Write/Edit", md)
 
     def test_audit_handles_missing_log_files_gracefully(self) -> None:
@@ -1057,8 +618,7 @@ class AuditIntegrationTests(unittest.TestCase):
             orch_id = "orch_empty"
             (Path(tmp) / "workspace" / "orchestrations" / orch_id).mkdir(parents=True)
             result = audit(Path(tmp), orch_id)
-        self.assertEqual(result["total_blocks"], 0)
-        self.assertIsNone(result["fail_closed_timeline"]["fail_closed_at"])
+        self.assertIsNone(result["fail_closed_at"])
         self.assertEqual(result["invalid_run_count"], 0)
 
     def test_audit_flags_corrupted_jsonl(self) -> None:
@@ -1066,28 +626,28 @@ class AuditIntegrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             orch_id = "orch_corrupt"
             orch_root = Path(tmp) / "workspace" / "orchestrations" / orch_id
-            (orch_root / "hooks").mkdir(parents=True)
-            (orch_root / "hooks" / "native_hook_events.jsonl").write_text(
-                '{"action":"block"}\n'
+            orch_root.mkdir(parents=True)
+            (orch_root / "agent_runs.jsonl").write_text(
+                '{"agent_run_id":"a","status":"pass"}\n'
                 '{this is not valid json\n'
-                '{"action":"allow"}\n',
+                '{"agent_run_id":"b","status":"fail"}\n',
                 encoding="utf-8",
             )
             result = audit(Path(tmp), orch_id)
         self.assertTrue(result["data_integrity_warning"])
         self.assertEqual(result["parse_error_count"], 1)
         self.assertEqual(result["parse_errors"][0]["line_number"], 2)
-        # Valid lines still parsed
-        self.assertEqual(result["total_hook_events"], 2)
-        self.assertEqual(result["total_blocks"], 1)
+        # Valid lines still parsed.
+        self.assertEqual(result["agent_run_summary"]["status_counts"]["pass"], 1)
+        self.assertEqual(result["agent_run_summary"]["status_counts"]["fail"], 1)
 
     def test_audit_clean_logs_no_warning(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             orch_id = "orch_clean"
             orch_root = Path(tmp) / "workspace" / "orchestrations" / orch_id
-            (orch_root / "hooks").mkdir(parents=True)
-            (orch_root / "hooks" / "native_hook_events.jsonl").write_text(
-                '{"action":"block"}\n', encoding="utf-8",
+            orch_root.mkdir(parents=True)
+            (orch_root / "agent_runs.jsonl").write_text(
+                '{"agent_run_id":"a","status":"pass"}\n', encoding="utf-8",
             )
             result = audit(Path(tmp), orch_id)
         self.assertFalse(result["data_integrity_warning"])

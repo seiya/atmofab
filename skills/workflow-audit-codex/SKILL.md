@@ -12,6 +12,22 @@ Investigate the logs of a completed or interrupted workflow execution across the
 2. **information-gathering behavior** - places where, due to unclear CLI specifications or insufficient state awareness, a `--help` reference or file exploration was performed
 3. **redos due to check failures** - gate / validator failures, multiple phase-launch attempts, status-setting mistakes
 
+> **RETIRED RECORDS — READ THIS FIRST.** Z4 ([issue #171](https://github.com/seiya/atmofab/issues/171))
+> deleted the leaf hook layer and, in PR-2, the enforcement records that outlived it. **None of
+> these files is written any more**, so every section of this skill that reads one is describing
+> a run recorded before the cut: `hooks/native_hook_events.jsonl` (the hook trace, and with it
+> every `action=block` / `fix_hint` / `allow_auto_approve` analysis below), `gates/<arid>/*.json`
+> and the `workspace/tmp/<arid>/gate_results/` copy (`run-gate` is deleted — the conductor runs
+> every gate itself, in its own process), `access_logs/<arid>.jsonl`, `capabilities/<arid>.json`,
+> `read_manifests/` and `output_manifests/`. `violations/` survives with two writers (a
+> sandbox-enforcement failure at `record-launch`, and a noncanonical-phase-write attempt) and is
+> created only when one occurs. What a current run leaves is `agent_runs.jsonl`,
+> `phase_state_log.jsonl`, `hooks/workflow_hooks.jsonl` (the HOST's own hook log),
+> `launches/<arid>.*`, `sandbox_profiles/<arid>.json`, `steps/.../step_result.json` and
+> `failure_analysis.json`. Consolidating the two audit skills against that set is
+> [issue #179](https://github.com/seiya/atmofab/issues/179); until it lands, treat a section
+> naming a deleted record as history rather than as an instruction.
+
 ## Log collection sources
 
 | log | collection source |

@@ -2,9 +2,9 @@
 
 ## Position of this document
 
-The **canonical CLI reference for the frequent subcommands (Tier-A)** of `tools/orchestration_runtime.py`. It covers those whose payload schema is complex, that have per-phase required-argument switching, and that cannot be determined from the `--help` output alone: `record-launch` / `record-agent-run` / `finalize-child` / `record-child-return` / `deactivate-child` / `record-reply` / `set-status` / `write-step-result` / `workflow-launch-check` / `reserve-phase-root` / `mark-dependency-readiness` / `run-gate` (12 total).
+The **canonical CLI reference for the frequent subcommands (Tier-A)** of `tools/orchestration_runtime.py`. It covers those whose payload schema is complex, that have per-phase required-argument switching, and that cannot be determined from the `--help` output alone: `record-launch` / `record-agent-run` / `finalize-child` / `record-child-return` / `deactivate-child` / `record-reply` / `set-status` / `write-step-result` / `workflow-launch-check` / `reserve-phase-root` / `mark-dependency-readiness` (11 total).
 
-For the rare subcommands (Tier-B: `init` / `preflight` / `preflight-status` / `record-timeout` / `check-phase-certified` / `orchestration-read` / `revoke-artifact` / `reset-phase`), only an overview is in [docs/CLI_REFERENCE_RARE.md](CLI_REFERENCE_RARE.md), and the canonical source for details is `python3 tools/orchestration_runtime.py <sub> --help`.
+For the rare subcommands (Tier-B: `init` / `preflight` / `preflight-status` / `record-timeout` / `check-phase-certified` / `revoke-artifact` / `reset-phase`), only an overview is in [docs/CLI_REFERENCE_RARE.md](CLI_REFERENCE_RARE.md), and the canonical source for details is `python3 tools/orchestration_runtime.py <sub> --help`.
 
 This document is the canonical source for the **information-acquisition policy** per tool / subcommand (frequent vs rare, `--help` vs doc) — see the section below.
 
@@ -15,10 +15,10 @@ When the argparse definition is updated, update this file in sync (during a `too
 Choose the path for obtaining CLI argument information based on the target subcommand's frequency, payload schema complexity, and doc synchronization cost (cross-backend; applies to Codex / Claude Code alike).
 
 - Frequent subcommands of `tools/orchestration_runtime.py` (the 12 Tier-A listed above): this document is canonical (complex payload schema, per-phase required-argument switching — `--help` alone is insufficient).
-- Rare subcommands of `tools/orchestration_runtime.py` (`init` / `preflight` / `preflight-status` / `record-timeout` / `check-phase-certified` / `orchestration-read` / `revoke-artifact` / `reset-phase`), and `tools/run_workflow.py` / `tools/validate_pipeline_semantics.py` / `tools/audit_orchestration.py`: `<tool> [<sub>] --help` is canonical. [docs/CLI_REFERENCE_RARE.md](CLI_REFERENCE_RARE.md) retains only an overview of the rare subcommands.
+- Rare subcommands of `tools/orchestration_runtime.py` (`init` / `preflight` / `preflight-status` / `record-timeout` / `check-phase-certified` / `revoke-artifact` / `reset-phase`), and `tools/run_workflow.py` / `tools/validate_pipeline_semantics.py` / `tools/audit_orchestration.py`: `<tool> [<sub>] --help` is canonical. [docs/CLI_REFERENCE_RARE.md](CLI_REFERENCE_RARE.md) retains only an overview of the rare subcommands.
 - `tools/prune_workflow_homes.py`: `--help` is canonical for the arguments, and `docs/RUNBOOK.md` §"The operator-private root" is canonical for WHEN to run it and what deleting a home costs. Operator-only, never invoked by the workflow.
-- `tools/new_agent_run_id.py` takes no arguments. A step / substep (leaf) agent does not consult this policy: its `run-gate` invocations use the literal embedded in its launch prompt (rendered from `tools/prompt_templates/`).
-- During workflow execution, reading the `.py` implementations under `tools/` directly is forbidden (`forbid_tools_direct_read`, `read_manifest_read_guard`) — via the `Read` tool, the `Grep` / `Glob` tools, or `grep` / `sed` / `cat` in `Bash`; the argparse output via `--help` is not blocked. During repository improvement / maintenance / testing / refactoring, `tools/*.py` is ordinary source code and may be inspected directly.
+- `tools/new_agent_run_id.py` takes no arguments. A leaf consults no policy of any kind: since Z4 ([issue #171](https://github.com/seiya/atmofab/issues/171)) it holds no shell and invokes no subcommand.
+- Every caller of these subcommands is the CONDUCTOR, in the host process. The rule that used to stand here — that a leaf may not read `tools/*.py` during a run, enforced by `forbid_tools_direct_read` / `read_manifest_read_guard` — has no subject since Z4 ([issue #171](https://github.com/seiya/atmofab/issues/171)): a leaf holds no `Read`, no `Grep`, no `Glob` and no shell.
 
 Related canonical sources:
 - rare subcommand overview: [docs/CLI_REFERENCE_RARE.md](CLI_REFERENCE_RARE.md)
@@ -35,9 +35,8 @@ Related canonical sources:
 - The form of `ir_id` / `pipeline_id` is `<slug>_<YYYYMMDD>_<seq3>` (slug being hyphen-separated lowercase alphanumeric). E.g. `flux-rsn-p0_20260425_001`. An underscore in the slug is invalid.
 - ISO 8601 timestamps are canonically UTC (`Z` suffix).
 - For JSON arguments (`--*-json`), be careful with shell quoting. A single argv element is also capped at MAX_ARG_STRLEN (128 KiB on Linux), and a large payload makes `execve` fail with `E2BIG` before the process starts. So for a large or unbounded payload use the file/stdin variant: `--request-json-file` (record-launch), `--agent-run-json-file` and `--reply-from-stdin` (finalize-child), `--reply-from-stdin` (record-reply).
-- **Terse stdout by default.** The high-frequency bookkeeping subcommands (`record-launch` / `record-agent-run` / `finalize-child` / `record-child-return` / `deactivate-child` / `record-reply` / `write-step-result` / `run-gate`) print **only the result fields the orchestration agent consumes downstream** to stdout, not the full payload. This keeps the orchestration's resident context small (its cache-read cost scales with context size × turn count). The full payload is always persisted to the canonical artifact files regardless (`launches/<arid>.*`, `agent_runs.jsonl`, `steps/.../step_result.json`, `gates/<arid>/<gate>.json`, etc.); pass `--verbose` to also emit the full JSON to stdout for debugging/audit. Soft-failure signals (`violations` / `error[s]` / `warning[s]`) are retained in terse output when present, and hard failures still exit non-zero via stderr.
-  - `record-launch` terse fields: `capability_token`, `capability_ref`, `read_access_manifest_ref`, `allowed_output_manifest_ref`, `sandbox_profile_ref`, `launch_prompt_ref`, and **`launch_prompt_text`** (the exact rendered prompt the orchestration passes verbatim to the leaf subprocess — it cannot read the template or the written prompt file). The remaining `launch_*_ref` / `child_launch_*_ref` paths are deterministic from `<orchestration_id>`+`<arid>` and are dropped from terse stdout.
-  - `run-gate` terse keeps `result` (the `orchestration_read` content) in addition to `violations` / `gate_result_ref`.
+- **Terse stdout by default.** The high-frequency bookkeeping subcommands (`record-launch` / `record-agent-run` / `finalize-child` / `record-child-return` / `deactivate-child` / `record-reply` / `write-step-result`) print **only the result fields the orchestration agent consumes downstream** to stdout, not the full payload. This keeps the orchestration's resident context small (its cache-read cost scales with context size × turn count). The full payload is always persisted to the canonical artifact files regardless (`launches/<arid>.*`, `agent_runs.jsonl`, `steps/.../step_result.json`, etc.); pass `--verbose` to also emit the full JSON to stdout for debugging/audit. Soft-failure signals (`violations` / `error[s]` / `warning[s]`) are retained in terse output when present, and hard failures still exit non-zero via stderr.
+  - `record-launch` terse fields: `sandbox_profile_ref`, `launch_prompt_ref`, and **`launch_prompt_text`** (the exact rendered prompt the conductor passes verbatim to the leaf subprocess). The remaining `launch_*_ref` / `child_launch_*_ref` paths are deterministic from `<orchestration_id>`+`<arid>` and are dropped from terse stdout. It carried four more — `capability_token`, `capability_ref`, `read_access_manifest_ref`, `allowed_output_manifest_ref` — until PR-2 of [issue #171](https://github.com/seiya/atmofab/issues/171); no leaf holds write authority for those documents to describe, and none of them is written any more.
 
 ---
 
@@ -47,7 +46,7 @@ The 12 subcommands whose details are covered in this file.
 
 | subcommand | purpose | section |
 |---|---|---|
-| `record-launch` | child-agent launch evidence + capability_token + manifest generation | [record-launch](#record-launch) |
+| `record-launch` | child-agent launch evidence + the read-only sandbox profile | [record-launch](#record-launch) |
 | `finalize-child` | one-call child finalization (record-child-return → deactivate-child → record-reply → record-agent-run) | [finalize-child](#finalize-child) |
 | `record-child-return` | Adv-20: record the leaf return ack | [record-child-return](#record-child-return) |
 | `deactivate-child` | release the active_children marker | [deactivate-child](#deactivate-child) |
@@ -58,7 +57,6 @@ The 12 subcommands whose details are covered in this file.
 | `write-step-result` | generate and verify step_result.json | [write-step-result](#write-step-result) |
 | `reserve-phase-root` | reserve ir_id / pipeline_id (does not materialize the path) | [reserve-phase-root](#reserve-phase-root) |
 | `workflow-launch-check` | the pre-phase gate (dependency readiness, agent type) | [workflow-launch-check](#workflow-launch-check) |
-| `run-gate` | run a validator gate (validate_pipeline_semantics etc.) across the capability | [run-gate](#run-gate) |
 
 ## Tier-B rare subcommand list (overview only)
 
@@ -70,7 +68,6 @@ For details `python3 tools/orchestration_runtime.py <sub> --help`, for the overv
 | `preflight` | judge the launchability of the execution platform |
 | `preflight-status` | read back an existing preflight.json |
 | `record-timeout` | the canonical recovery for an API stream idle timeout |
-| `orchestration-read` | the gate-mediated, audited re-read of a path **inside** the manifest (an out-of-manifest path is not granted: it records a `rule_source_violation` and fails the orchestration) |
 | `check-phase-certified` | is the phase already CERTIFIED by the artifacts on disk (stage meta `pass`, bound to the current upstream artifact, `artifact_hashes` still matching, dependency freshness holding)? The canonical skip decision, on every run — cold and resumed alike |
 | `revoke-artifact` | rewrite a phase's stage meta to `verification_status: revoked` — the half of a re-derivation decision that reaches the ARTIFACT |
 | `reset-phase` | reset a phase and everything downstream to `not_started` in `phase_state.json` |
@@ -79,9 +76,9 @@ For details `python3 tools/orchestration_runtime.py <sub> --help`, for the overv
 
 ## record-launch
 
-The most important entry point of a child-agent launch. It generates the capability_token, sandbox_profile, output_manifest, and read_manifest, and writes `launches/<child_agent_run_id>.{request,response,prompt,reply}.txt`.
+The most important entry point of a child-agent launch. It runs the live preflight, builds the read-only `sandbox_profile` for a CLI leaf, and writes `launches/<child_agent_run_id>.{request,response,prompt,reply}.txt`.
 
-In Claude Code, call it **before launching the `Agent` tool** (because the child agent needs to Read capabilities/<arid>.json immediately after launch).
+Call it **before launching the leaf**: it runs the live preflight and builds the sandbox profile the launch is wrapped in.
 
 | arg | required | description |
 |---|---|---|
@@ -94,7 +91,7 @@ In Claude Code, call it **before launching the `Agent` tool** (because the child
 | `--response-json` | yes | the spawn response payload (schema below) |
 | `--relation-type` | no | default `launch` |
 | `--child-env-from-stdin` | no | read the child leaf's environment from STDIN — a JSON object of string to string — and build the sandbox profile from it. This is the dict `workflow_conductor._child_env` AUTHORED for this leaf, so `sandbox_profiles/<arid>.json#env` records, and `#rendered_command` delivers (`--clearenv` then one `--setenv` per name), the environment the leaf actually runs under rather than a second one derived here. On STDIN and not argv because these values are readable in `ps` for every process on the host, and an HTTP entry's API key can be among them. Refused, before anything is recorded, if the payload is not a non-empty JSON object of string to string — under `--clearenv` an empty one would launch a leaf with no environment at all. Omitted (a conductor-less caller, or a test) falls back to filtering this process's own environment through the same allowlist, so no caller inherits; the two per-launch ids (`ATMOFAB_ORCHESTRATION_ID` / `ATMOFAB_CHILD_AGENT_RUN_ID`) are then OVERWRITTEN with the ids this profile is for, because a value inherited from the building process belongs to whatever launched that process and is stale rather than contradictory. On the threaded path a disagreeing id is refused instead — there the dict was authored for this launch, so a mismatch means another leaf's environment was handed in. |
-| `--expected-codex-home-generation` | no | codex only, warm resume only. The isolated `CODEX_HOME` generation the caller selected its resume thread under (positive integer; passing it for another backend is a `ValueError`). A codex thread is resumable only inside the home that created it, and that home can be rotated between the conductor's resume selection and this call — since issue #64 it is durable (`~/.atmofab/homes/<oid>/codex`), so the trigger is an operator running `tools/prune_workflow_homes.py` or losing the filesystem rather than a `tmpfiles` sweep. Rotation now re-creates the SAME path, which is exactly why this check compares the INTEGER generation and not the home's location. Checked FIRST, before any capability / launch artifact / active-child marker is written: on a mismatch `record-launch` records nothing and returns `{"codex_home_generation_mismatch": true, "expected_codex_home_generation": …, "codex_home_generation": …}` (kept intact by terse projection) so the caller rebuilds the request as a cold launch instead of issuing `codex exec resume` against an empty home. |
+| `--expected-codex-home-generation` | no | codex only, warm resume only. The isolated `CODEX_HOME` generation the caller selected its resume thread under (positive integer; passing it for another backend is a `ValueError`). A codex thread is resumable only inside the home that created it, and that home can be rotated between the conductor's resume selection and this call — since issue #64 it is durable (`~/.atmofab/homes/<oid>/codex`), so the trigger is an operator running `tools/prune_workflow_homes.py` or losing the filesystem rather than a `tmpfiles` sweep. Rotation now re-creates the SAME path, which is exactly why this check compares the INTEGER generation and not the home's location. Checked FIRST, before any launch artifact or active-child marker is written: on a mismatch `record-launch` records nothing and returns `{"codex_home_generation_mismatch": true, "expected_codex_home_generation": …, "codex_home_generation": …}` (kept intact by terse projection) so the caller rebuilds the request as a cold launch instead of issuing `codex exec resume` against an empty home. |
 
 ### request payload (main fields; `--request-json` / `--request-json-file` alike)
 
@@ -146,7 +143,7 @@ Adv-20: record the evidence (`child_returns/<arid>.txt`) that the orchestration 
 | `--repo-root` | yes | |
 | `--orchestration-id` | yes | |
 | `--agent-run-id` | yes | the child agent's UUID |
-| `--return-token` | yes | Adv-30: the value of `workspace/orchestrations/<orch>/launches/<arid>.parent_return_token`. Pass it as a **literal** value obtained by the two-step of `docs/RUNBOOK.md` §substep-timeout-recovery (a bare `cat` of that path, then the printed token embedded literally); the `$(cat <path>)` form is rejected by the Bash tool's static analysis. **Do not read that file in advance with the `Read` tool etc.** (a Read during the active_child window is evaluated against the child arid's `read_manifest` and blocked by `read_manifest_read_guard`) |
+| `--return-token` | yes | Adv-30: the value of `workspace/orchestrations/<orch>/launches/<arid>.parent_return_token`. The conductor reads it from that file itself; an operator running the recovery by hand reads it the same way (`docs/RUNBOOK.md` §substep-timeout-recovery). |
 | `--reply-excerpt` | no | an optional short text (truncated to 200 chars). For audit |
 
 ---
@@ -179,7 +176,7 @@ Overwrite `launches/<arid>.reply.txt` with the final response text of the `Agent
 
 ## record-agent-run
 
-Append 1 line to `agent_runs.jsonl`. For a step/substep role, also save `agent.result.json` and `agent.summary.txt`. When an `unauthorized write` not included in the capability's write_root is detected, reject.
+Append 1 line to `agent_runs.jsonl`. For a step/substep role, also save `agent.result.json` and `agent.summary.txt`. A terminal FILESYSTEM AUDIT ran here until PR-2 of [issue #171](https://github.com/seiya/atmofab/issues/171) — the repository diffed against a per-agent write baseline, with every changed path required to fall inside the capability's `write_roots`. It measured the HOST's own writes against a grant the host is not bound by, because no leaf holds write authority: a pure leaf runs read-only and the host writes every artifact after the child window. What still runs on a `pass` is the check against the LAUNCH's own declared `allowed_output_paths` (`_validate_pass_output_refs_against_launch`), and, for a pure leaf, the requirement that `output_refs` be exactly `[]`.
 
 | arg | required | description |
 |---|---|---|
@@ -201,7 +198,7 @@ Append 1 line to `agent_runs.jsonl`. For a step/substep role, also save `agent.r
 | `context_isolated` | yes for step/substep | `true` (Claude Code) |
 | `node_key` | yes for step/substep | |
 | `finished_at` | yes for a terminal status | ISO 8601 |
-| `output_refs` | yes for `pass` | the list of written artifact paths. **Concrete file paths only — a directory entry is rejected** (e.g. `.../src/` fails terminal-payload validation with `allowed_output_paths manifest violation`; enumerate each file: `.../src/<name>.f90`, `.../src/Makefile`, `.../src/command_log.jsonl`). For Validate.execute likewise enumerate each `raw/state_snapshots/<case_id>.json` rather than `raw/`. |
+| `output_refs` | yes for `pass` | the list of written artifact paths. **Concrete file paths only — a directory entry is rejected** (e.g. `.../src/` fails terminal-payload validation against the launch's `allowed_output_paths`; enumerate each file: `.../src/<name>.f90`, `.../src/Makefile`, `.../src/command_log.jsonl`). For Validate.execute likewise enumerate each `raw/state_snapshots/<case_id>.json` rather than `raw/`. |
 | `parent_agent_run_id` | automatic | required for a step/substep entry but **need not be written in the payload**. `record-agent-run` auto-copies it from `launches/<arid>.request.json` (record-launch already persisted it from `--parent-agent-run-id`). An explicitly specified value takes precedence |
 | `agent_model` | automatic | same as above. auto-copied from the launch request's `agent_model` (required at record-launch time). An explicitly specified value takes precedence |
 | `issue_severity` | optional | `minor` / `major` / `critical` |
@@ -430,31 +427,4 @@ Additional reasons returned by the `_dependency_ready` path of `workflow-launch-
 With the distinct reason design, observability tooling can distinguish a "spec-definition defect" from an "ordinary negative verification". It prevents an orchestration that was in a passing state before the error from remaining launchable in a subsequent `workflow-launch-check`.
 
 **Design trust boundary**: merely calling the CLI cannot raise a flag. Rather than the caller passing a boolean, the runtime resolves the version_constraint and inspects the **workspace artifact selected by canonical id order (`(date, seq)` of `<slug>_<YYYYMMDD>_<seq3>`)** of the identified catalog version (Codex round 26 F1: because the catalog cache is also content-keyed, it is not affected by mtime forgery). If any of stale artifact / version mismatch / verdict=fail / constraint ambiguous is detected, the flag stays false. Furthermore, with full-overwrite every time, `dep_set_fingerprint` match confirmation (also performed at launch time), content-keyed invalidation of the catalog cache, immediate fail-closed persist on verification failure, and incorporating per-dep artifact bytes into the fingerprint, it prevents all of: (a) gate bypass by a CLI call, (b) unblocking a new launch with an old passing artifact, (c) adopting an artifact of a version different from the constraint, (d) a stale `true` remaining from a partial update, (e) a stale state remaining after spec_ref replacement / deps.yaml edit, (f) gate bypass by an out-of-band edit in the interval until a preflight re-run, (g) a passing state surviving a verification failure, (h) a stale `true` passing the gate due to a post-mark dep artifact regression, and (i) resolution drift in a long-lived process where the catalog cache does not reflect an in-process edit.
-
----
-
-## run-gate
-
-Run a validator gate across the capability_token. The canonical path in a context that forbids a direct validator call.
-
-| arg | required | description |
-|---|---|---|
-| `--repo-root` | yes | |
-| `--orchestration-id` | yes | |
-| `--gate` | yes | `validate_pipeline_semantics` / `validate_workspace_root` / `orchestration_read` (the accepted set is `DEFAULT_ALLOWED_GATE_SERVICES` in `tools/orchestration_runtime.py`, which the `--gate` help is derived from) |
-| `--agent-run-id` | yes | the child agent's UUID |
-| `--args-json` | yes | per-gate schema (below) |
-| `--capability-token` | yes | `capabilities/<agent_run_id>.json#capability_token` |
-
-### `--args-json` schema (per gate)
-
-| gate | schema |
-|---|---|
-| `orchestration_read` | `{"read_path": "docs/..."}` |
-| `validate_workspace_root` | `{}` (defaults to the repo workspace) or `{"workspace_root": "workspace"}` |
-| `validate_pipeline_semantics` | `{"stage": "compile|post_generate|post_build|post_execute|pre_judge|full", "ir_ref": "workspace/ir/..." (compile stage), "pipeline_root": "workspace/pipelines/..." or a list, "source_id": "<id>" (optional)}` |
-
-The keys are converted into CLI flags (`pipeline_root` → `--pipeline-root`).
-
-The gate result JSON (`gate`, `status`, `args_json`, `exit_code`, `evaluated_at`, `gate_result_ref`, `violations`) is output on the last line of stderr, and stderr is returned in the command result; read it there. An appended redirect that captures it to a file is refused by the permission layer, so `run-gate` writes the same object itself, at `workspace/tmp/<agent_run_id>/gate_results/<gate>.json` — one file per gate name, replaced on each run of that gate, inside the calling agent's `allowed_tmp_root` and therefore readable by it. The copy holds the last run of that gate that COMPLETED. `run-gate` invalidates it immediately after the gate-name check, so every refusal raised from that point on — the argument guards, the capability gate and the gate itself — removes it rather than leaving the previous verdict where the caller is told to look (the unsupported-gate-name refusal precedes it, and can key no copy that was ever written) — but the window is narrowed, not closed: an invocation `argparse` rejects, or a command the permission layer refuses, never reaches the code, and a failed unlink is swallowed. It also says nothing about whether the artifact has changed since the verdict was taken, which is equally true of the persisted gate document and predates this copy. `args_json`, `exit_code` and `evaluated_at` say which run produced it, and are shared with the persisted document so the two can be cross-checked. The file and the stderr line are the same object, equal once parsed rather than byte-equal (the file is indented and not ASCII-escaped). It is a convenience for the caller and never evidence about it. The record the audit reads stays `workspace/orchestrations/<orchestration_id>/gates/<agent_run_id>/<gate>.json` (the `gate_result_ref`). Neither file is beyond a leaf that runs a script: `gates/<arid>/` is rw-bound into the leaf's sandbox because the leaf invokes this command itself, and the interpreter route is a recorded residue (`docs/HOOKS.md` §"Layer boundary"). The copy adds no write authority. A failure to write the tmp copy does not change the gate verdict, and removes any earlier copy rather than leaving a stale one.
 

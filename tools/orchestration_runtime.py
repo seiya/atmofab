@@ -16,10 +16,9 @@ import stat
 import subprocess
 import sys
 import tempfile
-import types
 import uuid
 from functools import lru_cache
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping, Sequence
 
@@ -63,17 +62,11 @@ def _require_yaml() -> Any:
 try:
     from tools.backends import registry as backend_registry
     from tools.backends.language.fortran import lines as fortran_lines
-    from tools.hooks.common import (
-        _normalize_rel_posix,
-        _utc_now_iso,
-        _ALLOWED_BYPRODUCT_EXTENSIONS,
-        _ALLOWED_EXTENSIONLESS_BYPRODUCT_NAMES,
-        _COMPILER_BYPRODUCT_EXTENSIONS,
+    from tools.operator_private_root import (
+        WORKFLOW_HOMES_ROOT_ENV,
         _resolve_lenient,
         backend_credential_home_paths as _backend_credential_home_paths,
-        validate_pipeline_semantics_stage,
         workflow_homes_root as _hooks_workflow_homes_root,
-        WORKFLOW_HOMES_ROOT_ENV,
     )
     from tools.meta_contracts import (
         CERTIFYING_META_FILENAME_BY_STEP,
@@ -82,7 +75,6 @@ try:
         stage_meta_type_violations,
     )
     from tools.pure_leaf import (
-        PURE_CAPABILITY_MODE,
         PURE_DOC_FENCE_BEGIN,
         PURE_DOC_FENCE_END,
         PURE_LEAF_MODE,
@@ -97,17 +89,11 @@ except ModuleNotFoundError:  # pragma: no cover - import bootstrap for direct CL
         sys.path.insert(0, str(_REPO_ROOT))
     from tools.backends import registry as backend_registry
     from tools.backends.language.fortran import lines as fortran_lines
-    from tools.hooks.common import (
-        _normalize_rel_posix,
-        _utc_now_iso,
-        _ALLOWED_BYPRODUCT_EXTENSIONS,
-        _ALLOWED_EXTENSIONLESS_BYPRODUCT_NAMES,
-        _COMPILER_BYPRODUCT_EXTENSIONS,
+    from tools.operator_private_root import (
+        WORKFLOW_HOMES_ROOT_ENV,
         _resolve_lenient,
         backend_credential_home_paths as _backend_credential_home_paths,
-        validate_pipeline_semantics_stage,
         workflow_homes_root as _hooks_workflow_homes_root,
-        WORKFLOW_HOMES_ROOT_ENV,
     )
     from tools.meta_contracts import (
         CERTIFYING_META_FILENAME_BY_STEP,
@@ -116,7 +102,6 @@ except ModuleNotFoundError:  # pragma: no cover - import bootstrap for direct CL
         stage_meta_type_violations,
     )
     from tools.pure_leaf import (
-        PURE_CAPABILITY_MODE,
         PURE_DOC_FENCE_BEGIN,
         PURE_DOC_FENCE_END,
         PURE_LEAF_MODE,
@@ -124,6 +109,18 @@ except ModuleNotFoundError:  # pragma: no cover - import bootstrap for direct CL
         PURE_PROMPT_SENTINEL,
         is_pure_request as _pure_leaf_is_pure_request,
     )
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _normalize_rel_posix(path_token: str) -> str:
+    """Normalize a repo-relative path into a stable POSIX token."""
+    token = path_token.strip().replace("\\", "/").lstrip("/")
+    while "//" in token:
+        token = token.replace("//", "/")
+    return token.rstrip("/")
+
 
 TERMINAL_STATUSES = {"pass", "fail", "blocked", "timeout", "cancel"}
 # Budget (chars) for a child's verbatim final reply (launches/<arid>.reply.txt). The reply
@@ -151,8 +148,9 @@ IDEMPOTENT_TERMINAL_STATUSES = TERMINAL_STATUSES | {"fail_closed"}
 #   1. run_workflow.py sets the in-process conductor host's `sys.pycache_prefix` to
 #      `<repo>/<this>` (redirects the host interpreter's lazy imports),
 #   2. `_gate_python_env` sets gate subprocesses' `PYTHONPYCACHEPREFIX` to `<repo>/<this>`,
-#   3. `_is_host_pycache_redirect_write` exempts writes under `<this>` from the terminal
-#      write-diff (see `_validate_actual_write_paths`).
+#   3. `_is_host_pycache_redirect_write` exempted writes under `<this>` from the terminal
+#      write-diff, which issue #171 PR-2 deleted; the predicate survives as a placement
+#      statement and has no consumer that refuses anything.
 #   4. validate_workspace_root.ALLOWED_WORKSPACE_TOP_LEVEL_DIRS must list this prefix's LEAF
 #      segment (`.pycache`) as a canonical top-level workspace dir, else _scan_workspace_layout
 #      flags the redirect target as a "non-canonical workspace directory".
@@ -2184,9 +2182,9 @@ def _strip_certification(
 
     This is the SECOND of two strips and covers only phases that reach here. The phase that
     fail-closes without writing a step_result at all (a leaf transport error, a validate gate
-    failure) is covered by the FIRST one, in `_validate_actual_write_paths` — every child
-    window terminalizes, and the keys are erased there from whatever stage meta the child
-    changed. Between them, the keys exist only where a passing `write-step-result` stamped
+    failure) is covered by the FIRST one, at the child's own terminalization in
+    `record_agent_run` — every child window terminalizes, and the keys are erased there from
+    whatever stage meta the child changed. Between them, the keys exist only where a passing `write-step-result` stamped
     them.
     """
     meta_filename = CERTIFYING_META_FILENAME_BY_STEP.get(step.strip().lower())
@@ -5166,10 +5164,11 @@ def _write_orphan_launch_tombstones(
     cleared/pruned during resume.
 
     A dangling launch (host died mid-Agent-call) leaves orphan launch artifacts
-    (`launches/<arid>.{prompt,request,response,reply}`, `capabilities/<arid>.json`,
-    `output_manifests/<arid>.json`) with NO terminal `agent_runs.jsonl` row and NO
-    `child_returns/<arid>.txt` ack. (A Z2 pure-function leaf's residual set has NO
-    `output_manifests/<arid>.json` — a pure launch never writes one — but the tombstone key is
+    (`launches/<arid>.{prompt,request,response,reply}`, `sandbox_profiles/<arid>.json`) with NO
+    terminal `agent_runs.jsonl` row and NO
+    `child_returns/<arid>.txt` ack. (The set used to include `capabilities/<arid>.json` and
+    `output_manifests/<arid>.json`, neither of which is written since issue #171 PR-2; the
+    tombstone key is
     derived solely from `launches/<arid>.request.json`, so a pure orphan is tombstoned the same
     way.) Resume keeps those artifacts for forensics but,
     without a marker, a later manual inspection / audit tool cannot distinguish them
@@ -5236,7 +5235,7 @@ def _write_orphan_launch_tombstones(
                 "note": (
                     "Abandoned launch (active_child window left open, no terminal "
                     "agent_runs row and no child_returns ack); pruned during "
-                    "checkpoint resume. Residual launches/capabilities/output_manifests "
+                    "checkpoint resume. Residual launches/ and sandbox_profiles/ "
                     "artifacts for this arid are expected orphans, not a violation."
                 ),
                 "pruned_at": _utc_now_iso(),
@@ -5255,10 +5254,11 @@ def _reset_stale_child_running_node_steps(
     `record_launch` transitions the node/step to `child_running`; an abandoned launch
     (host died mid-flight) leaves it there even after its active-child marker is
     cleared. The phase gates authorize child work when the node/step is
-    `child_running` — apply-patch (`_phase_write_requires_child_running`), the MCP
-    phase gate, and `run-gate` — so a resume must drop that stale authority, otherwise the
-    abandoned child's capability stays phase-authorized and agents reading phase_state still see
-    the substep as running. Any `child_running` node/step is then stale → reset to
+    `child_running`; issue #171 PR-2 deleted the last of those gates, so what a stale
+    `child_running` leaves is a RECORD that disagrees with the workspace rather than a live
+    authority. A resume still resets it: the completion vouch and the `--stage pre_judge` audit
+    read phase_state, and an abandoned child left running there describes a run that is not
+    happening. Any `child_running` node/step is then stale → reset to
     `not_started`; the resumed re-launch transitions it back to `child_running` for the real new
     child. Returns the reset [{node_key_safe, step}].
 
@@ -5626,88 +5626,6 @@ def _upsert_session_run_index_entry(
 
 # --- Phase 1: access policy / phase state artifact layout (Item 10) ---
 
-DEFAULT_ALLOWED_GATE_SERVICES: tuple[str, ...] = (
-    "validate_pipeline_semantics",
-    "validate_workspace_root",
-    "orchestration_read",
-)
-
-# The subdirectory of a leaf's own `allowed_tmp_root` in which `run_gate` leaves the
-# summary it also prints on the last line of its stderr (issue #77), one file per gate
-# name. THE RULE IS DEFINED HERE AND THE DOCUMENTS ARE CHECKED AGAINST IT, because this
-# path is restated in many places -- the leaf-read contract, the rendered gate hint, the
-# operator runbook, the audit SKILL and four more documents -- and a sweep by hand over
-# that many sites is the failure mode `.claude/skills/atmofab-enforcement-change` rule 3-a
-# exists for. THE COUNT IS DELIBERATELY NOT WRITTEN HERE: three parties measured it in
-# round 1 and returned three different answers (7 files, 8 files, and an appositive that
-# enumerated 8 while the sentence said 10), because none of them stated a method. The
-# method, if you want the number:
-#     os.walk over docs/ + skills/ + tools/prompt_templates/ + TODO.md, counting
-#     occurrences of this constant's value. `os.walk` rather than `grep` because in an
-#     agent session `grep` is a shell function exec'ing `ugrep --ignore-files`, which
-#     honours .gitignore -- measured NOT to change the answer here (identical counts;
-#     none of these files is ignored), so it is a reason to fix the method, not an
-#     explanation of anyone's wrong count. `GateResultTmpCopySurfaceTests` runs this
-#     enumeration as a check, so the corpus is no longer counted by hand at all.
-# At the round-1 fix that command gave 8 files and 11 occurrences (7 documents plus
-# TODO.md, which is excluded from the check below as a historical record).
-# `GateResultTmpCopySurfaceTests` in tools/tests/test_orchestration_runtime.py resolves
-# this constant and requires each surface to name the path it produces, so renaming the
-# directory turns every stale document red rather than leaving them quietly wrong.
-GATE_RESULT_TMP_DIRNAME = "gate_results"
-
-
-def _orchestration_holds_launch_record(
-    repo_root: Path, orchestration_id: str, agent_run_id: str
-) -> bool:
-    """Adv-5 ownership proof: did THIS orchestration launch `agent_run_id`?
-
-    `workspace/tmp/` is a FLAT namespace with no orchestration prefix, so two
-    orchestrations that reuse an agent_run_id share the directory. Anything that deletes
-    under it has to establish ownership first, or terminating one run wipes another's live
-    scratch. `_cleanup_agent_tmp_root` has enforced that since Adv-5; the durable
-    gate-result unlink in `run_gate` reads the same proof through this function rather
-    than spelling the rule a second time.
-
-    This is the LAUNCH-RECORD half only. `_cleanup_agent_tmp_root` accepts a second proof
-    (the orchestration agent's own arid, from `orchestration_meta.json`) because an
-    orchestration agent is not launched via `record-launch`; `run_gate` needs no such case,
-    since `_require_child_agent_role_for_step` refuses a non-child role outright.
-    """
-    # `.strip()` on BOTH ids, because the inline form this replaced stripped both and
-    # `_orchestration_root` does not. Without it a padded `orchestration_id` resolves to a
-    # directory that does not exist, ownership silently fails, and `_cleanup_agent_tmp_root`
-    # refuses -- leaving the run in cleanup-pending and its tmp scratch on disk. Caught by
-    # diffing this extraction against the code it replaced, not by any test.
-    return (
-        _orchestration_root(repo_root, orchestration_id.strip())
-        / "launches"
-        / f"{agent_run_id.strip()}.request.json"
-    ).is_file()
-
-
-def _agent_tmp_gate_result_path(repo_root: Path, agent_run_id: str, gate: str) -> Path:
-    """Absolute path of the leaf-readable copy of one gate's result summary.
-
-    Takes no caller text: `agent_run_id` has passed `_require_safe_gate_ids` by the time
-    `run_gate` calls this, and `gate` is a member of DEFAULT_ALLOWED_GATE_SERVICES. The
-    relative form is `_agent_tmp_gate_result_ref`, which is what the documents state and
-    what the launch-prompt hint renders.
-    """
-    return repo_root / _agent_tmp_gate_result_ref(agent_run_id, gate)
-
-
-def _agent_tmp_gate_result_ref(agent_run_id: str, gate: str) -> str:
-    """Repo-relative POSIX form of `_agent_tmp_gate_result_path`."""
-    return (
-        f"workspace/tmp/{agent_run_id.strip()}/{GATE_RESULT_TMP_DIRNAME}/{gate}.json"
-    )
-
-
-def _agent_tmp_gate_result_dir_ref(agent_run_id: str) -> str:
-    """Repo-relative POSIX form of the directory holding those copies (trailing slash)."""
-    return f"workspace/tmp/{agent_run_id.strip()}/{GATE_RESULT_TMP_DIRNAME}/"
-
 STEP_REQUIRED_CHILD_AGENT: dict[str, str] = {
     "compile": "substep",
     "generate": "substep",
@@ -5727,10 +5645,10 @@ DIAGNOSE_LAUNCH_PAIRS: frozenset[tuple[str, str]] = frozenset(
 # The COMPLETE `agent_role` vocabulary of `agent_runs.jsonl`. Canonical prose:
 # docs/ORCHESTRATION.md (the capability table), docs/CLI_REFERENCE.md (record-agent-run).
 #
-# Named once because the terminal write audit keys on membership: a role outside this
-# set made `_validate_actual_write_paths` — the FS-diff attribution docs/ORCHESTRATION.md
-# calls authoritative — return without validating, and `record_agent_run` accepted any
-# string at all, so a misspelling silently disabled it.
+# Named once because the terminal-payload checks key on membership: a role outside this set
+# used to make the FS-diff write audit return without validating (that audit went in issue
+# #171 PR-2), and `record_agent_run` accepted any string at all, so a misspelling silently
+# disabled it.
 #
 # Every member owns a filesystem write window, so the write-audited subset and this set are
 # ONE set since issue #177 removed `skipped_by_checkpoint` (a role for a step that was never
@@ -5738,9 +5656,10 @@ DIAGNOSE_LAUNCH_PAIRS: frozenset[tuple[str, str]] = frozenset(
 # as `skipped_certified` and appends no run at all). `WRITE_AUDITED_AGENT_ROLES` was that
 # subset and is gone with it; its two readers ask this set.
 #
-# TWO set literals with these same three members are deliberately NOT folded in, because they
-# answer a DIFFERENT question and folding them would make a later change to one silently change
-# the others: `build_capability_document` (x2), "which roles may a CAPABILITY document name".
+# A pair of set literals with these same three members used to sit in
+# `build_capability_document`, deliberately unfolded because they answered a DIFFERENT question
+# ("which roles may a CAPABILITY document name"). That function went in issue #171 PR-2; this
+# set is now the only one.
 AGENT_RUN_ROLES: frozenset[str] = frozenset({"orchestration", "step", "substep"})
 
 # The G5 severity vocabulary, as recorded ON a revocation. `resolve_severity_directive` in the
@@ -5883,32 +5802,8 @@ AUDIT_LOG_BASENAMES: frozenset[str] = frozenset({
 })
 
 
-def _access_policies_dir(repo_root: Path, orchestration_id: str) -> Path:
-    return _orchestration_root(repo_root, orchestration_id) / "access_policies"
-
-
-def _access_logs_dir(repo_root: Path, orchestration_id: str) -> Path:
-    return _orchestration_root(repo_root, orchestration_id) / "access_logs"
-
-
 def _violations_dir(repo_root: Path, orchestration_id: str) -> Path:
     return _orchestration_root(repo_root, orchestration_id) / "violations"
-
-
-def _capabilities_dir(repo_root: Path, orchestration_id: str) -> Path:
-    return _orchestration_root(repo_root, orchestration_id) / "capabilities"
-
-
-def _gates_dir(repo_root: Path, orchestration_id: str) -> Path:
-    return _orchestration_root(repo_root, orchestration_id) / "gates"
-
-
-def _output_manifests_dir(repo_root: Path, orchestration_id: str) -> Path:
-    return _orchestration_root(repo_root, orchestration_id) / "output_manifests"
-
-
-def _read_manifests_dir(repo_root: Path, orchestration_id: str) -> Path:
-    return _orchestration_root(repo_root, orchestration_id) / "read_manifests"
 
 
 def _sandbox_profiles_dir(repo_root: Path, orchestration_id: str) -> Path:
@@ -5980,8 +5875,14 @@ def _phase_state_log_has_set_status(
 
 def _ensure_orchestration_audit_dirs(repo_root: Path, orchestration_id: str) -> None:
     root = _orchestration_root(repo_root, orchestration_id)
-    for sub in ("access_policies", "access_logs", "violations", "capabilities", "sandbox_profiles"):
-        (root / sub).mkdir(parents=True, exist_ok=True)
+    # ONE directory. Four more were created here unconditionally — `access_policies/`,
+    # `access_logs/`, `violations/` and `capabilities/` — and three of them now have no
+    # writer at all (issue #171 PR-2). `violations/` still has two (a sandbox-enforcement
+    # failure and a noncanonical-phase-write attempt), and is deliberately NOT pre-created:
+    # an empty `violations/` is a record that something is expected to write there, and the
+    # completion criterion for this change is that a clean run leaves neither the directory
+    # nor its contents. `_write_json` creates the parent when a violation actually happens.
+    (root / "sandbox_profiles").mkdir(parents=True, exist_ok=True)
 
 
 def _new_phase_state_document(orchestration_id: str) -> dict[str, Any]:
@@ -6196,327 +6097,6 @@ def _transition_phase_state(
     return doc
 
 
-def _default_capability_expires_at_iso() -> str:
-    return (datetime.now(timezone.utc) + timedelta(days=7)).isoformat().replace("+00:00", "Z")
-
-
-def _parse_iso_z_expiry(raw: str) -> datetime | None:
-    token = raw.strip()
-    if not token:
-        return None
-    try:
-        return datetime.fromisoformat(token.replace("Z", "+00:00"))
-    except (ValueError, TypeError):
-        return None
-
-
-# Least-privilege MCP grants, keyed by the exact (step, substep) whose conductor
-# in-process body actually invokes a gated build-runtime tool. Only three bodies do:
-#   build            -> tool_compile_project      (_build_inproc)
-#   generate.gate    -> tool_run_linter + tool_run_syntax_check
-#                       (_gate_inproc -> _gate_lint_check + _gate_syntax_check; the static
-#                        checker invokes no MCP tool, running validators via direct subprocess)
-#   validate.execute -> tool_run_program + tool_run_quality_checks (_execute_inproc)
-# `build` is the only substep-less phase (role "step", no substep key), so its key is
-# ("build", ""). Every other (step, substep) — all LLM leaves (compile/generate.generate,
-# compile/generate.verify, validate.judge, which are forbidden from calling any MCP tool by
-# their SKILLs) and the deterministic in-process validators that never import a build-runtime
-# handler (compile.static, validate.pre_judge / post_judge) — falls through to the fail-closed
-# `[]` default. This is strictly per-substep least-privilege: a read-only reviewer leaf holds no
-# build-tool grant.
-#
-# A drift guard (test_mcp_grant_table_matches_conductor_call_sites) introspects the conductor
-# bodies above (matching the CALL shape, not the import) and fails CI if a body's gated tool set
-# stops matching this table. For generate.gate it walks the `_gate_inproc` body to the
-# `self._gate_*_check(` helper calls and UNIONS the gated tools each helper invokes, so removing a
-# helper call (dropping a checker) drops that checker's grant and reds the test. It also pins its
-# notion of "which tools are gated" to build_runtime_server's actual gate-enforcing handlers
-# (those calling _maybe_enforce_orchestration_mcp_gate), so a newly-added gated tool cannot enter
-# production while silently absent from this table (it would fail-closed at the runtime authz gate).
-#
-# Read-only mapping proxy: the grant table is security-sensitive, so freeze it against
-# accidental in-process mutation (a stray test or import doing `.clear()` / key reassignment
-# would otherwise flip grants for the rest of the process). Values are already immutable tuples.
-_MCP_TOOL_GRANTS_BY_SUBSTEP: types.MappingProxyType[tuple[str, str], tuple[str, ...]] = (
-    types.MappingProxyType({
-        ("build", ""): ("compile_project",),
-        ("generate", "gate"): ("run_linter", "run_syntax_check"),
-        ("validate", "execute"): ("run_program", "run_quality_checks"),
-    })
-)
-
-
-def _mcp_permissions_for_launch(role: str, step: str, *, substep: str = "") -> list[str]:
-    # `role` is a defense-in-depth guard ONLY (non-leaf roles get nothing); the actual grant
-    # is a pure `(step, substep)` lookup — the same (step, substep) yields the same grant for
-    # role "step" and "substep". Do not "fix" this into a role-dependent branch.
-    r = role.strip().lower()
-    if r not in {"step", "substep"}:
-        return []
-    return list(_MCP_TOOL_GRANTS_BY_SUBSTEP.get(
-        (step.strip().lower(), substep.strip().lower()), ()))
-
-
-# A per-substep write_root file pin interpolates `run_id` / `source_id` directly into a
-# repo-relative path, so the id is constrained to an explicit allowlist rather than a denylist:
-# only `[A-Za-z0-9_-]` (the superset of the canonical `_RUN_ID_RE` / `_SOURCE_ID_RE` forms).
-# This rejects not just path separators / traversal (`/`, `\`, `.`, `..`) but every other
-# metacharacter (space, `~`, `*`, `?`, glob/shell chars) in one place — a fail-closed guard, not
-# a full format check (the canonical regexes above own the exact `<prefix>_<date>_<seq3>` shape).
-_SAFE_PATH_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
-
-
-def _is_safe_path_id(tok: str) -> bool:
-    """A path segment safe to interpolate into a per-substep write_root pin.
-
-    A file pin embeds the id directly in a repo-relative path; anything but a plain
-    `[A-Za-z0-9_-]` token could widen the pin (a separator making a sibling dir writable),
-    escape the intended subtree (`.` / `..`), or introduce a shell/glob metacharacter. Reject
-    everything outside that allowlist so the caller fails closed (`[]` ->
-    capability_invalid_empty_write_roots).
-    """
-    return bool(_SAFE_PATH_ID_RE.fullmatch(tok))
-
-
-def _write_roots_for_launch(
-    *,
-    role: str,
-    step: str,
-    orchestration_id: str,
-    ir_ref: str,
-    pipeline_ref: str,
-    node_key: str = "",
-    substep: str = "",
-    run_id: str = "",
-    source_id: str = "",
-) -> list[str]:
-    r = role.strip().lower()
-    st = step.strip().lower()
-    ss = substep.strip().lower()
-    orch_root = _with_trailing_slash(_normalize_rel_posix(f"workspace/orchestrations/{orchestration_id}"))
-    ir_norm = _with_trailing_slash(_normalize_rel_posix(ir_ref))
-    pipe_norm = _with_trailing_slash(_normalize_rel_posix(pipeline_ref))
-    if r == "orchestration":
-        return [orch_root]
-    if r not in {"step", "substep"}:
-        return []
-    # Slash-stripped bases reused by the per-subtree branches below (avoids repeating
-    # `.rstrip('/')` inline at every f-string and drifting if a new step is added). Computed
-    # after the early returns since only the step/substep subtree branches use them.
-    ir_base = ir_ref.rstrip("/")
-    pipe_base = pipeline_ref.rstrip("/")
-    if st == "compile":
-        # Compile.verify authors ONLY ir_meta.json (verification_status): the certified
-        # spec.ir.yaml (and every other file under <ir_ref>/) must stay non-writable to the
-        # verifier so a post-gate mutation cannot bypass --stage compile. Narrow the verifier's
-        # write_root to that single conductor/generate-authored file pin instead of the whole
-        # <ir_ref>/ directory (a structural second layer under the file-tool guard). The other
-        # compile substeps (generate authors the IR; static is deterministic/no-leaf) keep the
-        # directory root.
-        if ss == "verify":
-            return [_normalize_rel_posix(f"{ir_base}/ir_meta.json")]
-        return [ir_norm]
-    if st == "generate":
-        # generate.verify's SOLE write is source_meta.json (verification_status): it inspects the
-        # producer sources (already certified by the deterministic lint/syntax/static gates that
-        # run before it and never re-run) but never rewrites them — a fail requests regeneration
-        # under a NEW source_id (SKILL workflow-generate-verify). Narrow its write_root to that
-        # single producer-authored file pin so an out-of-scope source rewrite is refused by the
-        # sandbox itself, not merely by the pattern-based file-tool hook. source_meta.json is both
-        # a read input and this write pin; render_bwrap_command skips the ro read-bind for a read
-        # input that coincides with a write_root, keeping it writable. A missing/malformed
-        # source_id yields [] -> capability_invalid_empty_write_roots at launch.
-        if ss == "verify":
-            sid = source_id.strip()
-            if not _is_safe_path_id(sid):
-                return []
-            return [_normalize_rel_posix(f"{pipe_base}/source/{sid}/source_meta.json")]
-        # lineage.json is NOT a leaf write_root: it sits at the pipeline root, which must
-        # stay non-writable to the sandboxed leaf (atomic temp-sibling+rename would need
-        # the whole root writable). It is authored host-side by the conductor
-        # (workflow_conductor._write_lineage), matching docs/WORKSPACE_LAYOUT.md. The
-        # source-generating substep writes only the source tree.
-        return [
-            _with_trailing_slash(_normalize_rel_posix(f"{pipe_base}/source")),
-        ]
-    if st == "build":
-        return [_with_trailing_slash(_normalize_rel_posix(f"{pipe_base}/binary"))]
-    if st == "validate":
-        # Validate.execute writes the whole runs/<run_id>/<node_key_safe>/ evidence tree
-        # (command_log, diagnostics, verdict, raw/ snapshots, ...). The judge is a pure
-        # semantic pass authoring ONLY semantic_review.json — verdict.json and the derived
-        # aggregate/summary/validate_meta are host/execute-authored — so narrow its write_root
-        # to that single file pin. This removes the same-dir host-authored verdict.json /
-        # diagnostics.json (the R2 verdict, the load-bearing evidence) from the judge leaf's RW
-        # surface. A missing/malformed run_id or node_key yields [] -> the launch-time
-        # capability_invalid_empty_write_roots fail-closed error.
-        if ss == "judge":
-            rid = run_id.strip()
-            if not _is_safe_path_id(rid):
-                return []
-            try:
-                node_safe = _node_key_to_safe(node_key.strip())
-            except ValueError:
-                return []
-            if not node_safe:
-                return []
-            return [
-                _normalize_rel_posix(
-                    f"{pipe_base}/runs/{rid}/{node_safe}/semantic_review.json"
-                )
-            ]
-        return [_with_trailing_slash(_normalize_rel_posix(f"{pipe_base}/runs"))]
-    # NOTE: `tune` / `promote` are out-of-scope for the core 5-phase workflow
-    # (Spec -> Compile -> Generate -> Build -> Validate). They are retained
-    # here as optional flows invoked via a separate entrypoint (Tune / Promote
-    # are defined outside the core workflow). The core workflow does not produce these
-    # step tokens, so the branches below are reachable only from the optional
-    # entrypoints; their tests assert the contract those entrypoints rely on.
-    if st == "tune":
-        return [_with_trailing_slash(_normalize_rel_posix(f"{pipe_base}/tune"))]
-    if st == "promote":
-        # Promote writes to two canonical locations outside the pipeline workspace:
-        #   - releases/<spec_kind>/<domain>/<family>/<spec_id>/...
-        #     — official release artifacts for THIS spec only
-        #   - spec/registry/spec_catalog.yaml
-        #     — official_releases registration (shared catalog file)
-        #
-        # The release subtree is scoped to the current node's spec at the
-        # capability level (write_roots), not just at validation time. This
-        # prevents a promote agent for spec_x from writing into spec_y's
-        # release tree even via direct file writes — a sandbox escape that
-        # post-hoc validation cannot recover from once shared checked-in
-        # artifacts are mutated.
-        if not node_key:
-            # Without node_key we cannot derive a per-spec subtree; refuse
-            # rather than fall back to the wide tree.
-            return []
-        try:
-            _spec_kind, _spec_id_dotted, _ = _parse_node_key_strict(node_key)
-        except ValueError:
-            # Strict validator rejects path-traversal / malformed node_keys.
-            # Returning [] here triggers the capability-level
-            # `capability_invalid_empty_write_roots` failure for the promote
-            # step, which is the correct fail-closed behavior for this branch.
-            return []
-        _spec_id_slashed = _spec_id_dotted.replace(".", "/")
-        return [
-            _with_trailing_slash(_normalize_rel_posix(
-                f"releases/{_spec_kind}/{_spec_id_slashed}"
-            )),
-            _normalize_rel_posix("spec/registry/spec_catalog.yaml"),
-        ]
-    return []
-
-
-def build_capability_document(
-    *,
-    agent_run_id: str,
-    orchestration_id: str,
-    request_payload: dict[str, Any],
-) -> dict[str, Any]:
-    """Assemble the payload of `capabilities/<agent_run_id>.json`."""
-    role_raw = request_payload.get("agent_role")
-    role = role_raw.strip().lower() if isinstance(role_raw, str) and role_raw.strip() else ""
-    if role not in {"orchestration", "step", "substep"}:
-        ss0 = request_payload.get("substep")
-        if isinstance(ss0, str) and ss0.strip():
-            role = "substep"
-        elif isinstance(request_payload.get("step"), str) and str(request_payload.get("step")).strip():
-            role = "step"
-    if role not in {"orchestration", "step", "substep"}:
-        raise ValueError("capability requires agent_role orchestration|step|substep")
-    step_raw = request_payload.get("step")
-    if not isinstance(step_raw, str) or not step_raw.strip():
-        raise ValueError("capability requires step")
-    step = step_raw.strip().lower()
-    node_raw = request_payload.get("node_key")
-    if not isinstance(node_raw, str) or not node_raw.strip():
-        raise ValueError("capability requires node_key")
-    node_key = node_raw.strip()
-    # Reject malformed/traversal-laden node_keys before they flow into
-    # write_roots and release path prefixes (e.g. `../etc/passwd@1.0.0`
-    # would otherwise yield `releases/../etc/passwd/`).
-    _parse_node_key_strict(node_key)
-    ir_ref = str(request_payload.get("ir_ref") or "").strip()
-    pipeline_ref = str(request_payload.get("pipeline_ref") or "").strip()
-    if not ir_ref or not pipeline_ref:
-        raise ValueError("capability requires ir_ref and pipeline_ref")
-
-    substep_val: str | None = None
-    ss = request_payload.get("substep")
-    if isinstance(ss, str) and ss.strip():
-        substep_val = ss.strip().lower()
-    # run_id / source_id are already resolved into the request payload at launch
-    # (build_launch_request / record_launch); they are needed to narrow the
-    # per-substep write_root file pins (validate.judge / generate.verify).
-    run_id_val = str(request_payload.get("run_id") or "").strip()
-    source_id_val = str(request_payload.get("source_id") or "").strip()
-
-    # A pure-function leaf holds NO repository-write authority (the host writes after the child
-    # window closes) and receives no gate/MCP invocation contract: its capability is a truthful
-    # zero-authority
-    # record — `write_roots: []`, no mcp_permissions — tagged `mode: PURE_CAPABILITY_MODE` so the
-    # verification systems (and the record-launch read-only-profile branch) can recognize it.
-    pure = _is_pure_launch_request(request_payload)
-
-    token = secrets.token_hex(32)
-    body: dict[str, Any] = {
-        "agent_run_id": agent_run_id.strip(),
-        "capability_token": token,
-        "orchestration_id": orchestration_id,
-        "agent_role": role,
-        "node_key": node_key,
-        "step": step,
-        "write_roots": [] if pure else _write_roots_for_launch(
-            role=role,
-            step=step,
-            orchestration_id=orchestration_id,
-            ir_ref=ir_ref,
-            pipeline_ref=pipeline_ref,
-            node_key=node_key,
-            substep=substep_val or "",
-            run_id=run_id_val,
-            source_id=source_id_val,
-        ),
-        "mcp_permissions": [] if pure else _mcp_permissions_for_launch(role, step, substep=substep_val or ""),
-        "expires_at": _default_capability_expires_at_iso(),
-    }
-    if pure:
-        body["mode"] = PURE_CAPABILITY_MODE
-    if substep_val is not None:
-        body["substep"] = substep_val
-    # step/substep agents must have at least one write root; an empty list means
-    # the request_payload was missing or incomplete and would later cause a
-    # fail_closed violation. Fail early here instead. EXCEPTION: a pure leaf's empty
-    # write_roots is intentional and load-bearing (fail-closed against ANY child-window write),
-    # so the empty-write_roots guard is relaxed for pure only; the default stays fail-closed.
-    if role in {"step", "substep"} and not pure and not body.get("write_roots"):
-        raise ValueError(
-            f"capability_invalid_empty_write_roots: agent_role={role!r} requires at least "
-            "one write_root. Check that ir_ref and pipeline_ref in request_payload are "
-            "non-empty and the step value is valid."
-        )
-    return body
-
-
-def _write_capability_for_launch(
-    repo_root: Path,
-    orchestration_id: str,
-    child_agent_run_id: str,
-    request_payload: dict[str, Any],
-) -> dict[str, Any]:
-    _ensure_orchestration_audit_dirs(repo_root, orchestration_id)
-    cap = build_capability_document(
-        agent_run_id=child_agent_run_id,
-        orchestration_id=orchestration_id,
-        request_payload=request_payload,
-    )
-    out = _capabilities_dir(repo_root, orchestration_id) / f"{child_agent_run_id}.json"
-    _write_json(out, cap)
-    return cap
-
-
 def _transition_node_step_phase_state(
     repo_root: Path,
     orchestration_id: str,
@@ -6617,50 +6197,6 @@ def _phase_state_allows_write_step_result(
     )
 
 
-def _write_rule_source_violation(
-    repo_root: Path,
-    orchestration_id: str,
-    *,
-    agent_run_id: str,
-    read_path: str,
-    matched_prefix: str | None,
-) -> Path:
-    _ensure_orchestration_audit_dirs(repo_root, orchestration_id)
-    out = _violations_dir(repo_root, orchestration_id) / f"{agent_run_id}.rule_source_violation.json"
-    payload = {
-        "kind": "rule_source_violation",
-        "agent_run_id": agent_run_id,
-        "read_path": read_path,
-        "matched_denied_prefix": matched_prefix,
-        "evaluated_at": _utc_now_iso(),
-    }
-    _write_json(out, payload)
-    return out
-
-
-def _write_phase_authority_violation(
-    repo_root: Path,
-    orchestration_id: str,
-    *,
-    agent_run_id: str,
-    actor_role: str,
-    rejected_paths: list[str],
-    reason: str,
-) -> Path:
-    _ensure_orchestration_audit_dirs(repo_root, orchestration_id)
-    out = _violations_dir(repo_root, orchestration_id) / f"{agent_run_id}.phase_authority_violation.json"
-    payload = {
-        "kind": "phase_authority_violation",
-        "actor_role": actor_role,
-        "agent_run_id": agent_run_id,
-        "rejected_paths": rejected_paths,
-        "reason": reason,
-        "evaluated_at": _utc_now_iso(),
-    }
-    _write_json(out, payload)
-    return out
-
-
 def _write_sandbox_enforcement_violation(
     repo_root: Path,
     orchestration_id: str,
@@ -6751,11 +6287,11 @@ def _require_child_agent_role_for_step(
 ) -> str:
     """Require `role_value` to be exactly the child agent kind that `step_key` demands.
 
-    ONE predicate with three callers — the MCP build-tool phase gate, the run-gate phase
-    gate, and the record-launch request validator. The first two read the CAPABILITY's
-    role; the third reads the LAUNCH REQUEST's, which is what mints that capability. The
-    launch-side call is the upstream one: without it an unrecognized role was inferred by
-    `build_capability_document` and skipped by four other readers (TODO.md).
+ONE caller since issue #171 PR-2: the record-launch request validator, which reads the
+    LAUNCH REQUEST's role. Two more read a CAPABILITY document's role — the MCP build-tool
+    phase gate and the run-gate phase gate — and both went with the capability itself. The
+    launch-side call was always the upstream one: without it an unrecognized role was inferred
+    downstream and skipped by every reader.
 
     `_required_child_agent_kind` is called first, so an unsupported step (`tune` /
     `promote`) fails on the step rather than on the role — the pre-existing behavior at
@@ -7317,269 +6853,6 @@ def pre_orchestration_start(
     return {"status": "pass", "hook": "pre_orchestration_start", **detail}
 
 
-def _load_write_roots_from_cap(roots_obj: Any) -> list[str]:
-    """Normalize write_roots from capability JSON at load time.
-
-    Trailing-slash entries are directory roots. All other entries are file pins (exact match),
-    including extensionless files like Makefile or LICENSE.
-    """
-    result: list[str] = []
-    for item in (roots_obj if isinstance(roots_obj, list) else []):
-        if not isinstance(item, str) or not item.strip():
-            continue
-        raw = item.strip()
-        if raw.endswith("/"):
-            result.append(_normalize_rel_posix(raw) + "/")
-        else:
-            result.append(_normalize_rel_posix(raw))  # file pin: exact match
-    return result
-
-
-# _ALLOWED_BYPRODUCT_EXTENSIONS and _ALLOWED_EXTENSIONLESS_BYPRODUCT_NAMES are imported
-# from tools.hooks.common — the single source of truth for pre-write and terminal policy.
-
-
-def _path_under_any_write_root(rel_posix: str, write_roots: list[str]) -> bool:
-    """Check whether rel_posix is authorized by any write_roots entry.
-
-    write_roots must be pre-normalized by _load_write_roots_from_cap so that
-    directory entries have trailing '/' and file pins are exact paths (with or without extension).
-    """
-    p = _normalize_rel_posix(rel_posix)
-    for root in write_roots:
-        if not isinstance(root, str) or not root.strip():
-            continue
-        normalized_root = _normalize_rel_posix(root)
-        if not normalized_root:
-            continue
-        if root.strip().endswith("/"):
-            # Directory entry: prefix match
-            if _repo_path_under_prefix(p, normalized_root):
-                return True
-        else:
-            # File pin: exact match only
-            if p == normalized_root:
-                return True
-    return False
-
-
-def validate_mcp_build_tool_invocation(
-    repo_root: Path,
-    *,
-    orchestration_id: str,
-    agent_run_id: str,
-    capability_token: str,
-    tool_name: str,
-    mcp_args: dict[str, Any] | None = None,
-) -> None:
-    """The phase gate before a `compile_project` / `run_linter` / `run_program` / `run_quality_checks` call."""
-    _require_safe_gate_ids(orchestration_id, agent_run_id, "MCP phase gate")
-    _require_preflight_launchable(repo_root, orchestration_id, enforce_live_probe=False)
-
-    root = _orchestration_root(repo_root, orchestration_id)
-    launch_resp = root / "launches" / f"{agent_run_id.strip()}.response.json"
-    if not launch_resp.exists():
-        raise RuntimeError(
-            "MCP phase gate: record-launch did not complete (missing launches/*.response.json) "
-            f"for agent_run_id={agent_run_id!r}"
-        )
-
-    doc = _load_phase_state(repo_root, orchestration_id)
-    if doc is None:
-        raise RuntimeError("MCP phase gate: phase_state.json missing")
-    cur = doc.get("current_state")
-    if cur != "preflight_passed":
-        raise RuntimeError(f"MCP phase gate: unexpected orchestration current_state: {cur!r}")
-
-    cap_path = _capabilities_dir(repo_root, orchestration_id) / f"{agent_run_id.strip()}.json"
-    if not cap_path.exists():
-        raise RuntimeError(f"MCP phase gate: capability file missing: {cap_path}")
-    cap = _read_json(cap_path)
-    if not isinstance(cap, dict):
-        raise RuntimeError(f"MCP phase gate: capability must be object: {cap_path}")
-    if str(cap.get("capability_token", "")).strip() != str(capability_token).strip():
-        raise RuntimeError("MCP phase gate: capability_token mismatch")
-
-    exp = cap.get("expires_at")
-    if isinstance(exp, str):
-        exp_dt = _parse_iso_z_expiry(exp)
-        if exp_dt is not None and datetime.now(timezone.utc) > exp_dt:
-            raise RuntimeError("MCP phase gate: capability token expired")
-
-    perms = cap.get("mcp_permissions")
-    allowed = [str(x) for x in perms] if isinstance(perms, list) else []
-    if tool_name not in allowed:
-        # Surface the resolving (step, substep) so an empty `allowed` is self-diagnosing:
-        # a correctly fail-closed leaf (e.g. generate.verify) reads the same as a genuinely
-        # missing _MCP_TOOL_GRANTS_BY_SUBSTEP entry without this context.
-        cap_step = str(cap.get("step", "")).strip().lower()
-        cap_substep = str(cap.get("substep", "")).strip().lower()
-        raise RuntimeError(
-            f"MCP phase gate: tool {tool_name!r} not permitted by capability "
-            f"(step={cap_step!r}, substep={cap_substep!r}, allowed={allowed!r})"
-        )
-
-    node_raw = cap.get("node_key")
-    step_raw = cap.get("step")
-    if not isinstance(node_raw, str) or not node_raw.strip():
-        raise RuntimeError("MCP phase gate: capability.node_key missing")
-    if not isinstance(step_raw, str) or not step_raw.strip():
-        raise RuntimeError("MCP phase gate: capability.step missing")
-    node_safe = _node_key_to_safe(node_raw.strip())
-    step_key = step_raw.strip().lower()
-    _require_child_agent_role_for_step(
-        cap.get("agent_role"),
-        step_key,
-        label="MCP phase gate: capability",
-        error_type=RuntimeError,
-    )
-    ns = doc.get("node_states")
-    if not isinstance(ns, dict):
-        raise RuntimeError("MCP phase gate: phase_state.node_states missing")
-    inner = ns.get(node_safe)
-    if not isinstance(inner, dict):
-        raise RuntimeError(f"MCP phase gate: phase_state missing node {node_safe!r}")
-    st = inner.get(step_key)
-    if st != "child_running":
-        raise RuntimeError(
-            "MCP phase gate: node step must be child_running "
-            f"(node_key_safe={node_safe!r}, step={step_key!r}, current={st!r})"
-        )
-
-    args_obj = mcp_args if isinstance(mcp_args, dict) else {}
-    if tool_name == "run_program" and step_key == "validate":
-        cmd = args_obj.get("command")
-        if not isinstance(cmd, list) or not cmd:
-            raise RuntimeError("MCP phase gate: run_program requires non-empty command array")
-        joined = " ".join(str(x) for x in cmd)
-        if "spec.ir.yaml" not in joined:
-            raise RuntimeError(
-                "MCP phase gate: Validate.execute run_program command must reference spec.ir.yaml (case section)"
-            )
-        # Canonical command_log_path enforcement: align with validator-side
-        # post_execute check so non-canonical placements fail at MCP-call time
-        # rather than after expensive execution. Required canonical:
-        #   <pipeline_ref>/runs/<run_id>/<node_safe>/command_log.jsonl
-        # The MCP server's `_resolve_command_log_path` resolves a relative
-        # `command_log_path` against `project_dir`; we normalize both to a
-        # repo-relative canonical comparison.
-        try:
-            req_doc_for_log = _read_json(
-                _orchestration_root(repo_root, orchestration_id)
-                / "launches"
-                / f"{agent_run_id.strip()}.request.json"
-            )
-        except (OSError, json.JSONDecodeError):
-            req_doc_for_log = None
-        pipeline_ref_for_log: str | None = None
-        run_id_for_log: str | None = None
-        if isinstance(req_doc_for_log, dict):
-            pr_raw = req_doc_for_log.get("pipeline_ref")
-            if isinstance(pr_raw, str) and pr_raw.strip():
-                pipeline_ref_for_log = _normalize_rel_posix(pr_raw.strip())
-            ex_raw = req_doc_for_log.get("run_id")
-            if isinstance(ex_raw, str) and ex_raw.strip():
-                run_id_for_log = ex_raw.strip()
-        if pipeline_ref_for_log and run_id_for_log:
-            expected_log_rel = (
-                f"{pipeline_ref_for_log}/runs/{run_id_for_log}/"
-                f"{node_safe}/command_log.jsonl"
-            )
-            project_dir_raw = args_obj.get("project_dir")
-            command_log_path_raw = args_obj.get("command_log_path")
-            actual_log_rel: str | None = None
-            try:
-                if (
-                    isinstance(command_log_path_raw, str)
-                    and command_log_path_raw.strip()
-                ):
-                    clp_path = Path(command_log_path_raw.strip())
-                    if clp_path.is_absolute():
-                        try:
-                            actual_log_rel = (
-                                clp_path.resolve()
-                                .relative_to(repo_root.resolve())
-                                .as_posix()
-                            )
-                        except ValueError:
-                            actual_log_rel = None
-                    else:
-                        if (
-                            isinstance(project_dir_raw, str)
-                            and project_dir_raw.strip()
-                        ):
-                            base = Path(project_dir_raw.strip())
-                            if not base.is_absolute():
-                                base = repo_root / base
-                            try:
-                                actual_log_rel = (
-                                    (base / clp_path)
-                                    .resolve()
-                                    .relative_to(repo_root.resolve())
-                                    .as_posix()
-                                )
-                            except ValueError:
-                                actual_log_rel = None
-                elif (
-                    isinstance(project_dir_raw, str)
-                    and project_dir_raw.strip()
-                ):
-                    base = Path(project_dir_raw.strip())
-                    if not base.is_absolute():
-                        base = repo_root / base
-                    try:
-                        actual_log_rel = (
-                            (base / "command_log.jsonl")
-                            .resolve()
-                            .relative_to(repo_root.resolve())
-                            .as_posix()
-                        )
-                    except ValueError:
-                        actual_log_rel = None
-            except OSError:
-                actual_log_rel = None
-            if actual_log_rel != expected_log_rel:
-                raise RuntimeError(
-                    "MCP phase gate: Execute run_program log placement must be "
-                    f"canonical {expected_log_rel!r} (resolved={actual_log_rel!r}). "
-                    "Set project_dir to the execute node directory or pass "
-                    "command_log_path explicitly so post_execute can verify "
-                    "tool-execution evidence at canonical placement."
-                )
-    if tool_name in {"compile_project", "run_quality_checks"}:
-        # Every absence on the way to this contract means make, which is the reading
-        # record_launch already applies to an IR that omits toolchain.build_system (and
-        # the conductor's own `str(toolchain.build_system or "make")`). Reading any of
-        # them as "no policy" exempts the whole contract: an unresolvable ir_ref, an IR
-        # without the key, an omitted argument, and an omitted preset each did so in
-        # turn, and the project is make-only.
-        ir_ref = _launch_ir_ref_for_agent(repo_root, orchestration_id, agent_run_id)
-        bs = (_impl_resolved_build_system(repo_root, ir_ref) if ir_ref else None) or "make"
-        if bs == "make":
-            if tool_name == "compile_project":
-                req_bs = str(args_obj.get("build_system", "")).strip().lower() or "make"
-                if req_bs != "make":
-                    raise RuntimeError(
-                        "MCP phase gate: toolchain.build_system=make requires compile_project "
-                        f"build_system make (got {req_bs!r})"
-                    )
-            if tool_name == "run_quality_checks":
-                preset = str(args_obj.get("preset", "")).strip().lower() or "make_test"
-                if preset not in {"make_test", "make_check"}:
-                    raise RuntimeError(
-                        "MCP phase gate: toolchain.build_system=make requires run_quality_checks "
-                        f"preset make_test or make_check (got {preset!r})"
-                    )
-
-    _append_workflow_hook_log(
-        repo_root,
-        orchestration_id,
-        hook_name="pre_command_execute",
-        status="allow",
-        detail={"mcp_tool": tool_name, "step": step_key},
-    )
-
-
 def _launch_ir_ref_for_agent(
     repo_root: Path, orchestration_id: str, agent_run_id: str
 ) -> str | None:
@@ -7594,6 +6867,53 @@ def _launch_ir_ref_for_agent(
         return None
     pr = doc.get("ir_ref")
     return pr.strip() if isinstance(pr, str) and pr.strip() else None
+
+
+# A per-substep write_root file pin interpolates `run_id` / `source_id` directly into a
+# repo-relative path, so the id is constrained to an explicit allowlist rather than a denylist:
+# only `[A-Za-z0-9_-]` (the superset of the canonical `_RUN_ID_RE` / `_SOURCE_ID_RE` forms).
+# This rejects not just path separators / traversal (`/`, `\`, `.`, `..`) but every other
+# metacharacter (space, `~`, `*`, `?`, glob/shell chars) in one place — a fail-closed guard, not
+# a full format check (the canonical regexes above own the exact `<prefix>_<date>_<seq3>` shape).
+_SAFE_PATH_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+def _is_safe_path_id(tok: str) -> bool:
+    """A path segment safe to interpolate into a per-substep write_root pin.
+
+    A file pin embeds the id directly in a repo-relative path; anything but a plain
+    `[A-Za-z0-9_-]` token could widen the pin (a separator making a sibling dir writable),
+    escape the intended subtree (`.` / `..`), or introduce a shell/glob metacharacter. Reject
+    everything outside that allowlist so the caller fails closed (`[]` ->
+    capability_invalid_empty_write_roots).
+    """
+    return bool(_SAFE_PATH_ID_RE.fullmatch(tok))
+
+def _orchestration_holds_launch_record(
+    repo_root: Path, orchestration_id: str, agent_run_id: str
+) -> bool:
+    """Adv-5 ownership proof: did THIS orchestration launch `agent_run_id`?
+
+    `workspace/tmp/` is a FLAT namespace with no orchestration prefix, so two
+    orchestrations that reuse an agent_run_id share the directory. Anything that deletes
+    under it has to establish ownership first, or terminating one run wipes another's live
+    scratch. `_cleanup_agent_tmp_root` has enforced that since Adv-5 and is the ONE caller
+    left; `run_gate`'s durable gate-result unlink read the same proof through this function
+    until issue #171 PR-2 deleted the subcommand.
+
+    This is the LAUNCH-RECORD half only. `_cleanup_agent_tmp_root` accepts a second proof
+    (the orchestration agent's own arid, from `orchestration_meta.json`) because an
+    orchestration agent is not launched via `record-launch`.
+    """
+    # `.strip()` on BOTH ids, because the inline form this replaced stripped both and
+    # `_orchestration_root` does not. Without it a padded `orchestration_id` resolves to a
+    # directory that does not exist, ownership silently fails, and `_cleanup_agent_tmp_root`
+    # refuses -- leaving the run in cleanup-pending and its tmp scratch on disk. Caught by
+    # diffing this extraction against the code it replaced, not by any test.
+    return (
+        _orchestration_root(repo_root, orchestration_id.strip())
+        / "launches"
+        / f"{agent_run_id.strip()}.request.json"
+    ).is_file()
 
 
 def _require_safe_gate_ids(
@@ -7774,652 +7094,88 @@ def _impl_is_leaf_node(repo_root: Path, ir_ref: str) -> bool | None:
     return None
 
 
-def _gate_script_command(
-    *,
-    repo_root: Path,
-    gate_name: str,
-    args_json: dict[str, Any],
-) -> list[str]:
-    gate = gate_name.strip()
-    tools_dir = Path(__file__).resolve().parent
-    tool_path: Path
-    if gate == "validate_pipeline_semantics":
-        tool_path = tools_dir / "validate_pipeline_semantics.py"
-    elif gate == "validate_workspace_root":
-        tool_path = tools_dir / "validate_workspace_root.py"
-    else:
-        raise ValueError(f"unsupported gate name: {gate_name!r}")
-    if not tool_path.exists():
-        raise RuntimeError(f"gate script not found: {tool_path}")
-
-    cmd: list[str] = [sys.executable, str(tool_path)]
-    positionals = args_json.get("paths")
-    if positionals is None:
-        positionals = args_json.get("positional_args")
-    if positionals is not None:
-        if not isinstance(positionals, list) or not all(isinstance(x, str) for x in positionals):
-            raise ValueError("args_json.paths/positional_args must be array of strings")
-    positional_list: list[str] = [str(x) for x in (positionals or []) if str(x).strip()]
-
-    for key in sorted(args_json.keys()):
-        if key in {"paths", "positional_args"}:
-            continue
-        value = args_json[key]
-        if value is None:
-            continue
-        if isinstance(key, str) and key.startswith("--"):
-            flag = key
-        else:
-            flag = "--" + str(key).strip().replace("_", "-")
-        if not flag.strip():
-            continue
-        if isinstance(value, bool):
-            if value:
-                cmd.append(flag)
-            continue
-        if isinstance(value, list):
-            for item in value:
-                if isinstance(item, (str, int, float)) and str(item).strip():
-                    cmd.extend([flag, str(item)])
-            continue
-        if isinstance(value, (str, int, float)) and str(value).strip():
-            cmd.extend([flag, str(value)])
-
-    cmd.extend(positional_list)
-    return cmd
-
-
-def _extract_gate_violations(stdout: str, stderr: str, returncode: int) -> list[str]:
-    lines: list[str] = []
-    for source in (stdout, stderr):
-        for raw in source.splitlines():
-            token = raw.strip()
-            if not token:
-                continue
-            if token.startswith("- "):
-                lines.append(token)
-                continue
-            if token.endswith(": FAIL") or " validation: FAIL" in token:
-                lines.append(token)
-                continue
-    deduped: list[str] = []
-    seen: set[str] = set()
-    for item in lines:
-        if item in seen:
-            continue
-        seen.add(item)
-        deduped.append(item)
-    if returncode != 0 and not deduped:
-        deduped.append(f"gate command failed with exit code {returncode}")
-    return deduped
-
-
-def _inline_gate_result(
-    repo_root: Path,
-    *,
-    orchestration_id: str,
-    gate_name: str,
-    agent_run_id: str,
-    args_json: dict[str, Any],
-    capability_token: str,
-) -> dict[str, Any]:
-    gate = gate_name.strip()
-    if gate == "orchestration_read":
-        read_path = args_json.get("read_path")
-        if not isinstance(read_path, str) or not read_path.strip():
-            raise ValueError("run-gate orchestration_read requires non-empty args_json.read_path")
-        return log_orchestration_read(
-            repo_root,
-            orchestration_id,
-            agent_run_id=agent_run_id,
-            read_path=read_path,
-        )
-    raise ValueError(f"unsupported inline gate name: {gate_name!r}")
-
-
-def _gate_python_env(repo_root: Path) -> dict[str, str]:
-    env = os.environ.copy()
-    env.setdefault("PYTHONDONTWRITEBYTECODE", "1")
-    env["PYTHONPYCACHEPREFIX"] = str((repo_root / _HOST_PYCACHE_REDIRECT_PREFIX).resolve())
-    return env
-
-
-def _pre_command_execute_validate_pipeline_semantics(
-    repo_root: Path,
-    orchestration_id: str,
-    agent_run_id: str,
-    args_json: dict[str, Any],
-) -> None:
-    cap_path = _capabilities_dir(repo_root, orchestration_id) / f"{agent_run_id.strip()}.json"
-    cap = _read_json(cap_path)
-    if not isinstance(cap, dict):
-        return
-    step_key = str(cap.get("step", "")).strip().lower()
-    stage_l = validate_pipeline_semantics_stage(step_key=step_key, args_json=args_json)
-    _append_workflow_hook_log(
-        repo_root,
-        orchestration_id,
-        hook_name="pre_command_execute",
-        status="allow",
-        detail={"gate": "validate_pipeline_semantics", "stage": stage_l, "step": step_key},
-    )
-
-
-def _validate_run_gate_permissions(
-    repo_root: Path,
-    *,
-    orchestration_id: str,
-    gate_name: str,
-    agent_run_id: str,
-    capability_token: str,
-) -> None:
-    _require_safe_gate_ids(orchestration_id, agent_run_id, "run-gate phase gate")
-    _require_preflight_launchable(repo_root, orchestration_id, enforce_live_probe=False)
-    root = _orchestration_root(repo_root, orchestration_id)
-
-    launch_resp = root / "launches" / f"{agent_run_id.strip()}.response.json"
-    if not launch_resp.exists():
-        raise RuntimeError(
-            "run-gate phase gate: record-launch did not complete "
-            f"(missing launches/{agent_run_id.strip()}.response.json)"
-        )
-
-    cap_path = _capabilities_dir(repo_root, orchestration_id) / f"{agent_run_id.strip()}.json"
-    if not cap_path.exists():
-        raise RuntimeError(f"run-gate phase gate: capability file missing: {cap_path}")
-    cap = _read_json(cap_path)
-    if not isinstance(cap, dict):
-        raise RuntimeError(f"run-gate phase gate: capability must be object: {cap_path}")
-    if str(cap.get("capability_token", "")).strip() != capability_token.strip():
-        raise RuntimeError("run-gate phase gate: capability_token mismatch")
-    exp = cap.get("expires_at")
-    if isinstance(exp, str):
-        exp_dt = _parse_iso_z_expiry(exp)
-        if exp_dt is not None and datetime.now(timezone.utc) > exp_dt:
-            raise RuntimeError("run-gate phase gate: capability token expired")
-
-    policy_path = _access_policies_dir(repo_root, orchestration_id) / f"{agent_run_id.strip()}.json"
-    if not policy_path.exists():
-        raise RuntimeError(f"run-gate phase gate: access policy missing: {policy_path}")
-    policy = _read_json(policy_path)
-    if not isinstance(policy, dict):
-        raise RuntimeError(f"run-gate phase gate: access policy must be object: {policy_path}")
-    allowed_svcs = policy.get("allowed_gate_services")
-    allowed = [str(x) for x in allowed_svcs] if isinstance(allowed_svcs, list) else []
-    if gate_name not in allowed:
-        raise RuntimeError(
-            f"run-gate phase gate: gate {gate_name!r} not permitted by access policy (allowed={allowed!r})"
-        )
-
-    doc = _load_phase_state(repo_root, orchestration_id)
-    if doc is None:
-        raise RuntimeError("run-gate phase gate: phase_state.json missing")
-    if doc.get("current_state") != "preflight_passed":
-        raise RuntimeError(
-            f"run-gate phase gate: unexpected orchestration current_state: {doc.get('current_state')!r}"
-        )
-    node_raw = cap.get("node_key")
-    step_raw = cap.get("step")
-    if not isinstance(node_raw, str) or not node_raw.strip():
-        raise RuntimeError("run-gate phase gate: capability.node_key missing")
-    if not isinstance(step_raw, str) or not step_raw.strip():
-        raise RuntimeError("run-gate phase gate: capability.step missing")
-    node_safe = _node_key_to_safe(node_raw.strip())
-    step_key = step_raw.strip().lower()
-    _require_child_agent_role_for_step(
-        cap.get("agent_role"),
-        step_key,
-        label="run-gate phase gate: capability",
-        error_type=RuntimeError,
-    )
-    ns = doc.get("node_states")
-    if not isinstance(ns, dict):
-        raise RuntimeError("run-gate phase gate: phase_state.node_states missing")
-    node_state = ns.get(node_safe)
-    if not isinstance(node_state, dict):
-        raise RuntimeError(f"run-gate phase gate: phase_state missing node {node_safe!r}")
-    if node_state.get(step_key) != "child_running":
-        raise RuntimeError(
-            "run-gate phase gate: node step must be child_running "
-            f"(node_key_safe={node_safe!r}, step={step_key!r}, current={node_state.get(step_key)!r})"
-        )
-
-
-def _assert_under_agent_tmp_root(repo_root: Path, target: Path) -> None:
-    """Refuse a durable-gate-result path that escapes `workspace/tmp/`.
-
-    Belt to `_require_safe_gate_ids`' braces. That check makes an escape unreachable
-    today, so this raises for no input the callers can currently produce -- which is the
-    point: it is a tripwire on a future change to `_agent_tmp_gate_result_path`, not a
-    second gate on caller text, and it can never become an exception to the invalidation
-    rule the documents state.
-
-    CONSEQUENCE, stated rather than discovered later: deleting the CALL is invisible to
-    the suite, because no reachable input makes it fire. The function's own behaviour is
-    pinned by `AgentTmpRootContainmentTests`; the call site is not, and cannot be without
-    a defect to reach it. Kept under `.claude/skills/atmofab-enforcement-change` rule 1-b --
-    a surviving mutation is not grounds for deletion, and "there is no test" and "the code
-    is unnecessary" are different claims.
-    """
-    tmp_root = (repo_root / "workspace" / "tmp").resolve(strict=False)
-    resolved = target.resolve(strict=False)
-    if not (resolved == tmp_root or tmp_root in resolved.parents):
-        raise ValueError(
-            f"durable gate-result path escapes the tmp namespace: {resolved} "
-            f"is not under {tmp_root}"
-        )
-
-
-def _invalidate_durable_gate_result(
-    repo_root: Path, orchestration_id: str, agent_run_id: str, gate: str
-) -> None:
-    """Remove the leaf-readable copy of one gate's result, before that gate is attempted.
-
-    The copy at `workspace/tmp/<arid>/gate_results/<gate>.json` is written only by a
-    `run_gate` call that reaches the write at the very end. Without this, a refused attempt
-    leaves the PREVIOUS run's verdict exactly where the launch prompt tells the leaf to
-    look, and a leaf that reads it reports its substep done on a verdict obtained for an
-    earlier artifact -- a `leaf shortcut` in the sense `AGENTS.md` §Development premises
-    defends against.
-
-    WHAT THIS DOES AND DOES NOT ESTABLISH, stated because round 2 shipped it as an
-    unconditional "the file is present iff a run completed since your last attempt" and
-    round 3 measured that false in four ways. This runs immediately after the gate-name
-    check and before everything else in `run_gate`, so it covers every refusal raised from
-    that point on -- both argument guards, and everything `_validate_run_gate_permissions`
-    and the gate itself raise. "Every refusal `run_gate` itself raises" is what the first
-    version said, and round 4 measured it false by one: the unsupported-gate-name
-    `ValueError` is raised BEFORE this, and is moot only because a name outside
-    DEFAULT_ALLOWED_GATE_SERVICES can key no copy that was ever written. It CANNOT cover
-    an attempt that never reaches this code:
-
-      - a command line argparse rejects (a malformed `--args-json`, a bad `--gate`);
-      - a Bash command the permission layer refuses before the process starts;
-      - an `OSError` on the unlink itself, swallowed below;
-      - and it says nothing about the ARTIFACT: a completed pass stays valid-looking after
-        the leaf edits the file the gate ran on. That last one is a property of the
-        persisted gate document too, and predates this change -- what is new is that a
-        leaf can now READ it. TODO.md carries it.
-
-    So the documents state a rule with its exceptions, and keep telling the leaf to check
-    `args_json` / `evaluated_at` against the run it means. The mechanism narrows the
-    window; it does not close it, and no surface may say that it does.
-
-    BLAST RADIUS, stated as what it is. The deletable set is
-    `<repo_root>/workspace/tmp/<safe-id>/gate_results/<one of DEFAULT_ALLOWED_GATE_SERVICES>.json`
-    for a caller-chosen `repo_root` -- so a caller CAN delete a copy belonging to another
-    agent_run_id, and `repo_root` is argv. What a leaf gains by either is nothing: nothing
-    but the owning leaf reads its own copy, and the copy decides nothing. Round 3 and round
-    4 reviewers reached that verdict independently, and the premises' decision criterion
-    puts it out of scope on the second branch.
-
-    ROUND 4 REMOVED AN Adv-5 OWNERSHIP GUARD FROM HERE, and deleting a defense is a
-    classification, so here is the evidence. The guard required this orchestration to hold
-    the arid's launch record, and returned SILENTLY when it did not -- which made it a
-    fourth exception to the rule every surface states, reachable by passing a wrong
-    `--orchestration-id` (argv the leaf types): the probe misses, nothing is invalidated,
-    `run_gate` refuses anyway, and the leaf reads a previous run's `status: pass` at the
-    path its launch prompt names. That is the shortcut this whole function exists to close,
-    reintroduced by a guard against something that gains a leaf nothing. The Adv-5 analogy
-    that justified it does not transfer either: that guard protects an `rmtree` of a whole
-    directory tree in `_cleanup_agent_tmp_root`, not the unlink of one file at a fixed
-    name. What replaces it is `_assert_under_agent_tmp_root`, which cannot fail for a valid
-    id and therefore adds no exception.
-    """
-    # BEFORE ANY PATH IS BUILT. `agent_run_id` is caller text at this point -- this runs
-    # ahead of `_validate_run_gate_permissions`, which is where the ids used to be checked
-    # first. `_require_safe_gate_ids` -> `_is_safe_path_id` is a `[A-Za-z0-9_-]` fullmatch,
-    # so `..`, a separator and an empty value are all refused before `_agent_tmp_gate_result_path`
-    # interpolates anything. It raises rather than returning: an unsafe id is a refusal in
-    # its own right, and `_validate_run_gate_permissions` would refuse it moments later.
-    _require_safe_gate_ids(orchestration_id, agent_run_id, "run-gate phase gate")
-    target = _agent_tmp_gate_result_path(repo_root, agent_run_id, gate)
-    # Containment, not ownership: this holds for every value `_require_safe_gate_ids`
-    # admits, so it can never become an exception to the rule the documents state. It is
-    # here to fail loudly if a later change to `_agent_tmp_gate_result_path` ever makes the
-    # target escape the tmp namespace -- the traversal this function's own test attacks.
-    _assert_under_agent_tmp_root(repo_root, target)
-    try:
-        target.unlink(missing_ok=True)
-    except OSError:
-        # Best-effort, for the same reason the write is: a convenience artifact must not
-        # decide a verdict, so a failed unlink does not fail the gate. It leaves a stale
-        # copy behind, which is one of the exceptions the docstring above enumerates and
-        # the documents describe.
-        pass
-
-
-def run_gate(
-    repo_root: Path,
-    *,
-    orchestration_id: str,
-    gate_name: str,
-    agent_run_id: str,
-    args_json: dict[str, Any],
-    capability_token: str,
-) -> dict[str, Any]:
-    gate = gate_name.strip()
-    if gate not in DEFAULT_ALLOWED_GATE_SERVICES:
-        raise ValueError(f"unsupported gate name: {gate_name!r}")
-
-    _invalidate_durable_gate_result(repo_root, orchestration_id, agent_run_id, gate)
-
-    if not capability_token.strip():
-        raise ValueError("capability_token is required for run-gate")
-    if not isinstance(args_json, dict):
-        raise ValueError("args_json must be object")
-
-    _validate_run_gate_permissions(
-        repo_root,
-        orchestration_id=orchestration_id,
-        gate_name=gate,
-        agent_run_id=agent_run_id,
-        capability_token=capability_token,
-    )
-    if gate == "validate_pipeline_semantics":
-        _pre_command_execute_validate_pipeline_semantics(
-            repo_root,
-            orchestration_id,
-            agent_run_id,
-            args_json,
-        )
-
-    inline_result: dict[str, Any] | None = None
-    if gate == "orchestration_read":
-        inline_result = _inline_gate_result(
-            repo_root,
-            orchestration_id=orchestration_id,
-            gate_name=gate,
-            agent_run_id=agent_run_id,
-            args_json=args_json,
-            capability_token=capability_token,
-        )
-        violations: list[str] = []
-        status = "pass"
-        exit_code = 0
-    else:
-        cmd = _gate_script_command(repo_root=repo_root, gate_name=gate, args_json=args_json)
-        gate_env = _gate_python_env(repo_root)
-        proc = subprocess.run(
-            cmd,
-            cwd=str(repo_root),
-            env=gate_env,
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-        violations = _extract_gate_violations(proc.stdout or "", proc.stderr or "", proc.returncode)
-        status = "pass" if proc.returncode == 0 else "fail"
-        exit_code = proc.returncode
-    gate_doc: dict[str, Any] = {
-        "orchestration_id": orchestration_id,
-        "agent_run_id": agent_run_id,
-        "gate": gate,
-        "args_json": args_json,
-        "status": status,
-        "exit_code": exit_code,
-        "violations": violations,
-        "evaluated_at": _utc_now_iso(),
-    }
-    if inline_result is not None:
-        gate_doc["result"] = inline_result
-    out_path = _gates_dir(repo_root, orchestration_id) / agent_run_id.strip() / f"{gate}.json"
-    _write_json(out_path, gate_doc)
-    gate_ref = (
-        f"workspace/orchestrations/{orchestration_id}/gates/"
-        f"{agent_run_id.strip()}/{gate}.json"
-    )
-    result: dict[str, Any] = {"violations": violations, "gate_result_ref": gate_ref}
-    if inline_result is not None:
-        result["result"] = inline_result
-    # Emit a one-line JSON status summary to stderr so agents can consume the
-    # gate result without needing to Read the persisted gate file.  The gate
-    # file path (gate_result_ref) is in a gates/<arid>/ directory that is
-    # outside most agents' read_manifests, causing read_manifest_read_guard
-    # blocks when agents attempt to read it directly (observed in
-    # orch_20260610T130256Z_ebe96a51).  Agents read this line out of the
-    # command result, which carries stderr. That is the CANONICAL route and the
-    # one always present.
-    #
-    # The SAME object is then written to the leaf's own tmp root, at
-    # `workspace/tmp/<arid>/gate_results/<gate>.json`, so a gate result outlives
-    # the tool call that produced it (issue #77) and so something on disk records
-    # what the leaf was told. One file per gate name: a second gate does not
-    # clobber the first, and re-running a gate replaces its own file.
-    #
-    # The runtime writes it because the route the documents used to teach -- the
-    # leaf appending `2>` plus a target under its tmp root to the gate command --
-    # is refused by the permission layer. What was measured on Claude Code 2.1.234
-    # is a redirect into the repository's own `workspace/tmp/<arid>/` in the `2>`,
-    # `>` and `>>` spellings, to a new and to an existing target; `2>/dev/null` is
-    # unaffected and no out-of-repo target was tested. It executed on 2.1.223
-    # (docs/HOOKS.md §"Layer boundary"). Writing it here makes no CLI permission
-    # behaviour load-bearing, and adds no leaf-supplied input to this gate.
-    #
-    # Neither identifier in that path is validated again here, deliberately:
-    # `agent_run_id` already passed `_require_safe_gate_ids` inside
-    # `_validate_run_gate_permissions` above, and `gate` is a member of
-    # DEFAULT_ALLOWED_GATE_SERVICES by the guard at the top of this function --
-    # a closed set, not caller text. A redundant re-check here would be a second
-    # spelling of both rules, which is the drift this repository pays for.
-    #
-    # The tmp root is leaf-WRITABLE, so a leaf can overwrite this copy with a
-    # forged pass. What it gains by that is still nothing, but the reason is
-    # narrower than "nothing reads it" -- round 3 caught that phrasing, because
-    # skills/workflow-audit-claude/SKILL.md now tells an auditor to cross-check
-    # the copy's six shared fields against the persisted document when the copy
-    # survives. The accurate reason: the copy DECIDES nothing. Every consumer
-    # that reaches a verdict -- the conductor, step_result.json -- reads
-    # gates/<arid>/<gate>.json, written above. Forging only the copy creates a
-    # disagreement the audit is told to investigate, which is worse for the leaf
-    # than leaving it alone; forging both is the interpreter route, a residue
-    # already recorded in docs/HOOKS.md and not this change's to own.
-    # So this file is a convenience FOR the leaf, never evidence ABOUT it, and it
-    # must not be cited as evidence anywhere. (AGENTS.md §Development premises,
-    # decision criterion: out of scope because what the leaf would gain can be
-    # named and is nothing.)
-    #
-    # ROUND 1 CORRECTION, kept because the first draft of this comment got it
-    # wrong and the wrong version is the intuitive one: the sentence above is
-    # about which file is READ, NOT about write authority. gates/<arid>/ is
-    # rw-bound into the leaf's own sandbox -- it has to be, the leaf invokes
-    # run-gate itself (`runtime_rw_rel_paths`, rendered --bind) -- and
-    # `_should_ignore_runtime_snapshot_path` exempts the whole {orch_root}/gates/
-    # prefix from the terminal FS-diff, and the interpreter route reaches it
-    # (docs/HOOKS.md §"Layer boundary" records that route as the widest residue
-    # of the Bash write refusal). So gates/<arid>/<gate>.json is NOT a file "no
-    # leaf can write", and nothing here should be justified by saying it is.
-    # What this copy adds is a second place the same summary can be found; it
-    # adds no write authority a leaf did not already have.
-    # KEY ORDER IS DELIBERATE, and the claim is smaller than the first version of this
-    # comment made it. `violations` is the only unbounded member and this dict is emitted
-    # as ONE stderr line, so everything identifying WHICH run produced the verdict sits
-    # AHEAD of it. That helps ONLY a truncation which cuts inside the final line: under a
-    # head-preserving truncation a long `violations[]` costs the whole line whatever the
-    # order, and whether any harness truncates either way is a declared UNMEASURED residue
-    # (TODO.md). So this is cheap insurance with an unmeasured payoff, not a fix -- the
-    # real answer to that residue is the untruncated copy on disk. Pinned by
-    # `test_run_gate_summary_puts_identity_ahead_of_the_unbounded_field`, because round 3
-    # found the first version asserting this in prose with nothing observing it, which is
-    # the shape this branch criticised round 1 for.
-    _gate_summary = {
-        "gate": gate,
-        "status": status,
-        # `args_json` names the inputs the verdict was taken on and `exit_code`
-        # distinguishes a pass from a gate that never ran, so a reader can tell WHICH
-        # invocation a copy belongs to. Both are shared with the persisted gate document,
-        # which is what makes an audit cross-check between the two possible;
-        # skills/workflow-audit-claude/SKILL.md names the comparable set.
-        "args_json": args_json,
-        "exit_code": exit_code,
-        # The stderr line carries this too, so the file and the line the leaf was shown
-        # are the SAME OBJECT -- equal once parsed, not byte-equal: `_write_json` renders
-        # indented with ensure_ascii=False and the stderr line is compact and
-        # ASCII-escaped, so a non-ASCII violation is spelled differently in the two.
-        # Compare them parsed, never as text.
-        "evaluated_at": gate_doc["evaluated_at"],
-        "gate_result_ref": gate_ref,
-        "violations": violations,
-    }
-    print(json.dumps(_gate_summary), file=sys.stderr)
-    _tmp_gate_result = _agent_tmp_gate_result_path(repo_root, agent_run_id, gate)
-    try:
-        _write_json(_tmp_gate_result, _gate_summary)
-    except OSError:
-        # Best-effort: the gate VERDICT must not depend on a convenience
-        # artifact, so a failed write neither raises nor changes status /
-        # exit_code / stdout / stderr. It must not leave an EARLIER call's file
-        # in place either -- a stale result that reads as this one's is worse
-        # than no file at all, and the leaf's fallback (the command result) is
-        # the canonical route regardless.
-        try:
-            _tmp_gate_result.unlink(missing_ok=True)
-        except OSError:
-            pass
-    return result
-
-
-def _allowed_output_manifest_path(
-    repo_root: Path,
-    orchestration_id: str,
-    agent_run_id: str,
-) -> Path:
-    return _output_manifests_dir(repo_root, orchestration_id) / f"{agent_run_id.strip()}.json"
-
-
-def _write_allowed_output_manifest(
-    repo_root: Path,
-    *,
-    orchestration_id: str,
-    agent_run_id: str,
+def _mandatory_phase_outputs_for_launch(
+    request_payload: dict[str, Any],
     allowed_output_paths: Sequence[str],
-    allowed_file_tool_paths: Sequence[str] | None = None,
-    agent_role: str | None = None,
-    allowed_tmp_root: str | None = None,
-    mcp_owned_audit_logs: Sequence[str] | None = None,
-) -> str:
-    normalized = []
-    for p in allowed_output_paths:
-        if not isinstance(p, str) or not p.strip():
-            continue
-        raw = p.strip()
-        if raw.endswith("/"):
-            normalized.append(_normalize_rel_posix(raw) + "/")
-        else:
-            normalized.append(_normalize_rel_posix(raw))
-    file_tool_normalized = [
-        _normalize_rel_posix(p)
-        for p in (allowed_file_tool_paths or [])
-        if isinstance(p, str) and p.strip()
-    ]
-    mcp_logs_normalized = [
-        _normalize_rel_posix(p)
-        for p in (mcp_owned_audit_logs or [])
-        if isinstance(p, str) and p.strip()
-    ]
-    payload = {
-        "orchestration_id": orchestration_id,
-        "agent_run_id": agent_run_id.strip(),
-        "allowed_output_paths": sorted(set(normalized)),
-        "allowed_file_tool_paths": sorted(set(file_tool_normalized)),
-        "mcp_owned_audit_logs": sorted(set(mcp_logs_normalized)),
-        "generated_at": _utc_now_iso(),
-    }
-    if isinstance(allowed_tmp_root, str) and allowed_tmp_root.strip():
-        payload["allowed_tmp_root"] = _normalize_rel_posix(allowed_tmp_root.strip())
-    if isinstance(agent_role, str) and agent_role.strip():
-        payload["agent_role"] = agent_role.strip()
-    out_path = _allowed_output_manifest_path(repo_root, orchestration_id, agent_run_id)
-    _write_json(out_path, payload)
-    return f"workspace/orchestrations/{orchestration_id}/output_manifests/{agent_run_id.strip()}.json"
+) -> list[str]:
+    """Canonical phase outputs that MUST be pre-authorized for the launch.
 
+    The Validate ``post_execute`` gate (``tools/validate_pipeline_semantics.py``)
+    requires the snapshot schema at
+    ``<pipeline_ref>/runs/<run_id>/<node_safe>/raw/state_snapshots/snapshot_schema.json``
+    whenever the spec mandates state-snapshot evidence. Its ``.json`` name is not
+    covered by a bare ``raw/state_snapshots/`` directory allowlist entry (the
+    directory-allowlist source-extension set excludes it, same reason the
+    ``Makefile`` needs an explicit pin), so an executor that writes it without
+    listing it gets rejected with ``allowed_output_paths manifest violation`` and
+    the orchestration restarts. Pre-authorizing the canonical path is harmless
+    when the spec does not require snapshots (the file is simply never written),
+    so we inject it for the Validate.execute substep and let the
+    ``_matches_phase_contract`` check below confirm it stays in-contract.
 
-def _load_allowed_output_manifest(
-    repo_root: Path,
-    *,
-    orchestration_id: str,
-    agent_run_id: str,
-) -> dict[str, Any]:
-    path = _allowed_output_manifest_path(repo_root, orchestration_id, agent_run_id)
-    if not path.exists():
-        raise ValueError(f"allowed_output_paths manifest not found: {path}")
-    payload = _read_json(path)
-    if not isinstance(payload, dict):
-        raise ValueError(f"allowed_output_paths manifest must be object: {path}")
-    return payload
-
-
-def _validate_paths_against_allowed_output_manifest(
-    repo_root: Path,
-    *,
-    orchestration_id: str,
-    agent_run_id: str,
-    paths: Sequence[str],
-) -> None:
-    manifest = _load_allowed_output_manifest(
-        repo_root,
-        orchestration_id=orchestration_id,
-        agent_run_id=agent_run_id,
-    )
-    allowed_obj = manifest.get("allowed_output_paths")
-    if not isinstance(allowed_obj, list) or not all(isinstance(x, str) for x in allowed_obj):
-        raise ValueError("allowed_output_paths manifest must include string array allowed_output_paths")
-    allowed_files: set[str] = set()
-    allowed_dirs: list[str] = []
-    for p in allowed_obj:
-        if not isinstance(p, str) or not p.strip():
-            continue
-        raw_p = p.strip()
-        if raw_p.endswith("/"):
-            allowed_dirs.append(_normalize_rel_posix(raw_p))
-        else:
-            allowed_files.add(_normalize_rel_posix(raw_p))
-    if not allowed_files and not allowed_dirs:
-        raise ValueError("allowed_output_paths manifest must include non-empty allowed_output_paths")
-    tmp_root_raw = manifest.get("allowed_tmp_root", "")
-    tmp_norm = ""
-    tmp_prefix = ""
-    if isinstance(tmp_root_raw, str) and tmp_root_raw.strip():
-        tmp_norm = _normalize_rel_posix(tmp_root_raw.strip())
-        tmp_prefix = tmp_norm + "/"
-    denied: list[str] = []
-    invalid_paths: list[str] = []
-    for raw in paths:
-        rel = _normalize_rel_posix(str(raw))
-        if not rel:
-            invalid_paths.append(str(raw))
-            continue
-        if rel in allowed_files:
-            continue
-        if allowed_dirs and any(_repo_path_under_prefix(rel, d) for d in allowed_dirs):
-            # Apply same extension policy as terminal validation — fail before mutation.
-            ext = os.path.splitext(rel)[1].lower()
-            if ext in _ALLOWED_BYPRODUCT_EXTENSIONS:
+    Restricted to the ``execute`` substep: only execute writes ``raw/`` evidence,
+    and the ``judge`` contract rejects ``raw/`` paths — injecting there would make
+    ``_matches_phase_contract`` raise. Mirrors
+    ``_mandatory_file_tool_pins_for_launch``: returns paths to be merged into
+    ``allowed`` only when missing; never raises.
+    """
+    step_token = str(request_payload.get("step") or "").strip().lower()
+    substep_token = str(request_payload.get("substep") or "").strip().lower()
+    pipeline_ref = _normalize_rel_posix(str(request_payload.get("pipeline_ref") or ""))
+    # Phase-2: the pipeline ``lineage.json`` is no longer a leaf output — it sits at the
+    # pipeline root, which must stay non-writable to the sandboxed leaf (the Edit/Write
+    # tools' atomic temp-sibling+rename would need the whole root writable). The conductor
+    # authors it host-side (workflow_conductor._write_lineage) before generate.gate's static
+    # post_generate gate runs, so it is NOT injected into the generate child's
+    # allowed_output_paths (historical audit: orch_20260615T095217Z_74450292 predates this).
+    if step_token != "validate" or substep_token != "execute" or not pipeline_ref:
+        return []
+    node_key = str(request_payload.get("node_key") or "").strip()
+    node_safe = _node_key_to_safe(node_key) if node_key else ""
+    if not node_safe:
+        return []
+    validate_prefix = f"{pipeline_ref}/runs/"
+    run_id = str(request_payload.get("run_id") or "").strip()
+    if not run_id:
+        # Single-namespace enforcement guarantees at most one run_id under the
+        # validate prefix; derive it from the listed paths when the request does
+        # not carry an explicit `run_id` field.
+        run_ids: set[str] = set()
+        for item in allowed_output_paths:
+            if not isinstance(item, str):
                 continue
-            if ext == "" and os.path.basename(rel).lower() in _ALLOWED_EXTENSIONLESS_BYPRODUCT_NAMES:
+            tok = _normalize_rel_posix(item)
+            if not tok.startswith(validate_prefix):
                 continue
-            denied.append(rel)
-            continue
-        if tmp_prefix and (rel == tmp_norm or rel.startswith(tmp_prefix)):
-            continue
-        denied.append(rel)
-    if denied or invalid_paths:
-        details = [*denied, *[f"<invalid:{token}>" for token in invalid_paths]]
-        raise ValueError("allowed_output_paths manifest violation: " + ", ".join(details))
+            tail = tok[len(validate_prefix):]
+            parts = [s for s in tail.split("/") if s]
+            if parts:
+                run_ids.add(parts[0])
+        if len(run_ids) == 1:
+            run_id = next(iter(run_ids))
+    if not run_id:
+        # run_id not determinable → inject nothing and preserve the loud
+        # downstream failure rather than guessing a placement.
+        return []
+    return [
+        f"{validate_prefix}{run_id}/{node_safe}/raw/state_snapshots/snapshot_schema.json"
+    ]
 
 
 def _allowed_output_paths_for_launch(
     *,
     request_payload: dict[str, Any],
-    write_roots: Sequence[str],
 ) -> list[str]:
-    role = str(request_payload.get("agent_role") or "").strip().lower()
-    if role not in {"step", "substep"}:
-        return [
-            _normalize_rel_posix(item)
-            for item in write_roots
-            if isinstance(item, str) and item.strip()
-        ]
+    """The paths this launch is CONTRACTED to produce, validated against the phase contract.
+
+    It took a `write_roots` argument until issue #171 PR-2 and checked each declared path for
+    containment in the capability's roots as well. That was the authority half — a bound on
+    what a leaf could write — and there is no capability any more: the one caller left is a
+    DETERMINISTIC substep, which runs in the conductor's own process and is bound by nothing
+    this function returns. The phase-contract half stays, because it answers a different
+    question — is this path where this phase's output BELONGS — and its readers
+    (`determine_substep_status`, `_validate_pass_output_refs_against_launch`) still ask it.
+    """
     raw_candidates = (
         request_payload.get("allowed_output_paths")
         or request_payload.get("required_outputs")
@@ -8458,11 +7214,6 @@ def _allowed_output_paths_for_launch(
         if not token or token == "/":
             raise ValueError(f"allowed_output_paths[{idx}] must be valid relative path")
         allowed.append(token)
-    normalized_roots = [
-        _normalize_rel_posix(root)
-        for root in write_roots
-        if isinstance(root, str) and str(root).strip()
-    ]
     step_token = str(request_payload.get("step") or "").strip().lower()
     substep_token = str(request_payload.get("substep") or "").strip().lower()
     ir_ref = _normalize_rel_posix(str(request_payload.get("ir_ref") or ""))
@@ -8538,9 +7289,8 @@ def _allowed_output_paths_for_launch(
                 # docs/workflow/phases/phase_02_generate.md. Gated to the deterministic
                 # Generate.gate substep ONLY: it is conductor-authored and leaf-non-writable, so a
                 # Generate.generate / Generate.verify leaf launch must NOT be able to list it as an
-                # output (which would auto-authorize the leaf to overwrite the gate verdict via
-                # _allowed_file_tool_paths_for_launch). Belt-and-suspenders: that helper also
-                # excludes gate_meta.json from the auto-derived file-tool set.
+                # output. A leaf writes nothing at all since issue #171, so this is a
+                # statement about the declaration rather than a refusal of a write.
                 if substep_token == "gate" and path.endswith("/gate_meta.json"):
                     return True
             return False
@@ -8701,9 +7451,8 @@ def _allowed_output_paths_for_launch(
                     "validate_meta.json",
                 }
             return rel_under_node == "pre_judge_meta.json"
-        # NOTE: `tune` / `promote` step branches below are out-of-scope for
-        # core 5-phase workflow (see _write_roots_for_launch for context).
-        # They remain to satisfy the optional-flow capability contract.
+        # NOTE: `tune` / `promote` step branches below are out-of-scope for the
+        # core 5-phase workflow. They remain to satisfy the optional flows' contract.
         if step_token == "tune":
             if not tune_prefix or not path.startswith(tune_prefix):
                 return False
@@ -8864,18 +7613,6 @@ def _allowed_output_paths_for_launch(
         if log_path not in allowed:
             allowed.append(log_path)
 
-    # Mandatory build-control file pins (e.g. Make's in-source Makefile). A bare
-    # `src/` directory allowlist entry covers source extensions (.f90/.c) via the
-    # Edit/Write tools but NOT the extensionless `Makefile`, which is
-    # intentionally excluded from the directory-allowlist source-extension set
-    # (tools/hooks/common.py) and would therefore be unwritable through every
-    # channel. Inject the explicit file pin so it is authorized as an output and
-    # — via `_allowed_file_tool_paths_for_launch` auto-derive — Edit/Write
-    # eligible. See `_mandatory_file_tool_pins_for_launch`.
-    for mandatory_pin in _mandatory_file_tool_pins_for_launch(request_payload, allowed):
-        if mandatory_pin not in allowed:
-            allowed.append(mandatory_pin)
-
     # Mandatory canonical phase outputs (e.g. Validate's snapshot_schema.json)
     # whose names are not covered by a directory allowlist entry. Inject so the
     # executor's write is authorized rather than failing post_execute and forcing
@@ -8889,19 +7626,12 @@ def _allowed_output_paths_for_launch(
             # Canonical MCP-owned audit logs are pre-validated against
             # canonical phase placements (including legitimate cross-phase
             # placements like Execute's run_quality_checks log under
-            # generate/<gen>/src/). Skip the capability write_roots check
-            # because the cross-phase placement legitimately falls outside
-            # the step's write_roots, and rely on phase contract +
-            # multi-layer integrity protection instead.
+            # generate/<gen>/src/).
             if not _matches_phase_contract(path):
                 raise ValueError(
                     f"allowed_output_paths[{idx}] is outside phase contract outputs for step={step_token!r}: {path!r}"
                 )
             continue
-        if normalized_roots and not any(_repo_path_under_prefix(path, root) for root in normalized_roots):
-            raise ValueError(
-                f"allowed_output_paths[{idx}] must be under capability write_roots: {path!r}"
-            )
         if not _matches_phase_contract(path):
             raise ValueError(
                 f"allowed_output_paths[{idx}] is outside phase contract outputs for step={step_token!r}: {path!r}"
@@ -9074,388 +7804,6 @@ def _canonical_mcp_audit_log_paths_for_request(
     )
 
 
-def _allowed_file_tool_paths_for_launch(
-    *,
-    request_payload: dict[str, Any],
-    allowed_output_paths: Sequence[str],
-) -> list[str]:
-    raw = request_payload.get("allowed_file_tool_paths")
-    # Exclude directory entries (trailing "/") from allowed_set: _normalize_rel_posix strips the
-    # slash, so a directory token would otherwise leak into the manifest as a file entry and
-    # enable a prefix-match bypass of the per-file write policy at the hook / terminal check.
-    allowed_set = {
-        _normalize_rel_posix(str(item))
-        for item in allowed_output_paths
-        if isinstance(item, str) and item.strip() and not item.strip().endswith("/")
-    }
-    # Canonical MCP audit log paths are MCP-owned and integrity-protected:
-    # exclude them from direct file-tool writes regardless of their extension.
-    # Non-canonical files that happen to share the basename are treated as
-    # ordinary outputs and remain Edit/Write-eligible.
-    canonical_log_set = set(
-        _canonical_mcp_audit_log_paths_for_request(request_payload, list(allowed_output_paths))
-    )
-    if raw is None:
-        # Auto-derive: every output path that is not a canonical MCP audit log is
-        # permitted to be written via direct Edit/Write tools.
-        #
-        # Phase-2: under mandatory bwrap confinement a leaf writes its managed
-        # artifacts (`*_meta.json`, `verdict.json`, …) and source directly via the
-        # Write/Edit tools; FS-diff containment within the leaf's `write_roots`
-        # is the authoritative attribution (`_validate_actual_write_paths`), so
-        # managed `.json` / `.txt` outputs no longer route through
-        # guarded-apply-patch. (A managed artifact's write_root is always a
-        # directory — the Edit/Write tools write via a temp sibling + rename, which
-        # needs a writable parent; a pipeline-root file like `lineage.json` is
-        # therefore NOT a leaf output and is authored host-side by the conductor.)
-        # Canonical MCP audit logs stay excluded: they are MCP-owned and
-        # integrity-protected (forging a successful tool run must remain impossible
-        # regardless of bwrap confinement).
-        derived = {
-            path
-            for path in allowed_set
-            if path
-            and path not in canonical_log_set
-            # The Generate.gate deliverable is the source-ROOT gate_meta.json
-            # (source/<source_id>/gate_meta.json — NOT under src/), the single unioned
-            # lint/syntax/static verdict, conductor-authored in-process
-            # (workflow_conductor._gate_inproc, raw host write) and documented leaf-non-writable.
-            # Keep it out of the auto-derived file-tool set so no leaf can Edit/Write it,
-            # mirroring the canonical-audit-log exclusion above. The "/src/" guard scopes this to
-            # the conductor-owned placement: a legitimately generated source-tree file that
-            # happens to be named gate_meta.json (under .../src/) is an ordinary leaf output and
-            # stays writable (and _matches_phase_contract already accepts it via its /src/ rule,
-            # checked first).
-            and not (path.endswith("/gate_meta.json") and "/src/" not in path)
-            # And for the Compile.static deliverable compile_static_meta.json
-            # (<ir_ref>/compile_static_meta.json, conductor-authored in-process by
-            # workflow_conductor._compile_static_inproc): never leaf-writable. Defense-in-depth
-            # (CP-1 already keeps it out of any compile leaf's allowed_output_paths).
-            and not path.endswith("/compile_static_meta.json")
-            # And for the IR-ROOT dependency-graph sidecar dependency_graph.json
-            # (<ir_ref>/dependency_graph.json, conductor-authored at Compile phase start by
-            # workflow_conductor._write_dependency_graph): the derived closure/topo graph is a
-            # pure function of deps.yaml + spec_catalog.yaml, so no compile leaf may write it.
-            # Scoped to the IR-root placement (NOT under a source "/src/" tree), mirroring the
-            # gate_meta guard: a generate leaf could legitimately emit a source
-            # file happening to be named dependency_graph.json under source/<id>/src/, which
-            # stays writable. Defense-in-depth (the sidecar is already absent from every compile
-            # leaf's allowed_output_paths — compile.generate lists only spec.ir.yaml+ir_meta.json).
-            and not (path.endswith("/dependency_graph.json") and "/src/" not in path)
-            # And for the Validate.pre_judge / Validate.post_judge deliverables
-            # (<run_node_dir>/pre_judge_meta.json / post_judge_meta.json, conductor-authored
-            # in-process by workflow_conductor._pre_judge_inproc / _post_judge_inproc): never
-            # leaf-writable (the judge leaf's allowed_output_paths never lists them).
-            and not path.endswith("/pre_judge_meta.json")
-            and not path.endswith("/post_judge_meta.json")
-            # G6: the run-node aggregate_verdict.json / summary.json / validate_meta.json are
-            # now conductor-authored in the post_judge substep (_author_derived_validate_
-            # artifacts), so no Validate leaf may write them. Scoped to the run-node dir
-            # (`/runs/`) so an unrelated file of the same generic name stays writable.
-            and not ("/runs/" in path and (
-                path.endswith("/aggregate_verdict.json")
-                or path.endswith("/summary.json")
-                or path.endswith("/validate_meta.json")))
-        }
-        result = sorted(derived)
-        _assert_mandatory_file_tool_pins_present(
-            request_payload=request_payload,
-            allowed_output_paths=allowed_output_paths,
-            allowed_file_tool_paths=result,
-        )
-        return result
-    if not isinstance(raw, list):
-        raise ValueError("allowed_file_tool_paths must be a list when provided")
-    normalized: list[str] = []
-    for idx, item in enumerate(raw):
-        if not isinstance(item, str) or not item.strip():
-            raise ValueError(f"allowed_file_tool_paths[{idx}] must be non-empty string")
-        item_token = item.strip().replace("\\", "/")
-        if item_token.endswith("/"):
-            raise ValueError(f"allowed_file_tool_paths[{idx}] must be file path: {item!r}")
-        path = _normalize_rel_posix(item_token)
-        if path in canonical_log_set:
-            raise ValueError(
-                f"allowed_file_tool_paths[{idx}] must not include canonical MCP audit "
-                f"log path: {path!r} (written exclusively by MCP tooling)"
-            )
-        # Source-ROOT gate_meta.json only (see auto-derive branch above): a legitimately
-        # generated .../src/gate_meta.json stays writable. This is the single unioned
-        # lint/syntax/static verdict (Generate.gate in-process deliverable).
-        if path.endswith("/gate_meta.json") and "/src/" not in path:
-            raise ValueError(
-                f"allowed_file_tool_paths[{idx}] must not include the conductor-authored "
-                f"gate deliverable: {path!r} (written exclusively by Generate.gate in-process)"
-            )
-        # Same for the IR-ROOT compile_static_meta.json (Compile.static in-process deliverable).
-        if path.endswith("/compile_static_meta.json"):
-            raise ValueError(
-                f"allowed_file_tool_paths[{idx}] must not include the conductor-authored "
-                f"compile static deliverable: {path!r} (written exclusively by Compile.static "
-                "in-process)"
-            )
-        # Same for the IR-ROOT dependency_graph.json (conductor-authored at Compile phase
-        # start by workflow_conductor._write_dependency_graph — the derived closure/topo graph).
-        # Scoped to the IR-root placement (NOT under a source "/src/" tree): a legitimately
-        # generated source file named dependency_graph.json under source/<id>/src/ stays writable.
-        if path.endswith("/dependency_graph.json") and "/src/" not in path:
-            raise ValueError(
-                f"allowed_file_tool_paths[{idx}] must not include the conductor-authored "
-                f"dependency-graph sidecar: {path!r} (written exclusively by the conductor at "
-                "Compile phase start)"
-            )
-        # Same for the run-node pre_judge_meta.json / post_judge_meta.json
-        # (Validate.pre_judge / Validate.post_judge in-process deliverables).
-        if path.endswith("/pre_judge_meta.json") or path.endswith("/post_judge_meta.json"):
-            raise ValueError(
-                f"allowed_file_tool_paths[{idx}] must not include the conductor-authored "
-                f"validate gate deliverable: {path!r} (written exclusively by "
-                "Validate.pre_judge / Validate.post_judge in-process)"
-            )
-        # G6: the run-node aggregate_verdict.json / summary.json / validate_meta.json are
-        # conductor-authored in the post_judge substep (hoisted out of the judge leaf).
-        if "/runs/" in path and (
-            path.endswith("/aggregate_verdict.json")
-            or path.endswith("/summary.json")
-            or path.endswith("/validate_meta.json")
-        ):
-            raise ValueError(
-                f"allowed_file_tool_paths[{idx}] must not include the conductor-authored "
-                f"derived validate deliverable: {path!r} (written exclusively by "
-                "Validate.post_judge in-process — G6)"
-            )
-        # Phase-2: managed `.json` / `.txt` artifacts are written directly by the
-        # confined leaf (FS-diff attribution), so they are no longer rejected here
-        # as "CLI-managed". Only canonical MCP audit logs (handled above) remain
-        # off-limits to direct file tools.
-        if path not in allowed_set:
-            raise ValueError(
-                f"allowed_file_tool_paths[{idx}] must be included in allowed_output_paths: {path!r}"
-            )
-        normalized.append(path)
-    result = sorted(set(normalized))
-    _assert_mandatory_file_tool_pins_present(
-        request_payload=request_payload,
-        allowed_output_paths=allowed_output_paths,
-        allowed_file_tool_paths=result,
-    )
-    return result
-
-
-def _mandatory_file_tool_pins_for_launch(
-    request_payload: dict[str, Any],
-    allowed_output_paths: Sequence[str],
-) -> list[str]:
-    """Build-control file pins that MUST be Edit/Write-eligible for the launch.
-
-    For Make-based Generate launches the in-source ``Makefile`` is mandatory
-    (make + Fortran/C needs the ``test`` / ``check`` targets) yet is an
-    extensionless build-control name intentionally excluded from the
-    directory-allowlist source-extension set (``tools/hooks/common.py``). A bare
-    ``<pipeline_ref>/source/<source_id>/src/`` directory entry therefore leaves
-    it unwritable through every channel, so it must be pinned explicitly.
-
-    ``build_system`` is resolved from ``_resolved_build_system``. ``record_launch`` always
-    populates it, defaulting an absent build_system to ``"make"`` (mirroring the conductor),
-    so a Make node with an under-specified IR still gets the pin. Only DIRECT callers that
-    omit the field see absence-disables-requirement (``bs_norm=""``), keeping them / non-Make
-    toolchains unaffected.
-    """
-    step_token = str(request_payload.get("step") or "").strip().lower()
-    substep_token = str(request_payload.get("substep") or "").strip().lower()
-    pipeline_ref = _normalize_rel_posix(str(request_payload.get("pipeline_ref") or ""))
-    # Only the source-generating launch needs the Makefile. The Generate.verify
-    # substep inspects src/ and writes source_meta.json — granting it Makefile
-    # (build-control) write authority would let the verifier mutate the very
-    # artifact it is supposed to judge, so it must be excluded. The deterministic
-    # Generate.gate substep (conductor-run, no leaf) writes no Makefile either (only
-    # gate_meta.json).
-    if step_token != "generate" or substep_token in ("verify", "gate") or not pipeline_ref:
-        return []
-    # When the conductor authors src/Makefile host-side (_write_makefile: make AND fortran,
-    # leaf OR dependency) it is NOT a leaf deliverable and must not be pinned (the file already
-    # exists; pinning would require the leaf to write it). `_resolved_makefile_host_authored`
-    # is populated by record_launch to mirror Conductor._conductor_authors_makefile exactly.
-    if request_payload.get("_resolved_makefile_host_authored") is True:
-        return []
-    bs_raw = request_payload.get("_resolved_build_system")
-    bs_norm = bs_raw.strip().lower() if isinstance(bs_raw, str) and bs_raw.strip() else ""
-    if bs_norm != "make":
-        return []
-    generate_prefix = f"{pipeline_ref}/source/"
-    source_id = str(request_payload.get("source_id") or "").strip()
-    if not source_id:
-        # Single-namespace enforcement guarantees at most one source_id under
-        # the generate prefix; derive it from the listed paths when the request
-        # does not carry an explicit `source_id` field.
-        gen_ids: set[str] = set()
-        for item in allowed_output_paths:
-            if not isinstance(item, str):
-                continue
-            tok = _normalize_rel_posix(item)
-            if not tok.startswith(generate_prefix):
-                continue
-            tail = tok[len(generate_prefix):]
-            parts = [s for s in tail.split("/") if s]
-            if parts:
-                gen_ids.add(parts[0])
-        if len(gen_ids) == 1:
-            source_id = next(iter(gen_ids))
-    if not source_id:
-        return []
-    return [f"{generate_prefix}{source_id}/src/Makefile"]
-
-
-def _mandatory_phase_outputs_for_launch(
-    request_payload: dict[str, Any],
-    allowed_output_paths: Sequence[str],
-) -> list[str]:
-    """Canonical phase outputs that MUST be pre-authorized for the launch.
-
-    The Validate ``post_execute`` gate (``tools/validate_pipeline_semantics.py``)
-    requires the snapshot schema at
-    ``<pipeline_ref>/runs/<run_id>/<node_safe>/raw/state_snapshots/snapshot_schema.json``
-    whenever the spec mandates state-snapshot evidence. Its ``.json`` name is not
-    covered by a bare ``raw/state_snapshots/`` directory allowlist entry (the
-    directory-allowlist source-extension set excludes it, same reason the
-    ``Makefile`` needs an explicit pin), so an executor that writes it without
-    listing it gets rejected with ``allowed_output_paths manifest violation`` and
-    the orchestration restarts. Pre-authorizing the canonical path is harmless
-    when the spec does not require snapshots (the file is simply never written),
-    so we inject it for the Validate.execute substep and let the
-    ``_matches_phase_contract`` check below confirm it stays in-contract.
-
-    Restricted to the ``execute`` substep: only execute writes ``raw/`` evidence,
-    and the ``judge`` contract rejects ``raw/`` paths — injecting there would make
-    ``_matches_phase_contract`` raise. Mirrors
-    ``_mandatory_file_tool_pins_for_launch``: returns paths to be merged into
-    ``allowed`` only when missing; never raises.
-    """
-    step_token = str(request_payload.get("step") or "").strip().lower()
-    substep_token = str(request_payload.get("substep") or "").strip().lower()
-    pipeline_ref = _normalize_rel_posix(str(request_payload.get("pipeline_ref") or ""))
-    # Phase-2: the pipeline ``lineage.json`` is no longer a leaf output — it sits at the
-    # pipeline root, which must stay non-writable to the sandboxed leaf (the Edit/Write
-    # tools' atomic temp-sibling+rename would need the whole root writable). The conductor
-    # authors it host-side (workflow_conductor._write_lineage) before generate.gate's static
-    # post_generate gate runs, so it is NOT injected into the generate child's
-    # allowed_output_paths (historical audit: orch_20260615T095217Z_74450292 predates this).
-    if step_token != "validate" or substep_token != "execute" or not pipeline_ref:
-        return []
-    node_key = str(request_payload.get("node_key") or "").strip()
-    node_safe = _node_key_to_safe(node_key) if node_key else ""
-    if not node_safe:
-        return []
-    validate_prefix = f"{pipeline_ref}/runs/"
-    run_id = str(request_payload.get("run_id") or "").strip()
-    if not run_id:
-        # Single-namespace enforcement guarantees at most one run_id under the
-        # validate prefix; derive it from the listed paths when the request does
-        # not carry an explicit `run_id` field.
-        run_ids: set[str] = set()
-        for item in allowed_output_paths:
-            if not isinstance(item, str):
-                continue
-            tok = _normalize_rel_posix(item)
-            if not tok.startswith(validate_prefix):
-                continue
-            tail = tok[len(validate_prefix):]
-            parts = [s for s in tail.split("/") if s]
-            if parts:
-                run_ids.add(parts[0])
-        if len(run_ids) == 1:
-            run_id = next(iter(run_ids))
-    if not run_id:
-        # run_id not determinable → inject nothing and preserve the loud
-        # downstream failure rather than guessing a placement.
-        return []
-    return [
-        f"{validate_prefix}{run_id}/{node_safe}/raw/state_snapshots/snapshot_schema.json"
-    ]
-
-
-def _assert_mandatory_file_tool_pins_present(
-    *,
-    request_payload: dict[str, Any],
-    allowed_output_paths: Sequence[str],
-    allowed_file_tool_paths: Sequence[str],
-) -> None:
-    """Fail the launch (before the child spawns) when a mandatory build-control
-    file pin is absent from the effective ``allowed_file_tool_paths``.
-
-    This converts the otherwise mid-run, artifact-corrupting fail-stop (a child
-    discovering it cannot write the Makefile and aborting) into a cheap,
-    recoverable launch-time ``ValueError``. The common case (auto-derived
-    file-tool paths) is already satisfied by the Fix-1 injection in
-    ``_allowed_output_paths_for_launch``; this guard catches the case where the
-    caller passes an explicit ``allowed_file_tool_paths`` list that omits the
-    pin.
-    """
-    mandatory = _mandatory_file_tool_pins_for_launch(
-        request_payload, allowed_output_paths
-    )
-    if not mandatory:
-        return
-    present = {_normalize_rel_posix(str(p)) for p in allowed_file_tool_paths}
-    missing = [pin for pin in mandatory if _normalize_rel_posix(pin) not in present]
-    if missing:
-        raise ValueError(
-            "allowed_file_tool_paths is missing mandatory build-control file "
-            f"pin(s) {missing!r} required for this launch. Make-based Generate "
-            "needs the in-source Makefile to be Edit/Write-eligible, but a bare "
-            "src/ directory entry is insufficient (the extensionless Makefile is "
-            "excluded from the directory-allowlist source-extension set). "
-            "Remediation: add the Makefile path to allowed_output_paths and "
-            "allowed_file_tool_paths, or omit an explicit allowed_file_tool_paths "
-            "so record-launch auto-derives it."
-        )
-
-
-def _validate_child_write_contract_preflight(
-    *,
-    request_payload: dict[str, Any],
-    capability_doc: dict[str, Any],
-    allowed_output_paths: Sequence[str],
-) -> None:
-    role = str(request_payload.get("agent_role") or "").strip().lower()
-    if role not in {"step", "substep"}:
-        return
-    cap_token = str(capability_doc.get("capability_token") or "").strip()
-    if not cap_token:
-        raise ValueError("child_write_contract_preflight: capability_token must be non-empty")
-    roots_obj = capability_doc.get("write_roots")
-    if not isinstance(roots_obj, list):
-        raise ValueError("child_write_contract_preflight: capability write_roots must be list")
-    roots = [_normalize_rel_posix(str(item)) for item in roots_obj if isinstance(item, str) and item.strip()]
-    allowed = [_normalize_rel_posix(str(item)) for item in allowed_output_paths if isinstance(item, str) and item.strip()]
-    if not allowed:
-        raise ValueError("child_write_contract_preflight: allowed_output_paths must be non-empty")
-    canonical_logs_set = set(
-        _canonical_mcp_audit_log_paths_for_request(request_payload, allowed_output_paths)
-    )
-    for idx, path in enumerate(allowed):
-        if path.endswith("/"):
-            # Directory allowlist entry — check it is under a write root (using the dir path itself).
-            if roots and not any(_repo_path_under_prefix(path, root) for root in roots):
-                raise ValueError(
-                    "child_write_contract_preflight: allowed_output_paths directory entry must be under "
-                    f"capability write_roots: {path!r}"
-                )
-            continue
-        if path in canonical_logs_set:
-            # Canonical MCP-owned audit logs may legitimately fall outside
-            # capability write_roots (e.g. Execute's run_quality_checks log
-            # under generate/<gen>/src/). Phase contract pre-validates the
-            # placement; multi-layer integrity protection prevents agent
-            # mutation, so the cross-phase write is safe.
-            continue
-        if roots and not any(_repo_path_under_prefix(path, root) for root in roots):
-            raise ValueError(
-                "child_write_contract_preflight: allowed_output_path must be under capability write_roots: "
-                f"{path!r}"
-            )
-
-
 
 def _with_trailing_slash(rel_posix: str) -> str:
     if not rel_posix:
@@ -9469,155 +7817,6 @@ def _repo_path_under_prefix(rel_posix: str, prefix_rel: str) -> bool:
     if not base:
         return False
     return p == base or p.startswith(base + "/")
-
-
-def build_access_policy_payload(
-    *,
-    agent_run_id: str,
-    request_payload: dict[str, Any],
-) -> dict[str, Any]:
-    """Assemble the content of `access_policies/<agent_run_id>.json`."""
-    node_key = request_payload.get("node_key")
-    step = request_payload.get("step")
-    if not isinstance(node_key, str) or not node_key.strip():
-        raise ValueError("access policy requires node_key")
-    if not isinstance(step, str) or not step.strip():
-        raise ValueError("access policy requires step")
-    ir_ref = request_payload.get("ir_ref")
-    pipeline_ref = request_payload.get("pipeline_ref")
-    if not isinstance(ir_ref, str) or not ir_ref.strip():
-        raise ValueError("access policy requires ir_ref")
-    if not isinstance(pipeline_ref, str) or not pipeline_ref.strip():
-        raise ValueError("access policy requires pipeline_ref")
-
-    if _is_pure_launch_request(request_payload):
-        # A pure leaf receives its whole context inlined in the prompt body and is authorized to
-        # read NO repository file. The policy is an ALLOWLIST, and an EMPTY `allowed_read_roots`
-        # states that authorization; `denied_read_roots: ["."]` is an explicit statement of the
-        # same intent. No gate services either — a pure leaf invokes no validator gate.
-        #
-        # WHAT ENFORCES IT, and the asymmetry that is open (round-1 review of issue #171). For
-        # CLAUDE the answer is structural: `--tools ""` leaves the model no read to make, so the
-        # policy below is a record of a boundary the launch shape already closes. For CODEX it
-        # is currently NOTHING. That provider's pure leaf is a `codex exec --sandbox read-only`
-        # session — tool-BEARING, as this module says at `_spawn_pure_turn` — and until Z4 the
-        # empty allow-set here was enforced on it by the leaf hook layer
-        # (`leaf_config/codex/hooks.json`'s `PreToolUse` matcher, SHA-pinned into the isolated
-        # CODEX_HOME and trusted with `--dangerously-bypass-hook-trust`). Z4 deleted that layer
-        # on the premise that a pure leaf issues no tool call, which is true of claude and false
-        # of codex. The read-only bwrap profile still closes WRITES, and it ro-binds the whole
-        # repository, so a codex pure leaf can READ it. `TODO.md` carries the entry, the
-        # candidate fix (bind only what the launch needs — the `--output-schema` file — instead
-        # of the checkout) and the measurement that fix needs.
-        pure_body = {
-            "agent_run_id": agent_run_id.strip(),
-            "node_key": node_key.strip(),
-            "step": step.strip().lower(),
-            "allowed_read_roots": [],
-            "denied_read_roots": ["."],
-            "allowed_gate_services": [],
-        }
-        substep_pure = request_payload.get("substep")
-        if isinstance(substep_pure, str) and substep_pure.strip():
-            pure_body["substep"] = substep_pure.strip().lower()
-        return pure_body
-
-    allowed_read_roots = [
-        "docs/",
-        "spec/",
-        _with_trailing_slash(_normalize_rel_posix(f"workspace/tmp/{agent_run_id.strip()}")),
-        _with_trailing_slash(_normalize_rel_posix(ir_ref)),
-        _with_trailing_slash(_normalize_rel_posix(pipeline_ref)),
-    ]
-    # The request's `skill_ref` / `skill_must_read_refs` used to be normalized into
-    # `allowed_read_roots` here, so an agentic leaf could read what it was told to read. Both
-    # fields are contractually EMPTY on every launch since Z4 (issue #171) — a pure leaf reads
-    # no document and a deterministic substep has no leaf — so the merge is deleted rather than
-    # left as a dead arm: it was the one place a caller-supplied string widened a read grant.
-    orchestration_id_val = str(request_payload.get("orchestration_id", "")).strip()
-    if orchestration_id_val:
-        cap_file = (
-            f"workspace/orchestrations/{orchestration_id_val}"
-            f"/capabilities/{agent_run_id}.json"
-        )
-        allowed_read_roots = _merge_unique_refs(allowed_read_roots, [cap_file])
-    body: dict[str, Any] = {
-        "agent_run_id": agent_run_id.strip(),
-        "node_key": node_key.strip(),
-        "step": step.strip().lower(),
-        "allowed_read_roots": allowed_read_roots,
-        "denied_read_roots": ["tools/"],
-        "allowed_gate_services": list(DEFAULT_ALLOWED_GATE_SERVICES),
-    }
-    substep = request_payload.get("substep")
-    if isinstance(substep, str) and substep.strip():
-        body["substep"] = substep.strip().lower()
-    return body
-
-
-def _write_access_policy_for_launch(
-    repo_root: Path,
-    orchestration_id: str,
-    child_agent_run_id: str,
-    request_payload: dict[str, Any],
-) -> dict[str, Any]:
-    _ensure_orchestration_audit_dirs(repo_root, orchestration_id)
-    policy = build_access_policy_payload(agent_run_id=child_agent_run_id, request_payload=request_payload)
-    out = _access_policies_dir(repo_root, orchestration_id) / f"{child_agent_run_id}.json"
-    _write_json(out, policy)
-    return policy
-
-
-def _read_access_manifest_path(
-    repo_root: Path,
-    orchestration_id: str,
-    *,
-    agent_run_id: str,
-) -> Path:
-    return _read_manifests_dir(repo_root, orchestration_id) / f"{agent_run_id.strip()}.json"
-
-
-def _write_read_access_manifest(
-    repo_root: Path,
-    *,
-    orchestration_id: str,
-    agent_run_id: str,
-    allowed_read_roots: Sequence[str],
-    denied_read_roots: Sequence[str],
-) -> str:
-    payload = {
-        "orchestration_id": orchestration_id,
-        "agent_run_id": agent_run_id.strip(),
-        "allowed_read_roots": [
-            _with_trailing_slash(_normalize_rel_posix(p))
-            for p in allowed_read_roots
-            if isinstance(p, str) and p.strip()
-        ],
-        "denied_read_roots": [
-            _with_trailing_slash(_normalize_rel_posix(p))
-            for p in denied_read_roots
-            if isinstance(p, str) and p.strip()
-        ],
-        "generated_at": _utc_now_iso(),
-    }
-    out = _read_access_manifest_path(repo_root, orchestration_id, agent_run_id=agent_run_id)
-    _write_json(out, payload)
-    return f"workspace/orchestrations/{orchestration_id}/read_manifests/{agent_run_id.strip()}.json"
-
-
-def _load_read_access_manifest(
-    repo_root: Path,
-    *,
-    orchestration_id: str,
-    agent_run_id: str,
-) -> dict[str, Any]:
-    path = _read_access_manifest_path(repo_root, orchestration_id, agent_run_id=agent_run_id)
-    if not path.exists():
-        raise FileNotFoundError(f"read access manifest not found: {path}")
-    payload = _read_json(path)
-    if not isinstance(payload, dict):
-        raise ValueError(f"read access manifest must be object: {path}")
-    return payload
 
 
 def _runtime_ro_bind_paths() -> list[str]:
@@ -9850,7 +8049,7 @@ def _backend_runtime_bind_paths(
     - rw: the backend's config/credential home (``~/.claude`` + ``~/.claude.json``
       for claude; ``~/.codex`` for codex), keyed on the backend *type* (not the command
       string, which may be a wrapper), and resolved by the canonical
-      ``tools.hooks.common.backend_credential_home_paths`` so this profile and the Bash
+      ``tools.operator_private_root.backend_credential_home_paths`` so this profile and the Bash
       read guard that forbids reading these paths cannot drift. Writable because the CLI
       refreshes auth and writes
       its session transcript there (the latter is also what Phase 4's ``--session-id`` /
@@ -9870,7 +8069,7 @@ def _backend_runtime_bind_paths(
         if btype == "claude":
             ro.add(str(Path(home) / ".local" / "share" / "claude"))
         # The credential-home paths come from the single canonical resolver in
-        # `tools/hooks/common.py`, so there is no second spelling of where a backend's
+        # `tools/operator_private_root.py`, so there is no second spelling of where a backend's
         # config/credential home is.
         #
         # SCOPE, since Z4 (issue #171): what this function returns is the DEFAULT rw set,
@@ -9896,7 +8095,7 @@ def _backend_runtime_bind_paths(
                 rw.add(str(cred_file))
     ro_paths = sorted(p for p in ro if p and Path(p).exists())
     # rw (backend config/credential home) is returned unfiltered by existence; the
-    # caller (build_bwrap_profile) materializes a missing config *dir* before binding,
+    # caller (build_readonly_bwrap_profile) materializes a missing config *dir* before binding,
     # so a fresh environment whose home does not yet exist (but is creatable — preflight
     # verifies the parent is writable) still gets a writable bind.
     rw_paths = sorted(p for p in rw if p)
@@ -9916,7 +8115,7 @@ def _resolve_backend_rw_binds(repo_root: Path, backend_rw_desired: Sequence[str]
     both. A missing config *dir* is created (the only file, ~/.claude.json, is
     existence-gated at source) so bwrap can bind it writable; a creation failure must
     fail closed rather than emit a profile missing the required auth/session home.
-    Shared by build_bwrap_profile and build_readonly_bwrap_profile.
+    Used by build_readonly_bwrap_profile, the one profile builder left.
     """
     resolved_repo = repo_root.resolve()
     backend_rw: list[str] = []
@@ -10012,245 +8211,6 @@ def build_readonly_bwrap_profile(
     }
 
 
-def build_bwrap_profile(
-    *,
-    repo_root: Path,
-    orchestration_id: str,
-    agent_run_id: str,
-    backend_command: str,
-    backend_type: str = "",
-    backend_ro_extra: Sequence[str] = (),
-    backend_ro_mappings: Sequence[tuple[str, str]] = (),
-    backend_rw_mappings: Sequence[tuple[str, str]] = (),
-    backend_rw_override: Sequence[str] | None = None,
-    env_overrides: Mapping[str, str] | None = None,
-    child_env: Mapping[str, str] | None = None,
-) -> dict[str, Any]:
-    read_manifest = _load_read_access_manifest(
-        repo_root,
-        orchestration_id=orchestration_id,
-        agent_run_id=agent_run_id,
-    )
-    cap_path = _capabilities_dir(repo_root, orchestration_id) / f"{agent_run_id}.json"
-    if not cap_path.exists():
-        raise ValueError(f"capability file not found: {cap_path}")
-    cap_payload = _read_json(cap_path)
-    if not isinstance(cap_payload, dict):
-        raise ValueError(f"capability file must be object: {cap_path}")
-    reads_obj = read_manifest.get("allowed_read_roots")
-    if not isinstance(reads_obj, list):
-        raise ValueError("read manifest must include allowed_read_roots list")
-    writes_obj = cap_payload.get("write_roots")
-    if not isinstance(writes_obj, list):
-        raise ValueError("capability must include write_roots list")
-    read_roots = sorted(
-        {
-            _normalize_rel_posix(str(p))
-            for p in reads_obj
-            if isinstance(p, str) and _normalize_rel_posix(str(p))
-        }
-    )
-    write_roots = _load_write_roots_from_cap(writes_obj)
-    resolved_repo_root = repo_root.resolve()
-    for root_entry in write_roots:
-        if root_entry.endswith("/"):
-            candidate = (repo_root / root_entry.rstrip("/")).resolve()
-            try:
-                candidate.relative_to(resolved_repo_root)
-            except ValueError:
-                raise ValueError(
-                    f"write_roots entry {root_entry!r} resolves outside repo_root "
-                    f"({candidate} is not under {resolved_repo_root})"
-                )
-            candidate.mkdir(parents=True, exist_ok=True)
-        else:
-            # File pin: pre-create (touch) so the pin exists for render (and so the judge's
-            # pre-created 0-byte semantic_review.json is present — all consumers fail-close on
-            # empty JSON). render_bwrap_command binds the pin's PARENT DIRECTORY writable (not
-            # the file inode) so the harness Write/Edit tool's atomic temp-sibling-then-rename
-            # can create `<pin>.tmp.*` in that dir; single-file authorization is enforced by
-            # the output-manifest hook + terminal FS-diff, not by a file-granular bwrap bind
-            # (a file-granular bind left the parent dir read-only and broke the atomic write —
-            # see the parent-dir-bind note in render_bwrap_command). The verify/judge substeps
-            # declare exactly one such file pin (ir_meta.json / source_meta.json /
-            # semantic_review.json). (P2-7 removed the earlier stub-RECOVERY machinery, which is
-            # still unnecessary: these pins are managed artifacts the owning leaf rewrites.)
-            pin_path = (repo_root / root_entry).resolve()
-            try:
-                pin_path.relative_to(resolved_repo_root)
-            except ValueError:
-                raise ValueError(
-                    f"write_roots entry {root_entry!r} resolves outside repo_root "
-                    f"({pin_path} is not under {resolved_repo_root})"
-                )
-            pin_path.parent.mkdir(parents=True, exist_ok=True)
-            # Check the original (unresolved) path for symlinks — resolve() follows
-            # symlinks so is_symlink() on the resolved path is always False.
-            orig_pin_path = repo_root / _normalize_rel_posix(root_entry)
-            if orig_pin_path.is_symlink():
-                raise ValueError(
-                    f"write_roots file pin {root_entry!r} is a symlink ({orig_pin_path}); "
-                    f"only regular files are permitted as file pins"
-                )
-            if pin_path.exists():
-                # Reject if the resolved path is a directory — binding it via bwrap
-                # would expose the entire subtree as writable.
-                if pin_path.is_dir():
-                    raise ValueError(
-                        f"write_roots file pin {root_entry!r} resolves to a directory ({pin_path}); "
-                        f"add a trailing '/' to declare a directory write root instead"
-                    )
-            else:
-                pin_path.touch()
-    sandbox_root = _orchestration_root(repo_root, orchestration_id) / "sandboxes" / agent_run_id
-    tmp_root = sandbox_root / "tmp"
-    tmp_root.mkdir(parents=True, exist_ok=True)
-    workspace_tmp_host = (repo_root / "workspace" / "tmp" / agent_run_id).resolve()
-    workspace_tmp_host.mkdir(parents=True, exist_ok=True)
-    child_env = _profile_child_env(child_env, orchestration_id=orchestration_id,
-                                   agent_run_id=agent_run_id)
-    child_env["TMPDIR"] = str(workspace_tmp_host)
-    backend_ro, backend_rw_desired = _backend_runtime_bind_paths(backend_type, backend_command)
-    backend_ro.extend(str(p) for p in backend_ro_extra)
-    if backend_rw_override is not None:
-        backend_rw_desired = list(backend_rw_override)
-    backend_rw = _resolve_backend_rw_binds(repo_root, backend_rw_desired)
-    if env_overrides:
-        child_env.update(env_overrides)
-    # The leaf runs `run-gate` (a runtime-CLI subprocess) which records each gate result
-    # under workspace/orchestrations/<orch>/gates/<arid>/<gate>.json (validate_pipeline_
-    # semantics / orchestration_read / etc.). That path is outside the artifact
-    # `write_roots`, so without a writable bind bwrap would block the gate-result write.
-    # Bind the per-arid gates dir writable — it is excluded from the artifact-write
-    # violation check as runtime bookkeeping (see the `{orch_root}/gates/` runtime-prefix
-    # exemption). Scoped to THIS arid only, never another child's.
-    gates_rel = f"workspace/orchestrations/{orchestration_id}/gates/{agent_run_id}/"
-    (repo_root / gates_rel).mkdir(parents=True, exist_ok=True)
-    # The leaf's own PreToolUse/PostToolUse hooks (running as confined subprocesses) write
-    # runtime bookkeeping under the orchestration root: hook-event audit
-    # (hooks/native_hook_events.jsonl) and the first-read-invariant state
-    # (audit/<arid>.auto_reads_seen.json, which FAIL-CLOSES the hook if it cannot persist).
-    # Both live outside write_roots, so bind their per-orchestration dirs writable (runtime
-    # bookkeeping, excluded from the artifact-write violation check). Shared dirs, but the
-    # conductor launches leaves sequentially and these are append/per-arid bookkeeping.
-    hooks_rel = f"workspace/orchestrations/{orchestration_id}/hooks/"
-    audit_rel = f"workspace/orchestrations/{orchestration_id}/audit/"
-    (repo_root / hooks_rel).mkdir(parents=True, exist_ok=True)
-    (repo_root / audit_rel).mkdir(parents=True, exist_ok=True)
-    # Cross-phase MCP audit logs: compile_project / run_quality_checks for a Make/Fortran
-    # build side-output their command_log.jsonl into the read-only source tree
-    # (source/<id>/src/), which is outside the leaf's write_roots and inside a read input,
-    # so bwrap would block the physical append (EROFS) mid-build. The manifest already
-    # authorizes these paths (mcp_owned_audit_logs, honored by _validate_actual_write_paths
-    # as integrity-protected). Pre-create each and bind it WRITABLE as an individual file
-    # (rendered after the read-root ro-binds, so it overrides the ro source dir while the
-    # rest of the source stays read-only).
-    runtime_rw_file_paths: list[str] = []
-    # The leaf's own `run-gate --gate orchestration_read` (an OPTIONAL audited re-read of a
-    # path already inside allowed_read_roots — never a way around the manifest, and never
-    # the remedy for a read block: for an out-of-manifest path it fails the run) appends one
-    # audit line to access_logs/<arid>.jsonl. That file lives outside write_roots under the
-    # otherwise read-only orchestration root, so without a writable bind the append raises
-    # OSError (EROFS) and crashes the gate — the recurring friction every leaf wasted
-    # thinking on. Bind ONLY this leaf's own per-arid log writable as an individual file
-    # (never the whole access_logs/ dir, which would expose sibling children's logs),
-    # mirroring the gates/<arid>/ per-arid discipline. It is already excluded from the
-    # artifact-write violation check as runtime bookkeeping (`{orch_root}/access_logs/`
-    # runtime-prefix exemption), so this only aligns the bwrap mount with the existing
-    # write-authorization policy. (The audit remains observational, not an enforcement
-    # gate; its bypassability is a known, separately-tracked limitation.)
-    _access_log_rel = _normalize_rel_posix(
-        f"workspace/orchestrations/{orchestration_id}/access_logs/{agent_run_id}.jsonl"
-    )
-    # Reject a symlink at the canonical log path on the UNRESOLVED path (resolve() follows
-    # symlinks, so the containment check below would pass a redirected target) and verify
-    # the resolved path stays under repo_root — mirroring the mcp_owned_audit_logs file-pin
-    # guards below so a swapped symlink or a traversal-laden orchestration_id/agent_run_id
-    # fails closed instead of binding a redirected/out-of-repo file writable.
-    _access_log_orig = repo_root / _access_log_rel
-    if _access_log_orig.is_symlink():
-        raise ValueError(
-            f"access_logs file pin {_access_log_rel!r} is a symlink "
-            f"({_access_log_orig}); only a regular file is permitted")
-    _access_log_abs = _access_log_orig.resolve()
-    try:
-        _access_log_abs.relative_to(resolved_repo_root)
-    except ValueError:
-        raise ValueError(
-            f"access_logs file pin {_access_log_rel!r} resolves outside repo_root "
-            f"({_access_log_abs} is not under {resolved_repo_root})")
-    _access_log_abs.parent.mkdir(parents=True, exist_ok=True)
-    if not _access_log_abs.exists():
-        _access_log_abs.touch()
-    runtime_rw_file_paths.append(_access_log_rel)
-    try:
-        _out_manifest = _load_allowed_output_manifest(
-            repo_root, orchestration_id=orchestration_id, agent_run_id=agent_run_id)
-    except ValueError:
-        _out_manifest = None
-    if isinstance(_out_manifest, dict):
-        _mcp_logs = _out_manifest.get("mcp_owned_audit_logs")
-        if isinstance(_mcp_logs, list):
-            for _log in _mcp_logs:
-                if not isinstance(_log, str) or not _log.strip():
-                    continue
-                _log_rel = _normalize_rel_posix(_log.strip())
-                # An in-phase log already lives under a write_root (bound rw by its dir);
-                # only a CROSS-phase log inside a read input needs an explicit writable
-                # file bind. Skipping in-phase logs also avoids creating a stray file under
-                # a write_root that would surface in the FS-diff.
-                if _path_under_any_write_root(_log_rel, write_roots):
-                    continue
-                # Reject a symlink at the canonical log path on the UNRESOLVED path
-                # (resolve() follows symlinks, so the containment check below would pass a
-                # redirected target). Mirrors the write_roots file-pin symlink guard so a
-                # swapped symlink fails closed instead of binding a redirected file writable.
-                _orig_log = repo_root / _log_rel
-                if _orig_log.is_symlink():
-                    raise ValueError(
-                        f"mcp_owned_audit_logs entry {_log_rel!r} is a symlink "
-                        f"({_orig_log}); only a regular file is permitted")
-                _log_abs = (repo_root / _log_rel).resolve()
-                try:
-                    _log_abs.relative_to(resolved_repo_root)
-                except ValueError:
-                    raise ValueError(
-                        f"mcp_owned_audit_logs entry {_log_rel!r} resolves outside "
-                        f"repo_root ({_log_abs} is not under {resolved_repo_root})")
-                _log_abs.parent.mkdir(parents=True, exist_ok=True)
-                if not _log_abs.exists():
-                    _log_abs.touch()
-                runtime_rw_file_paths.append(_log_rel)
-    return {
-        "orchestration_id": orchestration_id,
-        "agent_run_id": agent_run_id,
-        "sandbox_runtime": "bwrap",
-        "backend_command": backend_command.strip(),
-        "repo_root": str(repo_root),
-        "read_roots": read_roots,
-        "write_roots": write_roots,
-        "runtime_ro_bind_paths": _runtime_ro_bind_paths() + backend_ro,
-        "runtime_ro_bind_mappings": [list(pair) for pair in backend_ro_mappings],
-        "runtime_rw_bind_mappings": [list(pair) for pair in backend_rw_mappings],
-        # Writable binds outside repo_root: the backend's config/credential home
-        # (auth refresh + session transcript). Bound writable so the CLI runs and
-        # Phase 4 `--session-id`/`--resume` can read/write their session files.
-        "runtime_rw_bind_paths": backend_rw,
-        "tmp_dir": str(tmp_root),
-        "workspace_tmp_rw_abs": str(workspace_tmp_host),
-        # In-repo runtime bookkeeping dirs the leaf writes via the runtime CLI (gate
-        # evidence). Bound writable by render_bwrap_command; kept separate from the
-        # backend-home runtime_rw_bind_paths, which must be OUTSIDE repo_root.
-        "runtime_rw_rel_paths": [gates_rel, hooks_rel, audit_rel],
-        # Individual in-repo files bound writable (rendered after read-root ro-binds):
-        # authorized cross-phase MCP audit logs that live inside a read input.
-        "runtime_rw_file_paths": runtime_rw_file_paths,
-        "workdir": str(repo_root),
-        "env": child_env,
-        "generated_at": _utc_now_iso(),
-    }
-
-
 def _profile_child_env(child_env: Mapping[str, str] | None, *,
                        orchestration_id: str, agent_run_id: str) -> dict[str, str]:
     """The base environment a bwrap profile carries, before TMPDIR / `env_overrides`.
@@ -10313,9 +8273,10 @@ def _profile_child_env(child_env: Mapping[str, str] | None, *,
     # BOTH PATHS END WITH BOTH IDS PRESENT. Absence used to be tolerated on the threaded
     # path (the check above only compares a key that exists), and `--clearenv` is what
     # made that consequential: the profile is now the ONLY route into the leaf, so a
-    # profile missing `ATMOFAB_ORCHESTRATION_ID` produces a leaf whose build-runtime MCP
-    # server reads `_workflow_mode_env_signal() is None` — "not under a run" — and stops
-    # requiring a capability token. An ungated server, from an omission.
+    # profile missing `ATMOFAB_ORCHESTRATION_ID` used to produce a leaf whose build-runtime
+    # MCP server read "not under a run" and stopped requiring a capability token — an ungated
+    # server, from an omission. That gate is retired (issue #171 PR-2) and no leaf carries an
+    # MCP server at all, so what an omission costs now is ATTRIBUTION in `command_log.jsonl`.
     #
     # FILLED, not refused. Refusing would be the fourth over-refusal on this branch and
     # the second on this very function: a caller that omits an id has told us nothing
@@ -10501,11 +8462,13 @@ def render_bwrap_command(
                 f"must never be leaf-writable (check for a symlink in the path)"
             )
         if not abs_path.exists():
-            # File pins must be pre-created by build_bwrap_profile before render.
+            # A file pin must be pre-created by its profile builder before render. No builder
+            # emits one since issue #171 PR-2 (a leaf declares no write root), so this arm is
+            # reached only by a hand-built profile.
             if not is_dir_root:
                 raise ValueError(
                     f"write_roots file pin {rel!r} does not exist; "
-                    f"build_bwrap_profile must pre-create it before render_bwrap_command is called"
+                    f"the profile's builder must pre-create it before render_bwrap_command is called"
                 )
             continue
         if not is_dir_root:
@@ -10564,8 +8527,9 @@ def render_bwrap_command(
             continue
         abs_token = str(abs_path)
         cmd.extend(["--bind", abs_token, abs_token])
-    # In-repo runtime bookkeeping dirs the leaf writes via the runtime CLI (gate
-    # evidence under gates/<arid>/). Pre-created by build_bwrap_profile; bound writable.
+    # In-repo runtime bookkeeping dirs a leaf wrote via the runtime CLI (gate evidence under
+    # gates/<arid>/). Nothing populates this list since issue #171 PR-2 deleted `run-gate`;
+    # the rendering stays so a hand-built profile can still carry one.
     for rel in profile.get("runtime_rw_rel_paths", []):
         if not isinstance(rel, str) or not rel.strip():
             continue
@@ -10576,8 +8540,9 @@ def render_bwrap_command(
     # Authorized cross-phase MCP audit logs bound writable as individual files. Emitted
     # AFTER the read-root ro-binds so a log inside a read input (e.g. a Make build's
     # source/<id>/src/command_log.jsonl) becomes writable while the rest of that read
-    # input stays read-only (bwrap later-overrides-earlier). build_bwrap_profile
-    # pre-creates each file.
+    # input stays read-only (bwrap later-overrides-earlier). Nothing populates this list
+    # either since issue #171 PR-2: the cross-phase log is written by the MCP server from the
+    # conductor's own process, not from inside a sandbox.
     for rel in profile.get("runtime_rw_file_paths", []):
         if not isinstance(rel, str) or not rel.strip():
             continue
@@ -10665,143 +8630,6 @@ def render_bwrap_command(
     return cmd
 
 
-def _append_access_log_line(
-    repo_root: Path,
-    orchestration_id: str,
-    agent_run_id: str,
-    entry: dict[str, Any],
-) -> None:
-    _ensure_orchestration_audit_dirs(repo_root, orchestration_id)
-    path = _access_logs_dir(repo_root, orchestration_id) / f"{agent_run_id}.jsonl"
-    line = json.dumps(entry, ensure_ascii=False)
-    # The leaf's per-arid access_logs/<arid>.jsonl is bound writable into its sandbox
-    # (build_bwrap_profile), so the append normally succeeds and the audit trail is kept.
-    # Defense-in-depth: if a future config regresses that bind to read-only, degrade to a
-    # loud warning instead of crashing the gate with an unhandled OSError (the failure mode
-    # that previously made every leaf re-reason about "access_log read-only, non-blocking").
-    # The writable bind — not this except — is the audit-trail guarantee; we warn loudly so
-    # a dropped line is detectable rather than silently swallowed.
-    try:
-        with path.open("a", encoding="utf-8") as handle:
-            handle.write(line + "\n")
-    except OSError as exc:
-        print(
-            f"WARNING: access_log append skipped for agent_run_id={agent_run_id!r} "
-            f"(path={path}): {exc}. The orchestration_read gate continues; this audit "
-            "line is not recorded.",
-            file=sys.stderr,
-        )
-
-
-def log_orchestration_read(
-    repo_root: Path,
-    orchestration_id: str,
-    *,
-    agent_run_id: str,
-    read_path: str,
-) -> dict[str, Any]:
-    """Read audit for a path INSIDE the manifest; terminal for anything else.
-
-    A `denied_read_roots` (`tools/`) match and a path outside `allowed_read_roots`
-    are treated alike: both record a `rule_source_violation`, set the
-    orchestration to `fail`, and raise. So this is never the remedy for a read
-    the hook blocked — it is an audited re-read of a path already permitted.
-
-    Return the body only for a permitted read.
-    """
-    manifest = _load_read_access_manifest(
-        repo_root,
-        orchestration_id=orchestration_id,
-        agent_run_id=agent_run_id,
-    )
-    denied = manifest.get("denied_read_roots")
-    if not isinstance(denied, list):
-        denied = []
-    allowed = manifest.get("allowed_read_roots")
-    if not isinstance(allowed, list):
-        allowed = []
-
-    rel = _normalize_rel_posix(read_path)
-    hit_denied = False
-    matched_prefix: str | None = None
-    for item in denied:
-        if not isinstance(item, str) or not item.strip():
-            continue
-        prefix = _with_trailing_slash(_normalize_rel_posix(item))
-        if not prefix:
-            continue
-        base_no_slash = prefix.rstrip("/")
-        if _repo_path_under_prefix(rel, base_no_slash):
-            hit_denied = True
-            matched_prefix = prefix
-            break
-
-    matched_allowed_prefix: str | None = None
-    hit_allowed = False
-    for item in allowed:
-        if not isinstance(item, str) or not item.strip():
-            continue
-        prefix = _with_trailing_slash(_normalize_rel_posix(item))
-        if not prefix:
-            continue
-        base_no_slash = prefix.rstrip("/")
-        if _repo_path_under_prefix(rel, base_no_slash):
-            hit_allowed = True
-            matched_allowed_prefix = prefix
-            break
-
-    log_entry = {
-        "ts": _utc_now_iso(),
-        "path": rel,
-        "allowed_match": hit_allowed,
-        "matched_allowed_prefix": matched_allowed_prefix,
-        "denied_match": hit_denied,
-        "matched_denied_prefix": matched_prefix,
-    }
-    _append_access_log_line(repo_root, orchestration_id, agent_run_id, log_entry)
-
-    abs_path = (repo_root / rel).resolve()
-    try:
-        abs_path.relative_to(repo_root.resolve())
-    except ValueError as exc:
-        raise ValueError(f"path escapes repo_root: {read_path!r}") from exc
-
-    if hit_denied or not hit_allowed:
-        _write_rule_source_violation(
-            repo_root,
-            orchestration_id,
-            agent_run_id=agent_run_id.strip(),
-            read_path=rel,
-            matched_prefix=matched_prefix if hit_denied else None,
-        )
-        try:
-            update_orchestration_status(repo_root, orchestration_id, status="fail")
-        except Exception:
-            pass
-        if hit_denied:
-            raise RuntimeError(
-                f"orchestration-read denied: path {rel!r} matches rule-source deny list "
-                f"(prefix={matched_prefix!r}, agent_run_id={agent_run_id})"
-            )
-        raise RuntimeError(
-            f"orchestration-read denied: path {rel!r} is outside allowed_read_roots "
-            f"(agent_run_id={agent_run_id})"
-        )
-
-    content: str | None = None
-    file_exists = abs_path.is_file()
-    if file_exists:
-        content = abs_path.read_text(encoding="utf-8")
-
-    return {
-        "read_path": rel,
-        "file_exists": file_exists,
-        "denied_match": False,
-        "logged": True,
-        "content": content,
-    }
-
-
 
 
 def _compute_sha256(path: Path) -> str:
@@ -10832,365 +8660,6 @@ def _build_artifact_hashes(
     return hashes
 
 
-def _run_write_baseline_path(
-    repo_root: Path,
-    orchestration_id: str,
-    *,
-    agent_run_id: str | None = None,
-) -> Path:
-    if agent_run_id is not None and agent_run_id.strip():
-        return (
-            _orchestration_root(repo_root, orchestration_id)
-            / "agents"
-            / agent_run_id.strip()
-            / "run_write_baseline.json"
-        )
-    return _orchestration_root(repo_root, orchestration_id) / "orchestration_run_write_baseline.json"
-
-
-def _should_ignore_runtime_snapshot_path(
-    rel_posix: str,
-    *,
-    orchestration_id: str,
-    agent_run_id: str,
-) -> bool:
-    token = _normalize_rel_posix(rel_posix)
-    if not token or token.startswith(".git/"):
-        return True
-    # Ignore Claude local/runtime settings mutated by system-level hooks.
-    if token.startswith(".claude/"):
-        return True
-    # NOTE: dated archive / backup workspaces at the repo root (`workspace_<date>/`,
-    # `workspace_backup_*/`) are deliberately NOT exempted. They bloat the baseline,
-    # but exempting them from BOTH the baseline and the terminal diff would blind
-    # unauthorized-write validation to any child write under a `workspace_*` path
-    # (the diff is the defense-in-depth backstop for an output_manifest_write_guard
-    # bypass). Correctness of write validation outranks the snapshot-size win.
-    # NOTE: No blanket pyc/__pycache__ exemption here.  Incidental bytecode is kept out of the
-    # repo source tree at the WRITER, by role: the leaf / agent-launch subprocess path inherits
-    # PYTHONDONTWRITEBYTECODE=1 (base_env in run_workflow.py); run-gate subprocesses get it from
-    # _gate_python_env (which ALSO redirects PYTHONPYCACHEPREFIX to workspace/.pycache/); and the
-    # IN-PROCESS conductor host redirects its cache to workspace/.pycache/ via sys.pycache_prefix
-    # (run_workflow.py). Writes under that redirect root are exempted by
-    # _is_host_pycache_redirect_write (see _validate_actual_write_paths).  A *.pyc that still lands
-    # in a repo-tree __pycache__/ is therefore an explicit bytecode generation (e.g.
-    # python3 -m py_compile) — an agent action that SHOULD surface as an
-    # unauthorized_write_violation, and is not exempted anywhere.
-    orch_root = _normalize_rel_posix(f"workspace/orchestrations/{orchestration_id}")
-    runtime_prefixes = (
-        f"{orch_root}/access_logs/",
-        f"{orch_root}/access_policies/",
-        # Adv-16: per-arid active-child markers managed by record_launch /
-        # deactivate_child / record_agent_run terminal — orchestration runtime
-        # writes only, never authored by child agents.
-        f"{orch_root}/active_children/",
-        # Adv-20: per-arid child-return ack markers.
-        f"{orch_root}/child_returns/",
-        # Adv-35: per-arid cleanup-committed markers (two-phase finalization).
-        f"{orch_root}/cleanup_committed/",
-        f"{orch_root}/agents/",
-        # Per-arid first-read-invariant state + other runtime audit the leaf's hooks write
-        # (e.g. audit/<arid>.auto_reads_seen.json). Runtime bookkeeping, never an artifact.
-        f"{orch_root}/audit/",
-        f"{orch_root}/capabilities/",
-        f"{orch_root}/gates/",
-        f"{orch_root}/hooks/",
-        # Host-only staged files and durable recovery journal for Codex's
-        # multi-file thread-identity registration transaction.
-        f"{orch_root}/{_JSON_TRANSACTIONS_DIRNAME}/",
-        f"{orch_root}/launches/",
-        f"{orch_root}/output_manifests/",
-        f"{orch_root}/read_manifests/",
-        f"{orch_root}/sandbox_profiles/",
-        f"{orch_root}/sandboxes/",
-        f"{orch_root}/violations/",
-        f"{orch_root}/steps/",
-        f"{orch_root}/reservations/",
-        # Host-side run logs (run_workflow.py's stdout JSONL tee:
-        # run_<timestamp>_<uuid>.jsonl). Written only by the outer driver
-        # process, never by a child agent (a child cannot reach the path through
-        # tool hooks — `output_manifest_write_guard` blocks writes outside its
-        # allowed_file_tool_paths). The log grows while a leaf is running, so
-        # without this exemption it would surface in that leaf's terminal
-        # write-diff and be misattributed as an unauthorized_write_violation.
-        f"{orch_root}/run_logs/",
-    )
-    if any(token.startswith(prefix) for prefix in runtime_prefixes):
-        return True
-    # `failure_analysis.runtime.<uuid12>.json` safety-net sidecar, written by the
-    # outer run_workflow process's dev-mode failure-analysis path
-    # (`_write_failure_analysis`) when the canonical `failure_analysis.json` already
-    # exists — never by a child agent, which cannot reach the path through tool hooks
-    # (`output_manifest_write_guard`). The write could land after an interrupted
-    # child's launch baseline is captured but before `record-timeout` terminalizes
-    # it; without this exemption the sidecar shows up in that child's terminal-diff
-    # and is misattributed as an unauthorized_write_violation, dead-locking
-    # terminalization. Same runtime-owned rationale as `agent_runs_invalid.jsonl`
-    # below; intentionally narrow — only the UUID-suffixed runtime sidecar, NOT the
-    # canonical `failure_analysis.json`.
-    if re.fullmatch(
-        rf"{re.escape(orch_root)}/failure_analysis\.runtime\.[0-9a-f]{{12}}\.json",
-        token,
-    ):
-        return True
-    runtime_files = {
-        f"{orch_root}/agent_graph.json",
-        f"{orch_root}/agent_runs.jsonl",
-        # The bytes of the leaf-LLM configuration this run launched with, written by
-        # `run_workflow._write_llm_config_snapshot` on cold init — AFTER
-        # `_write_run_write_baseline` has already snapshotted the orchestration baseline, so
-        # without this exemption it reads as an orchestration-authored write. Harmless only by
-        # accident today (the orchestration row is appended once at init and thereafter
-        # rewritten in place by `set-status`, never re-recorded), which is exactly the
-        # accident `run_logs/` and `failure_analysis.runtime.*` are exempted for.
-        f"{orch_root}/llm_config_snapshot.yaml",
-        # Adv-24: fcntl lock sidecar; orchestration runtime exclusively manages it.
-        f"{orch_root}/agent_runs.jsonl.lock",
-        # Recurrence-prevention plan (Issue 3): the invalid-payload audit log
-        # is written by `record-agent-run` after terminal validation rejects a
-        # payload (see `_validate_terminal_run_payload`). It lives at the
-        # orchestration root and is exempted here because:
-        #   (1) the runtime is the only legitimate writer (record-agent-run
-        #       itself, while serializing terminal-validation failures);
-        #   (2) children cannot reach the path through tool hooks
-        #       (`output_manifest_write_guard` blocks any Edit/Write/Bash
-        #       redirect to paths outside `allowed_file_tool_paths`), so a
-        #       child entry can only land here through a hook bypass —
-        #       outside the threat model this terminal-diff check addresses;
-        #   (3) without the exemption, the very write that records a failed
-        #       attempt contaminates the next retry's baseline diff, which
-        #       was the demonstrated brick-cascade we are fixing.
-        # The exemption is intentionally narrow: only the literal log file
-        # and its fcntl-lock sidecar. Other files under `<orch_root>/` are
-        # not blanket-exempt — see Codex review round 6 P1.
-        f"{orch_root}/agent_runs_invalid.jsonl",
-        f"{orch_root}/agent_runs_invalid.jsonl.lock",
-        # Codex round 11 F1: fcntl lock sidecar for orchestration_meta.json
-        # serialization; same runtime-managed exemption as the runs lock.
-        f"{orch_root}/orchestration_meta.json.lock",
-        f"{orch_root}/orchestration_meta.json",
-        f"{orch_root}/active_child_agent_run_id.txt",
-        f"{orch_root}/phase_state.json",
-        f"{orch_root}/phase_state_log.jsonl",
-        f"{orch_root}/preflight.json",
-        f"{orch_root}/orchestration_run_write_baseline.json",
-        f"{orch_root}/session_run_index.json",
-        f"{orch_root}/session_run_index.json.lock",
-    }
-    return token in runtime_files
-
-
-def _snapshot_repo_files(
-    repo_root: Path,
-    *,
-    orchestration_id: str,
-    agent_run_id: str,
-) -> dict[str, str]:
-    snapshot: dict[str, str] = {}
-    for path in repo_root.rglob("*"):
-        if not path.is_file():
-            continue
-        rel = _normalize_rel_posix(path.relative_to(repo_root).as_posix())
-        # Paths whose DELETION must be visible are recorded even though they are exempt from
-        # the ordinary diff. `_compute_changed_paths_against_baseline` filters them out of both
-        # sides so the runtime's own writes into them stay unattributed, and reads them back
-        # from the RAW baseline to detect a removal. Without this they were never in the
-        # baseline at all, so nothing could notice one going missing.
-        if not _is_undeletable_runtime_path(rel, orchestration_id) and \
-                _should_ignore_runtime_snapshot_path(
-                    rel,
-                    orchestration_id=orchestration_id,
-                    agent_run_id=agent_run_id,
-                ):
-            continue
-        snapshot[rel] = _compute_sha256(path)
-    return snapshot
-
-
-def _write_run_write_baseline(
-    repo_root: Path,
-    orchestration_id: str,
-    *,
-    agent_run_id: str | None = None,
-) -> dict[str, Any]:
-    run_id = agent_run_id.strip() if isinstance(agent_run_id, str) and agent_run_id.strip() else "orchestration"
-    payload = {
-        "orchestration_id": orchestration_id,
-        "agent_run_id": agent_run_id.strip() if isinstance(agent_run_id, str) and agent_run_id.strip() else None,
-        "created_at": _utc_now_iso(),
-        "files": _snapshot_repo_files(
-            repo_root,
-            orchestration_id=orchestration_id,
-            agent_run_id=run_id,
-        ),
-    }
-    _write_json(
-        _run_write_baseline_path(repo_root, orchestration_id, agent_run_id=agent_run_id),
-        payload,
-    )
-    return payload
-
-
-def _load_run_write_baseline(
-    repo_root: Path,
-    orchestration_id: str,
-    *,
-    agent_run_id: str | None = None,
-) -> dict[str, Any]:
-    path = _run_write_baseline_path(repo_root, orchestration_id, agent_run_id=agent_run_id)
-    if not path.exists():
-        who = agent_run_id.strip() if isinstance(agent_run_id, str) and agent_run_id.strip() else "orchestration"
-        raise ValueError(f"run write baseline missing for {who}: {path}")
-    payload = _read_json(path)
-    if not isinstance(payload, dict):
-        raise ValueError(f"run write baseline must be object: {path}")
-    files = payload.get("files")
-    if not isinstance(files, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in files.items()):
-        raise ValueError(f"run write baseline files must be string map: {path}")
-    return payload
-
-
-def _deactivate_snapshot_path(
-    repo_root: Path,
-    orchestration_id: str,
-    *,
-    agent_run_id: str,
-) -> Path:
-    """Per-arid deactivate snapshot — child-authored path set captured at
-    `deactivate-child` time. Lives under `agents/<arid>/` (runtime-prefix
-    exempt), so writing it does not contaminate any diff."""
-    return (
-        _orchestration_root(repo_root, orchestration_id)
-        / "agents"
-        / agent_run_id.strip()
-        / "deactivate_snapshot.json"
-    )
-
-
-def _compute_changed_paths_against_baseline(
-    repo_root: Path,
-    orchestration_id: str,
-    *,
-    agent_run_id: str | None = None,
-) -> list[str]:
-    """Raw baseline-diff computation — walks the workspace and compares
-    against the per-arid write baseline. This is the canonical live-diff
-    used by `_actual_changed_paths_since_baseline` for terminal write
-    validation."""
-    baseline = _load_run_write_baseline(
-        repo_root,
-        orchestration_id,
-        agent_run_id=agent_run_id,
-    )
-    run_id = agent_run_id.strip() if isinstance(agent_run_id, str) and agent_run_id.strip() else "orchestration"
-    # Apply the runtime-snapshot ignore predicate to BOTH sides. `after` is
-    # already filtered (via `_snapshot_repo_files`); filtering `before`
-    # identically keeps the diff symmetric. Without this, a baseline written
-    # before a path became exempt — or one that captured a pre-existing
-    # runtime-owned file (e.g. a `failure_analysis.runtime.<uuid12>.json`
-    # sidecar left by a prior failed run) — would show that path only in
-    # `before`, so it surfaces as a spurious deletion/change and can be rejected
-    # as an unauthorized write, re-wedging resumed runs with older baselines.
-    before = {
-        rel: str(digest)
-        for path, digest in dict(baseline.get("files", {})).items()
-        if not _should_ignore_runtime_snapshot_path(
-            (rel := _normalize_rel_posix(str(path))),
-            orchestration_id=orchestration_id,
-            agent_run_id=run_id,
-        )
-    }
-    after = _snapshot_repo_files(
-        repo_root,
-        orchestration_id=orchestration_id,
-        agent_run_id=run_id,
-    )
-    changed = {
-        rel
-        for rel in set(before) | set(after)
-        if before.get(rel) != after.get(rel)
-        # These are in the snapshot ONLY so a deletion can be seen (below). Their additions and
-        # modifications stay exempt, which is what the runtime-owned exemption is for.
-        and not _is_undeletable_runtime_path(rel, orchestration_id)
-    }
-    # A runtime-owned path is exempt so the RUNTIME's own writes into it are not misattributed
-    # to whichever child's window happens to be open. It was never meant to license a child
-    # DELETING the runtime's records, and because the exemption is applied symmetrically to
-    # both sides, such a deletion was invisible — measured: removing
-    # `violations/<arid>.unauthorized_write_violation.json` and a control file together
-    # surfaced only the control.
-    #
-    # That mattered the moment the completion vouch started reading a violation record as the
-    # evidence of a landed unauthorized write: the evidence could be deleted with no trace, and
-    # the justification written for choosing that anchor ("a leaf cannot remove it quietly") was
-    # simply false. It is true now, and narrowly: only DELETIONS, and only of the prefixes
-    # nothing in this tree ever removes. `active_children/` is deliberately NOT among them —
-    # `deactivate_child` and `_clear_stale_active_child_markers` delete those markers as part of
-    # normal operation, so surfacing their deletion would wedge every ordinary run.
-    changed |= _deleted_undeletable_runtime_paths(repo_root, orchestration_id, baseline)
-    return sorted(changed)
-
-
-# Runtime-owned prefixes that NOTHING in this tree ever deletes, so a path that was in the
-# write baseline and is gone at terminal validation was removed by the child. Kept separate
-# from `runtime_prefixes`: those are exempt so the runtime's WRITES are not misattributed, and
-# that exemption stays.
-UNDELETABLE_RUNTIME_PREFIXES: tuple[str, ...] = ("violations/",)
-
-
-def _is_undeletable_runtime_path(rel_posix: str, orchestration_id: str) -> bool:
-    orch_root = _normalize_rel_posix(f"workspace/orchestrations/{orchestration_id}")
-    return _normalize_rel_posix(rel_posix).startswith(
-        tuple(f"{orch_root}/{suffix}" for suffix in UNDELETABLE_RUNTIME_PREFIXES))
-
-
-def _deleted_undeletable_runtime_paths(
-    repo_root: Path,
-    orchestration_id: str,
-    baseline: dict[str, Any],
-) -> set[str]:
-    """Paths under `UNDELETABLE_RUNTIME_PREFIXES` that the baseline recorded and that are gone.
-
-    Takes the ALREADY-LOADED baseline rather than re-reading it: `_load_run_write_baseline`
-    raises when none exists, and its path depends on whether the role is a child or the
-    orchestration itself — re-deriving that here got the orchestration-role path wrong and
-    turned a missing-baseline error into nine failures in callers that had loaded it fine.
-
-    Read from the RAW baseline, before the runtime-snapshot ignore predicate is applied to
-    `before` — that filtering is what makes these invisible in the ordinary diff."""
-    orch_root = _normalize_rel_posix(f"workspace/orchestrations/{orchestration_id}")
-    prefixes = tuple(f"{orch_root}/{suffix}" for suffix in UNDELETABLE_RUNTIME_PREFIXES)
-    gone: set[str] = set()
-    for path in dict(baseline.get("files", {})):
-        rel = _normalize_rel_posix(str(path))
-        if rel.startswith(prefixes) and not (repo_root / rel).exists():
-            gone.add(rel)
-    return gone
-
-
-def _actual_changed_paths_since_baseline(
-    repo_root: Path,
-    orchestration_id: str,
-    *,
-    agent_run_id: str | None = None,
-) -> list[str]:
-    # Recurrence-prevention plan (Issue 3) — Codex review P1 follow-up:
-    # always perform the live baseline diff so post-deactivate filesystem
-    # mutations remain visible to terminal write validation. The
-    # demonstrated failure (`agent_runs_invalid.jsonl` and similar runtime
-    # writes contaminating retries) is fully addressed by the
-    # `runtime_files` / `runtime_prefixes` exemptions in
-    # `_should_ignore_runtime_snapshot_path`, plus the existing
-    # `parent_tmp_root` exclusion in `_validate_actual_write_paths`. The
-    # deactivate snapshot remains available as an audit artifact (see
-    # `_deactivate_snapshot_path`) but is no longer consulted for diff
-    # short-circuiting — that would hide real unauthorized writes that
-    # appear between deactivate and the (possibly retried) record-agent-run.
-    return _compute_changed_paths_against_baseline(
-        repo_root, orchestration_id, agent_run_id=agent_run_id
-    )
-
-
 def _declared_output_refs(payload: dict[str, Any]) -> list[str]:
     output_refs_obj = payload.get("output_refs")
     if not isinstance(output_refs_obj, list):
@@ -11219,7 +8688,7 @@ def _is_host_pycache_redirect_write(rel_path: str) -> bool:
 
     The exemption is the WHOLE redirect subtree (not a ``.pyc``-suffix filter) deliberately: the
     only writer that can reach this dir is the trusted host (bwrap binds the repo read-only, so a
-    confined leaf hits EROFS here — see build_bwrap_profile / render_bwrap_command), and it writes
+    confined leaf hits EROFS here — see build_readonly_bwrap_profile / render_bwrap_command), and it writes
     only bytecode plus CPython's atomic-write temp siblings (``<name>.pyc.<int>``, named
     ``f'{path}.{id(path)}'`` in importlib._bootstrap_external). Matching the subtree covers those
     temp files too; a suffix filter would spuriously flag them.
@@ -11228,11 +8697,10 @@ def _is_host_pycache_redirect_write(rel_path: str) -> bool:
 
 
 def _orchestration_allowed_write_roots(orchestration_id: str) -> list[str]:
-    # Host bytecode cache under workspace/.pycache/ (both the sys.pycache_prefix host redirect and
-    # _gate_python_env's PYTHONPYCACHEPREFIX) is handled by the broad _is_host_pycache_redirect_write
-    # exemption in _validate_actual_write_paths, which runs for every actor role BEFORE write_roots
-    # are consulted. A per-orch workspace/.pycache/<orch_id>/ write_root entry here is therefore
-    # never reached (and never matched a real cache path anyway: the prefix mirrors the absolute
+    # Host bytecode cache under workspace/.pycache/ (the sys.pycache_prefix host redirect) was
+    # handled by the broad _is_host_pycache_redirect_write exemption in the terminal write audit,
+    # which issue #171 PR-2 deleted along with the audit. A per-orch workspace/.pycache/<orch_id>/
+    # entry here was therefore never reached (and never matched a real cache path anyway: the prefix mirrors the absolute
     # source path, not an <orch_id> subdir), so it is intentionally omitted.
     return [
         _with_trailing_slash(_normalize_rel_posix(f"workspace/orchestrations/{orchestration_id}")),
@@ -11244,138 +8712,6 @@ def _is_runtime_audit_artifact_path(orchestration_id: str, rel_path: str) -> boo
     rel = _normalize_rel_posix(rel_path)
     prefixes: tuple[str, ...] = ()
     return any(_repo_path_under_prefix(rel, prefix.rstrip("/")) for prefix in prefixes)
-
-
-def _managed_write_snapshot_path(
-    repo_root: Path,
-    orchestration_id: str,
-    *,
-    agent_run_id: str,
-) -> Path:
-    return (
-        _orchestration_root(repo_root, orchestration_id)
-        / "agents"
-        / agent_run_id.strip()
-        / "managed_write_snapshot.json"
-    )
-
-
-def _write_managed_write_snapshot(
-    repo_root: Path,
-    orchestration_id: str,
-    *,
-    agent_run_id: str,
-    declared_paths: Sequence[str],
-    actual_changed_paths: Sequence[str],
-) -> None:
-    normalized = sorted({_normalize_rel_posix(path) for path in declared_paths if str(path).strip()})
-    if not normalized:
-        return
-    actual_paths = sorted(
-        {
-            _normalize_rel_posix(path)
-            for path in actual_changed_paths
-            if str(path).strip()
-        }
-    )
-    tracked_paths = sorted(
-        {
-            path
-            for path in actual_paths
-            if any(_repo_path_under_prefix(path, decl) for decl in normalized)
-        }
-    )
-    if not tracked_paths:
-        return
-    files: dict[str, str] = {}
-    for path in tracked_paths:
-        abs_path = repo_root / path
-        if abs_path.exists():
-            files[path] = _compute_sha256(abs_path)
-        else:
-            files[path] = "__MISSING__"
-    _write_json(
-        _managed_write_snapshot_path(
-            repo_root,
-            orchestration_id,
-            agent_run_id=agent_run_id,
-        ),
-        {
-            "agent_run_id": agent_run_id.strip(),
-            "recorded_at": _utc_now_iso(),
-            "files": files,
-        },
-    )
-
-
-def _child_managed_paths_excludable_from_orchestration_diff(
-    repo_root: Path,
-    orchestration_id: str,
-    *,
-    current_agent_run_id: str,
-    caller_holds_lock: bool = False,
-) -> set[str]:
-    baseline = _load_run_write_baseline(repo_root, orchestration_id)
-    baseline_files_obj = baseline.get("files")
-    baseline_files = (
-        {
-            _normalize_rel_posix(str(path)): str(digest)
-            for path, digest in baseline_files_obj.items()
-            if isinstance(path, str) and path.strip() and isinstance(digest, str)
-        }
-        if isinstance(baseline_files_obj, dict)
-        else {}
-    )
-    excludable: set[str] = set()
-    # H-FOURTH-1: forward caller_holds_lock so the orchestration-role
-    # finalize path (called from inside the runs-jsonl lock) doesn't mask
-    # durable corruption via self-lock contention.
-    records = _load_run_records(
-        _orchestration_root(repo_root, orchestration_id),
-        caller_holds_lock=caller_holds_lock,
-    )
-    for run_id, record in records.items():
-        if run_id == current_agent_run_id.strip():
-            continue
-        role = str(record.get("agent_role") or "").strip().lower()
-        if role not in {"step", "substep"}:
-            continue
-        snap_path = _managed_write_snapshot_path(
-            repo_root,
-            orchestration_id,
-            agent_run_id=run_id,
-        )
-        if not snap_path.exists():
-            continue
-        snap_doc = _read_json(snap_path)
-        if not isinstance(snap_doc, dict):
-            continue
-        files_obj = snap_doc.get("files")
-        if not isinstance(files_obj, dict):
-            continue
-        for path, digest in files_obj.items():
-            if not isinstance(path, str) or not path.strip() or not isinstance(digest, str):
-                continue
-            rel = _normalize_rel_posix(path)
-            current_path = repo_root / rel
-            current_digest = "__MISSING__" if not current_path.exists() else _compute_sha256(current_path)
-            if current_digest != digest:
-                continue
-            if baseline_files.get(rel) == current_digest:
-                continue
-            excludable.add(rel)
-        manifest_path = _allowed_output_manifest_path(
-            repo_root,
-            orchestration_id,
-            run_id,
-        )
-        manifest_rel = _normalize_rel_posix(str(manifest_path.relative_to(repo_root)))
-        manifest_digest = (
-            "__MISSING__" if not manifest_path.exists() else _compute_sha256(manifest_path)
-        )
-        if manifest_digest != "__MISSING__" and baseline_files.get(manifest_rel) != manifest_digest:
-            excludable.add(manifest_rel)
-    return excludable
 
 
 def _cleanup_agent_tmp_root(
@@ -11526,59 +8862,6 @@ def _cleanup_agent_tmp_root(
         return not target.exists()
 
 
-def _write_directory_authorized_paths(
-    repo_root: Path,
-    orchestration_id: str,
-    *,
-    agent_run_id: str,
-    directory_authorized_paths: list[str],
-    manifest_allowed_output_dirs: list[str],
-) -> None:
-    out = _violations_dir(repo_root, orchestration_id).parent / "audit" / f"{agent_run_id}.directory_authorized_paths.json"
-    out.parent.mkdir(parents=True, exist_ok=True)
-    _write_json(out, {
-        "kind": "directory_authorized_paths",
-        "orchestration_id": orchestration_id,
-        "agent_run_id": agent_run_id,
-        "recorded_at": _utc_now_iso(),
-        "manifest_allowed_output_dirs": manifest_allowed_output_dirs,
-        "directory_authorized_paths": directory_authorized_paths,
-    })
-
-
-def _write_unauthorized_write_violation(
-    repo_root: Path,
-    orchestration_id: str,
-    *,
-    agent_run_id: str,
-    actor_role: str,
-    actual_changed_paths: list[str],
-    unauthorized_paths: list[str],
-    output_refs: list[str],
-    write_roots: list[str],
-    manifest_file_tool_paths: list[str] | None = None,
-    directory_authorized_paths: list[str] | None = None,
-) -> Path:
-    out = _violations_dir(repo_root, orchestration_id) / f"{agent_run_id}.unauthorized_write_violation.json"
-    record: dict[str, Any] = {
-        "kind": "unauthorized_write_violation",
-        "orchestration_id": orchestration_id,
-        "agent_run_id": agent_run_id,
-        "actor_role": actor_role,
-        "detected_at": _utc_now_iso(),
-        "actual_changed_paths": actual_changed_paths,
-        "unauthorized_paths": unauthorized_paths,
-        "output_refs": output_refs,
-        "write_roots": write_roots,
-    }
-    if manifest_file_tool_paths is not None:
-        record["manifest_file_tool_paths"] = manifest_file_tool_paths
-    if directory_authorized_paths is not None:
-        record["directory_authorized_paths"] = directory_authorized_paths
-    _write_json(out, record)
-    return out
-
-
 def _expected_host_evidence_rel_path(
     repo_root: Path,
     orchestration_id: str,
@@ -11606,8 +8889,8 @@ def _expected_host_evidence_rel_path(
         return None
     if str(cap_doc.get("substep") or "").strip().lower() != substep:
         return None
-    # generate write_root is exactly <pipeline_ref>/source/ (_write_roots_for_launch); the
-    # pipeline root is its parent. Derive it rather than re-deriving pipeline_ref elsewhere.
+    # A generate substep's outputs sit under <pipeline_ref>/source/; the pipeline root is its
+    # parent. Derive it rather than re-deriving pipeline_ref elsewhere.
     pipe_prefix: str | None = None
     for root in write_roots:
         if root.endswith("source/"):
@@ -11663,442 +8946,6 @@ def _expected_syntax_evidence_rel_path(
         agent_run_id=agent_run_id, cap_doc=cap_doc, write_roots=write_roots,
         substep="gate", evidence_dirname="syntax_evidence",
     )
-
-
-def _file_pin_parent_nonfile_strays(
-    repo_root: Path,
-    orchestration_id: str,
-    *,
-    agent_run_id: str,
-    write_roots: list[str],
-) -> list[str]:
-    """Flag directory / symlink strays in a file-pin's now-writable parent dir.
-
-    `render_bwrap_command` binds a file pin's PARENT directory writable (so the harness
-    Write tool's atomic temp-sibling + rename can run — a file-granular bind left the
-    parent read-only and broke that write with EROFS). The terminal FS-diff
-    (`_snapshot_repo_files`) records **regular files only**, so it would miss a leaf
-    creating a new *directory* or a symlink directly in that parent (e.g. an empty
-    `aggregate_verdict.json/`), which both evades unauthorized-write detection AND, by
-    pre-creating a host-target pathname as a directory, breaks the conductor's later
-    `write_text` of that artifact. The ONLY legitimate new entry in a file-pin's parent
-    is a transient regular file (the temp sibling, renamed away before terminalization),
-    so any new non-regular-file entry that was not an occupied path in the write baseline,
-    and is not itself authorized by a directory write_root, is an unauthorized write.
-    Scoped to the file-pin parents only; regular-file strays there are already caught by
-    the file-level FS-diff, and dir-write_root substeps are authorized by containment.
-    """
-    file_pins = [
-        _normalize_rel_posix(r.strip())
-        for r in write_roots
-        if isinstance(r, str) and r.strip() and not r.strip().endswith("/")
-    ]
-    if not file_pins:
-        return []
-    try:
-        baseline = _load_run_write_baseline(repo_root, orchestration_id, agent_run_id=agent_run_id)
-    except ValueError:
-        return []
-    occupied_dirs: set[str] = set()
-    for k in dict(baseline.get("files", {})):
-        parts = _normalize_rel_posix(str(k)).split("/")
-        for i in range(1, len(parts)):
-            occupied_dirs.add("/".join(parts[:i]))
-    strays: set[str] = set()
-    seen_parents: set[str] = set()
-    for pin_rel in file_pins:
-        parent_rel = pin_rel.rsplit("/", 1)[0] if "/" in pin_rel else ""
-        if parent_rel in seen_parents:
-            continue
-        seen_parents.add(parent_rel)
-        parent_abs = (repo_root / parent_rel) if parent_rel else repo_root
-        try:
-            children = list(parent_abs.iterdir())
-        except OSError:
-            continue
-        for child in children:
-            child_rel = _normalize_rel_posix(
-                f"{parent_rel}/{child.name}" if parent_rel else child.name
-            )
-            if child_rel == pin_rel:
-                continue  # the pin itself (a regular file) is legitimate
-            try:
-                is_symlink = child.is_symlink()
-                # a plain regular file is already covered by the file-level FS-diff
-                if not is_symlink and child.is_file():
-                    continue
-                is_dir = (not is_symlink) and child.is_dir()
-            except OSError:
-                continue
-            # a sibling authorized by a directory write_root is legitimate
-            if _path_under_any_write_root(child_rel, write_roots):
-                continue
-            # a directory that already held baseline files pre-existed (not a stray)
-            if is_dir and child_rel in occupied_dirs:
-                continue
-            strays.add(child_rel)
-    return sorted(strays)
-
-
-def _validate_actual_write_paths(
-    repo_root: Path,
-    orchestration_id: str,
-    payload: dict[str, Any],
-    *,
-    caller_holds_lock: bool = False,
-) -> None:
-    role_obj = payload.get("agent_role")
-    agent_run_id_obj = payload.get("agent_run_id")
-    if not isinstance(role_obj, str) or not isinstance(agent_run_id_obj, str) or not agent_run_id_obj.strip():
-        return
-    actor_role = _normalized_agent_role(role_obj)
-    # Membership in the role vocabulary, from the one named definition. This early return
-    # is what an out-of-vocabulary role used to reach in order to switch the audit off;
-    # `record_agent_run` now rejects such a role before any caller gets here, so nothing
-    # should reach it. Kept rather than deleted: unreachable is a classification, and this
-    # is not the layer that should be relying on it. Every role in the set now owns a write
-    # window, so the membership test no longer narrows anything — it only fails closed.
-    if actor_role not in AGENT_RUN_ROLES:
-        return
-    status_obj = payload.get("status")
-    if not isinstance(status_obj, str) or status_obj.strip().lower() not in TERMINAL_STATUSES:
-        return
-
-    run_id = agent_run_id_obj.strip()
-    baseline_agent_run_id = run_id if actor_role in {"step", "substep"} else None
-    actual_changed_paths = _actual_changed_paths_since_baseline(
-        repo_root,
-        orchestration_id,
-        agent_run_id=baseline_agent_run_id,
-    )
-    output_refs = _declared_output_refs(payload)
-
-    if actor_role in {"step", "substep"}:
-        # A certification is a HOST stamp, so it never survives a child window. The
-        # `generate.verify` leaf's write_root IS `source_meta.json`, so that leaf can author
-        # `artifact_hashes` / `source_ir_id` with perfectly correct values — and the phase
-        # would then read as certified on a later run even though it never passed. The
-        # `write-step-result` strip does not cover it: a phase that fail-closes on a leaf
-        # transport error or a validate gate returns WITHOUT writing a step_result at all,
-        # and `run_phase` consults the certification BEFORE it would rotate the producer id.
-        # Erasing the keys from whatever stage meta this child actually CHANGED closes that:
-        # after this point the keys can only have been written by a passing
-        # `write-step-result`, which runs when every child window is already closed.
-        #
-        # Placed HERE — right after the diff, before every refusal this function can raise —
-        # because the round-1 version sat after the unauthorized-write raise, and a leaf that
-        # made ONE unauthorized write (a stray file beside its own file pin, whose parent is
-        # bound writable for the Write tool's temp-sibling rename) therefore kept its forged
-        # certification. Measured end to end: that leaf's phase then read as certified in this
-        # orchestration AND in a fresh one, and the run reached `pass`.
-        for changed in actual_changed_paths:
-            base = _normalize_rel_posix(changed).rsplit("/", 1)[-1]
-            if base in set(CERTIFYING_META_FILENAME_BY_STEP.values()):
-                _strip_certification_keys(repo_root / _normalize_rel_posix(changed))
-
-    if actor_role == "orchestration":
-        child_excludable = _child_managed_paths_excludable_from_orchestration_diff(
-            repo_root,
-            orchestration_id,
-            current_agent_run_id=run_id,
-            caller_holds_lock=caller_holds_lock,
-        )
-        actual_changed_paths = [
-            path
-            for path in actual_changed_paths
-            if path not in child_excludable
-        ]
-        write_roots = _orchestration_allowed_write_roots(orchestration_id)
-    else:
-        cap_path = _capabilities_dir(repo_root, orchestration_id) / f"{run_id}.json"
-        if not cap_path.exists():
-            raise ValueError(f"capability file not found for terminal write validation: {cap_path}")
-        cap_doc = _read_json(cap_path)
-        if not isinstance(cap_doc, dict):
-            raise ValueError(f"capability must be object for terminal write validation: {cap_path}")
-        roots_obj = cap_doc.get("write_roots")
-        write_roots = _load_write_roots_from_cap(roots_obj)
-
-    # generate.gate writes a host-authored, leaf-non-writable lint certificate at the EXACT
-    # path <pipeline_ref>/lint_evidence/<source_id>.json, deliberately OUTSIDE the substep's
-    # source/ write_root (same non-forgeability placement as lineage.json). It is a conductor
-    # host write made during the in-process substep window (workflow_conductor.Conductor.
-    # _gate_inproc -> _gate_lint_check -> write_lint_evidence), not a leaf write, so it lands in
-    # the FS-diff and would otherwise be misattributed as an unauthorized write. Exempt ONLY that
-    # one exact certificate (not the whole lint_evidence/ dir) so an unexpected/stale sibling
-    # under lint_evidence/ is still flagged. Scoped to the gate substep so the sandboxed
-    # generate.generate leaf is never exempted (and bwrap blocks that leaf from the pipeline
-    # root regardless). write_roots stays minimal — like lineage.json, the certificate is NOT
-    # a capability write_root.
-    lint_evidence_expected_path: str | None = None
-    syntax_evidence_expected_path: str | None = None
-    if actor_role == "substep":
-        lint_evidence_expected_path = _expected_lint_evidence_rel_path(
-            repo_root,
-            orchestration_id,
-            agent_run_id=run_id,
-            cap_doc=cap_doc,
-            write_roots=write_roots,
-        )
-        # generate.gate also writes the analogous host-authored syntax certificate at
-        # <pipeline_ref>/syntax_evidence/<source_id>.json (workflow_conductor.Conductor.
-        # _gate_inproc -> _gate_syntax_check -> write_syntax_evidence); same exact-file scoping
-        # as lint above (both certificates come from the one gate substep window).
-        syntax_evidence_expected_path = _expected_syntax_evidence_rel_path(
-            repo_root,
-            orchestration_id,
-            agent_run_id=run_id,
-            cap_doc=cap_doc,
-            write_roots=write_roots,
-        )
-
-    unauthorized: list[str] = []
-    parent_tmp_root: str | None = None
-    if actor_role in {"step", "substep"}:
-        # Prefer the launch request file as the authoritative source for
-        # parent_agent_run_id; fall back to payload for backward compatibility.
-        _parent_run_id: str | None = None
-        _launch_req = (
-            repo_root
-            / "workspace"
-            / "orchestrations"
-            / orchestration_id
-            / "launches"
-            / f"{run_id}.request.json"
-        )
-        if _launch_req.exists():
-            try:
-                _req_doc = _read_json(_launch_req)
-                if isinstance(_req_doc, dict):
-                    _raw = _req_doc.get("parent_agent_run_id")
-                    if isinstance(_raw, str) and _raw.strip():
-                        _parent_run_id = _raw.strip()
-            except Exception:
-                pass
-        if _parent_run_id is None:
-            _raw_payload = payload.get("parent_agent_run_id")
-            if isinstance(_raw_payload, str) and _raw_payload.strip():
-                _parent_run_id = _raw_payload.strip()
-        if _parent_run_id:
-            parent_tmp_root = _normalize_rel_posix(f"workspace/tmp/{_parent_run_id}")
-    manifest_file_tool_paths: set[str] = set()
-    manifest_allowed_tmp_root: str | None = None
-    manifest_allowed_output_dirs: list[str] = []
-    manifest_integrity_protected_logs: set[str] = set()
-    if actor_role == "orchestration":
-        declared_paths = sorted(set(output_refs))
-        exact_declared_paths = declared_paths  # orchestration: no directory entries
-    else:
-        # step/substep: include manifest-permitted direct write paths so that
-        # `.yaml` / `.md` / source code outputs written via Edit/Write are not
-        # flagged as unauthorized writes.
-        try:
-            manifest_doc = _load_allowed_output_manifest(
-                repo_root,
-                orchestration_id=orchestration_id,
-                agent_run_id=run_id,
-            )
-        except ValueError:
-            manifest_doc = None
-        if isinstance(manifest_doc, dict):
-            ftp_obj = manifest_doc.get("allowed_file_tool_paths")
-            if isinstance(ftp_obj, list):
-                manifest_file_tool_paths = {
-                    _normalize_rel_posix(str(item))
-                    for item in ftp_obj
-                    if isinstance(item, str) and item.strip()
-                }
-            aop_obj = manifest_doc.get("allowed_output_paths")
-            if isinstance(aop_obj, list):
-                for item in aop_obj:
-                    if not isinstance(item, str) or not item.strip():
-                        continue
-                    raw_aop = item.strip()
-                    if raw_aop.endswith("/"):
-                        manifest_allowed_output_dirs.append(_normalize_rel_posix(raw_aop))
-            # Canonical MCP audit logs (e.g. command_log.jsonl at the
-            # phase-specific canonical placement) are written by MCP server
-            # tooling without going through guarded-apply-patch and are
-            # excluded from allowed_file_tool_paths so children cannot
-            # Edit/Write them. Authorize them as MCP-owned outputs at
-            # terminalization so a successful MCP tool run does not get
-            # fail-closed for the very file it is trusted to produce.
-            # Trust only the manifest's persisted `mcp_owned_audit_logs`
-            # field — basename matches outside canonical placement are not
-            # auto-trusted (defense against over-broad manifest entries).
-            mcp_logs_obj = manifest_doc.get("mcp_owned_audit_logs")
-            if isinstance(mcp_logs_obj, list):
-                for item in mcp_logs_obj:
-                    if isinstance(item, str) and item.strip():
-                        manifest_integrity_protected_logs.add(
-                            _normalize_rel_posix(item.strip())
-                        )
-            _tmp_raw = manifest_doc.get("allowed_tmp_root", "")
-            if isinstance(_tmp_raw, str) and _tmp_raw.strip():
-                _tmp_norm = _normalize_rel_posix(_tmp_raw.strip())
-                _expected_tmp = _normalize_rel_posix(f"workspace/tmp/{run_id}")
-                if _tmp_norm != _expected_tmp:
-                    raise ValueError(
-                        f"allowed_tmp_root manifest value {_tmp_norm!r} does not match "
-                        f"expected per-run root {_expected_tmp!r}"
-                    )
-                manifest_allowed_tmp_root = _tmp_norm
-        exact_declared_paths = sorted(
-            manifest_file_tool_paths
-            | manifest_integrity_protected_logs
-        )
-        declared_paths = sorted(set(exact_declared_paths) | set(manifest_allowed_output_dirs))
-    # Use a frozenset for O(1) exact-match lookup. exact_declared_paths contains
-    # concrete file paths (manifest_file_tool_paths + integrity-protected logs); prefix
-    # matching would allow a directory token that leaked in to bypass extension policy.
-    _exact_declared_set: frozenset[str] = frozenset(exact_declared_paths)
-    directory_authorized: list[str] = []
-    for path in actual_changed_paths:
-        # Codex round 20 F2: cross-orchestration cleanup lock sidecar at
-        # `workspace/tmp/<arid>.lock` is created/touched by `_cleanup_agent_tmp_root`
-        # via fcntl during terminal status finalization. Runtime-managed; exempt.
-        if (
-            path.startswith("workspace/tmp/")
-            and path.endswith(".lock")
-            and "/" not in path[len("workspace/tmp/"):]
-        ):
-            continue
-        if parent_tmp_root and _repo_path_under_prefix(path, parent_tmp_root):
-            continue
-        if manifest_allowed_tmp_root and _repo_path_under_prefix(path, manifest_allowed_tmp_root):
-            continue
-        if _is_host_pycache_redirect_write(path):
-            # In-process conductor host bytecode cache, redirected out of the repo source tree
-            # into workspace/.pycache/ (run_workflow sets sys.pycache_prefix). A trusted host
-            # write that lands in the child-window FS-diff; exempt. NOT a blanket pyc exemption
-            # (see _is_host_pycache_redirect_write): a leaf's explicit py_compile writes to the
-            # source's own __pycache__, never here, so it still surfaces.
-            continue
-        if path in manifest_integrity_protected_logs:
-            # Canonical MCP-owned audit logs are pre-validated against
-            # canonical phase placements at launch time and protected by
-            # multiple defense layers (file_tool exclusion, guarded-apply-
-            # patch rejection, hook-level write block). Authorize the actual
-            # write regardless of capability `write_roots` so legitimate
-            # cross-phase placements (e.g. Execute's run_quality_checks log
-            # under generate/<gen>/src/) are not fail-closed for the very
-            # file the MCP tool produced.
-            continue
-        if lint_evidence_expected_path is not None and path == lint_evidence_expected_path:
-            # Conductor host write of the exact generate.gate lint certificate (see above).
-            continue
-        if syntax_evidence_expected_path is not None and path == syntax_evidence_expected_path:
-            # Conductor host write of the exact generate.gate syntax certificate (see above).
-            continue
-        if write_roots and not _path_under_any_write_root(path, write_roots):
-            unauthorized.append(path)
-            continue
-        if actor_role in {"step", "substep"}:
-            if not write_roots:
-                # EMPTY write_roots (a Z2 pure-function leaf's zero-authority capability):
-                # containment cannot authorize a write when there is NO authorized root, so
-                # EVERY non-exempt child-window change is unauthorized. Without this guard the
-                # empty-write_roots case falls through to the containment `continue` below and
-                # fail-OPENs — the exact property the pure design relies on (a pure leaf writes
-                # nothing in its window; the host writes after it closes). For a NON-pure
-                # step/substep, build_capability_document rejects empty write_roots at launch,
-                # so this branch is reached only for a pure leaf.
-                unauthorized.append(path)
-                continue
-            # Phase-2 FS-diff attribution: bwrap is mandatory (a host that cannot
-            # sandbox the leaf fails closed at launch), so a leaf can only write
-            # inside its declared write_roots. A change that landed under a
-            # write_root is therefore the leaf's own confined output and is
-            # authorized by containment — no gate provenance is required
-            # (manifest_file_tool_paths is no longer consulted for authorization).
-            # Writes outside write_roots are impossible under the sandbox and already
-            # rejected above.
-            continue
-        # orchestration actor (the trusted, unconfined conductor): keep the
-        # declared-paths gate (its writes are bookkeeping under the orch root).
-        if _exact_declared_set and path in _exact_declared_set:
-            continue
-        if manifest_allowed_output_dirs and any(_repo_path_under_prefix(path, d) for d in manifest_allowed_output_dirs):
-            unauthorized.append(path)
-            continue
-        if not declared_paths:
-            unauthorized.append(path)
-            continue
-        unauthorized.append(path)
-
-    # A file pin's parent dir is bound writable (for the harness Write tool's atomic
-    # temp-sibling+rename); the file-only FS-diff cannot see a new directory / symlink
-    # stray created there, so detect those explicitly (see _file_pin_parent_nonfile_strays).
-    if actor_role in {"step", "substep"}:
-        for stray in _file_pin_parent_nonfile_strays(
-            repo_root,
-            orchestration_id,
-            agent_run_id=run_id,
-            write_roots=write_roots,
-        ):
-            if stray not in unauthorized:
-                unauthorized.append(stray)
-
-    if directory_authorized:
-        _write_directory_authorized_paths(
-            repo_root,
-            orchestration_id,
-            agent_run_id=run_id,
-            directory_authorized_paths=directory_authorized,
-            manifest_allowed_output_dirs=manifest_allowed_output_dirs,
-        )
-    if unauthorized:
-        # No pass-gate. An operator-approved dismissal used to skip this raise; issue #176
-        # deleted it (no violation was ever dismissed — 13 recorded
-        # `unauthorized_write_violation.json`, 0 with `dismissed_at`), so an unauthorized
-        # write is a leaf content failure that always fail_closes.
-        #
-        # Recovery is a FRESH RUN (`docs/RUNBOOK.md` §3-1). `revoke-artifact` + `reset-phase`
-        # will re-derive the attributed phase and give you a corrected artifact, but this
-        # orchestration cannot reach `pass` afterwards: the diverted run keeps its
-        # `agent_graph.json` edge and no `agent_runs.jsonl` row, which the completion vouch and
-        # `--stage pre_judge` both refuse — deliberately, because the write this violation
-        # names is still on disk and nothing rolled it back.
-        violation_path = _write_unauthorized_write_violation(
-            repo_root,
-            orchestration_id,
-            agent_run_id=run_id,
-            actor_role=actor_role,
-            actual_changed_paths=actual_changed_paths,
-            unauthorized_paths=unauthorized,
-            output_refs=output_refs,
-            write_roots=write_roots,
-            manifest_file_tool_paths=sorted(manifest_file_tool_paths) if manifest_file_tool_paths else None,
-            directory_authorized_paths=directory_authorized if directory_authorized else None,
-        )
-        if actor_role in {"step", "substep"}:
-            # Cleanup runs AFTER violation is recorded so evidence is preserved for auditors.
-            _cleanup_agent_tmp_root(repo_root, orchestration_id, agent_run_id=run_id)
-        raise ValueError(
-            "terminal run has unauthorized write paths: "
-            + ", ".join(unauthorized)
-            + f" (violation: {violation_path})"
-        )
-    if actor_role in {"step", "substep"}:
-        # Success path: persist the managed-write snapshot.
-        # NEW-M2: tmp cleanup is DEFERRED to the post-lock end-of-function
-        # phase in record_agent_run (Adv-35 two-phase commit). Doing it
-        # here, before the durable terminal append at runs.jsonl, would
-        # delete recovery scratch ahead of the durable state transition —
-        # if a crash lands between this point and the append, the run is
-        # left without a terminal entry AND without diagnostic scratch.
-        # NEW-L3: wrap each cleanup helper call so an unexpected OSError
-        # in one does not skip the snapshot write that follows.
-        try:
-            _write_managed_write_snapshot(
-                repo_root,
-                orchestration_id,
-                agent_run_id=run_id,
-                declared_paths=declared_paths,
-                actual_changed_paths=actual_changed_paths,
-            )
-        except OSError:
-            pass
 
 
 
@@ -13830,43 +10677,35 @@ def _validate_launch_prompt_text(request_payload: dict[str, Any], prompt_text: s
         #     payload `origin/main` refused, because the agentic marker set used to apply to any
         #     step.
         #
-        # The answer is a FLOOR — the prompt must at least identify the run it claims to belong
-        # to — rather than a refusal, and the reason is not the one first written here. That said
-        # a refusal "also refuses a `build` record written before the deterministic marker
-        # existed, which this validator still has to be able to read", which the round-2
-        # disclosure review showed is false: the only caller is `record_launch`, a WRITER, and it
-        # never re-reads a persisted record.
+        # THE ANSWER IS A REFUSAL, and it became one in PR-2 of issue #171.
         #
-        # The true reason is the corpus the refusal breaks. 30 tests build a launch whose step is
-        # an LLM pair and whose payload declares neither shape, because their SUBJECT is the
-        # leaf-declared write set: `allowed_output_paths`, the output manifest, the cross-phase
-        # MCP log auto-injection. Those are the AGENTIC leaf's machinery, they cannot be
-        # converted (a pure request must declare `allowed_output_paths: []`, which is exactly
-        # what those tests are about), and PR-2 of this issue deletes them outright. Refusing the
-        # shape in PR-1 would mean rewriting a corpus PR-2 removes. **When that machinery goes,
-        # this floor should become the refusal** — the payload shape it accommodates will have no
-        # test left that needs it, and no caller that can build it.
+        # PR-1 left an identity FLOOR here instead — the prompt had to at least name the
+        # node_key and the two ids — and the reason was neither the one first written (that a
+        # pre-Z4 `build` record still had to be readable, which the round-2 disclosure review
+        # showed is false: the only caller is `record_launch`, a WRITER, which never re-reads a
+        # persisted record) nor a judgment about the shape. It was the CORPUS: 30 tests built a
+        # launch whose step is an LLM pair and whose payload declared neither shape, because
+        # their subject was the leaf-declared write set — `allowed_output_paths`, the output
+        # manifest, the cross-phase MCP log auto-injection. They could not be converted (a pure
+        # request declares `allowed_output_paths: []`, which is what those tests were about),
+        # and refusing the shape in PR-1 would have meant rewriting a corpus PR-2 deletes.
         #
-        # This is a HOST-defect guard either way: `launch_prompt_full` is supplied by the
-        # conductor, and no leaf holds a write path to a launch request.
+        # PR-2 deleted it. There is no caller that can build this payload and no test that
+        # needs it, so the honest answer is the one the shape always deserved: a launch is
+        # DETERMINISTIC or PURE, and a request that is neither is a host defect, refused where
+        # it is written rather than recorded with a prompt nothing can check.
+        #
+        # This is a HOST-defect guard: `launch_prompt_full` is supplied by the conductor, and
+        # no leaf holds a write path to a launch request.
         step = request_payload.get("step")
         if isinstance(step, str) and step.strip():
-            identity_floor = [
-                f"Target node_key: {request_payload.get('node_key', '')}",
-                f"orchestration_id: {request_payload.get('orchestration_id', '')}",
-                f"agent_run_id: {request_payload.get('agent_run_id', '')}",
-            ]
-            missing_identity_floor = [
-                line for line in identity_floor if line not in prompt_text]
-            if missing_identity_floor:
-                raise ValueError(
-                    "launch prompt does not identify its own run (missing/mismatched: "
-                    + "; ".join(missing_identity_floor)
-                    + f"). The request declares step={step!r} "
-                    f"substep={request_payload.get('substep')!r} and is neither deterministic "
-                    "nor pure, so there is no template marker set to check it against; since "
-                    "Z4 (issue #171) a launch is one of those two shapes, and this floor is "
-                    "all that is left to check a hand-supplied prompt body with")
+            raise ValueError(
+                f"launch request declares step={step!r} "
+                f"substep={request_payload.get('substep')!r} and is neither deterministic nor "
+                "pure. Since Z4 (issue #171) a launch is one of those two shapes: set "
+                "`deterministic: true` for a conductor in-process substep, or `leaf_mode: "
+                '"pure"` with a `pure_context` for an LLM leaf'
+            )
         return
     missing_markers = [marker for marker in required_markers if marker not in prompt_text]
     if missing_markers:
@@ -14255,9 +11094,9 @@ def resume_orchestration(
         # resumed run's eventual set-status(pass) is not rejected by the orphan-edge
         # check in _validate_orchestration_completion_for_pass. Idempotent.
         pruned_graph_children = _prune_orphan_agent_graph_edges(repo_root, orchestration_id)
-        # Drop stale `child_running` authority for the abandoned launch — the phase
-        # gates (apply-patch / MCP / run-gate) authorize child work on that state, and
-        # a terminal status proves no child is live. The phase-state init below
+        # Drop a stale `child_running` for the abandoned launch: a terminal status proves no
+        # child is live, and a phase_state that says otherwise misdescribes the run to the
+        # completion vouch and the `--stage pre_judge` audit. The phase-state init below
         # preserves node_states, so this reset survives into the resumed run.
         reset_child_running = _reset_stale_child_running_node_steps(repo_root, orchestration_id)
         # Tombstone the abandoned launches' residual artifacts so a later manual
@@ -14683,8 +11522,9 @@ def _validate_launch_request_payload(request_payload: dict[str, Any]) -> None:
     # THE agent_role chokepoint. SIX readers disagreed about an unrecognized role, named
     # here in full because an earlier version of this comment said "six" and then listed
     # five: (1) `build_capability_document` INFERRED it; (2) `_allowed_output_paths_for_launch`,
-    # (3) `_validate_child_write_contract_preflight` and (4) `_build_task_card` (deleted in Z4,
-    # issue #171) SKIPPED their work; (5) `record_launch` itself fell back to the step-derived kind, or to the
+    # (3) `_validate_child_write_contract_preflight` and (4) `_build_task_card` SKIPPED their
+    # work — (1), (3) and (4) are deleted by Z4 (issue #171), (4) in PR-1 and the other two in
+    # PR-2; (5) `record_launch` itself fell back to the step-derived kind, or to the
     # literal "unknown" for the session-run-index row; and (6) `workflow_conductor.
     # _register_codex_thread` defaulted to "substep" when re-reading the persisted request.
     # Requiring the field here, at the one place every launch passes through, is what makes
@@ -14693,10 +11533,10 @@ def _validate_launch_request_payload(request_payload: dict[str, Any]) -> None:
     # Two things about the placement are load-bearing, and one is not. Load-bearing:
     # (1) `record_launch` calls this validator immediately BEFORE
     # `_append_session_run_index_entry`, so a rejected role leaves no orphan `running` row
-    # (validating inside `build_capability_document` instead would fire after that row is
-    # durable); (2) it is upstream of the capability, so the capability that the MCP and
-    # run-gate phase gates re-check with this same predicate can no longer be minted from
-    # an inferred role at all. NOT load-bearing: the position WITHIN this function. It sits
+    # (validating downstream instead would fire after that row is durable); (2) it was
+    # upstream of the capability, so a capability the MCP and run-gate phase gates re-checked
+    # with this same predicate could not be minted from an inferred role at all — all three of
+    # those went in issue #171 PR-2, and the chokepoint is now the only reader. NOT load-bearing: the position WITHIN this function. It sits
     # after the deterministic-flag and agent_model checks purely so their existing
     # error-ordering tests keep reporting the error they were written to observe.
     #
@@ -14958,17 +11798,18 @@ def _validate_terminal_run_payload(
     if not isinstance(role, str):
         return
     role_token = _normalized_agent_role(role)
-    # Same membership test, same single definition, as the check it guards
-    # (`_validate_actual_write_paths`). These two used to carry independent copies of the
-    # set literal, which is how one field ended up with two places to widen.
+    # Same membership test, same single definition, as the terminal write audit this used to
+    # guard (deleted in issue #171 PR-2). The two carried independent copies of the set literal
+    # once, which is how one field ended up with two places to widen.
     if role_token not in AGENT_RUN_ROLES:
         return
-    # H-FOURTH-1: forward caller_holds_lock so the orchestration-role
-    # _load_run_records call within _validate_actual_write_paths surfaces
-    # durable corruption rather than masking it via self-lock contention.
-    _validate_actual_write_paths(
-        repo_root, orchestration_id, payload, caller_holds_lock=caller_holds_lock
-    )
+    # The terminal FILESYSTEM AUDIT used to run here: a diff of the repository against the
+    # per-agent write baseline, with every changed path required to fall inside the
+    # capability's `write_roots`. It was the enforcement half of a write authority no leaf
+    # holds any more — a pure leaf runs under a read-only bwrap profile with `write_roots: []`
+    # and the host writes every artifact after the child window — so what it measured was the
+    # HOST's own writes against a grant the host is not bound by. Retired in issue #171 PR-2
+    # with the baseline, the capability and the violation record it wrote.
     if not isinstance(status, str) or status.strip().lower() != "pass":
         return
 
@@ -15006,25 +11847,22 @@ def _validate_terminal_run_payload(
         for idx, item in enumerate(output_refs):
             if not isinstance(item, str) or not item.strip():
                 raise ValueError(f"output_refs[{idx}] must be non-empty string")
+        # `_validate_pass_output_refs_against_launch` reads the LAUNCH REQUEST's
+        # `allowed_output_paths`, which is host-authored and still recorded. The second check
+        # that stood here re-read the same list from `output_manifests/<arid>.json`, a copy of
+        # it written for a leaf to read; issue #171 PR-2 stopped writing the copy, and the
+        # check against the original stays.
         _validate_pass_output_refs_against_launch(repo_root, payload)
-        _validate_paths_against_allowed_output_manifest(
-            repo_root,
-            orchestration_id=orchestration_id,
-            agent_run_id=str(payload.get("agent_run_id") or ""),
-            paths=[str(item) for item in output_refs if isinstance(item, str)],
-        )
-        # P2-7: the apply_patch_writes gate is retired. A step/substep leaf writes its
-        # artifacts directly (Edit/Write) under mandatory bwrap, and the actual-write
-        # check (`_validate_actual_write_paths`) authorizes purely by write_roots
-        # containment — there is no gate evidence to verify.
+        # P2-7 retired the apply_patch_writes gate, and issue #171 PR-2 retired the FS-diff
+        # that replaced it. A leaf writes no artifact at all: the host writes every one after
+        # the child window, so there is nothing about this row's writes left to verify.
         return
 
     # orchestration role (the trusted, unconfined conductor): output_refs are optional
     # bookkeeping. The retired apply_patch_writes gate previously tied each declared ref
     # to write evidence; its P2-7 replacement is an existence check — a `pass` that
     # declares output_refs must have actually produced them, so it cannot claim
-    # missing/unproduced artifacts. (Authorization that the writes stayed inside the
-    # orchestration write_roots is already enforced above by _validate_actual_write_paths.)
+    # missing/unproduced artifacts.
     if not isinstance(output_refs, list) or not output_refs:
         return
     missing: list[str] = []
@@ -15227,45 +12065,21 @@ def _validate_orchestration_completion_for_pass(
             "agent_runs.jsonl records step/substep runs (the agent tree is not traceable)"
         )
 
-    # (c-2) No UNAUTHORIZED WRITE may be outstanding. `_validate_actual_write_paths` writes
-    # `violations/<arid>.unauthorized_write_violation.json` when a child's terminal filesystem
-    # diff shows paths outside its `write_roots`. That write is NOT rolled back — the files are
-    # on disk — so an orchestration that reaches `pass` over one reports a clean verdict on a
-    # workspace a leaf has already written into outside its window. That is the `leaf shortcut`
-    # class this repository defends against, and `origin/main` refused it too: its rule exempted
-    # `superseded AND invalid`, and the conductor refused ON PURPOSE to tombstone an
-    # unauthorized-write child ("tombstoning a leaf that ALSO made a genuine unauthorized write
-    # would hide it"), so the conjunction was unsatisfiable for exactly this shape.
+    # (c-2) An outstanding UNAUTHORIZED WRITE used to be refused here — the marker
+    # `_validate_actual_write_paths` wrote when a child's terminal filesystem diff showed paths
+    # outside its `write_roots`, which is not rolled back, so a `pass` over one would report a
+    # clean verdict on a workspace a leaf had written into. PR-2 of issue #171 deleted that
+    # audit with the per-agent write baseline it diffed against: a pure leaf holds no write
+    # authority, so the diff compared the HOST's own writes against a grant the host is not
+    # bound by. Nothing writes the marker now, so nothing can be outstanding, and keeping a
+    # check that can only ever pass would read as coverage of a class nothing covers.
     #
-    # Anchored on the VIOLATION RECORD rather than on the run log or the graph edge, because it
-    # is the only one of the three whose REMOVAL is visible: `violations/` is listed in
-    # `UNDELETABLE_RUNTIME_PREFIXES`, so a child that deletes one surfaces in its own terminal
-    # write-audit diff. `agent_runs_invalid.jsonl` is exempt from that diff in both directions,
-    # and the graph edge is pruned as an orphan once that log no longer names the child.
-    #
-    # That visibility was ASSERTED here before it was true, and asserted in four places at once
-    # — this comment, `docs/ORCHESTRATION.md` rule 49, `docs/RUNBOOK.md` §3-1 and a test
-    # docstring. `violations/` was in `runtime_prefixes` and the exemption is applied
-    # symmetrically to both sides of the diff, so deleting a violation record left no trace at
-    # all. Measured, and then made true: the prefix is still exempt for the runtime's own writes
-    # (which is what that exemption is for) and no longer exempt for a deletion.
-    #
-    # There is no acknowledgement mechanism and there should not be one: the remedy is a fresh
-    # orchestration over the corrected artifact, not a ledger entry that makes the taint
-    # invisible. A later successful re-record under the same `agent_run_id` does not clear it —
-    # re-recording fixes the PAYLOAD, and nothing un-writes the file.
-    violations_dir = root / "violations"
-    outstanding = sorted(
-        path.name for path in violations_dir.glob("*.unauthorized_write_violation.json")
-    ) if violations_dir.is_dir() else []
-    if outstanding:
-        raise RuntimeError(
-            "cannot mark orchestration pass: unauthorized write violations are outstanding "
-            f"({', '.join(outstanding[:5])}{'...' if len(outstanding) > 5 else ''}). The paths "
-            "they name were written outside the child's write_roots and nothing rolled them "
-            "back, so this workspace cannot be certified. Repair the cause and run a fresh "
-            "orchestration (docs/RUNBOOK.md §3-1)."
-        )
+    # THE CLASS ITSELF is what changed, not merely the mechanism: a leaf reaches the filesystem
+    # only through a `bwrap` profile whose repository bind is read-only and whose `write_roots`
+    # is empty, so the write it refused cannot occur from the child window at all. That is a
+    # structural closure, not an unaudited hole — and it is the reason the deletion is a
+    # narrowing of scope rather than of defense. `docs/ORCHESTRATION.md` §"Capability /
+    # Manifest contract (removed in issue #171 PR-2)" is canonical.
 
     # (c) Every edge's parent and child are RECORDED — in `agent_runs.jsonl`, or in
     # `agent_runs_invalid.jsonl` for a terminal payload `record_agent_run` refused. A child in
@@ -15994,7 +12808,7 @@ def _chmod_directory_no_follow(path: Path, mode: int, label: str) -> None:
 
 
 # `WORKFLOW_HOMES_ROOT_ENV` and the resolver below are IMPORTED from
-# `tools/hooks/common.py`, not defined here. TWO subtrees of the operator-private root are
+# `tools/operator_private_root.py`, not defined here. TWO subtrees of the operator-private root are
 # relocatable, and each name moves exactly one of them:
 #
 #   * `ATMOFAB_WORKFLOW_HOMES_ROOT`  -> `~/.atmofab/homes` (this module writes it)
@@ -16035,7 +12849,7 @@ WORKFLOW_HOME_OWNER_FILENAME = "owner.json"
 def _workflow_homes_root() -> Path:
     """`~/.atmofab/homes` — the durable root of every isolated backend home.
 
-    A thin alias over `tools/hooks/common.py::workflow_homes_root`, kept as a name because
+    A thin alias over `tools/operator_private_root.py::workflow_homes_root`, kept as a name because
     this module's tests and `tools/prune_workflow_homes.py` patch it, and because the
     module-local spelling is what the preparers read. The RESOLUTION is not duplicated:
     the guard lists whatever this returns as a protected read root, so the tree that gets
@@ -16058,7 +12872,7 @@ def _require_usable_private_root_override(env_name: str, root: Path, subject: st
     side was about to create, for the operator-token store that shared this refusal until
     issue #176 deleted it; with the homes root the only caller, the sentence is fixed.
 
-    The resolvers in `tools/hooks/common.py` stay TOTAL — they feed the Bash read guard,
+    The resolvers in `tools/operator_private_root.py` stay TOTAL — they feed the Bash read guard,
     and a hook that raises while deciding a read is worse than one that guards a path
     nobody writes to. This is the creation side, which is where failing closed is
     available, and it is shared by every writer under the operator-private root so the two
@@ -17536,26 +14350,11 @@ def init_orchestration(
         )
     meta["orchestration_agent_run_id"] = orchestration_agent_run_id
     _write_json(meta_path, meta)
-    _write_read_access_manifest(
-        repo_root,
-        orchestration_id=orchestration_id,
-        agent_run_id=orchestration_agent_run_id,
-        allowed_read_roots=["docs/", "spec/", "skills/", "workspace/"],
-        denied_read_roots=["tools/"],
-    )
-    _write_allowed_output_manifest(
-        repo_root,
-        orchestration_id=orchestration_id,
-        agent_run_id=orchestration_agent_run_id,
-        allowed_output_paths=[
-            f"workspace/orchestrations/{orchestration_id}/failure_analysis.json",
-        ],
-        allowed_file_tool_paths=[
-            f"workspace/orchestrations/{orchestration_id}/failure_analysis.json",
-        ],
-        agent_role="orchestration",
-        allowed_tmp_root=f"workspace/tmp/{orchestration_agent_run_id}",
-    )
+    # NO read / output manifest for the orchestration agent either. The pair described what a
+    # LEAF was permitted to read and write, for a hook layer to enforce and an audit to
+    # re-read; the orchestration agent is the conductor's own process, which is not confined by
+    # anything it writes about itself, so its copies said only that the host may do what the
+    # host does. Retired with the leaf-facing set in issue #171 PR-2.
     (repo_root / "workspace" / "tmp" / orchestration_agent_run_id).mkdir(parents=True, exist_ok=True)
 
     graph_path = root / "agent_graph.json"
@@ -17618,7 +14417,6 @@ def init_orchestration(
     )
 
     pre_orchestration_start(repo_root, orchestration_id, event="init")
-    _write_run_write_baseline(repo_root, orchestration_id)
     return meta
 
 
@@ -18119,57 +14917,21 @@ def record_launch(
     if not (isinstance(nk, str) and nk.strip() and isinstance(st, str) and st.strip()):
         raise ValueError("record-launch requires non-empty node_key and step for sandbox-enforced launch")
     if isinstance(nk, str) and nk.strip() and isinstance(st, str) and st.strip():
-        _write_access_policy_for_launch(
-            repo_root,
-            orchestration_id,
-            child_agent_run_id,
-            request_payload,
-        )
-        policy_doc = _read_json(
-            _access_policies_dir(repo_root, orchestration_id) / f"{child_agent_run_id}.json"
-        )
-        if not isinstance(policy_doc, dict):
-            raise ValueError("access policy must be object for read manifest generation")
-        allowed_read_roots_obj = policy_doc.get("allowed_read_roots")
-        denied_read_roots_obj = policy_doc.get("denied_read_roots")
-        allowed_read_roots = (
-            [str(item) for item in allowed_read_roots_obj]
-            if isinstance(allowed_read_roots_obj, list)
-            else []
-        )
-        denied_read_roots = (
-            [str(item) for item in denied_read_roots_obj]
-            if isinstance(denied_read_roots_obj, list)
-            else []
-        )
-        read_manifest_ref = _write_read_access_manifest(
-            repo_root,
-            orchestration_id=orchestration_id,
-            agent_run_id=child_agent_run_id,
-            allowed_read_roots=allowed_read_roots,
-            denied_read_roots=denied_read_roots,
-        )
-        out_refs["read_access_manifest_ref"] = read_manifest_ref
-        cap_doc = _write_capability_for_launch(
-            repo_root,
-            orchestration_id,
-            child_agent_run_id,
-            request_payload,
-        )
-        cap_rel = f"workspace/orchestrations/{orchestration_id}/capabilities/{child_agent_run_id}.json"
-        out_refs["capability_ref"] = cap_rel
-        out_refs["capability_token"] = cap_doc.get("capability_token", "")
-        # A pure-function leaf (Z2) holds no write authority: the access policy (denied-all),
-        # read manifest, and capability (`write_roots: []`, `mode: pure_readonly`) written above
-        # are the truthful zero-authority record. Below, the write-authorization surface —
-        # output paths, file-tool pins, write-contract preflight, and the output manifest — is
-        # skipped, and the sandbox is the read-only profile. The FS-diff baseline,
-        # session-run-index, agent_graph, parent_return_token, and active-child markers stay
-        # unconditional (a child-window write is then caught by the empty-write_roots containment
-        # rule against that baseline — fail-closed, no new branch).
+        # NO ACCESS POLICY, READ MANIFEST, CAPABILITY OR OUTPUT MANIFEST. Four documents used
+        # to be written here, one per question about what the child was allowed to do: which
+        # roots it might read, which paths it might write, which MCP tools it might call, and
+        # the secret it would present to prove all three. Every one of them described a LEAF
+        # holding tools. Since Z4 (issue #171) the two launch shapes are a PURE leaf — no
+        # tools, no MCP configuration, a read-only sandbox, and `write_roots: []` by
+        # construction, with the host writing every artifact after the child window — and a
+        # DETERMINISTIC substep that is the conductor's own process and is bound by nothing it
+        # writes about itself. PR-2 of that issue stopped writing them.
+        #
+        # What still decides something is recorded below: the read-only sandbox profile (which
+        # the kernel enforces through bwrap) and the launch request itself, whose
+        # `allowed_output_paths` is what `_validate_pass_output_refs_against_launch` and
+        # `determine_substep_status` read for a deterministic substep.
         is_pure = _is_pure_launch_request(request_payload)
-        write_roots_obj = cap_doc.get("write_roots")
-        write_roots = [str(item) for item in write_roots_obj] if isinstance(write_roots_obj, list) else []
         # Resolve toolchain.build_system from spec.ir.yaml.impl_defaults so the
         # canonical-placement helper can gate cross-phase auto-inject on
         # `build_system=make` (the documented Make-only exception).
@@ -18205,24 +14967,17 @@ def record_launch(
             request_payload["_resolved_makefile_host_authored"] = control_file_host_authored(
                 _bs_for_mk, _lang_resolved)
         if is_pure:
-            # No output paths, no file-tool pins, no write-contract preflight — a pure leaf
-            # authors nothing in its window. Empty lists flow through the (inert for generate)
-            # lineage / cross-phase blocks below and suppress the output-manifest write.
+            # A pure leaf authors nothing in its window, so it declares no output path. The
+            # empty list flows through the (inert for generate) lineage / cross-phase blocks
+            # below.
             allowed_output_paths = []
-            allowed_file_tool_paths = []
         else:
+            # A DETERMINISTIC substep. The list is not an authority — nothing enforces it
+            # against the conductor's own process — it is the record of what this substep is
+            # contracted to produce, read back by `determine_substep_status` and
+            # `_validate_pass_output_refs_against_launch`.
             allowed_output_paths = _allowed_output_paths_for_launch(
                 request_payload=request_payload,
-                write_roots=write_roots,
-            )
-            allowed_file_tool_paths = _allowed_file_tool_paths_for_launch(
-                request_payload=request_payload,
-                allowed_output_paths=allowed_output_paths,
-            )
-            _validate_child_write_contract_preflight(
-                request_payload=request_payload,
-                capability_doc=cap_doc,
-                allowed_output_paths=allowed_output_paths,
             )
         (repo_root / "workspace" / "tmp" / child_agent_run_id).mkdir(parents=True, exist_ok=True)
         # Execute step lineage bind (mandatory for ALL execute launches, not
@@ -18379,19 +15134,6 @@ def record_launch(
                 # cross-phase loop here only handles existence + pass-state
                 # of the generation referenced from the cross-phase audit
                 # log path (build step's Make-only path).
-        if not is_pure:
-            # A pure launch writes NO output manifest — its absence is what the
-            # pipeline-semantics sweep keys on to catch a record-launch skip (mock-green guard).
-            manifest_ref = _write_allowed_output_manifest(
-                repo_root,
-                orchestration_id=orchestration_id,
-                agent_run_id=child_agent_run_id,
-                allowed_output_paths=allowed_output_paths,
-                allowed_file_tool_paths=allowed_file_tool_paths,
-                allowed_tmp_root=f"workspace/tmp/{child_agent_run_id}",
-                mcp_owned_audit_logs=canonical_audit_logs,
-            )
-            out_refs["allowed_output_manifest_ref"] = manifest_ref
         # An HTTP pure leaf (issue #28) runs in the conductor's own process over HTTPS: there is
         # no child process to confine, no codex home to isolate, and no `backend_command` to
         # pin. Everything ABOVE this point still runs for it — the capability, the manifest, the
@@ -18452,35 +15194,20 @@ def record_launch(
                 profile_kwargs: dict[str, Any] = {}
                 if codex_isolation is not None:
                     profile_kwargs = codex_isolation_profile_kwargs(codex_isolation)
-                if is_pure:
-                    # Read-only sandbox: repo bound ro, NO write_roots, no file pins. The pure
-                    # leaf has no repository write authority. Claude is tool-free, while Codex's
-                    # structured-output approximation remains tool-bearing in a read-only
-                    # sandbox; bwrap ensures neither can write an artifact from the child
-                    # window. It does NOT close reads for the codex side — the repository is
-                    # bound ro and is therefore readable by that leaf's tools. Until Z4 the leaf
-                    # hook layer refused those reads against the empty `allowed_read_roots`
-                    # (`build_access_policy_payload`'s pure arm carries the accounting);
-                    # nothing does now, and `TODO.md` carries the entry.
-                    profile = build_readonly_bwrap_profile(
-                        repo_root=repo_root,
-                        orchestration_id=orchestration_id,
-                        agent_run_id=child_agent_run_id,
-                        backend_command=backend_command,
-                        backend_type=_resp_backend if isinstance(_resp_backend, str) else "",
-                        child_env=child_env,
-                        **profile_kwargs,
-                    )
-                else:
-                    profile = build_bwrap_profile(
-                        repo_root=repo_root,
-                        orchestration_id=orchestration_id,
-                        agent_run_id=child_agent_run_id,
-                        backend_command=backend_command,
-                        backend_type=_resp_backend if isinstance(_resp_backend, str) else "",
-                        child_env=child_env,
-                        **profile_kwargs,
-                    )
+                # Every CLI leaf is pure (Z4, issue #171), so there is one profile builder.
+                # The read-write arm that stood beside it built a profile carrying the
+                # capability's `write_roots` as `--bind` mounts; with no capability and no
+                # write authority to carry, `build_bwrap_profile` had no reachable caller and
+                # went with it in PR-2.
+                profile = build_readonly_bwrap_profile(
+                    repo_root=repo_root,
+                    orchestration_id=orchestration_id,
+                    agent_run_id=child_agent_run_id,
+                    backend_command=backend_command,
+                    backend_type=_resp_backend if isinstance(_resp_backend, str) else "",
+                    child_env=child_env,
+                    **profile_kwargs,
+                )
                 command_argv = [backend_command]
                 rendered = render_bwrap_command(profile=profile, command_argv=command_argv)
                 profile["rendered_command"] = rendered
@@ -18543,11 +15270,6 @@ def record_launch(
             event="child_launched",
             agent_run_id=child_agent_run_id,
         )
-    _write_run_write_baseline(
-        repo_root,
-        orchestration_id,
-        agent_run_id=child_agent_run_id,
-    )
     # NEW-M1: write parent_return_token FIRST so it is durably present
     # before the active_children marker (Adv-16) appears. record_child_return
     # checks the marker before the token: if a crash interrupts launch
@@ -18972,13 +15694,14 @@ def record_agent_run(
     role_token = _normalized_agent_role(role) or None
     if role_token is None:
         raise ValueError("agent_role must be non-empty string")
-    # Fail closed on a role outside the vocabulary. Previously any string was accepted
-    # here and simply fell through both branches below — and then `_validate_actual_write_paths`
-    # (via `_validate_terminal_run_payload`) returned early for it, so recording a terminal
-    # status under a misspelled role SWITCHED OFF the unauthorized-write audit rather than
-    # being rejected. Measured on this checkout: with role="substep" a stray write outside
-    # write_roots raises `unauthorized write paths`; with role="bogus" the same tree
-    # validated clean.
+    # Fail closed on a role outside the vocabulary. Previously any string was accepted here and
+    # simply fell through both branches below — and the terminal write audit (reached via
+    # `_validate_terminal_run_payload`) returned early for it, so recording a terminal status
+    # under a misspelled role SWITCHED OFF the unauthorized-write check rather than being
+    # rejected; measured on this checkout at the time. That audit is deleted (issue #171 PR-2),
+    # and the refusal stays: `_validate_terminal_run_payload`'s surviving checks — the pure
+    # leaf's empty `output_refs` and the pass row's declared outputs — key on the same
+    # membership, so a role outside the vocabulary would switch THOSE off instead.
     if role_token not in AGENT_RUN_ROLES:
         raise ValueError(
             f"agent_role must be one of {sorted(AGENT_RUN_ROLES)}; got {role_token!r}"
@@ -19428,39 +16151,10 @@ def deactivate_child_agent(
             f"been tampered with or constructed without the per-arid token "
             f"from launches/{child_run_id}.parent_return_token."
         )
-    # Recurrence-prevention plan (Issue 3): capture the child-authored path
-    # set NOW, before any subsequent parent / runtime write can contaminate
-    # the live baseline diff. This freezes what the child wrote during its
-    # active window so `record-agent-run` retries (which may run after
-    # post-fail infrastructure writes like `agent_runs_invalid.jsonl`) can
-    # compute the diff against the snapshot rather than re-walking the
-    # workspace. Idempotent: subsequent deactivate calls preserve the first
-    # captured snapshot.
-    snap_path = _deactivate_snapshot_path(
-        repo_root, orchestration_id, agent_run_id=child_run_id
-    )
-    if not snap_path.exists():
-        try:
-            child_authored = _compute_changed_paths_against_baseline(
-                repo_root,
-                orchestration_id,
-                agent_run_id=child_run_id,
-            )
-            _write_json(
-                snap_path,
-                {
-                    "kind": "deactivate_snapshot",
-                    "agent_run_id": child_run_id,
-                    "orchestration_id": orchestration_id,
-                    "child_authored_paths": child_authored,
-                    "captured_at": _utc_now_iso(),
-                },
-            )
-        except (OSError, ValueError):
-            # If baseline is missing (legacy orchestration without per-arid
-            # baseline tracking) or write fails, fall through to the
-            # tree-walk fallback in `_actual_changed_paths_since_baseline`.
-            pass
+    # A CHILD-AUTHORED PATH SNAPSHOT used to be captured here, freezing the FS-diff against
+    # the write baseline before any later host write could contaminate it. It fed the terminal
+    # write audit, which issue #171 PR-2 retired along with the baseline: the diff measured the
+    # host's own writes against a grant no leaf holds.
     # Validation passed and at least one marker exists — atomic unlink phase.
     per_arid_marker.unlink(missing_ok=True)
     active_path.unlink(missing_ok=True)
@@ -20694,10 +17388,6 @@ def _validate_write_step_result_fields(payload: dict[str, Any], step: str) -> No
 # --verbose. Commands absent from this map are emitted unprojected.
 _TERSE_RESULT_FIELDS: dict[str, tuple[str, ...]] = {
     "record-launch": (
-        "capability_token",
-        "capability_ref",
-        "read_access_manifest_ref",
-        "allowed_output_manifest_ref",
         "sandbox_profile_ref",
         "launch_prompt_ref",
         # The rendered prompt text the orchestration must pass verbatim to the
@@ -20727,11 +17417,6 @@ _TERSE_RESULT_FIELDS: dict[str, tuple[str, ...]] = {
     # `step` is a CLI arg, not part of the result payload; the status/executor/
     # failed_substeps fields are what the orchestration consumes.
     "write-step-result": ("status", "executor_agent_run_id", "failed_substeps"),
-    # run_gate's stdout result contains only violations/gate_result_ref/result
-    # (gate/status live in the persisted gate doc + stderr summary). `result`
-    # carries the orchestration_read content (the audited re-read of an
-    # in-manifest path), so it must survive the terse projection.
-    "run-gate": ("violations", "gate_result_ref", "result"),
 }
 
 # Fields preserved in a terse result whenever present and non-empty, even if not
@@ -20900,19 +17585,8 @@ def main(argv: list[str] | None = None) -> int:
         '{"agent_run_id": "<uuid>", "agent_session_id": "<same uuid>", '
         '"started_at": "<ISO8601>", "backend": "claude"}. '
         "sandbox_runtime/sandbox_enforced/sandbox_profile_ref are added automatically. "
-        "Call record-launch BEFORE launching the child leaf so capability_token is available to the child agent; "
-        "then overwrite launches/<child_agent_run_id>.reply.txt with the actual child leaf response."
-    )
-    _RUN_GATE_ARGS_HELP = (
-        "JSON object for gate-specific arguments. Allowed gates and minimal args_json schema: "
-        "orchestration_read => {'read_path': 'docs/...'}; "
-        "validate_workspace_root => {} (defaults to the repo workspace) or "
-        "{'workspace_root': 'workspace'}; "
-        "validate_pipeline_semantics => {'stage': 'compile|post_generate|post_build|post_execute|pre_judge|full', "
-        "'ir_ref': 'workspace/ir/...'(compile stage), "
-        "'pipeline_root': 'workspace/pipelines/...' or ['workspace/pipelines/...', ...], "
-        "'source_id': '<id>' (optional)}. "
-        "Keys are converted to CLI flags (e.g. pipeline_root -> --pipeline-root)."
+        "Call record-launch BEFORE launching the child leaf, then overwrite "
+        "launches/<child_agent_run_id>.reply.txt with the actual child leaf response."
     )
     _STEP_RESULT_HELP = (
         "JSON object for step_result. Required: status, required_outputs (list[str]), "
@@ -20930,10 +17604,9 @@ def main(argv: list[str] | None = None) -> int:
     launch_parser = subparsers.add_parser(
         "record-launch",
         description=(
-            "Record a child agent launch: runs live preflight, generates capability_token, "
-            "sandbox profile, output/read manifests, and writes launches/<child_id>.* artifacts. "
-            "For Claude Code: call this BEFORE launching the child leaf so the child can read "
-            "its capability_token from capabilities/<child_id>.json during execution."
+            "Record a child agent launch: runs live preflight, builds the read-only sandbox "
+            "profile for a CLI leaf, and writes launches/<child_id>.* artifacts. Call it "
+            "BEFORE launching the child leaf."
         ),
     )
     launch_parser.add_argument("--repo-root", required=True)
@@ -20970,32 +17643,6 @@ def main(argv: list[str] | None = None) -> int:
         help=("For a Codex warm resume, require this isolated CODEX_HOME generation. "
               "A rotated home returns a cold-fallback sentinel before recording a launch."),
     )
-
-    orch_read_parser = subparsers.add_parser("orchestration-read")
-    orch_read_parser.add_argument("--repo-root", required=True)
-    orch_read_parser.add_argument("--orchestration-id", required=True)
-    orch_read_parser.add_argument("--agent-run-id", required=True)
-    orch_read_parser.add_argument("--read-path", required=True)
-    orch_read_parser.add_argument("--capability-token", required=True)
-
-    gate_parser = subparsers.add_parser(
-        "run-gate",
-        description=(
-            "Execute a validator gate under orchestration policy. "
-            "Use this as the canonical validator invocation path when capability-token/gate enforcement is required."
-        ),
-    )
-    gate_parser.add_argument("--repo-root", required=True)
-    gate_parser.add_argument("--orchestration-id", required=True)
-    gate_parser.add_argument(
-        "--gate",
-        required=True,
-        choices=sorted(DEFAULT_ALLOWED_GATE_SERVICES),
-        help="Gate name. " + " | ".join(sorted(DEFAULT_ALLOWED_GATE_SERVICES)),
-    )
-    gate_parser.add_argument("--agent-run-id", required=True)
-    gate_parser.add_argument("--args-json", required=True, type=_json_arg, help=_RUN_GATE_ARGS_HELP)
-    gate_parser.add_argument("--capability-token", required=True)
 
     run_parser = subparsers.add_parser(
         "record-agent-run",
@@ -21338,7 +17985,6 @@ def main(argv: list[str] | None = None) -> int:
     # appended after the subcommand (e.g. `record-launch ... --verbose`).
     for _terse_parser in (
         launch_parser,
-        gate_parser,
         run_parser,
         step_parser,
         finalize_parser,
@@ -21480,33 +18126,6 @@ def main(argv: list[str] | None = None) -> int:
                 child_env=child_env_payload,
             )
         except (ValueError, RuntimeError) as exc:
-            print(str(exc), file=sys.stderr)
-            return 1
-    elif args.command == "orchestration-read":
-        try:
-            gate_out = run_gate(
-                repo_root=repo_root,
-                orchestration_id=args.orchestration_id,
-                gate_name="orchestration_read",
-                agent_run_id=args.agent_run_id,
-                args_json={"read_path": args.read_path},
-                capability_token=args.capability_token,
-            )
-            result = gate_out.get("result", {})
-        except (RuntimeError, ValueError, FileNotFoundError) as exc:
-            print(str(exc), file=sys.stderr)
-            return 1
-    elif args.command == "run-gate":
-        try:
-            result = run_gate(
-                repo_root,
-                orchestration_id=args.orchestration_id,
-                gate_name=args.gate,
-                agent_run_id=args.agent_run_id,
-                args_json=args.args_json,
-                capability_token=args.capability_token,
-            )
-        except (RuntimeError, ValueError) as exc:
             print(str(exc), file=sys.stderr)
             return 1
     elif args.command == "record-agent-run":

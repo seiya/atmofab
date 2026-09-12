@@ -2,7 +2,7 @@
 
 `atmofab` generates, validates, and certifies weather and climate compute kernels from natural-language specifications.
 
-`controlled_spec.md` (physics and algorithm definition), `tests.md` (verification profile), and `deps.yaml` (dependency declaration) are authored by humans and are the canonical source. Every phase after them is executed by a deterministic conductor (`tools/workflow_conductor.py`), which fulfils the `orchestration agent` role: it launches each judgment-bearing `substep` as one isolated `substep agent` (an `LLM` leaf) under a fixed input/output contract, runs the deterministic gates and the build itself in its own process, and performs every build, execution, lint, and syntax check through the capability-gated MCP build/runtime server.
+`controlled_spec.md` (physics and algorithm definition), `tests.md` (verification profile), and `deps.yaml` (dependency declaration) are authored by humans and are the canonical source. Every phase after them is executed by a deterministic conductor (`tools/workflow_conductor.py`), which fulfils the `orchestration agent` role: it launches each judgment-bearing `substep` as one isolated `substep agent` (an `LLM` leaf) under a fixed input/output contract, runs the deterministic gates and the build itself in its own process, and performs every build, execution, lint, and syntax check through the MCP build/runtime server.
 
 ## Scope
 
@@ -83,7 +83,7 @@ python3 tools/run_workflow.py spec/problem/dynamics/advection_diffusion/advdiff1
 | `run_syntax_check` | run a compiler front end in syntax-only mode, producing no build artifacts |
 | `detect_build_system` | recommend a build system from the marker files present (standalone use only) |
 
-Under the workflow, `compile_project` / `run_program` / `run_quality_checks` / `run_linter` / `run_syntax_check` require `orchestration_id`, `agent_run_id`, and `capability_token`, and a call that omits them is refused; `detect_build_system` holds no capability and is refused outright. Outside a run the server works without them. `mcp_servers/README.md` is canonical for the argument allowlists and the operational rules; `mcp_servers/mcp_servers.example.json` holds client configuration examples.
+The conductor passes `orchestration_id` and `agent_run_id` so a line of `command_log.jsonl` can be traced back to the run that issued it; the server validates every call the same way whether they are there or not. It held a capability gate under the workflow until [issue #171](https://github.com/seiya/atmofab/issues/171) PR-2, which retired it — no leaf reaches this server at all. `mcp_servers/README.md` is canonical for the argument allowlists and the operational rules; `mcp_servers/mcp_servers.example.json` holds client configuration examples.
 
 ## Artifacts
 

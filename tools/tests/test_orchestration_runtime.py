@@ -34,10 +34,8 @@ from tools.llm_config import config_sha256 as lc_config_sha256
 
 from tools.orchestration_runtime import (
     TERMINAL_STATUSES,
-    _allowed_file_tool_paths_for_launch,
     _allowed_output_paths_for_launch,
     _effective_pass_substep_run_ids,
-    _validate_paths_against_allowed_output_manifest,
     _pre_phase_complete_judge_checks,
     _required_child_agent_kind,
     _build_artifact_hashes,
@@ -47,14 +45,11 @@ from tools.orchestration_runtime import (
     _live_preflight_mode,
     _live_preflight_ttl_seconds,
     _require_preflight_launchable,
-    _write_run_write_baseline,
-    _write_roots_for_launch,
     _update_preflight_probed_at,
     _validate_agent_summary_text,
     resume_orchestration,
     get_preflight_ttl_status,
     init_orchestration,
-    log_orchestration_read,
     main,
     _project_terse_result,
     parse_feature_list,
@@ -71,9 +66,7 @@ from tools.orchestration_runtime import (
     _evaluate_reply_budget,
     REPLY_BUDGET_CHARS,
     render_launch_prompt_text,
-    run_gate,
     update_orchestration_status,
-    validate_mcp_build_tool_invocation,
     workflow_launch_check,
     write_preflight,
     write_step_result,
@@ -327,6 +320,41 @@ def _mark_dependencies_ready(repo_root: Path, orchestration_id: str = "orch_001"
     }
     meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
+
+
+# The host-inlined context a PURE `compile.generate` launch carries, and its rendered prompt.
+# Same shape as the generate pair above; the key SET is what the launch validator requires for
+# that pair.
+_PURE_COMPILE_CONTEXT = {
+    key: "x" for key in (
+        "controlled_spec_document", "deps_document", "profile_spec_document",
+        "dependency_graph_document", "phase_contract_document",
+        "ir_algorithm_example_document", "ir_algorithm_2d_example_document",
+        "impl_defaults_schema_document", "checks_module_contract_document",
+        "toolchain_document", "tests_document",
+    )
+}
+
+
+def _pure_compile_generate_prompt(arid: str) -> str:
+    return render_launch_prompt_text({
+        "node_key": "problem/shallow_water2d@0.3.0",
+        "step": "compile",
+        "substep": "generate",
+        "agent_run_id": arid,
+        "orchestration_id": "orch_001",
+        "parent_agent_run_id": "orch_run_001",
+        "workflow_mode": "dev",
+        "ir_ref": _FIX_IR_REF,
+        "pipeline_ref": _FIX_PIPE_REF,
+        "dependency_ref": _FIX_COMPILE_STEP_DEP_REF,
+        "issue_severity": "none",
+        "repair_strategy": "none",
+        "repair_target_agent_run_id": "none",
+        "repair_reason": "none",
+        **_PURE_GENERATE_OVERRIDE,
+        "pure_context": _PURE_COMPILE_CONTEXT,
+    })
 
 
 def _launch_request_body(arid: str, *, deterministic: bool = False) -> dict:
@@ -1671,22 +1699,21 @@ shell_tool                       stable             true
                     "agent_role": "substep",
                     "node_key": "problem/shallow_water2d@0.3.0",
                     "step": "compile",
-                    "substep": "generate",
+                    "substep": "static",
+                    "deterministic": True,
                     "orchestration_id": "orch_001",
                     "parent_agent_run_id": "orch_run_001",
                     "ir_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
                     "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
                     "dependency_ref": "spec/problem/shallow_water2d/deps.yaml",
-                    "skill_name": "workflow-compile-generate",
-                    "skill_ref": "skills/workflow-compile-generate/SKILL.md",
-                    "skill_must_read_refs": "",
+                                                            "skill_must_read_refs": "",
                     "allowed_output_paths": [
-                        "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/spec.ir.yaml",
+                        "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/compile_static_meta.json",
                     ],
                     "launch_prompt_full": _substep_launch_prompt(
                         "problem/shallow_water2d@0.3.0",
                         "compile",
-                        "generate",
+                        "static",
                         "substep_run_ap_generate_001",
                     ),
                 },
@@ -1704,7 +1731,8 @@ shell_tool                       stable             true
                     "agent_role": "substep",
                     "node_key": "problem/shallow_water2d@0.3.0",
                     "step": "compile",
-                    "substep": "generate",
+                    "substep": "static",
+                    "deterministic": True,
                     "status": "pass",
                     "agent_backend": "codex",
                     "context_id": "ctx_substep_ap_generate_001",
@@ -1712,7 +1740,7 @@ shell_tool                       stable             true
                     "started_at": "2026-03-11T00:00:10Z",
                     "finished_at": "2026-03-11T00:00:50Z",
                     "output_refs": [
-                        "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/spec.ir.yaml",
+                        "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/compile_static_meta.json",
                     ],
                     "launch_request_ref": launch_refs["launch_request_ref"],
                     "launch_response_ref": launch_refs["launch_response_ref"],
@@ -1828,13 +1856,13 @@ shell_tool                       stable             true
                        "pipeline_ref": pipeline, "node_key": node_key,
                        "allowed_output_paths": [good]}
             self.assertEqual(
-                _allowed_output_paths_for_launch(request_payload=payload, write_roots=[]),
+                _allowed_output_paths_for_launch(request_payload=payload),
                 [good])
             # The gate substep may declare ONLY its own meta — not the judge's artifacts.
             forged = dict(payload, allowed_output_paths=[
                 f"{pipeline}/runs/{run_id}/{node_safe}/semantic_review.json"])
             with self.assertRaisesRegex(ValueError, "outside phase contract outputs"):
-                _allowed_output_paths_for_launch(request_payload=forged, write_roots=[])
+                _allowed_output_paths_for_launch(request_payload=forged)
 
     def test_phase_contract_execute_authors_verdict_judge_does_not(self) -> None:
         """R2: verdict.json is part of the Validate.EXECUTE write-contract (host-authored from
@@ -1853,17 +1881,17 @@ shell_tool                       stable             true
                    "pipeline_ref": pipeline, "node_key": node_key,
                    "allowed_output_paths": [verdict]}
         self.assertIn(
-            verdict, _allowed_output_paths_for_launch(request_payload=execute, write_roots=[]))
+            verdict, _allowed_output_paths_for_launch(request_payload=execute))
         # the judge may NOT declare verdict.json (it authors only semantic_review.json)
         judge = {"agent_role": "substep", "step": "validate", "substep": "judge",
                  "pipeline_ref": pipeline, "node_key": node_key,
                  "allowed_output_paths": [verdict]}
         with self.assertRaisesRegex(ValueError, "outside phase contract outputs"):
-            _allowed_output_paths_for_launch(request_payload=judge, write_roots=[])
+            _allowed_output_paths_for_launch(request_payload=judge)
         sem = f"{pipeline}/runs/{run_id}/{node_safe}/semantic_review.json"
         judge_ok = dict(judge, allowed_output_paths=[sem])
         self.assertEqual(
-            _allowed_output_paths_for_launch(request_payload=judge_ok, write_roots=[]), [sem])
+            _allowed_output_paths_for_launch(request_payload=judge_ok), [sem])
 
     # `test_phase_contract_compile_generate_admits_only_conductor_declaration` stood here until
     # Z4 (issue #171). It drove the CAPTURED agentic `compile.generate` request through
@@ -1903,7 +1931,7 @@ shell_tool                       stable             true
         meta = [f"{ir_ref}/compile_static_meta.json"]
         self.assertEqual(
             _allowed_output_paths_for_launch(
-                request_payload=dict(base, allowed_output_paths=meta), write_roots=[]),
+                request_payload=dict(base, allowed_output_paths=meta)),
             meta)
         # Not even the IR the gate reads, and not a sibling meta: static writes its verdict only.
         # The trailing-slash entries probe the directory branch, which no file-shaped probe
@@ -1912,7 +1940,7 @@ shell_tool                       stable             true
                       "zz9_unlisted_artifact.xyz", "", "views/"):
             forged = dict(base, allowed_output_paths=[*meta, f"{ir_ref}/{extra}"])
             with self.assertRaisesRegex(ValueError, "outside phase contract outputs"):
-                _allowed_output_paths_for_launch(request_payload=forged, write_roots=[])
+                _allowed_output_paths_for_launch(request_payload=forged)
 
     def test_writes_orchestration_artifacts_in_canonical_layout(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1957,24 +1985,15 @@ shell_tool                       stable             true
                     "node_key": "problem/shallow_water2d@0.3.0",
                     "step": "compile",
                     "substep": "generate",
+                    **_PURE_GENERATE_OVERRIDE,
+                    "pure_context": _PURE_COMPILE_CONTEXT,
                     "orchestration_id": "orch_001",
                     "parent_agent_run_id": "orch_run_001",
                     "ir_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
                     "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
                     "dependency_ref": "spec/problem/shallow_water2d/deps.yaml",
-                    "skill_name": "workflow-compile-generate",
-                    "skill_ref": "skills/workflow-compile-generate/SKILL.md",
-                    "skill_must_read_refs": "",
-                    "allowed_output_paths": [
-                        "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/spec.ir.yaml",
-                        "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/ir_meta.json",
-                    ],
-                    "launch_prompt_full": _substep_launch_prompt(
-                        "problem/shallow_water2d@0.3.0",
-                        "compile",
-                        "generate",
-                        "substep_run_plan_generate_001",
-                    ),
+                    "launch_prompt_full": _pure_compile_generate_prompt(
+                        "substep_run_plan_generate_001"),
                 },
                 response_payload={
                     "agent_run_id": "substep_run_plan_generate_001",
@@ -1996,7 +2015,7 @@ shell_tool                       stable             true
                     "parent_agent_run_id": "orch_run_001",
                     "ir_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
                     "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
-                    "dependency_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/spec.ir.yaml",
+                    "dependency_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/compile_static_meta.json",
                     "deterministic": True,
                     "allowed_output_paths": [
                         "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/binary/bin_20260101_001/bin/simulate",
@@ -2045,10 +2064,10 @@ shell_tool                       stable             true
                     "launch_reply_ref": launch_refs["launch_reply_ref"],
                     "started_at": "2026-03-11T00:00:10Z",
                     "finished_at": "2026-03-11T00:00:50Z",
-                    "output_refs": [
-                        "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/spec.ir.yaml",
-                        "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/ir_meta.json",
-                    ],
+                    # A PURE pass row carries `output_refs: []` (the host writes the IR after
+                    # the child window), so the summary needs its own result line.
+                    "output_refs": [],
+                    "result_summary": "IR authored; host wrote spec.ir.yaml + ir_meta.json",
                 },
             )
             record_agent_run(
@@ -2323,7 +2342,10 @@ shell_tool                       stable             true
                 / "agent.summary.txt"
             ).read_text(encoding="utf-8")
             self.assertIn("agent_run_id: substep_run_plan_generate_001", summary_text)
-            self.assertIn("output_refs:", summary_text)
+            # A PURE row declares no output, so the summary carries `result_summary:`
+            # instead of an `output_refs:` section — the two are the alternatives
+            # `_validate_agent_summary_text` accepts for a terminal row.
+            self.assertIn("result_summary:", summary_text)
 
     def test_init_records_orchestration_agent_model_when_supplied(self) -> None:
         """init_orchestration writes agent_model onto the orchestration agent_runs row
@@ -2477,73 +2499,6 @@ shell_tool                       stable             true
         rev = _capture_repo_revision(Path("/nonexistent"), runner=fake_runner)
         self.assertEqual(rev, {"commit": "abc123", "dirty": None})
 
-    def test_record_launch_strips_child_agent_run_id_for_tmp_and_manifest_paths(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            init_orchestration(repo_root=repo_root, orchestration_id="orch_001")
-            _mark_dependencies_ready(repo_root)
-            write_preflight(
-                repo_root=repo_root,
-                orchestration_id="orch_001",
-                payload={
-                    "status": "pass",
-                    "sandbox_runtime": "bwrap",
-                    "sandbox_enforced": True,
-                    "can_launch_step_agents": True,
-                    "can_launch_substep_agents": True,
-                    "feature_states": {"multi_agent": True, "hooks": True},
-                    "checks": [{"name": "multi_agent_enabled", "pass": True}],
-                },
-            )
-            record_launch(
-                repo_root=repo_root,
-                orchestration_id="orch_001",
-                parent_agent_run_id="orch_run_001",
-                child_agent_run_id="  substep_run_strip_001  ",
-                request_payload={
-                    "agent_model": "claude-opus-4-8",
-                    "agent_run_id": "substep_run_strip_001",
-                    "agent_role": "substep",
-                    "node_key": "problem/shallow_water2d@0.3.0",
-                    "step": "compile",
-                    "substep": "generate",
-                    "orchestration_id": "orch_001",
-                    "parent_agent_run_id": "orch_run_001",
-                    "ir_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
-                    "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
-                    "dependency_ref": "spec/problem/shallow_water2d/deps.yaml",
-                    "skill_name": "workflow-compile-generate",
-                    "skill_ref": "skills/workflow-compile-generate/SKILL.md",
-                    "skill_must_read_refs": "",
-                    "allowed_output_paths": [
-                        "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/spec.ir.yaml",
-                    ],
-                    "launch_prompt_full": _substep_launch_prompt(
-                        "problem/shallow_water2d@0.3.0",
-                        "compile",
-                        "generate",
-                        "substep_run_strip_001",
-                    ),
-                },
-                response_payload={
-                    "agent_run_id": "substep_run_strip_001",
-                    **_spawn_response_payload("sess_substep_strip"),
-                },
-            )
-            ok_manifest = (
-                repo_root
-                / "workspace/orchestrations/orch_001/output_manifests/substep_run_strip_001.json"
-            )
-            spaced_manifest = (
-                repo_root
-                / "workspace/orchestrations/orch_001/output_manifests/  substep_run_strip_001  .json"
-            )
-            self.assertTrue(ok_manifest.exists())
-            self.assertFalse(spaced_manifest.exists())
-            manifest = json.loads(ok_manifest.read_text(encoding="utf-8"))
-            self.assertEqual(manifest.get("allowed_tmp_root"), "workspace/tmp/substep_run_strip_001")
-            self.assertTrue((repo_root / "workspace/tmp/substep_run_strip_001").is_dir())
-
     def test_record_launch_prefers_prompt_over_launch_prompt_summary(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
@@ -2565,7 +2520,7 @@ shell_tool                       stable             true
             full_prompt = _substep_launch_prompt(
                 "problem/shallow_water2d@0.3.0",
                 "compile",
-                "generate",
+                "static",
                 "substep_run_plan_generate_001",
             )
             record_launch(
@@ -2576,21 +2531,19 @@ shell_tool                       stable             true
                 request_payload={
                     "agent_role": "substep",
                     "allowed_output_paths": [
-                        "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/spec.ir.yaml",
-                        "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/ir_meta.json",
-                    ],
+                        "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/compile_static_meta.json",
+                                            ],
                     "agent_model": "claude-opus-4-8",
                     "node_key": "problem/shallow_water2d@0.3.0",
                     "step": "compile",
-                    "substep": "generate",
+                    "substep": "static",
+                    "deterministic": True,
                     "orchestration_id": "orch_001",
                     "parent_agent_run_id": "orch_run_001",
                     "ir_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
                     "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
                     "dependency_ref": _FIX_COMPILE_STEP_DEP_REF,
-                    "skill_name": "workflow-compile-generate",
-                    "skill_ref": "skills/workflow-compile-generate/SKILL.md",
-                    "skill_must_read_refs": "",
+                                                            "skill_must_read_refs": "",
                     "launch_prompt": "short summary",
                     "prompt": full_prompt,
                 },
@@ -2632,32 +2585,30 @@ shell_tool                       stable             true
                 request_payload={
                     "agent_role": "substep",
                     "allowed_output_paths": [
-                        "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/spec.ir.yaml",
-                        "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/ir_meta.json",
-                    ],
+                        "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/compile_static_meta.json",
+                                            ],
                     "agent_model": "claude-opus-4-8",
                     "node_key": "problem/shallow_water2d@0.3.0",
                     "step": "compile",
-                    "substep": "generate",
+                    "substep": "static",
+                    "deterministic": True,
                     "orchestration_id": "orch_001",
                     "parent_agent_run_id": "orch_run_001",
                     "ir_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
                     "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
                     "dependency_ref": _FIX_COMPILE_STEP_DEP_REF,
-                    "skill_name": "workflow-compile-generate",
-                    "skill_ref": "skills/workflow-compile-generate/SKILL.md",
-                    "skill_must_read_refs": "",
+                                                            "skill_must_read_refs": "",
                     "launch_prompt": "summary",
                     "prompt": _substep_launch_prompt(
                         "problem/shallow_water2d@0.3.0",
                         "compile",
-                        "generate",
+                        "static",
                         "substep_run_plan_generate_001",
                     ),
                     "launch_prompt_full": _substep_launch_prompt(
                         "problem/shallow_water2d@0.3.0",
                         "compile",
-                        "generate",
+                        "static",
                         "substep_run_plan_generate_001",
                     )
                     + "\nAdditional instruction: save the most detailed prompt.",
@@ -2677,7 +2628,7 @@ shell_tool                       stable             true
                 _substep_launch_prompt(
                     "problem/shallow_water2d@0.3.0",
                     "compile",
-                    "generate",
+                    "static",
                     "substep_run_plan_generate_001",
                 )
                 + "\nAdditional instruction: save the most detailed prompt.\n",
@@ -2709,27 +2660,25 @@ shell_tool                       stable             true
                 request_payload={
                     "agent_role": "substep",
                     "allowed_output_paths": [
-                        "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/spec.ir.yaml",
-                        "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/ir_meta.json",
-                    ],
+                        "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/compile_static_meta.json",
+                                            ],
                     "agent_model": "claude-opus-4-8",
                     "node_key": "problem/shallow_water2d@0.3.0",
                     "step": "compile",
-                    "substep": "generate",
+                    "substep": "static",
+                    "deterministic": True,
                     "orchestration_id": "orch_001",
                     "parent_agent_run_id": "orch_run_001",
                     "ir_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
                     "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
                     "dependency_ref": _FIX_COMPILE_STEP_DEP_REF,
-                    "skill_name": "workflow-compile-generate",
-                    "skill_ref": "skills/workflow-compile-generate/SKILL.md",
-                    "skill_must_read_refs": "",
+                                                            "skill_must_read_refs": "",
                     "launch_prompt": "summary only",
                     "spawn_request": {
                         "task": _substep_launch_prompt(
                             "problem/shallow_water2d@0.3.0",
                             "compile",
-                            "generate",
+                            "static",
                             "substep_run_plan_generate_001",
                         ),
                     },
@@ -2749,280 +2698,10 @@ shell_tool                       stable             true
                 _substep_launch_prompt(
                     "problem/shallow_water2d@0.3.0",
                     "compile",
-                    "generate",
+                    "static",
                     "substep_run_plan_generate_001",
                 ),
             )
-
-    def test_record_launch_succeeds_with_generate_directory_allowed_output_path(self) -> None:
-        """record_launch for step=generate with a directory allowed_output_path must not raise.
-
-        KNOWN FIXTURE-SHAPE RESIDUAL (this test and two siblings — the multi-generation
-        rejection tests and the noncanonical-MCP-log test): the payload carries
-        `agent_role="substep"` with NO `substep` key and the STEP-level skill/prompt
-        fields, a combination `workflow_conductor.build_launch_request` never emits — it
-        always names a generate substep. Before the agent_role migration these fixtures
-        were self-consistent but declared `agent_role="step"`, which the table does not
-        allow for `generate`; the migration fixed the role and left the rest. Converting
-        them fully would mean swapping the skill_name, skill_ref, must-read helper and
-        prompt renderer to their substep variants, which changes WHICH prompt-validation
-        path runs — a real risk to the directory-path assertions these tests exist for, in
-        exchange for cosmetic fidelity. Deliberately not done; recorded so the next reader
-        does not mistake the shape for something production emits."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            init_orchestration(repo_root=repo_root, orchestration_id="orch_001")
-            _mark_dependencies_ready(repo_root)
-            write_preflight(
-                repo_root=repo_root,
-                orchestration_id="orch_001",
-                payload={
-                    "status": "pass",
-                    "sandbox_runtime": "bwrap",
-                    "sandbox_enforced": True,
-                    "can_launch_step_agents": True,
-                    "can_launch_substep_agents": True,
-                    "feature_states": {"multi_agent": True, "hooks": True},
-                    "checks": [
-                        {"name": "multi_agent_enabled", "pass": True},
-                        {"name": "hooks_enabled", "pass": True},
-                        {"name": "codex_home_writable", "pass": True},
-                        {"name": "sandbox_bwrap_available", "pass": True},
-                        {"name": "sandbox_bwrap_userns", "pass": True},
-                    ],
-                },
-            )
-            src_id = "src_20260508_001"
-            src_dir = f"{_FIX_PIPE_REF}/source/{src_id}/src/"
-            launch_refs = record_launch(
-                repo_root=repo_root,
-                orchestration_id="orch_001",
-                parent_agent_run_id="orch_run_001",
-                child_agent_run_id="step_run_gen_dir_001",
-                request_payload={
-                    "agent_model": "claude-opus-4-8",
-                    "node_key": "problem/shallow_water2d@0.3.0",
-                    "step": "generate",
-                    "agent_role": "substep",
-                    "agent_run_id": "step_run_gen_dir_001",
-                    "orchestration_id": "orch_001",
-                    "parent_agent_run_id": "orch_run_001",
-                    "ir_ref": _FIX_IR_REF,
-                    "pipeline_ref": _FIX_PIPE_REF,
-                    "dependency_ref": f"{_FIX_IR_REF}/spec.ir.yaml",
-                    "source_id": src_id,
-                    "allowed_output_paths": [src_dir],
-                    "skill_name": "workflow-generate",
-                    "skill_ref": "skills/workflow-generate/SKILL.md",
-                    "skill_must_read_refs": "",
-                    "launch_prompt_full": _step_launch_prompt(
-                        "problem/shallow_water2d@0.3.0",
-                        "generate",
-                        "step_run_gen_dir_001",
-                    ),
-                },
-                response_payload={
-                    "agent_run_id": "step_run_gen_dir_001",
-                    **_spawn_response_payload("sess_step_gen_dir_001"),
-                },
-            )
-            manifest_path = (
-                repo_root
-                / "workspace/orchestrations/orch_001/output_manifests/step_run_gen_dir_001.json"
-            )
-            self.assertTrue(manifest_path.exists(), "output manifest must be written")
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            self.assertIn(src_dir, manifest["allowed_output_paths"])
-
-    def _record_generate_launch_with_outputs(
-        self,
-        *,
-        repo_root: Path,
-        orchestration_id: str,
-        child_agent_run_id: str,
-        src_id: str,
-        allowed_output_paths: list[str],
-    ) -> Path:
-        init_orchestration(repo_root=repo_root, orchestration_id=orchestration_id)
-        _mark_dependencies_ready(repo_root)
-        write_preflight(
-            repo_root=repo_root,
-            orchestration_id=orchestration_id,
-            payload={
-                "status": "pass",
-                "sandbox_runtime": "bwrap",
-                "sandbox_enforced": True,
-                "can_launch_step_agents": True,
-                "can_launch_substep_agents": True,
-                "feature_states": {"multi_agent": True, "hooks": True},
-                "checks": [
-                    {"name": "multi_agent_enabled", "pass": True},
-                    {"name": "hooks_enabled", "pass": True},
-                    {"name": "codex_home_writable", "pass": True},
-                    {"name": "sandbox_bwrap_available", "pass": True},
-                    {"name": "sandbox_bwrap_userns", "pass": True},
-                ],
-            },
-        )
-        record_launch(
-            repo_root=repo_root,
-            orchestration_id=orchestration_id,
-            parent_agent_run_id="orch_run_001",
-            child_agent_run_id=child_agent_run_id,
-            request_payload={
-                "agent_model": "claude-opus-4-8",
-                "node_key": "problem/shallow_water2d@0.3.0",
-                "step": "generate",
-                "agent_role": "substep",
-                "agent_run_id": child_agent_run_id,
-                "orchestration_id": orchestration_id,
-                "parent_agent_run_id": "orch_run_001",
-                "ir_ref": _FIX_IR_REF,
-                "pipeline_ref": _FIX_PIPE_REF,
-                "dependency_ref": f"{_FIX_IR_REF}/spec.ir.yaml",
-                "source_id": src_id,
-                "allowed_output_paths": allowed_output_paths,
-                "skill_name": "workflow-generate",
-                "skill_ref": "skills/workflow-generate/SKILL.md",
-                "skill_must_read_refs": "",
-                "launch_prompt_full": _step_launch_prompt(
-                    "problem/shallow_water2d@0.3.0",
-                    "generate",
-                    child_agent_run_id,
-                ),
-            },
-            response_payload={
-                "agent_run_id": child_agent_run_id,
-                **_spawn_response_payload(f"sess_{child_agent_run_id}"),
-            },
-        )
-        return (
-            repo_root
-            / f"workspace/orchestrations/{orchestration_id}/output_manifests/{child_agent_run_id}.json"
-        )
-
-    def test_allowed_output_paths_auto_injects_mcp_command_log(self) -> None:
-        """Generate step launches must auto-inject <gen>/src/command_log.jsonl."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            src_id = "src_20260510_001"
-            src_dir = f"{_FIX_PIPE_REF}/source/{src_id}/src/"
-            manifest_path = self._record_generate_launch_with_outputs(
-                repo_root=repo_root,
-                orchestration_id="orch_001",
-                child_agent_run_id="run_auto_inject_dir",
-                src_id=src_id,
-                allowed_output_paths=[src_dir],
-            )
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            log_path = f"{src_dir}command_log.jsonl"
-            self.assertIn(log_path, manifest["allowed_output_paths"])
-
-    def test_auto_inject_idempotent_when_already_listed(self) -> None:
-        """Pre-listing the log path must not duplicate it after auto-inject."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            src_id = "src_20260510_002"
-            src_dir = f"{_FIX_PIPE_REF}/source/{src_id}/src/"
-            log_path = f"{src_dir}command_log.jsonl"
-            manifest_path = self._record_generate_launch_with_outputs(
-                repo_root=repo_root,
-                orchestration_id="orch_001",
-                child_agent_run_id="run_auto_inject_idempotent",
-                src_id=src_id,
-                allowed_output_paths=[src_dir, log_path],
-            )
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            occurrences = [p for p in manifest["allowed_output_paths"] if p == log_path]
-            self.assertEqual(len(occurrences), 1)
-
-    def test_auto_inject_extracts_gen_id_from_file_entry(self) -> None:
-        """File-only entries under <gen>/src/ must still trigger log path injection."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            src_id = "src_20260510_003"
-            src_file = f"{_FIX_PIPE_REF}/source/{src_id}/src/main.f90"
-            manifest_path = self._record_generate_launch_with_outputs(
-                repo_root=repo_root,
-                orchestration_id="orch_001",
-                child_agent_run_id="run_auto_inject_file_entry",
-                src_id=src_id,
-                allowed_output_paths=[src_file],
-            )
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            expected = f"{_FIX_PIPE_REF}/source/{src_id}/src/command_log.jsonl"
-            self.assertIn(expected, manifest["allowed_output_paths"])
-
-    def test_auto_inject_skipped_when_no_src_entry(self) -> None:
-        """Without any src/ entry the log path must NOT be injected."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            src_id = "src_20260510_004"
-            source_meta = (
-                f"{_FIX_PIPE_REF}/source/{src_id}/source_meta.json"
-            )
-            manifest_path = self._record_generate_launch_with_outputs(
-                repo_root=repo_root,
-                orchestration_id="orch_001",
-                child_agent_run_id="run_auto_inject_no_src",
-                src_id=src_id,
-                allowed_output_paths=[
-                    source_meta,
-                ],
-            )
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            for p in manifest["allowed_output_paths"]:
-                self.assertFalse(
-                    p.endswith("command_log.jsonl"),
-                    f"unexpected auto-inject without src/ entry: {p}",
-                )
-
-    def test_generate_launch_rejects_listed_paths_for_multiple_generations(self) -> None:
-        """A generate launch must target exactly one source_id.
-
-        Listing paths under two distinct <src_id>/src/ prefixes would let the
-        launch silently auto-inject MCP-owned audit logs for both, granting
-        write authority across sibling generations and breaking provenance
-        isolation.
-        """
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            src_bare_1 = "src_20260510_005"
-            src_bare_2 = "src_20260510_006"
-            src1 = f"{_FIX_PIPE_REF}/source/{src_bare_1}/src/"
-            src2 = f"{_FIX_PIPE_REF}/source/{src_bare_2}/src/"
-            # Request source_id is a valid bare id (passes the format check); the
-            # rejection under test is the multi-source_id span across the listed
-            # allowed_output_paths.
-            with self.assertRaisesRegex(
-                ValueError, "must target a single source_id"
-            ):
-                self._record_generate_launch_with_outputs(
-                    repo_root=repo_root,
-                    orchestration_id="orch_001",
-                    child_agent_run_id="run_auto_inject_multi",
-                    src_id=src_bare_1,
-                    allowed_output_paths=[src1, src2],
-                )
-
-    def test_generate_launch_rejects_listed_path_for_other_generation(self) -> None:
-        """If request.source_id is set, listed paths must use that src_id only."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            real_gen = "src_20260510_007"
-            other_src = "src_20260510_008"
-            src_other = f"{_FIX_PIPE_REF}/source/{other_src}/src/"
-            with self.assertRaisesRegex(
-                ValueError,
-                "must target a single source_id|does not match request source_id",
-            ):
-                self._record_generate_launch_with_outputs(
-                    repo_root=repo_root,
-                    orchestration_id="orch_001",
-                    child_agent_run_id="run_gen_mismatch",
-                    src_id=real_gen,
-                    allowed_output_paths=[src_other],
-                )
 
     def test_generate_gate_launch_accepts_gate_meta_json(self) -> None:
         """The deterministic Generate.gate substep declares
@@ -3050,7 +2729,6 @@ shell_tool                       stable             true
         }
         out = _allowed_output_paths_for_launch(
             request_payload=req,
-            write_roots=[f"{_FIX_PIPE_REF}/source/"],
         )
         self.assertIn(gate_meta, out)
         self.assertIn(command_log, out)
@@ -3082,7 +2760,6 @@ shell_tool                       stable             true
                 with self.assertRaisesRegex(ValueError, "outside phase contract outputs"):
                     _allowed_output_paths_for_launch(
                         request_payload=req,
-                        write_roots=[f"{_FIX_PIPE_REF}/source/"],
                     )
 
     def test_compile_static_launch_accepts_compile_static_meta_json(self) -> None:
@@ -3106,7 +2783,6 @@ shell_tool                       stable             true
         }
         out = _allowed_output_paths_for_launch(
             request_payload=req,
-            write_roots=[f"{_FIX_IR_REF}/"],
         )
         self.assertIn(compile_static_meta, out)
 
@@ -3127,19 +2803,16 @@ shell_tool                       stable             true
         }
         # ir_meta.json alone is accepted.
         out = _allowed_output_paths_for_launch(
-            request_payload={**base, "allowed_output_paths": [ir_meta]},
-            write_roots=[f"{_FIX_IR_REF}/"])
+            request_payload={**base, "allowed_output_paths": [ir_meta]})
         self.assertEqual(out, [ir_meta])
         # listing spec.ir.yaml is rejected for verify.
         with self.assertRaisesRegex(ValueError, "outside phase contract outputs"):
             _allowed_output_paths_for_launch(
-                request_payload={**base, "allowed_output_paths": [ir_yaml, ir_meta]},
-                write_roots=[f"{_FIX_IR_REF}/"])
+                request_payload={**base, "allowed_output_paths": [ir_yaml, ir_meta]})
         # ...but Compile.generate (the author) may still list spec.ir.yaml.
         gen_out = _allowed_output_paths_for_launch(
             request_payload={**base, "substep": "generate",
-                             "allowed_output_paths": [ir_yaml, ir_meta]},
-            write_roots=[f"{_FIX_IR_REF}/"])
+                             "allowed_output_paths": [ir_yaml, ir_meta]})
         self.assertIn(ir_yaml, gen_out)
 
     def test_compile_non_static_launch_rejects_compile_static_meta_json(self) -> None:
@@ -3166,7 +2839,6 @@ shell_tool                       stable             true
                 with self.assertRaisesRegex(ValueError, "outside phase contract outputs"):
                     _allowed_output_paths_for_launch(
                         request_payload=req,
-                        write_roots=[f"{_FIX_IR_REF}/"],
                     )
 
     def test_generate_leaf_launch_rejects_unlisted_source_root_json(self) -> None:
@@ -3206,126 +2878,7 @@ shell_tool                       stable             true
                 ):
                     _allowed_output_paths_for_launch(
                         request_payload=req,
-                        write_roots=[f"{_FIX_PIPE_REF}/source/"],
                     )
-
-    def test_gate_meta_json_not_file_tool_writable(self) -> None:
-        """Even for the Generate.gate substep, gate_meta.json must stay out of the
-        auto-derived allowed_file_tool_paths set (no leaf may Edit/Write it; the
-        conductor writes it in-process). An explicit request listing it is rejected.
-        """
-        from tools.orchestration_runtime import _allowed_file_tool_paths_for_launch
-
-        src_id = "src_gate_meta_003"
-        gate_meta = f"{_FIX_PIPE_REF}/source/{src_id}/gate_meta.json"
-        command_log = f"{_FIX_PIPE_REF}/source/{src_id}/src/command_log.jsonl"
-        model_src = f"{_FIX_PIPE_REF}/source/{src_id}/src/m_model.f90"
-        req = {
-            "agent_role": "substep",
-            "node_key": "problem/shallow_water2d@0.3.0",
-            "step": "generate",
-            "substep": "gate",
-            "ir_ref": _FIX_IR_REF,
-            "pipeline_ref": _FIX_PIPE_REF,
-            "source_id": src_id,
-        }
-        # Auto-derive (allowed_file_tool_paths unset): gate_meta.json excluded.
-        derived = _allowed_file_tool_paths_for_launch(
-            request_payload=req,
-            allowed_output_paths=[gate_meta, model_src, command_log],
-        )
-        self.assertNotIn(gate_meta, derived)
-        self.assertIn(model_src, derived)
-        # Explicit list including gate_meta.json: rejected.
-        req_explicit = {**req, "allowed_file_tool_paths": [model_src, gate_meta]}
-        with self.assertRaisesRegex(ValueError, "conductor-authored gate deliverable"):
-            _allowed_file_tool_paths_for_launch(
-                request_payload=req_explicit,
-                allowed_output_paths=[gate_meta, model_src, command_log],
-            )
-
-    def test_dependency_graph_sidecar_not_file_tool_writable(self) -> None:
-        """The conductor-authored dependency-graph sidecar <ir_ref>/dependency_graph.json
-        must stay out of the auto-derived allowed_file_tool_paths set (no compile leaf may
-        Edit/Write it), and an explicit request listing it is rejected."""
-        from tools.orchestration_runtime import _allowed_file_tool_paths_for_launch
-
-        sidecar = f"{_FIX_IR_REF}/dependency_graph.json"
-        ir_yaml = f"{_FIX_IR_REF}/spec.ir.yaml"
-        ir_meta = f"{_FIX_IR_REF}/ir_meta.json"
-        req = {
-            "agent_role": "substep",
-            "node_key": "problem/shallow_water2d@0.3.0",
-            "step": "compile",
-            "substep": "generate",
-            "ir_ref": _FIX_IR_REF,
-            "pipeline_ref": _FIX_PIPE_REF,
-        }
-        derived = _allowed_file_tool_paths_for_launch(
-            request_payload=req,
-            allowed_output_paths=[ir_yaml, ir_meta, sidecar],
-        )
-        self.assertNotIn(sidecar, derived)
-        self.assertIn(ir_yaml, derived)
-        req_explicit = {**req, "allowed_file_tool_paths": [ir_yaml, sidecar]}
-        with self.assertRaisesRegex(ValueError, "dependency-graph sidecar"):
-            _allowed_file_tool_paths_for_launch(
-                request_payload=req_explicit,
-                allowed_output_paths=[ir_yaml, ir_meta, sidecar],
-            )
-        # Scoping (P3): the exclusion is the IR-ROOT sidecar only. A generate leaf's
-        # source-tree file that happens to be named dependency_graph.json (under
-        # source/<id>/src/) is an ordinary leaf output and stays writable.
-        src_named = f"{_FIX_PIPE_REF}/source/src_x/src/dependency_graph.json"
-        gen_req = {
-            "agent_role": "substep", "node_key": "problem/shallow_water2d@0.3.0",
-            "step": "generate", "substep": "generate",
-            "ir_ref": _FIX_IR_REF, "pipeline_ref": _FIX_PIPE_REF, "source_id": "src_x",
-        }
-        gen_derived = _allowed_file_tool_paths_for_launch(
-            request_payload=gen_req, allowed_output_paths=[src_named])
-        self.assertIn(src_named, gen_derived)
-
-    def test_src_tree_file_named_gate_meta_stays_writable(self) -> None:
-        """The conductor-owned deliverable is ONLY the source-ROOT
-        source/<source_id>/gate_meta.json. A legitimately generated source-tree
-        file that happens to be named gate_meta.json (under .../src/) is an
-        ordinary leaf output: the phase contract accepts it via the /src/ rule and
-        it must stay Edit/Write-eligible (not excluded by the source-root guard).
-
-        This row is the `/src/` carve-out's ONLY pin. It used to probe `lint_meta.json`, whose
-        guard issue #180 deleted, so the carve-out it was checking was the retired rule's and
-        the surviving `gate_meta.json` one had none.
-        """
-        from tools.orchestration_runtime import (
-            _allowed_file_tool_paths_for_launch,
-            _allowed_output_paths_for_launch,
-        )
-
-        src_id = "src_gate_meta_004"
-        src_tree_file = f"{_FIX_PIPE_REF}/source/{src_id}/src/gate_meta.json"
-        req = {
-            "agent_role": "substep",
-            "node_key": "problem/shallow_water2d@0.3.0",
-            "step": "generate",
-            "substep": "generate",
-            "ir_ref": _FIX_IR_REF,
-            "pipeline_ref": _FIX_PIPE_REF,
-            "source_id": src_id,
-            "allowed_output_paths": [src_tree_file],
-        }
-        # Phase contract accepts it (under /src/) for any generate substep.
-        out = _allowed_output_paths_for_launch(
-            request_payload=req,
-            write_roots=[f"{_FIX_PIPE_REF}/source/"],
-        )
-        self.assertIn(src_tree_file, out)
-        # And it stays file-tool-writable (the source-root guard does not catch it).
-        derived = _allowed_file_tool_paths_for_launch(
-            request_payload=req,
-            allowed_output_paths=[src_tree_file],
-        )
-        self.assertIn(src_tree_file, derived)
 
     def test_validate_launch_rejects_listed_path_for_other_run_id(self) -> None:
         """If request.run_id is set, listed paths must use that run_id only."""
@@ -3351,7 +2904,6 @@ shell_tool                       stable             true
         ):
             _allowed_output_paths_for_launch(
                 request_payload=req,
-                write_roots=[f"{_FIX_PIPE_REF}/runs/"],
             )
 
     def test_build_launch_accepts_cross_phase_log_for_make_build(self) -> None:
@@ -3390,10 +2942,6 @@ shell_tool                       stable             true
         }
         out = _allowed_output_paths_for_launch(
             request_payload=req,
-            write_roots=[
-                f"{_FIX_PIPE_REF}/binary/",
-                f"{_FIX_PIPE_REF}/source/",
-            ],
         )
         # Both placements (in-phase and cross-phase) auto-injected.
         self.assertIn(in_phase_log, out)
@@ -3436,9 +2984,6 @@ shell_tool                       stable             true
         }
         out = _allowed_output_paths_for_launch(
             request_payload=req,
-            write_roots=[
-                f"{_FIX_PIPE_REF}/binary/",
-            ],
         )
         # In-phase log is auto-injected; cross-phase is NOT.
         self.assertIn(in_phase_log, out)
@@ -3468,7 +3013,6 @@ shell_tool                       stable             true
         }
         out = _allowed_output_paths_for_launch(
             request_payload=req,
-            write_roots=[f"{_FIX_PIPE_REF}/runs/"],
         )
         expected = f"{run_dir}/raw/state_snapshots/snapshot_schema.json"
         self.assertIn(expected, out)
@@ -3477,7 +3021,6 @@ shell_tool                       stable             true
         req2["allowed_output_paths"] = req["allowed_output_paths"] + [expected]
         out2 = _allowed_output_paths_for_launch(
             request_payload=req2,
-            write_roots=[f"{_FIX_PIPE_REF}/runs/"],
         )
         self.assertEqual([p for p in out2 if p == expected], [expected])
 
@@ -3501,7 +3044,6 @@ shell_tool                       stable             true
         }
         out = _allowed_output_paths_for_launch(
             request_payload=req,
-            write_roots=[f"{_FIX_PIPE_REF}/source/"],
         )
         self.assertNotIn(f"{_FIX_PIPE_REF}/lineage.json", out)
 
@@ -3524,7 +3066,6 @@ shell_tool                       stable             true
         }
         out = _allowed_output_paths_for_launch(
             request_payload=req,
-            write_roots=[f"{_FIX_PIPE_REF}/"],
         )
         self.assertNotIn(f"{_FIX_PIPE_REF}/lineage.json", out)
 
@@ -3551,7 +3092,6 @@ shell_tool                       stable             true
         out = _allowed_output_paths_for_launch(
             request_payload=req,
             # Judge's production write_root is the narrowed semantic_review.json file pin.
-            write_roots=[f"{run_dir}/semantic_review.json"],
         )
         for p in out:
             self.assertFalse(
@@ -4514,104 +4054,7 @@ shell_tool                       stable             true
         with self.assertRaisesRegex(ValueError, "must target a single binary_id"):
             _allowed_output_paths_for_launch(
                 request_payload=req,
-                write_roots=[f"{_FIX_PIPE_REF}/binary/"],
             )
-
-    def test_auto_inject_log_excluded_from_allowed_file_tool_paths(self) -> None:
-        """Auto-injected MCP audit log must not become directly Edit/Write-eligible.
-
-        validate_pipeline_semantics.py reads command_log.jsonl as the source
-        of truth that MCP run_linter actually executed. Direct file-tool writes
-        would let a child forge ok=true entries and bypass static-lint
-        verification.
-        """
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            src_id = "src_20260510_007"
-            src_dir = f"{_FIX_PIPE_REF}/source/{src_id}/src/"
-            manifest_path = self._record_generate_launch_with_outputs(
-                repo_root=repo_root,
-                orchestration_id="orch_001",
-                child_agent_run_id="run_log_not_filetool",
-                src_id=src_id,
-                allowed_output_paths=[src_dir],
-            )
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            log_path = f"{src_dir}command_log.jsonl"
-            self.assertIn(log_path, manifest["allowed_output_paths"])
-            self.assertNotIn(log_path, manifest["allowed_file_tool_paths"])
-            for p in manifest["allowed_file_tool_paths"]:
-                self.assertFalse(
-                    p.endswith("command_log.jsonl"),
-                    f"integrity-protected log leaked into allowed_file_tool_paths: {p}",
-                )
-
-    def test_explicit_file_tool_listing_of_mcp_log_rejected(self) -> None:
-        """Caller cannot bypass the protection by explicitly listing the canonical log path."""
-        from tools.orchestration_runtime import _allowed_file_tool_paths_for_launch
-
-        log_path = (
-            f"{_FIX_PIPE_REF}/source/src_20260510_008/src/command_log.jsonl"
-        )
-        req = {
-            "agent_role": "step",
-            "step": "generate",
-            "node_key": "problem/shallow_water2d@0.3.0",
-            "pipeline_ref": _FIX_PIPE_REF,
-            "allowed_file_tool_paths": [log_path],
-        }
-        with self.assertRaisesRegex(ValueError, "canonical MCP audit log"):
-            _allowed_file_tool_paths_for_launch(
-                request_payload=req,
-                allowed_output_paths=[log_path],
-            )
-
-    def test_noncanonical_mcp_log_basename_remains_writable(self) -> None:
-        """Files with the basename command_log.jsonl at NON-canonical paths
-        (e.g. nested under src/subdir/) must be treated as ordinary outputs:
-        Edit/Write-eligible and not protected as MCP-owned. The canonical
-        placement under <gen>/src/ is still classified MCP-owned, but a
-        sibling path one directory deeper is not.
-        """
-        from tools.orchestration_runtime import (
-            _allowed_file_tool_paths_for_launch,
-            _canonical_mcp_audit_log_paths_for_request,
-        )
-
-        src_id = "src_20260510_009"
-        canonical_path = (
-            f"{_FIX_PIPE_REF}/source/{src_id}/src/command_log.jsonl"
-        )
-        noncanonical_path = (
-            f"{_FIX_PIPE_REF}/source/{src_id}/src/notes/command_log.jsonl"
-        )
-        req = {
-            "agent_role": "step",
-            "step": "generate",
-            "node_key": "problem/shallow_water2d@0.3.0",
-            "pipeline_ref": _FIX_PIPE_REF,
-        }
-        canonical_set = set(
-            _canonical_mcp_audit_log_paths_for_request(req, [noncanonical_path])
-        )
-        # The noncanonical path is NOT in the canonical set even though its
-        # basename matches; only the canonical placement is.
-        self.assertNotIn(noncanonical_path, canonical_set)
-        self.assertIn(canonical_path, canonical_set)
-        # Auto-derived file_tool_paths must include the noncanonical path
-        # because .jsonl is not CLI-managed and the path is not MCP-owned.
-        out = _allowed_file_tool_paths_for_launch(
-            request_payload=req,
-            allowed_output_paths=[noncanonical_path],
-        )
-        self.assertIn(noncanonical_path, out)
-        # The canonical placement, if also listed, is excluded from file_tool.
-        out2 = _allowed_file_tool_paths_for_launch(
-            request_payload=req,
-            allowed_output_paths=[noncanonical_path, canonical_path],
-        )
-        self.assertIn(noncanonical_path, out2)
-        self.assertNotIn(canonical_path, out2)
 
     def test_build_phase_auto_injects_and_accepts_mcp_command_log(self) -> None:
         """Build step must auto-inject <binary_id>/command_log.jsonl (compile_project log)."""
@@ -4631,7 +4074,6 @@ shell_tool                       stable             true
         }
         out = _allowed_output_paths_for_launch(
             request_payload=req,
-            write_roots=[f"{_FIX_PIPE_REF}/binary/"],
         )
         expected_log = f"{_FIX_PIPE_REF}/binary/{binary_id}/command_log.jsonl"
         self.assertIn(expected_log, out)
@@ -4655,7 +4097,6 @@ shell_tool                       stable             true
         with self.assertRaisesRegex(ValueError, "outside phase contract"):
             _allowed_output_paths_for_launch(
                 request_payload=req,
-                write_roots=[f"{_FIX_PIPE_REF}/binary/"],
             )
 
     def test_execute_phase_auto_injects_and_accepts_mcp_command_log(self) -> None:
@@ -4677,7 +4118,6 @@ shell_tool                       stable             true
         }
         out = _allowed_output_paths_for_launch(
             request_payload=req,
-            write_roots=[f"{_FIX_PIPE_REF}/runs/"],
         )
         expected_log = (
             f"{_FIX_PIPE_REF}/runs/{run_id}/{node_safe}/command_log.jsonl"
@@ -4710,7 +4150,6 @@ shell_tool                       stable             true
         with self.assertRaisesRegex(ValueError, "outside phase contract"):
             _allowed_output_paths_for_launch(
                 request_payload=req,
-                write_roots=[f"{_FIX_PIPE_REF}/runs/"],
             )
 
     def test_record_launch_accepts_canonical_validate_run_id(self) -> None:
@@ -4733,152 +4172,10 @@ shell_tool                       stable             true
         }
         out = _allowed_output_paths_for_launch(
             request_payload=req,
-            write_roots=[f"{_FIX_PIPE_REF}/runs/"],
         )
         self.assertIn(
             f"{_FIX_PIPE_REF}/runs/{run_id}/{node_safe}/diagnostics.json", out
         )
-
-    def test_build_log_excluded_from_allowed_file_tool_paths(self) -> None:
-        """Auto-injected build log must remain integrity-protected (not Edit/Write-eligible)."""
-        from tools.orchestration_runtime import (
-            _allowed_file_tool_paths_for_launch,
-            _allowed_output_paths_for_launch,
-        )
-
-        binary_id = "bin_20260510_003"
-        req = {
-            "agent_role": "step",
-            "node_key": "problem/shallow_water2d@0.3.0",
-            "step": "build",
-            "ir_ref": _FIX_IR_REF,
-            "pipeline_ref": _FIX_PIPE_REF,
-            "allowed_output_paths": [
-                f"{_FIX_PIPE_REF}/binary/{binary_id}/bin/main",
-                f"{_FIX_PIPE_REF}/binary/{binary_id}/binary_meta.json",
-            ],
-        }
-        allowed = _allowed_output_paths_for_launch(
-            request_payload=req,
-            write_roots=[f"{_FIX_PIPE_REF}/binary/"],
-        )
-        file_tool = _allowed_file_tool_paths_for_launch(
-            request_payload=req,
-            allowed_output_paths=allowed,
-        )
-        log_path = f"{_FIX_PIPE_REF}/binary/{binary_id}/command_log.jsonl"
-        self.assertIn(log_path, allowed)
-        self.assertNotIn(log_path, file_tool)
-
-    def test_generate_make_launch_auto_injects_makefile_pin(self) -> None:
-        """Fix 1: a Make-based Generate launch with only a bare src/ directory
-        entry must auto-inject the extensionless src/Makefile as an explicit
-        file pin so it is Edit/Write-eligible. A bare directory alone leaves the
-        Makefile unwritable — source extensions (.f90) go via guarded-apply-
-        patch under the directory allowlist, but the extensionless Makefile is
-        intentionally excluded from that allowlist (tools/hooks/common.py)."""
-        from tools.orchestration_runtime import (
-            _allowed_file_tool_paths_for_launch,
-            _allowed_output_paths_for_launch,
-        )
-
-        src_id = "src_20260604_002"
-        src_dir = f"{_FIX_PIPE_REF}/source/{src_id}/src/"
-        makefile = f"{_FIX_PIPE_REF}/source/{src_id}/src/Makefile"
-        req = {
-            "agent_role": "step",
-            "step": "generate",
-            "node_key": "problem/shallow_water2d@0.3.0",
-            "ir_ref": _FIX_IR_REF,
-            "pipeline_ref": _FIX_PIPE_REF,
-            "source_id": src_id,
-            # Normally injected by record_launch from spec.ir.yaml.impl_defaults.
-            "_resolved_build_system": "make",
-            "allowed_output_paths": [src_dir],
-        }
-        allowed = _allowed_output_paths_for_launch(
-            request_payload=req,
-            write_roots=[
-                f"{_FIX_PIPE_REF}/source/",
-                f"{_FIX_PIPE_REF}/lineage.json",
-            ],
-        )
-        self.assertIn(makefile, allowed)
-        # Auto-derived file-tool paths (raw=None) must carry the Makefile so the
-        # child can Edit/Write it.
-        file_tool = _allowed_file_tool_paths_for_launch(
-            request_payload=req,
-            allowed_output_paths=allowed,
-        )
-        self.assertIn(makefile, file_tool)
-
-    def test_generate_leaf_make_launch_does_not_inject_makefile_pin(self) -> None:
-        """When the conductor authors src/Makefile host-side (_write_makefile: make AND
-        fortran, leaf OR dependency), even a Make Generate launch must NOT auto-inject the
-        Makefile pin (`_resolved_makefile_host_authored` True) — the leaf must not author it."""
-        from tools.orchestration_runtime import (
-            _allowed_output_paths_for_launch,
-            _mandatory_file_tool_pins_for_launch,
-        )
-
-        src_id = "src_20260604_004"
-        src_dir = f"{_FIX_PIPE_REF}/source/{src_id}/src/"
-        makefile = f"{_FIX_PIPE_REF}/source/{src_id}/src/Makefile"
-        req = {
-            "agent_role": "step",
-            "step": "generate",
-            "node_key": "component/foo_bar@0.1.0",
-            "ir_ref": _FIX_IR_REF,
-            "pipeline_ref": _FIX_PIPE_REF,
-            "source_id": src_id,
-            "_resolved_build_system": "make",
-            "_resolved_makefile_host_authored": True,
-            "allowed_output_paths": [src_dir],
-        }
-        self.assertEqual(_mandatory_file_tool_pins_for_launch(req, [src_dir]), [])
-        allowed = _allowed_output_paths_for_launch(
-            request_payload=req,
-            write_roots=[f"{_FIX_PIPE_REF}/source/", f"{_FIX_PIPE_REF}/lineage.json"],
-        )
-        self.assertNotIn(makefile, allowed)
-
-    def test_build_system_absent_defaults_to_make_for_makefile_pin(self) -> None:
-        """Regression: a generate IR that OMITS impl_defaults.toolchain.build_system must not
-        silently skip the Makefile pin for a non-host-authored node. `_impl_resolved_build_system`
-        returns None there, and record_launch now defaults `_resolved_build_system` to "make"
-        (mirroring the conductor's `or "make"`), so the pin is still required — matching the
-        conductor, which lists/requires the Makefile. Without the default the pin was skipped
-        while the conductor required the file -> a launch unauthorized for the Makefile."""
-        from tools.orchestration_runtime import (
-            _impl_resolved_build_system, _mandatory_file_tool_pins_for_launch)
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            ir = repo / "ir"
-            ir.mkdir()
-            # language=c -> NOT conductor-authored (c/cpp keep LLM authoring), so the Makefile
-            # pin is genuinely required. (A make+fortran node — leaf or dependency — is
-            # host-authored under Model B, so it would be pinned-suppressed instead.)
-            (ir / "spec.ir.yaml").write_text(
-                "impl_defaults:\n  toolchain:\n    language: c\n"
-                "dependency:\n  direct_deps:\n    - node_key: component/dep@0.1.0\n",
-                encoding="utf-8")
-            # precondition: build_system is genuinely unresolved
-            self.assertIsNone(_impl_resolved_build_system(repo, "ir"))
-            src_id = "src_x"
-            src_dir = f"{_FIX_PIPE_REF}/source/{src_id}/src/"
-            makefile = f"{src_dir}Makefile"
-            # payload as the FIXED record_launch populates it: bs absent -> "make",
-            # not host-authored (c node).
-            req = {
-                "agent_role": "step", "step": "generate",
-                "node_key": "component/top@0.1.0",
-                "ir_ref": "ir", "pipeline_ref": _FIX_PIPE_REF, "source_id": src_id,
-                "_resolved_build_system": "make",
-                "_resolved_makefile_host_authored": False,
-                "allowed_output_paths": [src_dir],
-            }
-            self.assertEqual(
-                _mandatory_file_tool_pins_for_launch(req, [src_dir]), [makefile])
 
     def test_impl_is_leaf_node_reads_dependency_block(self) -> None:
         from tools.orchestration_runtime import _impl_is_leaf_node
@@ -4925,91 +4222,10 @@ shell_tool                       stable             true
         }
         allowed = _allowed_output_paths_for_launch(
             request_payload=req,
-            write_roots=[
-                f"{_FIX_PIPE_REF}/source/",
-                f"{_FIX_PIPE_REF}/lineage.json",
-            ],
         )
         self.assertNotIn(
             f"{_FIX_PIPE_REF}/source/{src_id}/src/Makefile", allowed
         )
-
-    def test_generate_verify_make_launch_does_not_inject_makefile_pin(self) -> None:
-        """Fix 1 must be scoped to the source-generating launch: the
-        Generate.verify substep (which inspects src/ and writes source_meta.json)
-        must NOT receive Makefile write authority, even for a Make pipeline —
-        otherwise the verifier could mutate the artifact it is judging."""
-        from tools.orchestration_runtime import (
-            _allowed_file_tool_paths_for_launch,
-            _allowed_output_paths_for_launch,
-        )
-
-        src_id = "src_20260604_005"
-        source_meta = f"{_FIX_PIPE_REF}/source/{src_id}/source_meta.json"
-        makefile = f"{_FIX_PIPE_REF}/source/{src_id}/src/Makefile"
-        req = {
-            "agent_role": "substep",
-            "step": "generate",
-            "substep": "verify",
-            "node_key": "problem/shallow_water2d@0.3.0",
-            "ir_ref": _FIX_IR_REF,
-            "pipeline_ref": _FIX_PIPE_REF,
-            "source_id": src_id,
-            "_resolved_build_system": "make",
-            "allowed_output_paths": [source_meta],
-        }
-        allowed = _allowed_output_paths_for_launch(
-            request_payload=req,
-            write_roots=[
-                f"{_FIX_PIPE_REF}/source/",
-                f"{_FIX_PIPE_REF}/lineage.json",
-            ],
-        )
-        self.assertNotIn(makefile, allowed)
-        # And no mandatory-pin validation fires for the verify substep.
-        file_tool = _allowed_file_tool_paths_for_launch(
-            request_payload=req,
-            allowed_output_paths=allowed,
-        )
-        self.assertNotIn(makefile, file_tool)
-
-    def test_generate_make_launch_rejects_explicit_file_tool_omitting_makefile(self) -> None:
-        """Fix 2: when the caller passes an explicit allowed_file_tool_paths that
-        omits the mandatory Makefile pin, the launch must fail fast (before the
-        child spawns) with a clear remediation — converting an artifact-
-        corrupting mid-run fail-stop into a cheap, recoverable launch error."""
-        from tools.orchestration_runtime import (
-            _allowed_file_tool_paths_for_launch,
-            _allowed_output_paths_for_launch,
-        )
-
-        src_id = "src_20260604_004"
-        src_dir = f"{_FIX_PIPE_REF}/source/{src_id}/src/"
-        model = f"{_FIX_PIPE_REF}/source/{src_id}/src/model.f90"
-        req = {
-            "agent_role": "step",
-            "step": "generate",
-            "node_key": "problem/shallow_water2d@0.3.0",
-            "ir_ref": _FIX_IR_REF,
-            "pipeline_ref": _FIX_PIPE_REF,
-            "source_id": src_id,
-            "_resolved_build_system": "make",
-            "allowed_output_paths": [src_dir, model],
-            # Explicit list omits the mandatory Makefile pin.
-            "allowed_file_tool_paths": [model],
-        }
-        allowed = _allowed_output_paths_for_launch(
-            request_payload=req,
-            write_roots=[
-                f"{_FIX_PIPE_REF}/source/",
-                f"{_FIX_PIPE_REF}/lineage.json",
-            ],
-        )
-        with self.assertRaisesRegex(ValueError, "mandatory build-control file"):
-            _allowed_file_tool_paths_for_launch(
-                request_payload=req,
-                allowed_output_paths=allowed,
-            )
 
     def test_rejects_launch_with_placeholder_plan_or_pipeline_refs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -5294,7 +4510,8 @@ shell_tool                       stable             true
                     "agent_model": "claude-opus-4-8",
                     "node_key": "problem/shallow_water2d@0.3.0",
                     "step": "compile",
-                    "substep": "generate",
+                    "substep": "static",
+                    "deterministic": True,
                     "agent_role": "substep",
                     "orchestration_id": "orch_001",
                     "agent_run_id": "substep_run_plan_generate_001",
@@ -5302,16 +4519,14 @@ shell_tool                       stable             true
                     "ir_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
                     "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
                     "dependency_ref": _FIX_COMPILE_STEP_DEP_REF,
-                    "skill_name": "workflow-compile-generate",
-                    "skill_ref": "skills/workflow-compile-generate/SKILL.md",
-                    "skill_must_read_refs": "",
+                                                            "skill_must_read_refs": "",
                     "allowed_output_paths": [
-                        "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/spec.ir.yaml",
+                        "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/compile_static_meta.json",
                     ],
                     "launch_prompt_full": _substep_launch_prompt(
                         "problem/shallow_water2d@0.3.0",
                         "compile",
-                        "generate",
+                        "static",
                         "substep_run_plan_generate_001",
                     ),
                 },
@@ -5319,7 +4534,7 @@ shell_tool                       stable             true
             )
             impl_path = (
                 repo_root
-                / "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/spec.ir.yaml"
+                / "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/compile_static_meta.json"
             )
             impl_path.parent.mkdir(parents=True, exist_ok=True)
             impl_path.write_text("{}\n", encoding="utf-8")
@@ -5332,14 +4547,15 @@ shell_tool                       stable             true
                     "agent_role": "substep",
                     "node_key": "problem/shallow_water2d@0.3.0",
                     "step": "compile",
-                    "substep": "generate",
+                    "substep": "static",
+                    "deterministic": True,
                     "status": "pass",
                     "agent_backend": "codex",
                     "agent_model": "gpt-5-codex",
                     "context_id": "ctx_substep_plan_generate_001",
                     "agent_session_id": "sess_substep_plan_generate_001",
                     "output_refs": [
-                        "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/spec.ir.yaml",
+                        "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/compile_static_meta.json",
                     ],
                 },
             )
@@ -5440,130 +4656,6 @@ shell_tool                       stable             true
             )
             self.assertEqual(payload["status"], "pass")
             self.assertNotIn("output_refs", payload)
-
-    def test_record_agent_run_rejects_orchestration_terminal_with_noncanonical_phase_write(
-        self,
-    ) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            init_orchestration(repo_root=repo_root, orchestration_id="orch_001")
-            _mark_dependencies_ready(repo_root)
-            write_preflight(
-                repo_root=repo_root,
-                orchestration_id="orch_001",
-                payload={
-                    "status": "pass",
-                    "sandbox_runtime": "bwrap",
-                    "sandbox_enforced": True,
-                    "can_launch_step_agents": True,
-                    "can_launch_substep_agents": True,
-                    "feature_states": {"multi_agent": True, "hooks": True},
-                    "checks": [{"name": "multi_agent_enabled", "pass": True}, {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
-                },
-            )
-            bad_ref = (
-                "workspace/ir/problem__shallow_water2d__0.3.0/"
-                "shallow-water2d_20260415_001/ir_meta.json"
-            )
-            bad_path = repo_root / bad_ref
-            bad_path.parent.mkdir(parents=True, exist_ok=True)
-            bad_path.write_text('{"verification_status":"pass"}\n', encoding="utf-8")
-            with self.assertRaisesRegex(ValueError, "terminal run has unauthorized write paths"):
-                record_agent_run(
-                    repo_root=repo_root,
-                    orchestration_id="orch_001",
-                    payload={
-                        "agent_run_id": "orch_run_001",
-                        "agent_role": "orchestration",
-                        "status": "fail",
-                        "agent_backend": "claude",
-                        "result_summary": "orchestration wrote a phase artifact directly",
-                    },
-                )
-
-    def test_record_agent_run_rejects_step_terminal_write_outside_write_roots(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            init_orchestration(repo_root=repo_root, orchestration_id="orch_001")
-            _mark_dependencies_ready(repo_root)
-            write_preflight(
-                repo_root=repo_root,
-                orchestration_id="orch_001",
-                payload={
-                    "status": "pass",
-                    "sandbox_runtime": "bwrap",
-                    "sandbox_enforced": True,
-                    "can_launch_step_agents": True,
-                    "can_launch_substep_agents": True,
-                    "feature_states": {"multi_agent": True, "hooks": True},
-                    "checks": [{"name": "multi_agent_enabled", "pass": True}, {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
-                },
-            )
-            record_agent_run(
-                repo_root=repo_root,
-                orchestration_id="orch_001",
-                payload={
-                    "agent_run_id": "orch_run_001",
-                    "agent_role": "orchestration",
-                    "status": "running",
-                    "agent_backend": "claude",
-                },
-            )
-            record_launch(
-                repo_root=repo_root,
-                orchestration_id="orch_001",
-                parent_agent_run_id="orch_run_001",
-                child_agent_run_id="step_run_build_001",
-                request_payload={
-                    "agent_model": "claude-opus-4-8",
-                    "node_key": "problem/shallow_water2d@0.3.0",
-                    "step": "build",
-                    "agent_role": "step",
-                    "orchestration_id": "orch_001",
-                    "agent_run_id": "step_run_build_001",
-                    "parent_agent_run_id": "orch_run_001",
-                    "ir_ref": _FIX_IR_REF,
-                    "pipeline_ref": _FIX_PIPE_REF,
-                    "dependency_ref": _FIX_DEP_REF,
-                    "deterministic": True,
-                    "deterministic": True,
-                    "allowed_output_paths": [f"{_FIX_PIPE_REF}/binary/bin_20260101_001/binary_meta.json"],
-                    "launch_prompt_full": _step_launch_prompt(
-                        "problem/shallow_water2d@0.3.0",
-                        "build",
-                        "step_run_build_001",
-                    ),
-                },
-                response_payload=_spawn_response_payload("sess_step_build_001"),
-            )
-            out_ref = f"{_FIX_PIPE_REF}/binary/bin_20260101_001/binary_meta.json"
-            out_path = repo_root / out_ref
-            out_path.parent.mkdir(parents=True, exist_ok=True)
-            out_path.write_text('{"status":"ok"}\n', encoding="utf-8")
-            # Phase-2: the declared output above is authorized by write_roots containment;
-            # the surviving unauthorized case (defense-in-depth) is a write that landed
-            # OUTSIDE write_roots -- impossible under bwrap, but still rejected if it appears.
-            rogue = repo_root / "workspace" / "rogue_outside.json"
-            rogue.parent.mkdir(parents=True, exist_ok=True)
-            rogue.write_text("{}\n", encoding="utf-8")
-            with self.assertRaisesRegex(ValueError, "terminal run has unauthorized write paths"):
-                record_agent_run(
-                    repo_root=repo_root,
-                    orchestration_id="orch_001",
-                    payload={
-                        "agent_run_id": "step_run_build_001",
-                        "agent_role": "step",
-                        "parent_agent_run_id": "orch_run_001",
-                        "step": "build",
-                        "node_key": "problem/shallow_water2d@0.3.0",
-                        "status": "fail",
-                        "agent_backend": "codex",
-                        "agent_model": "gpt-5-codex",
-                        "context_id": "ctx_step_build_001",
-                        "agent_session_id": "sess_step_build_001",
-                        "result_summary": "write landed outside write_roots",
-                    },
-                )
 
     def test_record_agent_run_authorizes_step_pass_in_write_roots_without_gate_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -5802,367 +4894,6 @@ shell_tool                       stable             true
             )
             self.assertEqual(payload["output_refs"], [out_ref])
 
-    def test_noncanonical_mcp_log_in_allowed_output_paths_is_not_mcp_trusted(self) -> None:
-        """A manifest entry with the basename command_log.jsonl at a
-        non-canonical path (e.g. <gen>/src/notes/command_log.jsonl) must
-        NOT be persisted as an MCP-owned audit log. Only canonical placements
-        under <gen>/src/ directly (alongside model/runner sources) qualify.
-        Defense against an over-broad manifest silently auto-trusting an
-        arbitrary file.
-        """
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            init_orchestration(repo_root=repo_root, orchestration_id="orch_001")
-            _mark_dependencies_ready(repo_root)
-            write_preflight(
-                repo_root=repo_root,
-                orchestration_id="orch_001",
-                payload={
-                    "status": "pass",
-                    "sandbox_runtime": "bwrap",
-                    "sandbox_enforced": True,
-                    "can_launch_step_agents": True,
-                    "can_launch_substep_agents": True,
-                    "feature_states": {"multi_agent": True, "hooks": True},
-                    "checks": [{"name": "multi_agent_enabled", "pass": True}, {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
-                },
-            )
-            src_id = "src_20260510_010"
-            canonical_log = (
-                f"{_FIX_PIPE_REF}/source/{src_id}/src/command_log.jsonl"
-            )
-            noncanonical = (
-                f"{_FIX_PIPE_REF}/source/{src_id}/src/notes/command_log.jsonl"
-            )
-            record_launch(
-                repo_root=repo_root,
-                orchestration_id="orch_001",
-                parent_agent_run_id="orch_run_001",
-                child_agent_run_id="step_run_noncanon",
-                request_payload={
-                    "agent_model": "claude-opus-4-8",
-                    "node_key": "problem/shallow_water2d@0.3.0",
-                    "step": "generate",
-                    "agent_role": "substep",
-                    "orchestration_id": "orch_001",
-                    "agent_run_id": "step_run_noncanon",
-                    "parent_agent_run_id": "orch_run_001",
-                    "ir_ref": _FIX_IR_REF,
-                    "pipeline_ref": _FIX_PIPE_REF,
-                    "dependency_ref": f"{_FIX_IR_REF}/spec.ir.yaml",
-                    "source_id": src_id,
-                    # Caller declares both a canonical and a noncanonical
-                    # command_log.jsonl. Phase contract for /src/ is
-                    # loose enough to accept the noncanonical entry.
-                    "allowed_output_paths": [
-                        f"{_FIX_PIPE_REF}/source/{src_id}/src/main.f90",
-                        noncanonical,
-                    ],
-                    "skill_name": "workflow-generate",
-                    "skill_ref": "skills/workflow-generate/SKILL.md",
-                    "skill_must_read_refs": "",
-                    "launch_prompt_full": _step_launch_prompt(
-                        "problem/shallow_water2d@0.3.0",
-                        "generate",
-                        "step_run_noncanon",
-                    ),
-                },
-                response_payload=_spawn_response_payload("sess_step_run_noncanon"),
-            )
-            manifest = json.loads(
-                (
-                    repo_root
-                    / "workspace/orchestrations/orch_001/output_manifests/step_run_noncanon.json"
-                ).read_text(encoding="utf-8")
-            )
-            # The canonical placement is auto-injected and recorded as
-            # MCP-owned; the noncanonical path is treated as a normal output.
-            self.assertIn(canonical_log, manifest["mcp_owned_audit_logs"])
-            self.assertNotIn(noncanonical, manifest["mcp_owned_audit_logs"])
-            # The noncanonical path is auto-derived as Edit/Write-eligible
-            # (regular .jsonl, not MCP-owned).
-            self.assertIn(noncanonical, manifest["allowed_file_tool_paths"])
-            # The canonical placement is excluded from file_tool paths.
-            self.assertNotIn(canonical_log, manifest["allowed_file_tool_paths"])
-
-    def test_record_agent_run_accepts_mcp_command_log_without_gate_provenance(self) -> None:
-        """Terminal validation must accept MCP-written command_log.jsonl.
-
-        MCP server writes the log directly (no guarded-apply-patch, no
-        Edit/Write tool invocation). It is auto-injected into
-        allowed_output_paths but excluded from allowed_file_tool_paths for
-        integrity. _validate_actual_write_paths() must recognize integrity-
-        protected MCP audit log entries in the manifest as authorized
-        MCP-owned outputs, otherwise a successful build/execute would be
-        fail-closed for the very file the MCP tool just produced.
-        """
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            init_orchestration(repo_root=repo_root, orchestration_id="orch_001")
-            _mark_dependencies_ready(repo_root)
-            write_preflight(
-                repo_root=repo_root,
-                orchestration_id="orch_001",
-                payload={
-                    "status": "pass",
-                    "sandbox_runtime": "bwrap",
-                    "sandbox_enforced": True,
-                    "can_launch_step_agents": True,
-                    "can_launch_substep_agents": True,
-                    "feature_states": {"multi_agent": True, "hooks": True},
-                    "checks": [{"name": "multi_agent_enabled", "pass": True}, {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
-                },
-            )
-            record_agent_run(
-                repo_root=repo_root,
-                orchestration_id="orch_001",
-                payload={
-                    "agent_run_id": "orch_run_001",
-                    "agent_role": "orchestration",
-                    "status": "running",
-                    "agent_backend": "claude",
-                },
-            )
-            binary_id = "bin_20260510_001"
-            bin_ref = f"{_FIX_PIPE_REF}/binary/{binary_id}/bin/simulate"
-            log_ref = f"{_FIX_PIPE_REF}/binary/{binary_id}/command_log.jsonl"
-            record_launch(
-                repo_root=repo_root,
-                orchestration_id="orch_001",
-                parent_agent_run_id="orch_run_001",
-                child_agent_run_id="step_run_build_mcp_log",
-                request_payload={
-                    "agent_model": "claude-opus-4-8",
-                    "node_key": "problem/shallow_water2d@0.3.0",
-                    "step": "build",
-                    "agent_role": "step",
-                    "orchestration_id": "orch_001",
-                    "agent_run_id": "step_run_build_mcp_log",
-                    "parent_agent_run_id": "orch_run_001",
-                    "ir_ref": _FIX_IR_REF,
-                    "pipeline_ref": _FIX_PIPE_REF,
-                    "dependency_ref": _FIX_DEP_REF,
-                    "deterministic": True,
-                    "deterministic": True,
-                    "allowed_output_paths": [bin_ref],
-                    "launch_prompt_full": _step_launch_prompt(
-                        "problem/shallow_water2d@0.3.0",
-                        "build",
-                        "step_run_build_mcp_log",
-                    ),
-                },
-                response_payload=_spawn_response_payload("sess_step_build_mcp_log"),
-            )
-            # Confirm auto-inject placed log in allowed_output_paths but not in file_tool list.
-            manifest = json.loads(
-                (
-                    repo_root
-                    / "workspace/orchestrations/orch_001/output_manifests/step_run_build_mcp_log.json"
-                ).read_text(encoding="utf-8")
-            )
-            self.assertIn(log_ref, manifest["allowed_output_paths"])
-            self.assertNotIn(log_ref, manifest["allowed_file_tool_paths"])
-
-            # Simulate build artefacts on disk:
-            #   - the binary, written under the step's write_roots (authorized by containment)
-            #   - the MCP audit log, written by MCP server directly
-            bin_path = repo_root / bin_ref
-            bin_path.parent.mkdir(parents=True, exist_ok=True)
-            bin_path.write_text("binary\n", encoding="utf-8")
-            log_path = repo_root / log_ref
-            log_path.parent.mkdir(parents=True, exist_ok=True)
-            log_path.write_text(
-                '{"command_id":"abc","tool_name":"compile_project","ok":true}\n',
-                encoding="utf-8",
-            )
-            payload = record_agent_run(
-                repo_root=repo_root,
-                orchestration_id="orch_001",
-                payload={
-                    "agent_run_id": "step_run_build_mcp_log",
-                    "agent_role": "step",
-                    "parent_agent_run_id": "orch_run_001",
-                    "step": "build",
-                    "node_key": "problem/shallow_water2d@0.3.0",
-                    "status": "pass",
-                    "agent_backend": "codex",
-                    "agent_model": "gpt-5-codex",
-                    "context_id": "ctx_step_build_mcp_log",
-                    "agent_session_id": "sess_step_build_mcp_log",
-                    "output_refs": [bin_ref, log_ref],
-                },
-            )
-            self.assertEqual(payload["status"], "pass")
-            self.assertIn(log_ref, payload["output_refs"])
-            # No unauthorized_write_violation file should have been written.
-            violation_path = (
-                repo_root
-                / "workspace/orchestrations/orch_001/violations"
-                / "step_run_build_mcp_log.unauthorized_write_violation.json"
-            )
-            self.assertFalse(violation_path.exists())
-
-    def test_execute_run_quality_checks_cross_phase_mcp_log_authorized(self) -> None:
-        """Execute's run_quality_checks runs with project_dir=generate/<gen>/src/
-        per skills/workflow-execute/SKILL.md L20. The MCP server's default
-        command_log_path resolves to project_dir/command_log.jsonl, so the
-        audit log lands under the generate tree even though the agent role is
-        execute. The cross-phase canonical placement must be:
-          - auto-injected when execute requests include `source_id`
-          - phase-contract accepted
-          - terminal-validated as authorized despite execute's write_roots
-            being scoped to <pipeline_ref>/runs/.
-        """
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            init_orchestration(repo_root=repo_root, orchestration_id="orch_001")
-            _mark_dependencies_ready(repo_root)
-            _plant_spec_ir_yaml_make(repo_root)
-            write_preflight(
-                repo_root=repo_root,
-                orchestration_id="orch_001",
-                payload={
-                    "status": "pass",
-                    "sandbox_runtime": "bwrap",
-                    "sandbox_enforced": True,
-                    "can_launch_step_agents": True,
-                    "can_launch_substep_agents": True,
-                    "feature_states": {"multi_agent": True, "hooks": True},
-                    "checks": [{"name": "multi_agent_enabled", "pass": True}, {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
-                },
-            )
-            record_agent_run(
-                repo_root=repo_root,
-                orchestration_id="orch_001",
-                payload={
-                    "agent_run_id": "orch_run_001",
-                    "agent_role": "orchestration",
-                    "status": "running",
-                    "agent_backend": "claude",
-                },
-            )
-            src_id = "src_20260510_011"
-            run_id = "run_20260510_001"
-            node_safe = "problem__shallow_water2d__0.3.0"
-            # Cross-phase log auto-inject requires the referenced generation
-            # to have actually run (source_meta.json must exist). In a real
-            # workflow generate completes before execute launches.
-            gen_meta_dir = repo_root / f"{_FIX_PIPE_REF}/source/{src_id}"
-            gen_meta_dir.mkdir(parents=True, exist_ok=True)
-            (gen_meta_dir / "source_meta.json").write_text(
-                '{"verification_status": "pass"}\n', encoding="utf-8"
-            )
-            # Pipeline build phase must also exist for execute pre-launch
-            # readiness check (downstream_phase_launch_gate). The build_meta
-            # must record source_source_id for the cross-phase lineage
-            # bind to authorize the request's source_id.
-            binary_id_for_lineage = "bin_20260510_001"
-            build_dir = (
-                repo_root / f"{_FIX_PIPE_REF}/binary/{binary_id_for_lineage}"
-            )
-            (build_dir / "bin").mkdir(parents=True, exist_ok=True)
-            (build_dir / "bin/main").write_text("binary\n", encoding="utf-8")
-            (build_dir / "binary_meta.json").write_text(
-                json.dumps({
-                    "build_system": "make",
-                    "compiler": "gfortran",
-                    "build_log_ref": "...",
-                    "status": "pass",
-                    "source_source_id": src_id,
-                }) + "\n",
-                encoding="utf-8",
-            )
-            cross_phase_log = (
-                f"{_FIX_PIPE_REF}/source/{src_id}/src/command_log.jsonl"
-            )
-            in_phase_log = (
-                f"{_FIX_PIPE_REF}/runs/{run_id}/{node_safe}/command_log.jsonl"
-            )
-            diagnostics_ref = (
-                f"{_FIX_PIPE_REF}/runs/{run_id}/{node_safe}/diagnostics.json"
-            )
-            record_launch(
-                repo_root=repo_root,
-                orchestration_id="orch_001",
-                parent_agent_run_id="orch_run_001",
-                child_agent_run_id="step_run_exec_qc",
-                request_payload={
-                    "agent_model": "claude-opus-4-8",
-                    "node_key": "problem/shallow_water2d@0.3.0",
-                    "step": "validate", "substep": "execute",
-                    "agent_role": "substep",
-                    "orchestration_id": "orch_001",
-                    "agent_run_id": "step_run_exec_qc",
-                    "parent_agent_run_id": "orch_run_001",
-                    "ir_ref": _FIX_IR_REF,
-                    "pipeline_ref": _FIX_PIPE_REF,
-                    "dependency_ref": _FIX_DEP_REF,
-                    "run_id": run_id,
-                    # source_id triggers cross-phase log auto-inject for execute.
-                    "source_id": src_id,
-                    "source_binary_id": binary_id_for_lineage,
-                    "skill_name": "workflow-validate-execute",
-                    "skill_ref": "skills/workflow-validate-execute/SKILL.md",
-                    "skill_must_read_refs": "",
-                    "deterministic": True,
-                    "allowed_output_paths": [diagnostics_ref],
-                    "launch_prompt_full": _substep_launch_prompt("problem/shallow_water2d@0.3.0", "validate", "execute", "step_run_exec_qc"),
-                },
-                response_payload=_spawn_response_payload("sess_step_exec_qc"),
-            )
-            manifest = json.loads(
-                (
-                    repo_root
-                    / "workspace/orchestrations/orch_001/output_manifests/step_run_exec_qc.json"
-                ).read_text(encoding="utf-8")
-            )
-            # Both the in-phase and cross-phase canonical placements are auto-injected.
-            self.assertIn(in_phase_log, manifest["allowed_output_paths"])
-            self.assertIn(cross_phase_log, manifest["allowed_output_paths"])
-            # Both are in mcp_owned_audit_logs and excluded from file_tool list.
-            self.assertIn(in_phase_log, manifest["mcp_owned_audit_logs"])
-            self.assertIn(cross_phase_log, manifest["mcp_owned_audit_logs"])
-            self.assertNotIn(in_phase_log, manifest["allowed_file_tool_paths"])
-            self.assertNotIn(cross_phase_log, manifest["allowed_file_tool_paths"])
-
-            # Simulate the artefacts on disk:
-            #   - diagnostics.json written under the step's write_roots (authorized by containment)
-            #   - cross-phase command_log.jsonl written by MCP run_quality_checks
-            #     (cross-phase placement under generate/)
-            diag_path = repo_root / diagnostics_ref
-            diag_path.parent.mkdir(parents=True, exist_ok=True)
-            diag_path.write_text("{}\n", encoding="utf-8")
-            log_path = repo_root / cross_phase_log
-            log_path.parent.mkdir(parents=True, exist_ok=True)
-            log_path.write_text(
-                '{"command_id":"qc1","tool_name":"run_quality_checks","ok":true}\n',
-                encoding="utf-8",
-            )
-            payload = record_agent_run(
-                repo_root=repo_root,
-                orchestration_id="orch_001",
-                payload={
-                    "agent_run_id": "step_run_exec_qc",
-                    "agent_role": "substep",
-                    "parent_agent_run_id": "orch_run_001",
-                    "step": "validate", "substep": "execute",
-                    "node_key": "problem/shallow_water2d@0.3.0",
-                    "status": "pass",
-                    "agent_backend": "codex",
-                    "agent_model": "gpt-5-codex",
-                    "context_id": "ctx_step_run_exec_qc",
-                    "agent_session_id": "sess_step_exec_qc",
-                    "output_refs": [diagnostics_ref, cross_phase_log],
-                },
-            )
-            self.assertEqual(payload["status"], "pass")
-            violation_path = (
-                repo_root
-                / "workspace/orchestrations/orch_001/violations"
-                / "step_run_exec_qc.unauthorized_write_violation.json"
-            )
-            self.assertFalse(violation_path.exists())
-
     def test_execute_launch_rejects_listed_path_for_unrelated_generation(self) -> None:
         """Defense against authorization-by-listing of an unrelated generation.
 
@@ -6255,123 +4986,6 @@ shell_tool                       stable             true
                     },
                     response_payload=_spawn_response_payload("sess_step_exec_unrelated"),
                 )
-
-    def test_execute_launch_accepts_when_legacy_build_coexists_with_recorded_build(self) -> None:
-        """Legacy build directories without source_source_id must NOT
-        block valid execute launches as long as at least one current build
-        records the lineage and matches the request's source_id.
-
-        Defense against operational dead-end: pipelines accumulate historical
-        build dirs over retries, and over-broad strict bind would render the
-        pipeline unusable for future executes once any single build_meta is
-        missing the field.
-        """
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            init_orchestration(repo_root=repo_root, orchestration_id="orch_001")
-            _mark_dependencies_ready(repo_root)
-            _plant_spec_ir_yaml_make(repo_root)
-            write_preflight(
-                repo_root=repo_root,
-                orchestration_id="orch_001",
-                payload={
-                    "status": "pass",
-                    "sandbox_runtime": "bwrap",
-                    "sandbox_enforced": True,
-                    "can_launch_step_agents": True,
-                    "can_launch_substep_agents": True,
-                    "feature_states": {"multi_agent": True, "hooks": True},
-                    "checks": [{"name": "multi_agent_enabled", "pass": True}, {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
-                },
-            )
-            record_agent_run(
-                repo_root=repo_root,
-                orchestration_id="orch_001",
-                payload={
-                    "agent_run_id": "orch_run_001",
-                    "agent_role": "orchestration",
-                    "status": "running",
-                    "agent_backend": "claude",
-                },
-            )
-            real_gen = "gen_real_001"
-            run_id = "run_20260201_002"
-            node_safe = "problem__shallow_water2d__0.3.0"
-            gd = repo_root / f"{_FIX_PIPE_REF}/source/{real_gen}"
-            gd.mkdir(parents=True, exist_ok=True)
-            (gd / "source_meta.json").write_text(
-                '{"verification_status": "pass"}\n', encoding="utf-8"
-            )
-            # Legacy build dir WITHOUT source_source_id (older retry).
-            legacy_dir = repo_root / f"{_FIX_PIPE_REF}/binary/bin_20260101_999"
-            (legacy_dir / "bin").mkdir(parents=True, exist_ok=True)
-            (legacy_dir / "bin/main").write_text("legacy_binary\n", encoding="utf-8")
-            (legacy_dir / "binary_meta.json").write_text(
-                json.dumps({
-                    "build_system": "make",
-                    "compiler": "gfortran",
-                    "build_log_ref": "...",
-                    "status": "pass",
-                }) + "\n",
-                encoding="utf-8",
-            )
-            # Current build with source_source_id matching the request.
-            current_dir = repo_root / f"{_FIX_PIPE_REF}/binary/bin_20260201_001"
-            (current_dir / "bin").mkdir(parents=True, exist_ok=True)
-            (current_dir / "bin/main").write_text("current_binary\n", encoding="utf-8")
-            (current_dir / "binary_meta.json").write_text(
-                json.dumps({
-                    "build_system": "make",
-                    "compiler": "gfortran",
-                    "build_log_ref": "...",
-                    "status": "pass",
-                    "source_source_id": real_gen,
-                }) + "\n",
-                encoding="utf-8",
-            )
-            diagnostics_ref = (
-                f"{_FIX_PIPE_REF}/runs/{run_id}/{node_safe}/diagnostics.json"
-            )
-            # Execute launch with source_id=real_gen must succeed even
-            # though legacy_build is missing source_source_id.
-            record_launch(
-                repo_root=repo_root,
-                orchestration_id="orch_001",
-                parent_agent_run_id="orch_run_001",
-                child_agent_run_id="step_run_exec_legacy_coexist",
-                request_payload={
-                    "agent_model": "claude-opus-4-8",
-                    "node_key": "problem/shallow_water2d@0.3.0",
-                    "step": "validate", "substep": "execute",
-                    "agent_role": "substep",
-                    "orchestration_id": "orch_001",
-                    "agent_run_id": "step_run_exec_legacy_coexist",
-                    "parent_agent_run_id": "orch_run_001",
-                    "ir_ref": _FIX_IR_REF,
-                    "pipeline_ref": _FIX_PIPE_REF,
-                    "dependency_ref": _FIX_DEP_REF,
-                    "run_id": run_id,
-                    "source_id": real_gen,
-                    "source_binary_id": "bin_20260201_001",
-                    "skill_name": "workflow-validate-execute",
-                    "skill_ref": "skills/workflow-validate-execute/SKILL.md",
-                    "skill_must_read_refs": "",
-                    "deterministic": True,
-                    "allowed_output_paths": [diagnostics_ref],
-                    "launch_prompt_full": _substep_launch_prompt("problem/shallow_water2d@0.3.0", "validate", "execute", "step_run_exec_legacy_coexist"),
-                },
-                response_payload=_spawn_response_payload("sess_step_exec_legacy_coexist"),
-            )
-            manifest = json.loads(
-                (
-                    repo_root
-                    / "workspace/orchestrations/orch_001/output_manifests/step_run_exec_legacy_coexist.json"
-                ).read_text(encoding="utf-8")
-            )
-            cross_log = (
-                f"{_FIX_PIPE_REF}/source/{real_gen}/src/command_log.jsonl"
-            )
-            self.assertIn(cross_log, manifest["mcp_owned_audit_logs"])
 
     def test_execute_launch_requires_source_build_id_for_in_phase_log_only(self) -> None:
         """source_build_id is required for ALL execute launches, not only
@@ -6793,7 +5407,8 @@ shell_tool                       stable             true
                     "agent_model": "claude-opus-4-8",
                     "node_key": "problem/shallow_water2d@0.3.0",
                     "step": "compile",
-                    "substep": "generate",
+                    "substep": "static",
+                    "deterministic": True,
                     "agent_role": "substep",
                     "orchestration_id": "orch_001",
                     "agent_run_id": "substep_run_gen_001",
@@ -6801,20 +5416,18 @@ shell_tool                       stable             true
                     "ir_ref": _FIX_IR_REF,
                     "pipeline_ref": _FIX_PIPE_REF,
                     "dependency_ref": _FIX_COMPILE_STEP_DEP_REF,
-                    "skill_name": "workflow-compile-generate",
-                    "skill_ref": "skills/workflow-compile-generate/SKILL.md",
-                    "skill_must_read_refs": "",
-                    "allowed_output_paths": [f"{_FIX_IR_REF}/ir_meta.json"],
+                                                            "skill_must_read_refs": "",
+                    "allowed_output_paths": [f"{_FIX_IR_REF}/compile_static_meta.json"],
                     "launch_prompt_full": _substep_launch_prompt(
                         "problem/shallow_water2d@0.3.0",
                         "compile",
-                        "generate",
+                        "static",
                         "substep_run_gen_001",
                     ),
                 },
                 response_payload=_spawn_response_payload("sess_substep_gen_001"),
             )
-            out_ref = f"{_FIX_IR_REF}/ir_meta.json"
+            out_ref = f"{_FIX_IR_REF}/compile_static_meta.json"
             out_path = repo_root / out_ref
             out_path.parent.mkdir(parents=True, exist_ok=True)
             out_path.write_text('{"status":"ok"}\n', encoding="utf-8")
@@ -6829,7 +5442,8 @@ shell_tool                       stable             true
                     "agent_role": "substep",
                     "parent_agent_run_id": "orch_run_001",
                     "step": "compile",
-                    "substep": "generate",
+                    "substep": "static",
+                    "deterministic": True,
                     "node_key": "problem/shallow_water2d@0.3.0",
                     "status": "pass",
                     "agent_backend": "claude",
@@ -6840,108 +5454,6 @@ shell_tool                       stable             true
                 },
             )
             self.assertEqual(payload["output_refs"], [out_ref])
-
-    def test_record_agent_run_rejects_substep_terminal_when_allowed_tmp_root_is_overbroad(self) -> None:
-        from tools.orchestration_runtime import _write_allowed_output_manifest
-
-        for overbroad in ("workspace/tmp", "workspace", ".", "workspace/tmp/other_run_id"):
-            with self.subTest(overbroad=overbroad):
-                # Each iteration is an unrelated run reusing one orchestration id.
-                self.addCleanup(_discard_isolated_homes, "orch_001")
-                _discard_isolated_homes("orch_001")
-                with tempfile.TemporaryDirectory() as tmp:
-                    repo_root = Path(tmp)
-                    init_orchestration(repo_root=repo_root, orchestration_id="orch_001")
-                    _mark_dependencies_ready(repo_root)
-                    write_preflight(
-                        repo_root=repo_root,
-                        orchestration_id="orch_001",
-                        payload={
-                            "status": "pass",
-                            "sandbox_runtime": "bwrap",
-                            "sandbox_enforced": True,
-                            "can_launch_step_agents": True,
-                            "can_launch_substep_agents": True,
-                            "feature_states": {"multi_agent": True, "hooks": True},
-                            "checks": [{"name": "multi_agent_enabled", "pass": True}, {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
-                        },
-                    )
-                    record_agent_run(
-                        repo_root=repo_root,
-                        orchestration_id="orch_001",
-                        payload={
-                            "agent_run_id": "orch_run_001",
-                            "agent_role": "orchestration",
-                            "status": "running",
-                            "agent_backend": "claude",
-                        },
-                    )
-                    record_launch(
-                        repo_root=repo_root,
-                        orchestration_id="orch_001",
-                        parent_agent_run_id="orch_run_001",
-                        child_agent_run_id="substep_run_gen_001",
-                        request_payload={
-                            "agent_model": "claude-opus-4-8",
-                            "node_key": "problem/shallow_water2d@0.3.0",
-                            "step": "compile",
-                            "substep": "generate",
-                            "agent_role": "substep",
-                            "orchestration_id": "orch_001",
-                            "agent_run_id": "substep_run_gen_001",
-                            "parent_agent_run_id": "orch_run_001",
-                            "ir_ref": _FIX_IR_REF,
-                            "pipeline_ref": _FIX_PIPE_REF,
-                            "dependency_ref": _FIX_COMPILE_STEP_DEP_REF,
-                            "skill_name": "workflow-compile-generate",
-                            "skill_ref": "skills/workflow-compile-generate/SKILL.md",
-                            "skill_must_read_refs": "",
-                            "allowed_output_paths": [f"{_FIX_IR_REF}/ir_meta.json"],
-                            "launch_prompt_full": _substep_launch_prompt(
-                                "problem/shallow_water2d@0.3.0",
-                                "compile",
-                                "generate",
-                                "substep_run_gen_001",
-                            ),
-                        },
-                        response_payload=_spawn_response_payload("sess_substep_gen_001"),
-                    )
-                    out_ref = f"{_FIX_IR_REF}/ir_meta.json"
-                    out_path = repo_root / out_ref
-                    out_path.parent.mkdir(parents=True, exist_ok=True)
-                    out_path.write_text('{"status":"ok"}\n', encoding="utf-8")
-                    # Overwrite the manifest with an over-broad allowed_tmp_root
-                    _write_allowed_output_manifest(
-                        repo_root,
-                        orchestration_id="orch_001",
-                        agent_run_id="substep_run_gen_001",
-                        allowed_output_paths=[out_ref],
-                        allowed_tmp_root=overbroad,
-                    )
-                    # Write a file that would only be skipped if the over-broad tmp root
-                    # were accepted (path is outside the correct per-run tmp root)
-                    bad_path = repo_root / "workspace" / "tmp" / "other_run_id" / "sneaky.txt"
-                    bad_path.parent.mkdir(parents=True, exist_ok=True)
-                    bad_path.write_text("unauthorized\n", encoding="utf-8")
-                    with self.assertRaises(ValueError):
-                        record_agent_run(
-                            repo_root=repo_root,
-                            orchestration_id="orch_001",
-                            payload={
-                                "agent_run_id": "substep_run_gen_001",
-                                "agent_role": "substep",
-                                "parent_agent_run_id": "orch_run_001",
-                                "step": "compile",
-                                "substep": "generate",
-                                "node_key": "problem/shallow_water2d@0.3.0",
-                                "status": "pass",
-                                "agent_backend": "claude",
-                                "agent_model": "claude-sonnet-4-6",
-                                "context_id": "ctx_substep_gen_001",
-                                "agent_session_id": "sess_substep_gen_001",
-                                "output_refs": [out_ref],
-                            },
-                        )
 
     def test_record_agent_run_accepts_step_terminal_when_output_under_write_root(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -7205,189 +5717,6 @@ shell_tool                       stable             true
             )
             self.assertEqual(payload["status"], "pass")
 
-    def test_record_agent_run_rejects_orchestration_terminal_when_it_overwrites_child_output(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            init_orchestration(repo_root=repo_root, orchestration_id="orch_001")
-            _mark_dependencies_ready(repo_root)
-            write_preflight(
-                repo_root=repo_root,
-                orchestration_id="orch_001",
-                payload={
-                    "status": "pass",
-                    "sandbox_runtime": "bwrap",
-                    "sandbox_enforced": True,
-                    "can_launch_step_agents": True,
-                    "can_launch_substep_agents": True,
-                    "feature_states": {"multi_agent": True, "hooks": True},
-                    "checks": [{"name": "multi_agent_enabled", "pass": True}, {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
-                },
-            )
-            record_agent_run(
-                repo_root=repo_root,
-                orchestration_id="orch_001",
-                payload={
-                    "agent_run_id": "orch_run_001",
-                    "agent_role": "orchestration",
-                    "status": "running",
-                    "agent_backend": "claude",
-                },
-            )
-            record_launch(
-                repo_root=repo_root,
-                orchestration_id="orch_001",
-                parent_agent_run_id="orch_run_001",
-                child_agent_run_id="step_run_build_001",
-                request_payload={
-                    "agent_model": "claude-opus-4-8",
-                    "node_key": "problem/shallow_water2d@0.3.0",
-                    "step": "build",
-                    "agent_role": "step",
-                    "orchestration_id": "orch_001",
-                    "agent_run_id": "step_run_build_001",
-                    "parent_agent_run_id": "orch_run_001",
-                    "ir_ref": _FIX_IR_REF,
-                    "pipeline_ref": _FIX_PIPE_REF,
-                    "dependency_ref": _FIX_DEP_REF,
-                    "deterministic": True,
-                    "deterministic": True,
-                    "allowed_output_paths": [f"{_FIX_PIPE_REF}/binary/bin_20260101_001/bin/simulate"],
-                    "launch_prompt_full": _step_launch_prompt(
-                        "problem/shallow_water2d@0.3.0",
-                        "build",
-                        "step_run_build_001",
-                    ),
-                },
-                response_payload=_spawn_response_payload("sess_step_build_001"),
-            )
-            out_ref = f"{_FIX_PIPE_REF}/binary/bin_20260101_001/bin/simulate"
-            out_path = repo_root / out_ref
-            out_path.parent.mkdir(parents=True, exist_ok=True)
-            out_path.write_text("binary-v1\n", encoding="utf-8")
-            record_agent_run(
-                repo_root=repo_root,
-                orchestration_id="orch_001",
-                payload={
-                    "agent_run_id": "step_run_build_001",
-                    "agent_role": "step",
-                    "parent_agent_run_id": "orch_run_001",
-                    "step": "build",
-                    "node_key": "problem/shallow_water2d@0.3.0",
-                    "status": "pass",
-                    "agent_backend": "codex",
-                    "agent_model": "gpt-5-codex",
-                    "context_id": "ctx_step_build_001",
-                    "agent_session_id": "sess_step_build_001",
-                    "output_refs": [out_ref],
-                },
-            )
-            out_path.write_text("binary-v2\n", encoding="utf-8")
-            with self.assertRaisesRegex(ValueError, "terminal run has unauthorized write paths"):
-                record_agent_run(
-                    repo_root=repo_root,
-                    orchestration_id="orch_001",
-                    payload={
-                        "agent_run_id": "orch_run_002",
-                        "agent_role": "orchestration",
-                        "status": "fail",
-                        "agent_backend": "claude",
-                        "result_summary": "orchestration overwrote child output",
-                    },
-                )
-
-    def test_record_agent_run_rejects_orchestration_terminal_when_it_overwrites_existing_child_output(
-        self,
-    ) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            out_ref = f"{_FIX_PIPE_REF}/binary/bin_20260101_001/bin/simulate"
-            out_path = repo_root / out_ref
-            out_path.parent.mkdir(parents=True, exist_ok=True)
-            out_path.write_text("binary-baseline\n", encoding="utf-8")
-            _fixture_generate_downstream_ready(repo_root)
-            init_orchestration(repo_root=repo_root, orchestration_id="orch_001")
-            _mark_dependencies_ready(repo_root)
-            write_preflight(
-                repo_root=repo_root,
-                orchestration_id="orch_001",
-                payload={
-                    "status": "pass",
-                    "sandbox_runtime": "bwrap",
-                    "sandbox_enforced": True,
-                    "can_launch_step_agents": True,
-                    "can_launch_substep_agents": True,
-                    "feature_states": {"multi_agent": True, "hooks": True},
-                    "checks": [{"name": "multi_agent_enabled", "pass": True}, {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
-                },
-            )
-            record_agent_run(
-                repo_root=repo_root,
-                orchestration_id="orch_001",
-                payload={
-                    "agent_run_id": "orch_run_001",
-                    "agent_role": "orchestration",
-                    "status": "running",
-                    "agent_backend": "claude",
-                },
-            )
-            record_launch(
-                repo_root=repo_root,
-                orchestration_id="orch_001",
-                parent_agent_run_id="orch_run_001",
-                child_agent_run_id="step_run_build_001",
-                request_payload={
-                    "agent_model": "claude-opus-4-8",
-                    "node_key": "problem/shallow_water2d@0.3.0",
-                    "step": "build",
-                    "agent_role": "step",
-                    "orchestration_id": "orch_001",
-                    "agent_run_id": "step_run_build_001",
-                    "parent_agent_run_id": "orch_run_001",
-                    "ir_ref": _FIX_IR_REF,
-                    "pipeline_ref": _FIX_PIPE_REF,
-                    "dependency_ref": _FIX_DEP_REF,
-                    "deterministic": True,
-                    "deterministic": True,
-                    "allowed_output_paths": [f"{_FIX_PIPE_REF}/binary/bin_20260101_001/bin/simulate"],
-                    "launch_prompt_full": _step_launch_prompt(
-                        "problem/shallow_water2d@0.3.0",
-                        "build",
-                        "step_run_build_001",
-                    ),
-                },
-                response_payload=_spawn_response_payload("sess_step_build_001"),
-            )
-            record_agent_run(
-                repo_root=repo_root,
-                orchestration_id="orch_001",
-                payload={
-                    "agent_run_id": "step_run_build_001",
-                    "agent_role": "step",
-                    "parent_agent_run_id": "orch_run_001",
-                    "step": "build",
-                    "node_key": "problem/shallow_water2d@0.3.0",
-                    "status": "pass",
-                    "agent_backend": "codex",
-                    "agent_model": "gpt-5-codex",
-                    "context_id": "ctx_step_build_001",
-                    "agent_session_id": "sess_step_build_001",
-                    "output_refs": [out_ref],
-                },
-            )
-            out_path.write_text("binary-overwritten\n", encoding="utf-8")
-            with self.assertRaisesRegex(ValueError, "terminal run has unauthorized write paths"):
-                record_agent_run(
-                    repo_root=repo_root,
-                    orchestration_id="orch_001",
-                    payload={
-                        "agent_run_id": "orch_run_002",
-                        "agent_role": "orchestration",
-                        "status": "fail",
-                        "agent_backend": "claude",
-                        "result_summary": "orchestration overwrote existing child output",
-                    },
-                )
-
     def test_rejects_launch_response_without_child_agent_identifier(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
@@ -7434,452 +5763,6 @@ shell_tool                       stable             true
                     response_payload={"launch_reply": "accepted: missing-id"},
                 )
 
-    def test_write_roots_for_launch_includes_tune_canonical_root(self) -> None:
-        self.assertEqual(
-            _write_roots_for_launch(
-                role="substep",
-                step="tune",
-                orchestration_id="orch_001",
-                ir_ref=_FIX_IR_REF,
-                pipeline_ref=_FIX_PIPE_REF,
-            ),
-            [f"{_FIX_PIPE_REF}/tune/"],
-        )
-
-    def test_write_roots_for_launch_promote_scoped_to_node_spec_subtree(self) -> None:
-        """Regression: promote write_roots MUST be scoped to the current node's
-        spec subtree. A wide `releases/` write_root would let a promote agent
-        for spec_x mutate any release artifact under the entire releases/
-        tree via the bwrap sandbox bind, before terminal-time validation can
-        reject the path. Scope must come from node_key."""
-        self.assertEqual(
-            _write_roots_for_launch(
-                role="step",
-                step="promote",
-                orchestration_id="orch_001",
-                ir_ref=_FIX_IR_REF,
-                pipeline_ref=_FIX_PIPE_REF,
-                node_key="problem/dom.fam.spec_x@1.0",
-            ),
-            ["releases/problem/dom/fam/spec_x/", "spec/registry/spec_catalog.yaml"],
-        )
-
-    def test_write_roots_for_launch_promote_without_node_key_returns_empty(self) -> None:
-        """Without node_key we cannot derive a per-spec subtree. We refuse
-        rather than fall back to the wide releases/ tree. The fail-fast
-        invariant in build_capability_document then raises."""
-        self.assertEqual(
-            _write_roots_for_launch(
-                role="step",
-                step="promote",
-                orchestration_id="orch_001",
-                ir_ref=_FIX_IR_REF,
-                pipeline_ref=_FIX_PIPE_REF,
-            ),
-            [],
-        )
-
-    def test_write_roots_for_launch_compile_verify_pins_ir_meta(self) -> None:
-        """On an AGENTIC launch, Compile.verify's write_root is narrowed to the single
-        ir_meta.json file pin (not the whole <ir_ref>/ dir): the certified spec.ir.yaml
-        must stay non-writable to the verifier so a post-gate mutation cannot bypass
-        --stage compile. `_write_roots_for_launch` is the agentic derivation and this
-        drives it directly; a `pure-function leaf` — the default for this substep since
-        issue #168 — never reaches it and gets `write_roots: []`."""
-        self.assertEqual(
-            _write_roots_for_launch(
-                role="substep",
-                step="compile",
-                substep="verify",
-                orchestration_id="orch_001",
-                ir_ref=_FIX_IR_REF,
-                pipeline_ref=_FIX_PIPE_REF,
-                node_key="problem/shallow_water2d@0.3.0",
-            ),
-            [f"{_FIX_IR_REF.rstrip('/')}/ir_meta.json"],
-        )
-
-    def test_write_roots_for_launch_compile_generate_keeps_ir_dir(self) -> None:
-        """On an AGENTIC launch, Compile.generate (which authors the IR) keeps the whole
-        <ir_ref>/ directory root; only the verifier is pinned. Same scope note as the row
-        above: a pure `compile.generate` writes nothing and is not derived from here."""
-        self.assertEqual(
-            _write_roots_for_launch(
-                role="substep",
-                step="compile",
-                substep="generate",
-                orchestration_id="orch_001",
-                ir_ref=_FIX_IR_REF,
-                pipeline_ref=_FIX_PIPE_REF,
-                node_key="problem/shallow_water2d@0.3.0",
-            ),
-            [f"{_FIX_IR_REF.rstrip('/')}/"],
-        )
-
-    def test_write_roots_for_launch_validate_judge_pins_semantic_review(self) -> None:
-        """Validate.judge (a pure semantic pass authoring only semantic_review.json)
-        is narrowed to that single file pin, removing the same-dir host-authored
-        verdict.json / diagnostics.json from its RW surface."""
-        self.assertEqual(
-            _write_roots_for_launch(
-                role="substep",
-                step="validate",
-                substep="judge",
-                orchestration_id="orch_001",
-                ir_ref=_FIX_IR_REF,
-                pipeline_ref=_FIX_PIPE_REF,
-                node_key="problem/shallow_water2d@0.3.0",
-                run_id="run_20260415_001",
-            ),
-            [f"{_FIX_PIPE_REF}/runs/run_20260415_001/problem__shallow_water2d__0.3.0/semantic_review.json"],
-        )
-
-    def test_write_roots_for_launch_validate_execute_keeps_runs_dir(self) -> None:
-        """Validate.execute writes the whole runs/ evidence tree and keeps the
-        directory root; only the judge is pinned."""
-        self.assertEqual(
-            _write_roots_for_launch(
-                role="substep",
-                step="validate",
-                substep="execute",
-                orchestration_id="orch_001",
-                ir_ref=_FIX_IR_REF,
-                pipeline_ref=_FIX_PIPE_REF,
-                node_key="problem/shallow_water2d@0.3.0",
-                run_id="run_20260415_001",
-            ),
-            [f"{_FIX_PIPE_REF}/runs/"],
-        )
-
-    def test_write_roots_for_launch_validate_judge_missing_run_id_returns_empty(self) -> None:
-        """Without run_id the judge pin cannot be derived; return [] so the
-        capability_invalid_empty_write_roots fail-closed error fires at launch."""
-        self.assertEqual(
-            _write_roots_for_launch(
-                role="substep",
-                step="validate",
-                substep="judge",
-                orchestration_id="orch_001",
-                ir_ref=_FIX_IR_REF,
-                pipeline_ref=_FIX_PIPE_REF,
-                node_key="problem/shallow_water2d@0.3.0",
-            ),
-            [],
-        )
-
-    def test_write_roots_for_launch_validate_judge_malformed_run_id_returns_empty(self) -> None:
-        """A run_id outside the [A-Za-z0-9_-] allowlist (separators, traversal, or any
-        shell/glob metacharacter) must not widen or escape the pin. Fail closed with []."""
-        for bad in ("run_x/../../etc", "run/x", "..", ".", "run *", "run~1", "run?x", "run.1", ""):
-            self.assertEqual(
-                _write_roots_for_launch(
-                    role="substep",
-                    step="validate",
-                    substep="judge",
-                    orchestration_id="orch_001",
-                    ir_ref=_FIX_IR_REF,
-                    pipeline_ref=_FIX_PIPE_REF,
-                    node_key="problem/shallow_water2d@0.3.0",
-                    run_id=bad,
-                ),
-                [],
-                f"malformed run_id {bad!r} should yield []",
-            )
-
-    def test_build_capability_document_judge_missing_run_id_raises(self) -> None:
-        """The empty write_roots from a judge launch missing run_id surfaces as the
-        loud capability_invalid_empty_write_roots error, not a silent wide root."""
-        from tools.orchestration_runtime import build_capability_document
-        with self.assertRaises(ValueError) as ctx:
-            build_capability_document(
-                agent_run_id="substep_judge_001",
-                orchestration_id="orch_001",
-                request_payload={
-                    "agent_role": "substep",
-                    "step": "validate",
-                    "substep": "judge",
-                    "node_key": "problem/shallow_water2d@0.3.0",
-                    "ir_ref": _FIX_IR_REF,
-                    "pipeline_ref": _FIX_PIPE_REF,
-                },
-            )
-        self.assertIn("capability_invalid_empty_write_roots", str(ctx.exception))
-
-    def test_build_capability_document_judge_pins_semantic_review(self) -> None:
-        from tools.orchestration_runtime import build_capability_document
-        cap = build_capability_document(
-            agent_run_id="substep_judge_002",
-            orchestration_id="orch_001",
-            request_payload={
-                "agent_role": "substep",
-                "step": "validate",
-                "substep": "judge",
-                "node_key": "problem/shallow_water2d@0.3.0",
-                "ir_ref": _FIX_IR_REF,
-                "pipeline_ref": _FIX_PIPE_REF,
-                "run_id": "run_20260415_001",
-            },
-        )
-        self.assertEqual(
-            cap["write_roots"],
-            [f"{_FIX_PIPE_REF}/runs/run_20260415_001/problem__shallow_water2d__0.3.0/semantic_review.json"],
-        )
-
-    def test_write_roots_for_launch_generate_verify_pins_source_meta(self) -> None:
-        """generate.verify's write_root is narrowed to the single producer-authored
-        source_meta.json file pin: it inspects the certified sources but never rewrites
-        them (a fail requests regeneration under a NEW source_id)."""
-        self.assertEqual(
-            _write_roots_for_launch(
-                role="substep",
-                step="generate",
-                substep="verify",
-                orchestration_id="orch_001",
-                ir_ref=_FIX_IR_REF,
-                pipeline_ref=_FIX_PIPE_REF,
-                node_key="problem/shallow_water2d@0.3.0",
-                source_id="src_20260415_001",
-            ),
-            [f"{_FIX_PIPE_REF}/source/src_20260415_001/source_meta.json"],
-        )
-
-    def test_write_roots_for_launch_generate_generate_keeps_source_dir(self) -> None:
-        """generate.generate authors the source tree and keeps the whole source/ dir
-        root; only the verifier is pinned (source_id is irrelevant to the author root)."""
-        self.assertEqual(
-            _write_roots_for_launch(
-                role="substep",
-                step="generate",
-                substep="generate",
-                orchestration_id="orch_001",
-                ir_ref=_FIX_IR_REF,
-                pipeline_ref=_FIX_PIPE_REF,
-                node_key="problem/shallow_water2d@0.3.0",
-                source_id="src_20260415_001",
-            ),
-            [f"{_FIX_PIPE_REF}/source/"],
-        )
-
-    def test_write_roots_for_launch_generate_verify_missing_source_id_returns_empty(self) -> None:
-        """Without a valid source_id the verify pin cannot be derived; return [] so the
-        capability_invalid_empty_write_roots fail-closed error fires at launch."""
-        for bad in ("", "src/../x", "..", "sr/c"):
-            self.assertEqual(
-                _write_roots_for_launch(
-                    role="substep",
-                    step="generate",
-                    substep="verify",
-                    orchestration_id="orch_001",
-                    ir_ref=_FIX_IR_REF,
-                    pipeline_ref=_FIX_PIPE_REF,
-                    node_key="problem/shallow_water2d@0.3.0",
-                    source_id=bad,
-                ),
-                [],
-                f"malformed source_id {bad!r} should yield []",
-            )
-
-    def test_build_capability_document_generate_verify_pins_source_meta(self) -> None:
-        from tools.orchestration_runtime import build_capability_document
-        cap = build_capability_document(
-            agent_run_id="substep_gv_001",
-            orchestration_id="orch_001",
-            request_payload={
-                "agent_role": "substep",
-                "step": "generate",
-                "substep": "verify",
-                "node_key": "problem/shallow_water2d@0.3.0",
-                "ir_ref": _FIX_IR_REF,
-                "pipeline_ref": _FIX_PIPE_REF,
-                "source_id": "src_20260415_001",
-            },
-        )
-        self.assertEqual(
-            cap["write_roots"],
-            [f"{_FIX_PIPE_REF}/source/src_20260415_001/source_meta.json"],
-        )
-
-    def test_build_capability_document_mcp_permissions_per_substep(self) -> None:
-        """Least-privilege: `mcp_permissions` is granted per (step, substep) — ONLY the
-        three conductor in-process bodies that actually call a gated build-runtime tool get a
-        grant (build, generate.gate, validate.execute); every LLM leaf and every other
-        deterministic in-process validator falls through to the fail-closed `[]`. Asserted
-        through build_capability_document (the production path) so the wiring — not just the
-        table lookup — is pinned."""
-        from tools.orchestration_runtime import build_capability_document
-
-        node = "problem/shallow_water2d@0.3.0"
-
-        def _cap(*, role: str, step: str, substep: str | None, extra: dict | None = None) -> list:
-            payload: dict[str, object] = {
-                "agent_role": role,
-                "step": step,
-                "node_key": node,
-                "ir_ref": _FIX_IR_REF,
-                "pipeline_ref": _FIX_PIPE_REF,
-            }
-            if substep is not None:
-                payload["substep"] = substep
-            if extra:
-                payload.update(extra)
-            cap = build_capability_document(
-                agent_run_id="substep_perm_001",
-                orchestration_id="orch_001",
-                request_payload=payload,
-            )
-            return cap["mcp_permissions"]
-
-        # The three gated bodies get exactly their tool(s). generate.gate unions the lint +
-        # syntax checkers, so it grants both run_linter and run_syntax_check.
-        self.assertEqual(_cap(role="step", step="build", substep=None), ["compile_project"])
-        self.assertEqual(_cap(role="substep", step="generate", substep="gate"),
-                         ["run_linter", "run_syntax_check"])
-        self.assertEqual(
-            _cap(role="substep", step="validate", substep="execute"),
-            ["run_program", "run_quality_checks"],
-        )
-
-        # Every LLM leaf and every other deterministic validator: `[]` (fail-closed). The retired
-        # per-checker substep names (lint/syntax/static) are no longer in the table -> `[]`.
-        self.assertEqual(_cap(role="substep", step="generate", substep="generate"), [])
-        self.assertEqual(_cap(role="substep", step="generate", substep="lint"), [])
-        self.assertEqual(_cap(role="substep", step="generate", substep="syntax"), [])
-        self.assertEqual(_cap(role="substep", step="generate", substep="static"), [])
-        self.assertEqual(
-            _cap(role="substep", step="generate", substep="verify",
-                 extra={"source_id": "src_20260415_001"}),
-            [],
-        )
-        self.assertEqual(_cap(role="substep", step="validate", substep="pre_judge"), [])
-        self.assertEqual(_cap(role="substep", step="validate", substep="post_judge"), [])
-        self.assertEqual(
-            _cap(role="substep", step="validate", substep="judge",
-                 extra={"run_id": "run_20260415_001"}),
-            [],
-        )
-        self.assertEqual(_cap(role="substep", step="compile", substep="generate"), [])
-        self.assertEqual(_cap(role="substep", step="compile", substep="static"), [])
-        self.assertEqual(_cap(role="substep", step="compile", substep="verify"), [])
-        # Substep-less generate payload (agent_role explicitly "substep"): the ("generate", "")
-        # key is not in the table, so fail-closed `[]` even though write_roots resolve.
-        self.assertEqual(_cap(role="substep", step="generate", substep=None), [])
-
-    def test_mcp_permissions_for_launch_unknown_pairs_are_fail_closed(self) -> None:
-        """Direct-call fail-closed coverage: an unknown (step, substep) and a non-leaf role
-        both yield `[]`."""
-        from tools.orchestration_runtime import _mcp_permissions_for_launch
-
-        self.assertEqual(_mcp_permissions_for_launch("substep", "generate", substep="bogus"), [])
-        self.assertEqual(_mcp_permissions_for_launch("orchestration", "build"), [])
-        self.assertEqual(_mcp_permissions_for_launch("substep", "build", substep="lint"), [])
-
-    def test_mcp_grant_table_matches_conductor_call_sites(self) -> None:
-        """Drift guard: `_MCP_TOOL_GRANTS_BY_SUBSTEP` is a hand-maintained mirror of which
-        conductor in-process body calls which gated build-runtime tool. If a body gains,
-        loses, or renames a gated `tool_*` call and the table is not updated in lockstep,
-        the runtime authz gate would silently fail-closed (deny a needed tool) or over-grant
-        in production, with the existing per-substep tests still green.
-
-        generate.gate does NOT call any gated tool directly — it delegates to the
-        `self._gate_<checker>_check(...)` helpers. So the derivation is a one-level CALL-GRAPH
-        WALK: it starts from the dispatched body, and for every `self._gate_*_check(` call it
-        finds, UNIONS the gated tools of that helper. A helper call that is removed (dropping a
-        checker) drops its tool from the derived set and reds this test — the negative tooth the
-        plan requires."""
-        import inspect
-        import re
-        import tools.workflow_conductor as wc
-        # The conductor bodies import build_runtime_server bare at runtime; this test only reads
-        # their source via inspect.getsource, so import the module by its package path (already
-        # used at module top) — no cwd-dependent sys.path insertion needed.
-        from mcp_servers import build_runtime_server as brs
-        from tools.orchestration_runtime import _MCP_TOOL_GRANTS_BY_SUBSTEP
-
-        # (step, substep) -> the Conductor in-process method that the dispatcher runs.
-        bodies = {
-            ("build", ""): wc.Conductor._build_inproc,
-            ("generate", "gate"): wc.Conductor._gate_inproc,
-            ("validate", "execute"): wc.Conductor._execute_inproc,
-        }
-        # Gated build-runtime handler name -> the MCP tool id it enforces.
-        handler_to_tool = {
-            "tool_compile_project": "compile_project",
-            "tool_run_linter": "run_linter",
-            "tool_run_syntax_check": "run_syntax_check",
-            "tool_run_program": "run_program",
-            "tool_run_quality_checks": "run_quality_checks",
-        }
-
-        # Pin `handler_to_tool`'s universe to the ACTUAL gate-enforcing tools rather than a
-        # second hand-maintained list: a build-runtime `tool_*` handler is gated iff its body
-        # calls `_maybe_enforce_orchestration_mcp_gate`. If a NEW gated tool is added to
-        # build_runtime_server (or an existing one stops enforcing), this fails first —
-        # forcing handler_to_tool AND the grant table to be reconciled, so a brand-new gated
-        # call cannot enter production while silently absent from the table.
-        gate_enforcing = {
-            name for name, obj in vars(brs).items()
-            if name.startswith("tool_") and inspect.isfunction(obj)
-            and "_maybe_enforce_orchestration_mcp_gate" in inspect.getsource(obj)
-        }
-        self.assertEqual(
-            set(handler_to_tool), gate_enforcing,
-            "the set of gate-enforcing build-runtime tools changed — reconcile this test's "
-            "`handler_to_tool` and _MCP_TOOL_GRANTS_BY_SUBSTEP with build_runtime_server",
-        )
-
-        def _tools_in(src: str) -> set[str]:
-            # Match the CALL shape `tool_x(` — not a bare name, which would also match an
-            # in-body `from build_runtime_server import tool_x` line and let a removed call
-            # with a retained import slip through as a false grant.
-            return {tool for handler, tool in handler_to_tool.items()
-                    if re.search(rf"\b{handler}\s*\(", src)}
-
-        def _tools_for_body(fn) -> tuple[str, ...]:
-            src = inspect.getsource(fn)
-            tools = set(_tools_in(src))
-            # One-level call-graph walk: expand every self._gate_<checker>_check( helper the
-            # body calls, unioning the gated tools that helper itself invokes.
-            for m in re.finditer(r"self\.(_gate_\w+_check)\s*\(", src):
-                helper = getattr(wc.Conductor, m.group(1), None)
-                if helper is not None:
-                    tools |= _tools_in(inspect.getsource(helper))
-            return tuple(sorted(tools))
-
-        derived = {key: _tools_for_body(fn) for key, fn in bodies.items()}
-
-        # The table must grant EXACTLY the tools each body (transitively) calls
-        # (order-insensitive), covering exactly these keys — no stale entry, no missing body.
-        self.assertEqual(
-            {k: tuple(sorted(v)) for k, v in _MCP_TOOL_GRANTS_BY_SUBSTEP.items()},
-            derived,
-            "grant table drifted from the conductor in-process call sites — update "
-            "_MCP_TOOL_GRANTS_BY_SUBSTEP (and this test's `bodies` map) together",
-        )
-
-        # NEGATIVE TEETH — the gate grant lives ENTIRELY in the helper call-graph:
-        #   (i) _gate_inproc calls no gated tool directly (a direct-only scan derives nothing),
-        #       so an inlined checker with no self._gate_*_check( call would DROP its tools and
-        #       red the equality above instead of silently over-granting.
-        gate_src = inspect.getsource(wc.Conductor._gate_inproc)
-        self.assertEqual(_tools_in(gate_src), set(),
-                         "_gate_inproc must delegate gated tools to the checker helpers")
-        #   (ii) each helper contributes exactly its checker's tool, and _gate_inproc actually
-        #        calls both — so removing either helper call drops that tool from `derived`.
-        self.assertEqual(_tools_in(inspect.getsource(wc.Conductor._gate_lint_check)),
-                         {"run_linter"})
-        self.assertEqual(_tools_in(inspect.getsource(wc.Conductor._gate_syntax_check)),
-                         {"run_syntax_check"})
-        self.assertEqual(_tools_in(inspect.getsource(wc.Conductor._gate_static_check)), set())
-        self.assertTrue(re.search(r"self\._gate_lint_check\s*\(", gate_src))
-        self.assertTrue(re.search(r"self\._gate_syntax_check\s*\(", gate_src))
-
-    def test_mcp_grant_table_is_immutable(self) -> None:
-        """The grant table is frozen (MappingProxyType) so a stray mutation cannot flip a
-        security-sensitive grant for the rest of the process."""
-        from tools.orchestration_runtime import _MCP_TOOL_GRANTS_BY_SUBSTEP
-        with self.assertRaises(TypeError):
-            _MCP_TOOL_GRANTS_BY_SUBSTEP[("generate", "verify")] = ("run_linter",)  # type: ignore[index]
-
     def test_allowed_output_paths_for_launch_promote_accepts_release_artifact_and_catalog(self) -> None:
         """Regression: promote step must pass phase contract validation for
         canonical write paths (release tree + spec_catalog.yaml). Without this
@@ -7899,7 +5782,6 @@ shell_tool                       stable             true
                     "spec/registry/spec_catalog.yaml",
                 ],
             },
-            write_roots=["releases/", "spec/registry/spec_catalog.yaml"],
         )
         self.assertEqual(
             out,
@@ -7924,76 +5806,7 @@ shell_tool                       stable             true
                     "node_key": "problem/dom.fam.spec_x@1.0",
                     "allowed_output_paths": ["workspace/random.json"],
                 },
-                write_roots=["releases/", "spec/registry/spec_catalog.yaml", "workspace/"],
             )
-
-    def test_build_capability_document_rejects_traversal_node_key(self) -> None:
-        """Regression: node_key flows into write_roots / release path prefixes,
-        so malformed values containing path-traversal sequences (`../`),
-        embedded slashes, null bytes, or other non-canonical structure must be
-        rejected at capability-build time. Without strict validation a node_key
-        like `../etc/passwd@1.0.0` produces a write_root of
-        `releases/../etc/passwd/`, escaping the intended release subtree."""
-        from tools.orchestration_runtime import build_capability_document
-
-        base_payload: dict[str, object] = {
-            "agent_role": "step",
-            "step": "build",
-            "agent_model": "claude-opus-4-8",
-            "ir_ref": _FIX_IR_REF,
-            "pipeline_ref": _FIX_PIPE_REF,
-        }
-        malicious = [
-            "../etc/passwd@1.0.0",
-            "problem/../../../etc/passwd@1.0.0",
-            "problem/foo\x00bar@1.0.0",
-            "problem/foo@bar/1.0.0",
-            "   ../etc   /passwd@1.0.0",
-            "problem/.@1.0.0",
-            "problem/legit@../../1.0.0",
-            "problem/foo..bar@1.0.0",
-            "problem/foo/bar@1.0.0",
-            "problem/Foo@1.0.0",
-            "problem/.foo@1.0.0",
-            "problem/foo.@1.0.0",
-            "/abs/path@1.0.0",
-            "..\\..\\windows@1.0.0",
-        ]
-        for nk in malicious:
-            with self.assertRaises(ValueError, msg=f"should reject node_key={nk!r}"):
-                build_capability_document(
-                    agent_run_id="r1",
-                    orchestration_id="o1",
-                    request_payload={**base_payload, "node_key": nk},
-                )
-
-    def test_build_capability_document_accepts_canonical_node_keys(self) -> None:
-        """Sanity guard for the strict node_key validator: canonical forms used
-        across the codebase (single-segment spec_id, dotted spec_id, components
-        with hyphens/underscores) must continue to be accepted."""
-        from tools.orchestration_runtime import build_capability_document
-
-        base_payload: dict[str, object] = {
-            "agent_role": "step",
-            "step": "build",
-            "agent_model": "claude-opus-4-8",
-            "ir_ref": _FIX_IR_REF,
-            "pipeline_ref": _FIX_PIPE_REF,
-        }
-        for nk in (
-            "problem/shallow_water2d@0.3.0",
-            "component/dynamics_shallow_water_flux_2d_rusanov_p0@0.1.0",
-            "problem/dom.fam.spec_x@1.0",
-        ):
-            cap = build_capability_document(
-                agent_run_id="r1",
-                orchestration_id="o1",
-                request_payload={**base_payload, "node_key": nk},
-            )
-            self.assertEqual(cap["node_key"], nk)
-            self.assertTrue(cap["write_roots"], f"write_roots empty for {nk!r}")
-            for root in cap["write_roots"]:
-                self.assertNotIn("..", root.split("/"))
 
     def test_allowed_output_paths_for_launch_promote_rejects_cross_spec_release(self) -> None:
         """Regression: a promote agent for spec_x must NOT be allowed to write
@@ -8014,7 +5827,6 @@ shell_tool                       stable             true
                         "releases/problem/other_dom/other_fam/other_spec/aarch64/fortran/r_001/x.tar.gz",
                     ],
                 },
-                write_roots=["releases/", "spec/registry/spec_catalog.yaml"],
             )
 
     def test_allowed_output_paths_for_launch_promote_rejects_shallow_path_under_spec(self) -> None:
@@ -8035,7 +5847,6 @@ shell_tool                       stable             true
                         "releases/problem/dom/fam/spec_x/README.md",
                     ],
                 },
-                write_roots=["releases/", "spec/registry/spec_catalog.yaml"],
             )
 
     def test_allowed_output_paths_for_launch_promote_rejects_traversal_in_release_path(self) -> None:
@@ -8056,7 +5867,6 @@ shell_tool                       stable             true
                         "releases/problem/dom/fam/spec_x/.hidden/lang/r/x.tar.gz",
                     ],
                 },
-                write_roots=["releases/", "spec/registry/spec_catalog.yaml"],
             )
 
     def test_allowed_output_paths_for_launch_rejects_dotdot_segments(self) -> None:
@@ -8079,7 +5889,6 @@ shell_tool                       stable             true
                         "releases/problem/dom/fam/spec_x/aarch64/fortran/r1/../../spec/registry/spec_catalog.yaml",
                     ],
                 },
-                write_roots=["releases/problem/dom/fam/spec_x/", "spec/registry/spec_catalog.yaml"],
             )
 
     def test_allowed_output_paths_for_launch_rejects_single_dot_segments(self) -> None:
@@ -8097,7 +5906,6 @@ shell_tool                       stable             true
                         "releases/problem/dom/fam/spec_x/./aarch64/fortran/r1/x.tar.gz",
                     ],
                 },
-                write_roots=["releases/problem/dom/fam/spec_x/", "spec/registry/spec_catalog.yaml"],
             )
 
     def test_allowed_output_paths_for_launch_promote_accepts_deep_artifact_path(self) -> None:
@@ -8116,7 +5924,6 @@ shell_tool                       stable             true
                     "releases/problem/dom/fam/spec_x/aarch64/fortran/r1/sub/dir/x.tar.gz",
                 ],
             },
-            write_roots=["releases/", "spec/registry/spec_catalog.yaml"],
         )
         self.assertEqual(
             out,
@@ -8140,170 +5947,7 @@ shell_tool                       stable             true
                         "releases/algorithm/dom/fam/spec_x/aarch64/fortran/r_001/x.tar.gz",
                     ],
                 },
-                write_roots=["releases/", "spec/registry/spec_catalog.yaml"],
             )
-
-    def test_record_agent_run_rejects_tune_substep_terminal_write_outside_tune_root(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            init_orchestration(repo_root=repo_root, orchestration_id="orch_001")
-            _mark_dependencies_ready(repo_root)
-            write_preflight(
-                repo_root=repo_root,
-                orchestration_id="orch_001",
-                payload={
-                    "status": "pass",
-                    "sandbox_runtime": "bwrap",
-                    "sandbox_enforced": True,
-                    "can_launch_step_agents": True,
-                    "can_launch_substep_agents": True,
-                    "feature_states": {"multi_agent": True, "hooks": True},
-                    "checks": [{"name": "multi_agent_enabled", "pass": True}, {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
-                },
-            )
-            record_agent_run(
-                repo_root=repo_root,
-                orchestration_id="orch_001",
-                payload={
-                    "agent_run_id": "orch_run_001",
-                    "agent_role": "orchestration",
-                    "status": "running",
-                    "agent_backend": "claude",
-                },
-            )
-            cap_path = (
-                repo_root
-                / "workspace/orchestrations/orch_001/capabilities/substep_run_tune_001.json"
-            )
-            cap_path.parent.mkdir(parents=True, exist_ok=True)
-            cap_path.write_text(
-                json.dumps(
-                    {
-                        "agent_run_id": "substep_run_tune_001",
-                        "capability_token": "tok_tune_001",
-                        "orchestration_id": "orch_001",
-                        "agent_role": "substep",
-                        "node_key": "problem/shallow_water2d@0.3.0",
-                        "step": "tune",
-                        "substep": "generate",
-                        "write_roots": [f"{_FIX_PIPE_REF}/tune/"],
-                    },
-                    ensure_ascii=False,
-                    indent=2,
-                )
-                + "\n",
-                encoding="utf-8",
-            )
-            launch_request_path = (
-                repo_root
-                / "workspace/orchestrations/orch_001/launches/substep_run_tune_001.request.json"
-            )
-            launch_request_path.parent.mkdir(parents=True, exist_ok=True)
-            launch_request_path.write_text(
-                json.dumps(
-                    {
-                        "node_key": "problem/shallow_water2d@0.3.0",
-                        "step": "tune",
-                        "substep": "generate",
-                        "orchestration_id": "orch_001",
-                        "agent_run_id": "substep_run_tune_001",
-                        "parent_agent_run_id": "orch_run_001",
-                        "ir_ref": _FIX_IR_REF,
-                        "pipeline_ref": _FIX_PIPE_REF,
-                        "dependency_ref": _FIX_DEP_REF,
-                    },
-                    ensure_ascii=False,
-                    indent=2,
-                )
-                + "\n",
-                encoding="utf-8",
-            )
-            launch_response_path = (
-                repo_root
-                / "workspace/orchestrations/orch_001/launches/substep_run_tune_001.response.json"
-            )
-            sandbox_profile_path = (
-                repo_root
-                / "workspace/orchestrations/orch_001/sandbox_profiles/substep_run_tune_001.json"
-            )
-            sandbox_profile_path.parent.mkdir(parents=True, exist_ok=True)
-            sandbox_profile_path.write_text(
-                json.dumps(
-                    {
-                        "orchestration_id": "orch_001",
-                        "agent_run_id": "substep_run_tune_001",
-                        "sandbox_runtime": "bwrap",
-                    },
-                    ensure_ascii=False,
-                    indent=2,
-                )
-                + "\n",
-                encoding="utf-8",
-            )
-            launch_response_path.write_text(
-                json.dumps(
-                    {
-                        "agent_run_id": "substep_run_tune_001",
-                        **_spawn_response_payload("sess_substep_tune_001"),
-                        "sandbox_runtime": "bwrap",
-                        "sandbox_enforced": True,
-                        "sandbox_profile_ref": (
-                            "workspace/orchestrations/orch_001/"
-                            "sandbox_profiles/substep_run_tune_001.json"
-                        ),
-                    },
-                    ensure_ascii=False,
-                    indent=2,
-                )
-                + "\n",
-                encoding="utf-8",
-            )
-            launch_prompt_path = (
-                repo_root
-                / "workspace/orchestrations/orch_001/launches/substep_run_tune_001.prompt.txt"
-            )
-            launch_prompt_path.write_text(
-                _substep_launch_prompt(
-                    "problem/shallow_water2d@0.3.0",
-                    "tune",
-                    "generate",
-                    "substep_run_tune_001",
-                ),
-                encoding="utf-8",
-            )
-            launch_reply_path = (
-                repo_root
-                / "workspace/orchestrations/orch_001/launches/substep_run_tune_001.reply.txt"
-            )
-            launch_reply_path.write_text("accepted: sess_substep_tune_001\n", encoding="utf-8")
-            _write_run_write_baseline(
-                repo_root,
-                "orch_001",
-                agent_run_id="substep_run_tune_001",
-            )
-            bad_ref = f"{_FIX_PIPE_REF}/source/leaked.txt"
-            bad_path = repo_root / bad_ref
-            bad_path.parent.mkdir(parents=True, exist_ok=True)
-            bad_path.write_text("leak\n", encoding="utf-8")
-            with self.assertRaisesRegex(ValueError, "terminal run has unauthorized write paths"):
-                record_agent_run(
-                    repo_root=repo_root,
-                    orchestration_id="orch_001",
-                    payload={
-                        "agent_run_id": "substep_run_tune_001",
-                        "agent_role": "substep",
-                        "parent_agent_run_id": "orch_run_001",
-                        "step": "tune",
-                        "substep": "generate",
-                        "node_key": "problem/shallow_water2d@0.3.0",
-                        "status": "pass",
-                        "agent_backend": "codex",
-                        "agent_model": "gpt-5-codex",
-                        "context_id": "ctx_substep_tune_001",
-                        "agent_session_id": "sess_substep_tune_001",
-                        "output_refs": [bad_ref],
-                    },
-                )
 
     def test_rejects_agent_run_when_launch_response_session_id_differs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -8619,22 +6263,20 @@ shell_tool                       stable             true
                     request_payload={
                         "agent_role": "substep",
                         "allowed_output_paths": [
-                            "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/spec.ir.yaml",
-                            "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/ir_meta.json",
-                        ],
+                            "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/compile_static_meta.json",
+                                                    ],
                         "agent_model": "claude-opus-4-8",
                         "node_key": "problem/shallow_water2d@0.3.0",
                         "step": "compile",
-                        "substep": "generate",
+                        "substep": "static",
+                    "deterministic": True,
                         "orchestration_id": "orch_001",
                         "agent_run_id": "substep_run_plan_generate_001",
                         "parent_agent_run_id": "orch_run_001",
                         "ir_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
                         "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
                         "dependency_ref": _FIX_COMPILE_STEP_DEP_REF,
-                        "skill_name": "workflow-compile-generate",
-                        "skill_ref": "skills/workflow-compile-generate/SKILL.md",
-                        "skill_must_read_refs": "",
+                                                                        "skill_must_read_refs": "",
                         "issue_severity": "none",
                         "repair_strategy": "none",
                         "repair_target_agent_run_id": "none",
@@ -8642,7 +6284,7 @@ shell_tool                       stable             true
                         "launch_prompt_full": _substep_launch_prompt(
                             "problem/shallow_water2d@0.3.0",
                             "compile",
-                            "generate",
+                            "static",
                             "substep_run_plan_generate_001",
                         ),
                     },
@@ -10481,72 +8123,6 @@ shell_tool                       stable             true
             )
             self.assertIsInstance(result, dict)
 
-    def test_terse_record_launch_keys_exist_in_real_return(self) -> None:
-        """Anti-drift guard: every record-launch terse field must be a real key.
-
-        The synthetic _project_terse_result tests cannot catch a tuple field
-        name drifting from the actual record_launch return key (which would
-        silently emit a smaller dict). This runs a real record_launch and
-        asserts the load-bearing keys survive the projection with truthy values.
-        """
-        from tools.orchestration_runtime import _TERSE_RESULT_FIELDS
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._minimal_preflight_setup(repo_root)
-            result = record_launch(
-                repo_root=repo_root,
-                orchestration_id="orch_001",
-                parent_agent_run_id="orch_run_001",
-                child_agent_run_id="step_run_terse_001",
-                request_payload=self._minimal_request_payload(
-                    agent_run_id="step_run_terse_001"
-                ),
-                response_payload=_spawn_response_payload("sess_step_terse_001"),
-            )
-            terse = _project_terse_result("record-launch", result)
-            # The keys the orchestration depends on must be present and truthy in
-            # the real (terse) return — catches a rename of either the out_refs
-            # key or the terse tuple entry.
-            for key in ("capability_token", "launch_prompt_text", "launch_prompt_ref"):
-                self.assertIn(key, terse, msg=f"{key} missing from real terse record-launch")
-                self.assertTrue(terse[key], msg=f"{key} empty in real terse record-launch")
-            # No terse field may name a key the real payload never produced
-            # (would be a phantom/aspirational entry). `sandbox_profile_ref` is exempt on
-            # THIS launch and only on this one: it is deterministic (in-process), and since Z4
-            # (issue #171) such a launch records `sandbox_runtime: "none"` with no profile —
-            # there is no process to confine. A profile-bearing launch is covered by
-            # `test_deterministic_launch_records_no_sandbox`'s other half.
-            phantom = [
-                k for k in _TERSE_RESULT_FIELDS["record-launch"]
-                if k not in result and k != "sandbox_profile_ref"
-            ]
-            self.assertEqual(phantom, [], msg=f"phantom record-launch terse fields: {phantom}")
-            self.assertNotIn("sandbox_profile_ref", result)
-            # launch_prompt_text must be the same content record-launch wrote to
-            # the audit artifact (the .prompt.txt file carries a trailing newline
-            # added by the text writer; the returned text does not — same content).
-            prompt_path = (
-                repo_root / "workspace/orchestrations/orch_001/launches"
-                / "step_run_terse_001.prompt.txt"
-            )
-            self.assertEqual(
-                terse["launch_prompt_text"].rstrip("\n"),
-                prompt_path.read_text(encoding="utf-8").rstrip("\n"),
-            )
-
-    def test_main_help_run_gate_includes_args_json_schema_examples(self) -> None:
-        """`run-gate --help` displays a per-gate args_json schema summary."""
-        import re as _re
-        stdout = io.StringIO()
-        with redirect_stdout(stdout):
-            with self.assertRaises(SystemExit) as ctx:
-                main(["run-gate", "--help"])
-        self.assertEqual(ctx.exception.code, 0)
-        out = _re.sub(r"\n\s+", " ", stdout.getvalue())
-        self.assertIn("orchestration_read => {'read_path': 'docs/...'}", out)
-        self.assertIn("validate_pipeline_semantics => {'stage':", out)
-
     def test_main_help_write_step_result_includes_result_json_schema(self) -> None:
         """`write-step-result --help` displays a result_json schema summary."""
         import re as _re
@@ -11744,23 +9320,6 @@ class CertificationStampTests(unittest.TestCase):
     """`write_step_result` is the single host-side point that stamps a phase's certification
     into its stage meta (both the pure and the agentic path pass through it)."""
 
-    def _leaf_window(self, repo_root: Path, *, agent_run_id: str, write_roots: list[str],
-                     declared: list[str]) -> None:
-        """The launch state a child needs to reach terminal write validation: a capability
-        with its write_roots, an output manifest, and the window's own write baseline."""
-        from tools.orchestration_runtime import (
-            _capabilities_dir, _write_allowed_output_manifest, _write_run_write_baseline,
-        )
-        cap = _capabilities_dir(repo_root, "o1") / f"{agent_run_id}.json"
-        cap.parent.mkdir(parents=True, exist_ok=True)
-        cap.write_text(json.dumps({
-            "orchestration_id": "o1", "agent_run_id": agent_run_id,
-            "write_roots": write_roots}), encoding="utf-8")
-        _write_allowed_output_manifest(
-            repo_root, orchestration_id="o1", agent_run_id=agent_run_id,
-            allowed_output_paths=declared, allowed_file_tool_paths=declared)
-        _write_run_write_baseline(repo_root, "o1", agent_run_id=agent_run_id)
-
     def test_certifiable_artifact_refs_drops_the_meta_and_the_audit_logs(self) -> None:
         """Build declares `src/command_log.jsonl`, which Validate.execute later APPENDS to —
         hashing it would make every Validate attempt read as a tampered Build."""
@@ -11840,83 +9399,6 @@ class CertificationStampTests(unittest.TestCase):
             self.assertEqual(doc["verification_status"], "fail")
             self.assertEqual(doc["source_id"], "src_c_001")
 
-    def test_a_leaf_window_write_of_a_stage_meta_loses_its_certification(self) -> None:
-        """A certification is a HOST stamp and never survives a child window.
-
-        `generate.verify`'s write_root IS `source_meta.json`, so that leaf can author
-        `artifact_hashes` / `source_ir_id` with perfectly CORRECT values — no tampering
-        needed. The `write-step-result` strip does not reach it: a phase that fail-closes on a
-        leaf transport error writes no step_result at all, and `run_phase` consults the
-        certification before it would rotate the producer id. So the keys are erased at the
-        child's own terminalization, from whatever stage meta the child actually changed.
-        """
-        from tools.orchestration_runtime import _validate_actual_write_paths
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            refs = certify_node(repo, "o1", through="generate")
-            meta_rel = refs["source_meta"]
-            arid = "substep_run_gen_verify_1"
-            init_orchestration(repo_root=repo, orchestration_id="o1")
-            self._leaf_window(repo, agent_run_id=arid, write_roots=[meta_rel],
-                              declared=[meta_rel])
-            # The leaf rewrites its own meta inside its window, certification keys and all.
-            doc = json.loads((repo / meta_rel).read_text("utf-8"))
-            doc["verification_status"] = "pass"
-            (repo / meta_rel).write_text(json.dumps(doc), encoding="utf-8")
-            self.assertIn("artifact_hashes", json.loads((repo / meta_rel).read_text("utf-8")))
-
-            _validate_actual_write_paths(repo, "o1", {
-                "agent_run_id": arid, "agent_role": "substep", "status": "pass",
-                "output_refs": [meta_rel]})
-
-            after = json.loads((repo / meta_rel).read_text("utf-8"))
-            self.assertNotIn("artifact_hashes", after)
-            self.assertNotIn("source_ir_id", after)
-            # The leaf's own verdict is untouched — this strips a HOST claim, not the leaf's.
-            self.assertEqual(after["verification_status"], "pass")
-            self.assertEqual(after["source_id"], refs["source_id"])
-            ok, detail = ort._phase_certified(repo, "o1", "component/spec_x@0.1.0", "generate")
-            self.assertFalse(ok)
-            self.assertEqual(detail["reason"], "source_not_bound")
-
-    def test_the_strip_runs_even_when_the_window_ends_in_an_unauthorized_write(self) -> None:
-        """The round-1 strip sat AFTER the unauthorized-write raise, so a leaf that made ONE
-        unauthorized write kept its forged certification — and that phase then read as
-        certified in this orchestration and in a fresh one (security round 2, F1). The write
-        the leaf is allowed to make (its own file pin) and the one it is not (a stray beside
-        it, whose parent is bound writable for the Write tool's temp-sibling rename) arrive in
-        the same window, so the strip has to run before the refusal, not after it."""
-        from tools.orchestration_runtime import _validate_actual_write_paths
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            refs = certify_node(repo, "o1", through="generate")
-            meta_rel = refs["source_meta"]
-            stray_rel = f"{refs['pipeline_ref']}/source/{refs['source_id']}/stray.json"
-            arid = "substep_run_gen_verify_2"
-            init_orchestration(repo_root=repo, orchestration_id="o1")
-            self._leaf_window(repo, agent_run_id=arid, write_roots=[meta_rel],
-                              declared=[meta_rel])
-            # Inside the window the leaf authors its own meta — the allowed write — and drops
-            # one file beside it, the unauthorized one.
-            forged = json.loads((repo / meta_rel).read_text("utf-8"))
-            forged["verification_status"] = "pass"
-            (repo / meta_rel).write_text(json.dumps(forged), encoding="utf-8")
-            (repo / stray_rel).write_text("{}", encoding="utf-8")
-
-            with self.assertRaisesRegex(ValueError, "unauthorized write paths"):
-                _validate_actual_write_paths(repo, "o1", {
-                    "agent_run_id": arid, "agent_role": "substep", "status": "fail",
-                    "output_refs": [meta_rel]})
-
-            after = json.loads((repo / meta_rel).read_text("utf-8"))
-            self.assertNotIn("artifact_hashes", after)
-            self.assertNotIn("source_ir_id", after)
-            ok, detail = ort._phase_certified(repo, "o1", "component/spec_x@0.1.0", "generate")
-            self.assertFalse(ok)
-            self.assertEqual(detail["reason"], "source_not_bound")
-
     def test_stamp_refuses_a_phase_declaring_more_than_one_certifying_meta(self) -> None:
         """The `exactly one` rule (security round 2, mutant M21). With it dropped, a phase
         declaring two metas has the FIRST one stamped silently and the second left
@@ -11982,62 +9464,6 @@ class CertificationStampTests(unittest.TestCase):
                 ort._stamp_certification(
                     repo, "o1", node_key="component/spec_x@0.1.0", step="compile",
                     required_outputs=[refs["ir_meta"]])
-
-    def test_a_child_window_that_touched_no_stage_meta_strips_nothing(self) -> None:
-        """The over-refusal probe: the strip is keyed on the paths the child actually
-        CHANGED, so a passing phase's stamp is not erased by the next phase's children."""
-        from tools.orchestration_runtime import _validate_actual_write_paths
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            refs = certify_node(repo, "o1", through="generate")
-            arid = "substep_run_other_1"
-            other = f"{refs['pipeline_ref']}/source/{refs['source_id']}/src/scratch.txt"
-            init_orchestration(repo_root=repo, orchestration_id="o1")
-            self._leaf_window(repo, agent_run_id=arid,
-                              write_roots=[f"{refs['pipeline_ref']}/source/"],
-                              declared=[other])
-            (repo / other).write_text("scratch\n", encoding="utf-8")
-            _validate_actual_write_paths(repo, "o1", {
-                "agent_run_id": arid, "agent_role": "substep", "status": "pass",
-                "output_refs": [other]})
-            after = json.loads((repo / refs["source_meta"]).read_text("utf-8"))
-            self.assertIn("artifact_hashes", after)
-            self.assertIn("source_ir_id", after)
-
-    def test_a_build_keeps_its_ir_binding_across_the_child_window_strip(self) -> None:
-        """`_build_inproc` writes `binary_meta.source_ir_id` INSIDE the build child's window,
-        so the child-window strip erases it. The stamp restores it from the reservation —
-        without that, every successfully built binary reads `binary_not_bound` and Build and
-        Validate could never be skipped again (Codex round 2, P1)."""
-        from tools.orchestration_runtime import _validate_actual_write_paths
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            refs = certify_node(repo, "o1", through="build")
-            meta_rel = refs["binary_meta"]
-            arid = "step_run_build_1"
-            init_orchestration(repo_root=repo, orchestration_id="o1")
-            self._leaf_window(repo, agent_run_id=arid,
-                              write_roots=[f"{refs['pipeline_ref']}/binary/"],
-                              declared=[meta_rel, refs["exe_ref"]])
-            # The host's in-process build authors binary_meta inside the child's window.
-            doc = json.loads((repo / meta_rel).read_text("utf-8"))
-            doc["command_id"] = "cmd_1"
-            (repo / meta_rel).write_text(json.dumps(doc), encoding="utf-8")
-            _validate_actual_write_paths(repo, "o1", {
-                "agent_run_id": arid, "agent_role": "step", "status": "pass",
-                "output_refs": [meta_rel]})
-            stripped = json.loads((repo / meta_rel).read_text("utf-8"))
-            self.assertNotIn("source_ir_id", stripped)
-
-            ort._stamp_certification(
-                repo, "o1", node_key="component/spec_x@0.1.0", step="build",
-                required_outputs=[refs["exe_ref"], meta_rel])
-            restamped = json.loads((repo / meta_rel).read_text("utf-8"))
-            self.assertEqual(restamped["source_ir_id"], refs["ir_id"])
-            self.assertTrue(
-                ort._phase_certified(repo, "o1", "component/spec_x@0.1.0", "build")[0])
 
     def test_write_step_result_pass_refuses_when_the_deliverable_is_absent(self) -> None:
         """A stamp that cannot be taken fails CLOSED, and before the step_result exists: an
@@ -12262,103 +9688,6 @@ class CompletionVouchAttemptModelTests(unittest.TestCase):
                 update_orchestration_status(
                     repo_root=repo, orchestration_id="o1", status="pass")["status"],
                 "pass")
-
-    def test_an_outstanding_unauthorized_write_blocks_pass(self) -> None:
-        """A write that LANDED outside a child's `write_roots` is not rolled back, so an
-        orchestration that passes over one reports a clean verdict on a workspace a leaf has
-        already written into outside its window.
-
-        Anchored on the violation RECORD, and the anchor is the whole point. The first attempt
-        at this refused the diverted child's `agent_graph` edge instead, and that was reachable
-        around in one step: `_prune_orphan_agent_graph_edges` keeps the dangling edge only
-        BECAUSE the child is in `agent_runs_invalid.jsonl`, so deleting that log prunes the edge
-        and leaves the clause nothing to refuse — and that log is one of the runtime-owned paths
-        EXEMPT from the terminal write-audit diff, so a leaf could delete it without trace.
-        `violations/` is in `UNDELETABLE_RUNTIME_PREFIXES`, so a deletion there surfaces in the deleting child's own write-audit diff. The three subTests drive that difference."""
-        for label, act in (
-            ("edge and log intact", None),
-            # Delete the log and prune, which is what a resume does: the edge goes with it,
-            # so the edge clause has nothing left to refuse and only this clause is standing.
-            ("agent_runs_invalid.jsonl deleted, then pruned", "prune"),
-            ("no edge and no log ever written", None),
-        ):
-            with self.subTest(case=label), tempfile.TemporaryDirectory() as tmp:
-                repo = Path(tmp)
-                root = repo / "workspace/orchestrations/o1"
-                orch = self._orch(repo)
-                self._record(repo, "live_1", status="pass")
-                self._step_result(repo, executor=orch, status="pass", substeps=["live_1"])
-                if label != "no edge and no log ever written":
-                    graph = json.loads((root / "agent_graph.json").read_text("utf-8"))
-                    graph["edges"].append({"parent_agent_run_id": orch,
-                                           "child_agent_run_id": "tainted_1",
-                                           "relation_type": "launch"})
-                    (root / "agent_graph.json").write_text(json.dumps(graph), encoding="utf-8")
-                    (root / "agent_runs_invalid.jsonl").write_text(
-                        json.dumps({"agent_run_id": "tainted_1", "agent_role": "substep",
-                                    "status": "fail",
-                                    "fail_reason": "unauthorized_write_paths"}) + "\n",
-                        encoding="utf-8")
-                (root / "violations").mkdir(parents=True, exist_ok=True)
-                (root / "violations" / "tainted_1.unauthorized_write_violation.json").write_text(
-                    "{}", encoding="utf-8")
-                if act == "prune":
-                    (root / "agent_runs_invalid.jsonl").unlink()
-                    ort._prune_orphan_agent_graph_edges(repo, "o1")
-                with self.assertRaisesRegex(
-                        RuntimeError, "unauthorized write violations are outstanding"):
-                    update_orchestration_status(
-                        repo_root=repo, orchestration_id="o1", status="pass")
-
-    def test_deleting_a_violation_record_surfaces_in_the_write_audit(self) -> None:
-        """The property the vouch's anchor RESTS on, which was asserted in four places before
-        it was true.
-
-        `violations/` is a runtime-owned prefix, exempt from the terminal write-audit diff so
-        the runtime's own writes into it are not misattributed to whichever child's window is
-        open. The exemption is applied symmetrically to both sides of the diff, so a DELETION
-        was invisible too — and the completion vouch had just started reading a violation record
-        as the evidence of a landed unauthorized write. The evidence could be removed with no
-        trace, by the leaf the evidence was about.
-
-        Now only the deletion surfaces: additions and modifications stay exempt, which is what
-        the exemption exists for. `active_children/` is deliberately NOT in
-        `UNDELETABLE_RUNTIME_PREFIXES` — `deactivate_child` removes those markers in normal
-        operation, so surfacing their removal would wedge every ordinary run."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            init_orchestration(repo_root=repo, orchestration_id="o1",
-                               invocation={"until_phase": "compile"})
-            root = repo / "workspace/orchestrations/o1"
-            (root / "violations").mkdir(parents=True, exist_ok=True)
-            violation = root / "violations" / "a1.unauthorized_write_violation.json"
-            violation.write_text("{}", encoding="utf-8")
-            control = repo / "workspace" / "ir" / "control.txt"
-            control.parent.mkdir(parents=True, exist_ok=True)
-            control.write_text("x", encoding="utf-8")
-            ort._write_run_write_baseline(repo, "o1", agent_run_id="a1")
-
-            # A deletion surfaces — and the control proves the harness can see one at all.
-            violation.unlink()
-            control.unlink()
-            self.assertEqual(
-                ort._actual_changed_paths_since_baseline(repo, "o1", agent_run_id="a1"),
-                ["workspace/ir/control.txt",
-                 "workspace/orchestrations/o1/violations/a1.unauthorized_write_violation.json"])
-
-            # A runtime WRITE into the prefix mid-window does not — the misattribution this
-            # exemption exists to prevent.
-            control.write_text("x", encoding="utf-8")
-            violation.write_text("{}", encoding="utf-8")
-            ort._write_run_write_baseline(repo, "o1", agent_run_id="a2")
-            (root / "violations" / "a2.unauthorized_write_violation.json").write_text(
-                "{}", encoding="utf-8")
-            self.assertEqual(
-                ort._actual_changed_paths_since_baseline(repo, "o1", agent_run_id="a2"), [])
-            # Nor does a modification of one already there.
-            violation.write_text('{"more": true}', encoding="utf-8")
-            self.assertEqual(
-                ort._actual_changed_paths_since_baseline(repo, "o1", agent_run_id="a2"), [])
 
     def test_other_violation_kinds_do_not_block_pass(self) -> None:
         """Only the violation whose write LANDED blocks. A
@@ -13097,34 +10426,6 @@ class OrchestrationMetaAndJudgeHookTests(unittest.TestCase):
             self.assertEqual(meta.get("parallel_nodes_policy"), "sequential_default")
             self.assertEqual(meta.get("orchestration_id"), orch)
 
-    def test_init_orchestration_reuses_existing_orchestration_agent_run_id(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            orch = "orch_reinit_same_run_id"
-            init_orchestration(repo_root=repo, orchestration_id=orch)
-            meta_path = repo / "workspace" / "orchestrations" / orch / "orchestration_meta.json"
-            first_meta = json.loads(meta_path.read_text(encoding="utf-8"))
-            first_run_id = str(first_meta.get("orchestration_agent_run_id", "")).strip()
-            self.assertTrue(first_run_id)
-
-            init_orchestration(repo_root=repo, orchestration_id=orch)
-            second_meta = json.loads(meta_path.read_text(encoding="utf-8"))
-            second_run_id = str(second_meta.get("orchestration_agent_run_id", "")).strip()
-            self.assertEqual(second_run_id, first_run_id)
-
-            read_manifest_path = (
-                repo / "workspace" / "orchestrations" / orch / "read_manifests" / f"{first_run_id}.json"
-            )
-            self.assertTrue(read_manifest_path.is_file())
-            output_manifest_path = (
-                repo / "workspace" / "orchestrations" / orch / "output_manifests" / f"{first_run_id}.json"
-            )
-            self.assertTrue(output_manifest_path.is_file())
-            output_manifest = json.loads(output_manifest_path.read_text(encoding="utf-8"))
-            expected_failure_analysis = f"workspace/orchestrations/{orch}/failure_analysis.json"
-            self.assertIn(expected_failure_analysis, output_manifest.get("allowed_output_paths", []))
-            self.assertIn(expected_failure_analysis, output_manifest.get("allowed_file_tool_paths", []))
-
     def test_init_orchestration_does_not_duplicate_orchestration_running_entry_on_reinit(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
@@ -13834,22 +11135,20 @@ class PreflightLiveProbeTtlTests(unittest.TestCase):
                         request_payload={
                             "agent_role": "substep",
                             "allowed_output_paths": [
-                                "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/spec.ir.yaml",
-                                "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/ir_meta.json",
-                            ],
+                                "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/compile_static_meta.json",
+                                                            ],
                             "agent_model": "claude-opus-4-8",
                             "node_key": "problem/shallow_water2d@0.3.0",
                             "step": "compile",
-                            "substep": "generate",
+                            "substep": "static",
+                    "deterministic": True,
                             "orchestration_id": "orch_001",
                             "agent_run_id": "substep_run_plan_generate_001",
                             "parent_agent_run_id": "orch_run_001",
                             "ir_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
                             "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
                             "dependency_ref": _FIX_COMPILE_STEP_DEP_REF,
-                            "skill_name": "workflow-compile-generate",
-                            "skill_ref": "skills/workflow-compile-generate/SKILL.md",
-                            "skill_must_read_refs": "",
+                                                                                    "skill_must_read_refs": "",
                             "issue_severity": "none",
                             "repair_strategy": "none",
                             "repair_target_agent_run_id": "none",
@@ -13857,7 +11156,7 @@ class PreflightLiveProbeTtlTests(unittest.TestCase):
                             "launch_prompt_full": _substep_launch_prompt(
                                 "problem/shallow_water2d@0.3.0",
                                 "compile",
-                                "generate",
+                                "static",
                                 "substep_run_plan_generate_001",
                             ),
                         },
@@ -13880,7 +11179,7 @@ class PreflightLiveProbeTtlTests(unittest.TestCase):
                             "parent_agent_run_id": "orch_run_001",
                             "ir_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
                             "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
-                            "dependency_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/spec.ir.yaml",
+                            "dependency_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/compile_static_meta.json",
                             "deterministic": True,
                             "launch_prompt_full": _step_launch_prompt(
                                 "problem/shallow_water2d@0.3.0",
@@ -13929,22 +11228,20 @@ class PreflightLiveProbeTtlTests(unittest.TestCase):
                         request_payload={
                             "agent_role": "substep",
                             "allowed_output_paths": [
-                                "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/spec.ir.yaml",
-                                "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/ir_meta.json",
-                            ],
+                                "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/compile_static_meta.json",
+                                                            ],
                             "agent_model": "claude-opus-4-8",
                             "node_key": "problem/shallow_water2d@0.3.0",
                             "step": "compile",
-                            "substep": "generate",
+                            "substep": "static",
+                    "deterministic": True,
                             "orchestration_id": "orch_001",
                             "agent_run_id": "substep_run_plan_generate_001",
                             "parent_agent_run_id": "orch_run_001",
                             "ir_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
                             "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
                             "dependency_ref": _FIX_COMPILE_STEP_DEP_REF,
-                            "skill_name": "workflow-compile-generate",
-                            "skill_ref": "skills/workflow-compile-generate/SKILL.md",
-                            "skill_must_read_refs": "",
+                                                                                    "skill_must_read_refs": "",
                             "issue_severity": "none",
                             "repair_strategy": "none",
                             "repair_target_agent_run_id": "none",
@@ -13952,7 +11249,7 @@ class PreflightLiveProbeTtlTests(unittest.TestCase):
                             "launch_prompt_full": _substep_launch_prompt(
                                 "problem/shallow_water2d@0.3.0",
                                 "compile",
-                                "generate",
+                                "static",
                                 "substep_run_plan_generate_001",
                             ),
                         },
@@ -13978,7 +11275,7 @@ class PreflightLiveProbeTtlTests(unittest.TestCase):
                             "parent_agent_run_id": "orch_run_001",
                             "ir_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
                             "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
-                            "dependency_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/spec.ir.yaml",
+                            "dependency_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/compile_static_meta.json",
                             "deterministic": True,
                             "launch_prompt_full": _step_launch_prompt(
                                 "problem/shallow_water2d@0.3.0",
@@ -14080,370 +11377,12 @@ class PreflightLiveProbeTtlTests(unittest.TestCase):
 
 
 class TestPhase1RuleSourceAudit(unittest.TestCase):
-    def test_phase1_init_preflight_record_launch_writes_audit_artifacts(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            init_orchestration(repo_root=repo_root, orchestration_id="orch_001")
-            _mark_dependencies_ready(repo_root)
-            orch = repo_root / "workspace/orchestrations/orch_001"
-            self.assertTrue((orch / "access_policies").is_dir())
-            self.assertTrue((orch / "access_logs").is_dir())
-            self.assertTrue((orch / "violations").is_dir())
-            ps0 = json.loads((orch / "phase_state.json").read_text(encoding="utf-8"))
-            self.assertEqual(ps0.get("current_state"), "initialized")
-            self.assertEqual(ps0.get("orchestration_id"), "orch_001")
-            self.assertIsInstance(ps0.get("node_states"), dict)
-
-            write_preflight(
-                repo_root=repo_root,
-                orchestration_id="orch_001",
-                payload={
-                    "status": "pass",
-                    "sandbox_runtime": "bwrap",
-                    "sandbox_enforced": True,
-                    "can_launch_step_agents": True,
-                    "can_launch_substep_agents": True,
-                    "feature_states": {"multi_agent": True, "hooks": True},
-                    "checks": [{"name": "multi_agent_enabled", "pass": True}, {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
-                },
-            )
-            ps1 = json.loads((orch / "phase_state.json").read_text(encoding="utf-8"))
-            self.assertEqual(ps1.get("current_state"), "preflight_passed")
-            log_lines = (orch / "phase_state_log.jsonl").read_text(encoding="utf-8").strip().splitlines()
-            self.assertGreaterEqual(len(log_lines), 2)
-            last = json.loads(log_lines[-1])
-            self.assertEqual(last.get("event"), "preflight_written")
-            self.assertEqual(last.get("to"), "preflight_passed")
-
-            record_launch(
-                repo_root=repo_root,
-                orchestration_id="orch_001",
-                parent_agent_run_id="orch_run_001",
-                child_agent_run_id="substep_p1_001",
-                request_payload={
-                    "agent_model": "claude-opus-4-8",
-                    "agent_run_id": "substep_p1_001",
-                    "agent_role": "substep",
-                    "node_key": "problem/shallow_water2d@0.3.0",
-                    "step": "compile",
-                    "substep": "generate",
-                    "orchestration_id": "orch_001",
-                    "parent_agent_run_id": "orch_run_001",
-                    "ir_ref": _FIX_IR_REF,
-                    "pipeline_ref": _FIX_PIPE_REF,
-                    "dependency_ref": _FIX_COMPILE_STEP_DEP_REF,
-                    "skill_name": "workflow-compile-generate",
-                    "skill_ref": "skills/workflow-compile-generate/SKILL.md",
-                    "skill_must_read_refs": "",
-                    "allowed_output_paths": [f"{_FIX_IR_REF}/spec.ir.yaml"],
-                    "launch_prompt_full": _substep_launch_prompt(
-                        "problem/shallow_water2d@0.3.0",
-                        "compile",
-                        "generate",
-                        "substep_p1_001",
-                    ),
-                },
-                response_payload={
-                    "agent_run_id": "substep_p1_001",
-                    **_spawn_response_payload("sess_substep_p1"),
-                },
-            )
-            pol_path = orch / "access_policies" / "substep_p1_001.json"
-            self.assertTrue(pol_path.exists())
-            policy = json.loads(pol_path.read_text(encoding="utf-8"))
-            self.assertEqual(policy.get("agent_run_id"), "substep_p1_001")
-            self.assertEqual(policy.get("step"), "compile")
-            self.assertEqual(policy.get("substep"), "generate")
-            self.assertEqual(policy.get("denied_read_roots"), ["tools/"])
-            self.assertIn("docs/", policy.get("allowed_read_roots", []))
-            self.assertIn("spec/", policy.get("allowed_read_roots", []))
-            self.assertIn(
-                "workspace/tmp/substep_p1_001/",
-                policy.get("allowed_read_roots", []),
-            )
-            self.assertNotIn(
-                "workspace/tmp/",
-                policy.get("allowed_read_roots", []),
-            )
-            self.assertIn(
-                _FIX_IR_REF.rstrip("/") + "/",
-                policy.get("allowed_read_roots", []),
-            )
-            self.assertIn(
-                _FIX_PIPE_REF.rstrip("/") + "/",
-                policy.get("allowed_read_roots", []),
-            )
-            # A `skill_ref` used to be normalized into `allowed_read_roots` so the leaf could
-            # read the SKILL it was told to read. Z4 (issue #171) deleted that merge with the
-            # leaf that held a Read tool, so the roots are exactly the five below plus the
-            # capability file — asserted as a SET rather than by membership, because the
-            # defect this row guards against is a root reappearing, not one going missing.
-            self.assertEqual(
-                sorted(policy.get("allowed_read_roots", [])),
-                sorted(["docs/", "spec/", "workspace/tmp/substep_p1_001/",
-                        _FIX_IR_REF.rstrip("/") + "/", _FIX_PIPE_REF.rstrip("/") + "/",
-                        "workspace/orchestrations/orch_001/capabilities/substep_p1_001.json"]),
-            )
-            self.assertEqual(
-                policy.get("allowed_gate_services"),
-                [
-                    "validate_pipeline_semantics",
-                    "validate_workspace_root",
-                    "orchestration_read",
-                ],
-            )
-            cap_path = orch / "capabilities" / "substep_p1_001.json"
-            self.assertTrue(cap_path.exists())
-            cap = json.loads(cap_path.read_text(encoding="utf-8"))
-            self.assertEqual(cap.get("agent_run_id"), "substep_p1_001")
-            self.assertEqual(cap.get("step"), "compile")
-            self.assertTrue(isinstance(cap.get("capability_token"), str) and cap["capability_token"])
-            self.assertIn(_FIX_IR_REF.rstrip("/") + "/", cap.get("write_roots", []))
-            manifest_path = orch / "output_manifests" / "substep_p1_001.json"
-            self.assertTrue(manifest_path.exists())
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            self.assertEqual(manifest.get("agent_run_id"), "substep_p1_001")
-            self.assertEqual(
-                manifest.get("allowed_output_paths"),
-                [f"{_FIX_IR_REF}/spec.ir.yaml"],
-            )
-            read_manifest_path = orch / "read_manifests" / "substep_p1_001.json"
-            self.assertTrue(read_manifest_path.exists())
-            read_manifest = json.loads(read_manifest_path.read_text(encoding="utf-8"))
-            self.assertEqual(read_manifest.get("agent_run_id"), "substep_p1_001")
-            self.assertIn("docs/", read_manifest.get("allowed_read_roots", []))
-            self.assertIn("tools/", read_manifest.get("denied_read_roots", []))
-            ps_launch = json.loads((orch / "phase_state.json").read_text(encoding="utf-8"))
-            node_safe = "problem__shallow_water2d__0.3.0"
-            self.assertEqual(
-                ps_launch.get("node_states", {}).get(node_safe, {}).get("compile"),
-                "child_running",
-            )
-
-    def test_phase2_orchestration_read_denied_tools_emits_rule_source_violation(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            (repo_root / "tools").mkdir(parents=True, exist_ok=True)
-            (repo_root / "tools" / "p1_dummy.txt").write_text("dummy-tools-read\n", encoding="utf-8")
-            init_orchestration(repo_root=repo_root, orchestration_id="orch_001")
-            _mark_dependencies_ready(repo_root)
-            write_preflight(
-                repo_root=repo_root,
-                orchestration_id="orch_001",
-                payload={
-                    "status": "pass",
-                    "sandbox_runtime": "bwrap",
-                    "sandbox_enforced": True,
-                    "can_launch_step_agents": True,
-                    "can_launch_substep_agents": True,
-                    "feature_states": {"multi_agent": True, "hooks": True},
-                    "checks": [{"name": "multi_agent_enabled", "pass": True}, {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
-                },
-            )
-            record_launch(
-                repo_root=repo_root,
-                orchestration_id="orch_001",
-                parent_agent_run_id="orch_run_001",
-                child_agent_run_id="child_p1r",
-                request_payload={
-                    "agent_model": "claude-opus-4-8",
-                    "agent_run_id": "child_p1r",
-                    "agent_role": "substep",
-                    "node_key": "problem/shallow_water2d@0.3.0",
-                    "step": "compile",
-                    "substep": "generate",
-                    "orchestration_id": "orch_001",
-                    "parent_agent_run_id": "orch_run_001",
-                    "ir_ref": _FIX_IR_REF,
-                    "pipeline_ref": _FIX_PIPE_REF,
-                    "dependency_ref": _FIX_COMPILE_STEP_DEP_REF,
-                    "skill_name": "workflow-compile-generate",
-                    "skill_ref": "skills/workflow-compile-generate/SKILL.md",
-                    "skill_must_read_refs": "",
-                    "allowed_output_paths": [
-                        f"{_FIX_IR_REF}/spec.ir.yaml",
-                        f"{_FIX_IR_REF}/ir_meta.json",
-                    ],
-                    "launch_prompt_full": _substep_launch_prompt(
-                        "problem/shallow_water2d@0.3.0",
-                        "compile",
-                        "generate",
-                        "child_p1r",
-                    ),
-                },
-                response_payload={"agent_run_id": "child_p1r", **_spawn_response_payload("sess_p1r")},
-            )
-            with self.assertRaisesRegex(RuntimeError, "orchestration-read denied"):
-                log_orchestration_read(
-                    repo_root=repo_root,
-                    orchestration_id="orch_001",
-                    agent_run_id="child_p1r",
-                    read_path="tools/p1_dummy.txt",
-                )
-            viol = (
-                repo_root
-                / "workspace/orchestrations/orch_001/violations/child_p1r.rule_source_violation.json"
-            )
-            self.assertTrue(viol.exists())
-            vdoc = json.loads(viol.read_text(encoding="utf-8"))
-            self.assertEqual(vdoc.get("kind"), "rule_source_violation")
-            self.assertEqual(vdoc.get("read_path"), "tools/p1_dummy.txt")
-            meta = json.loads(
-                (repo_root / "workspace/orchestrations/orch_001/orchestration_meta.json").read_text(
-                    encoding="utf-8"
-                )
-            )
-            self.assertEqual(meta.get("status"), "fail")
-            log_path = (
-                repo_root
-                / "workspace/orchestrations/orch_001/access_logs/child_p1r.jsonl"
-            )
-            self.assertTrue(log_path.exists())
-            log_entry = json.loads(log_path.read_text(encoding="utf-8").strip().splitlines()[-1])
-            self.assertTrue(log_entry.get("denied_match"))
-            self.assertEqual(log_entry.get("path"), "tools/p1_dummy.txt")
-
-    def test_phase2_orchestration_read_rejects_path_outside_allowed_roots(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            (repo_root / "plans").mkdir(parents=True, exist_ok=True)
-            (repo_root / "plans" / "outside.txt").write_text("ng\n", encoding="utf-8")
-            init_orchestration(repo_root=repo_root, orchestration_id="orch_001")
-            _mark_dependencies_ready(repo_root)
-            write_preflight(
-                repo_root=repo_root,
-                orchestration_id="orch_001",
-                payload={
-                    "status": "pass",
-                    "sandbox_runtime": "bwrap",
-                    "sandbox_enforced": True,
-                    "can_launch_step_agents": True,
-                    "can_launch_substep_agents": True,
-                    "feature_states": {"multi_agent": True, "hooks": True},
-                    "checks": [{"name": "multi_agent_enabled", "pass": True}, {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
-                },
-            )
-            record_launch(
-                repo_root=repo_root,
-                orchestration_id="orch_001",
-                parent_agent_run_id="orch_run_001",
-                child_agent_run_id="child_p1r",
-                request_payload={
-                    "agent_model": "claude-opus-4-8",
-                    "agent_run_id": "child_p1r",
-                    "agent_role": "substep",
-                    "node_key": "problem/shallow_water2d@0.3.0",
-                    "step": "compile",
-                    "substep": "generate",
-                    "orchestration_id": "orch_001",
-                    "parent_agent_run_id": "orch_run_001",
-                    "ir_ref": _FIX_IR_REF,
-                    "pipeline_ref": _FIX_PIPE_REF,
-                    "dependency_ref": _FIX_COMPILE_STEP_DEP_REF,
-                    "skill_name": "workflow-compile-generate",
-                    "skill_ref": "skills/workflow-compile-generate/SKILL.md",
-                    "skill_must_read_refs": "",
-                    "allowed_output_paths": [
-                        f"{_FIX_IR_REF}/spec.ir.yaml",
-                        f"{_FIX_IR_REF}/ir_meta.json",
-                    ],
-                    "launch_prompt_full": _substep_launch_prompt(
-                        "problem/shallow_water2d@0.3.0",
-                        "compile",
-                        "generate",
-                        "child_p1r",
-                    ),
-                },
-                response_payload={"agent_run_id": "child_p1r", **_spawn_response_payload("sess_p1r")},
-            )
-            with self.assertRaisesRegex(RuntimeError, "outside allowed_read_roots"):
-                log_orchestration_read(
-                    repo_root=repo_root,
-                    orchestration_id="orch_001",
-                    agent_run_id="child_p1r",
-                    read_path="plans/outside.txt",
-                )
-            log_path = (
-                repo_root
-                / "workspace/orchestrations/orch_001/access_logs/child_p1r.jsonl"
-            )
-            self.assertTrue(log_path.exists())
-            log_entry = json.loads(log_path.read_text(encoding="utf-8").strip().splitlines()[-1])
-            self.assertFalse(log_entry.get("allowed_match"))
-            self.assertFalse(log_entry.get("denied_match"))
-            self.assertEqual(log_entry.get("path"), "plans/outside.txt")
 
     # `test_phase2_orchestration_read_allows_skill_ref_path` stood here until Z4 (issue #171).
     # It pinned that `run-gate orchestration_read` accepted the launch's own `skill_ref` path,
     # because `_write_read_access_manifest` merged that ref into `allowed_read_roots`. Both the
     # merge and the SKILL are deleted: no leaf reads a document, and a caller-supplied string
     # no longer widens a read grant.
-
-    def test_phase2_orchestration_read_rejects_when_read_manifest_is_missing(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            (repo_root / "docs").mkdir(parents=True, exist_ok=True)
-            (repo_root / "docs" / "probe.txt").write_text("ok\n", encoding="utf-8")
-            init_orchestration(repo_root=repo_root, orchestration_id="orch_001")
-            _mark_dependencies_ready(repo_root)
-            write_preflight(
-                repo_root=repo_root,
-                orchestration_id="orch_001",
-                payload={
-                    "status": "pass",
-                    "sandbox_runtime": "bwrap",
-                    "sandbox_enforced": True,
-                    "can_launch_step_agents": True,
-                    "can_launch_substep_agents": True,
-                    "feature_states": {"multi_agent": True, "hooks": True},
-                    "checks": [{"name": "multi_agent_enabled", "pass": True}, {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
-                },
-            )
-            record_launch(
-                repo_root=repo_root,
-                orchestration_id="orch_001",
-                parent_agent_run_id="orch_run_001",
-                child_agent_run_id="child_p1r",
-                request_payload={
-                    "agent_model": "claude-opus-4-8",
-                    "agent_run_id": "child_p1r",
-                    "agent_role": "substep",
-                    "node_key": "problem/shallow_water2d@0.3.0",
-                    "step": "compile",
-                    "substep": "generate",
-                    "orchestration_id": "orch_001",
-                    "parent_agent_run_id": "orch_run_001",
-                    "ir_ref": _FIX_IR_REF,
-                    "pipeline_ref": _FIX_PIPE_REF,
-                    "dependency_ref": _FIX_COMPILE_STEP_DEP_REF,
-                    "skill_name": "workflow-compile-generate",
-                    "skill_ref": "skills/workflow-compile-generate/SKILL.md",
-                    "skill_must_read_refs": "",
-                    "allowed_output_paths": [
-                        f"{_FIX_IR_REF}/spec.ir.yaml",
-                        f"{_FIX_IR_REF}/ir_meta.json",
-                    ],
-                    "launch_prompt_full": _substep_launch_prompt(
-                        "problem/shallow_water2d@0.3.0",
-                        "compile",
-                        "generate",
-                        "child_p1r",
-                    ),
-                },
-                response_payload={"agent_run_id": "child_p1r", **_spawn_response_payload("sess_p1r")},
-            )
-            manifest = (
-                repo_root
-                / "workspace/orchestrations/orch_001/read_manifests/child_p1r.json"
-            )
-            manifest.unlink()
-            with self.assertRaisesRegex(FileNotFoundError, "read access manifest not found"):
-                log_orchestration_read(
-                    repo_root=repo_root,
-                    orchestration_id="orch_001",
-                    agent_run_id="child_p1r",
-                    read_path="docs/probe.txt",
-                )
 
     def test_phase1_resume_missing_phase_state_infers_preflight_passed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -14468,86 +11407,6 @@ class TestPhase1RuleSourceAudit(unittest.TestCase):
             (orch / "phase_state_log.jsonl").unlink()
             doc = ort.reconcile_phase_state_for_resume(repo_root, "orch_p1m")
             self.assertEqual(doc.get("current_state"), "preflight_passed")
-
-    def test_phase1_orchestration_read_cli_outputs_json(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            (repo_root / "docs").mkdir(parents=True, exist_ok=True)
-            (repo_root / "docs" / "p1_doc.txt").write_text("ok\n", encoding="utf-8")
-            init_orchestration(repo_root=repo_root, orchestration_id="orch_001")
-            _mark_dependencies_ready(repo_root)
-            write_preflight(
-                repo_root=repo_root,
-                orchestration_id="orch_001",
-                payload={
-                    "status": "pass",
-                    "sandbox_runtime": "bwrap",
-                    "sandbox_enforced": True,
-                    "can_launch_step_agents": True,
-                    "can_launch_substep_agents": True,
-                    "feature_states": {"multi_agent": True, "hooks": True},
-                    "checks": [{"name": "multi_agent_enabled", "pass": True}, {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
-                },
-            )
-            record_launch(
-                repo_root=repo_root,
-                orchestration_id="orch_001",
-                parent_agent_run_id="orch_run_001",
-                child_agent_run_id="c_cli",
-                request_payload={
-                    "agent_model": "claude-opus-4-8",
-                    "agent_run_id": "c_cli",
-                    "agent_role": "substep",
-                    "node_key": "problem/shallow_water2d@0.3.0",
-                    "step": "compile",
-                    "substep": "generate",
-                    "orchestration_id": "orch_001",
-                    "parent_agent_run_id": "orch_run_001",
-                    "ir_ref": _FIX_IR_REF,
-                    "pipeline_ref": _FIX_PIPE_REF,
-                    "dependency_ref": _FIX_COMPILE_STEP_DEP_REF,
-                    "skill_name": "workflow-compile-generate",
-                    "skill_ref": "skills/workflow-compile-generate/SKILL.md",
-                    "skill_must_read_refs": "",
-                    "allowed_output_paths": [
-                        f"{_FIX_IR_REF}/spec.ir.yaml",
-                        f"{_FIX_IR_REF}/ir_meta.json",
-                    ],
-                    "launch_prompt_full": _substep_launch_prompt(
-                        "problem/shallow_water2d@0.3.0",
-                        "compile",
-                        "generate",
-                        "c_cli",
-                    ),
-                },
-                response_payload={"agent_run_id": "c_cli", **_spawn_response_payload("s_cli")},
-            )
-            cap = json.loads(
-                (
-                    repo_root / "workspace/orchestrations/orch_001/capabilities/c_cli.json"
-                ).read_text(encoding="utf-8")
-            )
-            buf = io.StringIO()
-            with redirect_stdout(buf):
-                rc = main(
-                    [
-                        "orchestration-read",
-                        "--repo-root",
-                        str(repo_root),
-                        "--orchestration-id",
-                        "orch_001",
-                        "--agent-run-id",
-                        "c_cli",
-                        "--read-path",
-                        "docs/p1_doc.txt",
-                        "--capability-token",
-                        str(cap["capability_token"]),
-                    ]
-                )
-            self.assertEqual(rc, 0)
-            cli_out = json.loads(buf.getvalue())
-            self.assertFalse(cli_out.get("denied_match"))
-            self.assertEqual(cli_out.get("content"), "ok\n")
 
 
 class TestPhase2PlanGuardsIntegration(unittest.TestCase):
@@ -14833,110 +11692,6 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
             self.assertEqual(meta.get("status"), "fail_closed")
             self.assertEqual(meta.get("reason_code"), "child_agent_forbidden_by_session_policy")
 
-    def test_validate_mcp_rejects_when_launch_response_missing(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            init_orchestration(repo_root=repo_root, orchestration_id="g1")
-            _mark_dependencies_ready(repo_root, "g1")
-            write_preflight(
-                repo_root=repo_root,
-                orchestration_id="g1",
-                payload={
-                    "status": "pass",
-                    "sandbox_runtime": "bwrap",
-                    "sandbox_enforced": True,
-                    "can_launch_step_agents": True,
-                    "can_launch_substep_agents": True,
-                    "feature_states": {"multi_agent": True, "hooks": True},
-                    "checks": [{"name": "multi_agent_enabled", "pass": True}, {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
-                },
-            )
-            with self.assertRaises(RuntimeError) as ctx:
-                validate_mcp_build_tool_invocation(
-                    repo_root,
-                    orchestration_id="g1",
-                    agent_run_id="ghost_child",
-                    capability_token="unused",
-                    tool_name="compile_project",
-                )
-            self.assertIn("record-launch", str(ctx.exception).lower())
-
-    def test_validate_mcp_accepts_after_record_launch_build_child(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            init_orchestration(repo_root=repo_root, orchestration_id="g2")
-            _mark_dependencies_ready(repo_root, "g2")
-            write_preflight(
-                repo_root=repo_root,
-                orchestration_id="g2",
-                payload={
-                    "status": "pass",
-                    "sandbox_runtime": "bwrap",
-                    "sandbox_enforced": True,
-                    "can_launch_step_agents": True,
-                    "can_launch_substep_agents": True,
-                    "feature_states": {"multi_agent": True, "hooks": True},
-                    "checks": [{"name": "multi_agent_enabled", "pass": True}, {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
-                },
-            )
-            g2_req = {
-                "agent_run_id": "build_child_1",
-                "agent_role": "step",
-                "node_key": "problem/shallow_water2d@0.3.0",
-                "step": "build",
-                "agent_model": "claude-opus-4-8",
-                "orchestration_id": "g2",
-                "parent_agent_run_id": "orch_g2",
-                "ir_ref": _FIX_IR_REF,
-                "pipeline_ref": _FIX_PIPE_REF,
-                "dependency_ref": _FIX_DEP_REF,
-                "deterministic": True,
-                "deterministic": True,
-                "issue_severity": "none",
-                "repair_strategy": "none",
-                "repair_target_agent_run_id": "none",
-                "repair_reason": "none",
-                "allowed_output_paths": [f"{_FIX_PIPE_REF}/binary/bin_20260101_001/bin/simulate"],
-                "launch_prompt_full": render_launch_prompt_text(
-                    {
-                        "agent_run_id": "build_child_1",
-                        "node_key": "problem/shallow_water2d@0.3.0",
-                        "step": "build",
-                        "orchestration_id": "g2",
-                        "parent_agent_run_id": "orch_g2",
-                        "ir_ref": _FIX_IR_REF,
-                        "pipeline_ref": _FIX_PIPE_REF,
-                        "dependency_ref": _FIX_DEP_REF,
-                        "deterministic": True,
-                        "deterministic": True,
-                        "issue_severity": "none",
-                        "repair_strategy": "none",
-                        "repair_target_agent_run_id": "none",
-                        "repair_reason": "none",
-                    }
-                ),
-            }
-            record_launch(
-                repo_root=repo_root,
-                orchestration_id="g2",
-                parent_agent_run_id="orch_g2",
-                child_agent_run_id="build_child_1",
-                request_payload=g2_req,
-                response_payload={
-                    "agent_run_id": "build_child_1",
-                    **_spawn_response_payload("sess_build_child_1"),
-                },
-            )
-            cap_path = repo_root / "workspace/orchestrations/g2/capabilities/build_child_1.json"
-            cap = json.loads(cap_path.read_text(encoding="utf-8"))
-            validate_mcp_build_tool_invocation(
-                repo_root,
-                orchestration_id="g2",
-                agent_run_id="build_child_1",
-                capability_token=str(cap["capability_token"]),
-                tool_name="compile_project",
-            )
-
     @staticmethod
     def _perm_test_refs(**extra):
         import tools.workflow_conductor as wc
@@ -15019,125 +11774,6 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
         cap_path = repo_root / f"workspace/orchestrations/{orchestration_id}/capabilities/{child}.json"
         return json.loads(cap_path.read_text(encoding="utf-8"))
 
-    def test_validate_mcp_rejects_build_tool_for_generate_verify_leaf(self) -> None:
-        """A generate.verify launch (read-only reviewer leaf) holds NO MCP grant, so the real
-        authz gate refuses a build-runtime tool call under its capability token. The perms
-        check fires before any node-state check, so no extra phase_state seed is needed."""
-        import tools.workflow_conductor as wc
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._perm_test_preflight(repo_root, "vperm1")
-            req = wc.build_launch_request(
-                self._perm_test_refs(),
-                step="generate", substep="verify",
-                orchestration_id="vperm1",
-                orchestration_agent_run_id="orch_vperm1",
-                child_agent_run_id="gen_verify_child",
-                agent_model="claude-opus-4-8",
-                workflow_mode="dev",
-            )
-            cap = self._perm_record_and_cap(
-                repo_root, orchestration_id="vperm1", parent="orch_vperm1",
-                child="gen_verify_child", req=req,
-            )
-            self.assertEqual(cap["mcp_permissions"], [])
-            with self.assertRaises(RuntimeError) as ctx:
-                validate_mcp_build_tool_invocation(
-                    repo_root,
-                    orchestration_id="vperm1",
-                    agent_run_id="gen_verify_child",
-                    capability_token=str(cap["capability_token"]),
-                    tool_name="run_linter",
-                )
-            self.assertIn("not permitted by capability", str(ctx.exception))
-
-    def test_validate_mcp_generate_gate_grant_is_least_privilege(self) -> None:
-        """The deterministic generate.gate body gets exactly {run_linter, run_syntax_check} (the
-        lint + syntax checkers): the real authz gate accepts BOTH under its capability token but
-        refuses the build/execute tools (compile_project, run_program) on the same child —
-        per-substep least-privilege, no unrelated grant leaks in."""
-        import tools.workflow_conductor as wc
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._perm_test_preflight(repo_root, "vperm2")
-            req = wc.build_launch_request(
-                self._perm_test_refs(),
-                step="generate", substep="gate",
-                orchestration_id="vperm2",
-                orchestration_agent_run_id="orch_vperm2",
-                child_agent_run_id="gen_gate_child",
-                agent_model="claude-opus-4-8",
-                workflow_mode="dev",
-            )
-            self.assertTrue(req.get("deterministic"))
-            cap = self._perm_record_and_cap(
-                repo_root, orchestration_id="vperm2", parent="orch_vperm2",
-                child="gen_gate_child", req=req,
-            )
-            self.assertEqual(cap["mcp_permissions"], ["run_linter", "run_syntax_check"])
-            # Both checker tools are accepted.
-            for tool_name in ("run_linter", "run_syntax_check"):
-                validate_mcp_build_tool_invocation(
-                    repo_root,
-                    orchestration_id="vperm2",
-                    agent_run_id="gen_gate_child",
-                    capability_token=str(cap["capability_token"]),
-                    tool_name=tool_name,
-                )
-            # The unrelated build/execute tools are refused on this gate child.
-            for tool_name in ("compile_project", "run_program"):
-                with self.subTest(tool_name=tool_name):
-                    with self.assertRaises(RuntimeError) as ctx:
-                        validate_mcp_build_tool_invocation(
-                            repo_root,
-                            orchestration_id="vperm2",
-                            agent_run_id="gen_gate_child",
-                            capability_token=str(cap["capability_token"]),
-                            tool_name=tool_name,
-                        )
-                    self.assertIn("not permitted by capability", str(ctx.exception))
-
-    def test_validate_mcp_build_grant_accepts_compile_project(self) -> None:
-        """The build step's grant is exercised through the REAL authz gate (not just the
-        table-lookup unit test): a build launch's capability token authorizes compile_project
-        and refuses a sibling gated tool."""
-        import tools.workflow_conductor as wc
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._perm_test_preflight(repo_root, "vperm3")
-            self._perm_test_plant_lineage(repo_root)
-            req = wc.build_launch_request(
-                self._perm_test_refs(binary_id="bin_20260415_001"),
-                step="build", substep=None,
-                orchestration_id="vperm3",
-                orchestration_agent_run_id="orch_vperm3",
-                child_agent_run_id="build_child",
-                agent_model="claude-opus-4-8",
-                workflow_mode="dev",
-                exe_name="simulate",
-            )
-            cap = self._perm_record_and_cap(
-                repo_root, orchestration_id="vperm3", parent="orch_vperm3",
-                child="build_child", req=req,
-            )
-            self.assertEqual(cap["mcp_permissions"], ["compile_project"])
-            validate_mcp_build_tool_invocation(
-                repo_root,
-                orchestration_id="vperm3",
-                agent_run_id="build_child",
-                capability_token=str(cap["capability_token"]),
-                tool_name="compile_project",
-            )
-            with self.assertRaises(RuntimeError) as ctx:
-                validate_mcp_build_tool_invocation(
-                    repo_root,
-                    orchestration_id="vperm3",
-                    agent_run_id="build_child",
-                    capability_token=str(cap["capability_token"]),
-                    tool_name="run_program",
-                )
-            self.assertIn("not permitted by capability", str(ctx.exception))
-
     def _build_child_capability(self, repo_root: Path, orchestration_id: str) -> dict:
         """A build-step child holding the compile_project grant, ready for the gate."""
         import tools.workflow_conductor as wc
@@ -15157,198 +11793,6 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
             repo_root, orchestration_id=orchestration_id,
             parent=f"orch_{orchestration_id}", child="build_child", req=req,
         )
-
-    def test_capability_role_must_match_its_step_at_both_gate_call_sites(self) -> None:
-        """The MCP build-tool gate and the run-gate both demand
-        `capability.agent_role == _required_child_agent_kind(capability.step)`. Neither
-        had ANY test: a branch-wide mutation check showed both call sites surviving, and
-        the only assertions on this message were the launch-side ones. Since the two are
-        mirrors of one predicate, they are pinned together here rather than left to
-        diverge — the same reason the id-token check above pins both.
-
-        PINNED: that a role disagreeing with the capability's own `step` is rejected at
-        BOTH call sites, for every role in the vocabulary other than the demanded one
-        (iterated from `AGENT_RUN_ROLES`). SAMPLED: nothing — the accept side is covered
-        by the other tests in this class, which all drive a truthful capability."""
-        from tools.orchestration_runtime import (
-            AGENT_RUN_ROLES,
-            _required_child_agent_kind,
-            _validate_run_gate_permissions,
-        )
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            cap = self._build_child_capability(repo_root, "vperm_role")
-            token = str(cap["capability_token"])
-            cap_path = (repo_root / "workspace/orchestrations/vperm_role/capabilities"
-                        / "build_child.json")
-            doc = json.loads(cap_path.read_text(encoding="utf-8"))
-            demanded = _required_child_agent_kind(doc["step"])
-            self.assertEqual(doc["agent_role"], demanded)
-            for role in sorted(AGENT_RUN_ROLES - {demanded}) + ["bogus"]:
-                with self.subTest(role=role):
-                    cap_path.write_text(
-                        json.dumps({**doc, "agent_role": role}), encoding="utf-8")
-                    with self.assertRaises(RuntimeError) as ctx_mcp:
-                        validate_mcp_build_tool_invocation(
-                            repo_root,
-                            orchestration_id="vperm_role",
-                            agent_run_id="build_child",
-                            capability_token=token,
-                            tool_name="compile_project",
-                        )
-                    self.assertIn(
-                        "does not satisfy required child agent kind", str(ctx_mcp.exception))
-                    with self.assertRaises(RuntimeError) as ctx_gate:
-                        _validate_run_gate_permissions(
-                            repo_root,
-                            orchestration_id="vperm_role",
-                            agent_run_id="build_child",
-                            gate_name="orchestration_read",
-                            capability_token=token,
-                        )
-                    self.assertIn(
-                        "does not satisfy required child agent kind", str(ctx_gate.exception))
-
-    def test_an_unresolvable_ir_ref_does_not_exempt_the_make_contract(self) -> None:
-        """Every absence on the way to the make-only contract means make. An ir_ref the
-        launch request does not carry used to skip the block outright, so a `ctest`
-        preset — arbitrary execution in place of `make test` — was accepted."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            cap = self._build_child_capability(repo_root, "vperm12")
-            req_path = (repo_root / "workspace/orchestrations/vperm12/launches"
-                        / "build_child.request.json")
-            doc = json.loads(req_path.read_text(encoding="utf-8"))
-            doc.pop("ir_ref", None)
-            req_path.write_text(json.dumps(doc), encoding="utf-8")
-            with self.assertRaises(RuntimeError) as ctx:
-                validate_mcp_build_tool_invocation(
-                    repo_root,
-                    orchestration_id="vperm12",
-                    agent_run_id="build_child",
-                    capability_token=str(cap["capability_token"]),
-                    tool_name="compile_project",
-                    mcp_args={"build_system": "cmake"},
-                )
-            self.assertIn("requires compile_project build_system make", str(ctx.exception))
-
-    def test_orchestrated_run_quality_checks_env_is_restricted_through_the_handler(self) -> None:
-        """`run_quality_checks` is the only tool a workflow call passes `env` to, so its
-        call site is the one whose downgrade to the standalone denylist would matter
-        most. Driven through a real Validate.execute capability."""
-        import mcp_servers.build_runtime_server as brs
-        import tools.workflow_conductor as wc
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._perm_test_preflight(repo_root, "vperm9")
-            self._perm_test_plant_lineage(repo_root, binary_id="bin_20260415_001")
-            req = wc.build_launch_request(
-                self._perm_test_refs(
-                    binary_id="bin_20260415_001",
-                    source_binary_id="bin_20260415_001",
-                    run_id="run_20260415_001",
-                ),
-                step="validate", substep="execute",
-                orchestration_id="vperm9",
-                orchestration_agent_run_id="orch_vperm9",
-                child_agent_run_id="exec_child",
-                agent_model="claude-opus-4-8",
-                workflow_mode="dev",
-                case_ids=("case_a",),
-            )
-            cap = self._perm_record_and_cap(
-                repo_root, orchestration_id="vperm9", parent="orch_vperm9",
-                child="exec_child", req=req,
-            )
-            project_dir = repo_root / "src"
-            project_dir.mkdir()
-            base = {
-                "project_dir": str(project_dir), "preset": "make_test",
-                "repo_root": str(repo_root), "orchestration_id": "vperm9",
-                "agent_run_id": "exec_child",
-                "capability_token": str(cap["capability_token"]),
-            }
-            fake = {"ok": True, "return_code": 0, "stdout": "", "stderr": ""}
-
-            for env, expected in (
-                ({"FC": "/tmp/evil"}, "accepts only these env overrides"),
-                ({"CASES": "c1; touch /tmp/evil"}, "reach the make recipe's shell"),
-                ({"BINDIR": "/usr/bin"}, "inside the repository"),
-            ):
-                with self.subTest(env=env):
-                    with self.assertRaises(ValueError) as ctx:
-                        brs.tool_run_quality_checks({**base, "env": env})
-                    self.assertIn(expected, str(ctx.exception))
-
-            # The sibling reading, on the same gate block: an omitted preset is the
-            # server's own `make_test` default, so it satisfies the make-only contract
-            # rather than tripping it, while a non-make preset still trips it.
-            _plant_spec_ir_yaml_make(repo_root)
-            gate_kwargs = dict(
-                orchestration_id="vperm9", agent_run_id="exec_child",
-                capability_token=str(cap["capability_token"]),
-                tool_name="run_quality_checks",
-            )
-            validate_mcp_build_tool_invocation(repo_root, mcp_args={}, **gate_kwargs)
-            with self.assertRaises(RuntimeError) as ctx_qc:
-                validate_mcp_build_tool_invocation(
-                    repo_root, mcp_args={"preset": "ctest"}, **gate_kwargs)
-            self.assertIn("preset make_test or make_check", str(ctx_qc.exception))
-
-            # What Validate.execute actually sends still runs.
-            payload = {
-                "OBJDIR": f"{repo_root}/workspace/tmp/a/obj",
-                "BINDIR": f"{repo_root}/workspace/binary/b1/bin",
-                "RUNDIR": f"{repo_root}/workspace/tmp/a/qc_run",
-                "BIN": "sw2d_runner",
-                "SPEC": f"{repo_root}/workspace/ir/x/spec.ir.yaml",
-                "CASES": "case_a case_b",
-            }
-            with patch.object(brs, "_run_command", return_value=dict(fake)) as run_command:
-                brs.tool_run_quality_checks({**base, "env": dict(payload)})
-            self.assertEqual(run_command.call_args.kwargs["env"], payload)
-
-    def test_validate_mcp_refuses_ids_that_are_not_plain_path_tokens(self) -> None:
-        """Both ids are interpolated into the paths this gate reads its own evidence
-        from, so a `..` in either relocates the check to a directory the caller wrote —
-        including the capability it is then validated against, and the audit record."""
-        from tools.orchestration_runtime import _validate_run_gate_permissions
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            cap = self._build_child_capability(repo_root, "vperm10")
-            token = str(cap["capability_token"])
-            for oid, arid in (("../vperm10", "build_child"),
-                              ("vperm10", "../../elsewhere/build_child"),
-                              ("vperm10/x", "build_child"),
-                              ("vperm10", "build_child/../y"),
-                              # The raw value is what builds the path, so it is what is
-                              # checked: a padded id would otherwise pass the check and
-                              # then address a different directory.
-                              (" vperm10 ", "build_child"),
-                              ("vperm10", " build_child ")):
-                with self.subTest(orchestration_id=oid, agent_run_id=arid):
-                    with self.assertRaises(RuntimeError) as ctx:
-                        validate_mcp_build_tool_invocation(
-                            repo_root,
-                            orchestration_id=oid,
-                            agent_run_id=arid,
-                            capability_token=token,
-                            tool_name="compile_project",
-                        )
-                    self.assertIn("plain [A-Za-z0-9_-] token", str(ctx.exception))
-                    # The run-gate mirror reads the same ids out of the same paths and
-                    # carries the same check, so it is pinned here rather than left to
-                    # diverge.
-                    with self.assertRaises(RuntimeError) as ctx_gate:
-                        _validate_run_gate_permissions(
-                            repo_root,
-                            orchestration_id=oid,
-                            agent_run_id=arid,
-                            gate_name="orchestration_read",
-                            capability_token=token,
-                        )
-                    self.assertIn("plain [A-Za-z0-9_-] token", str(ctx_gate.exception))
 
     def test_ir_build_system_is_read_structurally_not_line_scanned(self) -> None:
         """A line of prose containing `build_system:` must not answer for the toolchain.
@@ -15378,92 +11822,6 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
                 "toolchain:\n  build_system: cmake\n", encoding="utf-8")
             self.assertIsNone(_impl_resolved_build_system(repo_root, _FIX_IR_REF))
 
-    def test_ir_language_is_read_structurally_and_decides_makefile_ownership(self) -> None:
-        """The language half of the toolchain read, pinned at its consequence.
-
-        `_resolved_makefile_host_authored` is make AND fortran. Line-scanning the
-        language let a decoy line in a free-text field make record_launch believe the
-        conductor did not author `src/Makefile`, which pins it back as a path the leaf
-        may write with a file tool — the certified Makefile, writable, and then run by
-        `compile_project`."""
-        from tools.orchestration_runtime import (
-            _impl_resolved_build_system, _impl_resolved_language)
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            ir_path = repo_root / _FIX_IR_REF / "spec.ir.yaml"
-            ir_path.parent.mkdir(parents=True, exist_ok=True)
-            ir_path.write_text(
-                "algorithm:\n"
-                "  invariants:\n"
-                "    - \"the discretization order is fixed\n"
-                "      language: c is irrelevant to this invariant\"\n"
-                "impl_defaults:\n"
-                "  toolchain:\n"
-                "    language: fortran\n"
-                "    build_system: make\n",
-                encoding="utf-8")
-            self.assertEqual(_impl_resolved_language(repo_root, _FIX_IR_REF), "fortran")
-            self.assertEqual(_impl_resolved_build_system(repo_root, _FIX_IR_REF), "make")
-            # The consequence: record_launch persists what it concluded, and a decoy
-            # answer here drops the Makefile from the conductor-authored set and pins it
-            # back as a path the leaf may write.
-            import tools.workflow_conductor as wc
-            self._perm_test_preflight(repo_root, "vperm11")
-            req = wc.build_launch_request(
-                self._perm_test_refs(),
-                step="generate", substep="generate",
-                orchestration_id="vperm11",
-                orchestration_agent_run_id="orch_vperm11",
-                child_agent_run_id="gen_child",
-                agent_model="claude-opus-4-8",
-                workflow_mode="dev",
-            )
-            self._perm_record_and_cap(
-                repo_root, orchestration_id="vperm11", parent="orch_vperm11",
-                child="gen_child", req=req)
-            persisted = json.loads(
-                (repo_root / "workspace/orchestrations/vperm11/launches"
-                 "/gen_child.request.json").read_text(encoding="utf-8"))
-            self.assertTrue(persisted["_resolved_makefile_host_authored"])
-
-    def test_the_persisted_makefile_ownership_is_false_for_a_toolchain_the_host_cannot_author(
-            self) -> None:
-        """The other half of the pin above, which did not exist.
-
-        Only the True case was asserted, so a census measured that hardcoding
-        `request_payload["_resolved_makefile_host_authored"] = True` in `record_launch` passes
-        the entire suite — the call site of the predicate is what carries the decision into the
-        artifact, and nothing observed it answering False. The consequence of a wrong True is
-        the one the sibling test describes in reverse: the leaf's write-pin on `src/Makefile` is
-        suppressed for a node the conductor does NOT author it for, so the file is authored by
-        nobody.
-        """
-        import tools.workflow_conductor as wc
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            ir_path = repo_root / _FIX_IR_REF / "spec.ir.yaml"
-            ir_path.parent.mkdir(parents=True, exist_ok=True)
-            ir_path.write_text(
-                "impl_defaults:\n  toolchain:\n    language: c\n    build_system: make\n",
-                encoding="utf-8")
-            self._perm_test_preflight(repo_root, "vperm11b")
-            req = wc.build_launch_request(
-                self._perm_test_refs(),
-                step="generate", substep="generate",
-                orchestration_id="vperm11b",
-                orchestration_agent_run_id="orch_vperm11b",
-                child_agent_run_id="gen_child",
-                agent_model="claude-opus-4-8",
-                workflow_mode="dev",
-            )
-            self._perm_record_and_cap(
-                repo_root, orchestration_id="vperm11b", parent="orch_vperm11b",
-                child="gen_child", req=req)
-            persisted = json.loads(
-                (repo_root / "workspace/orchestrations/vperm11b/launches"
-                 "/gen_child.request.json").read_text(encoding="utf-8"))
-            self.assertFalse(persisted["_resolved_makefile_host_authored"])
-
     def test_init_and_resume_refuse_an_id_that_is_not_a_path_token(self) -> None:
         """The id becomes a directory name and every gate's path base, so both entry
         points refuse it. Resume as well as init: a workspace created under an older
@@ -15483,161 +11841,6 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
             init_orchestration(repo_root=repo_root,
                                orchestration_id="orch_20260812T010203Z_ab12cd34")
 
-    def test_validate_mcp_omitted_build_system_is_accepted_under_a_make_toolchain(self) -> None:
-        """An omitted (or blank) `build_system` means make, so the make-only contract
-        applies to it. Reading the omission as "no policy" was the bypass: the argument
-        is the caller's, and dropping it skipped the check while the server went on to
-        pick a build system from marker files."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            cap = self._build_child_capability(repo_root, "vperm5")
-            _plant_spec_ir_yaml_make(repo_root)
-            token = str(cap["capability_token"])
-
-            def check(mcp_args: dict) -> None:
-                validate_mcp_build_tool_invocation(
-                    repo_root,
-                    orchestration_id="vperm5",
-                    agent_run_id="build_child",
-                    capability_token=token,
-                    tool_name="compile_project",
-                    mcp_args=mcp_args,
-                )
-
-            check({})
-            check({"build_system": ""})
-            check({"build_system": "  "})
-            check({"build_system": "make"})
-
-
-            with self.assertRaises(RuntimeError) as ctx:
-                check({"build_system": "cmake"})
-            self.assertIn("requires compile_project build_system make", str(ctx.exception))
-
-    def test_validate_mcp_ir_without_build_system_still_enforces_make(self) -> None:
-        """An IR that declares no `toolchain.build_system` means make too, so the
-        make-only contract applies to its node. Reading THAT absence as "no policy" left
-        the whole block inert: a cmake compile and a ctest preset both sailed through,
-        while record_launch had already read the same IR as make and pinned its
-        Makefile."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            cap = self._build_child_capability(repo_root, "vperm7")
-            # An IR document with a toolchain but no build_system key.
-            ir_path = repo_root / _FIX_IR_REF / "spec.ir.yaml"
-            ir_path.parent.mkdir(parents=True, exist_ok=True)
-            ir_path.write_text(
-                "impl_defaults:\n  toolchain:\n    language: fortran\n", encoding="utf-8")
-            from tools.orchestration_runtime import _impl_resolved_build_system
-            self.assertIsNone(_impl_resolved_build_system(repo_root, _FIX_IR_REF))
-            token = str(cap["capability_token"])
-            with self.assertRaises(RuntimeError) as ctx:
-                validate_mcp_build_tool_invocation(
-                    repo_root,
-                    orchestration_id="vperm7",
-                    agent_run_id="build_child",
-                    capability_token=token,
-                    tool_name="compile_project",
-                    mcp_args={"build_system": "cmake"},
-                )
-            self.assertIn("requires compile_project build_system make", str(ctx.exception))
-
-    def test_orchestrated_call_env_and_argv_are_restricted_through_the_handler(self) -> None:
-        """Through a real capability, an orchestrated `compile_project` accepts only the
-        declared make variables — in `env` and in the argv alike. Pinning this at the
-        handler rather than at the helper is the point: the restriction is chosen per
-        call from `orchestration_id`, so a call site that asked for the standalone rule
-        would leave the workflow on the weaker one with every helper test still green."""
-        import mcp_servers.build_runtime_server as brs
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            cap = self._build_child_capability(repo_root, "vperm8")
-            _plant_spec_ir_yaml_make(repo_root)
-            project_dir = repo_root / "src"
-            project_dir.mkdir()
-            outside_stack = tempfile.TemporaryDirectory()
-            self.addCleanup(outside_stack.cleanup)
-            outside_dir = Path(outside_stack.name)
-            gate_args = {
-                "repo_root": str(repo_root),
-                "orchestration_id": "vperm8",
-                "agent_run_id": "build_child",
-                "capability_token": str(cap["capability_token"]),
-            }
-            base = {"project_dir": str(project_dir), "build_system": "make", **gate_args}
-
-            def call(extra: dict) -> dict:
-                fake = {"ok": True, "return_code": 0, "stdout": "", "stderr": ""}
-                with patch.object(brs, "_run_command", return_value=dict(fake)) as run_command:
-                    tool_compile_project({**base, **extra})
-                return run_command.call_args.kwargs
-
-            # `FC` in the environment and `FC=` on the make command line both replace the
-            # compiler the certified Makefile invokes; a make command-line assignment
-            # overrides even a hard assignment in the Makefile.
-            for extra, expected in (
-                ({"env": {"FC": "/tmp/evil"}}, "accepts only these env overrides"),
-                ({"extra_args": ["FC=/tmp/evil"]}, "make variables in extra_args"),
-                ({"extra_args": ["--eval=$(shell id)"]}, "make variables in extra_args"),
-                ({"target": "test"}, "does not accept a target"),
-                # The value is interpolated unquoted into the recipe's shell line.
-                ({"extra_args": ["BIN=x; touch /tmp/evil;"]}, "reach the make recipe's shell"),
-                # command_log_path is a write, and only run_program at Validate has a
-                # placement rule in the phase gate.
-                ({"command_log_path": "/tmp/evil.jsonl"},
-                 "command_log_path must stay under the repository root"),
-                # project_dir is the subprocess cwd, and a relative log path resolves
-                # against it.
-                ({"project_dir": str(outside_dir)},
-                 "project_dir must stay under the repository root"),
-                # A relative project_dir has two bases — the gate's root and the
-                # subprocess's own working directory.
-                ({"project_dir": "src"}, "project_dir must be an absolute path"),
-            ):
-                with self.subTest(extra=extra):
-                    with self.assertRaises(ValueError) as ctx:
-                        call(extra)
-                    self.assertIn(expected, str(ctx.exception))
-
-            # What Build actually sends still runs (its paths are inside the checkout).
-            kwargs = call({"extra_args": [
-                f"OBJDIR={repo_root}/workspace/tmp/a/obj",
-                f"BINDIR={repo_root}/workspace/binary/b1/bin", "BIN=runner"]})
-            self.assertEqual(
-                kwargs["command"],
-                ["make", f"-j{max(1, (os.cpu_count() or 1) // 2)}",
-                 f"OBJDIR={repo_root}/workspace/tmp/a/obj",
-                 f"BINDIR={repo_root}/workspace/binary/b1/bin", "BIN=runner"])
-
-    def test_gate_and_server_agree_on_omitted_build_system(self) -> None:
-        """Gate and server read an omitted `build_system` the same way. They did not:
-        the gate skipped its check and the server auto-detected from marker files, so a
-        project_dir with a CMakeLists.txt and no Makefile built with cmake under a
-        make-only toolchain."""
-        import mcp_servers.build_runtime_server as brs
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            cap = self._build_child_capability(repo_root, "vperm6")
-            _plant_spec_ir_yaml_make(repo_root)
-            project_dir = repo_root / "cmakeish"
-            project_dir.mkdir()
-            (project_dir / "CMakeLists.txt").write_text("project(x)\n", encoding="utf-8")
-            # Precondition: marker detection alone would answer cmake here.
-            self.assertEqual(
-                brs._recommended_build_system(str(project_dir), "")["build_system"], "cmake")
-
-            fake = {"ok": True, "return_code": 0, "stdout": "", "stderr": ""}
-            with patch.object(brs, "_run_command", return_value=dict(fake)) as run_command:
-                result = tool_compile_project({
-                    "project_dir": str(project_dir),
-                    "repo_root": str(repo_root),
-                    "orchestration_id": "vperm6",
-                    "agent_run_id": "build_child",
-                    "capability_token": str(cap["capability_token"]),
-                })
-            self.assertEqual(result["build_system"], "make")
-            self.assertEqual(run_command.call_args.kwargs["command"][0], "make")
-
     def test_omitted_build_system_standalone_still_marker_detects(self) -> None:
         """The asymmetry is deliberate: outside an orchestration there is no toolchain
         declaration to agree with, so marker detection stays the answer."""
@@ -15653,111 +11856,6 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
                     result = tool_compile_project({"project_dir": str(project_dir)})
             self.assertEqual(result["build_system"], "cmake")
             self.assertEqual(run_command.call_args.kwargs["command"][0], "cmake")
-
-    def test_validate_mcp_execute_grant_accepts_program_and_quality_checks(self) -> None:
-        """The validate.execute grant is exercised through the REAL authz gate: its capability
-        token authorizes BOTH run_program and run_quality_checks and refuses an unrelated
-        gated tool (run_linter, a different substep's grant)."""
-        import tools.workflow_conductor as wc
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._perm_test_preflight(repo_root, "vperm4")
-            self._perm_test_plant_lineage(repo_root, binary_id="bin_20260415_001")
-            req = wc.build_launch_request(
-                self._perm_test_refs(
-                    binary_id="bin_20260415_001",
-                    source_binary_id="bin_20260415_001",
-                    run_id="run_20260415_001",
-                ),
-                step="validate", substep="execute",
-                orchestration_id="vperm4",
-                orchestration_agent_run_id="orch_vperm4",
-                child_agent_run_id="exec_child",
-                agent_model="claude-opus-4-8",
-                workflow_mode="dev",
-                case_ids=("case_a",),
-            )
-            cap = self._perm_record_and_cap(
-                repo_root, orchestration_id="vperm4", parent="orch_vperm4",
-                child="exec_child", req=req,
-            )
-            self.assertEqual(cap["mcp_permissions"], ["run_program", "run_quality_checks"])
-            # run_quality_checks passes the grant gate cleanly — a full clean pass through
-            # the real gate. The make-preset contract applies here even with no spec.ir.yaml
-            # planted, because an IR that declares no build_system means make.
-            validate_mcp_build_tool_invocation(
-                repo_root,
-                orchestration_id="vperm4",
-                agent_run_id="exec_child",
-                capability_token=str(cap["capability_token"]),
-                tool_name="run_quality_checks",
-                mcp_args={"preset": "make_test"},
-            )
-            # run_program is ALSO granted: it gets PAST the perms gate and only then trips its
-            # own command-array contract (which is out of scope here). Asserting it fails on the
-            # command contract — NOT "not permitted by capability" — proves the grant authorizes it.
-            with self.assertRaises(RuntimeError) as ctx_prog:
-                validate_mcp_build_tool_invocation(
-                    repo_root,
-                    orchestration_id="vperm4",
-                    agent_run_id="exec_child",
-                    capability_token=str(cap["capability_token"]),
-                    tool_name="run_program",
-                )
-            self.assertNotIn("not permitted by capability", str(ctx_prog.exception))
-            self.assertIn("run_program requires", str(ctx_prog.exception))
-            # An unrelated gated tool (a different substep's grant) IS refused at the perms gate.
-            with self.assertRaises(RuntimeError) as ctx:
-                validate_mcp_build_tool_invocation(
-                    repo_root,
-                    orchestration_id="vperm4",
-                    agent_run_id="exec_child",
-                    capability_token=str(cap["capability_token"]),
-                    tool_name="run_linter",
-                )
-            self.assertIn("not permitted by capability", str(ctx.exception))
-
-    def test_tool_compile_project_enforces_gate_when_orchestration_id_set(self) -> None:
-        """L-FOURTH-1: exercise the REAL `validate_mcp_build_tool_invocation`
-        path (no stubbed runtime). When an orchestration is initialized but
-        `record-launch` was never called for the agent_run_id, the production
-        gate raises a RuntimeError mentioning "record-launch" — the test
-        assertion is satisfied by the real production message rather than a
-        self-fulfilling stub."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            init_orchestration(repo_root=repo_root, orchestration_id="g3")
-            _mark_dependencies_ready(repo_root, "g3")
-            write_preflight(
-                repo_root=repo_root,
-                orchestration_id="g3",
-                payload={
-                    "status": "pass",
-                    "sandbox_runtime": "bwrap",
-                    "sandbox_enforced": True,
-                    "can_launch_step_agents": True,
-                    "can_launch_substep_agents": True,
-                    "feature_states": {"multi_agent": True, "hooks": True},
-                    "checks": [{"name": "multi_agent_enabled", "pass": True}, {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
-                },
-            )
-            # No record-launch for agent_run_id="nolaunch" → real
-            # validate_mcp_build_tool_invocation raises:
-            # "MCP phase gate: record-launch did not complete (missing
-            #  launches/*.response.json) for agent_run_id='nolaunch'"
-            with self.assertRaises(RuntimeError) as ctx:
-                tool_compile_project(
-                    {
-                        "project_dir": str(repo_root),
-                        "language": "python",
-                        "build_system": "poetry",
-                        "orchestration_id": "g3",
-                        "agent_run_id": "nolaunch",
-                        "capability_token": "x",
-                        "repo_root": str(repo_root),
-                    }
-                )
-            self.assertIn("record-launch", str(ctx.exception).lower())
 
     def test_reserve_phase_root_creates_reservation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -15876,2287 +11974,6 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
                     )
 
 
-class TestPhase3RunGate(unittest.TestCase):
-    def _setup_run_gate_fixture(self, repo_root: Path) -> str:
-        (repo_root / "workspace").mkdir(parents=True, exist_ok=True)
-        (repo_root / "workspace" / "probe.json").write_text('{"ok": true}\n', encoding="utf-8")
-        init_orchestration(repo_root=repo_root, orchestration_id="rg1")
-        _mark_dependencies_ready(repo_root, "rg1")
-        write_preflight(
-            repo_root=repo_root,
-            orchestration_id="rg1",
-            payload={
-                "status": "pass",
-                "sandbox_runtime": "bwrap",
-                "sandbox_enforced": True,
-                "can_launch_step_agents": True,
-                "can_launch_substep_agents": True,
-                "feature_states": {"multi_agent": True, "hooks": True},
-                "checks": [{"name": "multi_agent_enabled", "pass": True}, {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
-            },
-        )
-        req = {
-            "agent_run_id": "build_child_rg1",
-            "agent_role": "step",
-            "node_key": "problem/shallow_water2d@0.3.0",
-            "step": "build",
-            "agent_model": "claude-opus-4-8",
-            "orchestration_id": "rg1",
-            "parent_agent_run_id": "orch_rg1",
-            "ir_ref": _FIX_IR_REF,
-            "pipeline_ref": _FIX_PIPE_REF,
-            "dependency_ref": _FIX_DEP_REF,
-            "deterministic": True,
-            "deterministic": True,
-            "issue_severity": "none",
-            "repair_strategy": "none",
-            "repair_target_agent_run_id": "none",
-            "repair_reason": "none",
-            "allowed_output_paths": [f"{_FIX_PIPE_REF}/binary/bin_20260101_001/binary_meta.json"],
-            "launch_prompt_full": render_launch_prompt_text(
-                {
-                    "agent_run_id": "build_child_rg1",
-                    "node_key": "problem/shallow_water2d@0.3.0",
-                    "step": "build",
-                    "orchestration_id": "rg1",
-                    "parent_agent_run_id": "orch_rg1",
-                    "ir_ref": _FIX_IR_REF,
-                    "pipeline_ref": _FIX_PIPE_REF,
-                    "dependency_ref": _FIX_DEP_REF,
-                    "deterministic": True,
-                    "deterministic": True,
-                    "issue_severity": "none",
-                    "repair_strategy": "none",
-                    "repair_target_agent_run_id": "none",
-                    "repair_reason": "none",
-                }
-            ),
-        }
-        record_launch(
-            repo_root=repo_root,
-            orchestration_id="rg1",
-            parent_agent_run_id="orch_rg1",
-            child_agent_run_id="build_child_rg1",
-            request_payload=req,
-            response_payload={
-                "agent_run_id": "build_child_rg1",
-                **_spawn_response_payload("sess_build_child_rg1"),
-            },
-        )
-        cap = json.loads(
-            (
-                repo_root
-                / "workspace/orchestrations/rg1/capabilities/build_child_rg1.json"
-            ).read_text(encoding="utf-8")
-        )
-        return str(cap["capability_token"])
-
-    def test_record_launch_rejects_allowed_output_paths_outside_phase_contract(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            init_orchestration(repo_root=repo_root, orchestration_id="rg_bad")
-            _mark_dependencies_ready(repo_root, "rg_bad")
-            write_preflight(
-                repo_root=repo_root,
-                orchestration_id="rg_bad",
-                payload={
-                    "status": "pass",
-                    "sandbox_runtime": "bwrap",
-                    "sandbox_enforced": True,
-                    "can_launch_step_agents": True,
-                    "can_launch_substep_agents": True,
-                    "feature_states": {"multi_agent": True, "hooks": True},
-                    "checks": [{"name": "multi_agent_enabled", "pass": True}, {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
-                },
-            )
-            bad_req = {
-                "agent_run_id": "build_bad_001",
-                "agent_role": "step",
-                "node_key": "problem/shallow_water2d@0.3.0",
-                "step": "build",
-                "agent_model": "claude-opus-4-8",
-                "orchestration_id": "rg_bad",
-                "parent_agent_run_id": "orch_bad",
-                "ir_ref": _FIX_IR_REF,
-                "pipeline_ref": _FIX_PIPE_REF,
-                "dependency_ref": _FIX_DEP_REF,
-                "deterministic": True,
-                "deterministic": True,
-                "issue_severity": "none",
-                "repair_strategy": "none",
-                "repair_target_agent_run_id": "none",
-                "repair_reason": "none",
-                "allowed_output_paths": [f"{_FIX_PIPE_REF}/binary/test3.tmp"],
-                "launch_prompt_full": render_launch_prompt_text(
-                    {
-                        "agent_run_id": "build_bad_001",
-                        "node_key": "problem/shallow_water2d@0.3.0",
-                        "step": "build",
-                        "orchestration_id": "rg_bad",
-                        "parent_agent_run_id": "orch_bad",
-                        "ir_ref": _FIX_IR_REF,
-                        "pipeline_ref": _FIX_PIPE_REF,
-                        "dependency_ref": _FIX_DEP_REF,
-                        "deterministic": True,
-                        "deterministic": True,
-                        "issue_severity": "none",
-                        "repair_strategy": "none",
-                        "repair_target_agent_run_id": "none",
-                        "repair_reason": "none",
-                    }
-                ),
-            }
-            with self.assertRaisesRegex(ValueError, "outside phase contract outputs"):
-                record_launch(
-                    repo_root=repo_root,
-                    orchestration_id="rg_bad",
-                    parent_agent_run_id="orch_bad",
-                    child_agent_run_id="build_bad_001",
-                    request_payload=bad_req,
-                    response_payload={"agent_run_id": "build_bad_001", **_spawn_response_payload("sess_bad")},
-                )
-
-    def test_record_launch_rejects_execute_path_without_node_directory(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            init_orchestration(repo_root=repo_root, orchestration_id="rg_exec_bad")
-            _mark_dependencies_ready(repo_root, "rg_exec_bad")
-            write_preflight(
-                repo_root=repo_root,
-                orchestration_id="rg_exec_bad",
-                payload={
-                    "status": "pass",
-                    "sandbox_runtime": "bwrap",
-                    "sandbox_enforced": True,
-                    "can_launch_step_agents": True,
-                    "can_launch_substep_agents": True,
-                    "feature_states": {"multi_agent": True, "hooks": True},
-                    "checks": [{"name": "multi_agent_enabled", "pass": True}, {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
-                },
-            )
-            bad_req = {
-                "agent_run_id": "execute_bad_001",
-                # `validate` demands `substep`; this fixture said `step`, which every
-                # launch-side reader used to tolerate. The path under test is the phase
-                # contract, so the role has to be the real one to reach it.
-                "agent_role": "substep",
-                "node_key": "problem/shallow_water2d@0.3.0",
-                "step": "validate", "substep": "execute",
-                "agent_model": "claude-opus-4-8",
-                "orchestration_id": "rg_exec_bad",
-                "parent_agent_run_id": "orch_exec_bad",
-                "ir_ref": _FIX_IR_REF,
-                "pipeline_ref": _FIX_PIPE_REF,
-                "dependency_ref": _FIX_DEP_REF,
-                "skill_name": "workflow-validate-execute",
-                "skill_ref": "skills/workflow-validate-execute/SKILL.md",
-                "skill_must_read_refs": "",
-                "deterministic": True,
-                "issue_severity": "none",
-                "repair_strategy": "none",
-                "repair_target_agent_run_id": "none",
-                "repair_reason": "none",
-                "allowed_output_paths": [f"{_FIX_PIPE_REF}/runs/run_20260101_001/diagnostics.json"],
-                "launch_prompt_full": render_launch_prompt_text(
-                    {
-                        "agent_run_id": "execute_bad_001",
-                        "node_key": "problem/shallow_water2d@0.3.0",
-                        "step": "validate", "substep": "execute",
-                        "orchestration_id": "rg_exec_bad",
-                        "parent_agent_run_id": "orch_exec_bad",
-                        "ir_ref": _FIX_IR_REF,
-                        "pipeline_ref": _FIX_PIPE_REF,
-                        "dependency_ref": _FIX_DEP_REF,
-                        "skill_name": "workflow-validate-execute",
-                        "skill_ref": "skills/workflow-validate-execute/SKILL.md",
-                        "skill_must_read_refs": "",
-                        "deterministic": True,
-                        "issue_severity": "none",
-                        "repair_strategy": "none",
-                        "repair_target_agent_run_id": "none",
-                        "repair_reason": "none",
-                    }
-                ),
-            }
-            with self.assertRaisesRegex(ValueError, "outside phase contract outputs"):
-                record_launch(
-                    repo_root=repo_root,
-                    orchestration_id="rg_exec_bad",
-                    parent_agent_run_id="orch_exec_bad",
-                    child_agent_run_id="execute_bad_001",
-                    request_payload=bad_req,
-                    response_payload={"agent_run_id": "execute_bad_001", **_spawn_response_payload("sess_exec_bad")},
-                )
-
-    def test_allowed_output_paths_for_launch_allows_tune_contract_output_path(self) -> None:
-        req = {
-            "agent_role": "substep",
-            "node_key": "problem/shallow_water2d@0.3.0",
-            "step": "tune",
-            "ir_ref": _FIX_IR_REF,
-            "pipeline_ref": _FIX_PIPE_REF,
-            "allowed_output_paths": [f"{_FIX_PIPE_REF}/tune/trial_001/spec.ir.yaml"],
-        }
-        out = _allowed_output_paths_for_launch(
-            request_payload=req,
-            write_roots=[f"{_FIX_PIPE_REF}/tune/"],
-        )
-        self.assertEqual(out, [f"{_FIX_PIPE_REF}/tune/trial_001/spec.ir.yaml"])
-
-    def test_allowed_output_paths_for_launch_rejects_nested_tune_subdirectory(self) -> None:
-        req = {
-            "agent_role": "substep",
-            "node_key": "problem/shallow_water2d@0.3.0",
-            "step": "tune",
-            "ir_ref": _FIX_IR_REF,
-            "pipeline_ref": _FIX_PIPE_REF,
-            "allowed_output_paths": [f"{_FIX_PIPE_REF}/tune/trial_001/subdir/spec.ir.yaml"],
-        }
-        with self.assertRaisesRegex(ValueError, "outside phase contract outputs"):
-            _allowed_output_paths_for_launch(
-                request_payload=req,
-                write_roots=[f"{_FIX_PIPE_REF}/tune/"],
-            )
-
-    def test_allowed_output_paths_for_launch_allows_judge_contract_path(self) -> None:
-        # R2: the judge's ONLY deliverable is semantic_review.json (verdict.json is host-authored
-        # at execute; aggregate_verdict / summary / validate_meta are conductor-authored in
-        # post_judge).
-        base = f"{_FIX_PIPE_REF}/runs/run_20260101_001/problem__shallow_water2d__0.3.0"
-        req = {
-            "agent_role": "step",
-            "node_key": "problem/shallow_water2d@0.3.0",
-            "step": "validate", "substep": "judge",
-            "ir_ref": _FIX_IR_REF,
-            "pipeline_ref": _FIX_PIPE_REF,
-            "allowed_output_paths": [f"{base}/semantic_review.json"],
-        }
-        out = _allowed_output_paths_for_launch(
-            request_payload=req,
-            write_roots=[f"{_FIX_PIPE_REF}/runs/"],
-        )
-        self.assertEqual(out, [f"{base}/semantic_review.json"])
-        # R2: the judge may NOT declare verdict.json (host-authored at execute).
-        forged = dict(req, allowed_output_paths=[f"{base}/verdict.json"])
-        with self.assertRaisesRegex(ValueError, "outside phase contract outputs"):
-            _allowed_output_paths_for_launch(
-                request_payload=forged, write_roots=[f"{_FIX_PIPE_REF}/runs/"])
-
-    def test_allowed_output_paths_for_launch_rejects_judge_path_under_legacy_judge_root(self) -> None:
-        req = {
-            "agent_role": "step",
-            "node_key": "problem/shallow_water2d@0.3.0",
-            "step": "validate", "substep": "judge",
-            "ir_ref": _FIX_IR_REF,
-            "pipeline_ref": _FIX_PIPE_REF,
-            "allowed_output_paths": [
-                f"{_FIX_PIPE_REF}/judge/jdg_001/problem__shallow_water2d__0.3.0/summary.json"
-            ],
-        }
-        with self.assertRaisesRegex(ValueError, "must be under capability write_roots"):
-            _allowed_output_paths_for_launch(
-                request_payload=req,
-                write_roots=[f"{_FIX_PIPE_REF}/runs/"],
-            )
-
-    def test_allowed_output_paths_for_launch_allows_generate_src_directory(self) -> None:
-        src_id = "src_20260508_001"
-        req = {
-            "agent_role": "step",
-            "node_key": "problem/shallow_water2d@0.3.0",
-            "step": "generate",
-            "ir_ref": _FIX_IR_REF,
-            "pipeline_ref": _FIX_PIPE_REF,
-            "allowed_output_paths": [f"{_FIX_PIPE_REF}/source/{src_id}/src/"],
-        }
-        out = _allowed_output_paths_for_launch(
-            request_payload=req,
-            write_roots=[f"{_FIX_PIPE_REF}/source/"],
-        )
-        # Generate-step launches receive a defensive auto-inject for the
-        # MCP run_linter side-effect log under <src_id>/src/.
-        self.assertEqual(
-            out,
-            [
-                f"{_FIX_PIPE_REF}/source/{src_id}/src/",
-                f"{_FIX_PIPE_REF}/source/{src_id}/src/command_log.jsonl",
-            ],
-        )
-
-    def test_allowed_output_paths_for_launch_rejects_generate_srcmal_directory(self) -> None:
-        src_id = "src_20260508_001"
-        req = {
-            "agent_role": "step",
-            "node_key": "problem/shallow_water2d@0.3.0",
-            "step": "generate",
-            "ir_ref": _FIX_IR_REF,
-            "pipeline_ref": _FIX_PIPE_REF,
-            "allowed_output_paths": [f"{_FIX_PIPE_REF}/source/{src_id}/srcmal/"],
-        }
-        with self.assertRaisesRegex(ValueError, "outside phase contract outputs"):
-            _allowed_output_paths_for_launch(
-                request_payload=req,
-                write_roots=[f"{_FIX_PIPE_REF}/source/"],
-            )
-
-    def test_allowed_output_paths_for_launch_rejects_generateevil_prefix_bypass(self) -> None:
-        """A directory whose name starts with 'generate' but is a sibling (e.g. generateevil/) must be rejected."""
-        src_id = "src_20260508_001"
-        req = {
-            "agent_role": "step",
-            "node_key": "problem/shallow_water2d@0.3.0",
-            "step": "generate",
-            "ir_ref": _FIX_IR_REF,
-            "pipeline_ref": _FIX_PIPE_REF,
-            "allowed_output_paths": [f"{_FIX_PIPE_REF}/generateevil/{src_id}/src/"],
-        }
-        with self.assertRaisesRegex(ValueError, "outside phase contract outputs"):
-            _allowed_output_paths_for_launch(
-                request_payload=req,
-                write_roots=[f"{_FIX_PIPE_REF}/generateevil/"],
-            )
-
-    def test_allowed_output_paths_for_launch_rejects_generate_root_directory(self) -> None:
-        req = {
-            "agent_role": "step",
-            "node_key": "problem/shallow_water2d@0.3.0",
-            "step": "generate",
-            "ir_ref": _FIX_IR_REF,
-            "pipeline_ref": _FIX_PIPE_REF,
-            "allowed_output_paths": [f"{_FIX_PIPE_REF}/source/"],
-        }
-        with self.assertRaisesRegex(ValueError, "outside phase contract outputs"):
-            _allowed_output_paths_for_launch(
-                request_payload=req,
-                write_roots=[f"{_FIX_PIPE_REF}/source/"],
-            )
-
-    def test_write_manifest_preserves_directory_entry_trailing_slash(self) -> None:
-        """_write_allowed_output_manifest must persist directory entries with trailing slash intact."""
-        from tools.orchestration_runtime import (
-            _load_allowed_output_manifest,
-            _write_allowed_output_manifest,
-        )
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            src_dir = f"{_FIX_PIPE_REF}/source/src_20260508_001/src/"
-            _write_allowed_output_manifest(
-                repo_root,
-                orchestration_id="rg_persist",
-                agent_run_id="gen_persist",
-                allowed_output_paths=[src_dir],
-            )
-            manifest = _load_allowed_output_manifest(
-                repo_root,
-                orchestration_id="rg_persist",
-                agent_run_id="gen_persist",
-            )
-            self.assertIn(src_dir.rstrip("/") + "/", manifest["allowed_output_paths"])
-
-    def test_write_manifest_then_validate_allows_file_under_directory_entry(self) -> None:
-        """Full path: write manifest with directory entry, then validate a file written under it."""
-        from tools.orchestration_runtime import (
-            _validate_paths_against_allowed_output_manifest,
-            _write_allowed_output_manifest,
-        )
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            src_dir = f"{_FIX_PIPE_REF}/source/src_20260508_001/src/"
-            _write_allowed_output_manifest(
-                repo_root,
-                orchestration_id="rg_e2e",
-                agent_run_id="gen_e2e",
-                allowed_output_paths=[src_dir],
-            )
-            _validate_paths_against_allowed_output_manifest(
-                repo_root,
-                orchestration_id="rg_e2e",
-                agent_run_id="gen_e2e",
-                paths=[
-                    f"{_FIX_PIPE_REF}/source/src_20260508_001/src/main.f90",
-                    f"{_FIX_PIPE_REF}/source/src_20260508_001/src/mod/util.f90",
-                ],
-            )
-
-    def test_validate_paths_against_allowed_output_manifest_allows_file_under_directory_entry(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            src_dir = f"{_FIX_PIPE_REF}/source/src_20260508_001/src/"
-            manifest_path = (
-                repo_root
-                / "workspace/orchestrations/rg_dir_ok/output_manifests/gen_child_dir.json"
-            )
-            manifest_path.parent.mkdir(parents=True, exist_ok=True)
-            manifest_path.write_text(
-                json.dumps(
-                    {
-                        "orchestration_id": "rg_dir_ok",
-                        "agent_run_id": "gen_child_dir",
-                        "allowed_output_paths": [src_dir],
-                    },
-                    ensure_ascii=False,
-                    indent=2,
-                )
-                + "\n",
-                encoding="utf-8",
-            )
-            # Files under the allowed directory must pass without raising
-            _validate_paths_against_allowed_output_manifest(
-                repo_root,
-                orchestration_id="rg_dir_ok",
-                agent_run_id="gen_child_dir",
-                paths=[
-                    f"{_FIX_PIPE_REF}/source/src_20260508_001/src/main.f90",
-                    f"{_FIX_PIPE_REF}/source/src_20260508_001/src/module/util.f90",
-                ],
-            )
-
-    def test_validate_paths_against_allowed_output_manifest_rejects_file_outside_directory_entry(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            src_dir = f"{_FIX_PIPE_REF}/source/src_20260508_001/src/"
-            manifest_path = (
-                repo_root
-                / "workspace/orchestrations/rg_dir_rej/output_manifests/gen_child_rej.json"
-            )
-            manifest_path.parent.mkdir(parents=True, exist_ok=True)
-            manifest_path.write_text(
-                json.dumps(
-                    {
-                        "orchestration_id": "rg_dir_rej",
-                        "agent_run_id": "gen_child_rej",
-                        "allowed_output_paths": [src_dir],
-                    },
-                    ensure_ascii=False,
-                    indent=2,
-                )
-                + "\n",
-                encoding="utf-8",
-            )
-            with self.assertRaisesRegex(ValueError, "allowed_output_paths manifest violation"):
-                _validate_paths_against_allowed_output_manifest(
-                    repo_root,
-                    orchestration_id="rg_dir_rej",
-                    agent_run_id="gen_child_rej",
-                    paths=[f"{_FIX_PIPE_REF}/source/src_20260508_001/other/main.f90"],
-                )
-
-    def test_validate_paths_against_allowed_output_manifest_rejects_empty_normalized_path(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            manifest_path = (
-                repo_root
-                / "workspace/orchestrations/rg_invalid/output_manifests/build_child_rg1.json"
-            )
-            manifest_path.parent.mkdir(parents=True, exist_ok=True)
-            manifest_path.write_text(
-                json.dumps(
-                    {
-                        "orchestration_id": "rg_invalid",
-                        "agent_run_id": "build_child_rg1",
-                        "allowed_output_paths": [f"{_FIX_PIPE_REF}/binary/bin_20260101_001/binary_meta.json"],
-                    },
-                    ensure_ascii=False,
-                    indent=2,
-                )
-                + "\n",
-                encoding="utf-8",
-            )
-            with self.assertRaisesRegex(ValueError, "allowed_output_paths manifest violation"):
-                _validate_paths_against_allowed_output_manifest(
-                    repo_root,
-                    orchestration_id="rg_invalid",
-                    agent_run_id="build_child_rg1",
-                    paths=["/"],
-                )
-
-    def test_run_gate_writes_artifact_and_cli_stdout_contract(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            token = self._setup_run_gate_fixture(repo_root)
-            out = run_gate(
-                repo_root,
-                orchestration_id="rg1",
-                gate_name="validate_workspace_root",
-                agent_run_id="build_child_rg1",
-                args_json={},
-                capability_token=token,
-            )
-            self.assertEqual(list(out.keys()), ["violations", "gate_result_ref"])
-            self.assertEqual(out["violations"], [])
-            gate_ref = out["gate_result_ref"]
-            self.assertEqual(
-                gate_ref,
-                "workspace/orchestrations/rg1/gates/build_child_rg1/validate_workspace_root.json",
-            )
-            gate_path = repo_root / gate_ref
-            self.assertTrue(gate_path.exists())
-            gate_doc = json.loads(gate_path.read_text(encoding="utf-8"))
-            self.assertEqual(gate_doc.get("gate"), "validate_workspace_root")
-            self.assertEqual(gate_doc.get("status"), "pass")
-            self.assertEqual(gate_doc.get("violations"), [])
-
-            buf = io.StringIO()
-            rc = None
-            with redirect_stdout(buf):
-                rc = main(
-                    [
-                        "run-gate",
-                        "--repo-root",
-                        str(repo_root),
-                        "--orchestration-id",
-                        "rg1",
-                        "--gate",
-                        "validate_workspace_root",
-                        "--agent-run-id",
-                        "build_child_rg1",
-                        "--args-json",
-                        json.dumps({}),
-                        "--capability-token",
-                        token,
-                    ]
-                )
-            self.assertEqual(rc, 0)
-            cli_out = json.loads(buf.getvalue())
-            self.assertEqual(set(cli_out.keys()), {"violations", "gate_result_ref"})
-
-    # --- issue #77: the durable gate-result copy in the leaf's own tmp root ------
-    #
-    # The route the documents used to teach -- the leaf appending a `2>` redirect to
-    # the gate command -- is refused by the permission layer (docs/HOOKS.md §"Layer
-    # boundary"), so `run_gate` writes that file itself. These tests pin what the
-    # leaf is handed, not how it is spelled: the file must carry EXACTLY the object
-    # printed on the last line of stderr, because the whole claim of the artifact is
-    # "what the leaf was told, on disk".
-
-    _TMP_GATE_DIR = "workspace/tmp/build_child_rg1/gate_results"
-
-    def _run_gate_capturing_stderr(self, repo_root: Path, token: str, **over: Any):
-        """Return (result, parsed last stderr line) for one run_gate call.
-
-        The stderr line is PARSED and returned rather than respelled in each test:
-        the equality these tests assert is between the file and the line the leaf
-        actually saw, and a second spelling of the expected dict is exactly the
-        drift that would make that equality hold by construction.
-        """
-        kwargs = {
-            "orchestration_id": "rg1",
-            "gate_name": "validate_workspace_root",
-            "agent_run_id": "build_child_rg1",
-            "args_json": {},
-            "capability_token": token,
-        }
-        kwargs.update(over)
-        err = io.StringIO()
-        with redirect_stderr(err):
-            result = run_gate(repo_root, **kwargs)
-        last_line = err.getvalue().strip().splitlines()[-1]
-        return result, json.loads(last_line)
-
-    def test_run_gate_tmp_copy_equals_the_stderr_line_on_pass_and_on_fail(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            token = self._setup_run_gate_fixture(repo_root)
-            # `validate_workspace_root` reads the tree rather than a named file, so the two
-            # cases are the SAME call against two states of `workspace/`: clean, then with a
-            # file that is not valid JSON in it. The order is load-bearing — planting the
-            # broken file first would make the pass case unreachable.
-            for label, expected_status in (("pass", "pass"), ("fail", "fail")):
-                with self.subTest(case=label):
-                    if label == "fail":
-                        (repo_root / "workspace" / "broken.json").write_text(
-                            "not json\n", encoding="utf-8")
-                    _result, summary = self._run_gate_capturing_stderr(repo_root, token)
-                    self.assertEqual(summary["status"], expected_status)
-                    copy_path = repo_root / self._TMP_GATE_DIR / "validate_workspace_root.json"
-                    self.assertTrue(
-                        copy_path.exists(),
-                        "run-gate must leave its summary in the leaf's tmp root",
-                    )
-                    self.assertEqual(
-                        json.loads(copy_path.read_text(encoding="utf-8")),
-                        summary,
-                        "the file must carry exactly what the leaf was shown",
-                    )
-                    # The evidential record is untouched by any of this.
-                    self.assertEqual(
-                        json.loads(
-                            (repo_root / summary["gate_result_ref"]).read_text(encoding="utf-8")
-                        )["status"],
-                        expected_status,
-                    )
-
-    def test_run_gate_tmp_copy_carries_evaluated_at_so_a_stale_copy_is_visible(self) -> None:
-        """The point of the timestamp: a copy left by an EARLIER call is detectable.
-
-        Without it the file is indistinguishable from this call's result, which is the
-        failure mode a durable copy introduces that the read-once route did not have.
-        """
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            token = self._setup_run_gate_fixture(repo_root)
-            _r1, first = self._run_gate_capturing_stderr(repo_root, token)
-            _r2, second = self._run_gate_capturing_stderr(repo_root, token)
-            self.assertIn("evaluated_at", first)
-            self.assertNotEqual(first["evaluated_at"], second["evaluated_at"])
-            copy_path = repo_root / self._TMP_GATE_DIR / "validate_workspace_root.json"
-            self.assertEqual(
-                json.loads(copy_path.read_text(encoding="utf-8"))["evaluated_at"],
-                second["evaluated_at"],
-                "re-running a gate must replace its own copy, not leave the older one",
-            )
-
-    def test_run_gate_tmp_copy_says_which_run_produced_it(self) -> None:
-        """S-F2 (round 1): a copy that cannot say WHAT passed is a shortcut waiting.
-
-        The copy is written only by a run that reaches the write; every refusal in
-        `run_gate` / `_validate_run_gate_permissions` raises before it. So a leaf whose
-        re-run was refused reads the path its launch prompt sent it to and finds the
-        PREVIOUS run's verdict. `evaluated_at` alone does not rescue that -- a leaf has no
-        reference clock -- so the summary carries `args_json` and `exit_code` too: the
-        inputs the verdict was taken on, and whether the gate ran at all.
-
-        The refusal half is the load-bearing assertion, and it is run, not assumed.
-        """
-        from tools.orchestration_runtime import run_gate as _run_gate
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            token = self._setup_run_gate_fixture(repo_root)
-            copy_path = repo_root / self._TMP_GATE_DIR / "validate_workspace_root.json"
-
-            # A NON-EMPTY args_json on purpose: `{}` would make the identity assertion
-            # below hold whether or not the summary carries the inputs at all.
-            _r, summary = self._run_gate_capturing_stderr(
-                repo_root, token, args_json={"workspace_root": "workspace"}
-            )
-            self.assertEqual(summary["args_json"], {"workspace_root": "workspace"})
-            self.assertEqual(summary["exit_code"], 0)
-            self.assertEqual(json.loads(copy_path.read_text(encoding="utf-8")), summary)
-
-            # A REFUSED re-run must REMOVE the copy, not leave the previous verdict where
-            # the launch prompt sends the leaf. Round 1 shipped the weaker version of this
-            # -- three prose warnings, with this assertion PINNING the staleness rather
-            # than closing it. Round 2 made the state unrepresentable: the file exists iff
-            # a run of this gate COMPLETED since the last attempt, so the invariant is
-            # carried by the filesystem instead of by a leaf's willingness to read a
-            # caution.
-            with self.assertRaises(RuntimeError):
-                _run_gate(
-                    repo_root,
-                    orchestration_id="rg1",
-                    gate_name="validate_workspace_root",
-                    agent_run_id="build_child_rg1",
-                    args_json={},
-                    capability_token="not-the-token",
-                )
-            self.assertFalse(
-                copy_path.exists(),
-                "a refused run must invalidate the copy; leaving the previous verdict "
-                "where the leaf is told to look is the shortcut this closes",
-            )
-            # EVERY refusal `run_gate` itself raises must invalidate, not just the one
-            # above. Round 3 measured the round-2 placement covering only refusals raised
-            # after it: a blank token and a non-dict `args_json` are checked EARLIER in the
-            # function, so both left the previous verdict on disk while the documents said
-            # a refused run removes it. The invalidation now runs directly after the
-            # gate-name check, and these are the two cases that proves.
-            for label, kwargs in (
-                ("blank capability_token", {"capability_token": "  "}),
-                ("args_json not an object", {"args_json": ["not", "a", "dict"]}),
-            ):
-                with self.subTest(refusal=label):
-                    _r, summary_n = self._run_gate_capturing_stderr(repo_root, token)
-                    self.assertTrue(copy_path.exists())
-                    call = dict(
-                        orchestration_id="rg1",
-                        gate_name="validate_workspace_root",
-                        agent_run_id="build_child_rg1",
-                        args_json={},
-                        capability_token=token,
-                    )
-                    call.update(kwargs)
-                    with self.assertRaises(ValueError):
-                        _run_gate(repo_root, **call)
-                    self.assertFalse(
-                        copy_path.exists(),
-                        f"a run refused for {label} left the previous verdict where the "
-                        "launch prompt sends the leaf",
-                    )
-
-            # Blast radius, the other direction: a refusal for ANOTHER arid must not touch
-            # this leaf's copy.
-            _r2, summary2 = self._run_gate_capturing_stderr(repo_root, token)
-            self.assertTrue(copy_path.exists())
-            with self.assertRaises((RuntimeError, ValueError)):
-                _run_gate(
-                    repo_root,
-                    orchestration_id="rg1",
-                    gate_name="validate_workspace_root",
-                    agent_run_id="no_such_child_arid",
-                    args_json={},
-                    capability_token=token,
-                )
-            self.assertTrue(
-                copy_path.exists(),
-                "a refusal for ANOTHER arid must not touch this leaf's copy",
-            )
-            self.assertEqual(
-                json.loads(copy_path.read_text(encoding="utf-8")), summary2
-            )
-
-    def test_launch_record_ownership_strips_both_ids(self) -> None:
-        """Round-3 REGRESSION GUARD, from a defect the extraction introduced.
-
-        `_orchestration_holds_launch_record` was extracted from an inline expression in
-        `_cleanup_agent_tmp_root` that stripped both ids; `_orchestration_root` does not
-        strip. A padded `orchestration_id` therefore resolved to a directory that does not
-        exist, ownership silently failed, and cleanup refused -- leaving the run in
-        cleanup-pending with its tmp scratch on disk. No test observed the difference; it
-        was found by diffing the extraction against the code it replaced.
-        """
-        from tools.orchestration_runtime import (
-            _orchestration_holds_launch_record,
-            init_orchestration,
-        )
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            orch = "orch_strip_probe"
-            arid = "step_run_strip_probe"
-            init_orchestration(repo_root=repo_root, orchestration_id=orch)
-            req = (
-                repo_root / "workspace" / "orchestrations" / orch
-                / "launches" / f"{arid}.request.json"
-            )
-            req.parent.mkdir(parents=True, exist_ok=True)
-            req.write_text("{}\n", encoding="utf-8")
-
-            self.assertTrue(_orchestration_holds_launch_record(repo_root, orch, arid))
-            for o, a in ((f"  {orch} ", arid), (orch, f" {arid}  "), (f" {orch} ", f" {arid} ")):
-                with self.subTest(orchestration_id=repr(o), agent_run_id=repr(a)):
-                    self.assertTrue(
-                        _orchestration_holds_launch_record(repo_root, o, a),
-                        "a padded id must resolve to the same launch record",
-                    )
-            # Control: a genuinely different id is still refused, so the strip did not
-            # turn the predicate into one that says yes to everything.
-            self.assertFalse(
-                _orchestration_holds_launch_record(repo_root, orch, "other_arid")
-            )
-
-    def test_run_gate_invalidation_failure_does_not_fail_the_gate(self) -> None:
-        """The pre-work unlink is best-effort, and round 3 found that branch untested.
-
-        A convenience artifact must not decide a verdict in either direction: a copy that
-        cannot be removed must not turn a runnable gate into a refusal. The cost is a
-        stale copy surviving a refused run -- one of the exceptions
-        `_invalidate_durable_gate_result` enumerates and the documents state, which is why
-        no surface says the window is closed.
-        """
-        from tools import orchestration_runtime as _rt
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            token = self._setup_run_gate_fixture(repo_root)
-            real_unlink = Path.unlink
-
-            def _refuse(self_path, *a, **kw):
-                if self_path.name == "validate_workspace_root.json" and \
-                        "gate_results" in str(self_path):
-                    raise OSError("read-only parent")
-                return real_unlink(self_path, *a, **kw)
-
-            with patch.object(Path, "unlink", _refuse):
-                _r, summary = self._run_gate_capturing_stderr(repo_root, token)
-            self.assertEqual(summary["status"], "pass", "a failed unlink failed the gate")
-            self.assertEqual(summary["exit_code"], 0)
-
-    def test_run_gate_invalidation_fires_for_every_refusal_it_precedes(self) -> None:
-        """The invalidation must have NO exception `run_gate` can reach.
-
-        Round 4 found the Adv-5 ownership guard that round 3 added being exactly that: it
-        returned SILENTLY when this orchestration held no launch record for the arid, so a
-        wrong `--orchestration-id` -- argv the leaf types -- left the previous run's
-        `status: pass` at the path the launch prompt names, while six surfaces told the
-        leaf a refusal that reached the runtime removes it. The guard was defending
-        something that gains a leaf nothing, at the cost of reopening the shortcut this
-        function exists to close, so it is gone.
-
-        This pins the property that replaced it: every refusal reachable AFTER the
-        invalidation invalidates, including one raised for a wrong orchestration id.
-        """
-        from tools.orchestration_runtime import run_gate as _run_gate
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            token = self._setup_run_gate_fixture(repo_root)
-            copy_path = repo_root / self._TMP_GATE_DIR / "validate_workspace_root.json"
-
-            for label, call in (
-                ("wrong orchestration id", dict(orchestration_id="rg_not_this_one")),
-                ("blank capability token", dict(capability_token="  ")),
-                ("args_json not an object", dict(args_json=["nope"])),
-                ("unlaunched arid", dict(agent_run_id="never_launched_arid")),
-            ):
-                with self.subTest(refusal=label):
-                    self._run_gate_capturing_stderr(repo_root, token)
-                    self.assertTrue(copy_path.is_file(), "fixture: a completed run first")
-                    kwargs = dict(
-                        orchestration_id="rg1",
-                        gate_name="validate_workspace_root",
-                        agent_run_id="build_child_rg1",
-                        args_json={},
-                        capability_token=token,
-                    )
-                    kwargs.update(call)
-                    with self.assertRaises((RuntimeError, ValueError)):
-                        _run_gate(repo_root, **kwargs)
-                    if label == "unlaunched arid":
-                        # That call names a DIFFERENT arid, so this leaf's own copy is not
-                        # its target and must survive -- the blast-radius control.
-                        self.assertTrue(copy_path.is_file())
-                    else:
-                        self.assertFalse(
-                            copy_path.exists(),
-                            f"a run refused for {label} left the previous verdict where "
-                            "the launch prompt sends the leaf",
-                        )
-
-    def test_run_gate_invalidation_refuses_an_unsafe_agent_run_id(self) -> None:
-        """The unlink builds a path, and it now runs before the id used to be checked.
-
-        Hoisting it above the capability guards moved it ahead of the first
-        `_require_safe_gate_ids` call, so the helper does that check itself, before
-        `_agent_tmp_gate_result_path` interpolates anything. Without it a traversal
-        spelling would reach a path join.
-        """
-        from tools.orchestration_runtime import run_gate as _run_gate
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            token = self._setup_run_gate_fixture(repo_root)
-            outside = repo_root / "outside.json"
-            outside.write_text('{"keep": true}\n', encoding="utf-8")
-
-            for unsafe in ("../../outside", "a/b", "", "  ", ".."):
-                with self.subTest(agent_run_id=unsafe):
-                    with self.assertRaises((ValueError, RuntimeError)):
-                        _run_gate(
-                            repo_root,
-                            orchestration_id="rg1",
-                            gate_name="validate_workspace_root",
-                            agent_run_id=unsafe,
-                            args_json={},
-                            capability_token=token,
-                        )
-            self.assertTrue(outside.is_file(), "nothing outside the tmp root may be touched")
-
-            # RUN THE ATTACK that reaches PAST the ownership guard, because without it the
-            # id check is shadowed: deleting `_require_safe_gate_ids` from the helper left
-            # every assertion above green, since an unsafe id has no launch record and the
-            # guard returns first. A traversal that lands on a launch record someone else
-            # planted defeats that, so the id check is what actually holds the path safe.
-            #
-            # `../../evil` makes the ownership probe read
-            # `workspace/orchestrations/rg1/launches/../../evil.request.json`, i.e.
-            # `workspace/orchestrations/evil.request.json`. Plant it, and plant the file
-            # the unlink would then compute, and assert the second one survives.
-            planted_record = repo_root / "workspace" / "orchestrations" / "evil.request.json"
-            planted_record.write_text("{}\n", encoding="utf-8")
-            # Computed, not guessed: `workspace/tmp/../../evil/...` normalises to
-            # `<repo_root>/evil/...`, one level ABOVE `workspace/` entirely.
-            would_delete = (
-                repo_root / "evil" / "gate_results" / "validate_workspace_root.json"
-            )
-            would_delete.parent.mkdir(parents=True, exist_ok=True)
-            would_delete.write_text('{"status": "pass"}\n', encoding="utf-8")
-            with self.assertRaises((ValueError, RuntimeError)):
-                _run_gate(
-                    repo_root,
-                    orchestration_id="rg1",
-                    gate_name="validate_workspace_root",
-                    agent_run_id="../../evil",
-                    args_json={},
-                    capability_token=token,
-                )
-            self.assertTrue(
-                would_delete.is_file(),
-                "a traversal agent_run_id with a reachable launch record deleted a file "
-                "outside the tmp namespace; the id check is what prevents this",
-            )
-
-    def test_run_gate_summary_puts_identity_ahead_of_the_unbounded_field(self) -> None:
-        """The key order was asserted in a comment with nothing observing it (round 3).
-
-        `violations` is the only unbounded member of the summary, so the fields that say
-        WHICH run produced the verdict are ordered ahead of it. Asserted on the SERIALIZED
-        stderr line, which is the only place order is observable at all -- every other
-        assertion in this class compares parsed dicts and is order-blind, which is exactly
-        why reverting the order left them all green.
-        """
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            token = self._setup_run_gate_fixture(repo_root)
-            err = io.StringIO()
-            with redirect_stderr(err):
-                run_gate(
-                    repo_root,
-                    orchestration_id="rg1",
-                    gate_name="validate_workspace_root",
-                    agent_run_id="build_child_rg1",
-                    args_json={},
-                    capability_token=token,
-                )
-            line = err.getvalue().strip().splitlines()[-1]
-            positions = {k: line.index(f'"{k}"') for k in
-                         ("gate", "status", "args_json", "exit_code", "evaluated_at",
-                          "gate_result_ref", "violations")}
-            self.assertEqual(
-                positions["violations"], max(positions.values()),
-                "`violations` is unbounded and must be serialized LAST, so a truncation "
-                "inside the line loses violation text rather than the fields that say "
-                f"which run this was (order was {sorted(positions, key=positions.get)})",
-            )
-            for identifying in ("args_json", "exit_code", "evaluated_at"):
-                self.assertLess(positions[identifying], positions["violations"])
-
-    def test_run_gate_tmp_copy_is_one_file_per_gate_name(self) -> None:
-        """A second gate must not clobber the first: that is why the name is the key."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            token = self._setup_run_gate_fixture(repo_root)
-            _r1, semantics_summary = self._run_gate_capturing_stderr(
-                repo_root, token, gate_name="validate_pipeline_semantics",
-                args_json={"stage": "post_build", "pipeline_root": _FIX_PIPE_REF},
-            )
-            _r2, root_summary = self._run_gate_capturing_stderr(repo_root, token)
-            gate_dir = repo_root / self._TMP_GATE_DIR
-            self.assertEqual(
-                sorted(q.name for q in gate_dir.iterdir()),
-                ["validate_pipeline_semantics.json", "validate_workspace_root.json"],
-            )
-            self.assertEqual(
-                json.loads(
-                    (gate_dir / "validate_pipeline_semantics.json").read_text(encoding="utf-8")),
-                semantics_summary,
-            )
-            self.assertEqual(
-                json.loads((gate_dir / "validate_workspace_root.json").read_text(encoding="utf-8")),
-                root_summary,
-            )
-
-    def test_run_gate_tmp_copy_lands_under_the_manifest_allowed_tmp_root(self) -> None:
-        """The tmp ROOT is asserted against the manifest, not against a literal.
-
-        `allowed_tmp_root` is the value the read boundary and the write-attribution
-        exemption are both derived from; a literal root here would pass even if the two
-        drifted apart. The `gate_results/<gate>.json` tail below IS a literal, and saying
-        otherwise was a round-1 finding: what pins the tail is `GateResultTmpCopySurfaceTests`
-        resolving `GATE_RESULT_TMP_DIRNAME`, not this line.
-        """
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            token = self._setup_run_gate_fixture(repo_root)
-            self._run_gate_capturing_stderr(repo_root, token)
-            manifest = json.loads(
-                (
-                    repo_root
-                    / "workspace/orchestrations/rg1/output_manifests/build_child_rg1.json"
-                ).read_text(encoding="utf-8")
-            )
-            tmp_root = manifest["allowed_tmp_root"]
-            self.assertTrue(tmp_root, "the fixture must declare an allowed_tmp_root")
-            copy_rel = f"{tmp_root}/gate_results/validate_workspace_root.json"
-            self.assertTrue((repo_root / copy_rel).is_file(), copy_rel)
-
-    def test_run_gate_tmp_copy_write_failure_neither_fails_the_gate_nor_leaves_a_stale_file(
-        self,
-    ) -> None:
-        """A convenience artifact must not be able to decide a verdict, and a copy
-        that cannot be refreshed must not survive as this call's answer.
-
-        The `_write_json` patch raises for the TMP path only, so the canonical gate
-        document is still written by the same call -- which is what makes this a test
-        of the fallback rather than of a gate that failed early.
-        """
-        from tools import orchestration_runtime as _rt
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            token = self._setup_run_gate_fixture(repo_root)
-            copy_path = repo_root / self._TMP_GATE_DIR / "validate_workspace_root.json"
-
-            # Round 1 succeeds, so there IS an older copy to go stale.
-            _r1, first = self._run_gate_capturing_stderr(repo_root, token)
-            self.assertTrue(copy_path.exists())
-
-            real_write_json = _rt._write_json
-
-            def _fail_for_tmp_copy(path: Path, payload: Any) -> None:
-                if Path(path) == copy_path:
-                    raise OSError("no space left on device")
-                real_write_json(path, payload)
-
-            # The pre-work invalidation is disabled for THIS call only. Round 4 measured
-            # the assertion below being satisfied by that unlink instead of by the fallback
-            # this test is named for: deleting the fallback entirely left the test green.
-            # A second path in the fixture producing the asserted outcome is the shape this
-            # repository calls "spinning in neutral", and it mattered here because the
-            # fallback is the only code that rescues a copy the pre-work unlink skipped.
-            with patch.object(_rt, "_write_json", _fail_for_tmp_copy), patch.object(
-                _rt, "_invalidate_durable_gate_result", lambda *a, **k: None
-            ):
-                result, second = self._run_gate_capturing_stderr(repo_root, token)
-
-            # The verdict is unchanged by the failed write.
-            self.assertEqual(second["status"], "pass")
-            self.assertEqual(result["violations"], [])
-            self.assertEqual(result["gate_result_ref"], first["gate_result_ref"])
-            # The canonical record was still written by this same call.
-            self.assertEqual(
-                json.loads(
-                    (repo_root / second["gate_result_ref"]).read_text(encoding="utf-8")
-                )["evaluated_at"],
-                second["evaluated_at"],
-            )
-            # And round 1's copy is gone rather than masquerading as round 2's.
-            self.assertFalse(
-                copy_path.exists(),
-                "a copy that could not be refreshed must be removed, not left stale",
-            )
-
-    def test_run_gate_orchestration_read_uses_inline_gate(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            (repo_root / "docs").mkdir(parents=True, exist_ok=True)
-            (repo_root / "docs" / "inline_gate.txt").write_text("inline\n", encoding="utf-8")
-            token = self._setup_run_gate_fixture(repo_root)
-            out = run_gate(
-                repo_root,
-                orchestration_id="rg1",
-                gate_name="orchestration_read",
-                agent_run_id="build_child_rg1",
-                args_json={"read_path": "docs/inline_gate.txt"},
-                capability_token=token,
-            )
-            self.assertEqual(out.get("violations"), [])
-            gate_ref = out.get("gate_result_ref")
-            self.assertEqual(
-                gate_ref,
-                "workspace/orchestrations/rg1/gates/build_child_rg1/orchestration_read.json",
-            )
-            self.assertEqual(out.get("result", {}).get("content"), "inline\n")
-            gate_doc = json.loads((repo_root / str(gate_ref)).read_text(encoding="utf-8"))
-            self.assertEqual(gate_doc.get("status"), "pass")
-            self.assertEqual(gate_doc.get("result", {}).get("content"), "inline\n")
-            # Anti-drift: the terse projection of the REAL run_gate return must
-            # preserve `result` (the only path child agents have to the
-            # orchestration_read content). Catches a tuple/return key rename.
-            terse = _project_terse_result("run-gate", out)
-            self.assertEqual(terse.get("result", {}).get("content"), "inline\n")
-            self.assertIn("gate_result_ref", terse)
-
-    def test_run_gate_rejects_apply_patch_writes(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            token = self._setup_run_gate_fixture(repo_root)
-            with self.assertRaisesRegex(ValueError, "unsupported gate name"):
-                run_gate(
-                    repo_root,
-                    orchestration_id="rg1",
-                    gate_name="apply_patch_writes",
-                    agent_run_id="build_child_rg1",
-                    args_json={
-                        "actor_role": "step",
-                        "changed_paths": [f"{_FIX_PIPE_REF}/binary/new_artifact.json"],
-                    },
-                    capability_token=token,
-                )
-
-    def test_run_gate_rejects_gate_not_allowed_by_policy(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            token = self._setup_run_gate_fixture(repo_root)
-            pol = repo_root / "workspace/orchestrations/rg1/access_policies/build_child_rg1.json"
-            body = json.loads(pol.read_text(encoding="utf-8"))
-            body["allowed_gate_services"] = ["orchestration_read"]
-            pol.write_text(json.dumps(body, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-            with self.assertRaisesRegex(RuntimeError, "not permitted by access policy"):
-                run_gate(
-                    repo_root,
-                    orchestration_id="rg1",
-                    gate_name="validate_workspace_root",
-                    agent_run_id="build_child_rg1",
-                    args_json={},
-                    capability_token=token,
-                )
-
-    def test_run_gate_validate_pipeline_semantics_requires_stage(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            token = self._setup_run_gate_fixture(repo_root)
-            with self.assertRaisesRegex(ValueError, "pre_command_execute hook"):
-                run_gate(
-                    repo_root,
-                    orchestration_id="rg1",
-                    gate_name="validate_pipeline_semantics",
-                    agent_run_id="build_child_rg1",
-                    args_json={"pipeline-root": _FIX_PIPE_REF},
-                    capability_token=token,
-                )
-
-    def test_run_gate_validate_pipeline_semantics_rejects_wrong_stage_for_build(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            token = self._setup_run_gate_fixture(repo_root)
-            with self.assertRaisesRegex(ValueError, "pre_command_execute hook"):
-                run_gate(
-                    repo_root,
-                    orchestration_id="rg1",
-                    gate_name="validate_pipeline_semantics",
-                    agent_run_id="build_child_rg1",
-                    args_json={"stage": "compile", "pipeline-root": _FIX_PIPE_REF},
-                    capability_token=token,
-                )
-
-    def test_pre_phase_launch_blocks_build_when_source_meta_not_pass(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            init_orchestration(repo_root=repo_root, orchestration_id="pl1")
-            _mark_dependencies_ready(repo_root, "pl1")
-            write_preflight(
-                repo_root=repo_root,
-                orchestration_id="pl1",
-                payload=_launchable_preflight_dict(),
-            )
-            pipe = repo_root / _FIX_PIPE_REF
-            (pipe / "generate" / "g1").mkdir(parents=True, exist_ok=True)
-            (pipe / "generate" / "g1" / "source_meta.json").write_text(
-                json.dumps({"verification_status": "fail"}),
-                encoding="utf-8",
-            )
-            out = pre_phase_launch(
-                repo_root,
-                orchestration_id="pl1",
-                node_key="problem/shallow_water2d@0.3.0",
-                step="build",
-                backend="codex",
-                require_child_agent="step",
-                launch_request={
-                    "node_key": "problem/shallow_water2d@0.3.0",
-                    "step": "build",
-                    "pipeline_ref": _FIX_PIPE_REF,
-                    "ir_ref": _FIX_IR_REF,
-                    "dependency_ref": _FIX_DEP_REF,
-                },
-            )
-            self.assertEqual(out.get("status"), "fail_closed")
-            self.assertEqual(out.get("reason_code"), "downstream_artifact_not_ready")
-
-    def test_run_gate_stdout_does_not_expose_input_file_body(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            secret = "SENSITIVE_PAYLOAD_DO_NOT_EXPOSE"
-            (repo_root / "workspace").mkdir(parents=True, exist_ok=True)
-            (repo_root / "workspace" / "broken.json").write_text(secret + "\n", encoding="utf-8")
-            token = self._setup_run_gate_fixture(repo_root)
-            out_buf = io.StringIO()
-            rc = None
-            with redirect_stdout(out_buf):
-                rc = main(
-                    [
-                        "run-gate",
-                        "--repo-root",
-                        str(repo_root),
-                        "--orchestration-id",
-                        "rg1",
-                        "--gate",
-                        "validate_workspace_root",
-                        "--agent-run-id",
-                        "build_child_rg1",
-                        "--args-json",
-                        json.dumps({}),
-                        "--capability-token",
-                        token,
-                    ]
-                )
-            self.assertEqual(rc, 0)
-            stdout_text = out_buf.getvalue()
-            self.assertNotIn(secret, stdout_text)
-            cli_out = json.loads(stdout_text)
-            self.assertIn("violations", cli_out)
-            self.assertGreaterEqual(len(cli_out["violations"]), 1)
-
-    def test_record_launch_claude_creates_active_child_file_and_rejects_parallel_launch(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            init_orchestration(repo_root=repo_root, orchestration_id="orch_001")
-            _mark_dependencies_ready(repo_root)
-            write_preflight(
-                repo_root=repo_root,
-                orchestration_id="orch_001",
-                payload={
-                    "status": "pass",
-                    "backend": "claude",
-                    "sandbox_runtime": "bwrap",
-                    "sandbox_enforced": True,
-                    "can_launch_step_agents": True,
-                    "can_launch_substep_agents": True,
-                    "feature_states": {"multi_agent": True},
-                    "checks": [
-                        {"name": "multi_agent_enabled", "pass": True},
-                        {"name": "sandbox_bwrap_available", "pass": True},
-                        {"name": "sandbox_bwrap_userns", "pass": True},
-                    ],
-                },
-            )
-            _fixture_generate_downstream_ready(repo_root)
-            record_launch(
-                repo_root=repo_root,
-                orchestration_id="orch_001",
-                parent_agent_run_id="orch_run_001",
-                child_agent_run_id="step_run_build_001",
-                request_payload={
-                    "agent_model": "claude-opus-4-8",
-                    "agent_run_id": "step_run_build_001",
-                    "agent_role": "step",
-                    "node_key": "problem/shallow_water2d@0.3.0",
-                    "step": "build",
-                    "orchestration_id": "orch_001",
-                    "parent_agent_run_id": "orch_run_001",
-                    "ir_ref": _FIX_IR_REF,
-                    "pipeline_ref": _FIX_PIPE_REF,
-                    "dependency_ref": _FIX_DEP_REF,
-                    "deterministic": True,
-                    "allowed_output_paths": [f"{_FIX_PIPE_REF}/binary/bin_20260101_001/bin/simulate"],
-                    "launch_prompt_full": _step_launch_prompt(
-                        "problem/shallow_water2d@0.3.0",
-                        "build",
-                        "step_run_build_001",
-                    ),
-                },
-                response_payload={
-                    "agent_run_id": "step_run_build_001",
-                    **_spawn_response_payload("sess_step_build_001"),
-                },
-            )
-            active_path = (
-                repo_root
-                / "workspace"
-                / "orchestrations"
-                / "orch_001"
-                / "active_child_agent_run_id.txt"
-            )
-            self.assertTrue(active_path.is_file())
-            self.assertEqual(active_path.read_text(encoding="utf-8").strip(), "step_run_build_001")
-            with self.assertRaisesRegex(RuntimeError, "sequential violation"):
-                record_launch(
-                    repo_root=repo_root,
-                    orchestration_id="orch_001",
-                    parent_agent_run_id="orch_run_001",
-                    child_agent_run_id="step_run_execute_001",
-                    request_payload={
-                        "agent_model": "claude-opus-4-8",
-                        "agent_run_id": "step_run_execute_001",
-                        "agent_role": "substep",
-                        "node_key": "problem/shallow_water2d@0.3.0",
-                        "step": "validate", "substep": "execute",
-                        "orchestration_id": "orch_001",
-                        "parent_agent_run_id": "orch_run_001",
-                        "ir_ref": _FIX_IR_REF,
-                        "pipeline_ref": _FIX_PIPE_REF,
-                        "dependency_ref": _FIX_DEP_REF,
-                        "skill_name": "workflow-validate-execute",
-                        "skill_ref": "skills/workflow-validate-execute/SKILL.md",
-                        "skill_must_read_refs": "",
-                        "launch_prompt_full": _substep_launch_prompt("problem/shallow_water2d@0.3.0", "validate", "execute", "step_run_execute_001"),
-                    },
-                    response_payload={
-                        "agent_run_id": "step_run_execute_001",
-                        **_spawn_response_payload("sess_step_execute_001"),
-                    },
-                )
-            meta_path = (
-                repo_root
-                / "workspace"
-                / "orchestrations"
-                / "orch_001"
-                / "orchestration_meta.json"
-            )
-            meta = json.loads(meta_path.read_text(encoding="utf-8"))
-            self.assertEqual(meta.get("status"), "fail_closed")
-            self.assertEqual(meta.get("reason_code"), "parallel_nodes_not_explicitly_allowed")
-
-    def test_record_agent_run_claude_terminal_status_clears_active_child_file(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            init_orchestration(repo_root=repo_root, orchestration_id="orch_001")
-            _mark_dependencies_ready(repo_root)
-            write_preflight(
-                repo_root=repo_root,
-                orchestration_id="orch_001",
-                payload={
-                    "status": "pass",
-                    "backend": "claude",
-                    "sandbox_runtime": "bwrap",
-                    "sandbox_enforced": True,
-                    "can_launch_step_agents": True,
-                    "can_launch_substep_agents": True,
-                    "feature_states": {"multi_agent": True},
-                    "checks": [
-                        {"name": "multi_agent_enabled", "pass": True},
-                        {"name": "sandbox_bwrap_available", "pass": True},
-                        {"name": "sandbox_bwrap_userns", "pass": True},
-                    ],
-                },
-            )
-            _fixture_generate_downstream_ready(repo_root)
-            launch_refs = record_launch(
-                repo_root=repo_root,
-                orchestration_id="orch_001",
-                parent_agent_run_id="orch_run_001",
-                child_agent_run_id="step_run_build_001",
-                request_payload={
-                    "agent_model": "claude-opus-4-8",
-                    "agent_run_id": "step_run_build_001",
-                    "agent_role": "step",
-                    "node_key": "problem/shallow_water2d@0.3.0",
-                    "step": "build",
-                    "orchestration_id": "orch_001",
-                    "parent_agent_run_id": "orch_run_001",
-                    "ir_ref": _FIX_IR_REF,
-                    "pipeline_ref": _FIX_PIPE_REF,
-                    "dependency_ref": _FIX_DEP_REF,
-                    "deterministic": True,
-                    "allowed_output_paths": [f"{_FIX_PIPE_REF}/binary/bin_20260101_001/bin/simulate"],
-                    "launch_prompt_full": _step_launch_prompt(
-                        "problem/shallow_water2d@0.3.0",
-                        "build",
-                        "step_run_build_001",
-                    ),
-                },
-                response_payload={
-                    "agent_run_id": "step_run_build_001",
-                    **_spawn_response_payload("sess_step_build_001"),
-                },
-            )
-            active_path = (
-                repo_root
-                / "workspace"
-                / "orchestrations"
-                / "orch_001"
-                / "active_child_agent_run_id.txt"
-            )
-            self.assertTrue(active_path.exists())
-            out_ref = f"{_FIX_PIPE_REF}/binary/bin_20260101_001/bin/simulate"
-            record_agent_run(
-                repo_root=repo_root,
-                orchestration_id="orch_001",
-                payload={
-                    "agent_run_id": "step_run_build_001",
-                    "parent_agent_run_id": "orch_run_001",
-                    "agent_role": "step",
-                    "node_key": "problem/shallow_water2d@0.3.0",
-                    "step": "build",
-                    "status": "pass",
-                    "agent_backend": "claude",
-                    "agent_model": "claude-opus",
-                    "context_id": "ctx_step_build_001",
-                    "agent_session_id": "sess_step_build_001",
-                    "launch_request_ref": launch_refs["launch_request_ref"],
-                    "launch_response_ref": launch_refs["launch_response_ref"],
-                    "launch_prompt_ref": launch_refs["launch_prompt_ref"],
-                    "launch_reply_ref": launch_refs["launch_reply_ref"],
-                    "output_refs": [out_ref],
-                },
-            )
-            self.assertFalse(active_path.exists())
-
-
-class DirectWritePathExtensionPolicyTests(unittest.TestCase):
-    """Confirm the auto-derived allowed_file_tool_paths behavior (P2-7: the per-extension
-    `_is_direct_write_path` / `CLI_MANAGED_EXTENSIONS` gate classification is retired —
-    every managed artifact is direct-write eligible)."""
-
-    def test_allowed_file_tool_paths_auto_derive_includes_managed_json(self) -> None:
-        # Phase-2: managed `.json` outputs (e.g. ir_meta.json) are written directly
-        # by the confined leaf, so the auto-derive now includes them alongside
-        # source / .yaml / .md outputs. Only canonical MCP audit logs stay excluded.
-        allowed_output_paths = [
-            "workspace/ir/p/spec.ir.yaml",
-            "workspace/ir/p/io_contract.yaml",
-            "workspace/ir/p/notes.md",
-            "workspace/ir/p/case_summary.yaml",
-            "workspace/ir/p/ir_meta.json",
-            "workspace/pipelines/p/source/g/src/main.f90",
-        ]
-        derived = _allowed_file_tool_paths_for_launch(
-            request_payload={},
-            allowed_output_paths=allowed_output_paths,
-        )
-        self.assertEqual(derived, sorted(allowed_output_paths))
-
-    def test_allowed_file_tool_paths_auto_derive_includes_all_managed_json(self) -> None:
-        # Phase-2: a launch whose outputs are all managed JSON now derives all of
-        # them as direct-write eligible (previously they were excluded as
-        # "CLI-managed" and the list came back empty).
-        derived = _allowed_file_tool_paths_for_launch(
-            request_payload={},
-            allowed_output_paths=[
-                "workspace/pipelines/p/source/s/source_meta.json",
-                "workspace/ir/p/ir_meta.json",
-            ],
-        )
-        self.assertEqual(
-            derived,
-            ["workspace/ir/p/ir_meta.json",
-             "workspace/pipelines/p/source/s/source_meta.json"],
-        )
-
-    def test_allowed_file_tool_paths_explicit_subset_validation(self) -> None:
-        allowed_output_paths = [
-            "workspace/ir/p/spec.ir.yaml",
-            "workspace/ir/p/spec.ir.yaml",
-        ]
-        explicit = _allowed_file_tool_paths_for_launch(
-            request_payload={
-                "agent_model": "claude-opus-4-8",
-                "allowed_file_tool_paths": [
-                    "workspace/ir/p/spec.ir.yaml",
-                ]
-            },
-            allowed_output_paths=allowed_output_paths,
-        )
-        self.assertEqual(explicit, ["workspace/ir/p/spec.ir.yaml"])
-
-    def test_allowed_file_tool_paths_explicit_accepts_managed_json(self) -> None:
-        # Phase-2: an explicit allowed_file_tool_paths list may include managed
-        # `.json` outputs (direct-write under bwrap). They are no longer rejected
-        # as "CLI-managed"; only canonical MCP audit logs remain off-limits.
-        explicit = _allowed_file_tool_paths_for_launch(
-            request_payload={
-                "agent_model": "claude-opus-4-8",
-                "allowed_file_tool_paths": [
-                    "workspace/ir/p/ir_meta.json",
-                ],
-            },
-            allowed_output_paths=[
-                "workspace/ir/p/spec.ir.yaml",
-                "workspace/ir/p/ir_meta.json",
-            ],
-        )
-        self.assertEqual(explicit, ["workspace/ir/p/ir_meta.json"])
-
-    def test_allowed_file_tool_paths_explicit_rejects_path_outside_outputs(self) -> None:
-        with self.assertRaisesRegex(ValueError, "must be included in allowed_output_paths"):
-            _allowed_file_tool_paths_for_launch(
-                request_payload={
-                    "agent_model": "claude-opus-4-8",
-                    "allowed_file_tool_paths": [
-                        "workspace/ir/p/extra.yaml",
-                    ]
-                },
-                allowed_output_paths=[
-                    "workspace/ir/p/spec.ir.yaml",
-                ],
-            )
-
-    def test_allowed_file_tool_paths_explicit_empty_returns_empty(self) -> None:
-        derived = _allowed_file_tool_paths_for_launch(
-            request_payload={"allowed_file_tool_paths": []},
-            allowed_output_paths=[
-                "workspace/ir/p/spec.ir.yaml",
-            ],
-        )
-        self.assertEqual(derived, [])
-
-    def test_allowed_file_tool_paths_auto_derive_excludes_directory_entries(self) -> None:
-        """Directory entries (trailing /) must not appear in auto-derived allowed_file_tool_paths.
-
-        Regression: _normalize_rel_posix strips '/', making 'src/' become 'src' which
-        would leak a directory token into the manifest, enabling a prefix-match bypass
-        of the per-file write policy at terminal. Directory entries are filtered before
-        derivation; the managed `lineage.json` file entry IS derived (Phase-2 direct
-        write), so the directory exclusion is verified independently of it.
-        """
-        src_dir = "workspace/pipelines/p/source/src_001/src/"
-        derived = _allowed_file_tool_paths_for_launch(
-            request_payload={},
-            allowed_output_paths=[
-                src_dir,
-                "workspace/pipelines/p/lineage.json",  # managed JSON: direct-write
-            ],
-        )
-        self.assertNotIn("workspace/pipelines/p/source/src_001/src", derived)
-        # The managed JSON file entry is now direct-write eligible.
-        self.assertEqual(derived, ["workspace/pipelines/p/lineage.json"])
-
-
-class TerminalUnauthorizedWriteDirectWriteTests(unittest.TestCase):
-    """Confirm that `_validate_actual_write_paths` permits a path of a direct-write extension."""
-
-    def _setup_step_run_state(
-        self,
-        repo_root: Path,
-        *,
-        orchestration_id: str,
-        agent_run_id: str,
-        write_roots: list[str],
-        allowed_output_paths: list[str],
-        allowed_file_tool_paths: list[str],
-        allowed_tmp_root: str | None = None,
-    ) -> None:
-        from tools.orchestration_runtime import (
-            _capabilities_dir,
-            _write_allowed_output_manifest,
-            _write_run_write_baseline,
-        )
-
-        init_orchestration(repo_root=repo_root, orchestration_id=orchestration_id)
-        _mark_dependencies_ready(repo_root)
-        cap_path = _capabilities_dir(repo_root, orchestration_id) / f"{agent_run_id}.json"
-        cap_path.parent.mkdir(parents=True, exist_ok=True)
-        cap_path.write_text(
-            json.dumps(
-                {
-                    "orchestration_id": orchestration_id,
-                    "agent_run_id": agent_run_id,
-                    "write_roots": write_roots,
-                }
-            ),
-            encoding="utf-8",
-        )
-        _write_allowed_output_manifest(
-            repo_root,
-            orchestration_id=orchestration_id,
-            agent_run_id=agent_run_id,
-            allowed_output_paths=allowed_output_paths,
-            allowed_file_tool_paths=allowed_file_tool_paths,
-            allowed_tmp_root=allowed_tmp_root,
-        )
-        _write_run_write_baseline(repo_root, orchestration_id, agent_run_id=agent_run_id)
-
-    def test_terminal_containment_authorizes_the_run_gate_copy_in_the_tmp_root(self) -> None:
-        """Issue #77: RUN the containment attack instead of reading the exemption.
-
-        `run_gate` writes `workspace/tmp/<arid>/gate_results/<gate>.json` and the whole
-        design rests on that path being exempt from the child-window FS-diff, which the
-        source claims at the `manifest_allowed_tmp_root` branch. A claim about an
-        enforcement layer is not established by reading it, so the file is placed on
-        disk and handed to the real terminalization check.
-
-        The second half is the over-refusal control: the SAME filename one directory
-        outside the tmp root must still be rejected, or a green first half would prove
-        only that the check had stopped looking.
-        """
-        from tools.orchestration_runtime import _validate_actual_write_paths
-
-        for label, rel, expect_raise in (
-            ("inside the tmp root", "workspace/tmp/{run_id}/gate_results/validate_workspace_root.json", False),
-            ("outside it", "workspace/tmp/other_arid/gate_results/validate_workspace_root.json", True),
-        ):
-            with self.subTest(case=label), tempfile.TemporaryDirectory() as tmp:
-                repo_root = Path(tmp)
-                orch = "orch_term_gate_copy"
-                run_id = "step_run_term_gate_copy"
-                yaml_rel = "workspace/ir/p/spec.ir.yaml"
-                self._setup_step_run_state(
-                    repo_root,
-                    orchestration_id=orch,
-                    agent_run_id=run_id,
-                    write_roots=["workspace/ir/"],
-                    allowed_output_paths=[yaml_rel],
-                    allowed_file_tool_paths=[yaml_rel],
-                    allowed_tmp_root=f"workspace/tmp/{run_id}",
-                )
-                copy_rel = rel.format(run_id=run_id)
-                copy_path = repo_root / copy_rel
-                copy_path.parent.mkdir(parents=True, exist_ok=True)
-                copy_path.write_text('{"gate": "validate_workspace_root"}\n', encoding="utf-8")
-
-                payload = {
-                    "agent_run_id": run_id,
-                    "agent_role": "step",
-                    "status": "pass",
-                    "output_refs": [],
-                }
-                if expect_raise:
-                    with self.assertRaises(ValueError) as ctx:
-                        _validate_actual_write_paths(repo_root, orch, payload)
-                    self.assertIn(copy_rel, str(ctx.exception))
-                else:
-                    _validate_actual_write_paths(repo_root, orch, payload)
-
-    def test_step_terminal_accepts_direct_write_yaml_without_gate(self) -> None:
-        from tools.orchestration_runtime import _validate_actual_write_paths
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            orch = "orch_term_dw_001"
-            run_id = "step_run_term_dw_001"
-            yaml_rel = "workspace/ir/p/spec.ir.yaml"
-            self._setup_step_run_state(
-                repo_root,
-                orchestration_id=orch,
-                agent_run_id=run_id,
-                write_roots=["workspace/ir/"],
-                allowed_output_paths=[yaml_rel],
-                allowed_file_tool_paths=[yaml_rel],
-            )
-            yaml_path = repo_root / yaml_rel
-            yaml_path.parent.mkdir(parents=True, exist_ok=True)
-            yaml_path.write_text("case: ok\n", encoding="utf-8")
-
-            _validate_actual_write_paths(
-                repo_root,
-                orch,
-                {
-                    "agent_run_id": run_id,
-                    "agent_role": "step",
-                    "status": "pass",
-                    "output_refs": [yaml_rel],
-                },
-            )
-
-    def test_step_terminal_authorizes_in_write_roots_write_without_gate_evidence(self) -> None:
-        # Phase-2: a leaf write landing inside its write_roots is authorized by bwrap
-        # FS-diff containment alone -- no guarded-apply-patch gate evidence required.
-        # (Pre-Phase-2 this same scenario was rejected as a gate-bypass.)
-        from tools.orchestration_runtime import _validate_actual_write_paths
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            orch = "orch_term_dw_002"
-            run_id = "step_run_term_dw_002"
-            yaml_rel = "workspace/ir/p/spec.ir.yaml"
-            self._setup_step_run_state(
-                repo_root,
-                orchestration_id=orch,
-                agent_run_id=run_id,
-                write_roots=["workspace/ir/"],
-                allowed_output_paths=[yaml_rel],
-                allowed_file_tool_paths=[],
-            )
-            yaml_path = repo_root / yaml_rel
-            yaml_path.parent.mkdir(parents=True, exist_ok=True)
-            yaml_path.write_text("case: ok\n", encoding="utf-8")
-
-            # No gate evidence written; the write is inside write_roots -> must not raise.
-            _validate_actual_write_paths(
-                repo_root,
-                orch,
-                {
-                    "agent_run_id": run_id,
-                    "agent_role": "step",
-                    "status": "pass",
-                    "output_refs": [yaml_rel],
-                },
-            )
-
-    def test_step_terminal_rejects_write_outside_write_roots(self) -> None:
-        # Phase-2 surviving boundary (defense-in-depth): a change that landed OUTSIDE the
-        # leaf's write_roots is impossible under bwrap, and if it appears in the FS-diff it
-        # is rejected regardless of any (now-ignored) gate evidence.
-        from tools.orchestration_runtime import _validate_actual_write_paths
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            orch = "orch_term_dw_002b"
-            run_id = "step_run_term_dw_002b"
-            rogue_rel = "workspace/pipelines/p/rogue.yaml"  # outside write_roots
-            self._setup_step_run_state(
-                repo_root,
-                orchestration_id=orch,
-                agent_run_id=run_id,
-                write_roots=["workspace/ir/"],
-                allowed_output_paths=["workspace/ir/p/spec.ir.yaml"],
-                allowed_file_tool_paths=[],
-            )
-            rogue_path = repo_root / rogue_rel
-            rogue_path.parent.mkdir(parents=True, exist_ok=True)
-            rogue_path.write_text("case: rogue\n", encoding="utf-8")
-
-            with self.assertRaisesRegex(ValueError, "unauthorized write paths"):
-                _validate_actual_write_paths(
-                    repo_root,
-                    orch,
-                    {
-                        "agent_run_id": run_id,
-                        "agent_role": "step",
-                        "status": "pass",
-                        "output_refs": ["workspace/ir/p/spec.ir.yaml"],
-                    },
-                )
-
-    def test_step_terminal_violation_flags_only_out_of_write_roots_path(self) -> None:
-        # Phase-2: only a write OUTSIDE write_roots is unauthorized. An in-write_roots
-        # write (A.json) is authorized by FS-diff containment and must NOT appear in the
-        # violation; only the out-of-root path (C.json) is flagged.
-        from tools.orchestration_runtime import _validate_actual_write_paths
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            orch = "orch_term_dw_004"
-            run_id = "step_run_term_dw_004"
-            in_root_rel = "workspace/pipelines/p/binary/bin_20260101_001/A.json"
-            out_of_root_rel = "workspace/pipelines/p/source/C.json"  # outside write_roots
-            self._setup_step_run_state(
-                repo_root,
-                orchestration_id=orch,
-                agent_run_id=run_id,
-                write_roots=["workspace/pipelines/p/binary/"],
-                allowed_output_paths=[in_root_rel],
-                allowed_file_tool_paths=[],
-            )
-            in_root_path = repo_root / in_root_rel
-            out_of_root_path = repo_root / out_of_root_rel
-            in_root_path.parent.mkdir(parents=True, exist_ok=True)
-            in_root_path.write_text('{"a": 1}\n', encoding="utf-8")
-            out_of_root_path.parent.mkdir(parents=True, exist_ok=True)
-            out_of_root_path.write_text('{"c": 1}\n', encoding="utf-8")
-
-            with self.assertRaisesRegex(ValueError, "unauthorized write paths"):
-                _validate_actual_write_paths(
-                    repo_root,
-                    orch,
-                    {
-                        "agent_run_id": run_id,
-                        "agent_role": "step",
-                        "status": "pass",
-                        "output_refs": [in_root_rel],
-                    },
-                )
-            violation_path = (
-                repo_root
-                / "workspace"
-                / "orchestrations"
-                / orch
-                / "violations"
-                / f"{run_id}.unauthorized_write_violation.json"
-            )
-            violation = json.loads(violation_path.read_text(encoding="utf-8"))
-            self.assertEqual(violation.get("unauthorized_paths"), [out_of_root_rel])
-            self.assertNotIn(in_root_rel, violation.get("unauthorized_paths") or [])
-
-    def test_step_terminal_rejects_mod_file_outside_write_roots(self) -> None:
-        """Compiler byproducts (.mod) written outside write_roots are unauthorized.
-
-        Agents must clean up build artefacts before record-agent-run to prevent unaudited binary injection.
-        """
-        from tools.orchestration_runtime import _validate_actual_write_paths
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            orch = "orch_term_dw_007"
-            run_id = "step_run_term_dw_007"
-            src_dir = f"{_FIX_PIPE_REF}/source/src_20260508_001/src/"
-            self._setup_step_run_state(
-                repo_root,
-                orchestration_id=orch,
-                agent_run_id=run_id,
-                write_roots=[f"{_FIX_PIPE_REF}/source/"],
-                allowed_output_paths=[src_dir],
-                allowed_file_tool_paths=[],
-            )
-            byproduct = repo_root / _FIX_PIPE_REF / "generate" / "src_20260508_001" / "src" / "flux.mod"
-            byproduct.parent.mkdir(parents=True, exist_ok=True)
-            byproduct.write_text("MODULE flux\nEND MODULE\n", encoding="utf-8")
-
-            with self.assertRaisesRegex(ValueError, "unauthorized write paths"):
-                _validate_actual_write_paths(
-                    repo_root,
-                    orch,
-                    {
-                        "agent_run_id": run_id,
-                        "agent_role": "step",
-                        "status": "pass",
-                        "output_refs": [],
-                    },
-                )
-
-    def _setup_src_dir_state(
-        self,
-        repo_root: Path,
-        *,
-        orch: str,
-        run_id: str,
-        src_files: dict[str, str],
-    ) -> None:
-        src_dir = f"{_FIX_PIPE_REF}/source/src_20260508_001/src/"
-        self._setup_step_run_state(
-            repo_root,
-            orchestration_id=orch,
-            agent_run_id=run_id,
-            write_roots=[f"{_FIX_PIPE_REF}/source/"],
-            allowed_output_paths=[src_dir],
-            allowed_file_tool_paths=[],
-        )
-        base = repo_root / _FIX_PIPE_REF / "generate" / "src_20260508_001" / "src"
-        base.mkdir(parents=True, exist_ok=True)
-        for name, content in src_files.items():
-            (base / name).write_text(content, encoding="utf-8")
-
-    def _run_validate(self, repo_root: Path, orch: str, run_id: str) -> None:
-        from tools.orchestration_runtime import _validate_actual_write_paths
-        _validate_actual_write_paths(
-            repo_root,
-            orch,
-            {"agent_run_id": run_id, "agent_role": "step", "status": "pass", "output_refs": []},
-        )
-
-    def test_step_terminal_rejects_script_under_directory_entry(self) -> None:
-        """Shell scripts under directory allowlist are unauthorized (not in allowlist)."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._setup_src_dir_state(repo_root, orch="orch_dw_bl_001", run_id="run_dw_bl_001",
-                                      src_files={"exploit.sh": "#!/bin/sh\nrm -rf /\n"})
-            with self.assertRaisesRegex(ValueError, "unauthorized write paths"):
-                self._run_validate(repo_root, "orch_dw_bl_001", "run_dw_bl_001")
-
-    def test_step_terminal_rejects_shared_lib_under_directory_entry(self) -> None:
-        """.so shared libraries are not a generate-phase source byproduct."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._setup_src_dir_state(repo_root, orch="orch_dw_bl_002", run_id="run_dw_bl_002",
-                                      src_files={"libevil.so": "\x7fELF"})
-            with self.assertRaisesRegex(ValueError, "unauthorized write paths"):
-                self._run_validate(repo_root, "orch_dw_bl_002", "run_dw_bl_002")
-
-    def test_step_terminal_rejects_unknown_extension_under_directory_entry(self) -> None:
-        """Files with unknown/unlisted extensions are fail-closed."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._setup_src_dir_state(repo_root, orch="orch_dw_bl_003", run_id="run_dw_bl_003",
-                                      src_files={"payload.whl": "PK\x03\x04"})
-            with self.assertRaisesRegex(ValueError, "unauthorized write paths"):
-                self._run_validate(repo_root, "orch_dw_bl_003", "run_dw_bl_003")
-
-    def test_step_terminal_rejects_source_file_outside_write_roots(self) -> None:
-        """A source file (.f90) written outside the step's write_roots must fail terminal validation."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            # Write the source file directly into a path outside the step's write_roots
-            self._setup_src_dir_state(repo_root, orch="orch_dw_gate_001", run_id="run_dw_gate_001",
-                                      src_files={"flux.f90": "MODULE flux\nEND MODULE\n"})
-            with self.assertRaisesRegex(ValueError, "unauthorized write paths"):
-                self._run_validate(repo_root, "orch_dw_gate_001", "run_dw_gate_001")
-
-    def test_step_terminal_rejects_compiler_byproduct_outside_write_roots(self) -> None:
-        """Compiler byproducts (.mod, .o, .a) written outside write_roots are unauthorized.
-
-        Agents must clean up compiler artefacts before record-agent-run to prevent
-        unaudited binary injection into the pipeline.
-        """
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._setup_src_dir_state(repo_root, orch="orch_dw_gate_002", run_id="run_dw_gate_002",
-                                      src_files={"flux.mod": "MODULE flux\nEND MODULE\n",
-                                                 "flux.o": "\x7fELF"})
-            with self.assertRaisesRegex(ValueError, "unauthorized write paths"):
-                self._run_validate(repo_root, "orch_dw_gate_002", "run_dw_gate_002")
-
-    def test_step_terminal_rejects_makefile_under_directory_entry(self) -> None:
-        """Makefile is a build-control file and requires explicit file pin — not in extensionless allowlist."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._setup_src_dir_state(repo_root, orch="orch_dw_bl_004", run_id="run_dw_bl_004",
-                                      src_files={"Makefile": "all:\n\tgfortran main.f90\n"})
-            with self.assertRaisesRegex(ValueError, "unauthorized write paths"):
-                self._run_validate(repo_root, "orch_dw_bl_004", "run_dw_bl_004")
-
-    def test_step_terminal_rejects_unknown_extensionless_file_under_directory_entry(self) -> None:
-        """An extensionless file not in _ALLOWED_EXTENSIONLESS_BYPRODUCT_NAMES is rejected."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._setup_src_dir_state(repo_root, orch="orch_dw_bl_005", run_id="run_dw_bl_005",
-                                      src_files={"myexe": "#!/bin/bash\necho hi\n"})
-            with self.assertRaisesRegex(ValueError, "unauthorized write paths"):
-                self._run_validate(repo_root, "orch_dw_bl_005", "run_dw_bl_005")
-
-    def test_step_terminal_rejects_cmake_under_directory_entry(self) -> None:
-        """Build control file (.cmake) requires explicit file pin — can inject commands."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._setup_src_dir_state(repo_root, orch="orch_dw_bl_006", run_id="run_dw_bl_006",
-                                      src_files={"CMakeLists.txt": "cmake_minimum_required(VERSION 3.0)\n"})
-            with self.assertRaisesRegex(ValueError, "unauthorized write paths"):
-                self._run_validate(repo_root, "orch_dw_bl_006", "run_dw_bl_006")
-
-    def test_step_terminal_rejects_nml_under_directory_entry(self) -> None:
-        """Namelist file (.nml) requires explicit file pin."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._setup_src_dir_state(repo_root, orch="orch_dw_bl_007", run_id="run_dw_bl_007",
-                                      src_files={"params.nml": "&input\n  dt=0.1\n/\n"})
-            with self.assertRaisesRegex(ValueError, "unauthorized write paths"):
-                self._run_validate(repo_root, "orch_dw_bl_007", "run_dw_bl_007")
-
-    def test_step_terminal_rejects_toml_under_directory_entry(self) -> None:
-        """Build config file (.toml) requires explicit file pin."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._setup_src_dir_state(repo_root, orch="orch_dw_bl_008", run_id="run_dw_bl_008",
-                                      src_files={"build.toml": "[build]\nmode = 'release'\n"})
-            with self.assertRaisesRegex(ValueError, "unauthorized write paths"):
-                self._run_validate(repo_root, "orch_dw_bl_008", "run_dw_bl_008")
-
-    def test_step_terminal_rejects_json_even_if_directory_path_leaked_into_manifest_file_tool_paths(self) -> None:
-        """Regression: old auto-derive bug put directory tokens (no trailing /) into
-        allowed_file_tool_paths manifest, then prefix-match in exact_declared_paths bypassed
-        extension policy — any file under src/ would pass. Verify terminal rejects it."""
-        from tools.orchestration_runtime import _validate_actual_write_paths
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            orch = "orch_dw_reg_001"
-            run_id = "run_dw_reg_001"
-            src_dir_entry = f"{_FIX_PIPE_REF}/source/src_20260508_001/src/"
-            # Simulate the buggy manifest: directory path WITHOUT trailing slash in allowed_file_tool_paths
-            self._setup_step_run_state(
-                repo_root,
-                orchestration_id=orch,
-                agent_run_id=run_id,
-                write_roots=[f"{_FIX_PIPE_REF}/source/"],
-                allowed_output_paths=[src_dir_entry],
-                # Inject the buggy token directly — no trailing slash, looks like a path prefix
-                allowed_file_tool_paths=[f"{_FIX_PIPE_REF}/source/src_20260508_001/src"],
-            )
-            forbidden = repo_root / _FIX_PIPE_REF / "generate" / "src_20260508_001" / "src" / "config.json"
-            forbidden.parent.mkdir(parents=True, exist_ok=True)
-            forbidden.write_text('{"key": "value"}\n', encoding="utf-8")
-
-            with self.assertRaisesRegex(ValueError, "unauthorized write paths"):
-                _validate_actual_write_paths(
-                    repo_root, orch,
-                    {"agent_run_id": run_id, "agent_role": "step", "status": "pass", "output_refs": []},
-                )
-
-    def test_step_terminal_rejects_sh_even_if_directory_path_leaked_into_manifest_file_tool_paths(self) -> None:
-        """Regression: same bypass as above but for shell scripts."""
-        from tools.orchestration_runtime import _validate_actual_write_paths
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            orch = "orch_dw_reg_002"
-            run_id = "run_dw_reg_002"
-            src_dir_entry = f"{_FIX_PIPE_REF}/source/src_20260508_001/src/"
-            self._setup_step_run_state(
-                repo_root,
-                orchestration_id=orch,
-                agent_run_id=run_id,
-                write_roots=[f"{_FIX_PIPE_REF}/source/"],
-                allowed_output_paths=[src_dir_entry],
-                allowed_file_tool_paths=[f"{_FIX_PIPE_REF}/source/src_20260508_001/src"],
-            )
-            forbidden = repo_root / _FIX_PIPE_REF / "generate" / "src_20260508_001" / "src" / "exploit.sh"
-            forbidden.parent.mkdir(parents=True, exist_ok=True)
-            forbidden.write_text("#!/bin/sh\nrm -rf /\n", encoding="utf-8")
-
-            with self.assertRaisesRegex(ValueError, "unauthorized write paths"):
-                _validate_actual_write_paths(
-                    repo_root, orch,
-                    {"agent_run_id": run_id, "agent_role": "step", "status": "pass", "output_refs": []},
-                )
-
-    def test_step_terminal_accepts_write_with_directory_write_root(self) -> None:
-        """Directory write_roots must have a trailing slash."""
-        from tools.orchestration_runtime import _validate_actual_write_paths
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            orch = "orch_term_dw_006"
-            run_id = "step_run_term_dw_006"
-            yaml_rel = "workspace/ir/p/spec.ir.yaml"
-            self._setup_step_run_state(
-                repo_root,
-                orchestration_id=orch,
-                agent_run_id=run_id,
-                write_roots=["workspace/ir/"],
-                allowed_output_paths=[yaml_rel],
-                allowed_file_tool_paths=[yaml_rel],
-            )
-            yaml_path = repo_root / yaml_rel
-            yaml_path.parent.mkdir(parents=True, exist_ok=True)
-            yaml_path.write_text("case: ok\n", encoding="utf-8")
-
-            _validate_actual_write_paths(
-                repo_root,
-                orch,
-                {
-                    "agent_run_id": run_id,
-                    "agent_role": "step",
-                    "status": "pass",
-                    "output_refs": [yaml_rel],
-                },
-            )
-
-
-class TerminalLintEvidenceExemptionTests(unittest.TestCase):
-    """The conductor-run generate.gate substep writes a host-authored, leaf-non-writable lint
-    certificate at <pipeline_ref>/lint_evidence/<source_id>.json -- deliberately outside the
-    substep's source/ write_root (workflow_conductor.Conductor._gate_inproc -> _gate_lint_check).
-    That host write must be exempt from FS-diff write attribution, but ONLY for the gate
-    substep."""
-
-    _SOURCE_ID = "src_20260415_001"
-    _EVIDENCE_REL = f"{_FIX_PIPE_REF}/lint_evidence/{_SOURCE_ID}.json"
-    _LINT_META_REL = f"{_FIX_PIPE_REF}/source/{_SOURCE_ID}/gate_meta.json"
-    # A sibling under lint_evidence/ that is NOT the run's own <source_id>.json certificate.
-    _OTHER_EVIDENCE_REL = f"{_FIX_PIPE_REF}/lint_evidence/src_other_999.json"
-
-    def _setup(
-        self,
-        repo_root: Path,
-        *,
-        orch: str,
-        run_id: str,
-        substep: str | None,
-        step: str = "generate",
-        source_id: str | None = _SOURCE_ID,
-    ) -> None:
-        from tools.orchestration_runtime import (
-            _capabilities_dir,
-            _write_allowed_output_manifest,
-            _write_run_write_baseline,
-        )
-
-        # No _mark_dependencies_ready: _validate_actual_write_paths does not consult
-        # dependency readiness, and the helper defaults to orch_001 (a different orch),
-        # so it would be a silent no-op here.
-        init_orchestration(repo_root=repo_root, orchestration_id=orch)
-        cap: dict[str, Any] = {
-            "orchestration_id": orch,
-            "agent_run_id": run_id,
-            "agent_role": "substep",
-            "step": step,
-            # Keep a source/ write_root regardless of `step` so that, for the
-            # step-scoping test, the ONLY thing preventing the exemption is the
-            # step==generate gate (not an absent source/ prefix).
-            "write_roots": [f"{_FIX_PIPE_REF}/source/"],
-        }
-        if substep is not None:
-            cap["substep"] = substep
-        cap_path = _capabilities_dir(repo_root, orch) / f"{run_id}.json"
-        cap_path.parent.mkdir(parents=True, exist_ok=True)
-        cap_path.write_text(json.dumps(cap), encoding="utf-8")
-        # The exempt certificate path is bound to the source_id recorded in the
-        # host-authored launch request (build_launch_request records it for every
-        # generate launch), so the exemption resolves to <pipe>/lint_evidence/<sid>.json.
-        if source_id is not None:
-            launch_dir = (
-                repo_root / "workspace" / "orchestrations" / orch / "launches"
-            )
-            launch_dir.mkdir(parents=True, exist_ok=True)
-            (launch_dir / f"{run_id}.request.json").write_text(
-                json.dumps({
-                    "agent_run_id": run_id,
-                    "step": step,
-                    "pipeline_ref": _FIX_PIPE_REF,
-                    "source_id": source_id,
-                }),
-                encoding="utf-8",
-            )
-        _write_allowed_output_manifest(
-            repo_root,
-            orchestration_id=orch,
-            agent_run_id=run_id,
-            allowed_output_paths=[f"{_FIX_PIPE_REF}/source/"],
-            allowed_file_tool_paths=[],
-        )
-        _write_run_write_baseline(repo_root, orch, agent_run_id=run_id)
-
-    def _write_evidence_and_meta(self, repo_root: Path) -> None:
-        for rel in (self._EVIDENCE_REL, self._LINT_META_REL):
-            p = repo_root / rel
-            p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_text('{"ok": true}\n', encoding="utf-8")
-
-    def test_gate_substep_exempts_pipeline_root_evidence(self) -> None:
-        from tools.orchestration_runtime import _validate_actual_write_paths
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            orch, run_id = "orch_lint_ev_001", "substep_lint_ev_001"
-            self._setup(repo_root, orch=orch, run_id=run_id, substep="gate")
-            self._write_evidence_and_meta(repo_root)
-
-            # Must NOT raise: gate_meta is in write_roots, the evidence is the exempt
-            # host-authored certificate.
-            _validate_actual_write_paths(
-                repo_root,
-                orch,
-                {
-                    "agent_run_id": run_id,
-                    "agent_role": "substep",
-                    "status": "pass",
-                    "output_refs": [self._LINT_META_REL],
-                },
-            )
-            violation = (
-                repo_root / "workspace" / "orchestrations" / orch / "violations"
-                / f"{run_id}.unauthorized_write_violation.json"
-            )
-            self.assertFalse(violation.exists())
-
-    def _assert_evidence_rejected(self, repo_root: Path, orch: str, run_id: str) -> None:
-        from tools.orchestration_runtime import _validate_actual_write_paths
-
-        with self.assertRaisesRegex(ValueError, "unauthorized write paths"):
-            _validate_actual_write_paths(
-                repo_root,
-                orch,
-                {
-                    "agent_run_id": run_id,
-                    "agent_role": "substep",
-                    "status": "pass",
-                    "output_refs": [self._LINT_META_REL],
-                },
-            )
-        violation = (
-            repo_root / "workspace" / "orchestrations" / orch / "violations"
-            / f"{run_id}.unauthorized_write_violation.json"
-        )
-        payload = json.loads(violation.read_text(encoding="utf-8"))
-        self.assertIn(self._EVIDENCE_REL, payload.get("unauthorized_paths") or [])
-
-    def test_non_gate_generate_substep_does_not_exempt_evidence(self) -> None:
-        # Scoping (substep gate): the sandboxed generate.generate leaf carries
-        # substep=="generate", NOT "gate" -- writing the same pipeline-root path is
-        # still rejected. Models the real actor the exemption must exclude.
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            orch, run_id = "orch_lint_ev_002", "substep_lint_ev_002"
-            self._setup(repo_root, orch=orch, run_id=run_id, step="generate", substep="generate")
-            self._write_evidence_and_meta(repo_root)
-            self._assert_evidence_rejected(repo_root, orch, run_id)
-
-    def test_generate_verify_substep_does_not_exempt_evidence(self) -> None:
-        # Scoping (substep gate): generate.verify (also step==generate) is NOT exempt either --
-        # only the deterministic gate substep writes the certificate.
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            orch, run_id = "orch_lint_ev_002b", "substep_lint_ev_002b"
-            self._setup(repo_root, orch=orch, run_id=run_id, step="generate", substep="verify")
-            self._write_evidence_and_meta(repo_root)
-            self._assert_evidence_rejected(repo_root, orch, run_id)
-
-    def test_non_generate_step_gate_substep_does_not_exempt_evidence(self) -> None:
-        # Scoping (step gate is load-bearing): a substep named "gate" under a NON-generate
-        # step, even with a source/ write_root present, is still rejected -- both halves of
-        # the step==generate AND substep==gate gate are required.
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            orch, run_id = "orch_lint_ev_003", "substep_lint_ev_003"
-            self._setup(repo_root, orch=orch, run_id=run_id, step="build", substep="gate")
-            self._write_evidence_and_meta(repo_root)
-            self._assert_evidence_rejected(repo_root, orch, run_id)
-
-    def test_gate_substep_does_not_exempt_sibling_evidence_file(self) -> None:
-        # The exemption is bound to the EXACT <source_id>.json certificate, not the whole
-        # lint_evidence/ dir: a stray sibling (e.g. left by a retry bug) under lint_evidence/
-        # is still flagged as an unauthorized write even for the gate substep.
-        from tools.orchestration_runtime import _validate_actual_write_paths
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            orch, run_id = "orch_lint_ev_004", "substep_lint_ev_004"
-            self._setup(repo_root, orch=orch, run_id=run_id, substep="gate")
-            # The run's own certificate (exempt) AND a foreign sibling (must be flagged).
-            for rel in (self._EVIDENCE_REL, self._LINT_META_REL, self._OTHER_EVIDENCE_REL):
-                p = repo_root / rel
-                p.parent.mkdir(parents=True, exist_ok=True)
-                p.write_text('{"ok": true}\n', encoding="utf-8")
-
-            with self.assertRaisesRegex(ValueError, "unauthorized write paths"):
-                _validate_actual_write_paths(
-                    repo_root,
-                    orch,
-                    {
-                        "agent_run_id": run_id,
-                        "agent_role": "substep",
-                        "status": "pass",
-                        "output_refs": [self._LINT_META_REL],
-                    },
-                )
-            violation = (
-                repo_root / "workspace" / "orchestrations" / orch / "violations"
-                / f"{run_id}.unauthorized_write_violation.json"
-            )
-            payload = json.loads(violation.read_text(encoding="utf-8"))
-            unauth = payload.get("unauthorized_paths") or []
-            # The foreign sibling is flagged; the run's own certificate is NOT.
-            self.assertIn(self._OTHER_EVIDENCE_REL, unauth)
-            self.assertNotIn(self._EVIDENCE_REL, unauth)
-
-
-class TerminalSyntaxEvidenceExemptionTests(TerminalLintEvidenceExemptionTests):
-    """The same generate.gate substep ALSO writes the analogous host-authored certificate at
-    <pipeline_ref>/syntax_evidence/<source_id>.json (Conductor._gate_inproc ->
-    _gate_syntax_check -> write_syntax_evidence). Reuses the exemption suite with the syntax
-    paths: the same exemption semantics (exact file, step==generate ∧ substep==gate only) must
-    hold for the syntax certificate too — both certificates come from the one gate substep."""
-
-    _SOURCE_ID = TerminalLintEvidenceExemptionTests._SOURCE_ID
-    _EVIDENCE_REL = f"{_FIX_PIPE_REF}/syntax_evidence/{_SOURCE_ID}.json"
-    _LINT_META_REL = f"{_FIX_PIPE_REF}/source/{_SOURCE_ID}/gate_meta.json"
-    _OTHER_EVIDENCE_REL = f"{_FIX_PIPE_REF}/syntax_evidence/src_other_999.json"
-
-    def test_generate_generate_substep_does_not_exempt_syntax_evidence(self) -> None:
-        # Cross-substep scoping: the generate.generate producer leaf must NOT be exempt for the
-        # SYNTAX certificate (only the deterministic gate substep writes it).
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            orch, run_id = "orch_syn_ev_005", "substep_syn_ev_005"
-            self._setup(repo_root, orch=orch, run_id=run_id, substep="generate")
-            self._write_evidence_and_meta(repo_root)
-            self._assert_evidence_rejected(repo_root, orch, run_id)
-
-
-class LoadWriteRootsFromCapTests(unittest.TestCase):
-    """Tests for _load_write_roots_from_cap normalization and rejection rules."""
-
-    def setUp(self) -> None:
-        from tools.orchestration_runtime import _load_write_roots_from_cap
-        self._load = _load_write_roots_from_cap
-
-    def test_trailing_slash_entry_normalized_as_directory(self) -> None:
-        result = self._load(["workspace/ir/"])
-        self.assertEqual(result, ["workspace/ir/"])
-
-    def test_extension_bearing_entry_kept_as_file_pin(self) -> None:
-        result = self._load(["workspace/pipelines/a__b__1.0/lineage.json"])
-        self.assertEqual(result, ["workspace/pipelines/a__b__1.0/lineage.json"])
-
-    def test_extensionless_no_slash_entry_accepted_as_file_pin(self) -> None:
-        """Extensionless entries like Makefile or LICENSE must be accepted as file pins."""
-        result = self._load(["workspace/pipelines/a__b__1.0/pipe_001/src/Makefile"])
-        self.assertEqual(result, ["workspace/pipelines/a__b__1.0/pipe_001/src/Makefile"])
-
-    def test_multiple_extensionless_file_pins_accepted(self) -> None:
-        """Multiple extensionless file pins are all kept in declaration order."""
-        result = self._load([
-            "workspace/pipelines/a__b__1.0/pipe_001/src/Makefile",
-            "workspace/pipelines/a__b__1.0/pipe_001/src/LICENSE",
-            "workspace/pipelines/a__b__1.0/pipe_001/source/",
-        ])
-        self.assertEqual(result, [
-            "workspace/pipelines/a__b__1.0/pipe_001/src/Makefile",
-            "workspace/pipelines/a__b__1.0/pipe_001/src/LICENSE",
-            "workspace/pipelines/a__b__1.0/pipe_001/source/",
-        ])
-
-    def test_empty_and_whitespace_entries_skipped(self) -> None:
-        result = self._load(["", "  ", None, 42, "workspace/ir/"])  # type: ignore[list-item]
-        self.assertEqual(result, ["workspace/ir/"])
-
-    def test_non_list_input_returns_empty(self) -> None:
-        self.assertEqual(self._load(None), [])
-        self.assertEqual(self._load("workspace/ir/"), [])
-
-
 class RuntimeRoBindDnsTests(unittest.TestCase):
     """_runtime_ro_bind_paths must bind the resolv.conf symlink target so DNS works
     in-sandbox (WSL2: /mnt/wsl/resolv.conf; systemd-resolved: stub under /run).
@@ -18181,805 +11998,6 @@ class RuntimeRoBindDnsTests(unittest.TestCase):
         else:
             # Plain resolv.conf under /etc — nothing extra to bind.
             self.assertEqual([p for p in paths if p.startswith("/etc/")], [])
-
-
-class BwrapProfileFilePinTests(unittest.TestCase):
-    """build_bwrap_profile + render_bwrap_command: file-pin write_roots must get a bind mount."""
-
-    def _write_cap_and_manifest(
-        self,
-        repo_root: Path,
-        *,
-        orchestration_id: str,
-        agent_run_id: str,
-        write_roots: list[str],
-    ) -> None:
-        from tools.orchestration_runtime import (
-            _capabilities_dir,
-            _read_manifests_dir,
-            _ensure_orchestration_audit_dirs,
-        )
-        _ensure_orchestration_audit_dirs(repo_root, orchestration_id)
-        cap_dir = _capabilities_dir(repo_root, orchestration_id)
-        cap_dir.mkdir(parents=True, exist_ok=True)
-        cap_path = cap_dir / f"{agent_run_id}.json"
-        cap_path.write_text(
-            json.dumps({"agent_run_id": agent_run_id, "write_roots": write_roots}),
-            encoding="utf-8",
-        )
-        rm_dir = _read_manifests_dir(repo_root, orchestration_id)
-        rm_dir.mkdir(parents=True, exist_ok=True)
-        rm_path = rm_dir / f"{agent_run_id}.json"
-        rm_path.write_text(
-            json.dumps({"agent_run_id": agent_run_id, "allowed_read_roots": ["workspace/"]}),
-            encoding="utf-8",
-        )
-
-    def test_build_bwrap_profile_materializes_missing_codex_home(self) -> None:
-        """A creatable-but-absent backend config home (e.g. ~/.codex in a fresh env) must
-        be created and bound writable, not silently dropped — otherwise the sandboxed CLI
-        cannot write its config/session state."""
-        from tools.orchestration_runtime import build_bwrap_profile
-
-        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as home:
-            repo_root = Path(tmp)
-            orch = "orch_codexhome_001"
-            run_id = "run_codexhome_001"
-            self._write_cap_and_manifest(
-                repo_root, orchestration_id=orch, agent_run_id=run_id,
-                write_roots=["workspace/out/"],
-            )
-            codex_home = Path(home) / ".codex"
-            self.assertFalse(codex_home.exists())
-            with patch.dict(os.environ, {"HOME": home}, clear=False):
-                os.environ.pop("ATMOFAB_HOME", None)
-                profile = build_bwrap_profile(
-                    repo_root=repo_root, orchestration_id=orch, agent_run_id=run_id,
-                    backend_command="codex", backend_type="codex",
-                )
-            self.assertTrue(codex_home.exists(), "missing codex home must be created")
-            self.assertIn(str(codex_home), profile["runtime_rw_bind_paths"])
-
-    def test_build_bwrap_profile_rejects_rw_home_not_outside_repo(self) -> None:
-        """A backend rw home with any containment relationship to repo_root must be
-        rejected: covering it (ATMOFAB_HOME=repo root/ancestor) would remount the repo
-        writable, and an in-repo home (ATMOFAB_HOME=$repo/workspace) would grant writes
-        beyond the child write_roots. Only a home fully outside repo_root is allowed."""
-        from tools.orchestration_runtime import build_bwrap_profile
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            orch = "orch_rwcover_001"
-            run_id = "run_rwcover_001"
-            self._write_cap_and_manifest(
-                repo_root, orchestration_id=orch, agent_run_id=run_id,
-                write_roots=["workspace/out/"],
-            )
-            for bad_home in (str(repo_root), str(repo_root / "workspace")):
-                with self.subTest(home=bad_home):
-                    with patch.dict(os.environ, {"ATMOFAB_HOME": bad_home}, clear=False):
-                        with self.assertRaises(ValueError):
-                            build_bwrap_profile(
-                                repo_root=repo_root, orchestration_id=orch,
-                                agent_run_id=run_id,
-                                backend_command="codex", backend_type="codex",
-                            )
-
-    def test_file_pin_write_root_pre_creates_target_file(self) -> None:
-        """build_bwrap_profile must touch a file-pin target so render_bwrap_command can bind it."""
-        from tools.orchestration_runtime import build_bwrap_profile
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            orch = "orch_bwrap_fp_001"
-            run_id = "run_bwrap_fp_001"
-            pin = "workspace/pipelines/a__b__1.0/lineage.json"
-            self._write_cap_and_manifest(
-                repo_root, orchestration_id=orch, agent_run_id=run_id,
-                write_roots=[pin],
-            )
-
-            profile = build_bwrap_profile(
-                repo_root=repo_root,
-                orchestration_id=orch,
-                agent_run_id=run_id,
-                backend_command="python3 agent.py",
-            )
-
-            pin_path = repo_root / pin
-            self.assertTrue(pin_path.exists(), "file-pin target must be pre-created for bwrap file-level bind")
-            self.assertIn(pin, profile["write_roots"])
-
-    def test_file_pin_binds_parent_dir_rw_and_reprotects_siblings(self) -> None:
-        """A file pin binds its PARENT DIR writable (so the harness Write tool's atomic
-        temp-sibling+rename can create `<pin>.tmp.*` there — a file-granular bind left the
-        parent read-only and broke that write with EROFS). Every existing non-write_root
-        sibling is then re-ro-bound AFTER the parent rw-bind (bwrap later-overrides-earlier),
-        so a same-dir certified artifact keeps its physical write protection while the pin
-        itself stays writable (never appears in the ro-bind list)."""
-        from tools.orchestration_runtime import build_bwrap_profile, render_bwrap_command
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            orch = "orch_bwrap_fp_002"
-            run_id = "run_bwrap_fp_002"
-            node_dir = "workspace/ir/a__b__1.0/ir_001"
-            pin = f"{node_dir}/ir_meta.json"
-            # a certified sibling in the same node dir that must stay physically read-only
-            (repo_root / node_dir).mkdir(parents=True, exist_ok=True)
-            (repo_root / node_dir / "spec.ir.yaml").write_text("meta: {}\n", encoding="utf-8")
-            self._write_cap_and_manifest(
-                repo_root, orchestration_id=orch, agent_run_id=run_id,
-                write_roots=[pin],
-            )
-            profile = build_bwrap_profile(
-                repo_root=repo_root,
-                orchestration_id=orch,
-                agent_run_id=run_id,
-                backend_command="python3 agent.py",
-            )
-            cmd = render_bwrap_command(profile=profile, command_argv=["python3", "agent.py"])
-            pin_abs = str((repo_root / pin).resolve())
-            parent_abs = str((repo_root / node_dir).resolve())
-            sibling_abs = str((repo_root / node_dir / "spec.ir.yaml").resolve())
-            bind_targets = [cmd[i + 1] for i, tok in enumerate(cmd) if tok == "--bind"]
-            robind_targets = [cmd[i + 1] for i, tok in enumerate(cmd) if tok == "--ro-bind"]
-            # the pin's parent dir is bound writable so the atomic write mechanism works
-            self.assertIn(parent_abs, bind_targets,
-                          "file-pin parent dir must be a writable --bind")
-            # the pin itself is writable (in the rw parent) — never made read-only
-            self.assertNotIn(pin_abs, robind_targets,
-                             "the pin must stay writable, not appear in --ro-bind")
-            # the certified sibling is re-ro-bound (physically protected) AFTER the parent rw-bind
-            self.assertIn(sibling_abs, robind_targets,
-                          "an existing non-write_root sibling must be re-ro-bound")
-            parent_bind_idx = next(
-                i for i, t in enumerate(cmd) if t == "--bind" and cmd[i + 1] == parent_abs)
-            sib_robind_idx = next(
-                i for i, t in enumerate(cmd) if t == "--ro-bind" and cmd[i + 1] == sibling_abs)
-            self.assertGreater(
-                sib_robind_idx, parent_bind_idx,
-                "sibling ro-bind must come AFTER the parent rw-bind to win (later-overrides-earlier)")
-
-    def test_file_pin_parent_directory_and_symlink_strays_are_rejected(self) -> None:
-        """A new directory or symlink created in a file pin's now-writable parent dir
-        bypasses the file-only FS-diff (`_snapshot_repo_files` records regular files only);
-        terminal validation must still reject it as an unauthorized write — otherwise a leaf
-        could pre-create a host-target pathname (e.g. `aggregate_verdict.json/`) as a directory
-        and break the conductor's later `write_text`, undetected. The pin write itself and the
-        pre-existing certified sibling stay authorized/untouched."""
-        import os
-        from tools.orchestration_runtime import (
-            _validate_actual_write_paths,
-            _write_run_write_baseline,
-        )
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            orch = "orch_bwrap_fp_stray"
-            run_id = "run_bwrap_fp_stray"
-            node_dir = "workspace/pipelines/a__b__1.0/pipe_001/runs/run_x/a__b__1.0"
-            pin = f"{node_dir}/semantic_review.json"
-            (repo_root / node_dir).mkdir(parents=True, exist_ok=True)
-            # a pre-existing certified sibling + a pre-existing occupied subdir (raw/)
-            (repo_root / node_dir / "verdict.json").write_text('{"per_test": []}\n', encoding="utf-8")
-            (repo_root / node_dir / "raw").mkdir()
-            (repo_root / node_dir / "raw" / "metrics_basis.json").write_text("{}", encoding="utf-8")
-            (repo_root / pin).write_text("", encoding="utf-8")  # pre-touched pin
-            self._write_cap_and_manifest(
-                repo_root, orchestration_id=orch, agent_run_id=run_id,
-                write_roots=[pin],
-            )
-            _write_run_write_baseline(repo_root, orch, agent_run_id=run_id)
-            # the leaf legitimately rewrites its pin ...
-            (repo_root / pin).write_text('{"decision":"pass"}', encoding="utf-8")
-            # ... but also creates a stray directory (at a host-target path) and a stray symlink.
-            (repo_root / node_dir / "aggregate_verdict.json").mkdir()
-            os.symlink(repo_root / node_dir / "verdict.json", repo_root / node_dir / "sneaky_link")
-            payload = {"agent_role": "substep", "agent_run_id": run_id, "status": "fail"}
-            with self.assertRaises(ValueError) as ctx:
-                _validate_actual_write_paths(repo_root, orch, payload)
-            msg = str(ctx.exception)
-            self.assertIn("unauthorized write paths", msg)
-            self.assertIn(f"{node_dir}/aggregate_verdict.json", msg)
-            self.assertIn(f"{node_dir}/sneaky_link", msg)
-            # the pre-existing occupied subdir raw/ and certified verdict.json are NOT flagged
-            self.assertNotIn(f"{node_dir}/raw", msg)
-            self.assertNotIn(f"{node_dir}/verdict.json,", msg)
-
-    def test_runtime_rw_bind_paths_emitted_as_writable_bind(self) -> None:
-        """render_bwrap_command must emit a writable --bind (not --ro-bind) for each
-        runtime_rw_bind_paths entry — the backend's config/credential home that lives
-        outside repo_root and must be writable for auth refresh + session transcripts."""
-        from tools.orchestration_runtime import build_bwrap_profile, render_bwrap_command
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            orch = "orch_rw_001"
-            run_id = "run_rw_001"
-            self._write_cap_and_manifest(
-                repo_root, orchestration_id=orch, agent_run_id=run_id,
-                write_roots=["workspace/out/"],
-            )
-            home_like = repo_root / "_home_cfg"
-            home_like.mkdir()
-            profile = build_bwrap_profile(
-                repo_root=repo_root, orchestration_id=orch, agent_run_id=run_id,
-                backend_command="python3 agent.py",
-            )
-            # In-repo home: must stay writable, so its --bind must come AFTER the repo
-            # --ro-bind (bwrap later-overrides-earlier), otherwise the repo mount would
-            # remount it read-only.
-            in_repo_home = repo_root / "_in_repo_home"
-            in_repo_home.mkdir()
-            profile["runtime_rw_bind_paths"] = [str(home_like), str(in_repo_home)]
-            cmd = render_bwrap_command(profile=profile, command_argv=["python3", "agent.py"])
-            bind_targets = [cmd[i + 1] for i, t in enumerate(cmd) if t == "--bind"]
-            robind_targets = [cmd[i + 1] for i, t in enumerate(cmd) if t == "--ro-bind"]
-            self.assertIn(str(home_like), bind_targets,
-                          "runtime_rw_bind_paths entry must be a writable --bind")
-            self.assertNotIn(str(home_like), robind_targets,
-                             "runtime_rw_bind_paths must not be read-only")
-            repo_robind_idx = next(
-                i for i, t in enumerate(cmd)
-                if t == "--ro-bind" and cmd[i + 1] == str(repo_root))
-            in_repo_bind_idx = next(
-                i for i, t in enumerate(cmd)
-                if t == "--bind" and cmd[i + 1] == str(in_repo_home))
-            self.assertGreater(in_repo_bind_idx, repo_robind_idx,
-                               "in-repo writable home must be bound AFTER the repo ro-bind")
-
-    def test_runtime_ro_file_mappings_override_writable_codex_home(self) -> None:
-        """Trust-sensitive files stay immutable even when their CODEX_HOME is writable."""
-        from tools.orchestration_runtime import render_bwrap_command
-
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            repo_root = root / "repo"
-            repo_root.mkdir()
-            workspace_tmp = root / "workspace-tmp"
-            workspace_tmp.mkdir()
-            codex_home = root / "codex-home"
-            codex_home.mkdir()
-            hooks = codex_home / "hooks.json"
-            config = codex_home / "config.toml"
-            auth = codex_home / "auth.json"
-            for path in (hooks, config, auth):
-                path.write_text("{}\n", encoding="utf-8")
-            profile = {
-                "repo_root": str(repo_root),
-                "tmp_dir": str(root / "tmp"),
-                "workspace_tmp_rw_abs": str(workspace_tmp),
-                "read_roots": [],
-                "write_roots": [],
-                "runtime_ro_bind_paths": [],
-                "runtime_rw_bind_paths": [str(codex_home)],
-                "runtime_ro_bind_mappings": [
-                    [str(hooks), str(hooks)],
-                    [str(config), str(config)],
-                    [str(auth), str(auth)],
-                ],
-                # An env-less profile no longer renders: with `--clearenv` it would
-                # launch a leaf with no environment at all, so the layer fails closed.
-                "env": {"PATH": "/usr/bin:/bin", "CODEX_HOME": str(codex_home)},
-            }
-            cmd = render_bwrap_command(profile=profile, command_argv=["codex"])
-            home_bind_idx = next(
-                i for i, token in enumerate(cmd)
-                if token == "--bind" and cmd[i + 1] == str(codex_home)
-            )
-            for protected in (hooks, config, auth):
-                mapping_idx = next(
-                    i for i, token in enumerate(cmd)
-                    if token == "--ro-bind" and cmd[i + 1] == str(protected)
-                )
-                self.assertGreater(
-                    mapping_idx, home_bind_idx,
-                    f"{protected.name} must be remounted read-only after CODEX_HOME")
-
-    def test_backend_runtime_bind_paths_claude_home(self) -> None:
-        """_backend_runtime_bind_paths(claude) must expose the claude install (ro) and
-        ~/.claude{,.json} (rw) so the CLI can run + write its session transcript."""
-        from tools.orchestration_runtime import _backend_runtime_bind_paths
-
-        with tempfile.TemporaryDirectory() as tmp:
-            home = Path(tmp)
-            (home / ".claude").mkdir()
-            (home / ".claude.json").write_text("{}", encoding="utf-8")
-            (home / ".local" / "share" / "claude").mkdir(parents=True)
-            with patch.dict(os.environ, {"HOME": str(home)}):
-                ro, rw = _backend_runtime_bind_paths("claude", "claude")
-            self.assertIn(str(home / ".claude"), rw)
-            self.assertIn(str(home / ".claude.json"), rw)
-            self.assertIn(str(home / ".local" / "share" / "claude"), ro)
-
-    def test_backend_runtime_bind_paths_uses_type_not_command_string(self) -> None:
-        """The backend home is keyed on the explicit type, not the command string —
-        a configured `command:` wrapper (command != 'claude') must still bind ~/.claude."""
-        from tools.orchestration_runtime import _backend_runtime_bind_paths
-
-        with tempfile.TemporaryDirectory() as tmp:
-            home = Path(tmp)
-            (home / ".claude").mkdir()
-            (home / ".claude.json").write_text("{}", encoding="utf-8")
-            (home / ".codex").mkdir()
-            with patch.dict(os.environ, {"HOME": str(home)}, clear=False):
-                os.environ.pop("ATMOFAB_HOME", None)
-                # explicit claude type + opaque wrapper command → claude home still bound
-                _, rw_wrap = _backend_runtime_bind_paths("claude", "mywrap --model Z")
-                self.assertIn(str(home / ".claude"), rw_wrap)
-                self.assertIn(str(home / ".claude.json"), rw_wrap)
-                # codex type → ~/.codex bound writable
-                _, rw_codex = _backend_runtime_bind_paths("codex", "codex")
-                self.assertIn(str(home / ".codex"), rw_codex)
-                # ATMOFAB_HOME with a `~` is expanded to an absolute path (matches preflight)
-                with patch.dict(os.environ, {"ATMOFAB_HOME": "~/.codexcustom"}, clear=False):
-                    _, rw_custom = _backend_runtime_bind_paths("codex", "codex")
-                self.assertIn(str(home / ".codexcustom"), rw_custom)
-
-    def test_dotted_directory_write_root_not_misclassified_as_file_pin(self) -> None:
-        """A directory write_root with a dotted name (e.g. v1.0/) must not be treated as a file pin."""
-        from tools.orchestration_runtime import build_bwrap_profile
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            orch = "orch_bwrap_fp_003"
-            run_id = "run_bwrap_fp_003"
-            dotted_dir = "workspace/ir/v1.0/"
-            self._write_cap_and_manifest(
-                repo_root, orchestration_id=orch, agent_run_id=run_id,
-                write_roots=[dotted_dir],
-            )
-            build_bwrap_profile(
-                repo_root=repo_root,
-                orchestration_id=orch,
-                agent_run_id=run_id,
-                backend_command="python3 agent.py",
-            )
-            # Must create the directory itself, not just its parent
-            dir_path = repo_root / "workspace" / "ir" / "v1.0"
-            self.assertTrue(dir_path.is_dir(), "dotted directory write_root must be created as directory")
-
-    def _save_profile(self, repo_root: Path, orchestration_id: str, agent_run_id: str, profile: dict) -> None:
-        """Helper: save a bwrap profile to disk for the cleanup tests."""
-        import json as _json
-        from tools.orchestration_runtime import _sandbox_profiles_dir
-        profiles_dir = _sandbox_profiles_dir(repo_root, orchestration_id)
-        profiles_dir.mkdir(parents=True, exist_ok=True)
-        (profiles_dir / f"{agent_run_id}.json").write_text(
-            _json.dumps(profile), encoding="utf-8"
-        )
-
-    def _seed_launch_request(self, repo_root: Path, orchestration_id: str, arid: str) -> None:
-        """Helper: create launches/<arid>.request.json so that
-        _cleanup_agent_tmp_root's Adv-5 ownership guard accepts the call."""
-        launches_dir = repo_root / "workspace" / "orchestrations" / orchestration_id / "launches"
-        launches_dir.mkdir(parents=True, exist_ok=True)
-        (launches_dir / f"{arid}.request.json").write_text(
-            json.dumps({"agent_run_id": arid}), encoding="utf-8"
-        )
-
-    def test_cleanup_agent_tmp_root_removes_per_agent_tmp_dir(self) -> None:
-        """Fix 4: _cleanup_agent_tmp_root must rmtree workspace/tmp/<arid>/
-        when the calling orchestration owns the launch record."""
-        from tools.orchestration_runtime import _cleanup_agent_tmp_root
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            arid = "abc123-tmp-cleanup-1"
-            self._seed_launch_request(repo_root, "orch_x", arid)
-            tmp_dir = repo_root / "workspace" / "tmp" / arid
-            (tmp_dir / "sub").mkdir(parents=True, exist_ok=True)
-            (tmp_dir / "run_record_launch.py").write_text("print('x')\n", encoding="utf-8")
-            (tmp_dir / "sub" / "patch.txt").write_text("data\n", encoding="utf-8")
-            self.assertTrue(tmp_dir.exists())
-
-            _cleanup_agent_tmp_root(repo_root, "orch_x", agent_run_id=arid)
-            self.assertFalse(tmp_dir.exists(), "agent tmp dir must be removed")
-
-    def test_cleanup_agent_tmp_root_refuses_when_not_owner(self) -> None:
-        """Adv-5: refuse to delete when the calling orchestration has no launch
-        record for arid. Two orchestrations could collide on the same arid (the
-        tmp namespace is flat); the non-owner must not be able to wipe the
-        owner's live scratch."""
-        from tools.orchestration_runtime import _cleanup_agent_tmp_root
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            arid = "shared-arid-cross-orch"
-            # Owner = orch_owner; intruder = orch_intruder
-            self._seed_launch_request(repo_root, "orch_owner", arid)
-            tmp_dir = repo_root / "workspace" / "tmp" / arid
-            tmp_dir.mkdir(parents=True, exist_ok=True)
-            sentinel = tmp_dir / "live_data.txt"
-            sentinel.write_text("owner data\n", encoding="utf-8")
-
-            # Intruder orchestration — no launch record for this arid.
-            _cleanup_agent_tmp_root(repo_root, "orch_intruder", agent_run_id=arid)
-            self.assertTrue(
-                sentinel.exists(),
-                "non-owner orchestration must not wipe the owner's tmp scratch",
-            )
-            self.assertTrue(tmp_dir.exists())
-
-    def test_cleanup_agent_tmp_root_no_op_when_dir_missing(self) -> None:
-        """Idempotent: missing directory is not an error."""
-        from tools.orchestration_runtime import _cleanup_agent_tmp_root
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._seed_launch_request(repo_root, "orch_x", "never-existed")
-            _cleanup_agent_tmp_root(repo_root, "orch_x", agent_run_id="never-existed")
-
-    def test_cleanup_agent_tmp_root_rejects_path_traversal(self) -> None:
-        """Defensive: reject agent_run_id values containing path separators or '..'."""
-        from tools.orchestration_runtime import _cleanup_agent_tmp_root
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            sentinel = repo_root / "workspace" / "tmp" / "abc"
-            sentinel.mkdir(parents=True, exist_ok=True)
-            (sentinel / "keep.txt").write_text("keep\n", encoding="utf-8")
-            self._seed_launch_request(repo_root, "orch_x", "abc")
-            # Each of these must be a no-op (no exception, no deletion).
-            for bad in ("../abc", "abc/sub", "..", ".", ""):
-                _cleanup_agent_tmp_root(repo_root, "orch_x", agent_run_id=bad)
-            self.assertTrue((sentinel / "keep.txt").exists(),
-                            "valid sibling tmp dir must not be touched by traversal attempts")
-
-    def test_cleanup_agent_tmp_root_refuses_on_cross_orch_arid_collision(self) -> None:
-        """Adv-11: when two orchestrations both have launch records for the
-        same arid, the flat workspace/tmp/<arid>/ namespace cannot
-        disambiguate ownership. Cleanup must refuse to delete to avoid wiping
-        the colliding orchestration's live scratch.
-        """
-        from tools.orchestration_runtime import _cleanup_agent_tmp_root
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            shared_arid = "collision-arid-001"
-            self._seed_launch_request(repo_root, "orch_alpha", shared_arid)
-            self._seed_launch_request(repo_root, "orch_beta", shared_arid)
-            tmp_dir = repo_root / "workspace" / "tmp" / shared_arid
-            tmp_dir.mkdir(parents=True, exist_ok=True)
-            sentinel = tmp_dir / "shared.txt"
-            sentinel.write_text("shared\n", encoding="utf-8")
-
-            _cleanup_agent_tmp_root(repo_root, "orch_alpha", agent_run_id=shared_arid)
-            self.assertTrue(
-                sentinel.exists(),
-                "Cross-orch collision must prevent deletion (orch_alpha tries to clean shared dir)",
-            )
-            _cleanup_agent_tmp_root(repo_root, "orch_beta", agent_run_id=shared_arid)
-            self.assertTrue(
-                sentinel.exists(),
-                "Cross-orch collision must prevent deletion (orch_beta also tries to clean shared dir)",
-            )
-
-    def test_cleanup_agent_tmp_root_refuses_on_orch_meta_vs_launch_collision(self) -> None:
-        """Adv-11 + Adv-9: collision can also be between one orch's
-        orchestration_agent_run_id and another orch's substep launch arid."""
-        from tools.orchestration_runtime import _cleanup_agent_tmp_root
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            shared_arid = "orch-vs-substep-collision"
-            # Orch X: claims shared_arid as its orchestration_agent_run_id.
-            orch_x = repo_root / "workspace" / "orchestrations" / "orch_X"
-            orch_x.mkdir(parents=True, exist_ok=True)
-            (orch_x / "orchestration_meta.json").write_text(
-                json.dumps({
-                    "orchestration_id": "orch_X",
-                    "orchestration_agent_run_id": shared_arid,
-                }),
-                encoding="utf-8",
-            )
-            # Orch Y: launched shared_arid as a child agent.
-            self._seed_launch_request(repo_root, "orch_Y", shared_arid)
-            tmp_dir = repo_root / "workspace" / "tmp" / shared_arid
-            tmp_dir.mkdir(parents=True, exist_ok=True)
-            sentinel = tmp_dir / "shared.txt"
-            sentinel.write_text("shared\n", encoding="utf-8")
-
-            _cleanup_agent_tmp_root(repo_root, "orch_Y", agent_run_id=shared_arid)
-            self.assertTrue(
-                sentinel.exists(),
-                "Collision between orchestration_agent_run_id and substep launch must prevent deletion",
-            )
-
-    def test_cleanup_agent_tmp_root_accepts_orchestration_meta_proof(self) -> None:
-        """Adv-7: orchestration agents are not 'launched' via record-launch and
-        so have no .request.json. Their identity is pinned in
-        orchestration_meta.json#orchestration_agent_run_id; that field is
-        accepted as ownership proof for cleanup."""
-        from tools.orchestration_runtime import _cleanup_agent_tmp_root
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            orch_arid = "orch-agent-run-id-001"
-            orch_dir = repo_root / "workspace" / "orchestrations" / "orch_meta"
-            orch_dir.mkdir(parents=True, exist_ok=True)
-            (orch_dir / "orchestration_meta.json").write_text(
-                json.dumps({"orchestration_agent_run_id": orch_arid}), encoding="utf-8",
-            )
-            tmp_dir = repo_root / "workspace" / "tmp" / orch_arid
-            tmp_dir.mkdir(parents=True, exist_ok=True)
-            (tmp_dir / "scratch.txt").write_text("ok\n", encoding="utf-8")
-
-            _cleanup_agent_tmp_root(repo_root, "orch_meta", agent_run_id=orch_arid)
-            self.assertFalse(
-                tmp_dir.exists(),
-                "orchestration role tmp dir must be cleaned when meta proves ownership",
-            )
-
-    def test_cleanup_agent_tmp_root_does_not_follow_symlink(self) -> None:
-        """Symlinks at workspace/tmp/<arid>/ must not be followed (refuse to delete)."""
-        import os
-        from tools.orchestration_runtime import _cleanup_agent_tmp_root
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            external = repo_root / "external_real_dir"
-            external.mkdir()
-            (external / "important.txt").write_text("do not delete\n", encoding="utf-8")
-            workspace_tmp = repo_root / "workspace" / "tmp"
-            workspace_tmp.mkdir(parents=True, exist_ok=True)
-            link_path = workspace_tmp / "link-arid"
-            try:
-                os.symlink(external, link_path)
-            except OSError:
-                self.skipTest("symlink not supported on this filesystem")
-            self._seed_launch_request(repo_root, "orch_x", "link-arid")
-            _cleanup_agent_tmp_root(repo_root, "orch_x", agent_run_id="link-arid")
-            self.assertTrue(
-                (external / "important.txt").exists(),
-                "symlink target must not be touched",
-            )
-
-    def test_file_pin_at_pipeline_root_reprotects_sibling_dirs(self) -> None:
-        """A file pin sharing the pipeline root with a dir write_root must not leave the
-        pipeline's OTHER subdirs (binary/, runs/) writable. Under the parent-dir-bind model the
-        pin's parent (the pipeline root) is bound rw so the atomic write works, but every
-        existing sibling that is not itself a declared write_root is re-ro-bound AFTER it, so
-        binary/ and runs/ stay physically read-only while the source/ write_root stays writable.
-        NOTE: the real generate contract no longer declares lineage.json as a write_root (it is
-        conductor-authored host-side); this fixture asserts the general rendering property."""
-        from tools.orchestration_runtime import build_bwrap_profile, render_bwrap_command
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            orch = "orch_bwrap_fp_007"
-            run_id = "run_bwrap_fp_007"
-            pipeline_root = "workspace/pipelines/a__b__1.0/pipe_001"
-            # sibling subdirs of the pin that must stay read-only (written by build/execute).
-            (repo_root / pipeline_root / "source").mkdir(parents=True, exist_ok=True)
-            (repo_root / pipeline_root / "binary").mkdir(parents=True, exist_ok=True)
-            (repo_root / pipeline_root / "runs").mkdir(parents=True, exist_ok=True)
-            write_roots = [
-                f"{pipeline_root}/source/",
-                f"{pipeline_root}/lineage.json",
-            ]
-            self._write_cap_and_manifest(
-                repo_root, orchestration_id=orch, agent_run_id=run_id,
-                write_roots=write_roots,
-            )
-            profile = build_bwrap_profile(
-                repo_root=repo_root,
-                orchestration_id=orch,
-                agent_run_id=run_id,
-                backend_command="python3 agent.py",
-            )
-            cmd = render_bwrap_command(profile=profile, command_argv=["python3", "agent.py"])
-            root_abs = str((repo_root / pipeline_root).resolve())
-            source_abs = str((repo_root / pipeline_root / "source").resolve())
-            binary_abs = str((repo_root / pipeline_root / "binary").resolve())
-            runs_abs = str((repo_root / pipeline_root / "runs").resolve())
-            pin_abs = str((repo_root / pipeline_root / "lineage.json").resolve())
-            bind_targets = [cmd[i + 1] for i, tok in enumerate(cmd) if tok == "--bind"]
-            robind_targets = [cmd[i + 1] for i, tok in enumerate(cmd) if tok == "--ro-bind"]
-            # the source/ write_root stays writable and is never re-ro-bound
-            self.assertIn(source_abs, bind_targets, "source/ write_root must stay a writable --bind")
-            self.assertNotIn(source_abs, robind_targets, "a declared write_root must not be re-ro-bound")
-            # the pin stays writable
-            self.assertNotIn(pin_abs, robind_targets, "the pin must stay writable")
-            # binary/ and runs/ are re-ro-bound AFTER the pipeline-root rw-bind, so net read-only
-            self.assertIn(binary_abs, robind_targets, "binary/ must be re-ro-bound (read-only)")
-            self.assertIn(runs_abs, robind_targets, "runs/ must be re-ro-bound (read-only)")
-            root_bind_idx = next(
-                i for i, t in enumerate(cmd) if t == "--bind" and cmd[i + 1] == root_abs)
-            for sib_abs in (binary_abs, runs_abs):
-                sib_idx = next(
-                    i for i, t in enumerate(cmd) if t == "--ro-bind" and cmd[i + 1] == sib_abs)
-                self.assertGreater(
-                    sib_idx, root_bind_idx,
-                    "sibling ro-bind must come AFTER the pipeline-root rw-bind to win")
-
-    def test_extensionless_no_slash_entry_treated_as_file_pin(self) -> None:
-        """An extensionless no-slash write_root entry (e.g. Makefile) is treated as a file pin.
-
-        The trailing-slash convention is sufficient to distinguish directories from file pins;
-        no extension is required for file pins.
-        """
-        from tools.orchestration_runtime import build_bwrap_profile
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            orch = "orch_bwrap_fp_004"
-            run_id = "run_bwrap_fp_004"
-            makefile_pin = "workspace/pipelines/a__b__1.0/pipe_001/src/Makefile"
-            self._write_cap_and_manifest(
-                repo_root, orchestration_id=orch, agent_run_id=run_id,
-                write_roots=[makefile_pin],
-            )
-            # Must succeed — extensionless file pin is valid
-            profile = build_bwrap_profile(
-                repo_root=repo_root,
-                orchestration_id=orch,
-                agent_run_id=run_id,
-                backend_command="python3 agent.py",
-            )
-            # The file pin must be pre-created as a stub
-            pin_path = repo_root / makefile_pin
-            self.assertTrue(pin_path.exists(), "extensionless file pin must be pre-created as stub")
-            self.assertTrue(pin_path.is_file(), "extensionless file pin stub must be a regular file")
-
-    def test_symlinked_directory_write_root_raises_before_mkdir(self) -> None:
-        """A write_root that resolves outside repo_root via symlink must be rejected before mkdir."""
-        import os
-        from tools.orchestration_runtime import build_bwrap_profile
-
-        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as outside:
-            repo_root = Path(tmp)
-            orch = "orch_bwrap_sl_001"
-            run_id = "run_bwrap_sl_001"
-            # Create a symlink inside the repo that points outside
-            link_parent = repo_root / "workspace" / "ir"
-            link_parent.mkdir(parents=True, exist_ok=True)
-            link_path = link_parent / "escape"
-            os.symlink(outside, str(link_path))
-            self._write_cap_and_manifest(
-                repo_root, orchestration_id=orch, agent_run_id=run_id,
-                write_roots=["workspace/ir/escape/"],
-            )
-            with self.assertRaises(ValueError) as ctx:
-                build_bwrap_profile(
-                    repo_root=repo_root,
-                    orchestration_id=orch,
-                    agent_run_id=run_id,
-                    backend_command="python3 agent.py",
-                )
-            self.assertIn("resolves outside repo_root", str(ctx.exception))
-
-    def test_symlinked_file_pin_write_root_raises_before_touch(self) -> None:
-        """A file-pin write_root that resolves outside repo_root via symlink must be rejected."""
-        import os
-        from tools.orchestration_runtime import build_bwrap_profile
-
-        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as outside:
-            repo_root = Path(tmp)
-            orch = "orch_bwrap_sl_002"
-            run_id = "run_bwrap_sl_002"
-            link_parent = repo_root / "workspace" / "pipelines" / "a"
-            link_parent.mkdir(parents=True, exist_ok=True)
-            # Symlink the parent directory so pin resolution escapes
-            link_path = link_parent / "escape"
-            os.symlink(outside, str(link_path))
-            self._write_cap_and_manifest(
-                repo_root, orchestration_id=orch, agent_run_id=run_id,
-                write_roots=["workspace/pipelines/a/escape/lineage.json"],
-            )
-            with self.assertRaises(ValueError) as ctx:
-                build_bwrap_profile(
-                    repo_root=repo_root,
-                    orchestration_id=orch,
-                    agent_run_id=run_id,
-                    backend_command="python3 agent.py",
-                )
-            self.assertIn("resolves outside repo_root", str(ctx.exception))
-
-    def test_file_pin_write_root_raises_if_path_is_existing_directory(self) -> None:
-        """build_bwrap_profile must reject a file pin if the path already exists as a directory."""
-        from tools.orchestration_runtime import build_bwrap_profile
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            orch = "orch_bwrap_type_001"
-            run_id = "run_bwrap_type_001"
-            pin = "workspace/pipelines/a__b__1.0/lineage.json"
-            # Pre-create the pin path as a directory (not a file).
-            (repo_root / pin).mkdir(parents=True, exist_ok=True)
-            self._write_cap_and_manifest(
-                repo_root, orchestration_id=orch, agent_run_id=run_id,
-                write_roots=[pin],
-            )
-            with self.assertRaises(ValueError) as ctx:
-                build_bwrap_profile(
-                    repo_root=repo_root,
-                    orchestration_id=orch,
-                    agent_run_id=run_id,
-                    backend_command="python3 agent.py",
-                )
-            self.assertIn("resolves to a directory", str(ctx.exception))
-
-    def test_file_pin_write_root_raises_if_path_is_symlink_inside_repo(self) -> None:
-        """build_bwrap_profile must reject a file pin that is a symlink even within the repo."""
-        import os
-        from tools.orchestration_runtime import build_bwrap_profile
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            orch = "orch_bwrap_type_002"
-            run_id = "run_bwrap_type_002"
-            pin = "workspace/pipelines/a__b__1.0/lineage.json"
-            pin_path = repo_root / pin
-            pin_path.parent.mkdir(parents=True, exist_ok=True)
-            # Create a real file and a symlink pointing to it.
-            real_file = pin_path.parent / "lineage_real.json"
-            real_file.write_text("{}", encoding="utf-8")
-            os.symlink(str(real_file), str(pin_path))
-            self._write_cap_and_manifest(
-                repo_root, orchestration_id=orch, agent_run_id=run_id,
-                write_roots=[pin],
-            )
-            with self.assertRaises(ValueError) as ctx:
-                build_bwrap_profile(
-                    repo_root=repo_root,
-                    orchestration_id=orch,
-                    agent_run_id=run_id,
-                    backend_command="python3 agent.py",
-                )
-            self.assertIn("symlink", str(ctx.exception))
-
-    def test_render_bwrap_raises_if_file_pin_is_directory_at_render_time(self) -> None:
-        """render_bwrap_command must raise if a file pin became a directory between build and render."""
-        from tools.orchestration_runtime import render_bwrap_command
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            pin_rel = "workspace/pipelines/a__b__1.0/lineage.json"
-            pin_abs = repo_root / pin_rel
-            # Place a directory at the pin path (simulating a race or misconfiguration).
-            pin_abs.mkdir(parents=True, exist_ok=True)
-            ws_tmp = repo_root / "workspace" / "tmp" / "run_rt_001"
-            ws_tmp.mkdir(parents=True, exist_ok=True)
-            profile = {
-                "repo_root": str(repo_root),
-                "tmp_dir": str(ws_tmp),
-                "workspace_tmp_rw_abs": str(ws_tmp),
-                "write_roots": [pin_rel],
-                "read_roots": [],
-                "runtime_ro_bind_paths": [],
-            }
-            with self.assertRaises(ValueError) as ctx:
-                render_bwrap_command(profile=profile, command_argv=["python3", "agent.py"])
-            self.assertIn("non-file", str(ctx.exception))
-
-    def test_render_bwrap_raises_if_file_pin_is_symlink_at_render_time(self) -> None:
-        """render_bwrap_command must raise if a file pin is a symlink at render time."""
-        import os
-        from tools.orchestration_runtime import render_bwrap_command
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            pin_rel = "workspace/pipelines/a__b__1.0/lineage.json"
-            pin_abs = repo_root / pin_rel
-            pin_abs.parent.mkdir(parents=True, exist_ok=True)
-            real = pin_abs.parent / "real.json"
-            real.write_text("{}", encoding="utf-8")
-            os.symlink(str(real), str(pin_abs))
-            ws_tmp = repo_root / "workspace" / "tmp" / "run_rt_002"
-            ws_tmp.mkdir(parents=True, exist_ok=True)
-            profile = {
-                "repo_root": str(repo_root),
-                "tmp_dir": str(ws_tmp),
-                "workspace_tmp_rw_abs": str(ws_tmp),
-                "write_roots": [pin_rel],
-                "read_roots": [],
-                "runtime_ro_bind_paths": [],
-            }
-            with self.assertRaises(ValueError) as ctx:
-                render_bwrap_command(profile=profile, command_argv=["python3", "agent.py"])
-            self.assertIn("symlink", str(ctx.exception))
 
 
 class DependencyFactsRenderTests(unittest.TestCase):
@@ -20662,363 +13680,6 @@ class ExtractSubroutineInterfaceTests(unittest.TestCase):
         self.assertEqual(len(out["arguments"]), len(out["argument_order"]))
 
 
-class AccessLogWritableBindTests(unittest.TestCase):
-    """The leaf's own access_logs/<arid>.jsonl is bound writable (per-file), and the
-    orchestration_read audit append degrades gracefully instead of crashing under EROFS."""
-
-    def _write_cap_and_manifest(
-        self, repo_root: Path, *, orchestration_id: str, agent_run_id: str
-    ) -> None:
-        from tools.orchestration_runtime import (
-            _capabilities_dir,
-            _read_manifests_dir,
-            _ensure_orchestration_audit_dirs,
-        )
-        _ensure_orchestration_audit_dirs(repo_root, orchestration_id)
-        cap_dir = _capabilities_dir(repo_root, orchestration_id)
-        cap_dir.mkdir(parents=True, exist_ok=True)
-        (cap_dir / f"{agent_run_id}.json").write_text(
-            json.dumps({"agent_run_id": agent_run_id, "write_roots": ["workspace/out/"]}),
-            encoding="utf-8",
-        )
-        rm_dir = _read_manifests_dir(repo_root, orchestration_id)
-        rm_dir.mkdir(parents=True, exist_ok=True)
-        (rm_dir / f"{agent_run_id}.json").write_text(
-            json.dumps({"agent_run_id": agent_run_id, "allowed_read_roots": ["workspace/"]}),
-            encoding="utf-8",
-        )
-
-    def test_own_access_log_pre_created_and_bound_per_file(self) -> None:
-        from tools.orchestration_runtime import build_bwrap_profile, render_bwrap_command
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            orch = "orch_acclog_001"
-            run_id = "run_acclog_001"
-            self._write_cap_and_manifest(repo_root, orchestration_id=orch, agent_run_id=run_id)
-            profile = build_bwrap_profile(
-                repo_root=repo_root, orchestration_id=orch, agent_run_id=run_id,
-                backend_command="python3 agent.py",
-            )
-            log_rel = f"workspace/orchestrations/{orch}/access_logs/{run_id}.jsonl"
-            log_abs = (repo_root / log_rel).resolve()
-            self.assertTrue(log_abs.exists(), "own access_log must be pre-created")
-            self.assertIn(log_rel, profile["runtime_rw_file_paths"])
-            # Must be a per-FILE bind, never the whole access_logs/ dir (sibling exposure).
-            self.assertNotIn(
-                f"workspace/orchestrations/{orch}/access_logs/",
-                profile["runtime_rw_rel_paths"])
-            cmd = render_bwrap_command(profile=profile, command_argv=["python3", "agent.py"])
-            bind_targets = [cmd[i + 1] for i, t in enumerate(cmd) if t == "--bind"]
-            self.assertIn(str(log_abs), bind_targets)
-            self.assertNotIn(str(log_abs.parent), bind_targets,
-                             "the access_logs/ dir itself must NOT be bound")
-
-    def test_append_access_log_degrades_on_readonly(self) -> None:
-        """A read-only access_logs append must not raise (gate would otherwise crash);
-        it warns and continues."""
-        from tools.orchestration_runtime import _append_access_log_line
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            orch = "orch_acclog_ro_001"
-            run_id = "run_acclog_ro_001"
-            # Patch Path.open to raise EROFS for the access_log path only.
-            real_open = Path.open
-
-            def fake_open(self_path, *a, **k):  # type: ignore[no-untyped-def]
-                if self_path.name == f"{run_id}.jsonl":
-                    raise OSError(30, "Read-only file system")
-                return real_open(self_path, *a, **k)
-
-            buf = io.StringIO()
-            with patch.object(Path, "open", fake_open), redirect_stderr(buf):
-                # Must not raise.
-                _append_access_log_line(repo_root, orch, run_id, {"path": "docs/x.md"})
-            self.assertIn("access_log append skipped", buf.getvalue())
-
-    def test_append_access_log_writes_line_normally(self) -> None:
-        from tools.orchestration_runtime import _append_access_log_line, _access_logs_dir
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            orch = "orch_acclog_ok_001"
-            run_id = "run_acclog_ok_001"
-            _append_access_log_line(repo_root, orch, run_id, {"path": "docs/x.md"})
-            log = _access_logs_dir(repo_root, orch) / f"{run_id}.jsonl"
-            self.assertTrue(log.exists())
-            self.assertIn("docs/x.md", log.read_text(encoding="utf-8"))
-
-    def test_access_log_symlink_pin_rejected(self) -> None:
-        """A symlink planted at the canonical access_log path must fail closed (parity with
-        the mcp_owned_audit_logs file-pin symlink guard) so resolve()+bind cannot expose a
-        redirected target writable."""
-        from tools.orchestration_runtime import (
-            build_bwrap_profile,
-            _access_logs_dir,
-            _ensure_orchestration_audit_dirs,
-        )
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            orch = "orch_acclog_sym_001"
-            run_id = "run_acclog_sym_001"
-            self._write_cap_and_manifest(repo_root, orchestration_id=orch, agent_run_id=run_id)
-            _ensure_orchestration_audit_dirs(repo_root, orch)
-            log_dir = _access_logs_dir(repo_root, orch)
-            log_dir.mkdir(parents=True, exist_ok=True)
-            outside = repo_root / "outside_target.jsonl"
-            outside.write_text("", encoding="utf-8")
-            (log_dir / f"{run_id}.jsonl").symlink_to(outside)
-            with self.assertRaises(ValueError) as ctx:
-                build_bwrap_profile(
-                    repo_root=repo_root, orchestration_id=orch, agent_run_id=run_id,
-                    backend_command="python3 agent.py",
-                )
-            self.assertIn("symlink", str(ctx.exception))
-
-
-class PreWriteManifestExtensionPolicyTests(unittest.TestCase):
-    """_validate_paths_against_allowed_output_manifest must enforce extension policy pre-mutation."""
-
-    def _write_manifest(
-        self,
-        repo_root: Path,
-        *,
-        orchestration_id: str,
-        agent_run_id: str,
-        allowed_output_paths: list[str],
-    ) -> None:
-        from tools.orchestration_runtime import (
-            _output_manifests_dir,
-            _ensure_orchestration_audit_dirs,
-        )
-        _ensure_orchestration_audit_dirs(repo_root, orchestration_id)
-        m_dir = _output_manifests_dir(repo_root, orchestration_id)
-        m_dir.mkdir(parents=True, exist_ok=True)
-        (m_dir / f"{agent_run_id}.json").write_text(
-            json.dumps({"allowed_output_paths": allowed_output_paths, "allowed_tmp_root": ""}),
-            encoding="utf-8",
-        )
-
-    def test_pre_write_allows_known_extension_under_directory_entry(self) -> None:
-        from tools.orchestration_runtime import _validate_paths_against_allowed_output_manifest
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            orch = "orch_pw_ext_001"
-            run_id = "run_pw_ext_001"
-            self._write_manifest(
-                repo_root, orchestration_id=orch, agent_run_id=run_id,
-                allowed_output_paths=["workspace/pipelines/a/source/g_001/src/"],
-            )
-            # Must not raise
-            _validate_paths_against_allowed_output_manifest(
-                repo_root,
-                orchestration_id=orch,
-                agent_run_id=run_id,
-                paths=["workspace/pipelines/a/source/g_001/src/flux.f90"],
-            )
-
-    def test_pre_write_rejects_makefile_under_directory_entry(self) -> None:
-        """Makefile requires explicit file pin — not in extensionless allowlist."""
-        from tools.orchestration_runtime import _validate_paths_against_allowed_output_manifest
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            orch = "orch_pw_ext_002"
-            run_id = "run_pw_ext_002"
-            self._write_manifest(
-                repo_root, orchestration_id=orch, agent_run_id=run_id,
-                allowed_output_paths=["workspace/pipelines/a/source/g_001/src/"],
-            )
-            with self.assertRaisesRegex(ValueError, "allowed_output_paths manifest violation"):
-                _validate_paths_against_allowed_output_manifest(
-                    repo_root,
-                    orchestration_id=orch,
-                    agent_run_id=run_id,
-                    paths=["workspace/pipelines/a/source/g_001/src/Makefile"],
-                )
-
-    def test_pre_write_rejects_script_under_directory_entry(self) -> None:
-        from tools.orchestration_runtime import _validate_paths_against_allowed_output_manifest
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            orch = "orch_pw_ext_003"
-            run_id = "run_pw_ext_003"
-            self._write_manifest(
-                repo_root, orchestration_id=orch, agent_run_id=run_id,
-                allowed_output_paths=["workspace/pipelines/a/source/g_001/src/"],
-            )
-            with self.assertRaisesRegex(ValueError, "allowed_output_paths manifest violation"):
-                _validate_paths_against_allowed_output_manifest(
-                    repo_root,
-                    orchestration_id=orch,
-                    agent_run_id=run_id,
-                    paths=["workspace/pipelines/a/source/g_001/src/exploit.sh"],
-                )
-
-    def test_pre_write_rejects_unknown_extensionless_under_directory_entry(self) -> None:
-        from tools.orchestration_runtime import _validate_paths_against_allowed_output_manifest
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            orch = "orch_pw_ext_004"
-            run_id = "run_pw_ext_004"
-            self._write_manifest(
-                repo_root, orchestration_id=orch, agent_run_id=run_id,
-                allowed_output_paths=["workspace/pipelines/a/source/g_001/src/"],
-            )
-            with self.assertRaisesRegex(ValueError, "allowed_output_paths manifest violation"):
-                _validate_paths_against_allowed_output_manifest(
-                    repo_root,
-                    orchestration_id=orch,
-                    agent_run_id=run_id,
-                    paths=["workspace/pipelines/a/source/g_001/src/myexe"],
-                )
-
-    def test_pre_write_rejects_json_under_directory_entry(self) -> None:
-        """Structured data (.json) under a directory entry requires an explicit file pin."""
-        from tools.orchestration_runtime import _validate_paths_against_allowed_output_manifest
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            orch = "orch_pw_ext_005"
-            run_id = "run_pw_ext_005"
-            self._write_manifest(
-                repo_root, orchestration_id=orch, agent_run_id=run_id,
-                allowed_output_paths=["workspace/pipelines/a/source/g_001/src/"],
-            )
-            with self.assertRaisesRegex(ValueError, "allowed_output_paths manifest violation"):
-                _validate_paths_against_allowed_output_manifest(
-                    repo_root,
-                    orchestration_id=orch,
-                    agent_run_id=run_id,
-                    paths=["workspace/pipelines/a/source/g_001/src/results.json"],
-                )
-
-    def test_pre_write_rejects_yaml_under_directory_entry(self) -> None:
-        """Structured data (.yaml) under a directory entry requires an explicit file pin."""
-        from tools.orchestration_runtime import _validate_paths_against_allowed_output_manifest
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            orch = "orch_pw_ext_006"
-            run_id = "run_pw_ext_006"
-            self._write_manifest(
-                repo_root, orchestration_id=orch, agent_run_id=run_id,
-                allowed_output_paths=["workspace/pipelines/a/source/g_001/src/"],
-            )
-            with self.assertRaisesRegex(ValueError, "allowed_output_paths manifest violation"):
-                _validate_paths_against_allowed_output_manifest(
-                    repo_root,
-                    orchestration_id=orch,
-                    agent_run_id=run_id,
-                    paths=["workspace/pipelines/a/source/g_001/src/config.yaml"],
-                )
-
-    def test_pre_write_rejects_cmake_under_directory_entry(self) -> None:
-        """Build control file (.cmake) under a directory entry requires an explicit file pin."""
-        from tools.orchestration_runtime import _validate_paths_against_allowed_output_manifest
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            orch = "orch_pw_ext_007"
-            run_id = "run_pw_ext_007"
-            self._write_manifest(
-                repo_root, orchestration_id=orch, agent_run_id=run_id,
-                allowed_output_paths=["workspace/pipelines/a/source/g_001/src/"],
-            )
-            with self.assertRaisesRegex(ValueError, "allowed_output_paths manifest violation"):
-                _validate_paths_against_allowed_output_manifest(
-                    repo_root,
-                    orchestration_id=orch,
-                    agent_run_id=run_id,
-                    paths=["workspace/pipelines/a/source/g_001/src/CMakeLists.txt"],
-                )
-
-    def test_pre_write_rejects_nml_under_directory_entry(self) -> None:
-        """Namelist file (.nml) under a directory entry requires an explicit file pin."""
-        from tools.orchestration_runtime import _validate_paths_against_allowed_output_manifest
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            orch = "orch_pw_ext_008"
-            run_id = "run_pw_ext_008"
-            self._write_manifest(
-                repo_root, orchestration_id=orch, agent_run_id=run_id,
-                allowed_output_paths=["workspace/pipelines/a/source/g_001/src/"],
-            )
-            with self.assertRaisesRegex(ValueError, "allowed_output_paths manifest violation"):
-                _validate_paths_against_allowed_output_manifest(
-                    repo_root,
-                    orchestration_id=orch,
-                    agent_run_id=run_id,
-                    paths=["workspace/pipelines/a/source/g_001/src/params.nml"],
-                )
-
-    def test_pre_write_rejects_object_file_under_directory_entry(self) -> None:
-        """Compiler byproduct (.o) is subprocess output — Edit/Write must be rejected pre-mutation."""
-        from tools.orchestration_runtime import _validate_paths_against_allowed_output_manifest
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            orch = "orch_pw_ext_009"
-            run_id = "run_pw_ext_009"
-            self._write_manifest(
-                repo_root, orchestration_id=orch, agent_run_id=run_id,
-                allowed_output_paths=["workspace/pipelines/a/source/g_001/src/"],
-            )
-            with self.assertRaisesRegex(ValueError, "allowed_output_paths manifest violation"):
-                _validate_paths_against_allowed_output_manifest(
-                    repo_root,
-                    orchestration_id=orch,
-                    agent_run_id=run_id,
-                    paths=["workspace/pipelines/a/source/g_001/src/flux.o"],
-                )
-
-    def test_pre_write_rejects_module_file_under_directory_entry(self) -> None:
-        """Compiler byproduct (.mod) is subprocess output — Edit/Write must be rejected pre-mutation."""
-        from tools.orchestration_runtime import _validate_paths_against_allowed_output_manifest
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            orch = "orch_pw_ext_010"
-            run_id = "run_pw_ext_010"
-            self._write_manifest(
-                repo_root, orchestration_id=orch, agent_run_id=run_id,
-                allowed_output_paths=["workspace/pipelines/a/source/g_001/src/"],
-            )
-            with self.assertRaisesRegex(ValueError, "allowed_output_paths manifest violation"):
-                _validate_paths_against_allowed_output_manifest(
-                    repo_root,
-                    orchestration_id=orch,
-                    agent_run_id=run_id,
-                    paths=["workspace/pipelines/a/source/g_001/src/flux.mod"],
-                )
-
-    def test_pre_write_rejects_archive_file_under_directory_entry(self) -> None:
-        """Compiler byproduct (.a) is subprocess output — Edit/Write must be rejected pre-mutation."""
-        from tools.orchestration_runtime import _validate_paths_against_allowed_output_manifest
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            orch = "orch_pw_ext_011"
-            run_id = "run_pw_ext_011"
-            self._write_manifest(
-                repo_root, orchestration_id=orch, agent_run_id=run_id,
-                allowed_output_paths=["workspace/pipelines/a/source/g_001/src/"],
-            )
-            with self.assertRaisesRegex(ValueError, "allowed_output_paths manifest violation"):
-                _validate_paths_against_allowed_output_manifest(
-                    repo_root,
-                    orchestration_id=orch,
-                    agent_run_id=run_id,
-                    paths=["workspace/pipelines/a/source/g_001/src/libflux.a"],
-                )
-
-
 class RecordTimeoutTests(unittest.TestCase):
     """Fix 5: record-timeout is the canonical recovery for child Agent stream timeouts."""
 
@@ -21160,7 +13821,7 @@ class RecordTimeoutTests(unittest.TestCase):
         agentic arm — preparing a home, and building a read-write profile, for a process that
         never exists. Both are false records, which is why the assertion is on the directory
         as well as on the fields."""
-        from tools.hooks.common import workflow_homes_root
+        from tools.operator_private_root import workflow_homes_root
         for oid, pure in (("orch_to_001", True), ("orch_det_001", False)):
             with tempfile.TemporaryDirectory() as td:
                 repo_root = Path(td)
@@ -22869,14 +15530,6 @@ class LaunchSettingSurfacePersistenceTests(unittest.TestCase):
                 self.assertEqual(doc["claude_setting_sources"], "user", msg=str(path))
                 self.assertEqual(doc["mcp_config"], self.SURFACE["mcp_config"],
                                  msg=str(path))
-
-    def test_the_setting_surface_is_not_projected_into_the_terse_result(self) -> None:
-        from tools.orchestration_runtime import _project_terse_result
-        terse = _project_terse_result(
-            "record-launch", {"capability_token": "t", **self.SURFACE})
-        self.assertEqual(terse.get("capability_token"), "t")
-        self.assertNotIn("claude_setting_sources", terse)
-        self.assertNotIn("mcp_config", terse)
 
 
 class SetStatusIdempotencyTests(unittest.TestCase):
@@ -27524,13 +20177,11 @@ class CanonicalIdEnforcementTests(unittest.TestCase):
         with self.assertRaises(ValueError) as ctx:
             _allowed_output_paths_for_launch(
                 request_payload=self._build_payload("build", None, [bad]),
-                write_roots=[f"{_FIX_PIPE_REF}/binary/"],
             )
         self.assertIn("outside phase contract", str(ctx.exception))
         # And the canonical form passes.
         ok_list = _allowed_output_paths_for_launch(
             request_payload=self._build_payload("build", None, [good]),
-            write_roots=[f"{_FIX_PIPE_REF}/binary/"],
         )
         self.assertIn(good, ok_list)
 
@@ -27546,12 +20197,10 @@ class CanonicalIdEnforcementTests(unittest.TestCase):
             with self.assertRaises(ValueError) as ctx:
                 _allowed_output_paths_for_launch(
                     request_payload=self._build_payload("validate", "execute", [bad]),
-                    write_roots=[f"{_FIX_PIPE_REF}/runs/"],
                 )
             self.assertIn("outside phase contract", str(ctx.exception))
         ok_list = _allowed_output_paths_for_launch(
             request_payload=self._build_payload("validate", "execute", [good]),
-            write_roots=[f"{_FIX_PIPE_REF}/runs/"],
         )
         self.assertIn(good, ok_list)
 
@@ -27567,12 +20216,10 @@ class CanonicalIdEnforcementTests(unittest.TestCase):
             with self.assertRaises(ValueError) as ctx:
                 _allowed_output_paths_for_launch(
                     request_payload=self._build_payload("validate", "judge", [bad]),
-                    write_roots=[f"{_FIX_PIPE_REF}/runs/"],
                 )
             self.assertIn("outside phase contract", str(ctx.exception))
         ok_list = _allowed_output_paths_for_launch(
             request_payload=self._build_payload("validate", "judge", [good]),
-            write_roots=[f"{_FIX_PIPE_REF}/runs/"],
         )
         self.assertIn(good, ok_list)
 
@@ -27588,25 +20235,21 @@ class CanonicalIdEnforcementTests(unittest.TestCase):
         # judge: its own deliverable passes; verdict.json + each derived artifact is rejected.
         self.assertIn(f"{run_dir}/semantic_review.json", _allowed_output_paths_for_launch(
             request_payload=self._build_payload(
-                "validate", "judge", [f"{run_dir}/semantic_review.json"]),
-            write_roots=[f"{_FIX_PIPE_REF}/runs/"]))
+                "validate", "judge", [f"{run_dir}/semantic_review.json"])))
         for bad in ([f"{run_dir}/verdict.json"] + derived):
             with self.assertRaises(ValueError) as ctx:
                 _allowed_output_paths_for_launch(
-                    request_payload=self._build_payload("validate", "judge", [bad]),
-                    write_roots=[f"{_FIX_PIPE_REF}/runs/"])
+                    request_payload=self._build_payload("validate", "judge", [bad]))
             self.assertIn("outside phase contract", str(ctx.exception))
         # post_judge: post_judge_meta + all three derived artifacts pass.
         for good in ([f"{run_dir}/post_judge_meta.json"] + derived):
             self.assertIn(good, _allowed_output_paths_for_launch(
-                request_payload=self._build_payload("validate", "post_judge", [good]),
-                write_roots=[f"{_FIX_PIPE_REF}/runs/"]))
+                request_payload=self._build_payload("validate", "post_judge", [good])))
         # pre_judge stays exact-match on its own meta (rejects the derived artifacts).
         for bad in derived:
             with self.assertRaises(ValueError):
                 _allowed_output_paths_for_launch(
-                    request_payload=self._build_payload("validate", "pre_judge", [bad]),
-                    write_roots=[f"{_FIX_PIPE_REF}/runs/"])
+                    request_payload=self._build_payload("validate", "pre_judge", [bad]))
 
 
 class FreshnessSelectorStrictGrammarTests(unittest.TestCase):
@@ -28321,224 +20964,6 @@ class SpecCatalogZeroByteCorruptionTests(unittest.TestCase):
             self.assertIn("spec_catalog_corrupt", log)
 
 
-class FailureAnalysisRuntimeSidecarExemptionTests(unittest.TestCase):
-    """The `failure_analysis.runtime.<uuid12>.json` safety-net sidecar written by
-    run_workflow.py must be exempt from the terminal write baseline diff, so an
-    interrupted child's `record-timeout` is not dead-locked by an
-    unauthorized_write_violation over a file the runtime (not the child) wrote.
-    """
-
-    def test_should_ignore_classifies_runtime_sidecar_not_canonical(self) -> None:
-        from tools.orchestration_runtime import _should_ignore_runtime_snapshot_path
-
-        orch_id = "orch_001"
-        base = f"workspace/orchestrations/{orch_id}"
-        kwargs = {"orchestration_id": orch_id, "agent_run_id": "child_arid"}
-
-        # UUID-suffixed runtime sidecar → exempt.
-        self.assertTrue(
-            _should_ignore_runtime_snapshot_path(
-                f"{base}/failure_analysis.runtime.abc123abc123.json", **kwargs
-            )
-        )
-        # Canonical failure_analysis.json (agent-owned via the gate) → NOT exempt.
-        self.assertFalse(
-            _should_ignore_runtime_snapshot_path(
-                f"{base}/failure_analysis.json", **kwargs
-            )
-        )
-        # A non-conforming slug (wrong length / non-hex) must NOT be blanket-exempt.
-        self.assertFalse(
-            _should_ignore_runtime_snapshot_path(
-                f"{base}/failure_analysis.runtime.NOTHEX12345.json", **kwargs
-            )
-        )
-        self.assertFalse(
-            _should_ignore_runtime_snapshot_path(
-                f"{base}/failure_analysis.runtime.deadbeef.json", **kwargs
-            )
-        )
-
-    def test_should_ignore_classifies_the_leaf_llm_config_snapshot(self) -> None:
-        """`run_workflow.py` copies the launched leaf-LLM configuration to
-        `<orch>/llm_config_snapshot.yaml` right after `init` — which is AFTER
-        `_write_run_write_baseline` has already snapshotted the orchestration baseline, so
-        without the exemption it reads as an orchestration-authored write. Scoped to THIS
-        orchestration's root and to that exact name: a child cannot reach the path through the
-        write guard, and a neighbouring orchestration's copy is not this one's to excuse."""
-        from tools.orchestration_runtime import _should_ignore_runtime_snapshot_path
-
-        orch_id = "orch_001"
-        kwargs = {"orchestration_id": orch_id, "agent_run_id": "child_arid"}
-        self.assertTrue(_should_ignore_runtime_snapshot_path(
-            f"workspace/orchestrations/{orch_id}/llm_config_snapshot.yaml", **kwargs))
-        # Another orchestration's snapshot is NOT excused by this one's baseline.
-        self.assertFalse(_should_ignore_runtime_snapshot_path(
-            "workspace/orchestrations/orch_other/llm_config_snapshot.yaml", **kwargs))
-        # ...nor is a look-alike elsewhere in the tree.
-        self.assertFalse(_should_ignore_runtime_snapshot_path(
-            "llm_config_snapshot.yaml", **kwargs))
-        self.assertFalse(_should_ignore_runtime_snapshot_path(
-            f"workspace/orchestrations/{orch_id}/src/llm_config_snapshot.yaml", **kwargs))
-
-    def test_the_snapshot_write_leaves_the_orchestration_baseline_clean(self) -> None:
-        """The behavioural half, in the real ordering: `init_orchestration` writes the
-        baseline, then `run_workflow._write_llm_config_snapshot` writes the file. Without the
-        exemption the very next orchestration-role write check reports it as an unauthorized
-        write — the class of latent fault `run_logs/` and the runtime sidecar already hold
-        exemptions for."""
-        import tempfile
-        from pathlib import Path as _Path
-        from tools import llm_config as _lc, run_workflow as _rw
-        from tools.orchestration_runtime import (
-            _actual_changed_paths_since_baseline, init_orchestration)
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = _Path(tmp)
-            (repo / "workspace").mkdir()
-            init_orchestration(repo, "orch_snap_base", spec_ref="spec/x", status="running")
-            cfg = _lc.load_llm_config(
-                _Path(__file__).resolve().parents[2]
-                / "docs" / "examples" / "llm_claude.example.yaml")
-            _rw._write_llm_config_snapshot(repo, "orch_snap_base", cfg)
-            self.assertEqual(
-                _actual_changed_paths_since_baseline(
-                    repo, "orch_snap_base", agent_run_id=None),
-                [])
-
-    def test_should_ignore_classifies_host_run_log(self) -> None:
-        """Host-side run logs (run_workflow.py's stdout JSONL tee, under
-        `<orch>/run_logs/`) must be exempt: the outer driver — not a child —
-        writes them, and the log grows while a leaf runs, so without the
-        exemption it would surface in that leaf's terminal write-diff."""
-        from tools.orchestration_runtime import _should_ignore_runtime_snapshot_path
-
-        orch_id = "orch_001"
-        base = f"workspace/orchestrations/{orch_id}"
-        kwargs = {"orchestration_id": orch_id, "agent_run_id": "child_arid"}
-
-        self.assertTrue(
-            _should_ignore_runtime_snapshot_path(
-                f"{base}/run_logs/run_20260623T051301Z_abc123de.jsonl", **kwargs
-            )
-        )
-        # A file directly at the orch root (not under run_logs/) is NOT exempt.
-        self.assertFalse(
-            _should_ignore_runtime_snapshot_path(
-                f"{base}/run_20260623T051301Z_abc123de.jsonl", **kwargs
-            )
-        )
-
-    def test_dated_archive_workspaces_are_not_exempt_from_validation(self) -> None:
-        """A child write under a top-level `workspace_*` archive must NOT be exempted
-        from the snapshot/diff — exempting it would blind unauthorized-write
-        validation (only the live single `workspace/` is a legitimate write tree, but
-        the diff must still catch writes anywhere else)."""
-        from tools.orchestration_runtime import _should_ignore_runtime_snapshot_path
-
-        kwargs = {"orchestration_id": "orch_001", "agent_run_id": "child_arid"}
-        for path in (
-            "workspace_20260303/ir/x/spec.ir.yaml",
-            "workspace_backup_20260101/anything.txt",
-            "workspace/ir/node/spec.ir.yaml",
-            "spec/component/x/controlled_spec.md",
-        ):
-            self.assertFalse(
-                _should_ignore_runtime_snapshot_path(path, **kwargs),
-                msg=path,
-            )
-
-    def test_runtime_sidecar_not_charged_to_child_terminal_diff(self) -> None:
-        from tools.orchestration_runtime import (
-            _actual_changed_paths_since_baseline,
-            _write_run_write_baseline,
-        )
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            orch_id = "orch_001"
-            orch_dir = repo_root / "workspace" / "orchestrations" / orch_id
-            orch_dir.mkdir(parents=True)
-
-            # Child launch baseline captured BEFORE the sidecar exists.
-            _write_run_write_baseline(repo_root, orch_id, agent_run_id="child_arid")
-
-            # run_workflow writes the safety-net sidecar after the baseline.
-            sidecar_rel = (
-                f"workspace/orchestrations/{orch_id}"
-                "/failure_analysis.runtime.abc123abc123.json"
-            )
-            (repo_root / sidecar_rel).write_text("{}\n", encoding="utf-8")
-
-            changed = _actual_changed_paths_since_baseline(
-                repo_root, orch_id, agent_run_id="child_arid"
-            )
-            self.assertNotIn(
-                sidecar_rel,
-                changed,
-                "runtime safety-net sidecar must not be charged to the child diff",
-            )
-
-            # Canonical failure_analysis.json remains tracked (not exempt), so a
-            # genuine agent write there is still observable.
-            canonical_rel = (
-                f"workspace/orchestrations/{orch_id}/failure_analysis.json"
-            )
-            (repo_root / canonical_rel).write_text("{}\n", encoding="utf-8")
-            changed_after = _actual_changed_paths_since_baseline(
-                repo_root, orch_id, agent_run_id="child_arid"
-            )
-            self.assertIn(canonical_rel, changed_after)
-            self.assertNotIn(sidecar_rel, changed_after)
-
-    def test_old_baseline_containing_sidecar_not_charged(self) -> None:
-        # Recovery path: a baseline written before the exemption (or one that
-        # captured a sidecar left by a prior failed run) already lists the
-        # `failure_analysis.runtime.<uuid12>.json` path in its `files` map. The
-        # filtered snapshot drops it from `after`, so without symmetric
-        # filtering of `before` it would surface as a spurious deletion and
-        # re-wedge the resumed run.
-        import json
-
-        from tools.orchestration_runtime import (
-            _actual_changed_paths_since_baseline,
-            _compute_sha256,
-            _run_write_baseline_path,
-            _write_run_write_baseline,
-        )
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            orch_id = "orch_001"
-            orch_dir = repo_root / "workspace" / "orchestrations" / orch_id
-            orch_dir.mkdir(parents=True)
-
-            sidecar_rel = (
-                f"workspace/orchestrations/{orch_id}"
-                "/failure_analysis.runtime.abc123abc123.json"
-            )
-            (repo_root / sidecar_rel).write_text("{}\n", encoding="utf-8")
-
-            _write_run_write_baseline(repo_root, orch_id, agent_run_id="child_arid")
-            # Simulate an old baseline that recorded the sidecar digest.
-            bpath = _run_write_baseline_path(
-                repo_root, orch_id, agent_run_id="child_arid"
-            )
-            doc = json.loads(bpath.read_text(encoding="utf-8"))
-            doc["files"][sidecar_rel] = _compute_sha256(repo_root / sidecar_rel)
-            bpath.write_text(json.dumps(doc), encoding="utf-8")
-
-            changed = _actual_changed_paths_since_baseline(
-                repo_root, orch_id, agent_run_id="child_arid"
-            )
-            self.assertNotIn(
-                sidecar_rel,
-                changed,
-                "a sidecar recorded in an old baseline must not surface as a "
-                "spurious change once the snapshot exempts it",
-            )
-
-
 class TerseResultProjectionTests(unittest.TestCase):
     """Default terse stdout projection for high-frequency bookkeeping subcommands.
 
@@ -28573,20 +20998,6 @@ class TerseResultProjectionTests(unittest.TestCase):
         )
         self.assertNotIn("huge", terse)
 
-    def test_record_launch_keeps_capability_token_drops_deterministic_refs(self) -> None:
-        full = {
-            "capability_token": "tok",
-            "capability_ref": "cap.json",
-            "launch_prompt_ref": "p.txt",
-            "launch_request_ref": "req.json",
-            "child_launch_request_ref": "creq.json",
-        }
-        terse = _project_terse_result("record-launch", full)
-        self.assertEqual(terse["capability_token"], "tok")
-        self.assertIn("launch_prompt_ref", terse)
-        self.assertNotIn("launch_request_ref", terse)
-        self.assertNotIn("child_launch_request_ref", terse)
-
     def test_run_gate_retains_violations_signal(self) -> None:
         full = {
             "gate": "g",
@@ -28608,17 +21019,6 @@ class TerseResultProjectionTests(unittest.TestCase):
         }
         terse = _project_terse_result("run-gate", full)
         self.assertEqual(terse["result"], {"read_path": "docs/x.md", "content": "hello"})
-
-    def test_record_launch_keeps_prompt_text(self) -> None:
-        full = {
-            "capability_token": "tok",
-            "launch_prompt_ref": "p.txt",
-            "launch_prompt_text": "You are a substep agent...",
-            "launch_request_ref": "req.json",
-        }
-        terse = _project_terse_result("record-launch", full)
-        self.assertEqual(terse["launch_prompt_text"], "You are a substep agent...")
-        self.assertNotIn("launch_request_ref", terse)
 
     def test_always_keep_surfaces_soft_failure_field(self) -> None:
         # An 'error' signal on an otherwise-unlisted command field must survive.
@@ -28645,7 +21045,7 @@ class TerseResultProjectionTests(unittest.TestCase):
                     main([cmd, "--help"])
             return _re.sub(r"\s+", " ", buf.getvalue())
 
-        for cmd in ("record-launch", "record-agent-run", "run-gate", "write-step-result"):
+        for cmd in ("record-launch", "record-agent-run", "write-step-result"):
             self.assertIn("--verbose", _help(cmd), msg=f"{cmd} should accept --verbose")
         # A non-bookkeeping subcommand must not gain the flag.
         self.assertNotIn("--verbose", _help("set-status"))
@@ -29016,42 +21416,6 @@ class ChildContextDocSizeTests(unittest.TestCase):
             self.assertLessEqual(
                 size, ceiling, f"{rel} grew to {size} bytes (ceiling {ceiling}); trim or justify"
             )
-
-
-class AgentTmpRootContainmentTests(unittest.TestCase):
-    """`_assert_under_agent_tmp_root`, the tripwire under the durable-gate-result unlink.
-
-    Its call site is unreachable by construction — `_require_safe_gate_ids` admits only
-    `[A-Za-z0-9_-]`, so no caller input escapes — which means deleting the CALL is
-    invisible to the suite. That is declared where the call lives. What can be pinned is
-    the function, so it is: if a later change to `_agent_tmp_gate_result_path` ever makes
-    a target escape, this is the thing that has to still work.
-    """
-
-    def test_a_path_inside_the_tmp_root_is_accepted(self) -> None:
-        from tools.orchestration_runtime import _assert_under_agent_tmp_root
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            inside = repo_root / "workspace" / "tmp" / "arid1" / "gate_results" / "g.json"
-            _assert_under_agent_tmp_root(repo_root, inside)
-
-    def test_an_escaping_path_is_refused(self) -> None:
-        from tools.orchestration_runtime import _assert_under_agent_tmp_root
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            for label, target in (
-                ("traversal out of the tmp root",
-                 repo_root / "workspace" / "tmp" / ".." / ".." / "evil" / "g.json"),
-                ("a sibling workspace directory",
-                 repo_root / "workspace" / "ir" / "p" / "g.json"),
-                ("outside the checkout entirely", Path("/etc") / "g.json"),
-            ):
-                with self.subTest(case=label):
-                    with self.assertRaises(ValueError) as ctx:
-                        _assert_under_agent_tmp_root(repo_root, target)
-                    self.assertIn("escapes the tmp namespace", str(ctx.exception))
 
 
 class ReplyBudgetTests(unittest.TestCase):
@@ -30623,19 +22987,6 @@ class HostPycacheRedirectExemptionTest(unittest.TestCase):
         self.assertFalse(_is_host_pycache_redirect_write(
             f"{_HOST_PYCACHE_REDIRECT_PREFIX}-not/here.pyc"))
 
-    def test_gate_python_env_prefix_derives_from_the_shared_constant(self):
-        # Drift-guard producer (2): _gate_python_env's PYTHONPYCACHEPREFIX must be the redirect
-        # root built from the SAME constant the exemption uses, and it must also suppress
-        # in-place bytecode for gate subprocesses.
-        from tools.orchestration_runtime import _gate_python_env, _HOST_PYCACHE_REDIRECT_PREFIX
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            env = _gate_python_env(root)
-            self.assertEqual(
-                env["PYTHONPYCACHEPREFIX"],
-                str((root / _HOST_PYCACHE_REDIRECT_PREFIX).resolve()))
-            self.assertEqual(env.get("PYTHONDONTWRITEBYTECODE"), "1")
-
     def test_workspace_layout_allowlist_contains_the_redirect_leaf_segment(self):
         # Drift-guard consumer (4): validate_workspace_root's canonical top-level allowlist must
         # contain the redirect prefix's LEAF segment, else _scan_workspace_layout would flag the
@@ -31662,7 +24013,10 @@ class AgentRoleFailClosedTests(unittest.TestCase):
         "test_launch_requires_exactly_the_role_its_step_demands",
         "test_terminal_payload_rejects_a_role_outside_the_vocabulary",
         "test_record_agent_run_itself_rejects_a_role_outside_the_vocabulary",
-        "test_the_write_audit_runs_for_every_role_in_the_vocabulary",
+        # `test_the_write_audit_runs_for_every_role_in_the_vocabulary` was here until PR-2 of
+        # issue #171: the terminal write audit it drove for every role
+        # (`_validate_actual_write_paths`) is deleted with the write baseline it diffed
+        # against — no leaf holds write authority for such an audit to measure.
     })
     _SAMPLE_DRIVEN = frozenset({
         "test_launch_role_normalization_closes_the_spelling_family",
@@ -31670,7 +24024,8 @@ class AgentRoleFailClosedTests(unittest.TestCase):
         # (issue #171): the Task Card was a section of the AGENTIC prompt, and it went with
         # the renderer that built it.
         "test_every_captured_production_payload_declares_the_demanded_role",
-        "test_capability_then_manifest_agree_on_the_role_record_launch_passes",
+        # `test_capability_then_manifest_agree_on_the_role_record_launch_passes` was here
+        # until PR-2 of issue #171: `record-launch` writes neither document now.
         "test_the_validator_backstop_canonicalizes_without_prepare",
         "test_a_caller_supplied_prompt_may_not_pair_with_a_respelled_role",
     })
@@ -31781,36 +24136,6 @@ class AgentRoleFailClosedTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "non-empty agent_role"):
                     _validate_launch_request_payload(
                         {k: v for k, v in payload.items() if k != "agent_role"})
-
-    def test_capability_then_manifest_agree_on_the_role_record_launch_passes(self) -> None:
-        """Drive `build_capability_document` -> `_allowed_output_paths_for_launch` in the
-        order `record_launch` drives them. Testing either alone is what hid the original
-        divergence: the producer INFERRED a role the consumer then SKIPPED on."""
-        from tools.orchestration_runtime import (
-            _allowed_output_paths_for_launch,
-            build_capability_document,
-        )
-
-        fixture = (
-            Path(__file__).resolve().parent / "data" / "conductor_launch_requests"
-            / "build_step.request.json"
-        )
-        payload = json.loads(fixture.read_text(encoding="utf-8"))
-        cap = build_capability_document(
-            agent_run_id=payload["agent_run_id"],
-            orchestration_id=payload["orchestration_id"],
-            request_payload=payload,
-        )
-        self.assertEqual(cap["agent_role"], payload["agent_role"])
-        allowed = _allowed_output_paths_for_launch(
-            request_payload=payload, write_roots=cap["write_roots"])
-        # The consumer applied the phase contract rather than echoing write_roots: the
-        # capability's write_root is the IR DIRECTORY (trailing slash), and what comes back
-        # is the two declared FILES. That difference is the whole signal — the skip branch
-        # returned the directory with its slash stripped, matching nothing downstream.
-        self.assertEqual(sorted(allowed), sorted(payload["allowed_output_paths"]))
-        self.assertTrue(any(r.endswith("/") for r in cap["write_roots"]))
-        self.assertNotIn(payload["ir_ref"], allowed)
 
     def test_terminal_payload_rejects_a_role_outside_the_vocabulary(self) -> None:
         """`record_agent_run` accepted ANY string before, and `_validate_actual_write_paths`
@@ -31967,34 +24292,6 @@ class AgentRoleFailClosedTests(unittest.TestCase):
         rendered = prepare_launch_request_payload(dict(respelled))
         self.assertEqual(rendered["agent_role"], "step")
         self.assertIn("Target step:", rendered["launch_prompt_full"])
-
-    def test_the_write_audit_runs_for_every_role_in_the_vocabulary(self) -> None:
-        """`WRITE_AUDITED_AGENT_ROLES` was a strict SUBSET of `AGENT_RUN_ROLES` — the
-        difference was `skipped_by_checkpoint`, a role for a step that was never launched and
-        therefore had no capability, no write_roots and no baseline to diff. Issue #177
-        removed that role (a skipped phase is recorded in `phase_state.json` and appends no
-        run at all), so the two sets coincided and one of them went.
-
-        What is pinned here is the consequence: the audit's early return no longer narrows
-        anything. Every role in the vocabulary reaches the audit, asserted behaviourally —
-        each one raises on the absent capability / baseline rather than returning quietly —
-        while a role OUTSIDE the vocabulary still takes the early return."""
-        from tools.orchestration_runtime import AGENT_RUN_ROLES, _validate_actual_write_paths
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            orch = "orch_audit_use_site"
-            init_orchestration(repo_root=repo_root, orchestration_id=orch)
-            payload = {"agent_run_id": "arid_audit", "status": "pass", "output_refs": []}
-            for role in sorted(AGENT_RUN_ROLES - {"orchestration"}):
-                with self.subTest(role=role):
-                    with self.assertRaises(ValueError):
-                        _validate_actual_write_paths(
-                            repo_root, orch, {**payload, "agent_role": role})
-            # Outside the vocabulary: the early return, and therefore no raise.
-            # `record_agent_run` refuses such a role before any caller gets here.
-            _validate_actual_write_paths(
-                repo_root, orch, {**payload, "agent_role": "bogus_role"})
 
 
 if __name__ == "__main__":
@@ -32196,7 +24493,7 @@ class DurableWorkflowHomesTests(unittest.TestCase):
         The environment name is CLEARED here rather than set, so what is measured is the
         default resolution the production launch takes.
         """
-        from tools.hooks.common import operator_secret_root
+        from tools.operator_private_root import operator_secret_root
         from tools.orchestration_runtime import WORKFLOW_HOMES_ROOT_ENV
         with tempfile.TemporaryDirectory() as td:
             fake_home = Path(td) / "home"
@@ -32808,7 +25105,7 @@ class DurableWorkflowHomesTests(unittest.TestCase):
         the writer and the read guard would resolve different trees; it would also slip
         past the absolute-path refusal, since `~/...` is not absolute until expanded.
         """
-        from tools.hooks.common import workflow_homes_root
+        from tools.operator_private_root import workflow_homes_root
         with mock.patch.dict(os.environ, {"HOME": "/tmp/fake-home-probe"}, clear=False):
             with mock.patch.dict(
                     os.environ, {ort.WORKFLOW_HOMES_ROOT_ENV: "~/big/homes"},
@@ -32857,7 +25154,7 @@ class DurableWorkflowHomesTests(unittest.TestCase):
         afterwards.
         """
         import tools.orchestration_runtime as runtime
-        from tools.hooks.common import operator_secret_root
+        from tools.operator_private_root import operator_secret_root
         if not getattr(runtime._workflow_homes_root,
                        "_atmofab_private_root_guard_installed", False):
             # The subject of this test is a pytest fixture. Run under plain `unittest`
@@ -32905,7 +25202,7 @@ class DurableWorkflowHomesTests(unittest.TestCase):
         is the same failure the override closure was supposed to end. Measured before the
         fix: `../outside_homes` came back relative from the resolver both sides share.
         """
-        from tools.hooks.common import workflow_homes_root
+        from tools.operator_private_root import workflow_homes_root
         with tempfile.TemporaryDirectory() as td:
             with mock.patch.dict(
                     os.environ, {ort.WORKFLOW_HOMES_ROOT_ENV: "../outside_homes"},

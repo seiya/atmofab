@@ -48,7 +48,7 @@ except ModuleNotFoundError:  # pragma: no cover - direct CLI execution
     # Re-probe so the in-function imports later in main() succeed.
     from tools import validate_pipeline_semantics as _probe  # noqa: F401
 
-from tools.hooks.common import operator_secret_root
+from tools.operator_private_root import operator_secret_root
 from tools.llm_config import (
     LlmConfig,
     LlmConfigError,
@@ -58,7 +58,7 @@ from tools.llm_config import (
 )
 
 # The environment name that relocates the start-claim locks. The RESOLVER is below;
-# unlike the homes root and the token store it does not live in `tools/hooks/common.py`,
+# unlike the homes root and the token store it does not live in `tools/operator_private_root.py`,
 # because the claims are not a protected read root and nothing in the hooks layer needs
 # to resolve them. What is shared with those two is the DEFAULT: it hangs off
 # `operator_secret_root()`, so the one place `~/.atmofab` is spelled decides where all
@@ -102,7 +102,7 @@ PHASE_ALIASES = {
 PHASE_ORDER = ["Compile", "Generate", "Build", "Validate"]
 
 # CLI tools the workflow runtime depends on (used internally by orchestration_runtime
-# subcommands such as run-gate / guarded-apply-patch, and by git-based status probes
+# subcommands, and by git-based status probes
 # in tools/run_workflow.py itself). Missing any one fails the run before init, so
 # agents never hit a partial-failure state where (e.g.) jq is unavailable to runtime
 # but already in the agent's environment.
@@ -1298,7 +1298,7 @@ def _start_claims_root() -> Path:
     on process death, is the point.
 
     `expanduser` before `absolute`, matching `workflow_homes_root` in
-    `tools/hooks/common.py`. It is a behaviour CHANGE: a quoted
+    `tools/operator_private_root.py`. It is a behaviour CHANGE: a quoted
     `ATMOFAB_START_CLAIM_ROOT='~/claims'` used to become a literal `~` directory under
     the caller's working directory, because the shell does not expand inside quotes.
 

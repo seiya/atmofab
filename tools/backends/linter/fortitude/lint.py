@@ -41,7 +41,7 @@ the tool has, which is how the third stayed open.
 * A `fortitude.toml` discovered beside the sources switches rules off — measured on 0.8.0 and
   0.9.2 alike, a neighbouring `[check] ignore=[...]` turns a failing tree green. `--isolated`
   closes it. A leaf cannot write that file today (the output manifest refuses a `.toml` under a
-  directory entry — `tools/hooks/common.py`'s `_ALLOWED_BYPRODUCT_EXTENSIONS`), so this half is
+  directory entry — the leaf write policy's `_ALLOWED_BYPRODUCT_EXTENSIONS`), so this half is
   an operator-side and future-leaf-side closure rather than a reachable `leaf shortcut`.
 * An in-source `! allow(<codes>)` comment suppresses whatever it names, and the leaf AUTHORS the
   source. Measured: one line reading `! allow(C122, C131, C061, PORT011, C003)` immediately above

@@ -514,10 +514,12 @@ class LaunchPromptValidationFloorTests(unittest.TestCase):
         the request between render and record. Mutating it to `return []` survived both suites.
     (b) A request that is NEITHER deterministic nor pure reached that same caller with an empty
         marker set and returned silently, so an arbitrary `launch_prompt_full` on a real step
-        was accepted unvalidated — on `origin/main` the agentic marker set refused it. A host
-        defect rather than a leaf one (no leaf writes a launch request), which is why the
-        replacement is an identity FLOOR and not a refusal: a `build` record written before the
-        deterministic marker existed still has to be readable.
+        was accepted unvalidated — on `origin/main` the agentic marker set refused it. PR-1
+        answered it with an identity FLOOR (the prompt must at least name the node_key and the
+        two ids); **PR-2 made it a REFUSAL**, once the test corpus that needed the shape went
+        with the leaf write-set machinery it was about. The reason first written for the floor
+        — that a pre-Z4 `build` record had to stay readable — was false: the only caller is
+        `record_launch`, a writer.
     """
 
     _BASE: ClassVar[dict[str, str]] = {
@@ -558,30 +560,29 @@ class LaunchPromptValidationFloorTests(unittest.TestCase):
             _validate_launch_prompt_text(payload, tampered)
         self.assertIn("must preserve", str(caught.exception))
 
-    def test_a_neither_shape_request_must_still_identify_its_own_run(self) -> None:
+    def test_a_neither_shape_request_is_refused_outright(self) -> None:
+        """PR-2: the shape itself is the defect, not the prompt body it carries.
+
+        A launch is DETERMINISTIC or PURE. PR-1 answered a request that is neither with an
+        identity floor — a body naming the node_key and the two ids passed — because 30 tests
+        built exactly that shape and could not be converted while the leaf write-set machinery
+        they were about still existed. PR-2 deletes that machinery, so nothing needs the shape
+        and the answer is a refusal. Driven on BOTH bodies: the arbitrary one the floor already
+        refused, AND the one it used to ACCEPT."""
         from tools.orchestration_runtime import _validate_launch_prompt_text
         payload = {**self._BASE, "step": "generate", "substep": "generate"}
-        # An arbitrary body on a real step: accepted silently before this floor existed.
-        with self.assertRaises(ValueError) as caught:
-            _validate_launch_prompt_text(payload, "you are a helpful assistant\n")
-        message = str(caught.exception)
-        self.assertIn("does not identify its own run", message)
-        self.assertIn("neither deterministic nor pure", message)
-        # The floor is a FLOOR: a body carrying the three identity lines passes, because the
-        # answer to a host defect here is "say which run this is", not "refuse the record".
-        lines = ["Target node_key: component/x@0.1.0", "orchestration_id: o",
-                 "agent_run_id: arid-1", "anything else at all"]
-        _validate_launch_prompt_text(payload, "\n".join(lines))
-        # EACH line, not the set. The round-2 security review measured this one all-or-nothing:
-        # dropping any single line survived, and the line carries the attribution the floor
-        # exists for — a prompt naming another run's `agent_run_id` is the defect, not a prompt
-        # naming none of them.
-        for dropped in range(3):
-            with self.subTest(dropped=lines[dropped]):
-                body = "\n".join(ln for i, ln in enumerate(lines) if i != dropped)
+        identifying = ("Target node_key: component/x@0.1.0\norchestration_id: o\n"
+                       "agent_run_id: arid-1\nanything else at all")
+        for body in ("you are a helpful assistant\n", identifying):
+            with self.subTest(body=body.splitlines()[0]):
                 with self.assertRaises(ValueError) as caught:
                     _validate_launch_prompt_text(payload, body)
-                self.assertIn(lines[dropped], str(caught.exception))
+                message = str(caught.exception)
+                self.assertIn("neither deterministic nor pure", message)
+                # The message names both repairs, because the caller is a host defect and the
+                # answer is which shape it meant.
+                self.assertIn("deterministic", message)
+                self.assertIn("leaf_mode", message)
 
     def test_the_self_prompt_with_no_step_is_still_exempt(self) -> None:
         """The case the silent return was written for, and the reason it is not a refusal."""

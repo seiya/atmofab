@@ -1227,16 +1227,16 @@ class RunWorkflowTests(unittest.TestCase):
         spelled `Path.home() / ".atmofab"` for itself.
 
         Pinned at the SHARED resolver, not against a transcribed path: `_home_dir` is
-        patched in `tools.hooks.common`, the module `operator_secret_root` reads, so if
+        patched in `tools.operator_private_root`, the module `operator_secret_root` reads, so if
         the default stopped going through it this lands somewhere else and fails.
         """
-        import tools.hooks.common as hooks_common
+        import tools.operator_private_root as private_root
         with tempfile.TemporaryDirectory() as tmp:
             fake_home = Path(tmp) / "home"
             env = {k: v for k, v in os.environ.items()
                    if k != run_workflow.START_CLAIMS_ROOT_ENV}
             with mock.patch.dict(os.environ, env, clear=True), \
-                    mock.patch.object(hooks_common, "_home_dir",
+                    mock.patch.object(private_root, "_home_dir",
                                       return_value=fake_home):
                 path = run_workflow._claim_lock_path(Path(tmp), "spec", "spec/x")
             self.assertEqual(path.parent, (fake_home / ".atmofab").resolve()
@@ -1493,7 +1493,7 @@ class RunWorkflowTests(unittest.TestCase):
         `operator_secret_root()/start_claims` — and asserting BOTH halves of "prevent,
         not detect": it raises, and nothing appeared in the operator's tree.
         """
-        from tools.hooks.common import operator_secret_root
+        from tools.operator_private_root import operator_secret_root
         if not getattr(run_workflow._start_claims_root,
                        "_atmofab_private_root_guard_installed", False):
             # The subject is a pytest fixture. Under plain `unittest` there is no guard

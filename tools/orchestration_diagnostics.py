@@ -56,14 +56,14 @@ from typing import Any, NamedTuple
 # the HTTP transport and the audit all record against, where THIS module is post-mortem
 # forensics over the machine-local `~/.claude` transcripts. The sum keys below derive from
 # its token-class vocabulary so the two cannot drift.
-# Module-level, absolute, and NOT shimmed: this module needs `tools.hooks.common` to do
+# Module-level, absolute, and NOT shimmed: this module needs `tools.operator_private_root` to do
 # its transcript work, so a consumer that cannot import `tools` must fail here, at import
 # time, rather than later inside a caller's `except Exception` (issue #130). Two guards
 # hold that, and NEITHER is in this module's own test file: the placement is pinned by
 # `tools/tests/test_audit_orchestration.py::DiagnosticsFailsAtImportTimeTests` (an AST
 # scan for function-body `tools.*` imports), and `build_launch_incident`'s refusal to
 # swallow by `tools/tests/test_orchestration_diagnostics.py::CollectorsDoNotSwallowTests`.
-from tools.hooks.common import claude_leaf_projects_roots
+from tools.operator_private_root import claude_leaf_projects_roots
 from tools.leaf_usage import LEAF_TOKEN_CLASS_KEYS
 
 # Terminal agent_runs statuses: a row carrying one of these (or any finished_at)
