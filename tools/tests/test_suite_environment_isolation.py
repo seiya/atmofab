@@ -47,7 +47,10 @@ _CITATION_SOURCES = (
     "tools/tests/suite_env_guard.py",
     "tools/tests/conftest.py",
     "tools/tests/test_suite_environment_isolation.py",
-    "tools/tests/test_hooks_common.py",
+    # `tools/tests/test_hooks_common.py` was the fourth source until Z4 (issue #171) deleted
+    # the hook layer this change's guard was written around. `tools/hooks/common.py` survives
+    # as a plain helper module with no test file of its own; the pins for the names it still
+    # exports moved to `test_operator_private_root.py`, which cites no test by name.
 )
 
 # The regression issue #84 opens with: under the workflow the MCP server refuses a
@@ -379,7 +382,11 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
         # first version anchored that root on `ATMOFAB_ORCHESTRATION_ID`, which is also read
         # under `tools/`, so dropping the whole `mcp_servers` root survived — the exact
         # silent shrinkage this block exists to stop.
-        for name, where in (("ATMOFAB_HOOK_REPO_ROOT", "tools/hooks/cli.py"),
+        # The `tools/hooks` anchor was `("ATMOFAB_HOOK_REPO_ROOT", "tools/hooks/cli.py")` until
+        # Z4 (issue #171) deleted the leaf hook entrypoint with the agentic leaf. The root still
+        # holds `tools/hooks/common.py`, so it is re-anchored on a name read THERE and nowhere
+        # else under the scanned roots — measured, not assumed.
+        for name, where in (("ATMOFAB_WORKFLOW_HOMES_ROOT", "tools/hooks/common.py"),
                             ("PYTHONPATH", "mcp_servers/build_runtime_server.py"),
                             ("ATMOFAB_ORCH_LIVENESS_TTL_SECONDS", "tools/validate_workspace_root.py"),
                             ("ATMOFAB_START_CLAIM_ROOT", "tools/run_workflow.py")):

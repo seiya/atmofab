@@ -13405,39 +13405,49 @@ end program shallow_water2d_runner
         # widened the spelling only, not the set of contributing schema keys.
         self.assertNotIn("t", canonical or set())
 
-    def test_compile_generate_skill_quotes_live_gate_messages(self) -> None:
-        """The Compile.generate SKILL quotes gate messages verbatim so the leaf can
-        recognize them. A quote is only useful while it matches the emitting code, and
-        doc<->gate drift is this repo's recurring failure class — the size ceiling is the
-        only other thing watching this file, and it would not notice a reword. Pin every
-        message the SKILL quotes against the validator source."""
+    def test_the_compile_authoring_rules_reach_the_leaf_that_is_gated_on_them(self) -> None:
+        """The rules a `Compile.generate` leaf is gated on are stated where that leaf reads.
+
+        Until Z4 (issue #171) that place was `skills/workflow-compile-generate/SKILL.md`, and
+        this test pinned the gate messages it quoted VERBATIM against the emitting validator so
+        the leaf could recognize them. The SKILL is deleted with the agentic transport: a pure
+        leaf reads no `SKILL`, and what it is handed instead is
+        `docs/workflow/phases/phase_01_compile.md`, inlined WHOLE into its prompt as
+        `phase_contract_document` (`Conductor._build_pure_compile_context`). So the same
+        question is asked of that document.
+
+        The verbatim-quote half does NOT move with it. Its purpose was recognition — the leaf
+        matching a gate message it was shown against one it had read — and on the pure
+        transport the leaf is handed the emitted message itself, verbatim, in the repair
+        findings excerpt. What phase_01 owes is the RULE, which it states in prose; a quoted
+        copy of the emitter's wording in a second document would be a twin with nothing left to
+        recognize. The doc<->gate drift guard below is what survives of it: the rule's own
+        subject (`raw_variables`) and its trigger have to be in the emitting source too."""
         repo_root = Path(vps.__file__).resolve().parent.parent
-        skill = (repo_root / "skills/workflow-compile-generate/SKILL.md").read_text(
+        contract = (repo_root / "docs/workflow/phases/phase_01_compile.md").read_text(
             encoding="utf-8"
         )
         source = (repo_root / "tools/validate_pipeline_semantics.py").read_text(
             encoding="utf-8"
         )
-        quoted = [
-            "raw_variables must be non-empty list when evidence_ref is non-snapshot "
-            "and state_snapshots is required",
-        ]
-        for message in quoted:
-            self.assertIn(message, skill, f"SKILL no longer quotes {message!r}")
-            self.assertIn(
-                message, source,
-                f"SKILL quotes {message!r} but no validator message emits it any more",
-            )
-        # The other two rules this SKILL carries are paraphrases, not quotes, so they have
-        # no emitter to pin against — but the doc-size ceiling is a MAXIMUM, so deleting
-        # them passes every other test in the suite. Anchor them here: they are the rules
-        # the 2026-07-25 warm retries broke, and the leaf can learn them nowhere else.
+        # The rules the 2026-07-25 warm retries broke, and the leaf can learn them nowhere
+        # else. The doc-size ceiling is a MAXIMUM, so deleting any of them passes every other
+        # test in the suite.
         for rule in (
             "unsigned integer literal or an identifier",   # the shape_expr dim-token grammar
             "is NOT one of the provenance sources",        # algorithm.state_variables
+            # The non-snapshot half of the `raw_variables` rule, whose gate message this test
+            # used to quote. Stated as the TRIGGER, which is the half an author gets wrong.
+            "the trigger is simply that `evidence_ref` does not name `state_snapshots`",
         ):
-            self.assertIn(rule, skill, f"SKILL no longer states the rule {rule!r}")
-        # The write contract. Same reason as the two rules above — the ceiling is a MAXIMUM, so
+            self.assertIn(rule, contract,
+                          f"phase_01_compile.md no longer states the rule {rule!r}")
+        # Doc<->gate drift: the gate message the rule above describes must still be emitted.
+        self.assertIn(
+            "raw_variables must be non-empty list when evidence_ref is non-snapshot "
+            "and state_snapshots is required", source,
+            "no validator message emits the rule phase_01_compile.md states")
+        # WAS: the write contract. Same reason as the two rules above — the ceiling is a MAXIMUM, so
         # deleting the sentence passes every other test — plus one more: this SKILL is the only
         # reader of the contract that no code path checks, and its previous instruction to author
         # `algorithm.summary.md` contradicted `allowed_output_paths` for months while everything
@@ -13453,26 +13463,28 @@ end program shallow_water2d_runner
         # Membership of the LINE LIST, not `in skill`: a substring test still matches when the
         # rule is left intact and a contradicting clause is appended to the same bullet, which is
         # one of the three breaks review demonstrated.
-        self.assertIn(
-            "- **The deliverables are exactly `spec.ir.yaml` + `ir_meta.json`.** Any other file"
-            " under `workspace/ir/<node_key_safe>/<ir_id>/` is outside `allowed_output_paths`,"
-            " so `output_manifest_write_guard` blocks the write.",
-            skill.splitlines(),
-            "SKILL no longer carries the compile.generate write-contract rule verbatim",
-        )
+        # ... and it does NOT move to phase_01. A pure leaf has no write authority at all: it
+        # returns one JSON document and the HOST writes `spec.ir.yaml` / `ir_meta.json`, so
+        # there is no other file it could author and no `output_manifest_write_guard` for it to
+        # take. The rule had a subject only while a leaf held a tool. The host-side half — that
+        # those two files are the deliverables — is pinned where the host writes them, not as
+        # prose a leaf reads.
         # The retired view-only companion must not come back as an instruction under EITHER
         # spelling: the conductor does not declare it (workflow_conductor.build_launch_request)
         # and record-launch rejects it (orchestration_runtime._matches_phase_contract), so a leaf
-        # told to author one is told to take a hook block. `algorithm_summary` is checked because
+        # told to author one is told to take a refusal. `algorithm_summary` is checked because
         # the runtime-side pin (test_orchestration_runtime) already treats the underscore form as
         # the likely re-introduction spelling — the two halves of this contract must not carry
         # different denylists, which is exactly the gap review found here.
         # A FAMILY, not a list of spellings. Round 3 walked through a two-literal denylist with
         # `algorithm-summary.md`; adding the hyphen would have invited a fourth round on the next
         # separator. Any separator (or none) between the two words is refused.
+        # Re-targeted at Z4 from the deleted SKILL to the document that replaced it as the
+        # leaf's input. It is a growth bound here: phase_01 never carried the instruction.
         self.assertIsNone(
-            re.search(r"algorithm[-._ ]?summary", skill, re.IGNORECASE),
-            "SKILL instructs an artifact the compile.generate write contract does not allow",
+            re.search(r"algorithm[-._ ]?summary", contract, re.IGNORECASE),
+            "phase_01_compile.md instructs an artifact the compile.generate write contract "
+            "does not allow",
         )
 
     def test_openmp_floor_rule_is_stated_in_both_docs(self) -> None:
@@ -13483,15 +13495,19 @@ end program shallow_water2d_runner
         deterministic (so the verify leaf does not re-derive a settled verdict), and
         phase_02 must document the floor beside the G6 band above it."""
         repo_root = Path(vps.__file__).resolve().parent.parent
-        verify_skill = (repo_root / "skills/workflow-generate-verify/SKILL.md").read_text(
-            encoding="utf-8"
-        )
+        # Z4 (issue #171): both SKILLs are deleted with the agentic leaf, and each half of the
+        # symmetry moves to the surface that leaf's pure replacement actually reads — its own
+        # launch template, which reaches it before anything else.
+        verify_prompt = (
+            repo_root / "tools/prompt_templates/pure_generate_verify.txt"
+        ).read_text(encoding="utf-8")
         phase_02 = (
             repo_root / "docs/workflow/phases/phase_02_generate.md"
         ).read_text(encoding="utf-8")
         self.assertIn(
-            "enforced deterministically by the `Generate.gate` static check", verify_skill,
-            "the verify SKILL no longer says the zero-`!$omp` slice is gate-settled",
+            "already settled deterministically by the `Generate.gate` static check",
+            verify_prompt,
+            "the pure verify template no longer says the zero-`!$omp` slice is gate-settled",
         )
         self.assertIn("`!$omp` presence floor", phase_02,
                       "phase_02 no longer documents the Generate.gate presence floor")
@@ -13499,24 +13515,28 @@ end program shallow_water2d_runner
             "_validate_openmp_presence_floor", phase_02,
             "phase_02 no longer names the emitting checker (doc<->gate drift guard)",
         )
-        # The agentic residual producer reads this SKILL instead of the pure prompt, so the
-        # obligation must be stated on BOTH producer paths or the asymmetry simply moves.
-        generate_skill = (
-            repo_root / "skills/workflow-generate-generate/SKILL.md"
+        # The PRODUCER half. The punished side is the `m3c` pure producer — the floor runs on
+        # a `component` / `problem` node and on no other kind — so its template is where the
+        # rule has to be. The `harness` shape's template carries no floor statement and needs
+        # none: that shape is an `infrastructure` node, which the floor exempts.
+        generate_prompt = (
+            repo_root / "tools/prompt_templates/pure_generate_generate.txt"
         ).read_text(encoding="utf-8")
         for rule in (
-            "are **obligations**, not description",     # the knobs bind
-            "Read them by MEANING, not by key name",    # the spellings vary per node
-            "_validate_openmp_presence_floor",          # which slice is deterministic
-            # ... and the floor's SCOPE. This was the last place stating the punishment
-            # unconditionally, and it is read by exactly the agentic leaves the floor exempts.
-            "The floor runs only where the `abstract` knobs affirmatively claim OpenMP as the model",
-            "not on an `infrastructure` node",   # issue #175: no `profile` IR exists to exempt
+            "are the binding obligations rule",         # the knobs bind, not data to read past
+            "by MEANING, not by key name",              # the spellings vary per node
+            "floor here is deterministic",              # which slice is deterministic
+            # ... and the floor's SCOPE. Stating the punishment unconditionally is issue #22's
+            # own failure mode, on the side that gets punished.
+            "It does NOT run on an `infrastructure` node",
+            # The honest move where a loop genuinely cannot be parallelized. Without it the
+            # scope sentence reads as an invitation to emit a directive to clear the floor.
+            "the honest move is to say so in prose for the reviewer",
         ):
             self.assertIn(
-                rule, generate_skill,
-                f"the generate.generate SKILL no longer states {rule!r} — the agentic producer "
-                "path would be punished by a rule only the reviewer is told (issue #22)",
+                rule, generate_prompt,
+                f"the pure generate.generate template no longer states {rule!r} — the producer "
+                "would be punished by a rule only the reviewer is told (issue #22)",
             )
 
     def test_every_undefined_binding_line_carries_its_own_remedy(self) -> None:
@@ -14312,6 +14332,16 @@ class WrappedLiteralMetricAssignmentTest(unittest.TestCase):
             )
 
 
+def _pure_judge_context_for_marker_test() -> dict[str, str]:
+    """One non-empty value per declared `validate.judge` context key, derived from the table.
+
+    What each value CONTAINS is the business of the context builder's own tests; what this has
+    to satisfy is the launch validator's "every declared key is a non-empty string"."""
+    from tools.orchestration_runtime import PURE_CONTEXT_REQUIRED_KEYS
+    return {key: f"<{key} fixture body>"
+            for key in PURE_CONTEXT_REQUIRED_KEYS[("validate", "judge")]}
+
+
 class DeterministicLaunchPromptMarkerTest(unittest.TestCase):
     """Build / Validate.execute run in-process (no leaf, no skill): their minimal
     deterministic launch prompt satisfies a reduced marker set (no skill markers)."""
@@ -14334,10 +14364,15 @@ class DeterministicLaunchPromptMarkerTest(unittest.TestCase):
         leaf = _required_launch_prompt_markers_for_role("step", deterministic=False)
         self.assertIn("skill_ref:", leaf)
 
-    def test_prepare_payload_keeps_deterministic_skill_free(self) -> None:
+    def test_prepare_payload_keeps_every_launch_skill_free(self) -> None:
         # Regression: prepare_launch_request_payload (the real record-launch path) must
         # NOT re-inject skill_name/skill_ref (to a deleted SKILL) for a deterministic
         # build/execute payload — it must mirror build_launch_request's stripping.
+        # Since Z4 (issue #171) the claim is wider and this test says so: NO launch of any
+        # shape carries a skill field, because no leaf reads a `SKILL` — the pure leaf is
+        # handed its closed context and the deterministic substep runs in-process. The
+        # `validate.judge` tail below used to be the CONTROL ("the leaf path still derives a
+        # real skill_ref"); it is now the second half of the same rule.
         import tools.workflow_conductor as wc
         from tools.orchestration_runtime import prepare_launch_request_payload
         refs = wc.NodeRefs(node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
@@ -14352,12 +14387,18 @@ class DeterministicLaunchPromptMarkerTest(unittest.TestCase):
             self.assertIsNone(prepared.get("skill_name"))
             self.assertIsNone(prepared.get("skill_ref"))
             self.assertEqual(prepared.get("skill_must_read_refs"), "")
-        # the leaf path (judge) still derives a real skill_ref
+        # The LEAF path (a pure `validate.judge`) carries none either.
         judge = wc.build_launch_request(
             refs, step="validate", substep="judge", orchestration_id="o",
             orchestration_agent_run_id="p", child_agent_run_id="c", agent_model="m",
-            workflow_mode="dev")
-        self.assertTrue(prepare_launch_request_payload(judge).get("skill_ref"))
+            workflow_mode="dev", pure_leaf=True,
+            pure_context=_pure_judge_context_for_marker_test())
+        prepared_judge = prepare_launch_request_payload(judge)
+        # The pure override EMPTIES the three fields rather than dropping them, where the
+        # deterministic arm above never sets them at all; both are "carries no skill", and
+        # asserting the spelling of each is what keeps that difference visible.
+        for key in ("skill_name", "skill_ref", "skill_must_read_refs"):
+            self.assertEqual(prepared_judge.get(key), "", key)
 
     def test_validate_rejects_forged_deterministic_on_leaf_step(self) -> None:
         # Defense-in-depth: deterministic=True is only valid for build / validate.execute.
@@ -14371,19 +14412,14 @@ class DeterministicLaunchPromptMarkerTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "deterministic=True is only valid"):
             _validate_launch_request_payload(forged_gen)
 
-    def test_forged_deterministic_on_leaf_step_still_renders_full_prompt(self) -> None:
-        # A non-build/execute step that forges deterministic:True must NOT downgrade to
-        # the minimal prompt in a way that hides the leaf constraint lines: the renderer
-        # branches on the flag, but the invariant we lock is that build_launch_request
-        # never sets deterministic for a leaf step, and a forged flag still carries the
-        # full leaf prompt's security-constraint lines through record-launch validation.
-        from tools.orchestration_runtime import (
-            _required_launch_prompt_constraint_lines, _required_launch_prompt_markers)
-        # leaf judge payload, no deterministic flag -> full constraint lines required
-        leaf = {"step": "validate", "substep": "judge", "node_key": "component/x@0.1.0",
-                "skill_ref": "skills/workflow-validate-judge/SKILL.md"}
-        self.assertTrue(_required_launch_prompt_constraint_lines(leaf))
-        self.assertIn("skill_ref:", _required_launch_prompt_markers(leaf))
+    # `test_forged_deterministic_on_leaf_step_still_renders_full_prompt` stood here until Z4
+    # (issue #171). It pinned that a forged `deterministic: True` on a leaf step still required
+    # the FULL leaf prompt's security-constraint lines — `_required_launch_prompt_constraint_lines`,
+    # which returned `[]` for every shape that survives Z4 and was deleted with the agentic
+    # prompt. What it defended is now stronger and lives one layer up:
+    # `test_validate_rejects_forged_deterministic_on_leaf_step` above refuses the payload
+    # outright at `_validate_launch_request_payload`, and `_render_launch_prompt_template`
+    # refuses to render anything that is neither deterministic nor pure.
 
     def test_deterministic_prompt_satisfies_reduced_markers(self) -> None:
         import tools.workflow_conductor as wc
@@ -14410,12 +14446,32 @@ class DeterministicLaunchPromptMarkerTest(unittest.TestCase):
 
 class SlimRepairLaunchPromptMarkerTest(unittest.TestCase):
     """A warm-resume slim repair turn (Generate.lint / Generate.static / Compile.static
-    finding) is rendered directly by the conductor with a REDUCED body — no skill /
-    must-read / requirements markers, since the resumed producer leaf already holds them.
-    The pipeline-semantic re-check must apply the same reduced marker set (mirror of
-    orchestration_runtime._required_launch_prompt_markers slim branch) so it does not
+    finding) was rendered directly by the conductor with a REDUCED body — no skill /
+    must-read / requirements markers, since the resumed producer leaf already held them.
+    The pipeline-semantic re-check must apply the same reduced marker set so it does not
     false-reject the recorded slim launch_prompt_ref. Regression: orch_20260702T065946Z_f05a7224
-    (validate.post_judge -> validate_pre_judge_violation)."""
+    (validate.post_judge -> validate_pre_judge_violation).
+
+    HISTORICAL since Z4 (issue #171). Nothing renders a slim — or any other agentic — prompt
+    any more; `_render_launch_prompt_template` refuses a request that is neither deterministic
+    nor pure. The validator keeps both arms because its subject is a PERSISTED record and an
+    operator's `workspace/` holds orchestrations launched before Z4, for the same reason
+    `_LEGACY_LAUNCH_PROMPT_MARKERS` still maps an even older one's Japanese markers: `--stage
+    full` is the documented CI pass-condition, so a stale artifact the sweep cannot classify
+    fails the gate with no artifact saying why (the `_global/` sink episode, one class below).
+    So these tests no longer mirror a renderer — there is none to drift from. They drive the
+    validator against `tools/tests/data/historical_launch_prompts/`, two prompts rendered at
+    `2b8db403`, the last commit before the cut. Re-authoring either by hand would pin what
+    someone believed the old renderer emitted, which is why they are a frozen record."""
+
+    _HISTORICAL_PROMPTS = (Path(vps.__file__).resolve().parent.parent
+                           / "tools" / "tests" / "data" / "historical_launch_prompts")
+
+    @classmethod
+    def _historical_prompt(cls, name: str) -> str:
+        text = (cls._HISTORICAL_PROMPTS / f"{name}.prompt.txt").read_text(encoding="utf-8")
+        assert text.strip(), f"{name}: the frozen historical prompt is empty"
+        return text
 
     def _slim_payload(self) -> dict:
         # A minimal request that satisfies _is_slim_repair_request (warm_resume + reuse +
@@ -14439,36 +14495,38 @@ class SlimRepairLaunchPromptMarkerTest(unittest.TestCase):
             ],
         }
 
-    def test_sentinel_constants_match_across_modules(self) -> None:
-        # The validator detects slim prompts by text (sentinel in launch_text); the runtime
-        # renders them. A desync would silently break the marker exemption.
+    def test_sentinel_constants_match_the_frozen_record(self) -> None:
+        # The validator detects slim prompts by text. Its two literals were a MIRROR of the
+        # renderer's until Z4 deleted it; what they are checked against now is the record they
+        # have to classify, which is the thing that was always at stake.
         from tools.validate_pipeline_semantics import (
-            SLIM_REPAIR_PROMPT_SENTINEL as V_SENT,
-            SLIM_REPAIR_FINDINGS_HEADER as V_HDR)
-        from tools.orchestration_runtime import (
-            SLIM_REPAIR_PROMPT_SENTINEL as R_SENT,
-            SLIM_REPAIR_FINDINGS_HEADER as R_HDR)
-        self.assertEqual(V_SENT, R_SENT)
-        self.assertEqual(V_HDR, R_HDR)
+            SLIM_REPAIR_PROMPT_SENTINEL, SLIM_REPAIR_FINDINGS_HEADER)
+        prompt = self._historical_prompt("slim_repair")
+        self.assertTrue(prompt.startswith(SLIM_REPAIR_PROMPT_SENTINEL))
+        self.assertIn(SLIM_REPAIR_FINDINGS_HEADER, prompt)
 
-    def test_slim_request_predicate_matches_runtime(self) -> None:
+    def test_slim_request_predicate_classifies_the_shapes_it_names(self) -> None:
         # The validator gates the reduced marker set on the structured launch request via
-        # _launch_request_is_slim_repair, a copied mirror of the renderer's own
-        # orchestration_runtime._is_slim_repair_request. Guard against behavioral drift.
+        # `_launch_request_is_slim_repair`. It was a copied mirror of the renderer's own
+        # predicate and the drift guard compared the two; with the renderer gone, the payload
+        # shapes are spelled out here — which is what the mirror was standing in for.
         from tools.validate_pipeline_semantics import _launch_request_is_slim_repair as V
-        from tools.orchestration_runtime import _is_slim_repair_request as R
         base = {"warm_resume": True, "repair_strategy": "reuse", "repair_findings": "x"}
-        payloads = [
-            base,
-            {**base, "warm_resume": False},                 # not warm-resumed
-            {**base, "repair_strategy": "restart"},         # not reuse
-            {**base, "repair_findings": "   "},             # empty findings
-            {**base, "repair_findings": ""},                # missing findings
-            {**base, "deterministic": True},                # deterministic never slim
-            {},                                             # empty payload
+        cases = [
+            (base, True),
+            ({**base, "warm_resume": False}, False),        # not warm-resumed
+            ({**base, "repair_strategy": "restart"}, False),  # not reuse
+            ({**base, "repair_findings": "   "}, False),    # empty findings
+            ({**base, "repair_findings": ""}, False),       # missing findings
+            ({**base, "deterministic": True}, False),       # deterministic never slim
+            ({}, False),                                    # empty payload
+            # A PURE warm-resume repair satisfies the slim shape and is not slim: it has its
+            # own marker set. This is the one live shape the predicate still sees, and the
+            # only reason it is not dead code.
+            ({**base, "leaf_mode": "pure"}, False),
         ]
-        for p in payloads:
-            self.assertEqual(V(p), R(p), f"slim-request predicate drift for {p}")
+        for payload, expected in cases:
+            self.assertEqual(V(payload), expected, f"slim-request predicate on {payload}")
 
     def test_reduced_markers_exclude_skill(self) -> None:
         from tools.validate_pipeline_semantics import (
@@ -14480,24 +14538,22 @@ class SlimRepairLaunchPromptMarkerTest(unittest.TestCase):
         for excluded in ("skill_ref:", "skill_name:", "skill_must_read_refs:",
                          "Required requirements:", "You are a substep agent."):
             self.assertNotIn(excluded, slim)
-        # the full (non-slim, non-deterministic) set still requires them
+        # the full (non-slim, non-deterministic) set — the historical leaf arm — requires them
         full = _required_launch_prompt_markers_for_role("substep")
         self.assertIn("skill_ref:", full)
         self.assertIn("Required requirements:", full)
 
-    def test_rendered_slim_prompt_satisfies_reduced_markers(self) -> None:
-        # The real reproduction: render a genuine slim prompt via the runtime, then run the
-        # validator's actual marker logic against it. Before the fix (slim=False) the slim
-        # prompt is reported as missing the full markers; with slim detection it passes.
-        from tools.orchestration_runtime import (
-            render_launch_prompt_text, _is_slim_repair_request)
+    def test_recorded_slim_prompt_satisfies_reduced_markers(self) -> None:
+        # The real reproduction: take a genuine recorded slim prompt and run the validator's
+        # actual marker logic against it. Before the fix (slim=False) the slim prompt is
+        # reported as missing the full markers; with slim detection it passes.
         from tools.validate_pipeline_semantics import (
             _required_launch_prompt_markers_for_role, _launch_prompt_marker_present,
-            _is_slim_launch_prompt_text,
+            _is_slim_launch_prompt_text, _launch_request_is_slim_repair,
             SLIM_REPAIR_PROMPT_SENTINEL, DETERMINISTIC_PROMPT_SENTINEL)
         payload = self._slim_payload()
-        self.assertTrue(_is_slim_repair_request(payload))
-        prompt = render_launch_prompt_text(payload)
+        self.assertTrue(_launch_request_is_slim_repair(payload))
+        prompt = self._historical_prompt("slim_repair")
         self.assertIn(SLIM_REPAIR_PROMPT_SENTINEL, prompt)
         # Drive the SAME detection the validator call site uses.
         is_slim = _is_slim_launch_prompt_text(prompt)
@@ -14526,21 +14582,11 @@ class SlimRepairLaunchPromptMarkerTest(unittest.TestCase):
         # the full prompt as slim and false-reject it (missing the slim-only findings header).
         # Detection must anchor on the sentinel's position (first line), matching the call
         # site's `launch_text.lstrip().startswith(...)`.
-        import tools.workflow_conductor as wc
-        from tools.orchestration_runtime import (
-            render_launch_prompt_text, prepare_launch_request_payload)
         from tools.validate_pipeline_semantics import (
             _required_launch_prompt_markers_for_role, _launch_prompt_marker_present,
             _is_slim_launch_prompt_text,
             SLIM_REPAIR_PROMPT_SENTINEL, DETERMINISTIC_PROMPT_SENTINEL)
-        refs = wc.NodeRefs(node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
-                           ir_id="x_1", pipeline_id="x_1", source_id="src_1", binary_id="bin_1",
-                           run_id="run_1", source_binary_id="bin_1")
-        req = wc.build_launch_request(
-            refs, step="generate", substep="generate", orchestration_id="o",
-            orchestration_agent_run_id="p", child_agent_run_id="c", agent_model="m",
-            workflow_mode="dev")
-        prompt = render_launch_prompt_text(prepare_launch_request_payload(req))
+        prompt = self._historical_prompt("full_substep")
         # The sentinel string IS present (in boilerplate) but NOT at the prompt's start —
         # so the production detection must NOT classify this full prompt as slim. Driving the
         # real _is_slim_launch_prompt_text here makes this a true regression test: reverting
@@ -14609,43 +14655,36 @@ class SlimRepairLaunchPromptMarkerTest(unittest.TestCase):
                 any("orch_debris" in str(v) and "orchestration_meta.json" in str(v)
                     for v in control), control)
 
-    def test_slim_marker_list_matches_runtime(self) -> None:
-        # Drift guard on the marker LIST (not just the sentinel constants): the validator's
-        # reduced slim set must equal the renderer's slim branch in
-        # orchestration_runtime._required_launch_prompt_markers.
-        from tools.validate_pipeline_semantics import _required_launch_prompt_markers_for_role
-        from tools.orchestration_runtime import _required_launch_prompt_markers
-        runtime_slim = _required_launch_prompt_markers(self._slim_payload())
+    def test_slim_marker_list_is_satisfied_by_the_frozen_record(self) -> None:
+        # Drift guard on the marker LIST (not just the sentinel constants). It compared the
+        # validator's reduced set against the renderer's slim branch; with the renderer gone,
+        # the comparison is against the recorded prompt itself — every marker of the reduced
+        # set is present in it, and the marker names are not a subset of some other shape's.
+        from tools.validate_pipeline_semantics import (
+            _required_launch_prompt_markers_for_role, _launch_prompt_marker_present)
+        prompt = self._historical_prompt("slim_repair")
         validator_slim = _required_launch_prompt_markers_for_role("substep", slim=True)
-        self.assertEqual(validator_slim, runtime_slim)
+        self.assertTrue(validator_slim, "the reduced slim marker set is empty")
+        self.assertEqual(
+            [m for m in validator_slim if not _launch_prompt_marker_present(m, prompt)], [])
 
     def test_end_to_end_validate_marker_check_uses_request_and_prompt(self) -> None:
         # Integration: drive the real _validate_orchestration_hierarchy call site (not just
         # the detection helpers in isolation) by seeding a substep launch_prompt_ref + its
         # launch request on disk and running validate(require_orchestration=True). Cases:
-        #   full     : REAL rendered FULL prompt (carries the slim sentinel in its
+        #   full     : RECORDED FULL prompt (carries the slim sentinel in its
         #              always-rendered boilerplate), full request -> not slim -> no violation.
         #              Catches the R1 substring bug + R2 wiring end-to-end.
-        #   slim     : REAL rendered SLIM prompt, request confirms warm-resume reuse repair
+        #   slim     : RECORDED SLIM prompt, request confirms warm-resume reuse repair
         #              -> slim -> reduced markers -> no violation (the original bug).
-        #   mismatch : REAL rendered SLIM-looking prompt but a FULL (non-slim) request -> must
+        #   mismatch : RECORDED SLIM-looking prompt but a FULL (non-slim) request -> must
         #              NOT be downgraded -> full markers required -> violation (the Codex P2:
         #              the exemption is gated on the structured request, not prompt text alone).
         import json as _json
-        import tools.workflow_conductor as wc
-        from tools.orchestration_runtime import (
-            render_launch_prompt_text, prepare_launch_request_payload)
         model_text = "module m\nimplicit none\nend module m\n"
         runner_text = "program r\nimplicit none\nend program r\n"
-        refs = wc.NodeRefs(node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
-                           ir_id="x_1", pipeline_id="x_1", source_id="src_1", binary_id="bin_1",
-                           run_id="run_1", source_binary_id="bin_1")
-        full_req = wc.build_launch_request(
-            refs, step="generate", substep="generate", orchestration_id="orch_test_001",
-            orchestration_agent_run_id="p", child_agent_run_id="c", agent_model="m",
-            workflow_mode="dev")
-        full_prompt = render_launch_prompt_text(prepare_launch_request_payload(full_req))
-        slim_prompt = render_launch_prompt_text(self._slim_payload())
+        full_prompt = self._historical_prompt("full_substep")
+        slim_prompt = self._historical_prompt("slim_repair")
         # (label, prompt body, seed a slim request?, expect a missing-markers violation)
         cases = [
             ("full", full_prompt, False, False),
@@ -21948,16 +21987,18 @@ class ImplDefaultsKnobNameGateTests(unittest.TestCase):
             schema["x-canonical-validator"],
             "tools/validate_pipeline_semantics.py:_validate_impl_defaults_knobs")
 
-    def test_canonical_knob_names_are_stated_in_both_authoring_docs(self) -> None:
+    def test_canonical_knob_names_are_stated_in_the_authoring_doc(self) -> None:
         """A tightened gate with a silent SKILL burns retries — R6-lite freshness re-runs Compile on
         a dependency bump, so the IR author must be able to look the pinned spellings up. Both files
         are size-ceilinged, and a ceiling is a MAXIMUM, so deleting these sentences stays green
         without an anchor."""
         repo_root = Path(vps.__file__).resolve().parent.parent
+        # `skills/workflow-compile-generate/SKILL.md` was the second site until Z4 (issue #171).
+        # The IR author is now a pure leaf, which reads no `SKILL` and is handed phase_01 whole,
+        # so the one document below is the one it can look the spellings up in — and "both
+        # authoring docs" is now one. The alias-to-canonical map itself is in the schema, which
+        # `x-canonical-validator` above ties to the gate.
         for rel, needles in (
-            ("skills/workflow-compile-generate/SKILL.md",
-             ("canonical key names**", "spec/schema/ir/impl_defaults.schema.json",
-              "threads_per_rank")),
             ("docs/workflow/phases/phase_01_compile.md",
              ("CANONICAL key names", "spec/schema/ir/impl_defaults.schema.json",
               # The `Compile.static` gate-list bullet, anchored on text unique to it: the bare
@@ -22112,7 +22153,11 @@ class ExecutionModeContractCouplingGateTests(unittest.TestCase):
         # form, without backticks.
         for rel, needle, count in (
             ("docs/workflow/phases/phase_01_compile.md", rendered, 2),
-            ("skills/workflow-compile-generate/SKILL.md", rendered, 1),
+            # `skills/workflow-compile-generate/SKILL.md` rendered it a third time until Z4
+            # (issue #171) deleted it with the agentic leaf. The IR author reads the phase
+            # contract instead — inlined whole into its prompt — and the two example files
+            # below reach it the same way (`ir_algorithm_example_document`), so every surface
+            # that still renders the set is one the leaf is actually handed.
             ("docs/examples/spec_ir_algorithm_2d_problem_contract.example.yaml",
              "loop_variable / counter / index_variable", 1),
             ("docs/examples/spec_ir_algorithm_section.example.yaml",
@@ -22481,42 +22526,22 @@ class ExecutionModeContractCouplingGateTests(unittest.TestCase):
               "# object, the TOP-LEVEL loop only. non-empty when execution_mode=iterative;"
               " conversely a loop counter + stop_condition here forbids execution_mode sequence"
               " and conditional")),
-            ("skills/workflow-compile-generate/SKILL.md",
-             ("**Select by the top-level control structure**",
-              # One needle per selection case: three of the four were deletable while the
-              # ceiling bump was credited to them.
-              "time marching over `n_step`",
-              "a fixed stage composition (SSPRK2's 2 stages) is `sequence`",
-              "a dispatch over a static case list is `conditional`",
-              "an independent per-column sweep is `columnwise`, but a `column_process` step"
-              " INSIDE a time loop leaves the node `iterative`",
-              "`iteration_contract` states the TOP-LEVEL loop only",
-              "together with `stop_condition` under `sequence` or `conditional` is a"
-              " `Compile fail`",
-              "`docs/workflow/phases/phase_01_compile.md` §`algorithm.execution_mode`")),
-            # The verify leaf reads this file and not the generate SKILL. Its whole added
-            # sentence was deletable with the suite green while its ceiling had been bumped
-            # 15700->16200 for precisely that text.
-            ("skills/workflow-compile-verify/SKILL.md",
-             ("Check `execution_mode` against the selection rule of",
-              # The sentence that ASSIGNS the three shapes to this leaf. Without it the three
-              # needles below survive as an unattributed list.
-              "Three shapes the gate cannot see and this leaf must:",
-              "the structural contradiction (a loop counter together with `stop_condition` in"
-              " `iteration_contract` under `execution_mode` `sequence` or `conditional`) is"
-              " already gated at `Compile.static`",
-              # The three shapes the gate cannot see. This leaf is the only thing standing
-              # behind each of them, so each is named.
-              "a time-marching node declaring `sequence` with an EMPTY `iteration_contract`",
-              "a node declaring `columnwise` whose top level is a time loop",
-              "an inner `iterative_solve` step's convergence criteria authored into"
-              " `algorithm.iteration_contract`",
-              # The wording qualifier. Without it this leaf is told it owns a shape the gate
-              # already catches, and stops looking for the ones it does not.
-              "in any wording other than a loop counter plus `stop_condition` under `sequence`"
-              " / `conditional`, that one spelling being the only one the gate catches",
-              # Where the three shapes route. A finding without its route is half a rule.
-              "Each is a `fail` remanded to `Compile.generate`.")),
+            # Two more rows stood here until Z4 (issue #171): the compile-generate SKILL's
+            # four selection cases and the compile-verify SKILL's "Three shapes the gate cannot
+            # see and this leaf must". Both files are deleted with the agentic leaf, and both
+            # leaves read this phase contract instead — it is inlined WHOLE into the pure
+            # producer's and the pure reviewer's prompts (`_build_pure_compile_context` /
+            # `_build_pure_compile_verify_context`), which is why the row above is not a
+            # weaker statement of the same rule but the same statement on the live surface.
+            # Each of the three shapes is pinned in it by a needle above: the `sequence`-with-
+            # empty-`iteration_contract` node by the V2 sentence, the `columnwise` node whose
+            # top level is a time loop by "each column is processed without carrying state to
+            # the next" plus "**a `column_process` step inside a time loop leaves the node
+            # `iterative`**", and the inner `iterative_solve` by "its convergence criteria
+            # (tolerance, iteration cap, divergence policy) are lowered in that step's own
+            # fields". The qualifier that keeps the reviewer looking — that the gate catches
+            # one spelling only — is "The deterministic gate recognizes one spelling of this
+            # mistake", also above.
         ):
             text = _doc_prose(rel, (repo_root / rel).read_text(encoding="utf-8"))
             for needle in needles:

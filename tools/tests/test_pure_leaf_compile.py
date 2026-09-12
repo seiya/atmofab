@@ -32,7 +32,6 @@ import tools.llm_config as lc
 import tools.orchestration_runtime as ort
 import tools.workflow_conductor as wc
 from tools.backends import registry as backend_registry
-from tools.tests.llm_samples import agentic_only_config as _agentic_cfg
 from tools.tests.test_pure_leaf_producer import (
     _conductor,
     _envelope,
@@ -1155,57 +1154,10 @@ class PureCompileTransportCategoryTests(_Fixture):
 # ======================================================================================
 # The defensive freshness branch
 # ======================================================================================
-class PureCompileSubstepStatusTests(_Fixture):
-    def test_a_stale_ir_beside_a_failing_meta_does_not_pass(self) -> None:
-        """`determine_substep_status`'s generic tail treats an EMPTY `allowed_output_paths` as
-        "every deliverable is fresh", which is a fail-open. The pure path returns before it, so
-        this branch is defence in depth — and it is what stops a declared-fail attempt from
-        reading as a pass because an earlier attempt's `spec.ir.yaml` is still on disk."""
-        ir_dir = self.repo / self.refs.ir_ref
-        (ir_dir / "spec.ir.yaml").write_text(yaml.safe_dump(_valid_ir()), encoding="utf-8")
-        (ir_dir / "compile_generate_meta.json").write_text(
-            json.dumps({"result": "fail", "failure_category": wc.COMPILE_DECLARED_FAIL,
-                        "attempts": 1, "per_attempt": []}), encoding="utf-8")
-        c = self.conductor()
-        status, refs_out = c.determine_substep_status(
-            self.refs, "compile", "generate", [])
-        self.assertEqual(status, "fail")
-        self.assertEqual(refs_out, [])
-
-    def test_a_fresh_ir_beside_a_passing_meta_passes(self) -> None:
-        ir_dir = self.repo / self.refs.ir_ref
-        (ir_dir / "spec.ir.yaml").write_text(yaml.safe_dump(_valid_ir()), encoding="utf-8")
-        (ir_dir / "compile_generate_meta.json").write_text(
-            json.dumps({"result": "pass", "failure_category": None,
-                        "attempts": 1, "per_attempt": []}), encoding="utf-8")
-        c = self.conductor()
-        status, _ = c.determine_substep_status(self.refs, "compile", "generate", [])
-        self.assertEqual(status, "pass")
-
-    def test_a_pass_meta_with_a_stale_ir_does_not_pass(self) -> None:
-        ir_dir = self.repo / self.refs.ir_ref
-        (ir_dir / "spec.ir.yaml").write_text(yaml.safe_dump(_valid_ir()), encoding="utf-8")
-        (ir_dir / "compile_generate_meta.json").write_text(
-            json.dumps({"result": "pass", "failure_category": None,
-                        "attempts": 1, "per_attempt": []}), encoding="utf-8")
-        c = self.conductor()
-        stale_after = (ir_dir / "spec.ir.yaml").stat().st_mtime + 1000
-        status, _ = c.determine_substep_status(
-            self.refs, "compile", "generate", [], stale_after)
-        self.assertEqual(status, "fail")
-
-
 # ======================================================================================
 # Provider matrix
 # ======================================================================================
 class PureCompileProviderMatrixTests(_Fixture):
-    def test_a_capability_restricted_entry_keeps_the_compile_leaves_agentic(self) -> None:
-        c = _PureFakeConductor(repo_root=self.repo, orchestration_id="o",
-                               orchestration_agent_run_id="orch",
-                               llm_config=_agentic_cfg("claude"), env={})
-        for substep in ("generate", "verify"):
-            self.assertFalse(c._pure_leaf_substep(self.refs, "compile", substep))
-
     def test_both_compile_leaves_are_pure_without_any_ir_on_disk(self) -> None:
         """No shape condition: at `compile.generate` time there is no IR to read a shape from,
         which is exactly why the predicate cannot use the generate pair's M3c test here."""

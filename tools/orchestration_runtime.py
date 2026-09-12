@@ -9754,14 +9754,14 @@ LEAF_ENV_NAMED_EXCLUSIONS = (
     # ALLOWLIST — which is where these names would have to go to reach a leaf, and
     # not this exclusion list, whose members are precisely the ones that do NOT
     # travel — is persisted verbatim into `sandbox_profiles/<arid>.json` and into
-    # that file's `rendered_command`, the repository is bound read-only INTO the
-    # sandbox whole, and `leaf_config/claude/settings.json` grants every agentic
-    # leaf `Bash(cat workspace/orchestrations/*)`. So allowlisting a live API key
-    # here writes it where any leaf of the run reads it with one granted command —
-    # the same hole the `api_key_env` rule above closes. The supported route is the
-    # credentials FILE, which is bound into the sandbox and never copied into a
-    # record. `_prepare_claude_workflow_home` records `claude_credentials_bound`
-    # so a host without one is visible in the launch record before the leaf fails.
+    # that file's `rendered_command`, and the repository is bound read-only INTO
+    # the sandbox whole. So allowlisting a live API key here writes it into a
+    # record that lives under `workspace/`, which every later run reads — the same
+    # hole the `api_key_env` rule above closes. Since Z4 (issue #171) no leaf holds
+    # a tool with which to read that record itself, which narrows the reader to the
+    # operator and to whatever else reads `workspace/`, and does not change the
+    # call: a credential belongs in no record. The supported route is the
+    # credentials FILE, which is bound into the sandbox and never copied into one.
     "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN",
 )
 

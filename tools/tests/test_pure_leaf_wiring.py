@@ -484,35 +484,6 @@ class PurePayloadValidationTests(unittest.TestCase):
         self.assertEqual(prepared["skill_name"], "")
         ort._validate_launch_request_payload(prepared)
 
-    def test_the_diagnose_pairs_are_in_the_gate_allowlist_table(self) -> None:
-        """`_lint_launch_prompt_gate_allowlist` FAILS OPEN on a pair it does not know: an
-        unknown `(step, substep)` returns `[]`, so the recurrence lint would not scan the
-        diagnostician's prompt at all. The four diagnose pairs are therefore in
-        `ALLOWED_VALIDATE_PIPELINE_STAGES` with the EMPTY set — the diagnostician invokes no
-        validator gate — and this row drives the lint rather than only reading the table, so
-        deleting the entries turns a scanned prompt into an unscanned one and is red.
-        """
-        forbidden = ("python3 tools/validate_pipeline_semantics.py "
-                     "--pipeline-ref workspace/pipelines/x/y --stage post_execute")
-        for step, substep in sorted(ort.DIAGNOSE_LAUNCH_PAIRS):
-            with self.subTest(pair=f"{step}.{substep}"):
-                self.assertEqual(
-                    ort.ALLOWED_VALIDATE_PIPELINE_STAGES[(step, substep)], frozenset())
-                violations = ort._lint_launch_prompt_gate_allowlist(
-                    f"do this:\n{forbidden}\n", step=step, substep=substep)
-                self.assertTrue(
-                    violations,
-                    "the lint must SCAN a diagnose prompt; an empty result here is the "
-                    "unknown-pair fail-open, not a clean prompt")
-        # The negative control: an unknown pair really does fall through silently, which is
-        # what makes the entries above load-bearing rather than decorative.
-        self.assertNotIn(("validate", "no_such_substep"), ort.ALLOWED_VALIDATE_PIPELINE_STAGES)
-        self.assertEqual(
-            ort._lint_launch_prompt_gate_allowlist(
-                f"do this:\n{forbidden}\n", step="validate", substep="no_such_substep"),
-            [])
-
-
 # ======================================================================================
 # B3 / B4 / B5 / B6 / B8: renderers, markers, fence carve-out
 # ======================================================================================
@@ -724,19 +695,6 @@ class PureRenderTests(unittest.TestCase):
         self.assertIn("verification_status missing from bundle", prompt)
         ort._validate_launch_prompt_text(prepared, prompt)
 
-    def test_pure_doc_fence_excluded_from_gate_allowlist(self) -> None:
-        # A `validate_pipeline_semantics --stage` string INSIDE an inlined doc must not
-        # fail-close the launch (pure allow-set is empty).
-        ctx = _pure_generate_context()
-        ctx["tests_document"] = (
-            "run python3 tools/validate_pipeline_semantics.py --stage post_generate to check"
-        )
-        prepared = ort.prepare_launch_request_payload(_pure_request("generate", pure_context=ctx))
-        # Must not raise despite the forbidden gate string in the fenced doc.
-        ort._validate_launch_prompt_text(prepared, prepared["launch_prompt_full"])
-        scanned = ort._gate_allowlist_scan_text(prepared, prepared["launch_prompt_full"])
-        self.assertNotIn("validate_pipeline_semantics", scanned)
-
     def test_pure_prompt_is_force_rendered_over_explicit_body(self) -> None:
         # A pure launch is host-mediated: an explicit `launch_prompt_full` must be overwritten by
         # the canonical render of the request, so a caller cannot inject a mismatched
@@ -759,24 +717,6 @@ class PureRenderTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             ort._validate_launch_prompt_text(prepared, forged)
         ort._validate_launch_prompt_text(prepared, good)  # canonical still passes
-
-    def test_pure_exemplar_gate_string_excluded_from_scan(self) -> None:
-        # Fix A: a certified `<exemplar>` (R5) is fenced with `--- BEGIN EXEMPLAR ---`, NOT the
-        # PURE_DOC fence; the pure scan carve-out must strip it too, else an exemplar source
-        # containing a `validate_pipeline_semantics --stage` string fail-closes the pure launch.
-        exemplar = {
-            "node_key": "component/sibling@1.0.0",
-            "sources": [{
-                "filename": "sibling_model.f90",
-                "text": "! example: python3 tools/validate_pipeline_semantics.py --stage post_generate",
-            }],
-        }
-        prepared = ort.prepare_launch_request_payload(_pure_request("generate", exemplar=exemplar))
-        prompt = prepared["launch_prompt_full"]
-        self.assertIn("BEGIN EXEMPLAR", prompt)  # exemplar really was injected
-        ort._validate_launch_prompt_text(prepared, prompt)  # must not fail-close
-        scanned = ort._gate_allowlist_scan_text(prepared, prompt)
-        self.assertNotIn("validate_pipeline_semantics", scanned)
 
     def test_pure_launch_prompt_carries_authoring_rules_tokens(self) -> None:
         # Defect C (billed E2E, 2026-07-16): the pure template stated NO authoring rules, so the
@@ -973,10 +913,6 @@ class PureRenderTests(unittest.TestCase):
          ("compile", "generate")),
         ("docs/GLOSSARY.md", "The 3 values `minor` / `major` / `critical` are used.",
          ("compile", "generate")),
-        ("skills/workflow-generate-verify/SKILL.md",
-         "A finding always sets `verification_status=fail`", ("generate",)),
-        ("skills/workflow-compile-verify/SKILL.md",
-         "A finding sets `verification_status=fail`", ("compile",)),
         ("docs/ORCHESTRATION.md", "The conductor routes a verify finding by `issue_severity`",
          ("compile", "generate")),
     )
@@ -1058,12 +994,12 @@ class PureRenderTests(unittest.TestCase):
              ("docs/AGENT_CONTRACT.md", ("compile", "generate")),
              ("docs/GLOSSARY.md", ("compile", "generate")),
              ("docs/ORCHESTRATION.md", ("compile", "generate")),
-             ("skills/workflow-generate-verify/SKILL.md", ("generate",)),
-             ("skills/workflow-compile-verify/SKILL.md", ("compile",))},
-            "a surface was dropped, or the phases its routing line must reach were narrowed. A "
-            "verify `SKILL` is scoped to its own phase; every phase-independent statement of the "
-            "routing must reach BOTH rubrics, because a reader of the routing does not learn "
-            "from it which phase's rule to look for.")
+             },
+            "a surface was dropped, or the phases its routing line must reach were narrowed. "
+            "Every statement of the routing must reach BOTH rubrics, because a reader of the "
+            "routing does not learn from it which phase's rule to look for. The two verify "
+            "`SKILL`s were the phase-SCOPED members here until Z4 (issue #171) deleted them "
+            "with the agentic leaf that read them.")
         for rel, sentence, steps in self._RUBRIC_POINTER_SURFACES:
             with self.subTest(surface=rel):
                 text = (repo_root / rel).read_text(encoding="utf-8")
@@ -1180,26 +1116,6 @@ class PureRenderTests(unittest.TestCase):
                 for key in named:
                     self.assertIn(key, section,
                                   f"{rel} no longer records that the reviewer is handed {key}")
-
-    def test_phase_02_is_not_a_generate_leaf_must_read_as_its_own_prose_says(self) -> None:
-        """§Generate-executor states that the agentic leaf is NOT handed the rubric and reaches
-        it through the `SKILL` pointer. That is a claim about `leaf_contract_doc_refs`, so it is
-        driven, not read: if a phase document ever became a `Generate` must-read the sentence
-        would be false in the direction that matters (a maintainer would stop looking for the
-        pointer). The prose is required to say so, and the closed statement is checked against
-        the function.
-        """
-        for m3c in (False, True):
-            with self.subTest(is_m3c_physics=m3c):
-                refs = ort.leaf_contract_doc_refs("generate", is_m3c_physics=m3c)
-                self.assertTrue(refs, "no contract docs at all; this check reads nothing")
-                self.assertNotIn("docs/workflow/phases/phase_02_generate.md", refs)
-        doc = (Path(ort.__file__).resolve().parents[1] / "docs" / "workflow" / "phases"
-               / "phase_02_generate.md").read_text(encoding="utf-8")
-        self.assertIn("The agentic leaf is NOT handed it", doc,
-                      "§Generate-executor no longer says the agentic leaf reaches the rubric by "
-                      "pointer; without that sentence 'this document' reads as the rubric and "
-                      "the reader concludes it is force-read")
 
     def test_phase_02_warns_its_editor_that_the_last_subsection_is_sliced(self) -> None:
         """The editing note in §2-2's preamble — outside the slice the reviewer receives — is
@@ -1384,10 +1300,6 @@ class PureRenderTests(unittest.TestCase):
     _SEVERITY_ASSIGNMENT_SURFACES = (
         ("docs/workflow/phases/phase_02_generate.md", None, None),
         ("docs/workflow/phases/phase_01_compile.md", None, None),
-        ("skills/workflow-generate-verify/SKILL.md", None, None),
-        ("skills/workflow-compile-verify/SKILL.md", None, None),
-        ("skills/workflow-generate-generate/SKILL.md", None, None),
-        ("skills/workflow-compile-generate/SKILL.md", None, None),
         ("tools/prompt_templates/pure_generate_verify.txt", None, None),
         # Issue #169: the `harness` bundle shape's own two GENERATE templates. The producer one
         # is scanned for the same reason its `m3c` twin is — a template reaches a leaf before
@@ -1409,9 +1321,6 @@ class PureRenderTests(unittest.TestCase):
         # this file is now its residual-agentic transport rather than its only one; it is scanned
         # for the unchanged reason that it carries `issue_severity: <issue_severity>` as its
         # output contract and reaches `validate.judge` as well.
-        ("tools/prompt_templates/substep_agent.txt", None, None),
-        ("tools/prompt_templates/step_agent.txt", None, None),
-        ("tools/prompt_templates/common_boilerplate.txt", None, None),
         # The derivation below found these two as well — the producer-side pure templates. A
         # producer template does not choose the verifier's value any more than a producer
         # `SKILL` does, and issue #143's leftover was in exactly that position.
@@ -1518,12 +1427,9 @@ class PureRenderTests(unittest.TestCase):
         # severity — the line still matches the pattern only through the mentions it had.
         "docs/RUNBOOK.md: - Recovery from a **`conductor_phase_fail_closed` whose `rea"
         " #ce3cf072ca6f",
-        "skills/workflow-generate-verify/SKILL.md: - A finding always sets "
-        "`verification_status=fail` (record ` #4a2a99cfe8e9",
-        # Issue #148: the `Compile.verify` mirror of the line above. It routes and points; it
-        # assigns nothing.
-        "skills/workflow-compile-verify/SKILL.md: - A finding sets "
-        "`verification_status=fail` (record `issue_s #dc93424d562a",
+        # The two verifier `SKILL`s' routing lines stood here until Z4 (issue #171). Both files
+        # are deleted with the agentic leaf: a pure leaf reads no `SKILL`, so the lines are not
+        # on a leaf-read surface any more and there is nothing left to allowlist.
         # `pure-30`: the checklist's input-side clause points at the rubric's `major` bullet
         # instead of re-enumerating its cases, which is a POINTER — and the gate did its job by
         # making that new mention be read before it shipped.
@@ -1536,6 +1442,55 @@ class PureRenderTests(unittest.TestCase):
         "tools/prompt_templates/pure_generate_verify_harness.txt: One kind of finding is NOT "
         "code-vs-IR and is still yours to  #18a97797a2d9",
     )
+
+    @classmethod
+    def _inlined_repo_documents(cls) -> set[str]:
+        """Every repository `.md` document a pure context builder inlines into a prompt.
+
+        Read out of `tools/workflow_conductor.py`'s AST rather than by driving the builders:
+        each one needs a node on disk, and what is being derived is WHICH files the code names,
+        not what a particular node's run produces. The names resolved are a literal
+        repo-relative path, the two contract-ref constants, and a `WORKFLOW_PHASE_DOC_BY_STEP`
+        subscript — the three spellings the builders use today; a fourth spelling would go
+        unseen, which is why the surface tuple stays hand-listed and this only bounds its
+        growth.
+        BOUNDED to `docs/**.md`. The builders also inline node artifacts (an IR, a runner) and
+        two `docs/examples/` schema files, none of which is prose that could assign a severity;
+        a docstring that merely MENTIONS a path is excluded by the full-match, which matters
+        because `_build_pure_context`'s docstring names the checks contract in order to say it
+        is NOT inlined there.
+        """
+        repo_root = Path(ort.__file__).resolve().parents[1]
+        tree = ast.parse((repo_root / "tools" / "workflow_conductor.py").read_text(
+            encoding="utf-8"))
+        consts = {"CHECKS_MODULE_CONTRACT_REF": ort.CHECKS_MODULE_CONTRACT_REF,
+                  "RUNNER_OUTPUT_CONTRACT_REF": ort.RUNNER_OUTPUT_CONTRACT_REF}
+        doc_re = re.compile(r"docs/[\w./-]+\.md")
+        found: set[str] = set()
+        builders = 0
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.FunctionDef):
+                continue
+            if not (node.name.startswith("_build_pure_") and node.name.endswith("_context")):
+                continue
+            builders += 1
+            body = node.body[1:] if ast.get_docstring(node) is not None else node.body
+            for stmt in body:
+                for sub in ast.walk(stmt):
+                    if isinstance(sub, ast.Constant) and isinstance(sub.value, str):
+                        if doc_re.fullmatch(sub.value):
+                            found.add(sub.value)
+                    elif isinstance(sub, ast.Name) and sub.id in consts:
+                        found.add(consts[sub.id])
+                    elif (isinstance(sub, ast.Subscript)
+                            and isinstance(sub.value, ast.Name)
+                            and sub.value.id == "WORKFLOW_PHASE_DOC_BY_STEP"
+                            and isinstance(sub.slice, ast.Constant)):
+                        found.add(ort.WORKFLOW_PHASE_DOC_BY_STEP[sub.slice.value])
+        assert builders >= 5, (
+            f"only {builders} pure context builders found; the naming convention this "
+            "derivation reads has moved and it is now scanning nothing")
+        return found
 
     def test_no_leaf_surface_hand_assigns_a_severity_outside_the_rubric(self) -> None:
         """A leaf-read surface may ROUTE on a severity; it may not assign one beside a checklist
@@ -1562,21 +1517,25 @@ class PureRenderTests(unittest.TestCase):
         no line for it to catch.
         """
         repo_root = Path(ort.__file__).resolve().parents[1]
-        # The surface list must COVER what the leaf actually force-reads, derived rather than
+        # The surface list must COVER what a leaf actually receives, derived rather than
         # trusted: round 5 found `RUNNER_OUTPUT_CONTRACT.md` missing while the docstring claimed
         # the set was closed, and deleting a surface that carries no allowlisted line was
         # invisible (3 of 5 were in that state), so the set identity below self-tests only the
         # surfaces that happen to mention a severity.
+        # Until Z4 (issue #171) the derivation read `leaf_contract_doc_refs` — the documents an
+        # AGENTIC leaf was TOLD to force-read. No leaf force-reads anything now, and that
+        # function is gone with the transport: a pure leaf holds no tools, and a repository
+        # document reaches it only where a `_build_pure_*_context` INLINES the file into the
+        # prompt. The derivation below asks the same question of the transport that exists.
         scanned = {rel for rel, _b, _e in self._SEVERITY_ASSIGNMENT_SURFACES}
-        for step in ("compile", "generate"):
-            for m3c in (False, True):
-                forced = set(ort.leaf_contract_doc_refs(step, is_m3c_physics=m3c))
-                self.assertTrue(forced,
-                                "no contract docs returned; this derivation reads nothing")
-                self.assertEqual(forced - scanned, set(),
-                                 f"a document every `{step}` leaf force-reads "
-                                 f"(is_m3c_physics={m3c}) is not scanned for hand-assigned "
-                                 f"severities; add it to `_SEVERITY_ASSIGNMENT_SURFACES`")
+        inlined = self._inlined_repo_documents()
+        self.assertTrue(inlined,
+                        "no inlined documents derived; this derivation reads nothing")
+        self.assertEqual(inlined - scanned, set(),
+                         "a document a pure leaf receives INLINED in its prompt is not scanned "
+                         "for hand-assigned severities. An inlined document reaches the leaf in "
+                         "the same prompt as its checklist, so a value spelled in one outranks "
+                         "the rubric; add it to `_SEVERITY_ASSIGNMENT_SURFACES`")
         # EVERY launch-prompt template, derived from the directory rather than listed. Round 2
         # found `substep_agent.txt` missing — the agentic transport, and the ONLY one
         # `Compile.verify` has, carrying `issue_severity: <issue_severity>` as its output
@@ -1599,15 +1558,22 @@ class PureRenderTests(unittest.TestCase):
                          "Every template is a transport that reaches a leaf BEFORE its `SKILL` "
                          "and its phase doc, so a value spelled in one outranks the rubric; add "
                          "it to `_SEVERITY_ASSIGNMENT_SURFACES`.")
-        # The producer `SKILL`s are not force-read by the VERIFIER, so the derivation above
-        # cannot reach them; they are asserted as a literal set for the same reason the surface
-        # list is (a silently dropped entry is invisible — issue #143 lost one there).
+        # The four `compile` / `generate` producer and verifier `SKILL`s were surfaces here
+        # until Z4 (issue #171) — a producer that spells the verifier's value states a rule it
+        # does not own, and issue #143 left one behind in exactly that place. A pure leaf reads
+        # no `SKILL`: they are deleted with the transport that delivered them, so the set is
+        # empty. Asserted against the TREE as well, not only against itself — a phase `SKILL`
+        # that comes back is red until someone decides whether it reaches a leaf, which is the
+        # same review gate the allowlist above is.
+        self.assertEqual({rel for rel in scanned if rel.startswith("skills/")}, set())
         self.assertEqual(
-            {rel for rel in scanned if rel.startswith("skills/")},
-            {"skills/workflow-generate-verify/SKILL.md",
-             "skills/workflow-compile-verify/SKILL.md",
-             "skills/workflow-generate-generate/SKILL.md",
-             "skills/workflow-compile-generate/SKILL.md"})
+            sorted(str(path.relative_to(repo_root))
+                   for pattern in ("workflow-compile-*/SKILL.md", "workflow-generate-*/SKILL.md")
+                   for path in (repo_root / "skills").glob(pattern)),
+            [],
+            "a `compile` / `generate` phase `SKILL` exists again. No leaf reads one since Z4 "
+            "(issue #171); if one is delivered to a leaf again, add it to "
+            "`_SEVERITY_ASSIGNMENT_SURFACES` and to the set above")
         # Each rubric is excluded from ITS OWN document only, never as a union across phases.
         # Round 1 measured the union version: pasting phase_02's `- `critical`: the sources
         # under review …` bullet verbatim into `skills/workflow-compile-verify/SKILL.md`, and
@@ -1707,17 +1673,13 @@ class PureRenderTests(unittest.TestCase):
     # data) and makes any line the HOST adds beside it red.
 
     # The launch metadata slot is spelled with a COLON (`issue_severity: major`), so the
-    # `=`-only branch of `_SEVERITY_LITERAL_RE` saw nothing here; issue #149 added `[:=]`.
-    _RENDERED_SEVERITY_ROUTING_ALLOWLIST = (
-        # `substep_agent.txt:15`'s launch-metadata slot, filled from the payload. This is a VALUE
-        # the conductor passes on a repair launch (`workflow_conductor._repair_payload` and five
-        # sibling sites hard-code `major`), not prose that assigns a class of finding a value.
-        # A different value is a different line and is red HERE only because the fixture below
-        # supplies it: this sweep reads `_RENDER_REPAIR`, not the conductor. Round 1 measured the
-        # difference — rewriting all six conductor sites to `critical` leaves this file green and
-        # is caught by `test_workflow_conductor` instead.
-        "issue_severity: major #e54e592e6501",
-    )
+    # `=`-only branch of `_SEVERITY_LITERAL_RE` saw nothing there; issue #149 added `[:=]`. That
+    # slot was `substep_agent.txt:15`'s, filled from the payload, and it was this tuple's sole
+    # entry until Z4 (issue #171) deleted the template with the agentic leaf. The pure
+    # templates carry no launch-metadata block, so no host-built line of any rendered prompt
+    # names a severity — EMPTY is the measurement, and the polarity is unchanged: a host line
+    # that starts naming one is red until someone reads it.
+    _RENDERED_SEVERITY_ROUTING_ALLOWLIST: ClassVar[tuple[str, ...]] = ()
 
     # The fixture values are the production ones: `_RENDER_REPAIR` is what the conductor's six
     # repair sites pass, and no payload value carries a severity WORD (`repair_reason` is a
@@ -1804,12 +1766,18 @@ class PureRenderTests(unittest.TestCase):
         "sources": [{"filename": "demo_sibling_model.f90",
                      "text": "module demo_sibling_model\nend module\n"}],
     }
-    # `<step>.<substep>/<shape>` for every shape, and the dependency fixture each cold shape
-    # carries. `slim` and the pure shapes are handled separately below.
+    # `<step>.<substep>/<shape>` for every COLD shape, and the dependency fixture each one
+    # carries. The repair shapes are handled separately below.
+    # Until Z4 (issue #171) these three were the AGENTIC cold shapes and the pure loop had a
+    # single `pure-cold`; the agentic loop is gone with its transport, so the three dependency
+    # fixtures — which exist to drive `_build_dependency_facts`' three branches, one of them
+    # observed by nothing else (`test_every_prose_statement_of_a_pinned_builder_is_driven`) —
+    # ride on the pure cold shape instead. Renaming them keeps every label in this class
+    # `pure-*`, which is what the whole class now renders.
     _RENDER_COLD_SHAPES: ClassVar[dict[str, str]] = {
-        "cold": "_RENDER_DEP",
-        "cold-no-arg-detail": "_RENDER_DEP_NO_DETAIL",
-        "cold-partial-arg-detail": "_RENDER_DEP_PARTIAL",
+        "pure-cold": "_RENDER_DEP",
+        "pure-cold-no-arg-detail": "_RENDER_DEP_NO_DETAIL",
+        "pure-cold-partial-arg-detail": "_RENDER_DEP_PARTIAL",
     }
 
     def _host_built_launch_requests(self) -> list[tuple[str, dict]]:
@@ -1822,45 +1790,26 @@ class PureRenderTests(unittest.TestCase):
         hand-scoped fixture here would pin this test's copy of it instead.
         """
         reqs: list[tuple[str, dict]] = []
-        pairs = sorted(LLM_LEAF_SUBSTEPS)
-        self.assertTrue(pairs, "no LLM leaf substeps; this renders nothing")
         refs = wc.NodeRefs(**self._RENDER_REFS)
-        for step, substep in pairs:
-            for shape in (*self._RENDER_COLD_SHAPES, "repair-full", "slim"):
-                kw = dict(self._RENDER_COMMON)
-                dep = getattr(self, self._RENDER_COLD_SHAPES.get(shape, "_RENDER_DEP"))
-                if shape == "repair-full":
-                    kw["repair"] = dict(self._RENDER_REPAIR)
-                elif shape == "slim":
-                    # `repair_findings` rides INSIDE the `repair` dict: `build_launch_request`
-                    # has no separate kwarg for it and `rep.update(repair)` is what makes
-                    # `_is_slim_repair_request` true.
-                    kw["repair"] = dict(self._RENDER_REPAIR,
-                                        repair_findings=self._RENDER_FINDINGS)
-                    kw["warm_resume"] = True
-                reqs.append((f"{step}.{substep}/{shape}",
-                             wc.build_launch_request(
-                                 refs, step=step, substep=substep,
-                                 resolved_dependencies=(dep,),
-                                 dependency_surface=self._RENDER_SURFACE,
-                                 exemplar=self._RENDER_EXEMPLAR, **kw)))
         pure_pairs = sorted(LLM_LEAF_SUBSTEPS)
-        self.assertTrue(pure_pairs, "no pure-capable substeps; this renders nothing")
+        self.assertTrue(pure_pairs, "no LLM leaf substeps; this renders nothing")
         for step, substep in pure_pairs:
             ctx = _pure_context_for(step, substep)
             reason = ("pure_bundle_repair" if (step, substep) == ("generate", "generate")
                       else "pure_ir_document_repair" if (step, substep) == ("compile", "generate")
                       else "pure_ir_verdict_repair" if step == "compile"
                       else "pure_verdict_repair")
-            for shape in ("pure-cold", "pure-repair-warm", "pure-repair-cold"):
+            for shape in (*self._RENDER_COLD_SHAPES, "pure-repair-warm", "pure-repair-cold"):
                 kw = dict(self._RENDER_COMMON, pure_leaf=True, makefile_host_authored=True,
                           runner_host_authored=True)
                 extra: dict = {}
-                if shape == "pure-cold":
+                if shape in self._RENDER_COLD_SHAPES:
                     kw["pure_context"] = ctx
-                    # Every optional input for every pair, as in the agentic loop above: the
-                    # BUILDER decides what to scope (`dependency_surface` to compile.generate).
-                    extra = {"resolved_dependencies": (self._RENDER_DEP,),
+                    # Every optional input for every pair: the BUILDER decides what to scope
+                    # (`dependency_surface` to compile.generate, `exemplar` to
+                    # generate.generate), which is the production division of labour.
+                    extra = {"resolved_dependencies": (
+                                 getattr(self, self._RENDER_COLD_SHAPES[shape]),),
                              "dependency_surface": self._RENDER_SURFACE,
                              "exemplar": self._RENDER_EXEMPLAR}
                 else:
@@ -1919,6 +1868,9 @@ class PureRenderTests(unittest.TestCase):
         `_is_slim_repair_request`), not re-derived: a slim turn is built from no template at all,
         which is why the subtraction below is empty for it — a fact this returns rather than an
         invariant asserted elsewhere.
+        Every request is pure since Z4 (issue #171). The slim warm-resume repair turn, built
+        from no template at all, went with the agentic leaf, and so did the `_is_slim_repair_request`
+        branch below.
         A pure request claims the pure LAUNCH template only where something reads it: a cold
         launch renders it, and a COLD repair lifts static paragraphs out of it
         (`_pure_output_contract_text` / `_pure_authoring_rules_text`) alongside
@@ -1941,9 +1893,6 @@ class PureRenderTests(unittest.TestCase):
                     names.add(ort._pure_launch_template_name(request_payload))
             else:
                 names.add(ort._pure_launch_template_name(request_payload))
-        elif not ort._is_slim_repair_request(request_payload):
-            names.add(ort._launch_prompt_template_name(request_payload))
-            names.add("common boilerplate")
         return {ln for name in names if name in templates
                 for ln in templates[name].splitlines() if ln.strip()}
 
@@ -1979,12 +1928,7 @@ class PureRenderTests(unittest.TestCase):
                 # (b) family witness: the config reached the renderer branch it claims.
                 ort._validate_launch_prompt_text(prepared, rendered)
                 first = rendered.splitlines()[0]
-                if shape == "slim":
-                    self.assertTrue(rendered.startswith(ort.SLIM_REPAIR_PROMPT_SENTINEL), label)
-                elif shape.startswith("pure"):
-                    self.assertTrue(first.startswith(PURE_PROMPT_SENTINEL), label)
-                else:
-                    self.assertEqual(first, "You are a substep agent.", label)
+                self.assertTrue(first.startswith(PURE_PROMPT_SENTINEL), label)
             data_lines = self._request_data_lines(prepared)
             template_lines = self._request_template_lines(prepared)
             rendered_lines = rendered.splitlines()
@@ -2002,10 +1946,11 @@ class PureRenderTests(unittest.TestCase):
                     bool(template_lines & present), bool(template_lines),
                     f"{label}: the request resolves to templates none of whose lines survive "
                     f"into the render; the subtraction would be reading the wrong templates")
-                self.assertEqual(
-                    bool(template_lines), shape != "slim",
-                    f"{label}: a slim repair turn is built from no template and every other "
-                    f"shape is built from one; `_request_template_lines` disagrees")
+                self.assertTrue(
+                    template_lines,
+                    f"{label}: every shape is built from a template since Z4 — the slim warm "
+                    f"repair turn, which was built from none, went with the agentic leaf; "
+                    f"`_request_template_lines` disagrees")
             for line in host_lines:
                 if self._SEVERITY_LITERAL_RE.search(line):
                     key = (f"{line[:60]} "
@@ -2017,9 +1962,8 @@ class PureRenderTests(unittest.TestCase):
             self.assertEqual(
                 seen_shapes,
                 {(f"{s}.{ss}", shape) for s, ss in LLM_LEAF_SUBSTEPS
-                 for shape in (*self._RENDER_COLD_SHAPES, "repair-full", "slim")}
-                | {(f"{s}.{ss}", shape) for s, ss in LLM_LEAF_SUBSTEPS
-                   for shape in ("pure-cold", "pure-repair-warm", "pure-repair-cold")},
+                 for shape in (*self._RENDER_COLD_SHAPES,
+                               "pure-repair-warm", "pure-repair-cold")},
                 "the rendered configurations do not cover the substep tables the conductor "
                 "dispatches on")
         for line in PURE_SYSTEM_PROMPT.splitlines():
@@ -2094,17 +2038,21 @@ class PureRenderTests(unittest.TestCase):
                                "`issue_severity=major`.")
     # Every `orchestration_runtime` function on the launch-render closure that returns PROSE a
     # leaf reads. Each is wrapped below and must be shown to reach the sweep.
+    # `_build_gate_runbook`, `_build_task_card` and `_render_slim_repair_launch_prompt` were
+    # here until Z4 (issue #171): all three built AGENTIC prompt text — the gate commands the
+    # leaf was told to run, its task card, and the warm-resume slim repair turn — and went with
+    # the leaf that received them.
     _HOST_BUILT_PROMPT_BUILDERS = (
-        "_build_gate_runbook", "_build_task_card", "_build_dependency_facts",
+        "_build_dependency_facts",
         "_build_dependency_surface_facts", "_published_operations_lines",
-        "_argument_detail_lines", "_build_exemplar", "_render_slim_repair_launch_prompt",
+        "_argument_detail_lines", "_build_exemplar",
         "_render_pure_launch_prompt", "_render_pure_repair_prompt",
         "_pure_output_contract_text", "_pure_authoring_rules_text",
     )
     # Dispatchers / value maps: they return no prose of their own but CALL builders, so the
     # derivation below descends into them without wrapping them.
     _PROMPT_RENDER_TRANSIT = frozenset({
-        "_render_launch_prompt_template", "_template_placeholder_values",
+        "_render_launch_prompt_template",
     })
     # Callees on the closure that add no prose of their own. Not descended into: the closure of
     # `_allowed_file_tool_paths_for_launch` alone pulls in path normalization that has nothing
@@ -2114,7 +2062,6 @@ class PureRenderTests(unittest.TestCase):
     # subtracting data VALUES instead. A line any of these adds is swept like any other.
     _NON_PROSE_PROMPT_HELPERS = frozenset({
         "_load_launch_prompt_templates",     # reads the template files verbatim
-        "_launch_prompt_template_name",      # returns a template NAME
         "_pure_launch_template_name",        # returns a template NAME
         "_pure_template_paragraph",          # lifts a template paragraph VERBATIM (subtracted)
         "_fence_pure_doc",                   # wraps a value in the data fence
@@ -2305,16 +2252,12 @@ class PureRenderTests(unittest.TestCase):
     # entry is a decision, one line of reason each, in the same polarity as the allowlists
     # above: a newly undriven paragraph is red until someone reads it and either drives it or
     # writes down why it cannot be driven.
-    _UNDRIVEN_PROSE_STATEMENTS = (
-        # `_build_task_card`'s directory deliverables. `out_dirs` is the trailing-slash entries
-        # of `allowed_output_paths`, and NO `build_launch_request` payload carries one — pinned
-        # by `test_no_launch_request_declares_a_directory_deliverable` below rather than read
-        # off the source, so this exemption dies the moment the conductor grows one.
-        "- Output directories you may create files under:  #19073d249d3f",
-        # `_build_gate_runbook`'s stage self-check. `--stage\s+(\w+)` is a REGEX literal, not
-        # text any leaf reads; the branch it guards raises rather than emitting a line.
-        "--stage\\s+(\\w+) #2ad101215b00",
-    )
+    # EMPTY since Z4 (issue #171), measured rather than chosen: both entries belonged to
+    # builders that served the agentic leaf — `_build_task_card`'s directory-deliverables
+    # paragraph and `_build_gate_runbook`'s stage self-check regex — and went with them, so
+    # every prose statement of every remaining builder is driven. The tuple stays, with its
+    # polarity: a newly undriven paragraph is red until someone reads it.
+    _UNDRIVEN_PROSE_STATEMENTS: ClassVar[tuple[str, ...]] = ()
 
     def test_every_prose_statement_of_a_pinned_builder_is_driven(self) -> None:
         """Every paragraph a pinned builder can emit is rendered by the table above.
@@ -2374,25 +2317,6 @@ class PureRenderTests(unittest.TestCase):
             "to `_UNDRIVEN_PROSE_STATEMENTS` with the reason and, where the reason is a property "
             "of the payloads, pin that property. Builders: "
             + ", ".join(f"{k!r} in {expected[k]}" for k in sorted(undriven)))
-
-    def test_no_launch_request_declares_a_directory_deliverable(self) -> None:
-        """The property `_UNDRIVEN_PROSE_STATEMENTS`' first entry rests on.
-
-        `_build_task_card` renders "Output directories you may create files under" from the
-        trailing-slash entries of `allowed_output_paths`. Exempting that paragraph as undrivable
-        is a claim about `build_launch_request`, so it is measured here rather than read off the
-        source: if the conductor ever grants a directory, this is red and the exemption has to
-        go before the paragraph can carry an unswept severity.
-        """
-        for label, req in self._host_built_launch_requests():
-            paths = req.get("allowed_output_paths")
-            self.assertIsInstance(paths, list, label)
-            for path in paths:
-                self.assertFalse(
-                    str(path).strip().endswith("/"),
-                    f"{label}: `build_launch_request` now grants the directory {path!r}, so "
-                    f"`_build_task_card`'s directory paragraph IS reachable; drive it and drop "
-                    f"its entry from `_UNDRIVEN_PROSE_STATEMENTS`")
 
     def test_pure_cold_launch_prompt_carries_the_host_resolved_dependency_facts(self) -> None:
         """A COLD pure launch prompt injects `_build_dependency_facts`, for both pure pairs.
@@ -3024,19 +2948,6 @@ class PureValidatePipelineTests(unittest.TestCase):
             self.assertEqual(vps._launch_request_is_pure(payload), is_pure_request(payload))
         self.assertEqual(PURE_LEAF_MODE, "pure")
         self.assertEqual(PURE_CAPABILITY_MODE, "pure_readonly")
-
-    def test_pure_and_slim_are_mutually_exclusive(self) -> None:
-        # A pure warm-resume repair satisfies the slim shape; both slim predicates must exclude
-        # it so the render/marker dispatch order is defensive, not load-bearing.
-        pure_repair = _pure_request(
-            warm_resume=True, repair_strategy="reuse", repair_findings="fix",
-            repair_target_agent_run_id="ar_prev")
-        self.assertFalse(ort._is_slim_repair_request(pure_repair))
-        self.assertFalse(vps._launch_request_is_slim_repair(pure_repair))
-        # A genuine (non-pure) slim repair is still slim.
-        slim = {"warm_resume": True, "repair_strategy": "reuse", "repair_findings": "fix"}
-        self.assertTrue(ort._is_slim_repair_request(slim))
-        self.assertTrue(vps._launch_request_is_slim_repair(slim))
 
     def test_pure_marker_set_matches_orchestration_runtime(self) -> None:
         prepared = ort.prepare_launch_request_payload(_pure_request("generate"))

@@ -221,18 +221,22 @@ class WorkflowHomesRootOverrideTests(unittest.TestCase):
 
 
 class OnePrivateRootTests(unittest.TestCase):
-    """The writers and the guard land in ONE root. This is issue #132 itself."""
+    """The writers land in ONE root. This is issue #132 itself."""
 
-    def test_the_two_writers_and_the_guard_resolve_one_root(self) -> None:
-        """Move `$HOME` and all three follow, together.
+    def test_the_two_writers_resolve_one_root(self) -> None:
+        """Move `$HOME` and both follow, together.
 
-        The three sites are `run_workflow._claim_lock_path` (writes a start claim),
-        `orchestration_runtime._workflow_homes_root` (writes the isolated homes) and
-        `protected_host_read_roots` (forbids a leaf from reading any of it). Before
+        The two sites are `run_workflow._claim_lock_path` (writes a start claim) and
+        `orchestration_runtime._workflow_homes_root` (writes the isolated homes). Before
         issue #132 each writer built `Path.home() / ".atmofab" / …` for itself, so they
         agreed by coincidence: the #127 rename moved one and the others stayed. There
         were four sites; the operator-token writer and its `dismiss_violation` reader
-        went with issue #176.
+        went with issue #176, and the READ GUARD — `protected_host_read_roots`, which
+        refused a leaf's `Bash` read of either root — went with Z4 (issue #171). It
+        guarded a leaf-held tool, and a pure leaf holds none: it receives a closed context
+        and returns one document, so there is no read for the guard to refuse and nothing
+        it could still be coupled to. What keeps the operator's root out of a leaf's reach
+        now is the sandbox profile, which binds the repository and nothing else.
 
         Driven through the REAL functions, not through the resolvers — pinning at the
         resolver would leave the wiring free to be deleted, which is the failure this
@@ -263,10 +267,8 @@ class OnePrivateRootTests(unittest.TestCase):
                 # WRITER 2 — the isolated homes root.
                 self.assertEqual(ort._workflow_homes_root(), atmofab / "homes")
 
-                # THE GUARD — both entries, so a Bash read of either fails closed.
-                roots = hooks_common.protected_host_read_roots()
-                self.assertIn(atmofab, roots)
-                self.assertIn(atmofab / "homes", roots)
+                # No third site: the read guard that was the third assertion here is gone
+                # with the tool it guarded (see the docstring).
 
     def test_the_dot_atmofab_constant_is_spelled_once(self) -> None:
         """`".atmofab"` is spelled exactly ONCE across `tools/` and `mcp_servers/`, in

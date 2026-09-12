@@ -237,6 +237,8 @@ own declaration; the version each resolved to is in `all_nodes` alone. The key i
 ### `algorithm.steps[].inputs` and `algorithm.steps[].outputs`
 A list of non-empty strings (e.g. `["U_L", "U_R"]`); the object form (`[{name: ..., source: ...}]`) is forbidden.
 
+Every token in either list is **traceable** to one of three places: a direct input/output variable of `controlled_spec.md`, an intermediate variable declared in `temporaries`, or a derived quantity of `derived_field_rules`. A name obtained by a slice, an alias, or a component decomposition (`h_L` from `U_L[0]`) is declared in `temporaries` or `derived_field_rules` so that its provenance is explicit. A token that maps to neither a direct name nor a derived one is a `Compile fail` (`undefined binding`), because the dataflow then cannot be traced from `spec.ir.yaml` alone. **`algorithm.state_variables` is NOT one of the provenance sources**: it serves the state contract, not the dataflow trace, so a name carries provenance only through an `io_contract` `inputs` / `outputs` entry, a `state_snapshots` `schema.variables` entry, `temporaries`, or `derived_field_rules`. A prognostic field usually qualifies through the snapshot schema; one that does not — a node that snapshots it under another name, or not at all — is an undefined binding whatever `state_variables` says, and needs a `temporaries` / `derived_field_rules` declaration.
+
 ### `algorithm.execution_mode`
 Only `sequence` / `conditional` / `iterative` / `columnwise` are allowed.
 

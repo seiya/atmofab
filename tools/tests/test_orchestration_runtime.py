@@ -29229,7 +29229,12 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # `ir_meta.json` and must neither author nor delete, so the one sentence saying so
         # belongs in the file that leaf force-reads. One line, not the rule's rationale —
         # that is in `docs/CLI_REFERENCE.md#write-step-result`, which no leaf reads.
-        "docs/workflow/phases/phase_01_compile.md": 69500,
+        # Bumped for issue #171 (Z4): the step-token traceability rule, and with it the
+        # `algorithm.state_variables` carve-out, moved here from the deleted
+        # `skills/workflow-compile-generate/SKILL.md`. The IR author is a pure leaf now — it
+        # reads no `SKILL`, and this document is inlined into its prompt whole — so a rule its
+        # `Compile.static` gate refuses it on had nowhere else left to be stated.
+        "docs/workflow/phases/phase_01_compile.md": 70700,
     }
 
     def test_child_context_docs_within_budget(self) -> None:

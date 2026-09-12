@@ -446,43 +446,39 @@ class OwnAridDisambiguationTests(unittest.TestCase):
 
 
 class LeafTranscriptRootTests(unittest.TestCase):
-    """The post-mortem readers follow the transcript into the private home.
+    """The post-mortem readers find the transcript in the operator's home.
 
-    Issue #63 moved an agentic leaf's transcript out of `~/.claude/projects`. The
-    code was already correct when this was written, but NOTHING observed it:
-    re-pointing either reader at the operator home left the whole suite green.
-    Regress it and `build_launch_incident` answers "no leaf transcript located"
-    for every post-#63 dangling leaf — a false record about the very leaf that
-    failed, on the one path an operator uses to diagnose a hung run.
+    Issue #63 moved an AGENTIC leaf's transcript out of `~/.claude/projects` into the private
+    home the conductor prepared for it, and this class pinned both readers onto that root —
+    the code was already correct when it was written, but NOTHING observed it: re-pointing
+    either reader at the operator home left the whole suite green.
+
+    Z4 (issue #171) retired the agentic leaf and the private home with it. A pure leaf runs
+    with no `CLAUDE_CONFIG_DIR` (`tools/pure_leaf.py`), so its transcript is written where the
+    CLI writes every transcript, and `claude_leaf_projects_roots` returns that one root. What
+    this class pins now is the operator-home half, which was always the other branch.
+
+    ACCEPTED LOSS, recorded rather than discovered later: a transcript written by a pre-Z4
+    agentic leaf sat under `<homes-root>/<orchestration_id>/claude/projects` and the
+    diagnostician no longer looks there, so `build_launch_incident` answers "no leaf transcript
+    located" for a dangling leaf of a pre-Z4 run. The files are not deleted — the run's own
+    home is still enumerated by `tools/prune_workflow_homes.py` — and no such leaf can be
+    launched again.
     """
 
-    def _repo_with_private_home(self, td: str) -> tuple[Path, Path, str]:
+    def _repo_and_slug(self, td: str) -> tuple[Path, str]:
         repo = Path(td) / "repo"
         repo.mkdir()
-        home = Path(td) / "atmofab-claude-diag"
-        home.mkdir()
         meta = repo / "workspace" / "orchestrations" / "o"
         meta.mkdir(parents=True)
-        (meta / "orchestration_meta.json").write_text(
-            json.dumps({"claude_workflow_home": str(home)}), encoding="utf-8")
+        (meta / "orchestration_meta.json").write_text(json.dumps({}), encoding="utf-8")
         slug = str(repo.resolve()).replace("/", "-")
-        return repo, home, slug
+        return repo, slug
 
-    def test_the_leaf_transcript_is_found_in_the_private_home(self) -> None:
+    def test_a_transcript_in_the_operator_home_is_found(self) -> None:
+        """The only root there is. This fixture was the pre-#63 case and is now the live one."""
         with tempfile.TemporaryDirectory() as td:
-            repo, home, slug = self._repo_with_private_home(td)
-            proj = home / "projects" / slug
-            proj.mkdir(parents=True)
-            (proj / "arid-1.jsonl").write_text("{}\n", encoding="utf-8")
-            found = diag._locate_leaf_transcript("arid-1", repo, "o")
-            assert found is not None
-            self.assertEqual(found.path, proj / "arid-1.jsonl")
-            self.assertEqual(found.projects_root, home / "projects")
-
-    def test_a_pre_move_transcript_in_the_operator_home_is_still_found(self) -> None:
-        """A run recorded before the move must stay auditable."""
-        with tempfile.TemporaryDirectory() as td:
-            repo, _home, slug = self._repo_with_private_home(td)
+            repo, slug = self._repo_and_slug(td)
             operator = Path(td) / "operator"
             proj = operator / ".claude" / "projects" / slug
             proj.mkdir(parents=True)
@@ -491,36 +487,40 @@ class LeafTranscriptRootTests(unittest.TestCase):
                 found = diag._locate_leaf_transcript("arid-old", repo, "o")
             assert found is not None
             self.assertEqual(found.path, proj / "arid-old.jsonl")
-            # The root, not just the file: an operator reading the incident has to be
-            # able to tell an operator-home hit from a private-home one. This fixture
-            # is the pre-#63 case, but the same shape is what a PURE leaf produces on a
-            # current run, which `test_a_pure_leafs_hit_in_the_operator_home_names_that_root`
-            # drives end to end.
+            # The root, not just the file: an incident names where it looked, and
+            # `test_a_pure_leafs_hit_in_the_operator_home_names_that_root` drives the same
+            # shape end to end.
             self.assertEqual(found.projects_root, operator / ".claude" / "projects")
 
-    def test_the_projects_dir_prefers_the_private_home(self) -> None:
+    def test_the_projects_dir_is_the_operator_home_with_an_orchestration_too(self) -> None:
+        """Passing an orchestration id changes nothing: there is no private home to prefer."""
         with tempfile.TemporaryDirectory() as td:
-            repo, home, slug = self._repo_with_private_home(td)
-            self.assertEqual(diag._claude_projects_dir(repo, "o"), home / "projects" / slug)
+            repo, slug = self._repo_and_slug(td)
+            operator = Path(td) / "operator"
+            with mock.patch.dict(os.environ, {"HOME": str(operator)}, clear=False):
+                self.assertEqual(diag._claude_projects_dir(repo, "o"),
+                                 operator / ".claude" / "projects" / slug)
 
     def test_without_an_orchestration_the_operator_home_answers(self) -> None:
         """The parent/host agent is not a leaf, so its callers pass no id."""
         with tempfile.TemporaryDirectory() as td:
-            repo, _home, slug = self._repo_with_private_home(td)
+            repo, slug = self._repo_and_slug(td)
             operator = Path(td) / "operator"
             with mock.patch.dict(os.environ, {"HOME": str(operator)}, clear=False):
                 self.assertEqual(diag._claude_projects_dir(repo),
                                  operator / ".claude" / "projects" / slug)
 
-    def test_the_private_home_is_searched_before_the_operator_home(self) -> None:
-        """Order is load-bearing: `_claude_projects_dir` takes the FIRST root, and
-        flipping it silently sends every post-#63 audit to the operator's home."""
+    def test_the_operator_home_is_the_only_root(self) -> None:
+        """The COUNT, not just the first entry. `_claude_projects_dir` takes the FIRST root, so
+        a second root reintroduced ahead of this one would send every audit somewhere a pure
+        leaf never writes, and a reader that only checked `roots[0]` would not see it."""
         from tools.hooks.common import claude_leaf_projects_roots
         with tempfile.TemporaryDirectory() as td:
-            repo, home, _slug = self._repo_with_private_home(td)
-            roots = claude_leaf_projects_roots(repo, "o")
-            self.assertEqual(roots[0], home / "projects")
-            self.assertEqual(len(roots), 2)
+            repo, _slug = self._repo_and_slug(td)
+            operator = Path(td) / "operator"
+            with mock.patch.dict(os.environ, {"HOME": str(operator)}, clear=False):
+                roots = claude_leaf_projects_roots(repo, "o")
+            self.assertEqual(roots, (operator / ".claude" / "projects",))
 
 
 class AggregateChildUsageTests(unittest.TestCase):

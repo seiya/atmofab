@@ -97,10 +97,12 @@ _DECLARED_ENVIRONMENT_SKIPS = {
         "the sandbox runtime is absent or unprivileged user namespaces are disabled",
     "symlink not supported on this filesystem":
         "the checkout is on a filesystem without symlinks",
-    "root bypasses file permissions":
-        "running as root, where an unreadable-file test cannot be set up",
+    # `root bypasses file permissions` sat here until Z4 (issue #171): both of its skips were
+    # in `test_hooks_cli.py` / `test_hooks_common.py`, deleted with the leaf hook layer. The
+    # entry below states the same privilege condition from the other direction and is still
+    # used, which is why only one of the pair went.
     "cannot make a file unreadable as this user":
-        "the same privilege condition, from the other direction",
+        "the privilege condition from the other direction: the file stays readable",
     "/etc/resolv.conf not resolvable on this host":
         "the host has no resolvable resolv.conf to bind-mount",
     "requires Linux /proc":
