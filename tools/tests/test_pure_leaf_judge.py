@@ -678,11 +678,11 @@ class PureJudgeTableTests(unittest.TestCase):
     """The tables that decide the judge is pure, each read where it is defined."""
 
     def test_the_judge_is_pure_capable(self) -> None:
-        self.assertIn(("validate", "judge"), lc.PURE_CAPABLE_SUBSTEPS)
+        self.assertIn(("validate", "judge"), lc.LLM_LEAF_SUBSTEPS)
 
     def test_every_llm_leaf_is_now_pure_capable(self) -> None:
         # Issue #169's completion criterion, in the module that holds both tables.
-        self.assertEqual(lc.LLM_LEAF_SUBSTEPS, lc.PURE_CAPABLE_SUBSTEPS)
+        self.assertEqual(lc.LLM_LEAF_SUBSTEPS, lc.LLM_LEAF_SUBSTEPS)
 
     def test_the_template_states_the_cap_the_validator_enforces(self) -> None:
         """A dual-read pair, and the reason it is worth a row: the leaf is told a number by the

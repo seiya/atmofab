@@ -721,7 +721,7 @@ class LeafCommandPureBranchTest(unittest.TestCase):
             orchestration_agent_run_id="ORCH", llm_config=_cfg(backend), env={})
 
     def test_pure_claude_command_includes_flags(self):
-        argv = self._conductor("claude").leaf_command(session_id="arid-1", pure=True)
+        argv = self._conductor("claude").leaf_command(session_id="arid-1")
         self.assertEqual(argv[0], "claude")
         self.assertIn("--session-id", argv)
         for flag in pl.pure_leaf_flags():
@@ -734,43 +734,34 @@ class LeafCommandPureBranchTest(unittest.TestCase):
         self.assertEqual(argv[argv.index("--tools") + 1], "")
 
     def test_pure_warm_resume_prefixes_resume_flags(self):
-        argv = self._conductor("claude").leaf_command(session_id="arid-2", resume_session_id="arid-1", pure=True)
+        argv = self._conductor("claude").leaf_command(
+            session_id="arid-2", resume_session_id="arid-1")
         self.assertEqual(argv[argv.index("--resume") + 1], "arid-1")
         self.assertIn("--fork-session", argv)
         self.assertIn("--output-format", argv)
 
-    def test_non_pure_claude_has_no_pure_only_flags(self):
-        """What still distinguishes a pure launch from an agentic one.
+    def test_every_claude_launch_carries_the_pure_flag_set(self):
+        """There is no second claude argv since Z4 (issue #171).
 
-        `--strict-mcp-config` and `--disable-slash-commands` USED to be listed here: they
-        were pure-only, so their absence identified an agentic leaf. Issue #63 gives
-        the agentic branch its own copy of both (plus `--setting-sources user` against a
-        private `CLAUDE_CONFIG_DIR`, and `--mcp-config`), for its own reason — closing the OPERATOR's configuration out of a
-        leaf that keeps its tools — so they are shared hardening now and no longer
-        discriminate. Asserting their absence here would forbid that hardening rather than
-        pin the pure/agentic split.
-
-        What is still pure-only is the flag set that makes the leaf a pure FUNCTION: no
-        ambient customization at all, and a replaced system prompt. An agentic leaf must
-        have neither — it reads files, runs the gates through MCP, and carries the repo's
-        PreToolUse hook.
-
-        `--tools` joined the shared list for the same reason as those two, in issue #71:
-        the agentic branch now passes it as an ALLOWLIST of the hook-validated tools, so
-        the FLAG no longer discriminates and only the VALUE does — `""` for a pure leaf
-        (no tools at all), a non-empty list for an agentic one. Asserting the flag's
-        absence here would forbid that hardening, exactly as it would have forbidden
-        issue #63's; asserting the values keeps the split pinned.
+        This row used to be `test_non_pure_claude_has_no_pure_only_flags`, pinning what
+        distinguished a pure launch from an agentic one — a distinction that narrowed twice
+        (issue #63 gave the agentic branch `--strict-mcp-config` / `--disable-slash-commands`,
+        issue #71 gave it `--tools` as an allowlist) until only `--safe-mode`, the replaced
+        system prompt, and the empty `--tools` value were left. Z4 removed the other side of
+        the comparison, so what it pins now is that the whole set is unconditional: every
+        `leaf_command` for a claude entry carries it, with no argument that can turn it off.
         """
-        argv = self._conductor("claude").leaf_command(session_id="a")
-        self.assertNotIn("--safe-mode", argv)
-        self.assertNotIn("--system-prompt", argv)
-        self.assertNotEqual(argv[argv.index("--tools") + 1], "")
-        pure_argv = self._conductor("claude").leaf_command(session_id="a", pure=True)
-        self.assertEqual(pure_argv[pure_argv.index("--tools") + 1], "")
+        import inspect
+        self.assertNotIn("pure", inspect.signature(wc.Conductor.leaf_command).parameters)
+        for kwargs in ({"session_id": "a"},
+                       {"session_id": "a", "resume_session_id": "b"}):
+            argv = self._conductor("claude").leaf_command(**kwargs)
+            self.assertIn("--safe-mode", argv, msg=str(kwargs))
+            self.assertIn("--system-prompt", argv, msg=str(kwargs))
+            self.assertEqual(argv[argv.index("--tools") + 1], "", msg=str(kwargs))
 
     def test_codex_pure_uses_structured_readonly_approximation(self):
-        argv = self._conductor("codex").leaf_command(session_id="arid-1", pure=True)
+        argv = self._conductor("codex").leaf_command(session_id="arid-1")
         self.assertEqual(argv[:2], ["codex", "exec"])
         self.assertEqual(argv[argv.index("--sandbox") + 1], "read-only")
         self.assertIn("--output-schema", argv)
@@ -788,7 +779,7 @@ class LeafCommandPureBranchTest(unittest.TestCase):
         override that `exec` and `exec resume` share instead of being dropped.
         """
         argv = self._conductor("codex").leaf_command(
-            session_id="arid-2", resume_session_id="thread-1", pure=True)
+            session_id="arid-2", resume_session_id="thread-1")
         self.assertEqual(argv[:3], ["codex", "exec", "resume"])
         self.assertNotIn("--sandbox", argv)
         # The PAIR, not `argv.index("--config") + 1`: a second `--config` (the reasoning
@@ -811,23 +802,19 @@ class LeafCommandPureBranchTest(unittest.TestCase):
         """
         from tools.orchestration_runtime import CODEX_EXEC_RESUME_REQUIRED_FLAGS
         required = set(CODEX_EXEC_RESUME_REQUIRED_FLAGS)
-        for pure in (False, True):
-            argv = self._conductor("codex").leaf_command(
-                session_id="a", resume_session_id="thread-1", pure=pure)
-            # No short-form aliasing: the argv must emit exactly the spellings the
-            # probe asserts, so a CLI that drops an alias cannot pass the preflight.
-            # The bare `-` is excluded: it is the value of the positional prompt (codex's
-            # stdin sentinel), not an option, and it is certified by its own preflight
-            # check `codex_prompt_stdin` rather than by a flag-name substring.
-            emitted = {part for part in argv if part.startswith("-") and part != "-"}
-            self.assertTrue(
-                emitted <= required,
-                f"uncertified resume options (pure={pure}): {sorted(emitted - required)}",
-            )
-        # The pure resume argv is the widest one, so on that arm the relation is
-        # EQUALITY. Subset alone would let the constant grow a flag the argv never
-        # emits, making the preflight stricter than the command and false-failing the
-        # backend on a CLI that dropped an option nothing uses.
+        argv = self._conductor("codex").leaf_command(
+            session_id="a", resume_session_id="thread-1")
+        # No short-form aliasing: the argv must emit exactly the spellings the
+        # probe asserts, so a CLI that drops an alias cannot pass the preflight.
+        # The bare `-` is excluded: it is the value of the positional prompt (codex's
+        # stdin sentinel), not an option, and it is certified by its own preflight
+        # check `codex_prompt_stdin` rather than by a flag-name substring.
+        emitted = {part for part in argv if part.startswith("-") and part != "-"}
+        # EQUALITY, not subset, in both directions. Subset alone would let the constant grow
+        # a flag the argv never emits, making the preflight stricter than the command and
+        # false-failing the backend on a CLI that dropped an option nothing uses. There is
+        # only ONE resume argv since Z4 (issue #171) — the pure one, which was already the
+        # widest — so the equality that used to hold on one arm of a loop now holds outright.
         self.assertEqual(emitted, required)
 
 

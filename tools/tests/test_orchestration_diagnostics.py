@@ -1254,7 +1254,7 @@ class PureLeafMetaPhaseTests(unittest.TestCase):
     def test_the_file_table_names_exactly_the_phases_that_have_a_pure_pair(self) -> None:
         import tools.llm_config as lc
         self.assertEqual(set(diag.PURE_LEAF_META_FILES),
-                         {phase for phase, _ in lc.PURE_CAPABLE_SUBSTEPS})
+                         {phase for phase, _ in lc.LLM_LEAF_SUBSTEPS})
 
     def test_the_file_table_names_exactly_the_pure_capable_substeps(self) -> None:
         """The finer half of the row above: since Z3 the table is keyed by substep too, so a
@@ -1263,7 +1263,7 @@ class PureLeafMetaPhaseTests(unittest.TestCase):
         self.assertEqual(
             {(phase, substep)
              for phase, files in diag.PURE_LEAF_META_FILES.items() for substep in files},
-            set(lc.PURE_CAPABLE_SUBSTEPS))
+            set(lc.LLM_LEAF_SUBSTEPS))
 
     def test_the_workspace_layout_document_carries_every_record_in_the_table(self) -> None:
         """`docs/WORKSPACE_LAYOUT.md` is the canonical map of what lands where, and until issue

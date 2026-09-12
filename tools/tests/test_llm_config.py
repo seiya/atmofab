@@ -11,7 +11,7 @@ wrong:
 2. **Every named rejection rule fires, exactly once, on its own input.** The rule name is the
    operator's search key, so a rule that silently changed name (or was shadowed by an earlier
    check) is a real regression.
-3. **The mirror tables still mirror.** `LLM_LEAF_SUBSTEPS` / `PURE_CAPABLE_SUBSTEPS` /
+3. **The mirror tables still mirror.** `LLM_LEAF_SUBSTEPS` /
    `MCP_REQUIRED_LLM_SUBSTEPS` are copies of facts owned by the conductor and the runtime.
    Each guard derives the original BEHAVIORALLY (running the conductor predicate, reading the
    runtime table) rather than re-asserting the same literal, so moving the original reds the
@@ -182,19 +182,19 @@ class SampleConfigTests(unittest.TestCase):
 
         The comment names the provider's whole capability set and the refusal a superset raises.
         Both are enumerations `llm_config` owns, so this asserts the DOCUMENT against the code —
-        the set is never spelled in this test. `capabilities: [agentic]` is required literally
-        because that is the operator instruction the comment exists to give; a sample that stops
-        naming the key has lost the thing it was added for.
+        the set is never spelled in this test. `capabilities:` is required literally because
+        that is the operator instruction the comment exists to give; a sample that stops naming
+        the key has lost the thing it was added for. (Until Z4, issue #171, the literal was
+        `capabilities: [agentic]` — the instruction for putting a leaf back on the agentic
+        path, which no longer exists.)
 
         READ THE ENUMERATION, NOT THE HEADER, and this is the round-1 correction: the first
-        version asked `assertIn(cap, header)`, and `agentic` occurs 6 further times and `pure` 5
-        further times in that header outside the enumeration line, so those two were satisfied by
-        unrelated prose — dropping either from the enumeration left the row green (measured).
-        (7 and 6 counting the enumeration itself; an earlier version of this sentence gave those
-        figures under the word "elsewhere", which is the wrong denominator for what it claims.) The parenthetical is located
-        by a marker asserted UNIQUE, its contents are parsed into a set, and the comparison is
-        set IDENTITY rather than membership: a capability the code drops but the comment keeps
-        naming is as wrong for the operator as one it omits."""
+        version asked `assertIn(cap, header)`, and each name occurs several further times in
+        that header outside the enumeration line, so those were satisfied by unrelated prose —
+        dropping one from the enumeration left the row green (measured). The parenthetical is
+        located by a marker asserted UNIQUE, its contents are parsed into a set, and the
+        comparison is set IDENTITY rather than membership: a capability the code drops but the
+        comment keeps naming is as wrong for the operator as one it omits."""
         text = (SAMPLE_DIR / "llm_claude.example.yaml").read_text(encoding="utf-8")
         # Anchored at a LINE START, and this is the round-2 correction. `text.split("defaults:")`
         # cut at the first occurrence anywhere, including inside the comment prose — the header
@@ -208,7 +208,7 @@ class SampleConfigTests(unittest.TestCase):
                          "below would be the whole file and every check in this row would be "
                          "answered by the per-leaf blocks instead of by the comment.")
         header = parts[0]
-        self.assertIn("capabilities: [agentic]", header)
+        self.assertIn("`capabilities:` narrows", header)
         self.assertIn("llm_config_capability_exceeds_provider", header)
         marker = "(`claude_cli`: "
         self.assertEqual(
@@ -231,16 +231,17 @@ class SampleConfigTests(unittest.TestCase):
         """The scope rule the HTTP samples exist to demonstrate. An HTTP provider anywhere else
         does not load at all (`llm_config_capability_insufficient_for_substep`, covered by
         `CapabilityTests`); what is checked here is that the samples USE the whole admissible
-        surface rather than demonstrating one leaf and leaving the other agentic."""
+        surface rather than demonstrating one leaf and leaving the others on a CLI."""
         for name in ("llm_openai_compatible.example.yaml", "llm_anthropic_api.example.yaml"):
             cfg = lc.load_llm_config(SAMPLE_DIR / name)
             provider = name[len("llm_"):-len(".example.yaml")]
             self.assertIn(provider, lc.HTTP_PROVIDERS, msg=name)
             on_http = {key for key, entry in cfg.entries.items() if entry.is_http}
-            self.assertEqual(on_http, set(lc.PURE_CAPABLE_SUBSTEPS), msg=name)
+            self.assertEqual(on_http, set(lc.LLM_LEAF_SUBSTEPS), msg=name)
             for key in on_http:
                 self.assertEqual(cfg.entries[key].provider, provider, msg=f"{name} {key}")
-            # ...and `defaults` stays agentic, which is what runs the `escalate` diagnostician.
+            # ...and `defaults` stays on a CLI, which is what runs the `escalate`
+            # diagnostician.
             self.assertFalse(cfg.defaults.is_http, msg=name)
 
     def test_a_codex_config_without_a_model_still_stops_before_launching(self) -> None:
@@ -515,9 +516,9 @@ class CapabilityTests(_Tmp):
         cfg = lc.load_llm_config(self.write(
             "defaults:\n"
             "  provider: claude_cli\n"
-            "  capabilities: [agentic, pure, mcp_tools]\n"))
+            "  capabilities: [pure, mcp_tools]\n"))
         entry = cfg.entry_for("validate", "judge")
-        self.assertTrue(entry.supports(lc.CAP_AGENTIC))
+        self.assertTrue(entry.supports(lc.CAP_PURE))
         self.assertFalse(entry.supports(lc.CAP_WARM_RESUME))
         self.assertFalse(entry.supports(lc.CAP_USAGE_PROBE))
 
@@ -533,35 +534,25 @@ class CapabilityTests(_Tmp):
                 "        model: local-model\n"))
             self.assertEqual(cfg.entry_for("generate", substep).provider, "openai_compatible")
 
-    def test_no_llm_leaf_is_agentic_only_any_more(self) -> None:
-        """This row used to loop over the agentic leaves and reject an HTTP provider on each.
-        The set has now reached ZERO — that is issue #169's completion criterion, and it is
-        what makes an all-HTTP configuration valid — so the loop is gone and the emptiness is
-        asserted instead of being silently vacuous.
+    def test_a_pair_outside_the_llm_leaf_table_requires_nothing(self) -> None:
+        """`_validate_assignment` requires `pure` of the pairs `LLM_LEAF_SUBSTEPS` names, and
+        of nothing else. Until Z4 (issue #171) a pair outside the table fell into an
+        agentic-only arm that refused an HTTP provider; there is no second transport for such
+        an arm to name, so the requirement is now derived from the table alone.
 
-        The rejection the loop used to make is not lost: it moved to
-        `test_an_agentic_only_leaf_would_still_refuse_an_http_provider`, which drives the same
-        branch with a synthetic pair, because there is no longer a real one to drive it with."""
-        self.assertEqual(sorted(lc.LLM_LEAF_SUBSTEPS - lc.PURE_CAPABLE_SUBSTEPS), [])
-        self.assertEqual(lc.LLM_LEAF_SUBSTEPS, lc.PURE_CAPABLE_SUBSTEPS)
-
-    def test_an_agentic_only_leaf_would_still_refuse_an_http_provider(self) -> None:
-        """The agentic-only branch of `_validate_assignment` has no reachable subject through
-        the configuration surface today, and it is NOT deleted: it re-arms the moment an LLM
-        leaf is added that the pure transport cannot express, and that is the moment an HTTP
-        provider must be refused on it rather than silently accepted.
-
-        Driven directly with a synthetic pair, since the config path cannot reach it — which is
-        what this test is FOR, and is also its limit: it pins the branch, not the wiring."""
+        Driven with a synthetic pair, since every real pair is in the table — which is what
+        this row is FOR, and also its limit: it pins the derivation, not the wiring."""
+        self.assertNotIn(("future", "leaf"), lc.LLM_LEAF_SUBSTEPS)
+        self.assertEqual(lc.required_capabilities("future", "leaf"), frozenset())
         entry = lc.ResolvedLeafEntry(
             provider="anthropic_api",
             capabilities=lc.PROVIDER_CAPABILITIES["anthropic_api"])
-        self.assertNotIn(("future", "leaf"), lc.PURE_CAPABLE_SUBSTEPS)
-        with self.assertRaises(lc.LlmConfigError) as ctx:
-            lc._validate_assignment("future", "leaf", entry, "phases.future.substeps.leaf")
-        self.assertEqual(ctx.exception.rule,
-                         "llm_config_capability_insufficient_for_substep")
-        self.assertIn("requires capability 'agentic'", str(ctx.exception))
+        # No raise: nothing is required of a pair no LLM leaf runs.
+        lc._validate_assignment("future", "leaf", entry, "phases.future.substeps.leaf")
+        # ...and every REAL pair does require `pure`.
+        for phase, substep in sorted(lc.LLM_LEAF_SUBSTEPS):
+            self.assertEqual(lc.required_capabilities(phase, substep),
+                             frozenset({lc.CAP_PURE}), msg=f"{phase}.{substep}")
 
     def test_llm_config_refuses_an_entry_without_pure(self) -> None:
         """Z4 (issue #171): `pure` is the ONLY leaf transport, so every LLM leaf hard-requires
@@ -984,6 +975,11 @@ class RuleTests(_Tmp):
                          "defaults:\n  provider: claude_cli\n  model: a\n  model: b\n")
 
     def test_capability_exceeds_provider(self) -> None:
+        """An HTTP provider declares `pure` and nothing else, so naming any second capability
+        is the superset this rule refuses. `warm_resume` is the probe because it is a real
+        capability the CLI providers have and the HTTP ones do not — `agentic`, which stood
+        here until Z4 (issue #171), is no longer a capability name at all and is refused one
+        rule earlier, by `llm_config_invalid_field`."""
         err = self.assert_rule(
             "llm_config_capability_exceeds_provider",
             "defaults:\n  provider: claude_cli\n"
@@ -992,32 +988,34 @@ class RuleTests(_Tmp):
             "        base_url: http://localhost:8000/v1\n"
             "        api_key_env: LOCAL_KEY\n"
             "        model: m\n"
-            "        capabilities: [pure, agentic]\n")
-        self.assertIn("agentic", str(err))
+            "        capabilities: [pure, warm_resume]\n")
+        self.assertIn("warm_resume", str(err))
 
     def test_capability_insufficient_after_a_restriction(self) -> None:
         """The rule is about the RESOLVED capability set, not the provider name: a claude entry
-        restricted until it holds NEITHER transport is inadmissible on every LLM leaf, exactly
-        as a provider declaring neither would be.
+        restricted until it no longer holds `pure` is inadmissible on every LLM leaf, exactly
+        as a provider declaring no `pure` would be.
 
-        The restriction had to change with Z3. This row used to restrict to `pure` on
-        `validate.judge`, the last agentic-only leaf; the judge is now pure-capable (issue
-        #169), so `[pure]` is admissible there and everywhere else, and the restriction that
-        still reaches the rule is one that leaves no transport at all."""
+        The restriction has had to change twice. It was `[pure]` on `validate.judge` while that
+        was the last agentic-only leaf; Z3 (issue #169) made the judge pure-capable, so the
+        restriction that reached the rule became one leaving NO transport at all; and Z4 (issue
+        #171) left one transport, so `[warm_resume]` is now simply an entry without `pure`."""
         err = self.assert_rule("llm_config_capability_insufficient_for_substep",
                                "defaults:\n  provider: claude_cli\n"
                                "phases:\n  validate:\n    substeps:\n      judge:\n"
                                "        capabilities: [warm_resume]\n")
-        self.assertIn("has neither", str(err))
+        self.assertIn("requires capability 'pure'", str(err))
 
     def test_defaults_not_pure(self) -> None:
         """`defaults` serves the escalate diagnostician, which is a PURE launch (issue #169),
-        so an entry RESTRICTED to `agentic` is inadmissible there. The restriction is the only
-        way to reach this today — every declared provider supports `pure` — which is why the
-        subject is `capabilities:` rather than a provider name."""
+        so an entry restricted away from `pure` is inadmissible there. The restriction is the
+        only way to reach this — every declared provider supports `pure` — which is why the
+        subject is `capabilities:` rather than a provider name. It is also the rule that fires
+        FIRST for such a document, ahead of the per-substep one, which is why `defaults` is
+        where the restriction is written."""
         err = self.assert_rule("llm_config_defaults_not_pure",
                                "defaults:\n  provider: claude_cli\n"
-                               "  capabilities: [agentic]\n")
+                               "  capabilities: [warm_resume]\n")
         self.assertIn("escalate", str(err))
 
     def test_an_http_defaults_loads_and_runs_beside_a_cli_leaf(self) -> None:
@@ -1295,10 +1293,11 @@ class MirrorTableDriftTests(unittest.TestCase):
         self.assertNotIn("build", lc.LLM_LEAF_PHASES)
         self.assertEqual(lc.LLM_LEAF_PHASES, frozenset({"compile", "generate", "validate"}))
 
-    def test_pure_capable_substeps_matches_conductor(self) -> None:
-        """Runs `Conductor._pure_leaf_substep` itself (on a stub whose node-shape predicates
-        are both True and whose entry is pure-capable), so the pair test in that body is what
-        is being compared — not a copy of it.
+    def test_llm_leaf_substeps_all_have_a_pure_path_in_the_conductor(self) -> None:
+        """Runs `Conductor._pure_leaf_substep` itself (on a stub whose node-shape predicate
+        answers a shape), so the pair test in that body is what is being compared — not a copy
+        of it. Since Z4 (issue #171) every LLM leaf must answer True on a shaped node: there is
+        no second transport for one that does not.
 
         The shape half is exercised by `..._on_a_shapeless_node` below: with a shape present
         this row cannot tell a pair that is admitted BECAUSE it is a compile pair from one
@@ -1324,10 +1323,9 @@ class MirrorTableDriftTests(unittest.TestCase):
             (phase, substep) for (phase, substep) in lc.LLM_LEAF_SUBSTEPS
             if stub._pure_leaf_substep(None, phase, substep)
         }
-        self.assertEqual(derived, set(lc.PURE_CAPABLE_SUBSTEPS))
-        self.assertLessEqual(lc.PURE_CAPABLE_SUBSTEPS, lc.LLM_LEAF_SUBSTEPS)
+        self.assertEqual(derived, set(lc.LLM_LEAF_SUBSTEPS))
 
-    def test_pure_capable_substeps_matches_conductor_on_a_shapeless_node(self) -> None:
+    def test_the_conductor_pure_path_on_a_shapeless_node(self) -> None:
         """The same predicate with the node-shape half absent (`_bundle_shape` -> None). Only
         the two COMPILE pairs and the judge stay admissible there — the Compile contract does
         not depend on the node kind, and no IR exists at `compile.generate` time to read a shape
@@ -1377,18 +1375,18 @@ class MirrorTableDriftTests(unittest.TestCase):
             (phase, substep) for (phase, substep) in lc.LLM_LEAF_SUBSTEPS
             if stub._pure_leaf_substep(None, phase, substep)
         }
-        self.assertEqual(derived, set(lc.PURE_CAPABLE_SUBSTEPS))
+        self.assertEqual(derived, set(lc.LLM_LEAF_SUBSTEPS))
 
-    def test_the_pure_capable_set_is_the_size_this_tree_decided(self) -> None:
+    def test_the_llm_leaf_set_is_the_size_this_tree_decided(self) -> None:
         """One place where the SIZE of the set is a decision rather than a consequence.
 
         Every other guard here runs the table (the wiring matrix, the template slots, the audit
         map keys), so growing or shrinking it moves them all together and nothing says a member
         was added or removed. This row does — and it is where a reviewer is told which members
         those are."""
-        self.assertEqual(len(lc.PURE_CAPABLE_SUBSTEPS), 5)
+        self.assertEqual(len(lc.LLM_LEAF_SUBSTEPS), 5)
         self.assertEqual(
-            sorted(lc.PURE_CAPABLE_SUBSTEPS),
+            sorted(lc.LLM_LEAF_SUBSTEPS),
             [("compile", "generate"), ("compile", "verify"),
              ("generate", "generate"), ("generate", "verify"),
              ("validate", "judge")])

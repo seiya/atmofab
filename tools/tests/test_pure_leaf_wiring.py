@@ -37,7 +37,7 @@ from tools.orchestration_runtime import (
     record_launch,
     write_preflight,
 )
-from tools.llm_config import LLM_LEAF_SUBSTEPS, PURE_CAPABLE_SUBSTEPS
+from tools.llm_config import LLM_LEAF_SUBSTEPS
 from tools.pure_leaf import (
     PURE_DOC_FENCE_BEGIN,
     PURE_DOC_FENCE_END,
@@ -1844,7 +1844,7 @@ class PureRenderTests(unittest.TestCase):
                                  resolved_dependencies=(dep,),
                                  dependency_surface=self._RENDER_SURFACE,
                                  exemplar=self._RENDER_EXEMPLAR, **kw)))
-        pure_pairs = sorted(PURE_CAPABLE_SUBSTEPS)
+        pure_pairs = sorted(LLM_LEAF_SUBSTEPS)
         self.assertTrue(pure_pairs, "no pure-capable substeps; this renders nothing")
         for step, substep in pure_pairs:
             ctx = _pure_context_for(step, substep)
@@ -2018,7 +2018,7 @@ class PureRenderTests(unittest.TestCase):
                 seen_shapes,
                 {(f"{s}.{ss}", shape) for s, ss in LLM_LEAF_SUBSTEPS
                  for shape in (*self._RENDER_COLD_SHAPES, "repair-full", "slim")}
-                | {(f"{s}.{ss}", shape) for s, ss in PURE_CAPABLE_SUBSTEPS
+                | {(f"{s}.{ss}", shape) for s, ss in LLM_LEAF_SUBSTEPS
                    for shape in ("pure-cold", "pure-repair-warm", "pure-repair-cold")},
                 "the rendered configurations do not cover the substep tables the conductor "
                 "dispatches on")
@@ -2034,7 +2034,7 @@ class PureRenderTests(unittest.TestCase):
         as the file sweep above, on the transport that has no file.
 
         PINNED, as a set: across every `(step, substep)` of `LLM_LEAF_SUBSTEPS` in its five
-        agentic shapes and every pair of `PURE_CAPABLE_SUBSTEPS` in its three pure shapes, the
+        agentic shapes and every pair of `LLM_LEAF_SUBSTEPS` in its three pure shapes, the
         severity mentions on the lines the RENDER adds — the rendered prompt minus the request's
         own data values minus the lines of the templates it is rendered from — are exactly
         `_RENDERED_SEVERITY_ROUTING_ALLOWLIST`. `PURE_SYSTEM_PROMPT` is swept as one more host
@@ -2067,7 +2067,7 @@ class PureRenderTests(unittest.TestCase):
           `workflow_conductor._DIRECTIVE_SCHEMA` / `_diagnosis_prompt` held it until issue
           #169 deleted both and made `tools/prompt_templates/pure_escalate_diagnose.txt` the
           single source. The exclusion still holds and is now STRUCTURAL rather than stated:
-          `_host_built_launch_requests` iterates `LLM_LEAF_SUBSTEPS ∪ PURE_CAPABLE_SUBSTEPS`,
+          `_host_built_launch_requests` iterates `LLM_LEAF_SUBSTEPS ∪ LLM_LEAF_SUBSTEPS`,
           neither of which carries a `diagnose` pair, so that template never reaches this
           sweep. The reason is unchanged — `severity` there is the diagnostician's own field,
           grading how compromised the existing artifacts are and mapping to reuse-vs-discard,

@@ -228,9 +228,9 @@ class CodexLeafHasNoHookLayerTests(unittest.TestCase):
                 repo_root=repo, orchestration_id="o", orchestration_agent_run_id="orch",
                 env={}, llm_config=_config_on("codex_cli", repo))
             entry = c.entry_for("generate", "generate")
-            cold = c.leaf_command(entry, session_id="child-1", pure=True)
+            cold = c.leaf_command(entry, session_id="child-1")
             warm = c.leaf_command(entry, session_id="child-1",
-                                  resume_session_id="thread-1", pure=True)
+                                  resume_session_id="thread-1")
         for argv in (cold, warm):
             self.assertNotIn("--dangerously-bypass-hook-trust", argv)
         # The read-only policy is what replaced it, on BOTH subcommands — `exec resume`

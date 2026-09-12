@@ -1215,13 +1215,13 @@ class PureCompileProviderMatrixTests(_Fixture):
             self.assertTrue(c._pure_leaf_substep(self.refs, "compile", substep))
 
     def test_the_declared_pure_set_is_exactly_the_migrated_leaf_pairs(self) -> None:
-        """`PURE_CAPABLE_SUBSTEPS` is the set of LLM LEAF pairs that run pure; the launch
+        """`LLM_LEAF_SUBSTEPS` is the set of LLM LEAF pairs that run pure; the launch
         table additionally keys the escalate diagnostician, which is not a leaf of any phase
         (no `SUBSTEPS` entry, no per-leaf configuration — it runs on `defaults`). Subtracting
         exactly that set keeps the identity, so a new pure LEAF pair added to one table and not
         the other is still red here."""
         self.assertEqual(
-            sorted(lc.PURE_CAPABLE_SUBSTEPS),
+            sorted(lc.LLM_LEAF_SUBSTEPS),
             sorted(set(ort.PURE_CONTEXT_REQUIRED_KEYS) - ort.DIAGNOSE_LAUNCH_PAIRS))
 
 

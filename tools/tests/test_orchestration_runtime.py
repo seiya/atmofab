@@ -34,13 +34,11 @@ from tools.tests.orchestration_fixtures import certify_node
 from tools.llm_config import config_sha256 as lc_config_sha256
 
 from tools.orchestration_runtime import (
-    CLAUDE_HOME_WRITABLE_RELPATHS,
     TERMINAL_STATUSES,
     _allowed_file_tool_paths_for_launch,
     _allowed_output_paths_for_launch,
     _effective_pass_substep_run_ids,
     _validate_paths_against_allowed_output_manifest,
-    _required_launch_prompt_constraint_lines,
     _pre_phase_complete_judge_checks,
     _required_child_agent_kind,
     _build_artifact_hashes,
@@ -55,8 +53,6 @@ from tools.orchestration_runtime import (
     _update_preflight_probed_at,
     _validate_agent_summary_text,
     build_launch_prompt_text,
-    build_skill_must_read_refs,
-    leaf_contract_doc_refs,
     resume_orchestration,
     get_preflight_ttl_status,
     init_orchestration,

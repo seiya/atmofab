@@ -15166,7 +15166,7 @@ class PureLeafSubstepPredicateTests(unittest.TestCase):
             c = _FakeConductor(repo_root=repo, orchestration_id="o",
                                orchestration_agent_run_id="ORCH",
                                llm_config=_agentic_cfg("claude"), env={})
-            for phase, substep in sorted(lc.PURE_CAPABLE_SUBSTEPS):
+            for phase, substep in sorted(lc.LLM_LEAF_SUBSTEPS):
                 self.assertFalse(c._pure_leaf_substep(refs, phase, substep),
                                  msg=f"{phase}.{substep}")
 

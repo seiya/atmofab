@@ -35,7 +35,7 @@ from typing import Any
 # THIS module importable buys nothing (issue #130).
 try:
     from tools.leaf_usage import LEAF_USAGE_SOURCE_UNRECORDED, normalize_leaf_usage
-    from tools.llm_config import PURE_CAPABLE_SUBSTEPS as _PURE_CAPABLE_SUBSTEPS
+    from tools.llm_config import LLM_LEAF_SUBSTEPS as _LLM_LEAF_SUBSTEPS
     from tools.orchestration_diagnostics import (
         build_launch_incident,
         api_error_from_records,
@@ -48,7 +48,7 @@ except ModuleNotFoundError:  # pragma: no cover - import bootstrap for direct CL
     if str(_REPO_ROOT) not in sys.path:
         sys.path.insert(0, str(_REPO_ROOT))
     from tools.leaf_usage import LEAF_USAGE_SOURCE_UNRECORDED, normalize_leaf_usage
-    from tools.llm_config import PURE_CAPABLE_SUBSTEPS as _PURE_CAPABLE_SUBSTEPS
+    from tools.llm_config import LLM_LEAF_SUBSTEPS as _LLM_LEAF_SUBSTEPS
     from tools.orchestration_diagnostics import (
         build_launch_incident,
         api_error_from_records,
@@ -601,10 +601,11 @@ def collect_token_cost_summary(
 _KNOWN_GENERATE_EXECUTORS: tuple[str, ...] = ("legacy", "pure")
 
 
-# The `llm_leaf_map` keys whose provider this section attributes: the pure-capable substeps,
-# read from `llm_config` rather than restated, so adding one cannot silently leave it out.
+# The `llm_leaf_map` keys whose provider this section attributes: every LLM leaf, all of which
+# are pure since Z4 (issue #171). Read from `llm_config` rather than restated, so adding one
+# cannot silently leave it out.
 _PURE_LEAF_MAP_KEYS: frozenset[str] = frozenset(
-    f"{phase}.{substep}" for phase, substep in _PURE_CAPABLE_SUBSTEPS)
+    f"{phase}.{substep}" for phase, substep in _LLM_LEAF_SUBSTEPS)
 
 
 def _clean_str(value: Any) -> str | None:
