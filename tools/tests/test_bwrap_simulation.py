@@ -627,6 +627,60 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
             # the repo file is unchanged on the host
             self.assertEqual((repo / "AGENTS_SIM.md").read_text(), "orig\n")
 
+    def test_readonly_profile_hides_workspace_from_the_leaf(self) -> None:
+        """A read-only leaf cannot READ another run's records, or the producer's own reasoning.
+
+        FOUND BY THE ROUND-2 CODEX REVIEW (P1) and by the round-1 security axis before it. A
+        CLAUDE pure leaf is tool-free and could read nothing anyway; a CODEX pure leaf is
+        `codex exec --sandbox read-only` — tool-BEARING — and until Z4 (issue #171) its reads
+        were refused by the leaf hook layer against the empty `allowed_read_roots` this profile
+        still records. Deleting that layer left the read boundary to nothing, and the sharpest
+        gain is here: a VERIFY leaf reading the producer's `dialogs/leaf.stdout.jsonl` for the
+        run it is reviewing can reuse the producer's conclusions instead of reviewing the
+        supplied context, which defeats the persona separation `_run_pure_verify_substep` calls
+        structural. Past artifacts and sibling certified sources are under here too, and
+        `docs/workflow/WORKFLOW_CORE.md` invariants 6-8 forbid referencing them.
+
+        Driven under REAL bwrap rather than asserted on the rendered argv: what is under test is
+        whether the mount actually hides the tree, which an argv comparison cannot answer.
+        """
+        with tempfile.TemporaryDirectory() as t:
+            repo = Path(t).resolve()
+            orch, arid = "orch_ro2", "arid_ro2"
+            _ensure_orchestration_audit_dirs(repo, orch)
+            # The producer's persisted reasoning, in the run this leaf would be reviewing.
+            dialogs = repo / "workspace" / "orchestrations" / orch / "agents" / "producer" / "dialogs"
+            dialogs.mkdir(parents=True, exist_ok=True)
+            (dialogs / "leaf.stdout.jsonl").write_text("PRODUCER REASONING\n", encoding="utf-8")
+            # A sibling node's certified source, and an IR from an earlier run.
+            sibling = repo / "workspace" / "pipelines" / "sib" / "source" / "s1" / "src"
+            sibling.mkdir(parents=True, exist_ok=True)
+            (sibling / "sib_model.f90").write_text("module sib\nend module\n", encoding="utf-8")
+            profile = build_readonly_bwrap_profile(
+                repo_root=repo, orchestration_id=orch, agent_run_id=arid,
+                backend_command="python3", backend_type="codex")
+            script = textwrap.dedent(f"""
+                from pathlib import Path
+                for tag, rel in (
+                        ("DIALOG", "workspace/orchestrations/{orch}/agents/producer/dialogs/leaf.stdout.jsonl"),
+                        ("SIBLING", "workspace/pipelines/sib/source/s1/src/sib_model.f90")):
+                    print(f"{{tag}}:" + ("READABLE" if Path(rel).exists() else "HIDDEN"), flush=True)
+                # ... while the leaf's OWN tmp root is still there: a codex pure launch needs it
+                # for its `--output-schema` file and its TMPDIR.
+                p = Path("workspace/tmp/{arid}/schema.json")
+                try:
+                    p.write_text("{{}}"); print("OWN_TMP:WRITABLE", flush=True)
+                except Exception as e:
+                    print("OWN_TMP:FAIL " + repr(e), flush=True)
+            """)
+            out = _bwrap_stdout(render_bwrap_command(
+                profile=profile, command_argv=["python3", "-c", script]))
+            self.assertIn("DIALOG:HIDDEN", out, out)
+            self.assertIn("SIBLING:HIDDEN", out, out)
+            self.assertIn("OWN_TMP:WRITABLE", out, out)
+            # The host's copies are untouched — this hides, it does not delete.
+            self.assertEqual((dialogs / "leaf.stdout.jsonl").read_text(), "PRODUCER REASONING\n")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -10355,6 +10355,33 @@ def render_bwrap_command(
         if isinstance(item, str) and item.strip():
             cmd.extend(["--ro-bind", item.strip(), item.strip()])
     cmd.extend(["--ro-bind", repo_root, repo_root])
+    if profile.get("readonly") is True:
+        # HIDE `workspace/` FROM A READ-ONLY LEAF, by overlaying an empty tmpfs on it after the
+        # repository's ro-bind (bwrap applies binds in order, later overriding earlier). The
+        # leaf's own `workspace/tmp/<arid>` is bind-mounted back further down, so the
+        # `--output-schema` file a codex pure launch needs and its `TMPDIR` still work; bwrap
+        # creates the mountpoint under the tmpfs.
+        #
+        # WHY, and it is not symmetry with the write side. A CLAUDE pure leaf is tool-free
+        # (`--tools ""`) and could not read this or anything else. A CODEX pure leaf is
+        # `codex exec --sandbox read-only`: tool-BEARING, with the repository ro-bound, and
+        # until Z4 (issue #171) its reads were refused by the leaf hook layer against the empty
+        # `allowed_read_roots` this profile still records. Deleting that layer left the read
+        # boundary to nothing, and `workspace/` is where the sharpest gain lives — a round-2
+        # Codex review named it: a VERIFY leaf can read the producer's own reasoning in
+        # `agents/<arid>/dialogs/leaf.stdout.jsonl` of the run it is reviewing and reuse its
+        # conclusions instead of reviewing the supplied context, which defeats the persona
+        # separation `_run_pure_verify_substep` calls structural. Past artifacts, sibling
+        # certified sources and other orchestrations are under here too, and the workflow
+        # forbids referencing them (`docs/workflow/WORKFLOW_CORE.md` §invariants 6-8).
+        #
+        # WHAT THIS DOES NOT CLOSE, named rather than implied: `tools/`, `docs/` and `spec/`
+        # stay readable, so a codex leaf can still read the deterministic gate's implementation.
+        # Closing that means binding only the launch's own necessities instead of the checkout,
+        # which needs a measured codex launch under the narrowed profile — `TODO.md` carries the
+        # entry and why that measurement could not be taken here. This change needs no such
+        # measurement: the repository root and every other tree stay exactly as they were.
+        cmd.extend(["--tmpfs", str(Path(repo_root) / "workspace")])
     # write_root absolute paths, used to suppress an ro read-bind that would otherwise
     # make a writable artifact read-only.
     _write_abs = [
