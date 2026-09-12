@@ -63,8 +63,8 @@ from typing import Any, NamedTuple
 # `tools/tests/test_audit_orchestration.py::DiagnosticsFailsAtImportTimeTests` (an AST
 # scan for function-body `tools.*` imports), and `build_launch_incident`'s refusal to
 # swallow by `tools/tests/test_orchestration_diagnostics.py::CollectorsDoNotSwallowTests`.
-from tools.operator_private_root import claude_leaf_projects_roots
 from tools.leaf_usage import LEAF_TOKEN_CLASS_KEYS
+from tools.operator_private_root import claude_leaf_projects_roots
 
 # Terminal agent_runs statuses: a row carrying one of these (or any finished_at)
 # proves the child completed and the window is NOT dangling.

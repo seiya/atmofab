@@ -642,9 +642,11 @@ class BuildArgvOverrideTests(unittest.TestCase):
         the validator would report green while the name rule itself still missed them, and
         the hole would be closed by two rules each covering half of it. That is the shape
         that has reopened three times on this branch."""
-        for spelling in ("SHELL=./evil", "SHELL:=./evil", "SHELL+=./evil",
-                         " SHELL=./evil", "SHELL =./evil", "shell=./evil",
-                         "LD_PRELOAD:=/tmp/x.so", "MAKEFILES+=/tmp/evil.mk"):
+        for spelling in ("SHELL=./evil", "SHELL:=./evil", "SHELL::=./evil",
+                         "SHELL+=./evil", "SHELL!=./evil", " SHELL=./evil",
+                         "SHELL =./evil", "shell=./evil",
+                         "LD_PRELOAD:=/tmp/x.so", "MAKEFILES+=/tmp/evil.mk",
+                         "MAKESHELL!=/tmp/x"):
             with self.subTest(spelling=spelling):
                 self.assertTrue(
                     self.mod._is_execution_redirecting_assignment(spelling))
@@ -652,7 +654,8 @@ class BuildArgvOverrideTests(unittest.TestCase):
     def test_the_name_rule_reaches_a_build_system_with_no_shape_rule(self) -> None:
         # The other half of the same claim, through the real validator on a build system
         # where nothing else would catch it.
-        for spelling in ("SHELL:=./evil", "SHELL+=./evil", " SHELL=./evil"):
+        for spelling in ("SHELL:=./evil", "SHELL::=./evil", "SHELL+=./evil",
+                         "SHELL!=./evil", " SHELL=./evil"):
             with self.subTest(spelling=spelling):
                 with self.assertRaises(ValueError) as ctx:
                     self.mod._validate_build_argv_overrides(
@@ -2109,6 +2112,12 @@ class ServedSchemaDescribesWhatIsEnforcedTests(unittest.TestCase):
         rows = (
             ("target", {"target": "--eval=$(shell id)"}, "not open with -"),
             ("target", {"target": "a b"}, "whitespace"),
+            # Added by 6d77f2f9, one commit after this class was written, and not added
+            # HERE by it — which is how the class built to stop description drift failed
+            # to cover the next rule. Deleting either clause from the served description
+            # left the whole suite green.
+            ("target", {"target": "SHELL=./evil"}, "redirection of what is executed"),
+            ("target", {"target": "OBJDIR=/repo/obj"}, "not be a variable assignment"),
             ("extra_args", {"extra_args": ["--release"]}, "ASSIGN a make variable"),
             ("extra_args", {"extra_args": ["SHELL=/tmp/x"]}, "redirection of what is executed"),
             ("extra_args", {"extra_args": ["X=a; id"]}, "character a shell acts on"),

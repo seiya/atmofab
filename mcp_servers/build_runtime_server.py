@@ -257,10 +257,15 @@ def _is_execution_redirecting_assignment(element: str) -> bool:
 
     The name is normalised the way MAKE reads it, not the way the string is spelled.
     Measured against GNU Make 4.3 with a `SHELL` that prints instead of running the
-    recipe: `SHELL=./evil`, `SHELL:=./evil`, `SHELL+=./evil` and ` SHELL=./evil` all
-    execute `./evil` as every recipe line's interpreter; only `SHELL?=` does not, because
-    `SHELL` is already set. So the flavour operators and surrounding space are stripped
-    before the lookup.
+    recipe. ALL of these execute `./evil` as every recipe line's interpreter:
+
+        SHELL=./evil    SHELL:=./evil    SHELL::=./evil
+        SHELL+=./evil   SHELL!=./evil     SHELL=./evil   (leading space)
+
+    Only `SHELL?=` does not, because `SHELL` is already set. So every assignment operator
+    make accepts — `:` `+` `!` `?`, and `::` — and the surrounding space come off before
+    the lookup. The list is measured, not derived from the manual: `!=` is the shell-
+    assignment operator and was the one a first version of this normalisation missed.
 
     Without that, this predicate misses `SHELL:=` and the only thing refusing it is the
     make-ONLY assignment-shape rule — two rules each covering half of one hole, which is
@@ -268,7 +273,7 @@ def _is_execution_redirecting_assignment(element: str) -> bool:
     """
     if "=" not in element:
         return False
-    name = element.split("=", 1)[0].strip().rstrip(":+?").strip().upper()
+    name = element.split("=", 1)[0].strip().rstrip(":+!?").strip().upper()
     return (name in _UNSAFE_ASSIGNMENT_NAMES
             or name.startswith(_UNSAFE_ENV_OVERRIDE_PREFIXES))
 
@@ -1476,10 +1481,12 @@ TOOLS: dict[str, Tool] = {
                     "type": "string",
                     "description": (
                         "Build goal. Must not open with - (that is a switch), must "
-                        "carry no whitespace or character the shell acts on, and must "
-                        "not be a variable assignment -- make reads a positional "
-                        "NAME=value as an assignment, never as a goal. Refused for "
-                        "every caller."
+                        "carry no whitespace or character the shell acts on, must not "
+                        "name a redirection of what is executed (SHELL, MAKE, "
+                        "MAKEFILES, MAKEFLAGS, LD_*, PATH, ...), and under "
+                        "build_system=make must not be a variable assignment at all -- "
+                        "make reads a positional NAME=value as an assignment, never as "
+                        "a goal. Refused for every caller."
                     ),
                 },
                 "jobs": {"type": "integer", "minimum": 1},

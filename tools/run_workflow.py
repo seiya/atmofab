@@ -48,7 +48,6 @@ except ModuleNotFoundError:  # pragma: no cover - direct CLI execution
     # Re-probe so the in-function imports later in main() succeed.
     from tools import validate_pipeline_semantics as _probe  # noqa: F401
 
-from tools.operator_private_root import operator_secret_root
 from tools.llm_config import (
     LlmConfig,
     LlmConfigError,
@@ -56,6 +55,7 @@ from tools.llm_config import (
     load_llm_config,
     resolve_default_config_path,
 )
+from tools.operator_private_root import operator_secret_root
 
 # The environment name that relocates the start-claim locks. The RESOLVER is below;
 # unlike the homes root and the token store it does not live in `tools/operator_private_root.py`,
