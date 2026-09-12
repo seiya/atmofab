@@ -24586,7 +24586,9 @@ class DurableWorkflowHomesTests(unittest.TestCase):
         """`~/.atmofab/homes`, resolved through the SAME `$HOME` reading as the guard.
 
         This is the assertion that connects the new location to the protection it
-        depends on: `tools/hooks/common.py::protected_host_read_roots` refuses a leaf's
+        depended on (until Z4, issue #171, deleted the leaf hook layer with the guard and
+        `protected_host_read_roots` — a pure leaf holds no tool to read with):
+        `tools/hooks/common.py::protected_host_read_roots` refuses a leaf's
         Bash read of `operator_secret_root()` unconditionally, and that covers every
         orchestration's home only while the homes root actually resolves underneath it.
         The environment name is CLEARED here rather than set, so what is measured is the

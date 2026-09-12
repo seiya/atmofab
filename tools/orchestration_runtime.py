@@ -12731,14 +12731,17 @@ def _workflow_homes_root() -> Path:
 
     A thin alias over `tools/operator_private_root.py::workflow_homes_root`, kept as a name because
     this module's tests and `tools/prune_workflow_homes.py` patch it, and because the
-    module-local spelling is what the preparers read. The RESOLUTION is not duplicated:
-    the guard lists whatever this returns as a protected read root, so the tree that gets
-    created is by construction the tree that gets guarded — including when the override
-    moves it, which is precisely the case that was open before.
+    module-local spelling is what the preparers read. The RESOLUTION is not duplicated,
+    which used to matter twice over: the leaf's Bash read guard listed whatever this
+    returns as a protected read root, so the tree that got created was by construction the
+    tree that got guarded, including when the override moved it. That guard and
+    `protected_host_read_roots` went with the leaf hook layer in Z4 (issue #171) — a pure
+    leaf holds no tool to read with — so what single resolution buys now is that the
+    preparers, the pruner and this module cannot disagree about where the homes live.
 
-    Under the operator-secret root by default, which is what lets a single entry in
-    `protected_host_read_roots` cover every orchestration's home rather than only the one
-    the per-orchestration resolver can name from metadata.
+    Under the operator-secret root by default, which is where the single protected-root
+    entry used to cover every orchestration's home rather than only the one the
+    per-orchestration resolver can name from metadata.
     """
     return _hooks_workflow_homes_root()
 

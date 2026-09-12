@@ -2026,9 +2026,8 @@ class SchemaMinimumsAreEnforcedTests(unittest.TestCase):
                     self.mod, "_run_command",
                     return_value={"ok": True, "return_code": 0,
                                   "stdout": "", "stderr": ""},
-                ) as run_command:
-                    with self.assertRaises(ValueError) as ctx:
-                        getattr(self.mod, f"tool_{tool}")(args)
+                ) as run_command, self.assertRaises(ValueError) as ctx:
+                    getattr(self.mod, f"tool_{tool}")(args)
                 self.assertIn(prop, str(ctx.exception))
                 self.assertIn(str(minimum), str(ctx.exception))
                 run_command.assert_not_called()

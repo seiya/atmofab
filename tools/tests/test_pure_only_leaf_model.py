@@ -594,7 +594,8 @@ class LaunchPromptValidationFloorTests(unittest.TestCase):
         exact orphan the agent_role check's own comment says its placement exists to prevent.
         The request-side arm is what closes it; this row is what keeps it closed."""
         from tools.orchestration_runtime import (
-            _read_session_run_index, _validate_launch_request_payload,
+            _read_session_run_index,
+            _validate_launch_request_payload,
         )
         with tempfile.TemporaryDirectory() as tmp:
             repo_root, arid = Path(tmp), "substep_run_neither_001"
