@@ -2169,13 +2169,14 @@ def _strip_certification(
     """Remove the certification keys from a NON-passing phase's stage meta. Returns the meta
     ref when something was removed, else `None`.
 
-    The stamp is host-written, but on the agentic path the stage meta lives inside the verify
-    leaf's write_root — so a leaf can put `artifact_hashes` / `source_ir_id` there itself. That
-    buys it nothing while the phase passes (the host overwrites them with its own measurement
-    of the same files), but a phase that ends NON-pass would otherwise leave a meta claiming a
-    certification no host ever issued, and the skip decision reads exactly that claim. Erasing
-    the keys when the phase terminates non-pass makes "certified" mean "a passing
-    `write-step-result` stamped it" for every phase that reaches this function.
+    The stamp is host-written and always was; on the deleted agentic path the stage meta also
+    sat inside the verify leaf's write_root, so a leaf could put `artifact_hashes` /
+    `source_ir_id` there itself. That half is gone with the leaf's write authority (Z4, issue
+    #171 — a pure leaf authors no file), and the function is not: the HOST stamps the keys
+    before it knows the phase's outcome, so a phase that ends NON-pass would otherwise leave a
+    meta claiming a certification no host ever issued, and the skip decision reads exactly
+    that claim. Erasing the keys when the phase terminates non-pass makes "certified" mean "a
+    passing `write-step-result` stamped it" for every phase that reaches this function.
 
     Best effort by design: an absent or unreadable meta is the ordinary shape of a failed
     phase (nothing was authored), and there is nothing to strip.

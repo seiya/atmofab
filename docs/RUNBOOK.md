@@ -556,13 +556,17 @@ paragraph after the list for what that leaves):
 **`ATMOFAB_START_CLAIM_ROOT` is checked for ONE thing — it must be absolute** (a relative root resolves against each process’s working directory, so two drivers would take their claims on different files and neither would serialize the other; the run then proceeds with a `start_claim_degraded` warning). Otherwise it is unchecked, and that is the price of the claim
 being advisory: a claim that cannot be taken yields "proceed" rather than failing, so
 there is no refusal to hang the checks on. Pointing it inside the checkout is therefore
-possible and is a bad idea for a different reason from the homes root — a 0-byte lock file
-created under the repository while a leaf is running lands in that leaf's terminal
-write-diff and is misattributed as an unauthorized write, which is the reason the claims
-live outside the repository at all.
+possible and is a bad idea for a different reason from the homes root. A 0-byte lock file
+created under the repository while a leaf is running used to land in that leaf's terminal
+write-diff and be misattributed as an unauthorized write — that diff went with the leaf's
+write authority ([issue #171](https://github.com/seiya/atmofab/issues/171) PR-2) — and it
+is still a host file appearing inside a checkout every structural check reads, which is why
+the claims live outside the repository.
 
-A relocated homes tree is an entry in `protected_host_read_roots` in its own right and
-keeps its own block message. (A LIMIT of the guard was measured against the relocated
+A relocated homes tree was an entry in `protected_host_read_roots` in its own right and
+kept its own block message; that read guard went with the leaf hook layer in Z4
+([issue #171](https://github.com/seiya/atmofab/issues/171)), a pure leaf holding no tool to
+read with, so relocating one now changes where the tree lives and nothing else. (A LIMIT of the guard was measured against the relocated
 TOKEN STORE — the fail-closed fallback for a command it cannot resolve fires only when a
 token also spells `.atmofab` / `.claude` / `.codex`, which a relocated root need not, so
 `cat $(printenv <RELOCATOR>)/<file>` was ALLOWED where the default spelling blocked, and
