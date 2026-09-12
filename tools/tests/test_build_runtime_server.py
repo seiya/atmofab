@@ -492,6 +492,38 @@ class EnvOverrideDenylistTests(unittest.TestCase):
                     # Refused, not stripped after the merge: nothing ran.
                     run_command.assert_not_called()
 
+    def test_an_env_value_that_reaches_the_recipe_shell_is_refused(self) -> None:
+        # make imports an environment name as a make VARIABLE, so a value arriving this
+        # way is interpolated into the host-authored recipe exactly as a command-line
+        # assignment would be. `extra_args` has had this rule all along; the env half
+        # had no value check at all, so `CASES='; touch /tmp/x'` was accepted there and
+        # refused one argument over.
+        for value in ("a; touch /tmp/x", "a && id", "$(shell id)", "`id`", "a|b",
+                      "a>b", "a\nb", "'x'"):
+            with self.subTest(value=value):
+                with self._spy_run_command() as run_command:
+                    with self.assertRaises(ValueError) as ctx:
+                        self.mod.tool_run_quality_checks(
+                            self._args("run_quality_checks", {"CASES": value}))
+                self.assertIn("reach the make recipe's shell", str(ctx.exception))
+                run_command.assert_not_called()
+
+    def test_the_conductor_env_payload_is_accepted(self) -> None:
+        # The six make variables `Validate.execute` declares. If this payload ever
+        # grows a value the rule refuses, it fails here rather than mid-phase.
+        payload = {
+            "OBJDIR": "/repo/workspace/tmp/a/build",
+            "BINDIR": "/repo/workspace/binary/bin_1/bin",
+            "RUNDIR": "/repo/workspace/tmp/a/run",
+            "BIN": "sw2d_runner",
+            "SPEC": "/repo/spec/x/spec.ir.yaml",
+            "CASES": "c1 l0_v1.2-alpha",
+        }
+        with self._spy_run_command() as run_command:
+            self.mod.tool_run_quality_checks(
+                self._args("run_quality_checks", payload))
+        run_command.assert_called_once()
+
     def test_denylist_is_case_insensitive_and_prefix_exact(self) -> None:
         with self._spy_run_command():
             with self.assertRaises(ValueError):

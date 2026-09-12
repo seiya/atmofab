@@ -124,6 +124,13 @@ _UNSAFE_ENV_OVERRIDE_KEYS = frozenset({
 })
 _UNSAFE_ENV_OVERRIDE_PREFIXES = ("LD_", "DYLD_")
 
+# The make recipe interpolates a make variable's value unquoted (`cd $(RUNDIR) &&
+# $(BINDIR)/$(BIN) --cases $(SPEC) $(CASES)`), so a value carrying a character that
+# line's shell or make acts on is a command rather than a value. A space is not one of
+# them: it splits words in the recipe, but `CASES` is a word LIST by contract and a
+# checkout path may legitimately hold one.
+_SHELL_ACTIVE_CHARS = set("\t\n\r;&|$`'\"\\<>()*?[]{}~#!")
+
 
 def _validate_env_overrides(env: Any, tool_name: str) -> None:
     """Refuse an environment override that redirects what the command executes.
@@ -144,6 +151,21 @@ def _validate_env_overrides(env: Any, tool_name: str) -> None:
     catches a mistake rather than confining a caller — and it now applies to the
     conductor's calls too, which it did not before.
 
+    The VALUE rule is the same one `_validate_build_argv_overrides` applies, and it is
+    here for the same reason: make imports an environment name as a make variable, so a
+    value arriving this way is interpolated unquoted into the host-authored recipe
+    exactly as a command-line assignment would be. Refusing it in one half and accepting
+    it in the other guards nothing.
+
+    What the retired allowlist did and this does NOT: bound the NAMES. `FC` is not an
+    execution-redirecting name, and make imports it as the variable a certified
+    Makefile's compiler comes from. That is a real gap and it is recorded rather than
+    closed, because closing it means an allowlist, an allowlist bounds a caller's GRANT,
+    and there is no longer a caller whose grant needs bounding: no leaf reaches this
+    server, and the conductor passes a fixed six-key dict it composes itself. A denylist
+    over names does not terminate, which is why this one covers only the names that
+    redirect what is EXECUTED rather than what a Makefile reads.
+
     Call this on the raw `env` argument, before the server composes its own additions
     (`OMP_*` for run_program, `PYTHONPATH` for the pytest preset) — those are the
     server's own decisions and are not caller-controlled.
@@ -161,18 +183,21 @@ def _validate_env_overrides(env: Any, tool_name: str) -> None:
             f"{tool_name} does not accept env overrides that redirect execution: "
             + ", ".join(offending)
         )
+    unsafe = sorted(
+        str(key) for key, value in env.items()
+        if set(str(value)) & _SHELL_ACTIVE_CHARS
+    )
+    if unsafe:
+        raise ValueError(
+            f"{tool_name} env values reach the make recipe's shell: refused "
+            + ", ".join(unsafe)
+        )
 
 
 # A build-tool command line takes a make VARIABLE ASSIGNMENT and nothing else. The name
 # is what decides: `--eval=$(shell ...)` and `--load-average=8` both carry an `=`, and
 # make reads them as switches that run before the certified Makefile is read at all.
 _MAKE_ASSIGNMENT_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-# The make recipe interpolates an assignment's value unquoted (`cd $(RUNDIR) &&
-# $(BINDIR)/$(BIN) --cases $(SPEC) $(CASES)`), so a value carrying a character that
-# line's shell or make acts on is a command rather than a value. A space is not one of
-# them: it splits words in the recipe, but `CASES` is a word LIST by contract and a
-# checkout path may legitimately hold one.
-_SHELL_ACTIVE_CHARS = set("\t\n\r;&|$`'\"\\<>()*?[]{}~#!")
 # `target` reaches the build tool's argv POSITIONALLY for every build system here
 # (`make -jN <target>`, `ninja -jN <target>`, `cmake --build . --target <target>`), so it
 # is the same surface `extra_args` is and takes the same answer: a build GOAL is a name,
