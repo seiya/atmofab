@@ -11689,6 +11689,28 @@ def _validate_launch_request_payload(request_payload: dict[str, Any]) -> None:
         if not isinstance(gen_id, str) or not gen_id.strip():
             raise ValueError("generate verify launch request must include non-empty source_id")
 
+    # THE TWO SHAPES, refused HERE and not only at the prompt.
+    # `_validate_launch_prompt_text` carries the same refusal and is the one that answers for
+    # an arbitrary prompt BODY; but `record_launch` calls it AFTER
+    # `_append_session_run_index_entry`, so a neither-shape request was recorded as a `running`
+    # row and only then refused — an orphan row naming a launch that never happened, which is
+    # exactly what the placement of the agent_role check three lines up exists to prevent.
+    # Same defect class as the one that comment describes, introduced by PR-2 when it turned
+    # the identity floor into a refusal without moving it. This arm reads the REQUEST only, so
+    # it is safe this early; the prompt-text arm stays, because a request can declare a shape
+    # its prompt does not carry.
+    # The shape question is asked of ONE function, `_required_launch_prompt_markers`: an empty
+    # marker set on a real step IS "neither deterministic nor pure" (its own comment says so),
+    # so the two refusals cannot answer differently.
+    if isinstance(step, str) and step.strip():
+        if not _required_launch_prompt_markers(request_payload):
+            raise ValueError(
+                f"launch request declares step={step!r} "
+                f"substep={request_payload.get('substep')!r} and is neither deterministic nor "
+                "pure. Since Z4 (issue #171) a launch is one of those two shapes: set "
+                "`deterministic: true` for a conductor in-process substep, or `leaf_mode: "
+                '"pure"` with a `pure_context` for an LLM leaf'
+            )
     if not is_verify_substep:
         return
     # Every verify leaf is pure since Z4 (issue #171), and a pure request's skill fields are

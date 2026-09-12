@@ -584,6 +584,47 @@ class LaunchPromptValidationFloorTests(unittest.TestCase):
                 self.assertIn("deterministic", message)
                 self.assertIn("leaf_mode", message)
 
+    def test_the_refusal_lands_before_the_running_row_is_durable(self) -> None:
+        """WHERE the refusal fires, not only that it fires.
+
+        `record_launch` calls `_validate_launch_request_payload` and only then
+        `_append_session_run_index_entry`; the prompt-text arm above runs AFTER that row is
+        written. PR-2 turned the identity floor into a refusal without moving it, so a
+        neither-shape request left a `running` row naming a launch that never happened — the
+        exact orphan the agent_role check's own comment says its placement exists to prevent.
+        The request-side arm is what closes it; this row is what keeps it closed."""
+        from tools.orchestration_runtime import (
+            _read_session_run_index, _validate_launch_request_payload,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root, arid = Path(tmp), "substep_run_neither_001"
+            orchestration_id = "orch_neither_001"
+            _seed_launchable(repo_root, orchestration_id)
+            payload = {
+                **_launch_request_body(arid),
+                "orchestration_id": orchestration_id,
+                "agent_run_id": arid,
+            }
+            for key in ("leaf_mode", "pure_context", "deterministic"):
+                payload.pop(key, None)
+            with self.assertRaises(ValueError) as caught:
+                _validate_launch_request_payload(dict(payload))
+            self.assertIn("neither deterministic nor pure", str(caught.exception))
+
+            with self.assertRaises(ValueError):
+                ort.record_launch(
+                    repo_root=repo_root,
+                    orchestration_id=orchestration_id,
+                    parent_agent_run_id="orch_run_001",
+                    child_agent_run_id=arid,
+                    request_payload=dict(payload),
+                    response_payload={"agent_run_id": arid, "backend": "claude",
+                                      **_spawn_response_payload(arid)},
+                )
+            entries = _read_session_run_index(repo_root, orchestration_id).get("entries", [])
+            self.assertNotIn(arid, [e.get("agent_run_id") for e in entries],
+                             "the refused launch left a session_run_index row behind")
+
     def test_the_self_prompt_with_no_step_is_still_exempt(self) -> None:
         """The case the silent return was written for, and the reason it is not a refusal."""
         from tools.orchestration_runtime import _validate_launch_prompt_text
