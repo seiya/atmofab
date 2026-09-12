@@ -348,6 +348,17 @@ def _validate_build_argv_overrides(
     was never built. The round-1 fix made only the VALUE rule symmetric and named `FC` —
     the weakest member — as the residue, which understated what was open.
 
+    WHAT THESE RULES ARE, and it bounds how much they are worth. `run_program`'s `command`
+    is caller-chosen argv by design and is constrained by nothing, so a caller that wants to
+    execute an arbitrary program calls THAT tool. These rules therefore cannot confine the
+    caller they are checked against — they catch a MISTAKE in the one composition this
+    repository writes (`workflow_conductor._build_inproc`, a fixed three-element list of
+    host paths), and they are documented that way everywhere they are documented. A finding
+    here is judged as a defect in that composition, never as an escape: rounds 1-5 of issue
+    #171 PR-2's review spent five rounds on this surface and each round found another make
+    spelling, which is what the shape of the surface predicts — the answer is a rule stated
+    once and derived, not a longer list.
+
     ONE mode since Z4 (issue #171), like `_validate_env_overrides` above and for the same
     reason. The orchestrated arm held THREE further things: an allowlist of six variable
     NAMES, a containment rule on the four whose value is a path, and an outright refusal
