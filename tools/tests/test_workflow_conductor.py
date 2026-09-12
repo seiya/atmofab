@@ -167,23 +167,41 @@ class BuildLaunchRequestTest(unittest.TestCase):
     """build_launch_request reproduces real request.json payloads exactly.
 
     The fixtures under `data/conductor_launch_requests/` are CAPTURES of real runs, and that is
-    what makes this row evidence rather than a restatement of the builder. So a fixture is
-    edited only when the launch contract deliberately changes, and the edit is recorded:
-    `compile_generate.request.json` gained `<ir_ref>/dependency_graph.json` in its
-    `skill_must_read_refs` for issue #175, because the node's direct dependency set moved out of
-    `deps.yaml` and into that sidecar, and an agentic producer that reads only its required set
-    would otherwise have no source for it. Every other field of every fixture is as captured."""
+    what makes this row evidence rather than a restatement of the builder.
+
+    TWO ROWS, not seven, since Z4 (issue #171) — and the round-1 review is what established
+    that the seven were wrong rather than merely old. The five LLM rows were captures of the
+    AGENTIC launch: a skill ref, a must-read list, and a leaf-authored `allowed_output_paths`.
+    This branch stripped the three skill fields from them and left the rest, which made them a
+    shape production cannot emit and the renderer refuses — `prepare_launch_request_payload`
+    answers "neither deterministic nor pure" for all five — so the strongest anti-drift row on
+    `build_launch_request` was comparing against a dead payload.
+
+    They are DELETED rather than converted, deliberately. Converting means writing the pure
+    fields in by hand and emptying `allowed_output_paths`, at which point the fixture is the
+    builder's own output and the comparison is a tautology. A faithful capture is not cheap
+    either: a real pure `generate.generate` request recorded on this machine is 259 KB, 105 KB
+    of it the inlined `pure_context`. What is owed, and is recorded in `TODO.md`, is a REDACTED
+    pure capture (`pure_context` and `launch_prompt_full` replaced by a placeholder) taken from
+    the billed run of this issue's PR-3, restoring the LLM half of this corpus as evidence.
+
+    What is NOT lost meanwhile: the pure builder is driven for every pair and every bundle shape
+    by `test_pure_leaf_wiring._host_built_launch_requests`, and its dispatch by
+    `test_pure_only_leaf_model`. What is lost is "the payload matches a run that really
+    happened", which is this row's own axis, and only for the LLM pairs.
+
+    The two rows that remain are DETERMINISTIC captures and still match production exactly."""
 
     def test_reproduces_every_real_substep_payload(self) -> None:
         real = _load_real_requests()
         self.assertTrue(real, "no captured request.json artifacts found")
-        expected_keys = {
-            ("compile", "generate"), ("compile", "verify"),
-            ("generate", "generate"), ("generate", "verify"),
-            ("build", None),
-            ("validate", "execute"), ("validate", "judge"),
-        }
+        expected_keys = {("build", None), ("validate", "execute")}
         self.assertEqual(set(real), expected_keys, "captured fixture set changed")
+        # Both survivors are DETERMINISTIC, and that is asserted rather than assumed: an LLM
+        # pair reappearing here would be an agentic-shaped capture coming back, which is the
+        # thing the docstring above says this corpus no longer holds.
+        for (step, substep), req in real.items():
+            self.assertTrue(req.get("deterministic"), f"{step}/{substep} is not deterministic")
 
         for (step, substep), req in real.items():
             with self.subTest(step=step, substep=substep):
