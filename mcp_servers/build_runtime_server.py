@@ -129,6 +129,19 @@ _UNSAFE_ENV_OVERRIDE_KEYS = frozenset({
     # both spellings are refused on both halves. This lived in the argv-only set until the
     # measurement above; "matters only on a command line" was an assumption.
     "SHELLFLAGS",
+    # ONE SET FOR BOTH HALVES, and the reason is the history. `SHELL` and `MAKE` sat in an
+    # argv-only set on the written premise that they "matter only on a command line", and
+    # that premise was wrong for `MAKE`: measured on GNU Make 4.3, against a Makefile whose
+    # recipe calls `$(MAKE)`,
+    #   env 'MAKE=./evil' make all   ->  ./evil runs, the inner recipe does not, rc 0
+    # `MAKE_COMMAND` is the same mechanism under make's other spelling. `SHELL` genuinely is
+    # argv-only — make sets it itself and ignores the environment's, verified — and it is
+    # here anyway, because the SET DIFFERENCE is the defect class: issue #171 PR-2's review
+    # found the same hole three times (`.SHELLFLAGS` in argv then in env, then `MAKE`), and
+    # round 6 unified the NORMALISER while leaving the sets apart, so the class reopened one
+    # level up. A name that is argv-only costs nothing in the env half; a name missing from
+    # one half is a hole by construction.
+    "SHELL", "MAKE", "MAKE_COMMAND",
 })
 _UNSAFE_ENV_OVERRIDE_PREFIXES = ("LD_", "DYLD_")
 
@@ -137,12 +150,11 @@ _UNSAFE_ENV_OVERRIDE_PREFIXES = ("LD_", "DYLD_")
 # than the environment, not less — and `SHELL=` is not the `FC` class it was first grouped
 # with: it replaces the interpreter of every recipe line, which is arbitrary execution rather
 # than a redirected compiler. `make SHELL=./evil all` runs `./evil` (measured, GNU Make 4.3).
-# `MAKE` is here and not in the env set because make exports it to sub-makes as the command
-# to re-invoke itself with, and `SHELLFLAGS` because make's own spelling is the SPECIAL
-# variable `.SHELLFLAGS`, which supplies the arguments `SHELL` is invoked with — measured:
-# `make '.SHELLFLAGS=-c touch /tmp/x;' all` runs `touch`. The leading dot is normalised off
-# before the lookup, so both spellings are covered.
-_UNSAFE_ASSIGNMENT_NAMES = frozenset(_UNSAFE_ENV_OVERRIDE_KEYS | {"SHELL", "MAKE"})
+# THE SAME SET, deliberately not a superset. Every name make reads as a redirection of what
+# is executed is refused on both halves, whichever way it arrives — an environment key and a
+# command-line assignment are one vocabulary to make, so two sets is two answers to one
+# question. The alias is kept as a name because the two call sites read differently.
+_UNSAFE_ASSIGNMENT_NAMES = _UNSAFE_ENV_OVERRIDE_KEYS
 
 # The make recipe interpolates a make variable's value unquoted (`cd $(RUNDIR) &&
 # $(BINDIR)/$(BIN) --cases $(SPEC) $(CASES)`), so a value carrying a character that
@@ -529,7 +541,7 @@ _ENV_PROPERTY_SCHEMA: dict[str, Any] = {
         "Environment overrides for the command. Keys that redirect execution (LD_*, "
         "DYLD_*, PATH, PYTHONPATH, BASH_ENV, ENV, IFS, COMPILER_PATH, "
         "GCC_EXEC_PREFIX, LIBRARY_PATH, MAKEFLAGS, GNUMAKEFLAGS, MAKEFILES, "
-        ".SHELLFLAGS, MAKESHELL) are refused, and so is any VALUE carrying a character a shell "
+        ".SHELLFLAGS, MAKESHELL, SHELL, MAKE) are refused, and so is any VALUE carrying a character a shell "
         "acts on -- make imports an environment name as a make variable and the "
         "recipe interpolates it unquoted."
     ),
@@ -1579,8 +1591,9 @@ TOOLS: dict[str, Tool] = {
                         "build system: no element may use make's shell assignment "
                         "(NAME!=command), which EXECUTES its value whatever the name is; "
                         "an assignment must not name something make reads as a "
-                        "redirection of what is executed (SHELL, .SHELLFLAGS, MAKE, "
-                        "MAKEFILES, MAKEFLAGS, LD_*, PATH, ...); and no element may carry "
+                        "redirection of what is executed -- the same set the env half "
+                        "refuses (SHELL, .SHELLFLAGS, MAKE, MAKEFILES, MAKEFLAGS, LD_*, "
+                        "PATH, ...); and no element may carry "
                         "a character a shell acts on, because make interpolates a value "
                         "into the recipe unquoted. Applies to every caller."
                     ),

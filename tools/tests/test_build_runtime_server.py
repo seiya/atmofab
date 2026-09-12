@@ -547,13 +547,34 @@ class EnvOverrideDenylistTests(unittest.TestCase):
                 self.assertIn("redirect execution", str(ctx.exception))
                 run_command.assert_not_called()
 
+    def test_the_two_halves_refuse_exactly_the_same_names(self) -> None:
+        """ONE set, asserted as a set — not sampled.
+
+        The first version of this row iterated six SPELLINGS, all drawn from the set the two
+        halves already shared, so it could not see a set DIFFERENCE by construction: it was
+        green while `_UNSAFE_ASSIGNMENT_NAMES - _UNSAFE_ENV_OVERRIDE_KEYS == {MAKE, SHELL}`
+        and `env MAKE=./evil` ran `./evil` through a recipe calling `$(MAKE)`.
+
+        That difference is the defect class this branch met three times — `.SHELLFLAGS` in
+        argv then in env, then `MAKE` — so what is pinned is the identity, plus a drive of
+        EVERY member through both halves so the identity cannot be satisfied by a set neither
+        validator reads."""
+        self.assertEqual(self.mod._UNSAFE_ASSIGNMENT_NAMES,
+                         self.mod._UNSAFE_ENV_OVERRIDE_KEYS)
+        for name in sorted(self.mod._UNSAFE_ENV_OVERRIDE_KEYS):
+            with self.subTest(name=name):
+                with self.assertRaises(ValueError):
+                    self.mod._validate_env_overrides({name: "x"}, "compile_project")
+                with self.assertRaises(ValueError):
+                    self.mod._validate_build_argv_overrides(
+                        None, [f"{name}=x"], "compile_project", build_system="cargo")
+
     def test_the_two_halves_share_one_name_normaliser(self) -> None:
-        # The property, not the members: every spelling the argv half normalises, the env
-        # half normalises the same way. A second normaliser on either side is how the
-        # `.SHELLFLAGS` hole opened — the argv side stripped the leading dot and the env
-        # side did not.
+        # The other half of the same claim: the sets being equal buys nothing if the two
+        # call sites normalise the spelling differently before the lookup. Each of these
+        # reaches a member only through the normaliser.
         for spelling in (".SHELLFLAGS", "SHELLFLAGS ", " .shellflags", ".MAKEFLAGS",
-                         "ld_preload", " LD_PRELOAD"):
+                         "ld_preload", " LD_PRELOAD", "MAKE:", "shell?"):
             with self.subTest(spelling=spelling):
                 with self.assertRaises(ValueError):
                     self.mod._validate_env_overrides({spelling: "x"}, "compile_project")
