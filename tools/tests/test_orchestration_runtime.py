@@ -1602,6 +1602,7 @@ shell_tool                       stable             true
             "source_id": "src_20260101_002",
             "skill_name": "workflow-generate-generate",
             "skill_ref": "skills/workflow-generate-generate/SKILL.md",
+            "skill_must_read_refs": "",
             "skill_must_read_refs":
                 "skills/workflow-generate-generate/SKILL.md,docs/AGENT_CONTRACT.md",
             "allowed_output_paths": [
@@ -1996,9 +1997,7 @@ shell_tool                       stable             true
                     "ir_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
                     "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
                     "dependency_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/spec.ir.yaml",
-                    "skill_name": "workflow-build",
-                    "skill_ref": "skills/workflow-build/SKILL.md",
-                    "skill_must_read_refs": "",
+                    "deterministic": True,
                     "allowed_output_paths": [
                         "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/binary/bin_20260101_001/bin/simulate",
                     ],
@@ -4483,9 +4482,7 @@ shell_tool                       stable             true
                         "pipeline_ref": _FIX_PIPE_REF,
                         "dependency_ref": _FIX_DEP_REF,
                         "source_id": failed_gen,
-                        "skill_name": "workflow-build",
-                        "skill_ref": "skills/workflow-build/SKILL.md",
-                        "skill_must_read_refs": "",
+                        "deterministic": True,
                         "deterministic": True,
                         "allowed_output_paths": [
                             f"{_FIX_PIPE_REF}/binary/{binary_id}/binary_meta.json",
@@ -5528,9 +5525,7 @@ shell_tool                       stable             true
                     "ir_ref": _FIX_IR_REF,
                     "pipeline_ref": _FIX_PIPE_REF,
                     "dependency_ref": _FIX_DEP_REF,
-                    "skill_name": "workflow-build",
-                    "skill_ref": "skills/workflow-build/SKILL.md",
-                    "skill_must_read_refs": "",
+                    "deterministic": True,
                     "deterministic": True,
                     "allowed_output_paths": [f"{_FIX_PIPE_REF}/binary/bin_20260101_001/binary_meta.json"],
                     "launch_prompt_full": _step_launch_prompt(
@@ -5614,9 +5609,7 @@ shell_tool                       stable             true
                     "ir_ref": _FIX_IR_REF,
                     "pipeline_ref": _FIX_PIPE_REF,
                     "dependency_ref": _FIX_DEP_REF,
-                    "skill_name": "workflow-build",
-                    "skill_ref": "skills/workflow-build/SKILL.md",
-                    "skill_must_read_refs": "",
+                    "deterministic": True,
                     "deterministic": True,
                     "allowed_output_paths": [f"{_FIX_PIPE_REF}/binary/bin_20260101_001/binary_meta.json"],
                     "launch_prompt_full": _step_launch_prompt(
@@ -5695,9 +5688,7 @@ shell_tool                       stable             true
                     "ir_ref": _FIX_IR_REF,
                     "pipeline_ref": _FIX_PIPE_REF,
                     "dependency_ref": _FIX_DEP_REF,
-                    "skill_name": "workflow-build",
-                    "skill_ref": "skills/workflow-build/SKILL.md",
-                    "skill_must_read_refs": "",
+                    "deterministic": True,
                     "deterministic": True,
                     "allowed_output_paths": [f"{_FIX_PIPE_REF}/binary/bin_20260101_001/binary_meta.json"],
                     "launch_prompt_full": _step_launch_prompt(
@@ -5777,9 +5768,7 @@ shell_tool                       stable             true
                     "ir_ref": _FIX_IR_REF,
                     "pipeline_ref": _FIX_PIPE_REF,
                     "dependency_ref": _FIX_DEP_REF,
-                    "skill_name": "workflow-build",
-                    "skill_ref": "skills/workflow-build/SKILL.md",
-                    "skill_must_read_refs": "",
+                    "deterministic": True,
                     "deterministic": True,
                     "allowed_output_paths": [f"{_FIX_PIPE_REF}/binary/bin_20260101_001/bin/simulate"],
                     "launch_prompt_full": _step_launch_prompt(
@@ -5953,9 +5942,7 @@ shell_tool                       stable             true
                     "ir_ref": _FIX_IR_REF,
                     "pipeline_ref": _FIX_PIPE_REF,
                     "dependency_ref": _FIX_DEP_REF,
-                    "skill_name": "workflow-build",
-                    "skill_ref": "skills/workflow-build/SKILL.md",
-                    "skill_must_read_refs": "",
+                    "deterministic": True,
                     "deterministic": True,
                     "allowed_output_paths": [bin_ref],
                     "launch_prompt_full": _step_launch_prompt(
@@ -7000,9 +6987,7 @@ shell_tool                       stable             true
                     "ir_ref": _FIX_IR_REF,
                     "pipeline_ref": _FIX_PIPE_REF,
                     "dependency_ref": _FIX_DEP_REF,
-                    "skill_name": "workflow-build",
-                    "skill_ref": "skills/workflow-build/SKILL.md",
-                    "skill_must_read_refs": "",
+                    "deterministic": True,
                     "deterministic": True,
                     "allowed_output_paths": [f"{_FIX_PIPE_REF}/binary/bin_20260101_001/bin/simulate"],
                     "launch_prompt_full": _step_launch_prompt(
@@ -7087,9 +7072,7 @@ shell_tool                       stable             true
                     "ir_ref": _FIX_IR_REF,
                     "pipeline_ref": _FIX_PIPE_REF,
                     "dependency_ref": _FIX_DEP_REF,
-                    "skill_name": "workflow-build",
-                    "skill_ref": "skills/workflow-build/SKILL.md",
-                    "skill_must_read_refs": "",
+                    "deterministic": True,
                     "deterministic": True,
                     "allowed_output_paths": [f"{_FIX_PIPE_REF}/binary/bin_20260101_001/bin/simulate"],
                     "launch_prompt_full": _step_launch_prompt(
@@ -7177,9 +7160,7 @@ shell_tool                       stable             true
                     "ir_ref": _FIX_IR_REF,
                     "pipeline_ref": _FIX_PIPE_REF,
                     "dependency_ref": _FIX_DEP_REF,
-                    "skill_name": "workflow-build",
-                    "skill_ref": "skills/workflow-build/SKILL.md",
-                    "skill_must_read_refs": "",
+                    "deterministic": True,
                     "deterministic": True,
                     "allowed_output_paths": [f"{_FIX_PIPE_REF}/binary/bin_20260101_001/bin/simulate"],
                     "launch_prompt_full": _step_launch_prompt(
@@ -7268,9 +7249,7 @@ shell_tool                       stable             true
                     "ir_ref": _FIX_IR_REF,
                     "pipeline_ref": _FIX_PIPE_REF,
                     "dependency_ref": _FIX_DEP_REF,
-                    "skill_name": "workflow-build",
-                    "skill_ref": "skills/workflow-build/SKILL.md",
-                    "skill_must_read_refs": "",
+                    "deterministic": True,
                     "deterministic": True,
                     "allowed_output_paths": [f"{_FIX_PIPE_REF}/binary/bin_20260101_001/bin/simulate"],
                     "launch_prompt_full": _step_launch_prompt(
@@ -7367,9 +7346,7 @@ shell_tool                       stable             true
                     "ir_ref": _FIX_IR_REF,
                     "pipeline_ref": _FIX_PIPE_REF,
                     "dependency_ref": _FIX_DEP_REF,
-                    "skill_name": "workflow-build",
-                    "skill_ref": "skills/workflow-build/SKILL.md",
-                    "skill_must_read_refs": "",
+                    "deterministic": True,
                     "deterministic": True,
                     "allowed_output_paths": [f"{_FIX_PIPE_REF}/binary/bin_20260101_001/bin/simulate"],
                     "launch_prompt_full": _step_launch_prompt(
@@ -7447,9 +7424,7 @@ shell_tool                       stable             true
                         "ir_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
                         "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
                         "dependency_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/spec.ir.yaml",
-                        "skill_name": "workflow-build",
-                        "skill_ref": "skills/workflow-build/SKILL.md",
-                        "skill_must_read_refs": "",
+                        "deterministic": True,
                         "launch_prompt_full": _step_launch_prompt(
                             "problem/shallow_water2d@0.3.0",
                             "build",
@@ -8364,9 +8339,7 @@ shell_tool                       stable             true
                     "ir_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
                     "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
                     "dependency_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/spec.ir.yaml",
-                    "skill_name": "workflow-build",
-                    "skill_ref": "skills/workflow-build/SKILL.md",
-                    "skill_must_read_refs": "",
+                    "deterministic": True,
                     "allowed_output_paths": ["workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/binary/bin_20260101_001/bin/simulate"],
                     "launch_prompt_full": _step_launch_prompt(
                         "problem/shallow_water2d@0.3.0",
@@ -8730,9 +8703,7 @@ shell_tool                       stable             true
                         "ir_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
                         "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
                         "dependency_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/spec.ir.yaml",
-                        "skill_name": "workflow-build",
-                        "skill_ref": "skills/workflow-build/SKILL.md",
-                        "skill_must_read_refs": "",
+                        "deterministic": True,
                         "allowed_output_paths": [
                             "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/binary/bin_20260101_001/bin/simulate",
                         ],
@@ -8828,9 +8799,7 @@ shell_tool                       stable             true
                     "ir_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
                     "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
                     "dependency_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/spec.ir.yaml",
-                    "skill_name": "workflow-build",
-                    "skill_ref": "skills/workflow-build/SKILL.md",
-                    "skill_must_read_refs": "",
+                    "deterministic": True,
                     "allowed_output_paths": ["workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/binary/bin_20260101_001/bin/simulate"],
                     "launch_prompt_full": _step_launch_prompt(
                         "problem/shallow_water2d@0.3.0",
@@ -9195,9 +9164,7 @@ shell_tool                       stable             true
             "ir_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
             "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
             "dependency_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/spec.ir.yaml",
-            "skill_name": "workflow-build",
-            "skill_ref": "skills/workflow-build/SKILL.md",
-            "skill_must_read_refs": "",
+            "deterministic": True,
             "allowed_output_paths": [
                 "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/binary/bin_20260101_001/bin/simulate",
             ],
@@ -10398,9 +10365,7 @@ shell_tool                       stable             true
             "ir_ref": _FIX_IR_REF,
             "pipeline_ref": _FIX_PIPE_REF,
             "dependency_ref": _FIX_DEP_REF,
-            "skill_name": "workflow-build",
-            "skill_ref": "skills/workflow-build/SKILL.md",
-            "skill_must_read_refs": "",
+            "deterministic": True,
             "deterministic": True,
             "issue_severity": "none",
             "repair_strategy": "none",
@@ -13252,9 +13217,7 @@ class OrchestrationMetaAndJudgeHookTests(unittest.TestCase):
                     "ir_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
                     "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
                     "dependency_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/spec.ir.yaml",
-                    "skill_name": "workflow-build",
-                    "skill_ref": "skills/workflow-build/SKILL.md",
-                    "skill_must_read_refs": "",
+                    "deterministic": True,
                     "allowed_output_paths": [
                         "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/binary/bin_20260101_001/binary_meta.json"
                     ],
@@ -13918,9 +13881,7 @@ class PreflightLiveProbeTtlTests(unittest.TestCase):
                             "ir_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
                             "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
                             "dependency_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/spec.ir.yaml",
-                            "skill_name": "workflow-build",
-                            "skill_ref": "skills/workflow-build/SKILL.md",
-                            "skill_must_read_refs": "",
+                            "deterministic": True,
                             "launch_prompt_full": _step_launch_prompt(
                                 "problem/shallow_water2d@0.3.0",
                                 "build",
@@ -14018,9 +13979,7 @@ class PreflightLiveProbeTtlTests(unittest.TestCase):
                             "ir_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
                             "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
                             "dependency_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/spec.ir.yaml",
-                            "skill_name": "workflow-build",
-                            "skill_ref": "skills/workflow-build/SKILL.md",
-                            "skill_must_read_refs": "",
+                            "deterministic": True,
                             "launch_prompt_full": _step_launch_prompt(
                                 "problem/shallow_water2d@0.3.0",
                                 "build",
@@ -14691,6 +14650,7 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
                 "dependency_ref": _FIX_DEP_REF,
                 "skill_name": "workflow-compile-generate",
                 "skill_ref": "skills/workflow-compile-generate/SKILL.md",
+                "skill_must_read_refs": "",
                 "leaf_mode": "pure",
                 "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
                 "pure_context": _PURE_GENERATE_CONTEXT,
@@ -14819,6 +14779,7 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
                 "dependency_ref": _FIX_DEP_REF,
                 "skill_name": "workflow-compile-generate",
                 "skill_ref": "skills/workflow-compile-generate/SKILL.md",
+                "skill_must_read_refs": "",
                 "leaf_mode": "pure",
                 "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
                 "pure_context": _PURE_GENERATE_CONTEXT,
@@ -14840,6 +14801,7 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
                         "dependency_ref": _FIX_DEP_REF,
                         "skill_name": "workflow-compile-generate",
                         "skill_ref": "skills/workflow-compile-generate/SKILL.md",
+                        "skill_must_read_refs": "",
                         "leaf_mode": "pure",
                         "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
                         "pure_context": _PURE_GENERATE_CONTEXT,
@@ -14928,8 +14890,7 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
                 "ir_ref": _FIX_IR_REF,
                 "pipeline_ref": _FIX_PIPE_REF,
                 "dependency_ref": _FIX_DEP_REF,
-                "skill_name": "workflow-build",
-                "skill_ref": "skills/workflow-build/SKILL.md",
+                "deterministic": True,
                 "deterministic": True,
                 "issue_severity": "none",
                 "repair_strategy": "none",
@@ -14946,8 +14907,7 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
                         "ir_ref": _FIX_IR_REF,
                         "pipeline_ref": _FIX_PIPE_REF,
                         "dependency_ref": _FIX_DEP_REF,
-                        "skill_name": "workflow-build",
-                        "skill_ref": "skills/workflow-build/SKILL.md",
+                        "deterministic": True,
                         "deterministic": True,
                         "issue_severity": "none",
                         "repair_strategy": "none",
@@ -15946,9 +15906,7 @@ class TestPhase3RunGate(unittest.TestCase):
             "ir_ref": _FIX_IR_REF,
             "pipeline_ref": _FIX_PIPE_REF,
             "dependency_ref": _FIX_DEP_REF,
-            "skill_name": "workflow-build",
-            "skill_ref": "skills/workflow-build/SKILL.md",
-            "skill_must_read_refs": "",
+            "deterministic": True,
             "deterministic": True,
             "issue_severity": "none",
             "repair_strategy": "none",
@@ -15965,9 +15923,7 @@ class TestPhase3RunGate(unittest.TestCase):
                     "ir_ref": _FIX_IR_REF,
                     "pipeline_ref": _FIX_PIPE_REF,
                     "dependency_ref": _FIX_DEP_REF,
-                    "skill_name": "workflow-build",
-                    "skill_ref": "skills/workflow-build/SKILL.md",
-                    "skill_must_read_refs": "",
+                    "deterministic": True,
                     "deterministic": True,
                     "issue_severity": "none",
                     "repair_strategy": "none",
@@ -16024,9 +15980,7 @@ class TestPhase3RunGate(unittest.TestCase):
                 "ir_ref": _FIX_IR_REF,
                 "pipeline_ref": _FIX_PIPE_REF,
                 "dependency_ref": _FIX_DEP_REF,
-                "skill_name": "workflow-build",
-                "skill_ref": "skills/workflow-build/SKILL.md",
-                "skill_must_read_refs": "",
+                "deterministic": True,
                 "deterministic": True,
                 "issue_severity": "none",
                 "repair_strategy": "none",
@@ -16043,9 +15997,7 @@ class TestPhase3RunGate(unittest.TestCase):
                         "ir_ref": _FIX_IR_REF,
                         "pipeline_ref": _FIX_PIPE_REF,
                         "dependency_ref": _FIX_DEP_REF,
-                        "skill_name": "workflow-build",
-                        "skill_ref": "skills/workflow-build/SKILL.md",
-                        "skill_must_read_refs": "",
+                        "deterministic": True,
                         "deterministic": True,
                         "issue_severity": "none",
                         "repair_strategy": "none",
@@ -17178,9 +17130,7 @@ class TestPhase3RunGate(unittest.TestCase):
                     "ir_ref": _FIX_IR_REF,
                     "pipeline_ref": _FIX_PIPE_REF,
                     "dependency_ref": _FIX_DEP_REF,
-                    "skill_name": "workflow-build",
-                    "skill_ref": "skills/workflow-build/SKILL.md",
-                    "skill_must_read_refs": "",
+                    "deterministic": True,
                     "allowed_output_paths": [f"{_FIX_PIPE_REF}/binary/bin_20260101_001/bin/simulate"],
                     "launch_prompt_full": _step_launch_prompt(
                         "problem/shallow_water2d@0.3.0",
@@ -17280,9 +17230,7 @@ class TestPhase3RunGate(unittest.TestCase):
                     "ir_ref": _FIX_IR_REF,
                     "pipeline_ref": _FIX_PIPE_REF,
                     "dependency_ref": _FIX_DEP_REF,
-                    "skill_name": "workflow-build",
-                    "skill_ref": "skills/workflow-build/SKILL.md",
-                    "skill_must_read_refs": "",
+                    "deterministic": True,
                     "allowed_output_paths": [f"{_FIX_PIPE_REF}/binary/bin_20260101_001/bin/simulate"],
                     "launch_prompt_full": _step_launch_prompt(
                         "problem/shallow_water2d@0.3.0",
@@ -28809,7 +28757,11 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # reviewer: the inlined slice). The agentic leaf's force-read cost is what this ceiling
         # guards, and the preamble is the first thing that leaf reads to know which half binds
         # it. Measured 14865 at the end of the loop.
-        "docs/workflow/CHECKS_MODULE_CONTRACT.md": 14900,
+        # Bumped for issue #171 round 2: the banner said "Force-read by the **agentic** leaf",
+        # and this document reaches its two leaves INLINED (§1-4 to the `m3c` reviewer, §5 to the
+        # `harness` producer) — so the sentence was read, inside a prompt, by a leaf that force-
+        # reads nothing. Replacing it cost ~120 bytes.
+        "docs/workflow/CHECKS_MODULE_CONTRACT.md": 15100,
         # Still force-read by compile.generate/verify (its IR schema is the contract
         # the compile SKILL defers to).
         # Bumped 17000->18200: documented the deterministic Compile.static substep (G2,
@@ -29051,7 +29003,11 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # `skills/workflow-compile-generate/SKILL.md`. The IR author is a pure leaf now — it
         # reads no `SKILL`, and this document is inlined into its prompt whole — so a rule its
         # `Compile.static` gate refuses it on had nowhere else left to be stated.
-        "docs/workflow/phases/phase_01_compile.md": 70700,
+        # Bumped again in the same issue's round 2: this document is inlined WHOLE into both
+        # compile prompts and still described the AGENTIC path in the present tense to the leaf
+        # reading it ("An agentic leaf writes `ir_meta.json` itself"). Three sentences rewritten
+        # to address the one leaf there is, ~170 bytes.
+        "docs/workflow/phases/phase_01_compile.md": 70900,
     }
 
     def test_child_context_docs_within_budget(self) -> None:

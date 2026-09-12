@@ -13758,23 +13758,35 @@ def _validate_launch_prompt_text(request_payload: dict[str, Any], prompt_text: s
     if not required_markers:
         # An empty marker set means one of two things, and they must not share an exit.
         # (a) NO STEP: the orchestration agent's own self-prompt, rendered from no template,
-        #     with nothing to preserve. That is what this early return was written for.
+        #     with nothing to preserve. That is what the early return below is for.
         # (b) A STEP that is NEITHER deterministic NOR pure. Since Z4 (issue #171) there is no
-        #     third shape and `_render_launch_prompt_template` refuses to render one — but a
-        #     caller that supplies `launch_prompt_full` ITSELF is never rendered for
-        #     (`prepare_launch_request_payload` force-renders only when `pure or not
-        #     explicit_prompt_present`), so this validator is the only thing in front of an
-        #     arbitrary prompt body on a real step. Returning silently there is a fail-OPEN,
-        #     measured by the round-1 review: on `origin/main` the agentic marker set applied
-        #     to any step and refused it; here nothing did.
+        #     third shape. The renderer refuses to RENDER one — but `prepare_launch_request_payload`
+        #     force-renders only when `pure or not explicit_prompt_present`, so a caller that
+        #     supplies `launch_prompt_full` ITSELF never meets the renderer, and this validator
+        #     is the only thing in front of an arbitrary prompt body on a real step. Returning
+        #     silently there was a fail-OPEN, measured by the round-1 review: HEAD accepted a
+        #     payload `origin/main` refused, because the agentic marker set used to apply to any
+        #     step.
         #
-        # The floor below is what replaces it, and it is a FLOOR rather than a refusal
-        # deliberately. This is a HOST-defect guard — `launch_prompt_full` is supplied by the
-        # conductor, and no leaf holds a write path to a launch request — so the proportionate
-        # answer is that a prompt must at least identify the run it belongs to, which every
-        # shape's prompt carries and an arbitrary body does not. Refusing outright was tried
-        # and rejected in the same round: it also refuses a `build` record written before the
-        # deterministic marker existed, which this validator still has to be able to read.
+        # The answer is a FLOOR — the prompt must at least identify the run it claims to belong
+        # to — rather than a refusal, and the reason is not the one first written here. That said
+        # a refusal "also refuses a `build` record written before the deterministic marker
+        # existed, which this validator still has to be able to read", which the round-2
+        # disclosure review showed is false: the only caller is `record_launch`, a WRITER, and it
+        # never re-reads a persisted record.
+        #
+        # The true reason is the corpus the refusal breaks. 30 tests build a launch whose step is
+        # an LLM pair and whose payload declares neither shape, because their SUBJECT is the
+        # leaf-declared write set: `allowed_output_paths`, the output manifest, the cross-phase
+        # MCP log auto-injection. Those are the AGENTIC leaf's machinery, they cannot be
+        # converted (a pure request must declare `allowed_output_paths: []`, which is exactly
+        # what those tests are about), and PR-2 of this issue deletes them outright. Refusing the
+        # shape in PR-1 would mean rewriting a corpus PR-2 removes. **When that machinery goes,
+        # this floor should become the refusal** — the payload shape it accommodates will have no
+        # test left that needs it, and no caller that can build it.
+        #
+        # This is a HOST-defect guard either way: `launch_prompt_full` is supplied by the
+        # conductor, and no leaf holds a write path to a launch request.
         step = request_payload.get("step")
         if isinstance(step, str) and step.strip():
             identity_floor = [
