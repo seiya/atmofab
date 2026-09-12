@@ -109,10 +109,10 @@ Call it **before launching the leaf**: it runs the live preflight and builds the
 | `ir_ref` | yes | `workspace/ir/<node_key_safe>/<ir_id>` (required in all phases including the Compile phase) |
 | `pipeline_ref` | yes | `workspace/pipelines/<node_key_safe>/<pipeline_id>` (required even in the Compile phase. If not yet generated, reserve it first with `reserve-phase-root --step generate`) |
 | `dependency_ref` | yes | Compile: `spec/.../deps.yaml`, from Generate onward: the phase root in workspace |
-| `skill_name` | yes | `workflow-<step>` or `workflow-<step>-<substep>` |
-| `skill_ref` | yes | `skills/<skill_name>/SKILL.md` |
+| `skill_name` | no — must be EMPTY | no leaf reads a `SKILL` since Z4 ([issue #171](https://github.com/seiya/atmofab/issues/171)); a non-empty value is refused on a pure launch. No `skills/workflow-<step>/` directory exists any more |
+| `skill_ref` | no — must be EMPTY | same |
 | `allowed_output_paths` or `required_outputs` or `output_refs` | one required for step/substep | the list of write-permitted paths |
-| `allowed_file_tool_paths` | optional | the path for direct `Edit` / `Write`. A subset of `allowed_output_paths` |
+| `allowed_file_tool_paths` | accepted and IGNORED | it named the paths a leaf's `Edit` / `Write` grant covered; no leaf holds either tool, and nothing reads the field since [issue #171](https://github.com/seiya/atmofab/issues/171) PR-2 |
 | `run_id` | yes for a Validate step | the execution ID (1 pinned per launch) |
 | `source_id` | yes for a Generate substep / Validate / Build (cross-phase Make) | identifies the Generate output |
 | `source_binary_id` | yes for a Validate step | the `binary_id` to use |
@@ -130,7 +130,7 @@ Call it **before launching the leaf**: it runs the live preflight and builds the
 
 `sandbox_runtime` / `sandbox_enforced` / `sandbox_profile_ref` are auto-added by record-launch.
 
-**Make build's `src/Makefile` auto-inject + provisioning verification:** when `step=generate` and `spec.ir.yaml.impl_defaults.toolchain.build_system=make` **and the Makefile is not conductor-authored** (a non-fortran make family — c/cpp/mixed), record-launch auto-injects `<pipeline_ref>/source/<source_id>/src/Makefile` into `allowed_output_paths` / `allowed_file_tool_paths` (because with only a bare `src/` directory entry the extension-less Makefile cannot be written via any path). When an explicit `allowed_file_tool_paths` is passed and the Makefile pin is missed, it **fail-fasts with a `ValueError` before launching the child**. For a `make` ∧ `fortran` node (leaf or with dependencies) the conductor authors `src/Makefile` host-side (`_resolved_makefile_host_authored`), so the pin is suppressed and the file dropped from the child's `allowed_output_paths`. Since the `Compile.static` toolchain gate rejects a non-`fortran` `language` on every non-`infrastructure` node, no physics `spec` node reaches the auto-inject branch any more; it remains as `record-launch`'s fail-safe default. For the canonical contract, refer to [docs/ORCHESTRATION.md](ORCHESTRATION.md).
+**Make build's `src/Makefile`:** for a `make` ∧ `fortran` node (leaf **or** with dependencies) the conductor authors `src/Makefile` host-side, and `record-launch` stamps that decision onto the launch request as `_resolved_makefile_host_authored`. A `record-launch` auto-inject of that path into a leaf's `allowed_output_paths` / `allowed_file_tool_paths` used to cover the other make families (c/cpp/mixed), where the extension-less name falls outside the directory allowlist's source-extension set, and fail-fasted with a `ValueError` when an explicit `allowed_file_tool_paths` missed the pin. Both are deleted with the leaf's write authority ([issue #171](https://github.com/seiya/atmofab/issues/171) PR-2) — and the `Compile.static` toolchain gate rejects a non-`fortran` `language` on every non-`infrastructure` node anyway, so no physics `spec` node ever reached that branch. Canonical: [docs/workflow/MCP_COMMAND_LOG_PLACEMENT.md](workflow/MCP_COMMAND_LOG_PLACEMENT.md).
 
 ---
 
