@@ -19,9 +19,10 @@ Investigate the logs of a completed or interrupted workflow execution across the
 > every `action=block` / `fix_hint` / `allow_auto_approve` analysis below), `gates/<arid>/*.json`
 > and the `workspace/tmp/<arid>/gate_results/` copy (`run-gate` is deleted — the conductor runs
 > every gate itself, in its own process), `access_logs/<arid>.jsonl`, `capabilities/<arid>.json`,
-> `read_manifests/` and `output_manifests/`. `violations/` survives with two writers (a
-> sandbox-enforcement failure at `record-launch`, and a noncanonical-phase-write attempt) and is
-> created only when one occurs. What a current run leaves is `agent_runs.jsonl`,
+> `read_manifests/` and `output_manifests/`. `violations/` survives with ONE live writer — a
+> sandbox-enforcement failure at `record-launch` — and is created only when one occurs. (A
+> second writer, a noncanonical-phase-write attempt, is in the tree with no caller and was
+> already dead before this change; `TODO.md` owns its removal. Do not audit for it.) What a current run leaves is `agent_runs.jsonl`,
 > `phase_state_log.jsonl`, `hooks/workflow_hooks.jsonl` (the HOST's own hook log),
 > `launches/<arid>.*`, `sandbox_profiles/<arid>.json`, `steps/.../step_result.json` and
 > `failure_analysis.json`. Consolidating the two audit skills against that set is
