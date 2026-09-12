@@ -32,8 +32,12 @@ the episode files under `.claude/skills/atmofab-enforcement-change/references/`.
   reason on stderr. Both encodings live in `dev_cli.py` and are pinned by its test.
 - The `matcher` of a Claude hook entry is a **regular expression matched in full** — measured on CLI
   2.1.235: `Bash` and `Bash|Write` and `.*` all match, a prefix that is not the whole tool name does
-  not. A matcher that matches nothing is silently inert, which is why the dev layer's entries are
-  pinned by test rather than read by eye.
+  not. A matcher that matches nothing is silently inert — both operator rules stop firing and the
+  suite stays green — so every committed dev entry is checked against the tool names its backend
+  sends a command under by
+  `test_hooks_dev_cli.DevMatcherActuallyMatchesTheToolThatCarriesACommand`. That check is this
+  branch's, added when a round-1 reviewer set the only matcher in `.claude/settings.json` to
+  `ZzNeverMatches` and every test that reads that file stayed green.
 
 ## Not event hooks
 - `tools/hooks/lint_evidence.py` / `tools/hooks/syntax_evidence.py` are not event hooks but the host-authored, leaf-non-writable evidence certificates of the deterministic `Generate.gate` substep's lint and syntax checks (`<pipeline_root>/lint_evidence/<source_id>.json` / `<pipeline_root>/syntax_evidence/<source_id>.json`). The conductor writes them in-process (`workflow_conductor._gate_lint_check` / `_gate_syntax_check`, composed by `_gate_inproc`); `validate_pipeline_semantics --stage post_generate` certifies them; the write-attribution check in `tools/orchestration_runtime.py` exempts exactly those files scoped to the `gate` substep. See each module's docstring for the non-forgeability rationale. The same substep-granular scoping now also governs the bwrap `write_roots`: on an AGENTIC launch `compile.verify` / `generate.verify` / `validate.judge` are pinned to a single file (`ir_meta.json` / `source_meta.json` / `semantic_review.json`) rather than the step's whole directory (a `pure-function leaf` — which since [issue #168](https://github.com/seiya/atmofab/issues/168) is the default for both `compile` LLM substeps — has `write_roots: []` and is pinned to nothing, because it writes nothing), so the sandbox and the terminal FS-diff enforce the per-substep write scope structurally — a second layer beneath the pattern-based file-tool hook (canonical: `docs/ORCHESTRATION.md` §capability / write_root).

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import ast
 import io
+import re
 import json
 import os
 import subprocess
@@ -518,3 +519,67 @@ class DevCliImportBoundary(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DevMatcherActuallyMatchesTheToolThatCarriesACommand(unittest.TestCase):
+    """Every committed DEV hook entry matches the tool whose calls it has to judge.
+
+    FOUND BY THE ROUND-1 REVIEW of issue #171, as a claim with no check behind it:
+    `docs/HOOKS.md` says the dev layer's entries are "pinned by test rather than read by eye",
+    and nothing read a matcher. The reviewer set `.claude/settings.json`'s only matcher to
+    `ZzNeverMatches` and all three test files that even open that file stayed green — which
+    makes both operator rules (the hard-reset refusal and the sleep-based-wait refusal)
+    silently inert, the one failure mode a matcher has.
+
+    WHY A FULL MATCH. `docs/HOOKS.md` records the measurement: a Claude `matcher` is a regular
+    expression matched in FULL against the tool name, so `Bash` matches and a prefix of a
+    longer name does not. Applying `re.fullmatch` here is that rule, not a guess about it.
+
+    BOUNDED to the tools that carry a COMMAND, because a command is the only thing either dev
+    rule reads. A file tool is out of scope for this layer by design — the operator owns their
+    own checkout.
+    """
+
+    #: Tool names each backend's command-carrying events arrive under. Claude sends `Bash`;
+    #: codex sends its shell under several spellings and `apply_patch` for a patch program.
+    _MUST_MATCH = {
+        ".claude/settings.json": ("Bash",),
+        ".codex/hooks.json": ("Bash", "Shell", "shell", "apply_patch"),
+    }
+
+    def test_every_dev_entry_matches_its_backend_command_tool(self) -> None:
+        seen_files = set()
+        for rel, names in self._MUST_MATCH.items():
+            doc = json.loads((REPO_ROOT / rel).read_text(encoding="utf-8"))
+            events = doc.get("hooks") or {}
+            self.assertTrue(events, f"{rel} declares no hooks at all")
+            for event, blocks in events.items():
+                if "PreToolUse" not in event and "PermissionRequest" not in event:
+                    continue
+                for block in blocks:
+                    matcher = block.get("matcher")
+                    self.assertIsInstance(matcher, str, f"{rel}:{event} has no matcher")
+                    seen_files.add(rel)
+                    for name in names:
+                        with self.subTest(file=rel, event=event, tool=name):
+                            self.assertTrue(
+                                re.fullmatch(matcher, name),
+                                f"{rel}:{event} matcher {matcher!r} does not match the tool "
+                                f"{name!r}, so this hook never fires for it and both operator "
+                                f"rules are silently inert for that call")
+        self.assertEqual(set(seen_files), set(self._MUST_MATCH),
+                         "a committed dev file declares no command-carrying event")
+
+    def test_the_reader_sees_a_matcher_that_matches_nothing(self) -> None:
+        """The self-test: the row above must be capable of failing.
+
+        An emptiness check that reads the wrong field passes whatever the file says, and this
+        is the shape the reviewer's mutation took — so the refusal is driven here on a
+        synthetic matcher rather than trusted.
+        """
+        for matcher in ("ZzNeverMatches", "^Write$", "Bas"):
+            with self.subTest(matcher=matcher):
+                self.assertIsNone(re.fullmatch(matcher, "Bash"))
+        # ... and the committed spellings DO match, so the row is not vacuous either.
+        self.assertTrue(re.fullmatch("Bash", "Bash"))
+        self.assertTrue(re.fullmatch("^(Bash|bash|Shell|shell|apply_patch|ApplyPatch)$", "Bash"))
