@@ -26041,6 +26041,80 @@ class LeafEnvClosureTests(unittest.TestCase):
         self.assertEqual(profile["env"]["HOME"], str(fake_home))
 
 
+class BackendRuntimeBindPathsTests(unittest.TestCase):
+    """The backend CLI's own install dir and credential home, which the bare profile misses.
+
+    `_backend_runtime_bind_paths` is the sole producer of both, and its only caller is
+    `build_readonly_bwrap_profile`, which is now the only profile builder there is. Its
+    tests went with `BwrapProfileFilePinTests` in PR-2 although the function has nothing
+    to do with the capability document: making it `return ([], [])` left the full suite
+    green, and a leaf that cannot find `~/.claude` cannot authenticate — so this is a
+    LAUNCH failure with no test naming the cause, not a confinement question.
+
+    Two properties, because they fail differently. The rw set is keyed on the backend
+    TYPE, since the command may be a wrapper whose name says nothing; and it is resolved
+    through `tools.operator_private_root.backend_credential_home_paths`, which is the
+    single canonical answer to "where does a backend keep its credentials" — a second
+    spelling here is how the profile and that resolver drift apart."""
+
+    def _paths(self, btype: str, command: str, home: Path):
+        with mock.patch.dict(os.environ, {"HOME": str(home)}):
+            return ort._backend_runtime_bind_paths(btype, command)
+
+    def test_the_credential_home_is_bound_rw_for_each_backend_type(self) -> None:
+        from tools.operator_private_root import backend_credential_home_paths
+        d = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d, True)
+        home = d / "home"
+        home.mkdir()
+        for btype in ("claude", "codex"):
+            with self.subTest(backend_type=btype):
+                with mock.patch.dict(os.environ, {"HOME": str(home)}):
+                    cred_dirs, cred_files = backend_credential_home_paths(btype)
+                self.assertTrue(cred_dirs, f"{btype} declares no credential home; "
+                                           "this pin has lost its subject")
+                for cred_file in cred_files:
+                    cred_file.parent.mkdir(parents=True, exist_ok=True)
+                    cred_file.write_text("{}", encoding="utf-8")
+                _ro, rw = self._paths(btype, btype, home)
+                # Every path the canonical resolver names is bound, and nothing outside
+                # the operator's home is: the set is derived, not spelled a second time.
+                for cred_dir in cred_dirs:
+                    self.assertIn(str(cred_dir), rw)
+                for cred_file in cred_files:
+                    self.assertIn(str(cred_file), rw)
+                for entry in rw:
+                    self.assertTrue(entry.startswith(str(home)), entry)
+
+    def test_the_rw_set_is_keyed_on_the_type_not_on_the_command_string(self) -> None:
+        # A `command:` wrapper resolves to the wrapper binary, so reading the command
+        # string for the backend's identity binds the wrong home — or none.
+        d = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d, True)
+        home = d / "home"
+        home.mkdir()
+        _ro, direct = self._paths("codex", "codex", home)
+        _ro, wrapped = self._paths("codex", "/opt/wrappers/run-the-leaf --flag", home)
+        self.assertEqual(direct, wrapped)
+        self.assertTrue(any(entry.endswith(".codex") for entry in wrapped), wrapped)
+
+    def test_the_backend_install_dir_is_bound_ro(self) -> None:
+        # The `claude` CLI installs under the operator's home, outside every system dir
+        # `_runtime_ro_bind_paths` covers, so without this the sandbox cannot exec it.
+        d = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d, True)
+        home = d / "home"
+        bindir = home / ".local" / "bin"
+        bindir.mkdir(parents=True)
+        exe = bindir / "claude-sim"
+        exe.write_text("#!/bin/sh\n", encoding="utf-8")
+        exe.chmod(0o755)
+        with mock.patch.dict(os.environ,
+                             {"HOME": str(home), "PATH": f"{bindir}:{os.environ['PATH']}"}):
+            ro, _rw = ort._backend_runtime_bind_paths("claude", "claude-sim")
+        self.assertIn(str(bindir), ro)
+
+
 @unittest.skipUnless(_bwrap_usable(), "bwrap / user namespaces not available")
 class LeafEnvLiveBwrapWitnessTests(unittest.TestCase):
     """The one measurement that is not an argv assertion: RUN the rendered command and
