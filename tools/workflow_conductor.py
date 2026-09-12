@@ -5917,10 +5917,11 @@ class Conductor:
         * `harness` — an `infrastructure` node's self-test (issue #169). The host renders no
           runner for it, so the leaf authors model + the executable entry as a `runner`-role
           bundle file (bundle v1.1.0), and there is no checks module.
-        * None — no bundle representation, so the node's GENERATE substeps fall through to the
-          shared agentic leaf loop. Since #169 no in-tree node answers None; it is the
-          fail-safe for a hand-crafted IR whose toolchain the neutral core cannot write a
-          control file for, or whose language has no bundle backend.
+        * None — no bundle representation, so the node's GENERATE substeps FAIL CLOSED
+          (`run_substep` emits `node_has_no_bundle_shape`). They fell through to the shared
+          agentic leaf loop until Z4 (issue #171) deleted it. Since #169 no in-tree node
+          answers None; it is the fail-safe for a hand-crafted IR whose toolchain the neutral
+          core cannot write a control file for, or whose language has no bundle backend.
 
         The `infrastructure` question is asked of the NODE_KEY, not of the IR's self-declared
         `meta.spec_kind`: the shape decides which admissibility rules the bundle is judged

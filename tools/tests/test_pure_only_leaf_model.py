@@ -22,6 +22,8 @@ guard, is what they are written to catch.
 
 from __future__ import annotations
 
+import ast
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -688,3 +690,166 @@ class BundleWriteStaysInsideTheSourceTreeTests(unittest.TestCase):
             doc = {"files": [{"logical_path": "x_model.f90", "content": "module m\nend module\n"}]}
             written = c._write_pure_bundle_artifacts(refs, doc, {})
             self.assertTrue(any(w.endswith("src/x_model.f90") for w in written), written)
+
+
+class NoInlinedDocumentDescribesADeletedTransportTests(unittest.TestCase):
+    """A document the host INLINES into a leaf's prompt may not describe the agentic leaf.
+
+    THE INSTRUMENT rounds 1-3 kept failing to be. Each round swept this class by hand and each
+    missed a different spelling: round 1 fixed six citations and missed the three that are
+    inlined; round 2 fixed those three; round 3 found a fourth, in a document neither sweep had
+    listed, spelled `generate-generate` where round 2 had grepped `workflow-generate-generate`.
+    Three rounds, three token lists, three blind spots — which is
+    `.claude/skills/atmofab-enforcement-change` rule 3-a's trigger exactly: when the sweep keeps
+    losing, couple the documents to the rule with a check.
+
+    WHY IT MATTERS MORE HERE than in a document nobody reads: these are the leaf's own input.
+    A sentence telling it that dropping `pure` "runs the AGENTIC leaf instead" is read, inside
+    its prompt, by the model being instructed — and it is false twice over, because the config
+    load refuses that entry outright.
+
+    DERIVED, not listed. The document set comes from the AST of
+    `Conductor._build_pure_*_context` — the same three spellings those builders use, resolved:
+    a literal `docs/**.md` path, `CHECKS_MODULE_CONTRACT_REF` / `RUNNER_OUTPUT_CONTRACT_REF`,
+    and a `WORKFLOW_PHASE_DOC_BY_STEP[...]` subscript. A builder added later is scanned without
+    an edit here, which is the whole point; a fourth SPELLING would not be, and that bound is
+    self-tested below.
+
+    OVER-APPROXIMATES for a sliced inline, deliberately. `phase_02_generate.md` reaches a leaf
+    as one section (the severity rubric) and this scans the whole file. The extra hits are real
+    defects in a document the workflow still owns, and the safe direction for a check whose
+    subject is "prose that has outlived its mechanism" is to flag them.
+    """
+
+    #: A line may name the deleted transport when it is DATING the statement — every allowed
+    #: mention says when it stopped being true. Any other mention is refused, which is the
+    #: review gate: a new one has to be read by a person and either rewritten or dated.
+    _DATED = ("issue #171", "Z4")
+    #: The five deleted phase SKILLs, in both spellings the corpus uses: the directory name and
+    #: the bare `<step>-<substep>` nickname that round 2's grep missed.
+    _DEAD_SKILLS = ("workflow-compile-generate", "workflow-compile-verify",
+                    "workflow-generate-generate", "workflow-generate-verify",
+                    "workflow-validate-judge")
+    _DEAD_NICKNAMES = re.compile(r"`(compile|generate)-(generate|verify)`\s+SKILL")
+
+    @staticmethod
+    def _inlined_documents() -> set[str]:
+        repo_root = Path(ort.__file__).resolve().parents[1]
+        tree = ast.parse((repo_root / "tools" / "workflow_conductor.py").read_text(
+            encoding="utf-8"))
+        consts = {"CHECKS_MODULE_CONTRACT_REF": ort.CHECKS_MODULE_CONTRACT_REF,
+                  "RUNNER_OUTPUT_CONTRACT_REF": ort.RUNNER_OUTPUT_CONTRACT_REF}
+        doc_re = re.compile(r"docs/[\w./-]+\.md")
+        found: set[str] = set()
+        builders = 0
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.FunctionDef):
+                continue
+            if not (node.name.startswith("_build_pure_") and node.name.endswith("_context")):
+                continue
+            builders += 1
+            body = node.body[1:] if ast.get_docstring(node) is not None else node.body
+            for stmt in body:
+                for sub in ast.walk(stmt):
+                    if (isinstance(sub, ast.Constant) and isinstance(sub.value, str)
+                            and doc_re.fullmatch(sub.value)):
+                        found.add(sub.value)
+                    elif isinstance(sub, ast.Name) and sub.id in consts:
+                        found.add(consts[sub.id])
+                    elif (isinstance(sub, ast.Subscript) and isinstance(sub.value, ast.Name)
+                            and sub.value.id == "WORKFLOW_PHASE_DOC_BY_STEP"
+                            and isinstance(sub.slice, ast.Constant)):
+                        found.add(ort.WORKFLOW_PHASE_DOC_BY_STEP[sub.slice.value])
+        assert builders >= 6, (
+            f"only {builders} pure context builders found; the naming convention this "
+            "derivation reads has moved and it is now scanning nothing")
+        return found
+
+    def _offending_lines(self, text: str) -> list[tuple[int, str, str]]:
+        out: list[tuple[int, str, str]] = []
+        for i, line in enumerate(text.splitlines(), 1):
+            if any(token in line for token in self._DATED):
+                continue
+            why = ""
+            if "agentic" in line.lower():
+                why = "names the deleted agentic leaf"
+            elif any(d in line for d in self._DEAD_SKILLS):
+                why = "cites a deleted SKILL"
+            elif self._DEAD_NICKNAMES.search(line):
+                why = "cites a deleted SKILL by its bare nickname"
+            else:
+                # A `skills/<name>/SKILL.md` path for a skill that is NOT on disk. Derived from
+                # the tree rather than from `_DEAD_SKILLS`, so a citation of a skill deleted
+                # LATER is caught without an edit here — and so the surviving operator flows
+                # (`spec-input-check`, the audits, tune / promote) are not flagged, which they
+                # would be by a bare `skills/` match.
+                for match in re.finditer(r"skills/([\w.-]+)/SKILL\.md", line):
+                    if not (Path(ort.__file__).resolve().parents[1]
+                            / "skills" / match.group(1) / "SKILL.md").is_file():
+                        why = f"cites {match.group(0)}, which does not exist"
+                        break
+            if why:
+                out.append((i, why, line.strip()[:120]))
+        return out
+
+    def test_no_inlined_document_names_the_deleted_transport(self) -> None:
+        repo_root = Path(ort.__file__).resolve().parents[1]
+        documents = self._inlined_documents()
+        self.assertTrue(documents, "no inlined document derived; this scans nothing")
+        for rel in sorted(documents):
+            with self.subTest(document=rel):
+                offending = self._offending_lines(
+                    (repo_root / rel).read_text(encoding="utf-8"))
+                self.assertEqual(
+                    [], offending,
+                    f"{rel} is inlined into a leaf's prompt and still describes machinery this "
+                    f"repository deleted. Rewrite the line for the leaf that exists, or — if it "
+                    f"is a deliberate historical note — DATE it by naming `issue #171` or `Z4` "
+                    f"on the same line, which is how this check tells a record from a stale "
+                    f"instruction. Lines: {offending}")
+
+    def test_the_derivation_reads_what_the_builders_actually_inline(self) -> None:
+        """Self-test: the AST set must match a driven builder, or this scans the wrong files.
+
+        Drives the two COMPILE builders — the cheapest real fixture in the tree — and requires
+        every repository document they inline to be one the derivation found. A builder reading
+        a document through a spelling the AST walk does not model would fail here rather than
+        silently shrink the scanned set.
+        """
+        from tools.tests.test_pure_leaf_compile import _write_compile_node
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = _write_compile_node(repo, stage_ir=True)
+            c = _PureFakeConductor(
+                repo_root=repo, orchestration_id="o", orchestration_agent_run_id="orch",
+                env={"ATMOFAB_TEST_KEY": "sk-test"}, llm_config=_config_on("claude_cli", repo))
+            derived = self._inlined_documents()
+            for builder in (c._build_pure_compile_context, c._build_pure_compile_verify_context):
+                ctx = builder(refs)
+                inlined_text = "\n".join(str(v) for v in ctx.values())
+                for rel in derived:
+                    body = (Path(ort.__file__).resolve().parents[1] / rel).read_text(
+                        encoding="utf-8")
+                    marker = body.splitlines()[0]
+                    if marker and marker in inlined_text:
+                        break
+                else:
+                    self.fail(
+                        f"{builder.__name__} inlines no document the derivation found; the AST "
+                        "walk is reading the wrong spellings")
+
+    def test_the_scanner_refuses_a_planted_line_and_accepts_a_dated_one(self) -> None:
+        """Both directions, so neither the pattern nor the exemption is taken on trust."""
+        self.assertEqual(
+            [(1, "names the deleted agentic leaf", "the agentic leaf reads this")],
+            self._offending_lines("the agentic leaf reads this"))
+        self.assertEqual(
+            [(1, "cites a deleted SKILL", "see skills/workflow-generate-verify/SKILL.md")],
+            self._offending_lines("see skills/workflow-generate-verify/SKILL.md"))
+        self.assertEqual(
+            [(1, "cites a deleted SKILL by its bare nickname",
+              "the `generate-generate` SKILL says so")],
+            self._offending_lines("the `generate-generate` SKILL says so"))
+        # ... and a DATED mention is a record, not an instruction.
+        self.assertEqual([], self._offending_lines(
+            "an agentic leaf read this until Z4 (issue #171) deleted it"))
