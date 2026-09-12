@@ -10324,6 +10324,34 @@ def _profile_child_env(child_env: Mapping[str, str] | None, *,
     return body
 
 
+def _leaf_hidden_artifact_trees(repo_root: Path) -> list[Path]:
+    """The repository trees a read-only leaf's sandbox hides behind an empty tmpfs.
+
+    Every tree that holds RUN ARTIFACTS: the live `workspace/`, the `workspace_*` archives an
+    operator's convention leaves beside it, and `releases/` (the promoted artifacts of the
+    Promote flow). A pure leaf needs none of them — its whole context is inlined — and each
+    holds the same thing: another run's records, a producer's persisted reasoning, and
+    certified sources the workflow forbids referencing.
+
+    ENUMERATED FROM DISK rather than listed, because the archives are an operator convention
+    with no fixed set: a `workspace_20260723/` this repository has never heard of is hidden on
+    the machine that has it. `workspace/` is returned whether or not it exists, so the leaf's
+    own `workspace/tmp/<arid>` bind (emitted later, overriding this) has a mountpoint.
+    """
+    trees = [repo_root / "workspace"]
+    try:
+        for entry in sorted(repo_root.iterdir()):
+            if entry.name == "workspace" or not entry.is_dir():
+                continue
+            if entry.name.startswith("workspace_") or entry.name == "releases":
+                trees.append(entry)
+    except OSError:
+        # An unreadable repo root is a host defect the caller's own binds will surface; hiding
+        # the live `workspace/` is the part that must not depend on a directory listing.
+        pass
+    return trees
+
+
 def render_bwrap_command(
     *,
     profile: dict[str, Any],
@@ -10388,7 +10416,15 @@ def render_bwrap_command(
         # which needs a measured codex launch under the narrowed profile — `TODO.md` carries the
         # entry and why that measurement could not be taken here. This change needs no such
         # measurement: the repository root and every other tree stay exactly as they were.
-        cmd.extend(["--tmpfs", str(Path(repo_root) / "workspace")])
+        #
+        # THE SET IS DERIVED FROM THE TREE, not just `workspace/`. A round-3 disclosure review
+        # measured the first version of this and found it incomplete: this checkout carries 51
+        # `workspace_*/` archives holding past orchestrations and certified sources — the same
+        # content, under a different name, and gitignored, which is why a `.gitignore`-respecting
+        # grep would not have surfaced them. Every artifact tree is hidden, so an operator's
+        # archiving convention cannot re-open what `workspace/` closes.
+        for artifact_tree in _leaf_hidden_artifact_trees(Path(repo_root)):
+            cmd.extend(["--tmpfs", str(artifact_tree)])
     # write_root absolute paths, used to suppress an ro read-bind that would otherwise
     # make a writable artifact read-only.
     _write_abs = [
@@ -16056,8 +16092,9 @@ def _require_usable_private_root_override(env_name: str, root: Path, subject: st
         roots are exempt from the containment drop (`_command_reads_protected_host_path`
         keeps them so the guard is not lost), so a root ABOVE the checkout makes every
         in-repo path a path under a protected root — and the guard matches the command's
-        tokens, not only its read targets. MEASURED through `evaluate_common_policy`:
-        with either root set to the checkout's parent, `cat README.md`, `ls`, `python3
+        tokens, not only its read targets. MEASURED through `evaluate_common_policy`, the
+        leaf hook policy deleted in Z4 (issue #171) — so this is a record of what the guard
+        did, not a claim about today: with either root set to the checkout's parent, `cat README.md`, `ls`, `python3
         tools/x.py` and even `echo hi` all BLOCK. There is no working configuration to
         preserve, so refusing costs nothing and turns a total, unexplained failure at the
         first leaf into one refusal naming the variable. `docs/RUNBOOK.md` used to

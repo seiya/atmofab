@@ -656,6 +656,16 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
             sibling = repo / "workspace" / "pipelines" / "sib" / "source" / "s1" / "src"
             sibling.mkdir(parents=True, exist_ok=True)
             (sibling / "sib_model.f90").write_text("module sib\nend module\n", encoding="utf-8")
+            # An operator's ARCHIVE of an earlier run, and the promoted-artifact tree. Both hold
+            # the same content under a different name; the round-3 review measured the first
+            # version of this profile leaving 51 such archives readable, and gitignored, which is
+            # why a `.gitignore`-respecting grep had not surfaced them.
+            archive = repo / "workspace_20260723" / "orchestrations" / "old" / "agents" / "p" / "dialogs"
+            archive.mkdir(parents=True, exist_ok=True)
+            (archive / "leaf.stdout.jsonl").write_text("ARCHIVED REASONING\n", encoding="utf-8")
+            released = repo / "releases" / "component" / "rel_1"
+            released.mkdir(parents=True, exist_ok=True)
+            (released / "model.f90").write_text("module rel\nend module\n", encoding="utf-8")
             profile = build_readonly_bwrap_profile(
                 repo_root=repo, orchestration_id=orch, agent_run_id=arid,
                 backend_command="python3", backend_type="codex")
@@ -663,7 +673,9 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
                 from pathlib import Path
                 for tag, rel in (
                         ("DIALOG", "workspace/orchestrations/{orch}/agents/producer/dialogs/leaf.stdout.jsonl"),
-                        ("SIBLING", "workspace/pipelines/sib/source/s1/src/sib_model.f90")):
+                        ("SIBLING", "workspace/pipelines/sib/source/s1/src/sib_model.f90"),
+                        ("ARCHIVE", "workspace_20260723/orchestrations/old/agents/p/dialogs/leaf.stdout.jsonl"),
+                        ("RELEASES", "releases/component/rel_1/model.f90")):
                     print(f"{{tag}}:" + ("READABLE" if Path(rel).exists() else "HIDDEN"), flush=True)
                 # ... while the leaf's OWN tmp root is still there: a codex pure launch needs it
                 # for its `--output-schema` file and its TMPDIR.
@@ -677,6 +689,8 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
                 profile=profile, command_argv=["python3", "-c", script]))
             self.assertIn("DIALOG:HIDDEN", out, out)
             self.assertIn("SIBLING:HIDDEN", out, out)
+            self.assertIn("ARCHIVE:HIDDEN", out, out)
+            self.assertIn("RELEASES:HIDDEN", out, out)
             self.assertIn("OWN_TMP:WRITABLE", out, out)
             # The host's copies are untouched — this hides, it does not delete.
             self.assertEqual((dialogs / "leaf.stdout.jsonl").read_text(), "PRODUCER REASONING\n")
