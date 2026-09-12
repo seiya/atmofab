@@ -121,6 +121,14 @@ _UNSAFE_ENV_OVERRIDE_KEYS = frozenset({
     # GNU make parses these as command-line switches / extra makefiles, so
     # `--eval=$(shell ...)` runs before the certified Makefile is read.
     "MAKEFLAGS", "GNUMAKEFLAGS", "MAKEFILES", "MAKESHELL",
+    # make's own spelling is the special variable `.SHELLFLAGS`, and it is taken from the
+    # ENVIRONMENT as well as from the command line. Measured on GNU Make 4.3:
+    #   env '.SHELLFLAGS=-c ./evil.sh' make all   ->  ./evil.sh runs, the recipe does not,
+    #                                                 and make exits 0
+    # The leading dot is normalised off before the lookup (`_normalized_override_name`), so
+    # both spellings are refused on both halves. This lived in the argv-only set until the
+    # measurement above; "matters only on a command line" was an assumption.
+    "SHELLFLAGS",
 })
 _UNSAFE_ENV_OVERRIDE_PREFIXES = ("LD_", "DYLD_")
 
@@ -134,8 +142,7 @@ _UNSAFE_ENV_OVERRIDE_PREFIXES = ("LD_", "DYLD_")
 # variable `.SHELLFLAGS`, which supplies the arguments `SHELL` is invoked with — measured:
 # `make '.SHELLFLAGS=-c touch /tmp/x;' all` runs `touch`. The leading dot is normalised off
 # before the lookup, so both spellings are covered.
-_UNSAFE_ASSIGNMENT_NAMES = frozenset(
-    _UNSAFE_ENV_OVERRIDE_KEYS | {"SHELL", "SHELLFLAGS", "MAKE"})
+_UNSAFE_ASSIGNMENT_NAMES = frozenset(_UNSAFE_ENV_OVERRIDE_KEYS | {"SHELL", "MAKE"})
 
 # The make recipe interpolates a make variable's value unquoted (`cd $(RUNDIR) &&
 # $(BINDIR)/$(BIN) --cases $(SPEC) $(CASES)`), so a value carrying a character that
@@ -143,6 +150,23 @@ _UNSAFE_ASSIGNMENT_NAMES = frozenset(
 # them: it splits words in the recipe, but `CASES` is a word LIST by contract and a
 # checkout path may legitimately hold one.
 _SHELL_ACTIVE_CHARS = set("\t\n\r;&|$`'\"\\<>()*?[]{}~#!")
+
+
+def _normalized_override_name(raw: Any) -> str:
+    """The name make reads, from the name a caller spelled.
+
+    ONE normaliser for both halves. `env` keys and `extra_args` assignment names are the
+    same vocabulary — make imports an environment name as a variable and reads a
+    command-line assignment as one — so a normalisation applied to one half and not the
+    other is a hole on the weaker half by construction. That is how `.SHELLFLAGS` stayed
+    reachable through `env` after it was refused in `extra_args`: the argv side stripped the
+    leading dot and the env side did not.
+
+    Surrounding space, a leading `.` (make's special-variable spelling) and the flavour
+    operators `:` `+` `!` `?` come off; the result is upper-cased, which over-refuses
+    (make variables are case-sensitive) rather than under-refuses.
+    """
+    return str(raw).strip().rstrip(":+!?").strip().lstrip(".").upper()
 
 
 def _validate_env_overrides(env: Any, tool_name: str) -> None:
@@ -188,7 +212,7 @@ def _validate_env_overrides(env: Any, tool_name: str) -> None:
     offending = sorted(
         str(key)
         for key in env
-        if (norm := str(key).strip().upper()) in _UNSAFE_ENV_OVERRIDE_KEYS
+        if (norm := _normalized_override_name(key)) in _UNSAFE_ENV_OVERRIDE_KEYS
         or norm.startswith(_UNSAFE_ENV_OVERRIDE_PREFIXES)
     )
     if offending:
@@ -295,7 +319,7 @@ def _is_execution_redirecting_assignment(element: str) -> bool:
     """
     if "=" not in element:
         return False
-    name = element.split("=", 1)[0].strip().rstrip(":+!?").strip().lstrip(".").upper()
+    name = _normalized_override_name(element.split("=", 1)[0])
     return (name in _UNSAFE_ASSIGNMENT_NAMES
             or name.startswith(_UNSAFE_ENV_OVERRIDE_PREFIXES))
 
@@ -494,7 +518,7 @@ _ENV_PROPERTY_SCHEMA: dict[str, Any] = {
         "Environment overrides for the command. Keys that redirect execution (LD_*, "
         "DYLD_*, PATH, PYTHONPATH, BASH_ENV, ENV, IFS, COMPILER_PATH, "
         "GCC_EXEC_PREFIX, LIBRARY_PATH, MAKEFLAGS, GNUMAKEFLAGS, MAKEFILES, "
-        "MAKESHELL) are refused, and so is any VALUE carrying a character a shell "
+        ".SHELLFLAGS, MAKESHELL) are refused, and so is any VALUE carrying a character a shell "
         "acts on -- make imports an environment name as a make variable and the "
         "recipe interpolates it unquoted."
     ),

@@ -30,7 +30,7 @@
         "additionalProperties": {
           "type": "string"
         },
-        "description": "Environment overrides for the command. Keys that redirect execution (LD_*, DYLD_*, PATH, PYTHONPATH, BASH_ENV, ENV, IFS, COMPILER_PATH, GCC_EXEC_PREFIX, LIBRARY_PATH, MAKEFLAGS, GNUMAKEFLAGS, MAKEFILES, MAKESHELL) are refused, and so is any VALUE carrying a character a shell acts on -- make imports an environment name as a make variable and the recipe interpolates it unquoted."
+        "description": "Environment overrides for the command. Keys that redirect execution (LD_*, DYLD_*, PATH, PYTHONPATH, BASH_ENV, ENV, IFS, COMPILER_PATH, GCC_EXEC_PREFIX, LIBRARY_PATH, MAKEFLAGS, GNUMAKEFLAGS, MAKEFILES, .SHELLFLAGS, MAKESHELL) are refused, and so is any VALUE carrying a character a shell acts on -- make imports an environment name as a make variable and the recipe interpolates it unquoted."
       },
       "orchestration_id": {
         "type": "string",

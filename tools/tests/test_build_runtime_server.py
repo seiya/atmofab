@@ -524,6 +524,44 @@ class EnvOverrideDenylistTests(unittest.TestCase):
                 self._args("run_quality_checks", payload))
         run_command.assert_called_once()
 
+    def test_the_shell_flags_variable_is_refused_through_env_too(self) -> None:
+        """make takes `.SHELLFLAGS` from the ENVIRONMENT, not only from the command line.
+
+        Measured on GNU Make 4.3:
+
+            env '.SHELLFLAGS=-c ./evil.sh' make -f Makefile all
+            OWNED_VIA_ENV      <- ./evil.sh ran; the recipe did not
+            rc=0               <- and make reported the build as succeeding
+
+        It was refused in `extra_args` and accepted here, which is the asymmetry this
+        module's own docstring calls out ("must not be weaker than the env twin", and the
+        reverse). The two halves share ONE normaliser now, so a spelling handled on one
+        side cannot be missed on the other. The value `-c ./evil.sh` carries only a space,
+        deliberately outside `_SHELL_ACTIVE_CHARS`, so the value rule does not catch it."""
+        for key in (".SHELLFLAGS", "SHELLFLAGS", ".shellflags", " .SHELLFLAGS "):
+            with self.subTest(key=key):
+                with self._spy_run_command() as run_command:
+                    with self.assertRaises(ValueError) as ctx:
+                        self.mod.tool_compile_project(
+                            self._args("compile_project", {key: "-c /tmp/evil.sh"}))
+                self.assertIn("redirect execution", str(ctx.exception))
+                run_command.assert_not_called()
+
+    def test_the_two_halves_share_one_name_normaliser(self) -> None:
+        # The property, not the members: every spelling the argv half normalises, the env
+        # half normalises the same way. A second normaliser on either side is how the
+        # `.SHELLFLAGS` hole opened — the argv side stripped the leading dot and the env
+        # side did not.
+        for spelling in (".SHELLFLAGS", "SHELLFLAGS ", " .shellflags", ".MAKEFLAGS",
+                         "ld_preload", " LD_PRELOAD"):
+            with self.subTest(spelling=spelling):
+                with self.assertRaises(ValueError):
+                    self.mod._validate_env_overrides({spelling: "x"}, "compile_project")
+                with self.assertRaises(ValueError):
+                    self.mod._validate_build_argv_overrides(
+                        None, [f"{spelling}=x"], "compile_project",
+                        build_system="cargo")
+
     def test_denylist_is_case_insensitive_and_prefix_exact(self) -> None:
         with self._spy_run_command():
             with self.assertRaises(ValueError):
