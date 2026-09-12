@@ -1962,7 +1962,7 @@ class PureLeafProvenanceUnderAMixedConfigTests(unittest.TestCase):
         # this row is about, so the non-default provider is put on every attributed leaf.
         summary = self._summary({
             f"{phase}.{substep}": {"backend": "openai_compatible", "model": "local-coder"}
-            for phase, substep in ao._PURE_CAPABLE_SUBSTEPS
+            for phase, substep in ao._LLM_LEAF_SUBSTEPS
         })
         rendered = self._render(summary)
         self.assertEqual(summary["backend"], "openai_compatible")
@@ -1999,7 +1999,7 @@ class PureLeafProvenanceUnderAMixedConfigTests(unittest.TestCase):
         import tools.llm_config as lc
         self.assertEqual(
             ao._PURE_LEAF_MAP_KEYS,
-            frozenset(f"{p}.{s}" for p, s in lc.PURE_CAPABLE_SUBSTEPS))
+            frozenset(f"{p}.{s}" for p, s in lc.LLM_LEAF_SUBSTEPS))
         # A leaf INSIDE that set steers the attribution — `compile.verify` is one since Z1
         # (issue #168), and this row asserted the opposite while it was outside.
         summary = self._summary({"compile.verify": {"backend": "codex", "model": "x"}})

@@ -37,7 +37,7 @@ BACKEND_CONFIG_HOME_ENV = ("CODEX_HOME", "CLAUDE_CONFIG_DIR")
 SUITE_OWNED_ENV = {
     "ATMOFAB_WORKFLOW_HOMES_ROOT":
         "the `_redirect_operator_private_roots` fixture in tools/tests/conftest.py, per "
-        "test (outside pytest: the module-level redirect in leaf_config_fixture.py)",
+        "test (outside pytest: the module-level redirect in private_root_fixture.py)",
     "ATMOFAB_START_CLAIM_ROOT":
         "the `_redirect_operator_private_roots` fixture in tools/tests/conftest.py, per "
         "test; ALSO set process-globally for the duration of test_run_workflow.py by its "

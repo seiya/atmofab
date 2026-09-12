@@ -226,7 +226,7 @@ def _redirect_operator_private_roots(tmp_path, monkeypatch):
     two tests using the same fixed orchestration id would collide on the exclusive
     `os.mkdir` under a shared root.
     """
-    from tools.tests.leaf_config_fixture import _private_root_redirects
+    from tools.tests.private_root_fixture import _private_root_redirects
 
     roots = {}
     for env_name, subdir in _private_root_redirects():

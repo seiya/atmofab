@@ -43,14 +43,13 @@ The assumptions every design, review, and triage decision in this repository res
 - For MCP client configuration, refer to `mcp_servers/mcp_servers.example.json`; for operational details, `mcp_servers/README.md`.
 
 ## Project Local Skills rules
-- Treat the `SKILL.md` files under `skills/` as the canonical source for the execution procedure of each workflow phase.
-- For the mapping between phases and `SKILL`, refer to `docs/AGENT_SKILLS.md`.
-- For phases that have a `generate -> verify -> regenerate` loop, apply the corresponding `generate` `SKILL` and `verify` `SKILL` separately.
-- On `Codex` / `Claude Code` alike, before starting work read the `SKILL.md` for the target phase and follow the defined input/output contract and decision criteria.
+- **A workflow leaf reads no `SKILL`.** Every LLM substep of the core workflow is a `pure-function leaf` since Z4 ([issue #171](https://github.com/seiya/atmofab/issues/171)): it holds no tools and receives its whole contract inlined in the launch prompt the host renders from `tools/prompt_templates/pure_*.txt`.
+- What remains under `skills/` is the procedures an OPERATOR runs — the optional `Tune` / `Promote` flows, the two workflow audits, the spec input check, the timing audit. Read the `SKILL.md` for the flow you are running and follow its input/output contract and decision criteria.
+- For the mapping — which template carries each core phase's contract, and which `SKILL` each operator flow uses — refer to `docs/AGENT_SKILLS.md`.
 
 ## Workflow document reference rules
 - The entry point to the workflow specification is `docs/WORKFLOW.md`. `docs/workflow/WORKFLOW_CORE.md` is the canonical source for the common invariants, phase sequence, and the per-`phase` I/O contract list; the files under `docs/workflow/phases/` are the canonical source for each `phase`'s detailed contract.
-- `tools/workflow_conductor.py` drives the deterministic phase/substep loop and launches each `step agent` / `substep agent` as a leaf. `docs/ORCHESTRATION.md` is the canonical orchestration design + contract spec; `docs/AGENT_CONTRACT.md` is the canonical child step/substep agent contract.
+- `tools/workflow_conductor.py` drives the deterministic phase/substep loop and launches each `step agent` / `substep agent` as a leaf. `docs/ORCHESTRATION.md` is the canonical orchestration design + contract spec, including the `pure-function leaf` contract every LLM substep runs under. There is no separate child-agent contract document: a leaf reads nothing from disk, so its whole contract is the launch prompt the host renders for it (`tools/prompt_templates/pure_*.txt`).
 - `docs/AGENT_SKILLS.md` is the canonical source for the phase-to-`SKILL` mapping, the decision on where rules are documented, and the phase-switching rules.
 - Do not restate workflow-specific prohibitions, the ban on referencing past artifacts, or the independent-`agent` execution-evidence requirements in `AGENTS.md`; refer to the corresponding canonical source.
 - The canonical entrypoint for starting the workflow is the user running `python3 tools/run_workflow.py <spec_ref> <until_phase> [--llm-config <path>]`, which selects the LLM of each phase / `substep` from a configuration file (default `./llm.yaml`, which the operator creates with `cp docs/examples/llm_claude.example.yaml llm.yaml`); a codex configuration also requires an explicit `model:` (add `--with-deps` to run the dependency closure, `--resume` to recover a failed run; see `docs/RUNBOOK.md`). The configuration file is the only thing that says what a leaf launches; `docs/ORCHESTRATION.md` "Leaf LLM configuration" is canonical for it.

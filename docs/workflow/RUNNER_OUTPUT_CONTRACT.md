@@ -170,7 +170,7 @@ descriptor must not appear at all.
   (`python` / `bash` / `sh` / `node`).
 - The `runner` writes its output paths **relatively** so a `cd $(RUNDIR)` in the
   `make test`/`check` target redirects them under the run dir (see the Makefile
-  contract in `phase_02_generate.md` / the `generate-generate` SKILL).
+  contract in `phase_02_generate.md`).
 - The `runner` is **always** invoked with `--cases <spec.ir.yaml> <case_id>...`:
   by `run_program` directly and by the `make test`/`check` target (which forwards
   the same argv, so the re-run's `diagnostics.json` equals `run_program`'s). It

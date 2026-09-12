@@ -58,15 +58,15 @@ The run must reach `orchestration_meta.json` `status=pass` with a real
 | Check | How to confirm |
 |---|---|
 | Leaves actually ran sandboxed | each `agents/<arid>/dialogs/child.response.json` of a CHILD-PROCESS leaf has `sandbox_enforced: true` **and** a `sandbox_command` starting with `bwrap`; the leaf produced a real reply (not an immediate launch error). A leaf answered over HTTPS from the conductor's own process instead carries `leaf_transport: "http"`, `sandbox_enforced: false` and no `sandbox_command` — it runs no model-directed tool, so there is nothing to confine (see `docs/ORCHESTRATION.md` "Leaf LLM configuration") |
-| Real auth + `--session-id` transcript worked | `<projects-root>/<slug>/<session_id>.jsonl` exists (for a workflow leaf `<projects-root>` is `orchestration_meta.json#claude_workflow_home` + `/projects`, issue #63; for an operator's own session `~/.claude/projects`) and has assistant turns for each leaf (auth/config-home bind is functional). **Operator context only**: that path is the backend CLI's credential/session home, which the Bash read guard rejects fail-closed whenever `ATMOFAB_WORKFLOW_MODE=1` (policy `forbid_backend_credential_direct_read`; canonical: `docs/HOOKS.md` §"Layer boundary"). Check it from an operator terminal outside a workflow run |
+| Real auth + `--session-id` transcript worked | `<projects-root>/<slug>/<session_id>.jsonl` exists (`<projects-root>` is `~/.claude/projects` for every session, a workflow leaf's included: a pure leaf is prepared no private home. Issue #63 had put an agentic leaf's under `orchestration_meta.json#claude_workflow_home` + `/projects`, which Z4 — issue #171 — deleted with that leaf) and has assistant turns for each leaf (auth/config-home bind is functional). **Operator context only**: that path is the backend CLI's credential/session home, which the Bash read guard rejects fail-closed whenever `ATMOFAB_WORKFLOW_MODE=1` (policy `forbid_backend_credential_direct_read`; canonical: `docs/HOOKS.md` §"Layer boundary"). Check it from an operator terminal outside a workflow run |
 | MCP `build-runtime` invoked | the deterministic conductor substeps (`generate.gate` / `build` / `validate.execute`, run in-process — not LLM leaves) recorded `run_linter` / `run_syntax_check` / `compile_project` / `run_program` evidence (`command_log.jsonl` present, `ok:true`) |
-| Hooks fired in-sandbox | the run completed without a `*_violation` due to a missing hook decision; gate-friction behavior is unchanged |
+| `workspace/` hidden from the leaf | a leaf's sandbox sees only its own `workspace/tmp/<arid>` and its own sandbox dir: no other orchestration's records, no `dialogs/`, no sibling pipeline. Since Z4 ([issue #171](https://github.com/seiya/atmofab/issues/171)); pinned by `test_bwrap_simulation.BwrapReadonlyProfileTests::test_readonly_profile_hides_workspace_from_the_leaf` |
 | **Build output landed in write_roots (highest risk)** | the **Build phase passed** — `compile_project` wrote `.o`/`.mod` to the per-run object dir and the exe to `binary/<binary_id>/bin/` with no `unauthorized_write_violation` / EROFS. This is the make-or-break check. |
 
 `python3 tools/audit_orchestration.py <orchestration_id>` summarizes per-run cost and
 status for a quick read.
 
-## Codex session and hook criteria
+## Codex session criteria
 
 For a Codex run, confirm that every leaf launch has a distinct `thread.started` event before a
 tool request, and that `session_run_index.json`, `launches/<agent_run_id>.response.json`, and the
@@ -114,12 +114,14 @@ The whole JSONL event stream of each Codex leaf is kept at
 where a failed Codex leaf is diagnosed.
 
 For every Codex orchestration, the host creates an isolated `CODEX_HOME` outside the repository.
-It contains only a SHA-256-verified copy of this repository's `leaf_config/codex/hooks.json` (issue #102 moved it there from `.codex/hooks.json`, which is now the DEV layer); the original
-home contributes only `auth.json` as a read-only bwrap bind. Its `config.toml` marks the repository
-project `untrusted`, preventing the project hook layer from being loaded a second time. Therefore
-`--dangerously-bypass-hook-trust` applies only to that verified user-level hook source, never to
-ambient user or plugin hooks. The same isolated home is reused by `codex exec resume` for the
-orchestration's thread state.
+The original home contributes only `auth.json`, as a read-only bwrap bind. Its `config.toml` marks
+the repository project `untrusted`, so the project hook layer is not loaded. The same isolated home
+is reused by `codex exec resume` for the orchestration's thread state.
+
+It carried one more thing until Z4 ([issue #171](https://github.com/seiya/atmofab/issues/171)): a
+SHA-256-verified copy of `leaf_config/codex/hooks.json`, the leaf hook source, launched with
+`--dangerously-bypass-hook-trust` so that copy — and nothing ambient — was trusted. A pure leaf
+makes no tool call, so there is no hook to run, no flag to pass, and no hook source to verify.
 
 ## 3. If it fails
 

@@ -8,15 +8,13 @@
 #     cp docs/examples/llm_anthropic_api.example.yaml llm.yaml
 #
 # WHY EVERY LEAF, NOW. `anthropic_api` is one request and one response: no session to reopen,
-# no tools to grant, and no agentic loop. That confines it to the leaves that run as
-# host-mediated PURE functions — one closed context in, one JSON document out — and since Z3
-# (issue #169) every LLM leaf is one of those. `validate.judge` was the last exception; it held
-# tools only to walk `raw/`, which the host now summarizes for it
-# (`tools/raw_evidence_excerpt.py`), so an HTTP provider is admissible on it too.
+# no tools to grant, and nothing to hold a tool. That confines it to the leaves that run as
+# host-mediated PURE functions — one closed context in, one JSON document out — which since
+# Z4 (issue #171) is EVERY leaf there is. There is no other leaf model to be admissible on.
 #
 # `defaults` MAY be an HTTP provider since issue #169: the one launch it serves, the
-# `escalate` diagnostician, is a pure leaf now, so the rule on it is
-# `llm_config_defaults_not_pure` rather than a requirement to be agentic. `init` and the
+# `escalate` diagnostician, is a pure leaf, so the rule on it is
+# `llm_config_defaults_not_pure`. `init` and the
 # preflight still take one CLI backend token, and it is resolved from whatever the file can
 # launch (`LlmConfig.cli_launch_identity`) rather than from `defaults`, so an HTTP `defaults`
 # beside a CLI leaf runs. ONE thing still stands between this file and an ALL-HTTP run — that
@@ -27,8 +25,9 @@
 # The two GENERATE pure leaves are additionally gated at run time on the node having a
 # CodegenBundle SHAPE (`Conductor._bundle_shape`: `m3c` for a physics node, `harness` for an
 # `infrastructure` self-test since issue #169). Every node the spec catalog holds has one, so a
-# pure-only provider has a pure path everywhere; a hand-crafted IR with no shape would fail that
-# node closed rather than silently launching an agentic session on it. The two COMPILE pure
+# pure-only provider has a pure path everywhere; a hand-crafted IR with no shape fails that node
+# closed (`node_has_no_bundle_shape`) — since Z4 (issue #171) there is no agentic session to fall
+# back to on any provider. The two COMPILE pure
 # leaves carry no such condition — the Compile contract does not depend on the node kind.
 #
 # EVERY phase, substep and provider is written out, even though the resolution rules would let

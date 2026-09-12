@@ -58,28 +58,27 @@ Claude Code reads `.mcp.json` directly under the project root and defines the se
 
 `.mcp.json` is **the server definition** only, and enabling it (enablement) per project requires separate approval. The approval sources are (a) the workspace trust dialog at interactive `claude` launch (recorded per-user in `~/.claude.json`), and (b) the `enabledMcpjsonServers` / `enableAllProjectMcpServers` of the repository-committed `.claude/settings.json`.
 
-**A workflow leaf does not take that path.** Since issue #63 the conductor launches an agentic claude leaf with `--strict-mcp-config --mcp-config .mcp.json`, so this file IS the leaf's entire server set, read directly: no enablement decision, and no ambient server from the operator's `~/.claude`, reaches it. The enablement rules below therefore describe the OPERATOR's interactive session and the preflight gate that certifies it, not what a leaf comes up with. `record-launch` hashes the file's bytes into each claude leaf's launch record (`mcp_config`), and an unreadable one fails the launch closed.
+**A workflow leaf does not take that path, and since Z4 ([issue #171](https://github.com/seiya/atmofab/issues/171)) it takes no MCP path at all.** A `pure-function leaf` launches with `--strict-mcp-config` and no `--mcp-config`, under `--safe-mode` with `--tools ""`: it has no server set, no tool to call one with, and nothing for an enablement decision to decide. The MCP tools are called by the CONDUCTOR's own in-process deterministic substeps. The enablement rules below therefore describe the OPERATOR's interactive session and the preflight gate that certifies it.
 
-The `preflight` of a run whose leaves use the `claude_cli` provider (`tools/run_workflow.py` with a `claude_cli` leaf-LLM configuration) (`tools/orchestration_runtime.py` `_probe_claude_mcp_registry`) verifies the enablement of `build-runtime` using **only the committed `.claude/settings.json` of (b)** as the canonical source, and stops with `status=fail` when not enabled (`~/.claude.json` is not referenced because it harms reproducibility per-machine). `claude mcp list` is displayed only as an advisory diagnostic.
+The `preflight` verified the enablement of `build-runtime` for a `claude_cli` run, using only the committed `.claude/settings.json` of (b) as the canonical source (`~/.claude.json` was not referenced, because it harms per-machine reproducibility). That check (`_probe_claude_mcp_registry`) is deleted with the agentic leaf in Z4: the enablement it certified governed a leaf's session, and no leaf has one now. An operator enabling the server for their own session reads (a) and (b) above; `claude mcp list` shows what a session came up with.
 
-**In addition to enablement, the tool-call permission is also required.** Even if the server is enabled, without the MCP tool-call permission for the child `Agent` session, `run_linter` etc. fail with `Claude requested permissions … but you haven't granted it yet.`, and Generate/Build/Validate stop entirely. Place the server-level grant `mcp__build-runtime` in the `permissions.allow` of the committed **`leaf_config/claude/settings.json`** — the LEAF configuration specifically, since a workflow leaf loads only that file (copied into a private `CLAUDE_CONFIG_DIR` and read as the `user` layer, issue #63) and the preflight reads the same file, so a grant in the repository's own `.claude/settings.json` or in `.claude/settings.local.json` satisfies neither (because Claude Code's permission rule does not interpret the tool-name wildcard `mcp__build-runtime__*`, use the server level). The preflight (`claude_mcp_build_runtime_permission_granted` check) verifies it ANDed with the enablement, and stops with `status=fail` when not granted.
+**In addition to enablement, the tool-call permission is also required for an operator's own session.** Place the server-level grant `mcp__build-runtime` in the `permissions.allow` of the committed `.claude/settings.json` (Claude Code's permission rule does not interpret the tool-name wildcard `mcp__build-runtime__*`, so use the server level). This used to be a LEAF requirement, stated on `leaf_config/claude/settings.json` with a preflight check behind it; both are deleted with the agentic leaf, which was the only thing that called an MCP tool from inside a session.
 
-The repository bundles TWO files, because a leaf and an operator load different ones. `leaf_config/claude/settings.json` is what a WORKFLOW LEAF loads (the host copies it into a private `CLAUDE_CONFIG_DIR` under a SHA-256 pin, issue #63) and is where the permission grant must live. The repository's own `.claude/settings.json` is the DEV layer for an operator's interactive session, and additionally carries the `enabledMcpjsonServers` enablement key, which is a property of a CHECKOUT rather than of a leaf — a leaf passes `--strict-mcp-config` and never consults it. The dev layer carries every grant the leaf layer does — a SUPERSET, which is what the sync test asserts. The HOOK half of that claim was repealed by issue #102: the two layers name different entrypoints and share no command:
+There is ONE file: the repository's own `.claude/settings.json`, the DEV layer for an operator's
+interactive session, which carries the `enabledMcpjsonServers` enablement key and the grant above.
+`leaf_config/claude/settings.json` was the second, loaded by a workflow leaf as the sole layer of a
+host-prepared private configuration directory; it is deleted with the agentic leaf, and so is the
+sync test that required the dev layer to be a superset of it.
 
 ```json
-// .claude/settings.json  (dev layer: operator's own session)
+// .claude/settings.json  (the operator's own session)
 {
   "enabledMcpjsonServers": ["build-runtime"],
   "permissions": { "allow": ["mcp__build-runtime"] }
 }
-
-// leaf_config/claude/settings.json  (the ONLY layer a workflow leaf loads)
-{
-  "permissions": { "allow": ["mcp__build-runtime"] }
-}
 ```
 
-To temporarily disable it in a personal environment, place `"disabledMcpjsonServers": ["build-runtime"]` in `.claude/settings.local.json` (the preflight detects this opt-out and makes it `status=fail`). It stops the run at the gate; it does not subtract anything from a leaf, which reads `.mcp.json` directly.
+To temporarily disable it in a personal environment, place `"disabledMcpjsonServers": ["build-runtime"]` in `.claude/settings.local.json`. That is a statement about the OPERATOR's own session: the preflight check that read it and made the run `status=fail` went with `_probe_claude_mcp_registry` in Z4 (issue #171), so it no longer stops a run — and it subtracts nothing from a leaf, which calls no MCP tool. What it does affect is the conductor's own in-process MCP calls, which run in the operator's environment.
 
 ### Cursor: `.cursor/mcp.json`
 

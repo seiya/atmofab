@@ -1,31 +1,20 @@
-"""Seed a synthetic repo root with the repository's committed leaf configuration.
+"""Per-test isolation of the operator-private root, for the suite.
 
-Every test that drives `record_launch` (or the diagnostician profile) for the
-`claude` backend needs `leaf_config/claude/settings.json` present, because
-`_prepare_claude_workflow_home` validates and SHA-pins it before any launch and
-fails closed when it is absent.
+Every test that drives `record_launch` writes under `~/.atmofab/homes`, and without a
+redirect that is the OPERATOR'S OWN tree. These helpers give each test module — and, outside
+pytest, each test — a root of its own, and hand a codex-backed fixture its own credential
+instead of reading the developer's.
 
-Driven by the REAL committed file rather than a hand-written copy: a fixture that
-invented its own settings would keep passing after the committed file drifted,
-which is the failure mode the leaf-config probe exists to catch in the first place.
+Until Z4 (issue #171) this module was also where a synthetic repo root was seeded with
+`leaf_config/claude/settings.json` and `leaf_config/codex/hooks.json`, because
+`_prepare_claude_workflow_home` and `_prepare_codex_workflow_home` SHA-pinned them before any
+launch. Neither file exists: the claude private home went with the agentic leaf, and the codex
+leaf brings no hooks. The file keeps its name for this change; the plan renames it to
+`private_root_fixture.py` once the call sites settle.
 """
 from __future__ import annotations
 
 from pathlib import Path
-
-REPO_ROOT = Path(__file__).resolve().parents[2]
-LEAF_CONFIG_REL = Path("leaf_config") / "claude" / "settings.json"
-# The LEAF-owned codex hook source since issue #102. `.codex/hooks.json` is the DEV
-# layer now and is not what a leaf launch validates.
-CODEX_HOOKS_REL = Path("leaf_config") / "codex" / "hooks.json"
-
-
-def seed_claude_leaf_config(repo_root: Path) -> Path:
-    """Copy this repository's committed leaf settings into `repo_root`."""
-    destination = Path(repo_root) / LEAF_CONFIG_REL
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.write_bytes((REPO_ROOT / LEAF_CONFIG_REL).read_bytes())
-    return destination
 
 
 def seed_codex_auth(directory: Path) -> Path:
@@ -49,22 +38,6 @@ def seed_codex_auth(directory: Path) -> Path:
     directory.mkdir(parents=True, exist_ok=True)
     (directory / "auth.json").write_text("{}\n", encoding="utf-8")
     return directory
-
-
-def seed_codex_hooks(repo_root: Path) -> Path:
-    """Copy this repository's committed Codex hook source into `repo_root`.
-
-    The codex twin of the above, for the same reason: `_prepare_codex_workflow_home`
-    validates and SHA-pins `leaf_config/codex/hooks.json` before a codex launch and
-    fails closed
-    when it is absent. Fixtures needed it only once the isolation branch started
-    keying on the family the PROFILE resolves — before that, a launch whose response
-    omitted `backend` silently skipped isolation on both backends.
-    """
-    destination = Path(repo_root) / CODEX_HOOKS_REL
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.write_bytes((REPO_ROOT / CODEX_HOOKS_REL).read_bytes())
-    return destination
 
 
 # --------------------------------------------------------------------------------------

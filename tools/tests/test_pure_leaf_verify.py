@@ -114,7 +114,10 @@ class PureVerifyContextTests(unittest.TestCase):
             for absent in ("## 5.",
                            "Fortran legality and gate guards",
                            "# Checks-module contract",
-                           "Force-read by the **agentic** leaf"):
+                           # A banner sentence, re-pointed when Z4 (issue #171) rewrote the
+                           # previous one away — which this row caught, exactly as its comment
+                           # above says it must.
+                           "NO leaf reads this document from disk"):
                 self.assertIn(absent, real, f"{absent!r} no longer occurs in the document, so "
                                             f"asserting its absence from the slice pins nothing")
                 self.assertNotIn(absent, doc)

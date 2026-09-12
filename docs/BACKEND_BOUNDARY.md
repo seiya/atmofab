@@ -15,9 +15,6 @@ rule that keeps it out of everything else.
 - Every document and script under `skills/`.
 - Every document under `docs/`, recursively.
 - `README.md`, `AGENTS.md`, `CLAUDE.md`.
-- `leaf_config/`, the committed configuration a workflow leaf is launched with. It names
-  hook events, tool names and permission tokens of the LLM CLI that runs a leaf — an
-  `agent` axis concern, not a target-stack one — and no `axis` value appears in it.
 - `requirements*.txt`, the dependency declaration. These name the pip distributions of a
   `language` backend's parser and of the `linter` backends' tools, which is the same kind of
   statement as the install line this rule already measures in `docs/RUNBOOK.md`.

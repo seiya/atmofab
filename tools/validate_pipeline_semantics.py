@@ -598,11 +598,14 @@ def _has_informative_agent_summary(text: str) -> bool:
 
 DETERMINISTIC_PROMPT_SENTINEL = "Conductor-executed deterministic step"
 
-# Mirror of the warm-resume slim repair prompt's identifying strings in
-# orchestration_runtime.py (SLIM_REPAIR_PROMPT_SENTINEL / SLIM_REPAIR_FINDINGS_HEADER).
-# Copied literals (the validator intentionally does not import orchestration_runtime,
-# matching the DETERMINISTIC_PROMPT_SENTINEL duplication); a cross-module equality test
-# guards against drift.
+# The warm-resume slim repair prompt's identifying strings. They were a MIRROR of
+# `orchestration_runtime`'s copies until Z4 (issue #171) deleted that renderer and its
+# literals; this module is the only home now, so there is no drift to guard and the
+# cross-module equality test that guarded it is gone. They are kept because this validator's
+# subject is a PERSISTED record and an operator's `workspace/` holds runs launched before the
+# cut, which it still has to classify — the same reason `_LEGACY_LAUNCH_PROMPT_MARKERS` keeps
+# an even older one's Japanese markers. `DETERMINISTIC_PROMPT_SENTINEL` above IS still
+# duplicated and still cross-checked, so the two are no longer the same case.
 SLIM_REPAIR_PROMPT_SENTINEL = "Warm-resume slim repair turn"
 SLIM_REPAIR_FINDINGS_HEADER = "Findings to fix (from the lint/syntax/static gate or verify finding):"
 
@@ -611,10 +614,11 @@ def _is_slim_launch_prompt_text(launch_text: str) -> bool:
     """True when a recorded launch_prompt_ref body is shaped like a warm-resume slim repair turn.
 
     Detect by the sentinel's POSITION (first line), NOT a whole-body substring: the FULL
-    substep template documents the slim mechanism in its always-rendered boilerplate (see
-    tools/prompt_templates/substep_agent.txt), so the sentinel string appears inside every
-    full substep prompt. The slim renderer (orchestration_runtime._render_slim_repair_launch_prompt)
-    always emits the sentinel as the very first line, so anchoring on the prefix is exact.
+    substep template documented the slim mechanism in its always-rendered boilerplate, so the
+    sentinel string appeared inside every full substep prompt — both that template and the slim
+    renderer are deleted (Z4, issue #171), and the position rule is what makes this exact on the
+    records they left. `tools/tests/data/historical_launch_prompts/` holds one of each, frozen
+    at the last commit before the cut, and is what drives this function.
 
     This is a NECESSARY but not SUFFICIENT signal for downgrading the required marker set:
     the authoritative signal is the structured launch request (see
@@ -625,16 +629,15 @@ def _is_slim_launch_prompt_text(launch_text: str) -> bool:
 def _launch_request_is_slim_repair(request_payload: dict) -> bool:
     """True when the structured launch REQUEST payload is a warm-resume slim repair.
 
-    Mirror of orchestration_runtime._is_slim_repair_request (the renderer's own authoritative
-    predicate; the validator intentionally does not import orchestration_runtime, matching the
-    SLIM_REPAIR_PROMPT_SENTINEL duplication — a cross-module parity test guards against drift).
-    Gating the reduced marker set on this — not on prompt text alone — prevents a non-slim
+    This was a mirror of the renderer's own predicate, and the renderer is deleted (Z4, issue
+    #171), so it is now the only statement of the shape — pinned against the payload shapes it
+    must classify rather than against a twin. Gating the reduced marker set on this — not on prompt text alone — prevents a non-slim
     launch record whose prompt was replaced with a slim-looking body from escaping the full
     skill / must-read / requirements markers (an inconsistent record would otherwise pass).
 
-    A pure request is excluded up front (mirrors orchestration_runtime._is_slim_repair_request):
-    a pure warm-resume repair satisfies the slim shape but has its own pure marker set, so pure
-    and slim classify mutually exclusively here too."""
+    A pure request is excluded up front, and that arm is the one still LIVE: a pure warm-resume
+    repair satisfies the slim shape (warm + reuse + findings) and has its own marker set, so the
+    two classify mutually exclusively. Everything else here answers for a pre-Z4 record."""
     if request_payload.get("deterministic"):
         return False
     if _pure_leaf_is_pure_request(request_payload):
@@ -9924,9 +9927,11 @@ def _resolve_pipeline_roots(
     return roots
 
 
-#: The reserved directory under `workspace/orchestrations/` that is NOT a run: the hook
-#: entrypoint records a refusal there when the payload cannot name an orchestration
-#: (`tools/hooks/cli.py`, `docs/ORCHESTRATION.md` §38). Spelled once, here, and read by
+#: The reserved directory under `workspace/orchestrations/` that is NOT a run: the LEAF hook
+#: entrypoint recorded a refusal there when the payload could not name an orchestration
+#: (`docs/ORCHESTRATION.md` §38). That entrypoint is deleted (Z4, issue #171) so nothing writes
+#: the sink any more — the exclusion stays for the workspaces that already hold one, which is
+#: the same reason this validator keeps its pre-Z4 marker arms. Spelled once, here, and read by
 #: the hierarchy sweep below.
 HOOK_REFUSAL_SINK_DIR_NAME = "_global"
 
@@ -9946,8 +9951,8 @@ def _validate_orchestration_hierarchy(
         )
         return
 
-    # `_global` IS NOT AN ORCHESTRATION. It is the reserved sink `tools/hooks/cli.py`
-    # records a hook refusal under when the payload cannot name one
+    # `_global` IS NOT AN ORCHESTRATION. It is the reserved sink the deleted leaf hook
+    # entrypoint recorded a refusal under when the payload could not name one
     # (`docs/ORCHESTRATION.md` §38), so it holds `hooks/` and nothing else — no
     # `orchestration_meta.json`, no `steps/`. Swept as a run it produced five violations
     # per refusal, which made the documented `--stage full` CI pass-condition
@@ -10496,8 +10501,12 @@ def _validate_orchestration_hierarchy(
                                                 f"mcp_permissions must be [] (got {cap_doc.get('mcp_permissions')!r})"
                                             )
                                     # (3) The read manifest must be DENY-ALL (empty
-                                    # allowed_read_roots — the enforcing allowlist for a leaf that
-                                    # reads no file) and the sandbox must be the READ-ONLY profile
+                                    # allowed_read_roots — the RECORD of a leaf authorized to read
+                                    # no file; it was the enforcing allowlist while a hook read it
+                                    # for the codex leaf, and Z4 (issue #171) deleted that layer,
+                                    # so this audit now checks that the record says the right
+                                    # thing rather than that something refused a read)
+                                    # and the sandbox must be the READ-ONLY profile
                                     # (readonly + write_roots==[]). Auditing these here catches a
                                     # pure launch mistakenly provisioned through the generic
                                     # (writable/read-granting) record-launch path even though the

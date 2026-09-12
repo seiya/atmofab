@@ -16,18 +16,18 @@ table row instead of a new branch.
 
 **Capabilities are declared, never inferred.** `PROVIDER_CAPABILITIES` below is the single
 source of truth; a config's own `capabilities:` list may only RESTRICT a provider's set (to
-model an endpoint that, say, cannot be warm-resumed), never extend it. The user-approved scope
-rule — HTTP providers are admissible only on the *pure* leaves — is therefore not a
-`provider == "openai_compatible"` branch anywhere: it falls out of the HTTP providers holding
-`pure` and not `agentic`, checked against what each substep requires
-(`llm_config_capability_insufficient_for_substep`).
+model an endpoint that, say, cannot be warm-resumed), never extend it. Since Z4 (issue #171)
+the pure leaf is the only leaf model, so every LLM leaf simply requires `pure` — which is what
+makes an HTTP provider admissible everywhere, and an entry narrowed away from `pure` admissible
+nowhere (`llm_config_capability_insufficient_for_substep`). Neither is a
+`provider == "openai_compatible"` branch.
 
 Stdlib + PyYAML only, and deliberately importing nothing from `tools.orchestration_runtime` /
 `tools.workflow_conductor`: both of those import (or will import) this module, and the
 mirror-table drift guards in `tools/tests/test_llm_config.py` import all three to compare them.
-The tables duplicated here (`LLM_LEAF_SUBSTEPS`, `PURE_CAPABLE_SUBSTEPS`,
-`MCP_REQUIRED_LLM_SUBSTEPS`) are guarded copies, not independent opinions: each has a test that
-fails if the conductor/runtime original moves.
+The tables duplicated here (`LLM_LEAF_SUBSTEPS`, `MCP_REQUIRED_LLM_SUBSTEPS`) are guarded
+copies, not independent opinions: each has a test that fails if the conductor/runtime original
+moves.
 
 Rejections are NAMED. `LlmConfigError.rule` carries a stable identifier (`llm_config_*`) that
 callers surface verbatim, because a config the operator wrote by hand is exactly the place
@@ -107,33 +107,34 @@ def _is_loopback(host: str) -> bool:
 
 # The capability vocabulary. These are the questions the conductor actually asks of a leaf's
 # provider; each one replaces a `backend == ...` branch:
-#   agentic      the provider can run the shared AGENTIC leaf loop (a tool-holding session
-#                driven by a launch prompt, with hooks, MCP grants and a workspace).
 #   pure         the provider can run a Z2 host-mediated PURE leaf (one typed document in,
-#                one JSON document out; `write_roots: []`, no tools, no hooks, no MCP).
+#                one JSON document out; `write_roots: []`, no tools, no hooks, no MCP). Since
+#                Z4 (issue #171) this is the ONLY leaf transport: the agentic loop — a
+#                tool-holding session in the checkout, driven by a launch prompt — is gone,
+#                and with it the `agentic` capability that selected it.
 #   warm_resume  a finished leaf session can be reopened for a repair turn carrying the prior
 #                context (claude `--resume --fork-session`, codex `exec resume`).
 #   mcp_tools    the leaf can be granted build-runtime MCP tools.
 #   usage_probe  the provider answers a host-side `/usage` probe, which is how a run waits out
 #                a usage-limit reset instead of failing (see docs/RUNBOOK.md).
-CAP_AGENTIC = "agentic"
 CAP_PURE = "pure"
 CAP_WARM_RESUME = "warm_resume"
 CAP_MCP_TOOLS = "mcp_tools"
 CAP_USAGE_PROBE = "usage_probe"
 
+# `agentic` is deliberately absent rather than accepted-and-ignored: a configuration still
+# spelling it is refused at `capabilities:` parse time, where the operator can read why, rather
+# than resolving to a transport that no longer exists.
 KNOWN_CAPABILITIES: frozenset[str] = frozenset({
-    CAP_AGENTIC, CAP_PURE, CAP_WARM_RESUME, CAP_MCP_TOOLS, CAP_USAGE_PROBE,
+    CAP_PURE, CAP_WARM_RESUME, CAP_MCP_TOOLS, CAP_USAGE_PROBE,
 })
 
 # THE capability authority. A config may restrict a provider's set; it may never exceed it.
 PROVIDER_CAPABILITIES: Mapping[str, frozenset[str]] = {
-    "claude_cli": frozenset({CAP_AGENTIC, CAP_PURE, CAP_WARM_RESUME, CAP_MCP_TOOLS,
-                             CAP_USAGE_PROBE}),
-    "codex_cli": frozenset({CAP_AGENTIC, CAP_PURE, CAP_WARM_RESUME, CAP_MCP_TOOLS}),
-    # HTTP providers: one request, one response. No session to reopen, no tools to grant, no
-    # `/usage` endpoint in the shape the probe speaks — and, decisively, no agentic loop, which
-    # is what confines them to the pure leaves.
+    "claude_cli": frozenset({CAP_PURE, CAP_WARM_RESUME, CAP_MCP_TOOLS, CAP_USAGE_PROBE}),
+    "codex_cli": frozenset({CAP_PURE, CAP_WARM_RESUME, CAP_MCP_TOOLS}),
+    # HTTP providers: one request, one response. No session to reopen, no tools to grant, and
+    # no `/usage` endpoint in the shape the probe speaks.
     "openai_compatible": frozenset({CAP_PURE}),
     "anthropic_api": frozenset({CAP_PURE}),
 }
@@ -163,29 +164,25 @@ BACKEND_TOKEN_PROVIDERS: Mapping[str, str] = {v: k for k, v in PROVIDER_BACKEND_
 
 # --- mirror tables (guarded copies) --------------------------------------------------
 
-# The five substeps that run as an LLM leaf. Mirror of
+# The five substeps that run as an LLM leaf, ALL of which run as pure leaves (Z4, issue #171 —
+# there is no second transport for one of them to run on). Mirror of
 # `workflow_conductor.SUBSTEPS` minus `Conductor._is_deterministic_substep`; guarded by
 # `test_llm_leaf_substeps_matches_conductor`.
+#
+# NOTE the dispatch in `Conductor._pure_leaf_substep` additionally gates the two GENERATE pairs
+# on the node having a bundle SHAPE at all (`Conductor._bundle_shape`: `m3c` or, since issue
+# #169, `harness`). No in-tree node answers None; a hand-crafted IR with no shape has no pure
+# path for those two pairs, and since Z4 there is nothing to fall through to, so the conductor
+# fails that closed at run time (`node_has_no_bundle_shape`) — which config validation cannot
+# see, because it cannot see a node. The two COMPILE pairs (Z1, issue #168) carry no shape
+# condition: the Compile contract does not depend on the node kind, and at `compile.generate`
+# time no IR exists to read a shape from. `validate.judge` (Z3, issue #169) carries none either,
+# and for the same kind of reason: what it reviews is the run's evidence against the tests,
+# which every node kind has.
+#
+# This table used to have a twin, `PURE_CAPABLE_SUBSTEPS`, naming the subset that had been
+# migrated. The two became equal at issue #169 and Z4 removed the distinction they expressed.
 LLM_LEAF_SUBSTEPS: frozenset[tuple[str, str]] = frozenset({
-    ("compile", "generate"),
-    ("compile", "verify"),
-    ("generate", "generate"),
-    ("generate", "verify"),
-    ("validate", "judge"),
-})
-
-# The subset that CAN run as a pure leaf. Mirror of the `(phase, substep)` pair test in
-# `Conductor._pure_leaf_substep`; guarded by `test_pure_capable_substeps_matches_conductor`.
-# NOTE the dispatch there additionally gates the two GENERATE pairs on the node having a bundle
-# SHAPE at all (`Conductor._bundle_shape`: `m3c` or, since issue #169, `harness`). No in-tree node
-# answers None, so a pure-only provider has a pure path for every node the catalog carries; a
-# hand-crafted IR with no shape would have none for those two pairs, and the conductor fails that
-# closed at run time (`pure_only_provider_on_agentic_path`), which config validation cannot see.
-# The two COMPILE pairs (Z1, issue #168) carry no shape condition: the Compile contract does not
-# depend on the node kind, and at `compile.generate` time no IR exists to read a shape from.
-# `validate.judge` (Z3, issue #169) carries none either, and for the same kind of reason: what it
-# reviews is the run's evidence against the tests, which every node kind has.
-PURE_CAPABLE_SUBSTEPS: frozenset[tuple[str, str]] = frozenset({
     ("compile", "generate"),
     ("compile", "verify"),
     ("generate", "generate"),
@@ -208,11 +205,11 @@ LLM_LEAF_PHASES: frozenset[str] = frozenset(p for p, _ in LLM_LEAF_SUBSTEPS)
 def required_capabilities(phase: str, substep: str) -> frozenset[str]:
     """The capabilities an entry MUST have to run `(phase, substep)`.
 
-    A pure-capable substep accepts either an agentic or a pure provider (the conductor picks
-    per node shape), so its requirement is the *alternative* {agentic, pure} — expressed here
-    as the empty hard requirement plus the alternative handled by the caller. Everything else
-    hard-requires `agentic`."""
+    Every LLM leaf runs on the pure transport and only on it (Z4, issue #171), so `pure` is a
+    hard requirement for each of them rather than one half of an alternative."""
     caps: set[str] = set()
+    if (phase, substep) in LLM_LEAF_SUBSTEPS:
+        caps.add(CAP_PURE)
     if (phase, substep) in MCP_REQUIRED_LLM_SUBSTEPS:
         caps.add(CAP_MCP_TOOLS)
     return frozenset(caps)
@@ -773,31 +770,18 @@ class LlmConfig:
 def _validate_assignment(phase: str, substep: str, entry: ResolvedLeafEntry, where: str) -> None:
     """Reject an entry that cannot run the substep it was assigned to.
 
-    This is where "HTTP providers are pure-only" is enforced — as a capability comparison, not
-    a provider name test. A pure-capable substep is satisfied by EITHER `agentic` (the shared
-    leaf loop, used on non-M3c nodes) or `pure`; every other LLM leaf hard-requires
-    `agentic`."""
+    One rule since Z4 (issue #171): every LLM leaf runs on the pure transport, so an entry
+    narrowed away from `pure` can run nothing. Stated as a capability comparison rather than a
+    provider name test — the declared set is the authority, and `capabilities:` may narrow it."""
     for cap in sorted(required_capabilities(phase, substep)):
         if not entry.supports(cap):
             raise LlmConfigError(
                 "llm_config_capability_insufficient_for_substep",
                 f"substep {phase}.{substep} requires capability {cap!r}, which provider "
-                f"{entry.provider!r} does not have", where=where)
-    if (phase, substep) in PURE_CAPABLE_SUBSTEPS:
-        if entry.supports(CAP_AGENTIC) or entry.supports(CAP_PURE):
-            return
-        raise LlmConfigError(
-            "llm_config_capability_insufficient_for_substep",
-            f"substep {phase}.{substep} requires capability 'agentic' or 'pure', and provider "
-            f"{entry.provider!r} has neither", where=where)
-    if not entry.supports(CAP_AGENTIC):
-        raise LlmConfigError(
-            "llm_config_capability_insufficient_for_substep",
-            f"substep {phase}.{substep} runs the agentic leaf loop, so it requires capability "
-            f"'agentic'; provider {entry.provider!r} has {', '.join(sorted(entry.capabilities))}"
-            f" (HTTP providers are admissible only on the pure leaves "
-            f"{', '.join(f'{p}.{s}' for p, s in sorted(PURE_CAPABLE_SUBSTEPS))})",
-            where=where)
+                f"{entry.provider!r} does not have (it has "
+                f"{', '.join(sorted(entry.capabilities)) or '(none)'}); every LLM leaf runs as "
+                f"a pure-function leaf and there is no other transport to fall back to",
+                where=where)
 
 
 def load_llm_config(path: str | Path, *, content: bytes | None = None) -> LlmConfig:

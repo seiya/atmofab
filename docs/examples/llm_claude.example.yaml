@@ -20,23 +20,17 @@
 # build phase) is deterministic and runs in-process, so naming one here is rejected.
 #
 #   model    An unpinned ALIAS, never a pinned version: versions move, and the exact version
-#            that ran is recovered afterwards from the leaf's own CLI result envelope and recorded on its
-#            `agent_runs` row. Because this file DECLARES it, it is passed as
+#            that ran is recovered afterwards from the leaf's own CLI result envelope and
+#            recorded on its `agent_runs` row. Because this file DECLARES it, it is passed as
 #            `claude --model opus`. Delete the `model:` lines and no `--model` is passed,
-#            which hands the choice to whatever that leaf's launch resolves to. For an
-#            AGENTIC leaf that is the CLI's own default and NOT the operator's
-#            `~/.claude/settings.json`, which it no longer reads (`--setting-sources user`
-#            against a private CLAUDE_CONFIG_DIR carrying only this repository's leaf
-#            configuration, issue #63). A PURE launch carries no `--setting-sources`, so
-#            there the operator's settings can still decide, exactly as before. Since
-#            issue #169 EVERY leaf of every in-tree node runs pure: the `infrastructure`
-#            harness self-test was the last node whose two `generate` leaves ran agentic,
-#            and bundle v1.1.0's `runner` role gave it a bundle shape of its own. A node
-#            with no bundle shape at all would still run those two agentic
-#            (`Conductor._bundle_shape`), but the spec catalog holds none.
+#            which hands the choice to whatever that leaf's launch resolves to. Every leaf is
+#            a PURE leaf since Z4 (issue #171), and a pure launch takes `--safe-mode` with no
+#            settings-layer flag, so there the operator's own `~/.claude/settings.json` can
+#            still decide the unpinned model. Declaring `model:` here is what makes that a
+#            recorded choice rather than an ambient one.
 #   effort   `low` | `medium` | `high` | `xhigh` | `max`, passed as `claude --effort`.
-#            Delete the lines and no `--effort` is passed; the same agentic/pure split
-#            applies to the operator's `effortLevel`.
+#            Delete the lines and no `--effort` is passed; the operator's own `effortLevel`
+#            then decides, for the same reason as the model above.
 #
 # WHY `medium`. It is what the current model generation is built around: it is this CLI's own
 # default, and Codex ships the same default for every gpt-5.6 model while its PREDECESSOR
@@ -76,18 +70,17 @@
 # table — reasoning from it is the mistake this comment exists to prevent.
 #
 # To move one leaf elsewhere, replace its block. HTTP providers (`openai_compatible`,
-# `anthropic_api`) are admissible on every LLM leaf since Z3 (issue #169): all five run as
-# host-mediated pure functions, `validate.judge` last of them. The capability rule that used to
-# refuse one on the judge (`llm_config_capability_insufficient_for_substep`) is unchanged and
-# now has no LLM leaf to refuse on. `llm_openai_compatible.example.yaml` and
-# `llm_anthropic_api.example.yaml` in this directory are worked examples of each.
+# `anthropic_api`) are admissible on every LLM leaf: all five run as host-mediated pure
+# functions. `llm_openai_compatible.example.yaml` and `llm_anthropic_api.example.yaml` in this
+# directory are worked examples of each.
 #
-# To put ONE migrated leaf back on the agentic path, add `capabilities: [agentic]` to its
-# block. The key is RESTRICT-ONLY — it may name a subset of what the provider has
-# (`claude_cli`: agentic, pure, warm_resume, mcp_tools, usage_probe) and never more, or the
-# load is refused with `llm_config_capability_exceeds_provider`. Dropping `pure` is what
-# selects the agentic loop; no sample sets the key, because the pure path is the default
-# for every leaf and this is a diagnostic detour, not a configuration to keep.
+# `capabilities:` narrows what a provider may be used for. The key is RESTRICT-ONLY — it may
+# name a subset of what the provider has (`claude_cli`: pure, warm_resume, mcp_tools,
+# usage_probe) and never more, or the load is refused with
+# `llm_config_capability_exceeds_provider`. There is no configuration that puts a leaf on
+# another transport: the pure leaf is the only leaf model since Z4 (issue #171), so an entry
+# narrowed away from `pure` can run nothing and is refused with
+# `llm_config_capability_insufficient_for_substep`. No sample sets the key.
 defaults:
   provider: claude_cli
   model: opus

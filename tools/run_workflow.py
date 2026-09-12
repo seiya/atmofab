@@ -2215,9 +2215,11 @@ def _run_main(
 
     # Z2 generate-executor (M-F). The executor is no longer selectable: legacy execution was
     # removed, so `pure` is hardcoded. Both generate LLM substeps (the CodegenBundle producer and
-    # the verdict reviewer) go through the pure path when `_pure_leaf_substep` matches (claude
-    # backend ∧ M3c node); a non-M3c or codex node runs the shared agentic leaf loop as a recorded
-    # residual, NOT as a selectable executor. The `--generate-executor` flag and
+    # the verdict reviewer) go through the pure path when `_pure_leaf_substep` matches — the node
+    # having a `CodegenBundle` SHAPE, on EITHER backend (the "claude backend ∧ M3c node"
+    # condition this comment used to state stopped being true when codex joined the pure path).
+    # A node with no shape used to fall through to the shared agentic leaf loop; Z4 (issue #171)
+    # deleted that loop, and the pair now fails closed (`node_has_no_bundle_shape`). The `--generate-executor` flag and
     # ATMOFAB_GENERATE_EXECUTOR env were deleted; a cold run that still passes the flag fails at
     # argparse. On RESUME the recorded executor is recovered below and a non-`pure` record is
     # rejected fail-closed (`generate_executor_legacy_removed`) — legacy runs cannot be resumed.

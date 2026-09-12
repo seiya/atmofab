@@ -2,8 +2,11 @@
 #
 # This file is a reference format showing, in a minimal 2-step form, the `algorithm:`
 # section part of the spec.ir.yaml that the Compile phase outputs. It shows the
-# structure required by the `workflow-compile-generate` / `workflow-compile-verify`
-# skills (and the validate_pipeline_semantics --stage compile gate).
+# structure required by the `Compile` phase contract
+# (`docs/workflow/phases/phase_01_compile.md`) and the
+# `validate_pipeline_semantics --stage compile` gate. The host inlines THIS FILE, whole, into
+# both pure compile prompts, so a leaf reading this line is reading it in its own prompt: it
+# named two `SKILL`s until Z4 (issue #171) deleted them, and no leaf reads a `SKILL`.
 #
 # This file is written as an excerpt of only the algorithm section; in an actual
 # spec.ir.yaml, place this block as the value of the `algorithm:` key, alongside

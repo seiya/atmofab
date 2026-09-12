@@ -27,7 +27,7 @@ The core workflow is five phases. Each phase produces exactly one kind of primar
 
 From `Generate` onward, `spec.ir.yaml` is the sole generation and verification contract; reading `controlled_spec.md` is forbidden except at `Generate.verify`, which reads it as a secondary requirement-fidelity cross-check.
 
-Each phase runs an ordered substep sequence. An `LLM` substep runs as one isolated leaf; a deterministic substep runs in the conductor's own process. Every `LLM` substep is now `pure-function leaf` CAPABLE — the host inlines a closed context, the model returns one JSON document, and the host validates and writes it. Since issue #169 every `LLM` substep of every node in the spec catalog actually takes it: the `infrastructure` harness self-test, which authors its own runner, was the last node whose `Generate.generate` and `Generate.verify` ran the shared agentic leaf, and bundle `1.1.0`'s `runner` role gave it a bundle shape of its own. A node with no bundle shape at all would still run those two agentic; the catalog holds none.
+Each phase runs an ordered substep sequence, and there are exactly two launch shapes. An `LLM` substep runs as one `pure-function leaf`: the host inlines a closed context into the prompt, the model returns one JSON document, and the host validates and writes it — the leaf holds no tools, no shell and no write authority. A deterministic substep runs in the conductor's own process. Since Z4 ([issue #171](https://github.com/seiya/atmofab/issues/171)) there is no third shape: the agentic leaf, which ran in the checkout with tools and a hook layer around it, is retired, and a node with no bundle shape now fails closed rather than falling back to one.
 
 | phase | substeps | `LLM` substeps |
 |---|---|---|
@@ -107,10 +107,9 @@ The driver prints the run's event stream on stdout (`--stdout-format human`, or 
 ```text
 docs/         workflow contracts, phase specifications, runbook, glossary
 spec/         source specs (problem / component / profile / infrastructure) and the registry
-skills/       per-phase execution procedures (SKILL.md) for the agentic leaves
+skills/       execution procedures (SKILL.md) for the flows an operator runs
 tools/        workflow driver, conductor, orchestration runtime, gates, validators, tests
 mcp_servers/  MCP build/runtime server and client configuration examples
-leaf_config/  the committed configuration a workflow leaf is launched with
 .claude/      the operator's own interactive session: settings, and the development skills
 releases/     the component registry, and the promoted official artifacts of the Promote flow (none yet)
 workspace/    trial artifacts
@@ -179,7 +178,7 @@ and `tools/tests/suite_env_guard.py` are canonical.
 | `docs/WORKFLOW.md` | workflow entry point; `docs/workflow/WORKFLOW_CORE.md` and `docs/workflow/phases/` hold the contracts |
 | `docs/SPEC.md` | overall policy, `spec` management requirements, registry requirements |
 | `docs/RUNBOOK.md` | operational procedure, preflight, recovery |
-| `docs/ORCHESTRATION.md` | orchestration design and contract; `docs/AGENT_CONTRACT.md` holds the child-agent contract |
+| `docs/ORCHESTRATION.md` | orchestration design and contract, including the `pure-function leaf` every LLM substep runs as |
 | `docs/AGENT_SKILLS.md` | phase-to-`SKILL` mapping |
 | `docs/GLOSSARY.md` | canonical terminology and artifact definitions |
 | `docs/BACKEND_BOUNDARY.md` | where knowledge of a concrete target-stack technology may live, and which `axis` selects it |

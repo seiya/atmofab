@@ -15,10 +15,10 @@
 > document and cannot know the node. It is the acceptance layer's argument
 > (`tools/codegen_bundle.py:pure_bundle_contract_violation`, `shape`), resolved by the twin
 > readers `Conductor._bundle_shape` / `validate_pipeline_semantics._ir_bundle_shape`. A node
-> with neither shape produces no bundle and runs the residual agentic `Generate.generate`
-> leaf, which writes the sources directly as described in
-> `docs/workflow/phases/phase_02_generate.md` together with `CHECKS_MODULE_CONTRACT.md`; no
-> such node is in the catalog.
+> with neither shape has no pure path and FAILS CLOSED: `Conductor.run_substep` emits
+> `node_has_no_bundle_shape` and returns `fail`. It ran the shared agentic `Generate.generate`
+> leaf until Z4 ([issue #171](https://github.com/seiya/atmofab/issues/171)) deleted that leaf;
+> no such node is in the catalog, so the fall-back was never taken in tree.
 >
 > This document is the canonical contract for the bundle document itself; the schema
 > (`spec/schema/generate/codegen_bundle.schema.json`) and the validator module
@@ -548,9 +548,13 @@ counterpart to compare it against, because that renderer assumes the fixed model
 set. For a bundle of the `M3c` shape (one member, `model` + `checks`, a
 dependency closure, host-rendered runner glue), the derived object order equals the
 object order of the IR-shaped Makefile the conductor renders via `_write_makefile`
-(dependency objects → model → checks → runner). `_write_makefile` remains the live
-Makefile author for Model B dependency closures and for a residual agentic leaf, so it
-is not dead code. That equality is what the parity test pins: it compares
+(dependency objects → model → checks → runner). `_write_makefile` is the Makefile author for Model B
+dependency closures. Its reachability narrowed in Z4 (issue #171) and the accounting is
+worth stating: its sole call site is guarded by `not self._pure_leaf_substep(refs,
+"generate", "generate")`, so it now runs only for a node with no bundle shape — the shape
+`run_substep` then fails closed. It is kept because the parity test below is what pins the
+derived object order against it, and because narrowing a renderer's reachability is not
+the same claim as it being dead (`atmofab-enforcement-change` rule 1-b). That equality is what the parity test pins: it compares
 `derive_build_graph(...)["link"]["objects"]` against the object list parsed out of the
 `_write_makefile`-authored Makefile. Under `Z2` a pure `M3c` node renders its Makefile
 from this derived graph (`_render_pure_makefile_from_graph`) while `_write_makefile` is

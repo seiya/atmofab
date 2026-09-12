@@ -504,7 +504,16 @@ PINNED: dict[str, str] = {
     # now a `<repair_scope>` SLOT, rendered only for `PURE_VERDICT_PAIRS`, and states the
     # invariant in both directions: either half may be the one to change, and what is forbidden
     # is the dishonest edit rather than a particular field.
-    "pure-42": "602fa500871274d19ea2704e6a6083530f15b576b4f155d6d0afd6361b047c80",}
+    "pure-42": "602fa500871274d19ea2704e6a6083530f15b576b4f155d6d0afd6361b047c80",
+    # issue #171 (Z4) round 3: `docs/workflow/RUNNER_OUTPUT_CONTRACT.md` — inlined WHOLE into the
+    # `harness` producer's prompt and sliced into the judge's — cited the deleted
+    # `generate-generate` SKILL. A round-3 disclosure review found it: the fourth inlined surface
+    # still naming a transport this branch removed, and the one three hand-sweeps missed because
+    # each grepped a different spelling. The citation is deleted, so the leaf's prompt changed by
+    # one clause and the version moves with it. Nothing else in the pinned surface moved — the
+    # other round-3 document edits are outside it (`phase_01_compile.md` is excluded by design,
+    # and the `phase_02_generate.md` lines are outside the severity-rubric slice).
+    "pure-43": "3d863920debf1e3e1767e1a6a952c88a64e80ff6e5450b20a9192307094a79f5",}
 
 
 def _contract_tuple() -> dict[str, object]:
@@ -608,8 +617,9 @@ class PurePromptContractDriftTests(unittest.TestCase):
             "  (2) UNINTENTIONAL drift: revert the edit to the pinned surface "
             f"({len(_TEMPLATE_FILES)} pure_*.txt templates, "
             "PURE_REPAIR_STATIC_PARAGRAPH_PREFIXES, the "
-            "language backend runner's checks-ABI constants, or an inlined document slice — "
-            "CHECKS_MODULE_CONTRACT.md §1-4, phase_02_generate.md's severity rubric)."
+            "language backend runner's checks-ABI constants, or an inlined document — "
+            "CHECKS_MODULE_CONTRACT.md §1-4, phase_02_generate.md's severity rubric, "
+            "RUNNER_OUTPUT_CONTRACT.md §1+§3 AND the whole of that file)."
         )
         self.assertIn(
             PURE_PROMPT_CONTRACT_VERSION, PINNED,

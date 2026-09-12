@@ -179,26 +179,27 @@ class HttpPureLeafWiringTests(_HttpServeMixin, unittest.TestCase):
         self.assertTrue((base / "src" / f"{_SPEC_ID}_model.f90").exists())
         self.assertTrue((base / "src" / "Makefile").exists())
 
-    def test_the_pure_loop_resolves_its_resume_as_a_pure_launch(self) -> None:
-        """The pure loop must tell the resume resolver which home its launch uses.
+    def test_the_pure_loop_resolves_its_resume_through_the_one_resolver(self) -> None:
+        """The pure loop asks the resolver for its warm-resume target rather than deciding.
 
-        A pure leaf is given no private `CLAUDE_CONFIG_DIR`, so its transcript is
-        written to — and served from — the operator's `~/.claude`. If this call site
-        says `pure=False`, the resolver looks in the orchestration's private home,
-        finds nothing, and every pure reuse repair silently goes cold, re-inlining
-        `pure_context` on the branch's most expensive substep. Measured: that
-        mutation survived a pin placed on the resolver alone, so it is asserted here
-        at the CALL SITE, on the value that actually arrives.
+        It used to have to tell the resolver WHICH HOME its launch would use: an agentic leaf
+        read the orchestration's private `CLAUDE_CONFIG_DIR` and a pure one the operator's
+        `~/.claude`, and a call site saying `pure=False` sent the resolver looking in a home
+        that never held the transcript — every pure reuse repair silently going cold,
+        re-inlining `pure_context` on the branch's most expensive substep. That mutation
+        survived a pin placed on the resolver alone, which is why it is asserted at the CALL
+        SITE. Z4 (issue #171) deleted the private home with the agentic leaf, so there is one
+        home, no argument, and what is left to pin here is the call itself.
         """
         self._serve([json.dumps(_valid_bundle())])
         c = self._conductor()
-        seen: list[bool] = []
+        seen: list = []
         c._resolve_reuse_resume = (  # type: ignore[assignment]
-            lambda repair, phase, substep, pure=False: seen.append(pure))
+            lambda repair, phase, substep: seen.append((phase, substep)) or None)
         c._run_pure_generate_substep(
             self.refs, "generate", "generate",
             {"repair_strategy": "reuse", "repair_target_agent_run_id": "child-1"}, ())
-        self.assertEqual(seen, [True])
+        self.assertEqual(seen, [("generate", "generate")])
 
     def test_the_provenance_names_the_http_provider_and_its_resolved_model(self) -> None:
         self._serve([json.dumps(_valid_bundle())])
@@ -494,21 +495,29 @@ class HttpPureLeafWiringTests(_HttpServeMixin, unittest.TestCase):
         outcome = c.run_substep(self.refs, "generate", "generate")
         self.assertEqual(outcome.status, "fail")
         assert outcome.infra_error is not None
-        self.assertEqual(outcome.infra_error[0], "pure_only_provider_on_agentic_path")
+        self.assertEqual(outcome.infra_error[0], "node_has_no_bundle_shape")
         self.assertIn("no CodegenBundle shape", outcome.infra_error[1])
         self.assertNotIn("M3c", outcome.infra_error[1])
         # ...and it names BOTH inputs the predicate reads. A round-3 reviewer caught the first
         # replacement sending an operator to the IR alone, when the node_key can decide.
         self.assertIn("node_key", outcome.infra_error[1])
 
-    def test_an_agentic_provider_on_a_shapeless_node_is_untouched(self) -> None:
+    def test_a_cli_provider_on_a_shapeless_node_fails_closed_the_same_way(self) -> None:
+        """The refusal is about the NODE, not about the provider.
+
+        It used to be about both: a shapeless node fell through to the agentic loop, so an
+        HTTP entry (which could not run it) was refused there while a CLI entry sailed past.
+        Z4 (issue #171) removed the loop, so the refusal is the node's alone and every
+        provider meets it — which is what this row, the sibling of the one above, asserts."""
         c = _HttpConductor(
             repo_root=self.repo, orchestration_id="o", orchestration_agent_run_id="orch",
             env={KEY_ENV: "sk-test"}, llm_config=_cfg("claude", agent_model="opus"))
         c._conductor_authors_makefile = lambda refs: False   # type: ignore[assignment]
         self.assertFalse(c._pure_leaf_substep(self.refs, "generate", "generate"))
-        entry = c.entry_for("generate", "generate")
-        self.assertTrue(entry.supports(lc.CAP_AGENTIC))      # so the guard does not fire
+        outcome = c.run_substep(self.refs, "generate", "generate")
+        self.assertEqual(outcome.status, "fail")
+        assert outcome.infra_error is not None
+        self.assertEqual(outcome.infra_error[0], "node_has_no_bundle_shape")
 
     # --- the mixed configuration itself ----------------------------------------------
 

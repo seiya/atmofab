@@ -574,9 +574,11 @@ class ProseCouplingTests(unittest.TestCase):
         ("docs/workflow/phases/phase_02_generate.md",
          "- `static lint` is NOT run by the `Generate.generate` leaf.", 12,
          "- **The `Generate.gate` static check traces the dependency dataflow"),
-        ("skills/workflow-generate-generate/SKILL.md",
-         "- **Write source that passes `static lint` AND the compiler syntax gate", 1,
-         "- The `verification_status` of `source_meta.json` presumes `fail_closed`"),
+        # `skills/workflow-generate-generate/SKILL.md` was a regioned site until Z4 (issue
+        # #171) deleted it with the agentic leaf. The producer that replaced it reads
+        # `tools/prompt_templates/pure_generate_generate.txt`, already a row below, and the
+        # `harness` shape's producer template states the same contract by inlining
+        # `CHECKS_MODULE_CONTRACT.md` §5 — also a row below. No site is lost.
         # Three lines, not one: the template's lint contract is rules (1)-(3), and line 7
         # already named a rule code OUTSIDE the one-line region — the same shape as the round-2
         # defect, one file over, found by the round-3 attack axis.
@@ -599,10 +601,16 @@ class ProseCouplingTests(unittest.TestCase):
     #: and inlined for some producers. The round-3 census found the abolished idiom taught in
     #: exactly such a file, outside the four this class watched. The regioned rows stay on the
     #: four sites that STATE the rule; the whole-file row below covers everything a leaf reads.
+    # Z4 (issue #171): `skills/workflow-generate-verify/SKILL.md` is deleted with the agentic
+    # leaf and the two reviewer templates take its place, so they are listed here — a template
+    # reaches a leaf before anything else does, which is the whole reason this row is wider than
+    # the regioned ones. `docs/AGENT_CONTRACT.md` is deleted in the same change and leaves the
+    # list with no replacement: it was the every-leaf force-read, and no leaf force-reads.
     _LEAF_READ_FILES = tuple(path for path, _a, _l, _o in _SITES) + (
-        "docs/AGENT_CONTRACT.md",
         "docs/workflow/RUNNER_OUTPUT_CONTRACT.md",
-        "skills/workflow-generate-verify/SKILL.md",
+        "tools/prompt_templates/pure_generate_verify.txt",
+        "tools/prompt_templates/pure_generate_verify_harness.txt",
+        "tools/prompt_templates/pure_generate_generate_harness.txt",
         "spec/component/dynamics/shallow_water/"
         "dynamics_shallow_water_time_update_2d_ssprk2/controlled_spec.md",
     )

@@ -35,7 +35,6 @@ import tools.raw_evidence_excerpt as rex
 import tools.orchestration_runtime as ort
 import tools.workflow_conductor as wc
 from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION
-from tools.tests.llm_samples import agentic_only_config as _agentic_cfg
 from tools.tests.llm_samples import sample_config as _cfg
 from tools.tests.test_pure_leaf_producer import (
     _conductor,
@@ -605,57 +604,19 @@ class PostJudgeReclassificationTests(_Fixture):
         """
         unknown = "workspace/pipelines/p/runs/r/n/diagnostics.json: missing key"
         self.assertEqual(wc.classify_post_judge_violations([unknown]), "unknown")
-        for label, config in (("pure", _cfg("claude")), ("agentic", _agentic_cfg("claude"))):
-            with self.subTest(transport=label):
-                self.assertEqual(self._disposition(config, violation=unknown), "escalate")
+        self.assertEqual(self._disposition(_cfg("claude"), violation=unknown), "escalate")
 
-    def test_a_review_violation_terminalizes_on_either_transport(self) -> None:
+    def test_a_review_violation_terminalizes(self) -> None:
         """`recoverable` used to mean "the judge wrote it wrong, so re-run the judge". That
         premise was already false for a PURE judge — the HOST wrote the file, so the re-run
-        emits the identical one — and since issue #176 nothing re-runs either transport's
-        judge, so both record `fail_closed`. Two configs, one expectation: a reclassification
-        reintroduced on one side only would separate them again."""
+        emits the identical one — and since issue #176 nothing re-runs the judge at all, so it
+        records `fail_closed`.
+
+        This row drove TWO configurations, because a reclassification reintroduced on one
+        transport only would have separated them. There is one transport since Z4 (issue
+        #171), and the premise that made the reclassification right is now unconditional: the
+        host writes `semantic_review.json` for every judge there is."""
         self.assertEqual(self._disposition(_cfg("claude")), "fail_closed")
-        self.assertEqual(self._disposition(_agentic_cfg("claude")), "fail_closed")
-
-
-class PureJudgeFreshnessTests(_Fixture):
-    """The defensive branch of `determine_substep_status`. Unreachable through the live path —
-    the pure substep computes its own status and returns early — and it must not be left to
-    the generic tail, where a pure judge's EMPTY `allowed_output_paths` is vacuously fresh."""
-
-    def _status(self, min_mtime: float) -> str:
-        c = self.conductor()
-        return c.determine_substep_status(
-            self.refs, "validate", "judge", [], min_mtime=min_mtime)[0]
-
-    def _seed(self, *, decision: str = "pass", result: str = "pass") -> None:
-        self.run_node("semantic_review.json").write_text(
-            json.dumps({"decision": decision}), encoding="utf-8")
-        self.run_node("judge_meta.json").write_text(
-            json.dumps({"result": result}), encoding="utf-8")
-
-    def test_a_fresh_pass_passes(self) -> None:
-        self._seed()
-        self.assertEqual(self._status(0.0), "pass")
-
-    def test_a_stale_review_cannot_certify(self) -> None:
-        self._seed()
-        stale = self.run_node("semantic_review.json").stat().st_mtime + 100.0
-        self.assertEqual(self._status(stale), "fail")
-
-    def test_a_fail_decision_fails(self) -> None:
-        self._seed(decision="fail")
-        self.assertEqual(self._status(0.0), "fail")
-
-    def test_no_judge_meta_fails(self) -> None:
-        self._seed()
-        self.run_node("judge_meta.json").unlink()
-        self.assertEqual(self._status(0.0), "fail")
-
-    def test_an_exhausted_judge_meta_fails_even_beside_a_passing_review(self) -> None:
-        self._seed(result="fail")
-        self.assertEqual(self._status(0.0), "fail")
 
 
 class ConductorConstantIsNotAFieldTests(unittest.TestCase):
@@ -678,11 +639,7 @@ class PureJudgeTableTests(unittest.TestCase):
     """The tables that decide the judge is pure, each read where it is defined."""
 
     def test_the_judge_is_pure_capable(self) -> None:
-        self.assertIn(("validate", "judge"), lc.PURE_CAPABLE_SUBSTEPS)
-
-    def test_every_llm_leaf_is_now_pure_capable(self) -> None:
-        # Issue #169's completion criterion, in the module that holds both tables.
-        self.assertEqual(lc.LLM_LEAF_SUBSTEPS, lc.PURE_CAPABLE_SUBSTEPS)
+        self.assertIn(("validate", "judge"), lc.LLM_LEAF_SUBSTEPS)
 
     def test_the_template_states_the_cap_the_validator_enforces(self) -> None:
         """A dual-read pair, and the reason it is worth a row: the leaf is told a number by the
@@ -701,16 +658,6 @@ class PureJudgeTableTests(unittest.TestCase):
         self.assertIn(("validate", "judge"), ort.PURE_CONTEXT_REQUIRED_KEYS)
         self.assertEqual(ort._PROMPT_TEMPLATE_FILES["pure validate.judge"],
                          "pure_validate_judge.txt")
-
-    def test_a_capability_restricted_entry_keeps_the_judge_agentic(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            refs = _write_run_node(repo)
-            c = wc.Conductor(repo_root=repo, orchestration_id="o",
-                             orchestration_agent_run_id="orch",
-                             llm_config=_agentic_cfg("claude"), env={})
-            self.assertFalse(c._pure_leaf_substep(refs, "validate", "judge"))
-
 
 if __name__ == "__main__":
     unittest.main()

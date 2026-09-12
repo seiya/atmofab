@@ -1,33 +1,31 @@
 #!/usr/bin/env python3
 """The two hook policies that are not about a leaf.
 
-Everything else in `tools/hooks/` decides what a WORKFLOW LEAF may do, and is gated on
-the environment a leaf runs under. These two are not: they refuse a command that
-destroys the operator's own checkout, or that turns a verify gate off, whoever issued
-it.
+They refuse a command that destroys the operator's own checkout, or that turns a verify
+gate off, whoever issued it. Until Z4 (issue #171) they were the only policies in
+`tools/hooks/` with that audience — everything else there decided what a WORKFLOW LEAF
+may do and was gated on the environment a leaf runs under. Those went with the agentic
+leaf; these two did not, because their subject is the operator's machine.
 
-They live here, alone, so the DEV entrypoint (`tools/hooks/dev_cli.py`) can apply them
-WITHOUT importing `tools/hooks/cli.py` or `tools/hooks/common.py` (issue #102). That
-import boundary is the point of this module, not tidiness: the operator's interactive
-session runs the working-tree copy of its hook, so a defect in the leaf-facing modules
-would otherwise refuse the operator out of the very session they are editing in. It has
-happened once (2026-08-26), and only stdlib imports belong here.
+They live in a module of their own so the DEV entrypoint (`tools/hooks/dev_cli.py`) can
+apply them without importing anything heavier (issue #102). That import boundary is the
+point of this module, not tidiness: the operator's interactive session runs the
+working-tree copy of its hook, so a defect in a module it imports would otherwise refuse
+the operator out of the very session they are editing in. It has happened once
+(2026-08-26), and only stdlib imports belong here.
 
-The rule text is defined ONCE, here. `tools/hooks/common.py::evaluate_common_policy`
-wraps these into a `HookDecision` for the leaf path; `dev_cli` encodes them itself.
+The rule text is defined ONCE, here; `dev_cli` encodes the decision itself.
 
 **Known over-refusal, and it fires in ordinary use.** The match is a substring of the
 whole command, so a command that merely CONTAINS the text is refused too — a commit
 message that quotes the rule, a heredoc that writes documentation about it, a grep for
 it. Measured 2026-08-26: the commit that introduced this module was refused by it. The
-leaf path has blanking machinery (`_strip_quoted_strings`, heredoc blanking in
-`common.py`) but **does not apply it to these two policies either** — measured end to
-end through `tools/hooks/cli.py` with an orchestration_id present: a quoted echo and a
-heredoc body both reach rc 2. So this is not a cost the dev entrypoint pays for its
-import boundary; it is one rule matching raw text on both paths, and the earlier version
-of this paragraph claimed a benefit that does not exist. It stands because the failure
-direction is refusal rather than a missed one and the operator can rephrase — narrowing
-it would weaken the leaf path by the same edit.
+leaf path had blanking machinery (`_strip_quoted_strings`, heredoc blanking) and was
+measured NOT to apply it to these two policies either — a quoted echo and a heredoc body
+both reached rc 2 there — so this was never a cost the dev entrypoint paid for its import
+boundary; it is one rule matching raw text. That leaf path is deleted (Z4, issue #171)
+and this is now the only path. It stands because the failure direction is refusal rather
+than a missed one and the operator can rephrase.
 """
 
 from __future__ import annotations

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import ast
 import io
+import re
 import json
 import os
 import subprocess
@@ -20,9 +21,6 @@ from pathlib import Path
 from unittest.mock import patch
 
 from tools.hooks import dev_cli
-from tools.hooks.adapters.claude import ClaudeHookAdapter
-from tools.hooks.adapters.codex import CodexHookAdapter
-from tools.hooks.common import HookDecision, HookDecisionAction, HookEventName
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -168,32 +166,33 @@ class DevCliRefusesASleepBasedWait(unittest.TestCase):
         assert violation is not None
         self.assertEqual(violation[1]["policy"], "forbid_sleep_wait_in_agent_session")
 
-    def test_the_leaf_path_does_not_carry_this_rule(self) -> None:
+    def test_this_rule_is_stated_only_on_the_dev_layer(self) -> None:
         """DEV-ONLY, and that is a decision rather than an omission.
 
         A leaf that sleeps wastes its own budget and gets no closer to reporting its task done,
-        which `AGENTS.md` §Development premises puts out of the defended set. Pinned by reading
-        the leaf-facing sources, so importing it there fails here rather than silently widening
-        a leaf policy."""
-        # The TRANSITIVE closure, not the two obvious files: a reviewer's leak into
-        # `tools/hooks/adapters/claude.py` — one hop from `cli.py` — left this row green.
-        for module in sorted(_leaf_reachable_modules()):
-            self.assertNotIn(
-                "dev_session_hygiene", module,
-                f"{module} is reachable from the LEAF entrypoint and names the DEV-only rule "
-                f"module; that widens a leaf policy with a rule a leaf gains nothing from")
-        rel_paths = [Path(*m.split(".")).with_suffix(".py") for m in _leaf_reachable_modules()]
-        read = 0
-        for rel in rel_paths:
-            path = REPO_ROOT / rel
-            if not path.exists():
-                path = REPO_ROOT / Path(*rel.with_suffix("").parts) / "__init__.py"
-            if not path.exists():
-                continue
-            read += 1
-            self.assertNotIn("dev_session_hygiene", path.read_text(encoding="utf-8"), str(rel))
-        self.assertGreaterEqual(read, 4, "the leaf closure collapsed to almost nothing; a walk "
-                                         "that reads no files cannot notice a leak")
+        which `AGENTS.md` §Development premises puts out of the defended set.
+
+        Until Z4 (issue #171) this was pinned by walking the LEAF hook entrypoint's transitive
+        `tools.hooks.*` closure and requiring the module's name to be absent from it — a walk
+        written after a reviewer's leak into `tools/hooks/adapters/claude.py`, one hop from
+        `cli.py`, left an earlier two-file version green. There is no leaf entrypoint any more,
+        so the closure is empty and the walk cannot answer: it would pass by reading nothing,
+        which is the vacuity its own `assertGreaterEqual(read, 4)` floor existed to refuse.
+
+        What replaces it is the property a reader actually needs, and the only one still
+        checkable: the module is named `dev_`, nothing outside the DEV entrypoint's own import
+        set reaches it, and `tools/` carries exactly one importer of it. A leaf-side leak would
+        have to add a second importer, which this row names.
+        """
+        importers = sorted(
+            str(path.relative_to(REPO_ROOT))
+            for path in REPO_ROOT.joinpath("tools").rglob("*.py")
+            if path.name != "dev_session_hygiene.py"
+            and not str(path.relative_to(REPO_ROOT)).startswith("tools/tests/")
+            and "dev_session_hygiene" in path.read_text(encoding="utf-8")
+        )
+        self.assertEqual(importers, ["tools/hooks/dev_cli.py"])
+        self.assertIn("tools.hooks.dev_session_hygiene", _dev_cli_repo_imports())
 
 
 class DevCliReadsTheCodexPayloadShape(unittest.TestCase):
@@ -243,7 +242,7 @@ class DevCliRefusesNothingElse(unittest.TestCase):
         cases = [
             ("claude", "PreToolUse", "echo hello"),
             ("claude", "PreToolUse", "cat ~/.claude.json"),      # a LEAF policy
-            ("claude", "PreToolUse", "cat tools/hooks/cli.py"),  # a LEAF policy
+            ("claude", "PreToolUse", "cat tools/orchestration_runtime.py"),
             ("claude", "PreToolUse", ""),
             ("claude", "PreToolUse", None),
             ("claude", "PreToolUse", {"nested": "shape"}),
@@ -266,35 +265,45 @@ class DevCliRefusesNothingElse(unittest.TestCase):
                 self.assertEqual(code, 0, msg=(out.getvalue(), err.getvalue()))
 
 
-class DevCliEncodingMatchesTheAdapters(unittest.TestCase):
-    """`dev_cli` re-implements the BLOCK encodings rather than importing the adapters
-    (that import is what the module's boundary forbids). This is the coupling that
-    keeps the copy honest: the real adapters are asked for the same decision and the
-    bytes are compared."""
+class DevCliBlockEncodingIsTheWireShape(unittest.TestCase):
+    """The bytes each CLI must receive to actually refuse the command.
 
-    REASON = "blocked by common hook policy: git reset --hard is forbidden"
+    Until Z4 (issue #171) this class compared `dev_cli._encode_block` against the LEAF hook's
+    adapters, which were the second implementation. Those went with the leaf hook layer, so
+    there is nothing left to agree with, and the encoding is pinned as what it always really
+    was: a claim about the two vendors' hook protocols. The literals are therefore the SUBJECT
+    of this class, not a transcription of another module's output.
 
-    def _decision(self) -> HookDecision:
-        return HookDecision(
-            action=HookDecisionAction.BLOCK, reason=self.REASON, continue_processing=False)
+    Getting one wrong is silent in the worst way — the hook exits, the operator's command runs,
+    and nothing anywhere says the refusal did not happen. Hence the exit code is pinned beside
+    the body in each row: for `PermissionRequest` codex consumes the structured decision and a
+    `2` would report the hook as FAILED and may discard it, while for the pre-command events
+    the `2` is what makes the refusal binding.
+    """
 
-    def test_claude_pre_tool_use_block_is_byte_identical(self) -> None:
-        want = ClaudeHookAdapter().encode_decision(
-            self._decision(), event_name=HookEventName.PRE_COMMAND_EXECUTE)
-        got = dev_cli._encode_block("claude", "pretooluse", self.REASON)
-        self.assertEqual(got, want)
+    REASON = 'blocked by common hook policy: git reset --hard is forbidden'
 
-    def test_codex_pre_tool_use_block_is_byte_identical(self) -> None:
-        want = CodexHookAdapter().encode_decision(
-            self._decision(), event_name=HookEventName.PRE_COMMAND_EXECUTE)
-        got = dev_cli._encode_block("codex", "pre_tool_use", self.REASON)
-        self.assertEqual(got, want)
+    def test_claude_pre_tool_use_block(self) -> None:
+        code, body = dev_cli._encode_block("claude", "pretooluse", self.REASON)
+        self.assertEqual(code, 2)
+        self.assertEqual(json.loads(body),
+                         {"decision": "block", "reason": self.REASON})
 
-    def test_codex_permission_request_deny_is_byte_identical(self) -> None:
-        want = CodexHookAdapter().encode_decision(
-            self._decision(), event_name=HookEventName.PERMISSION_REQUEST)
-        got = dev_cli._encode_block("codex", "permission_request", self.REASON)
-        self.assertEqual(got, want)
+    def test_codex_pre_tool_use_block_carries_continue_processing(self) -> None:
+        code, body = dev_cli._encode_block("codex", "pre_tool_use", self.REASON)
+        self.assertEqual(code, 2)
+        self.assertEqual(json.loads(body),
+                         {"decision": "block", "reason": self.REASON,
+                          "continue_processing": False})
+
+    def test_codex_permission_request_deny_exits_zero(self) -> None:
+        code, body = dev_cli._encode_block("codex", "permission_request", self.REASON)
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(body), {
+            "hookSpecificOutput": {
+                "hookEventName": "PermissionRequest",
+                "decision": {"behavior": "deny", "message": self.REASON},
+            }})
 
 
 class DevCliWrapperCommandsExecute(unittest.TestCase):
@@ -371,45 +380,6 @@ class DevCliWrapperCommandsExecute(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, msg=(rel, event, proc.stderr))
 
 
-def _leaf_reachable_modules() -> set[str]:
-    """The TRANSITIVE `tools.hooks.*` closure of the LEAF entrypoint, read from source.
-
-    Two files were not enough. A reviewer appended the dev-only rule module's import to
-    `tools/hooks/adapters/claude.py` — which `tools/hooks/cli.py` imports — and the whole file
-    stayed green: the leak was one hop away from the pair being read, so the module was still
-    classified dev-only and the "leaf path does not carry this rule" row still passed. A leak INTO
-    `cli.py` was killed; a leak one module deeper was not.
-
-    So the closure is walked. Source, not `sys.modules`: another test may already have imported
-    something, which would answer for the wrong reason.
-    """
-    seen: set[str] = set()
-    queue = ["tools.hooks.cli"]
-    while queue:
-        module = queue.pop()
-        if module in seen:
-            continue
-        seen.add(module)
-        rel = Path(*module.split("."))
-        for candidate in (REPO_ROOT / rel.with_suffix(".py"),
-                          REPO_ROOT / rel / "__init__.py"):
-            if not candidate.exists():
-                continue
-            tree = ast.parse(candidate.read_text(encoding="utf-8"))
-            for node in ast.walk(tree):
-                if isinstance(node, ast.Import):
-                    queue.extend(a.name for a in node.names
-                                 if a.name.startswith("tools.hooks"))
-                elif isinstance(node, ast.ImportFrom) and node.module and (
-                        node.module.startswith("tools.hooks")):
-                    queue.append(node.module)
-                    # `from tools.hooks.adapters import ClaudeHookAdapter` — the name may be a
-                    # SUBMODULE rather than an attribute, so follow both readings.
-                    queue.extend(f"{node.module}.{a.name}" for a in node.names)
-            break
-    return seen
-
-
 def _dev_cli_repo_imports() -> set[str]:
     """The `tools.` modules the DEV entrypoint imports, read from its SOURCE.
 
@@ -433,8 +403,13 @@ class DevCliImportBoundary(unittest.TestCase):
     import-observing check pass for the wrong reason.
     """
 
-    FORBIDDEN = ("tools.hooks.cli", "tools.hooks.common", "tools.hooks.adapters",
-                 "tools.orchestration_runtime")
+    # `tools.hooks.cli`, `tools.hooks.common` and `tools.hooks.adapters` stood here until Z4
+    # (issue #171). The first and third no longer exist, and `common` is now a handful of
+    # host-side helpers rather than the leaf hook's body — what the rule is about is that the
+    # DEV entrypoint imports nothing heavy enough to fail on a half-applied edit, and the
+    # set-equality assertion below states that exactly. This tuple keeps the one name whose
+    # import would be the expensive mistake.
+    FORBIDDEN = ("tools.orchestration_runtime",)
 
     def test_dev_cli_imports_only_stdlib_and_its_rule_modules(self) -> None:
         tree = ast.parse((REPO_ROOT / "tools" / "hooks" / "dev_cli.py").read_text(
@@ -460,34 +435,28 @@ class DevCliImportBoundary(unittest.TestCase):
     def test_a_dev_only_rule_module_is_named_dev_something(self) -> None:
         """The naming convention, checked rather than remembered.
 
-        `dev_cli.py` already carried the prefix; the second dev-only module did not until it was
-        renamed, and by then five files spelled the old name. The rule is derivable, so it is
-        derived: a module the DEV entrypoint imports and the LEAF entrypoint does not is dev-only
-        and must say so in its name. A module BOTH import (`operator_safety`) must not, because
-        the prefix would then be a lie about its audience — that half is what makes this a check
-        and not a substring rule.
+        The rule was derived by DIFFERENCE while there were two entrypoints: a module the DEV
+        entrypoint imports and the LEAF entrypoint does not is dev-only and must say so in its
+        name, and one BOTH import must not, because the prefix would then be a lie about its
+        audience. Z4 (issue #171) removed the leaf entrypoint, so the difference is no longer
+        computable and the shared side no longer exists to check.
 
-        Read from source on both sides for the same reason the boundary rows do: another test may
-        already have imported something, which would answer for the wrong reason."""
-        leaf_imports = _leaf_reachable_modules()
-        dev_only = _dev_cli_repo_imports() - leaf_imports
-        shared = _dev_cli_repo_imports() & leaf_imports
-        self.assertTrue(dev_only, "the DEV entrypoint has no module of its own any more; if that "
-                                  "is deliberate, delete this row and say why")
-        for module in sorted(dev_only):
-            name = module.rsplit(".", 1)[-1]
-            self.assertTrue(
-                name.startswith("dev_"),
-                f"{module} is imported by tools/hooks/dev_cli.py and by no leaf entrypoint, so it "
-                f"is DEV-ONLY and its file name must start with `dev_` (see docs/HOOKS.md). "
-                f"Rename it, or — if it is meant to be shared — import it from the leaf path too.")
-        for module in sorted(shared):
-            name = module.rsplit(".", 1)[-1]
-            self.assertFalse(
-                name.startswith("dev_"),
-                f"{module} is imported by BOTH entrypoints, so a `dev_` prefix misstates its "
-                f"audience: a reader would take a rule that also binds a leaf for one that does "
-                f"not.")
+        What is checked instead is the pair the convention now covers, named explicitly because
+        nothing derives it any more: `dev_session_hygiene` is DEV-only and carries the prefix,
+        `operator_safety` is deliberately applied from both the DEV hook and (while a leaf hook
+        existed) the leaf one, and must not. Adding a third rule module fails the equality.
+        """
+        self.assertEqual(
+            _dev_cli_repo_imports(),
+            {"tools.hooks.operator_safety", "tools.hooks.dev_session_hygiene"},
+            "a rule module was added or removed; decide whether it is DEV-only and give it "
+            "(or withhold from it) the `dev_` prefix, then update this row")
+        self.assertTrue(
+            Path("tools/hooks/dev_session_hygiene.py").name.startswith("dev_"))
+        self.assertFalse(
+            Path("tools/hooks/operator_safety.py").name.startswith("dev_"),
+            "operator_safety binds more than the DEV session, so a `dev_` prefix would "
+            "misstate its audience")
 
     def test_the_rule_modules_import_only_stdlib(self) -> None:
         """Every module `dev_cli` imports carries the same obligation, or the boundary is
@@ -506,10 +475,15 @@ class DevCliImportBoundary(unittest.TestCase):
                     imported.add(node.module)
             self.assertEqual({n for n in imported if n.startswith("tools.")}, set(), module)
 
-    def test_dev_cli_runs_with_the_leaf_entrypoint_unimportable(self) -> None:
-        """The property the boundary buys, executed rather than argued: with
-        `tools/hooks/cli.py` replaced by a file that raises on import, the dev hook
-        still answers. This is the shape that locked a session out on 2026-08-26."""
+    def test_dev_cli_runs_with_the_rest_of_tools_unimportable(self) -> None:
+        """The property the boundary buys, executed rather than argued: with the rest of
+        `tools/` replaced by files that raise on import, the dev hook still answers. This is
+        the shape that locked a session out on 2026-08-26.
+
+        The stand-ins used to be `tools/hooks/cli.py` and `tools/hooks/common.py` — the leaf
+        entrypoint and its body. The first is gone (Z4, issue #171) and the second is no longer
+        leaf-facing, so the file planted here is `tools/orchestration_runtime.py`, the one name
+        `FORBIDDEN` still carries and the one whose import would actually be expensive."""
         import shutil
         import tempfile
         with tempfile.TemporaryDirectory() as tmp:
@@ -528,7 +502,7 @@ class DevCliImportBoundary(unittest.TestCase):
                 # `tools/` is a namespace package here - no `__init__.py` on disk.
                 if (REPO_ROOT / rel).exists():
                     shutil.copy(REPO_ROOT / rel, fake / rel)
-            (fake / "tools" / "hooks" / "cli.py").write_text(
+            (fake / "tools" / "orchestration_runtime.py").write_text(
                 "raise RuntimeError('half-applied edit')\n", encoding="utf-8")
             (fake / "tools" / "hooks" / "common.py").write_text(
                 "raise RuntimeError('half-applied edit')\n", encoding="utf-8")
@@ -545,3 +519,67 @@ class DevCliImportBoundary(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DevMatcherActuallyMatchesTheToolThatCarriesACommand(unittest.TestCase):
+    """Every committed DEV hook entry matches the tool whose calls it has to judge.
+
+    FOUND BY THE ROUND-1 REVIEW of issue #171, as a claim with no check behind it:
+    `docs/HOOKS.md` says the dev layer's entries are "pinned by test rather than read by eye",
+    and nothing read a matcher. The reviewer set `.claude/settings.json`'s only matcher to
+    `ZzNeverMatches` and all three test files that even open that file stayed green — which
+    makes both operator rules (the hard-reset refusal and the sleep-based-wait refusal)
+    silently inert, the one failure mode a matcher has.
+
+    WHY A FULL MATCH. `docs/HOOKS.md` records the measurement: a Claude `matcher` is a regular
+    expression matched in FULL against the tool name, so `Bash` matches and a prefix of a
+    longer name does not. Applying `re.fullmatch` here is that rule, not a guess about it.
+
+    BOUNDED to the tools that carry a COMMAND, because a command is the only thing either dev
+    rule reads. A file tool is out of scope for this layer by design — the operator owns their
+    own checkout.
+    """
+
+    #: Tool names each backend's command-carrying events arrive under. Claude sends `Bash`;
+    #: codex sends its shell under several spellings and `apply_patch` for a patch program.
+    _MUST_MATCH = {
+        ".claude/settings.json": ("Bash",),
+        ".codex/hooks.json": ("Bash", "Shell", "shell", "apply_patch"),
+    }
+
+    def test_every_dev_entry_matches_its_backend_command_tool(self) -> None:
+        seen_files = set()
+        for rel, names in self._MUST_MATCH.items():
+            doc = json.loads((REPO_ROOT / rel).read_text(encoding="utf-8"))
+            events = doc.get("hooks") or {}
+            self.assertTrue(events, f"{rel} declares no hooks at all")
+            for event, blocks in events.items():
+                if "PreToolUse" not in event and "PermissionRequest" not in event:
+                    continue
+                for block in blocks:
+                    matcher = block.get("matcher")
+                    self.assertIsInstance(matcher, str, f"{rel}:{event} has no matcher")
+                    seen_files.add(rel)
+                    for name in names:
+                        with self.subTest(file=rel, event=event, tool=name):
+                            self.assertTrue(
+                                re.fullmatch(matcher, name),
+                                f"{rel}:{event} matcher {matcher!r} does not match the tool "
+                                f"{name!r}, so this hook never fires for it and both operator "
+                                f"rules are silently inert for that call")
+        self.assertEqual(set(seen_files), set(self._MUST_MATCH),
+                         "a committed dev file declares no command-carrying event")
+
+    def test_the_reader_sees_a_matcher_that_matches_nothing(self) -> None:
+        """The self-test: the row above must be capable of failing.
+
+        An emptiness check that reads the wrong field passes whatever the file says, and this
+        is the shape the reviewer's mutation took — so the refusal is driven here on a
+        synthetic matcher rather than trusted.
+        """
+        for matcher in ("ZzNeverMatches", "^Write$", "Bas"):
+            with self.subTest(matcher=matcher):
+                self.assertIsNone(re.fullmatch(matcher, "Bash"))
+        # ... and the committed spellings DO match, so the row is not vacuous either.
+        self.assertTrue(re.fullmatch("Bash", "Bash"))
+        self.assertTrue(re.fullmatch("^(Bash|bash|Shell|shell|apply_patch|ApplyPatch)$", "Bash"))

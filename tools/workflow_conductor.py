@@ -26,7 +26,6 @@ real, working request.json artifacts in tools/tests/test_workflow_conductor.py.
 from __future__ import annotations
 
 import codecs
-import hashlib
 import json
 import locale
 import queue
@@ -49,8 +48,6 @@ import yaml
 
 from tools.backends import registry as backend_registry
 from tools.llm_config import (
-    CAP_AGENTIC,
-    CAP_PURE,
     CAP_USAGE_PROBE,
     CAP_WARM_RESUME,
     LlmConfig,
@@ -70,15 +67,15 @@ def _provider_command_base(entry: ResolvedLeafEntry) -> list[str]:
     """The argv prefix a CLI leaf is launched through: the entry's configured wrapper command
     (with any flags) if it has one, else the bare backend binary name.
 
-    ONE definition, because FOUR places have to agree about it or they certify/probe/confine a
-    different executable than the leaf runs: `leaf_command`, `_ensure_codex_feature_cache`
-    (which certifies the codex hooks feature of that binary), `record_launch`'s
+    ONE definition, because THREE places have to agree about it or they probe/confine a
+    different executable than the leaf runs: `leaf_command`, `record_launch`'s
     `backend_command` (which decides the CLI binary the sandbox profile binds, so it is the
-    one that CONFINES rather than probes), and the host-side `/usage` probe. The count was
-    written as three and listed four for a while, one of them the read-only diagnostician's
-    in-process bwrap profile, which issue #169 deleted — that leaf's profile is the runtime's
-    now, built from this same `backend_command`, which is why the third entry matters more
-    since #169 rather than less."""
+    one that CONFINES rather than probes), and the host-side `/usage` probe. A fourth,
+    `_ensure_codex_feature_cache`, certified the codex hooks feature of that binary and went
+    with the leaf hook layer in Z4 (issue #171). The count has been wrong here before — written
+    as three while four were listed, one of them the read-only diagnostician's in-process bwrap
+    profile, which issue #169 deleted (that leaf's profile is the runtime's now, built from this
+    same `backend_command`). Re-count the list when you change it; nothing compares the two."""
     base = shlex.split(entry.command) if entry.command.strip() else []
     return base or [entry.backend_token]
 
@@ -191,10 +188,12 @@ SUBSTEPS: dict[str, tuple[str | None, ...]] = {
     #     non-physics integrity blocker -> fail_closed (no judge has run).
     #   - execute    (Conductor._execute_inproc):    unchanged binary run + evidence capture.
     #   - judge      (LLM leaf):                      a semantic pass holding neither a gate
-    #     nor an MCP grant (ALLOWED_VALIDATE_PIPELINE_STAGES[(validate,judge)] == frozenset()).
-    #     Since Z3 (issue #169) it holds no TOOLS either — it is a pure leaf in the Z2 sense,
-    #     which is a different and stronger claim than the "pure semantic pass" this comment
-    #     used to make, and the reason that older phrase is gone from these three lines.
+    #     nor an MCP grant. Since Z3 (issue #169) it holds no TOOLS either — it is a pure
+    #     leaf, which is a different and stronger claim than the "pure semantic pass" this
+    #     comment used to make, and the reason that older phrase is gone from these three
+    #     lines. Z4 (issue #171) made it the only claim there is to make: no leaf holds a
+    #     tool, and the per-substep gate-allowlist map this line used to cite is deleted
+    #     with the agentic prompt it constrained.
     #   - post_judge (Conductor._post_judge_inproc):  runs `validate_pipeline_semantics
     #     --stage pre_judge` (the gate the judge leaf used to own) and CLASSIFIES the
     #     violation severity. Both graded classes — leaf/judge-authored conformance and
@@ -1045,9 +1044,10 @@ def _checks_contract_gate_guards_section(text: str) -> str:
     of any `Generate` node — naming the model, the checks module, and the hand-authored runner
     of an `infrastructure` node's self-test — and it carries the rules of the deterministic
     `Generate.gate` lint and syntax checkers, which are this REPOSITORY's rule set rather than
-    the language's. The agentic leaf received it as a force-read must-read
-    (`orchestration_runtime.leaf_contract_doc_refs`, whose docstring names this very leaf as the
-    reason not to gate that injection on the node's shape). A pure leaf force-reads nothing, so
+    the language's. The agentic leaf received it as a force-read must-read, from a
+    selector whose docstring named this very leaf as the reason not to gate that injection on
+    the node's shape (`orchestration_runtime.leaf_contract_doc_refs`, deleted with the force-read
+    set in Z4 — issue #171). A pure leaf force-reads nothing, so
     making that leaf pure (issue #169) cut the only carrier those rules had — found by a
     round-3 disclosure review that rendered the prompt and looked for them. Inlining the section
     is also what keeps the rules out of a `neutral core` template
@@ -1443,16 +1443,12 @@ class NodeRefs:
 # NOTE: `launch_prompt_full` is intentionally OMITTED so record-launch renders the
 # canonical prompt and returns it as `launch_prompt_text` (tools/prompt_templates/).
 
-# The contract docs every LLM leaf force-reads are derived by the single canonical
-# policy `orchestration_runtime.leaf_contract_doc_refs(step)` (imported lazily where
-# the must-read is assembled). record-launch's `_workflow_contract_refs_for_launch`
-# calls the same helper, so the two must-read assembly paths cannot drift. The
-# node-specific spec artifacts (which only the conductor knows) are appended per-step
-# below. Canonical rationale: docs/design/leaf_must_read_restructure.md.
-
-
-def _skill_name(step: str, substep: str | None) -> str:
-    return f"workflow-{step}" if substep is None else f"workflow-{step}-{substep}"
+# NO leaf force-reads a document. Until Z4 (issue #171) a launch carried a `skill_ref` and a
+# `skill_must_read_refs` list, and the agentic leaf was required to read both before acting;
+# the pure leaf, which is now the only one, is HANDED its whole context inlined in the prompt
+# and reads nothing from disk. The three skill fields survive only as the explicit empties a
+# pure request declares (below), which is what the launch validator checks.
+# Canonical rationale for what they used to be: docs/design/leaf_must_read_restructure.md.
 
 
 def build_launch_request(
@@ -1493,10 +1489,9 @@ def build_launch_request(
     judge skip the filesystem lookup. They never gate (pure module function, no FS access).
     """
     spec = refs.spec_path
-    skill = _skill_name(step, substep)
     role = child_agent_role(step)
     # Build, Validate.execute and Generate.gate run in-process (no leaf), so they carry no
-    # skill / leaf prompt — only the bookkeeping the capability/phase_state need.
+    # leaf prompt — only the bookkeeping the capability/phase_state need.
     from tools.orchestration_runtime import DIAGNOSE_SUBSTEP
     # The escalate diagnostician. It belongs to a phase (`step` names the phase that failed,
     # and the payload keeps that phase's ids so `_validate_launch_request_payload` is
@@ -1547,27 +1542,16 @@ def build_launch_request(
     }
     if deterministic:
         req["deterministic"] = True
-    else:
-        req["skill_name"] = skill
-        req["skill_ref"] = f"skills/{skill}/SKILL.md"
     if substep is not None:
         req["substep"] = substep
     if runner_host_authored:
-        # M3c physics node (runner host-rendered). Stamp it into the payload so the
-        # record-launch security-boundary path (`_payload_is_m3c_physics`) derives the
-        # SAME physics-narrowed contract-doc set as this conductor path — no drift.
+        # M3c physics node (runner host-rendered). The stamp existed so record-launch's
+        # security-boundary path derived the SAME physics-narrowed contract-doc set as this
+        # conductor path — no drift. That reader (`_payload_is_m3c_physics`) and the whole
+        # contract-doc set went with the agentic leaf in Z4 (issue #171); the stamp is kept as
+        # recorded provenance of what the host rendered, and `_host_authored_render_flags`
+        # carries the accounting of its one remaining oddity.
         req["runner_host_authored"] = True
-
-    # Base leaf must-read = its SKILL + the contract docs from the single canonical
-    # policy (AGENT_CONTRACT for every leaf; phase_01 for Compile; runner-output
-    # contract for Validate.judge and for a NON-M3c runner-authoring Generate leaf;
-    # M3c physics Generate drops it — see leaf_contract_doc_refs). The same helper is
-    # used by record-launch, so the two assembly paths cannot drift. The node-specific
-    # spec artifacts are appended per-step below.
-    from tools.orchestration_runtime import leaf_contract_doc_refs
-    must_read: list[str] = ([] if deterministic
-                            else [f"skills/{skill}/SKILL.md",
-                                  *leaf_contract_doc_refs(step, is_m3c_physics=runner_host_authored)])
 
     if step == "compile":
         req["dependency_ref"] = f"{spec}/deps.yaml"
@@ -1588,25 +1572,6 @@ def build_launch_request(
             # `dependency_graph.json` is a must-read for GENERATE only, and it is not optional:
             # since issue #175 the node's direct dependency set is the sidecar's
             # `all_nodes − self − transitive_deps`, NOT the `deps.yaml` declaration (a `profile`
-            # entry there is not a node), and the per-case `inputs.profile_selection` is
-            # transcribed from the sidecar's `profiles[]`. Both problem specs in this tree now
-            # declare `components: []`, so an agentic producer handed only the four documents
-            # below has no source anywhere in its required set for either fact and fails
-            # `_validate_compile_dependency_consistency` / `_validate_profile_selection` on
-            # every attempt. The PURE producer is unaffected — the host inlines the same file
-            # as `dependency_graph_document` — which is exactly why the omission was invisible:
-            # the SKILL was corrected to say "read it THERE" without the launch being changed
-            # to deliver it (`atmofab-enforcement-change` surface 12, in reverse).
-            # Verify does NOT get it: `_build_pure_compile_verify_context` inlines no graph
-            # either, and the reviewer is told the dependency cross-check is the gate's.
-            must_read += [
-                f"{refs.ir_ref}/spec.ir.yaml" if substep == "verify" else None,
-                f"{refs.ir_ref}/dependency_graph.json" if substep == "generate" else None,
-                f"{spec}/controlled_spec.md",
-                f"{spec}/tests.md",
-                f"{spec}/deps.yaml",
-            ]
-            must_read = [m for m in must_read if m]
             if substep == "verify":
                 # Compile.verify authors NOTHING in spec.ir.yaml — all 5 sections (incl.
                 # io_contract) are authored by Compile.generate and the deterministic
@@ -1645,18 +1610,6 @@ def build_launch_request(
         if diagnose:
             pass
         elif substep == "generate":
-            # Contract docs come from leaf_contract_doc_refs above (node-aware: an M3c
-            # physics leaf gets the checks ABI and no runner-output contract; a non-M3c
-            # runner-authoring leaf keeps it). Here only node-specific spec artifacts.
-            must_read += [
-                f"{refs.ir_ref}/spec.ir.yaml",
-                # controlled_spec.md is intentionally NOT must-read here: phase_02
-                # §2-1 forbids Generate.generate from taking controlled_spec.md as
-                # input (re-introducing controlled_spec-derived info is a fail), so
-                # the requirement composition is read from spec.ir.yaml.algorithm.
-                # tests.md stays (used for case_id coverage).
-                f"{spec}/tests.md",
-            ]
             # lineage.json is authored host-side by the conductor (_write_lineage), not by
             # the leaf — it sits at the pipeline root which must stay non-writable to the
             # sandboxed leaf. So it is NOT in the leaf's allowed_output_paths.
@@ -1681,13 +1634,6 @@ def build_launch_request(
                 f"{src}/src/command_log.jsonl",
             ]
         else:  # verify
-            must_read += [
-                f"{refs.ir_ref}/spec.ir.yaml",
-                f"{src}/source_meta.json",
-                f"{spec}/controlled_spec.md",
-                f"{spec}/tests.md",
-                f"{refs.pipeline_ref}/lineage.json",
-            ]
             # Verify's SOLE write is source_meta.json (verification_status): it inspects the
             # producer sources (model / runner|checks / Makefile) but never rewrites them — a
             # fail requests regeneration under a NEW source_id (SKILL workflow-generate-verify
@@ -1705,10 +1651,6 @@ def build_launch_request(
         req["binary_id"] = refs.binary_id
         req["dependency_ref"] = refs.pipeline_ref
         if not diagnose:
-            must_read += [
-                f"{refs.ir_ref}/spec.ir.yaml",
-                f"{refs.source_dir()}/source_meta.json",
-            ]
             bdir = refs.binary_dir()
             # The binary basename is the Makefile's BIN (resolved by the conductor and passed
             # in); fall back to the <spec_id>_runner name when unknown (e.g. unit fixtures).
@@ -1742,11 +1684,6 @@ def build_launch_request(
         elif substep == "execute":
             req["source_id"] = refs.source_id
             req["source_binary_id"] = refs.source_binary_id
-            must_read += [
-                f"{refs.ir_ref}/spec.ir.yaml",
-                f"{refs.source_dir()}/source_meta.json",
-                f"{refs.binary_dir(refs.source_binary_id)}/binary_meta.json",
-            ]
             outs = [
                 f"{rundir}/command_log.jsonl",
                 f"{rundir}/diagnostics.json",
@@ -1774,12 +1711,6 @@ def build_launch_request(
             ]
             req["allowed_output_paths"] = outs
         elif substep == "judge":
-            must_read += [
-                f"{refs.ir_ref}/spec.ir.yaml",
-                f"{refs.source_dir()}/source_meta.json",
-                f"{refs.binary_dir()}/binary_meta.json",
-                f"{spec}/tests.md",
-            ]
             # R2: the judge authors ONLY semantic_review.json. verdict.json (per_test +
             # failure_class) is now deterministically host-authored at execute from the IR
             # predicates + diagnostics.json; the deterministically-derivable aggregate_verdict /
@@ -1791,9 +1722,6 @@ def build_launch_request(
     else:  # pragma: no cover - guarded by SUBSTEPS keys
         raise ValueError(f"unknown step: {step}")
 
-    # Deterministic steps have no leaf, so no skill_must_read_refs (the conductor reads
-    # what it needs in-process; the read_manifest is irrelevant for them).
-    req["skill_must_read_refs"] = "" if deterministic else ",".join(must_read)
     # Orientation-only dependency facts for the LLM leaves that benefit (generate's
     # semantic authoring, validate.judge's dependency-PASS review). Deterministic phases
     # (build / validate.execute) render the minimal prompt and never read them, so they
@@ -1830,21 +1758,18 @@ def build_launch_request(
     # rely on the findings text (which the slim renderer fences as untrusted data anyway).
     # Slim warm-resume repair turn: when the conductor has decided the producer session is
     # resumable (warm_resume) AND this is a reuse repair carrying findings, mark the request
-    # so the runtime renders the findings-only slim prompt and empty the must-read (the
-    # resumed leaf already read them). Emptied in BOTH assembly paths (here +
-    # prepare_launch_request_payload) or the launch-integrity validator rejects the prompt.
+    # so the runtime renders the findings-only slim prompt.
     if (warm_resume and not deterministic
             and rep.get("repair_strategy") == "reuse"
             and str(rep.get("repair_findings", "")).strip()):
         req["warm_resume"] = True
-        req["skill_must_read_refs"] = ""
     # Z2 pure-function producer variant (M-C): the leaf is a host-mediated pure function with no
     # write authority, so it carries `leaf_mode=pure`, the exact transport contract version, the
     # host-assembled `pure_context` (each inlined document a data-fenced string), and EMPTY
     # write/skill fields. `allowed_output_paths` is forced empty (the host writes files[] + the
     # bundle + the Makefile AFTER the child window closes — see run_substep's pure branch), and
-    # the three skill fields are emptied (no SKILL is read). Applied LAST so it overrides the
-    # generate branch's leaf-authored output set. On a warm-resume repair the resumed session
+    # the three skill fields are declared empty (no SKILL exists to read). Applied LAST so it
+    # overrides the generate branch's leaf-authored output set. On a warm-resume repair the session
     # already holds the context, so pure_context is omitted (the validator exempts it for a
     # warm+reuse+findings request); a cold launch/fallback carries it.
     if pure_leaf:
@@ -1890,43 +1815,19 @@ def build_launch_request(
 # leaves actually run.
 LEAF_MAX_OUTPUT_TOKENS = 128000
 
-# The tools an agentic claude leaf is launched WITH are an ALLOWLIST (issue #71),
-# `orchestration_runtime.CLAUDE_LEAF_TOOLS`, derived there from the PreToolUse hook's
-# matcher coverage and imported lazily at the emission site below. It is deliberately
-# NOT restated here: two spellings of one set is the drift this repository keeps
-# paying for, and the value is a fact about the read boundary, which
-# `orchestration_runtime` owns.
+# A claude leaf is launched with `--tools ""` (`pure_leaf.pure_leaf_flags`): no tool at all.
+# The `--tools <allowlist>` of issue #71, and the `--mcp-config .mcp.json` that gave an agentic
+# leaf a build-runtime server set, both went with the agentic leaf in Z4 (issue #171). What
+# remains that reads the argv is `_launch_setting_surface`, which records the tool VALUES.
 #
-# It replaces the `--disallowedTools Task,WebFetch,WebSearch,NotebookEdit` denylist that
-# stood here from issue #42 decision 3 until issue #71 — a denylist over a roster the
-# vendor grows, which by CLI 2.1.238 left fifteen hook-unjudged built-ins in a leaf's
-# hands (measured; the rationale and the measurement live next to the constant).
-# Comma-joined single value: the CLI documents `--tools <tools...>` in the same
-# "comma or space-separated" variadic form the denylist used, so the PLACEMENT RULE
-# below applies to it unchanged. Pure leaves pass `--tools ""` and take none of this.
-
-# The ONLY MCP configuration an agentic claude leaf is launched with, paired with
-# `--strict-mcp-config` (which makes this file the whole server set instead of an
-# addition to whatever the ambient configuration resolves to). Spelled repo-relative
-# because the leaf always starts with the repository as its working directory: the
-# unsandboxed spawn passes `cwd=self.repo_root` (`spawn_leaf`), and under mandatory
-# bwrap the wrapper is rendered with `--chdir <repo_root>` over a read-only bind of
-# the same tree (`render_bwrap_command`), so the relative path resolves to the
-# committed file in both.
-#
-# PLACEMENT RULE for this and the other variadic flags on this argv
-# (`--mcp-config <configs...>`, `--tools <tools...>`): a variadic flag keeps
-# consuming tokens until one starts with `-`, so each of their values must be followed
-# by an OPTION token. Here `--mcp-config`'s value is followed by
-# `--disable-slash-commands` and `--tools`'s by `--output-format`.
-# MEASURED (CLI 2.1.234), because the obvious guess is wrong in the safe direction:
+# PLACEMENT RULE for the variadic flags on this argv (`--tools <tools...>`): a variadic flag
+# keeps consuming tokens until one starts with `-`, so its value must be followed by an OPTION
+# token. MEASURED (CLI 2.1.234), because the obvious guess is wrong in the safe direction:
 # `claude --mcp-config <file> -p` does NOT swallow the `-p` — it is a `-` token, so it
 # terminates the list and is parsed as `--print`. A SHORT option therefore terminates a
-# variadic just as a long one does, and the trailing `-p` is safe even directly after a
-# variadic value. What is genuinely unsafe is a bare word: a positional prompt restored
-# after `--tools` would be eaten by the list, which is one more reason the
-# prompt rides stdin.
-CLAUDE_LEAF_MCP_CONFIG = ".mcp.json"
+# variadic just as a long one does, and a trailing `-p` is safe even directly after a variadic
+# value. What is genuinely unsafe is a bare word: a positional prompt restored after `--tools`
+# would be eaten by the list, which is one more reason the prompt rides stdin.
 
 
 def _variadic_values(argv: list[str], flag: str) -> list[str]:
@@ -1956,21 +1857,6 @@ def _variadic_values(argv: list[str], flag: str) -> list[str]:
             out.append(value)
     return out
 
-
-def _effective_option_value(argv: list[str], flag: str) -> str | None:
-    """The value an OVERRIDING (non-accumulating) option actually takes on `argv`: the LAST
-    occurrence's, or None if the flag is absent.
-
-    Last, not first — measured on 2.1.234: `--setting-sources user --setting-sources
-    nonsense` is rejected for `nonsense` while `--setting-sources nonsense
-    --setting-sources user` runs, so the trailing occurrence is the one in force. The
-    conductor appends its own after any the entry's `command:` prefix carries, so reading
-    the first would record a value that was never in effect."""
-    value: str | None = None
-    for i, token in enumerate(argv):
-        if token == flag and i + 1 < len(argv):
-            value = argv[i + 1]
-    return value
 
 # How long a leaf gets to exit on SIGTERM before the group is SIGKILLed, and how long
 # the whole teardown may take. Both are bounded on purpose: this runs on the driver's
@@ -2814,9 +2700,11 @@ class ProcResult:
     #     model's answer channel cannot be redacted in the value itself: the validators parse
     #     it, and a key that is a common substring would corrupt a legitimate document (a real
     #     defect, measured). The validators read `stdout`, the artifact gets this.
-    #   - an AGENTIC claude leaf's envelope is lifted at the capture boundary
-    #     (`_unwrap_agentic_envelope`), so `stdout` is the model's text while this keeps the
-    #     whole envelope — the accounting blocks included — for `dialogs/leaf.stdout.log`.
+    #   - it also served an AGENTIC claude leaf, whose envelope was lifted at the capture
+    #     boundary (`_unwrap_agentic_envelope`, deleted in Z4 — issue #171) so that `stdout`
+    #     was the model's text while this kept the whole envelope for
+    #     `dialogs/leaf.stdout.log`. A pure claude leaf's stdout IS the envelope and is never
+    #     lifted, so that user is gone and only the HTTP one above is live.
     persist_stdout: str | None = None
     # An HTTP provider reported its own answer cut off at the output-token ceiling
     # (`finish_reason == "length"` / `stop_reason == "max_tokens"`). Authoritative, so the pure
@@ -2838,15 +2726,6 @@ _MODEL_USAGE_KEYS: dict[str, str] = {
     "cacheReadInputTokens": "cache_read_input_tokens",
     "cacheCreationInputTokens": "cache_creation_input_tokens",
 }
-
-
-def _parse_leaf_envelope(stdout: Any) -> Any:
-    """`pure_leaf.parse_result_envelope`, imported lazily like every other use of that module.
-
-    One wrapper so every consumer of a leaf's envelope parses it with the same reader.
-    """
-    from tools.pure_leaf import parse_result_envelope
-    return parse_result_envelope(stdout)
 
 
 def _envelope_usage_totals(envelope: Any) -> tuple[dict[str, Any], bool]:
@@ -2892,126 +2771,6 @@ def _envelope_usage_totals(envelope: Any) -> tuple[dict[str, Any], bool]:
     return (usage if isinstance(usage, dict) else {}), False
 
 
-def _is_cli_result_envelope(raw: Any) -> bool:
-    """True when this JSON object is the CLI's own result envelope, not a model document.
-
-    Keyed on `type: "result"`, which the CLI stamps in the envelope factory (it is on every
-    recorded envelope) and which no leaf answer this repository has recorded carries.
-    """
-    return isinstance(raw, dict) and raw.get("type") == "result"
-
-
-def _envelope_leaf_text(envelope: Any, fallback: str) -> str:
-    r"""The line-oriented text a result envelope carries, for the diagnostic consumers.
-
-    The CLI writes TWO envelope families, and only one of them has an answer to lift:
-
-    - `subtype: "success"` carries the model's reply in `result`;
-    - the error families (`error_during_execution`, `error_max_turns`, `error_max_budget_usd`,
-      `error_max_structured_output_retries`) carry NO `result` at all — they carry `errors`,
-      a list of strings, alongside `subtype` and `terminal_reason`.
-
-    An error envelope is exactly the case the diagnostic consumers exist for, so leaving it
-    unlifted would hand the classifier and the failure summary a one-line JSON document in
-    the one situation where the message matters: the recorded `result_summary` would be the
-    envelope's trailing accounting block, and `_classify_leaf_infra_error`'s line-anchored
-    patterns would see nothing. So its `errors` are rendered ONE PER LINE, with the subtype
-    on a line of its own.
-
-    The subtype's own line is load-bearing, not formatting. Three of the classifier's
-    patterns are start-anchored (`^\s*overloaded\s*$`, the `^\s*api error\b` catch-all, and
-    the usage-limit lead-in), so prefixing the first error with `<subtype>: ` puts every one
-    of them out of reach — measured: `Overloaded` tags `llm_overloaded`,
-    `error_during_execution: Overloaded` tags nothing. A lost tag is a retryable death that
-    fails the run closed, or a quota stop that never arms `--wait-usage-reset`.
-
-    The two variants are DISJOINT — a `success` envelope has no `errors` key and an error one
-    has no `result` key — so a string `result` is always the whole answer, empty included.
-    The CLI writes `result: ""` on its deferred-tool and zero-turn paths; that is an empty
-    answer, and returning it empty is what the text-mode launch did. Falling back to the raw
-    envelope there would put the accounting block in front of the classifier and the failure
-    summary, which is what this function exists to prevent.
-
-    Anything else — a `result` that is not a string, an unrecognised variant — keeps the raw
-    stdout: an envelope this reader does not model must not cost the evidence it contains.
-    """
-    if isinstance(envelope.result, str):
-        return envelope.result
-    raw = envelope.raw if isinstance(envelope.raw, dict) else {}
-    errors = [line for line in (raw.get("errors") or []) if isinstance(line, str) and line.strip()]
-    if not errors:
-        return fallback
-    subtype = raw.get("subtype")
-    head = [subtype.strip()] if isinstance(subtype, str) and subtype.strip() else []
-    return "\n".join(head + errors)
-
-
-def _unwrap_agentic_envelope(proc: ProcResult, entry: ResolvedLeafEntry, *,
-                             pure: bool) -> ProcResult:
-    """Lift an AGENTIC claude leaf's answer back out of its `--output-format json` envelope.
-
-    The leaf is launched with that flag so its cost and resolved model are readable from its
-    own stdout (issue #47) — but `stdout` is ALSO the repository's diagnostic channel, and
-    several consumers were written against the model's plain text and quietly stop working on
-    a one-line JSON document:
-
-    - `escalate` parses the diagnostician's routing directive with `_last_json_object`, which
-      would return the ENVELOPE rather than the directive inside `result` — every escalation
-      routing `fail_closed` as unparsable;
-    - `_classify_leaf_infra_error` matches LINE BY LINE, and most of its patterns are anchored
-      to the start or the end of a line. Inside a single-line envelope an `Overloaded` or a
-      `Premature close` matches nothing, so a retryable death loses its tag and terminalizes
-      instead of being re-launched;
-    - `_LEAF_RETRY_NOTICE_RE` skips a whole line, so one `retrying` anywhere in the envelope —
-      including inside the model's own `result` prose — would suppress classification entirely;
-    - the evidence excerpt and `_leaf_failure_summary` would quote the envelope's accounting
-      block instead of the message.
-
-    So the envelope is unwrapped HERE, once, at the capture boundary: everything downstream
-    sees exactly the text it saw before, and the envelope's numbers ride the `ProcResult`
-    fields that exist for them. The raw envelope is still what gets PERSISTED (`persist_stdout`
-    → `dialogs/leaf.stdout.log`), so nothing is lost from the record.
-
-    A pure leaf is deliberately untouched: its loops parse the envelope themselves and read
-    `is_error` / `parse_error` off it, which is the contract that makes a malformed pure reply
-    repairable rather than silently empty.
-
-    The residual: an envelope this reader cannot parse is returned UNCHANGED rather than
-    blanked, so those consumers see a JSON fragment. Reaching that state needs a capture cut
-    at `LEAF_RAW_STDOUT_CAPTURE_MAX_CHARS`, or a kill landing inside the CLI's single
-    terminal write — a leaf killed at the per-leaf cap writes nothing at all (measured, under
-    both output formats: `--output-format json` emits one result at exit, and the text form
-    buffers to the end too), which is why its stdout is empty rather than partial. Keeping
-    the fragment is the lesser loss: it is the only evidence of what the leaf was doing.
-    """
-    if pure or entry.provider != "claude_cli" or not isinstance(proc.stdout, str):
-        return proc
-    envelope = _parse_leaf_envelope(proc.stdout)
-    # `parsed` means "stdout was a JSON object", which is NOT the same as "the CLI wrote it".
-    # `type: "result"` is CLI-authored and present on every one of the 140 JSON-object leaf
-    # stdout logs recorded in this repository that is an envelope (136 of them; the other 4
-    # are pure leaves' own bundle documents). Gating on it keeps this from lifting a `result`
-    # key out of a document the MODEL wrote — reachable if an operator's configured
-    # `command:` wrapper does not emit the envelope, in which case stdout is the model's own
-    # answer and unwrapping it would silently replace the answer with one of its fields.
-    # Same trust rule as `_cli_abort_envelope_result`, which gates on the CLI's own keys.
-    if not envelope.parsed or not _is_cli_result_envelope(envelope.raw):
-        return proc
-    raw = envelope.raw if isinstance(envelope.raw, dict) else {}
-    totals, covers_every_model = _envelope_usage_totals(raw)
-    usage = normalize_leaf_usage(
-        totals, source=LEAF_USAGE_SOURCE_ENVELOPE,
-        cost_usd=raw.get("total_cost_usd") if covers_every_model else None)
-    model = envelope.model.strip() if isinstance(envelope.model, str) else ""
-    return replace(
-        proc,
-        stdout=_envelope_leaf_text(envelope, proc.stdout),
-        persist_stdout=proc.stdout if proc.persist_stdout is None else proc.persist_stdout,
-        usage=usage if usage is not None else proc.usage,
-        model=model or proc.model,
-    )
-
-
 def _leaf_usage_row(
     proc: ProcResult,
     entry: ResolvedLeafEntry,
@@ -3038,8 +2797,7 @@ def _leaf_usage_row(
     (issue #47).
 
     `envelope` is the parsed result envelope when the CALLER holds one — the two pure loops
-    parse it themselves. An agentic claude leaf's envelope was already consumed at the capture
-    boundary (`_unwrap_agentic_envelope`), so its numbers arrive on `proc.usage`.
+    parse it themselves, which since Z4 (issue #171) is every claude leaf there is.
     """
     if deterministic:
         return leaf_usage_not_measured(
@@ -3547,9 +3305,9 @@ def _cli_abort_envelope_result(line: str) -> str | None:
     `_sole_content_usage_limit_line`), because only there is the stdout still a CLI-authored
     envelope when it arrives: the recorded incidents show one shape per launch
     mode — a bare abort line for the agentic launches (5 of 6) and, for the one PURE launch, the
-    same message carried in `result`. (Since issue #47 an agentic claude leaf is launched with the
-    flag too, but `_unwrap_agentic_envelope` lifts its answer out at the capture boundary, so the
-    bare shape is still what this side sees.)
+    same message carried in `result`. Both launch modes existed when that sweep was taken; only
+    the pure one does now (Z4, issue #171), which makes the `result` shape the live one and the
+    bare shape the historical majority of the corpus.
 
         {"type":"result","is_error":true,"api_error_status":429,...,
          "result":"You've hit your session limit · resets 12:30pm (Asia/Tokyo)",
@@ -3613,9 +3371,10 @@ def _sole_content_usage_limit_line(stdout: str, *, allow_envelope: bool) -> str 
     alone and stayed inert for the pure loops, the same bug one layer in. The direction this code
     RELIES on is `envelope => the CLI authored this stdout`, which holds by construction: the
     callers pass `allow_envelope` only for a `claude_cli` PURE launch. A codex or HTTP pure leaf
-    writes the model's own answer to stdout, and an agentic claude leaf's envelope was lifted at
-    the capture boundary (`_unwrap_agentic_envelope`) — in both cases a JSON line here is
-    model-written and its keys prove nothing. The converse is not assumed — a pure launch may
+    writes the model's own answer to stdout, so a JSON line there is model-written and its keys
+    prove nothing. (The third case this used to name — an agentic claude leaf, whose envelope
+    was lifted at the capture boundary by `_unwrap_agentic_envelope` — went with that leaf in
+    Z4, issue #171.) The converse is not assumed — a pure launch may
     still abort bare, and the bare path accepts it. Every count in this docstring and the two
     below comes from ONE sweep of the recorded workspaces (2026-07-24, 711 leaf stdout logs);
     in it an envelope appears iff the launch was pure, with zero exceptions. The corpus has
@@ -4079,10 +3838,10 @@ def _classify_leaf_infra_error(stderr: str, stdout: str = "") -> tuple[str, str]
     message, not one the run went on to survive.
 
     `stderr` is authoritative: stdout carries the leaf's OWN TEXT — the model's answer for a
-    codex or HTTP leaf, and for an AGENTIC claude leaf the `result` string
-    `_unwrap_agentic_envelope` lifted out of its envelope (a PURE claude leaf's stdout is
-    still the envelope itself, which is why the line-anchored patterns find nothing in it) —
-    which may well discuss "the rate-limiting step" of a numerical scheme, so a stdout match may override a
+    codex or HTTP leaf, while a claude leaf's stdout is the CLI envelope itself, which is why
+    the line-anchored patterns find nothing in it. (A third shape existed until Z4, issue #171:
+    an AGENTIC claude leaf's stdout was the `result` string `_unwrap_agentic_envelope` had
+    lifted out of that envelope.) The leaf's own text may well discuss "the rate-limiting step" of a numerical scheme, so a stdout match may override a
     stderr match only for a tag in _CROSS_STREAM_PROMOTING_TAGS. Otherwise stdout is consulted
     solely when stderr named nothing — which is the common case, since the CLI reports an
     infrastructure failure as its result text (the E2E #4 incident had an empty stderr).
@@ -4182,10 +3941,13 @@ def _host_authored_m3c(refs: NodeRefs) -> tuple[bool, bool]:
     `runner_host_authored=True` for a node whose runner the host does not author.
 
     That is unchanged from before this was a function — both loops wrote the same literal — and
-    it is inert: the stamp's only reader is `_payload_is_m3c_physics`, which uses it to narrow
-    the contract-doc set, and a pure launch empties `skill_must_read_refs` regardless. It is
-    written down because this is the SEAM, and the next author needs to know it already has a
-    caller it does not fit rather than discover it after adding a second.
+    it is inert. It was inert already when its only reader was `_payload_is_m3c_physics`, which
+    narrowed the AGENTIC contract-doc set while a pure launch emptied `skill_must_read_refs`
+    regardless; Z4 (issue #171) deleted that reader with the rest of the must-read machinery, so
+    the stamp now has NO reader at all and is recorded provenance. It is written down because
+    this is the SEAM: the next author needs to know it already has a caller it does not fit,
+    and that adding a reader means deciding what the flag means for an `infrastructure` node
+    first.
     """
     return (True, True)
 
@@ -4308,8 +4070,7 @@ class Conductor:
         return proc.stdout.strip()
 
     def _resolve_reuse_resume(self, repair: dict[str, str] | None,
-                              phase: str, substep: str | None,
-                              pure: bool = False) -> str | None:
+                              phase: str, substep: str | None) -> str | None:
         """The producer session id to warm-`--resume`, or None for a cold launch.
 
         Resolved BEFORE building the launch request (not after) so the slim-vs-full prompt
@@ -4334,14 +4095,13 @@ class Conductor:
         entry = self.entry_for(phase, substep)
         if not entry.supports(CAP_WARM_RESUME):
             # No session to reopen on this provider (an HTTP leaf holds no session at all).
-            # Same outcome as a GC'd transcript: the caller falls back to a cold turn — for the
-            # pure PRODUCER loop a cold REPAIR, carrying the findings and the prior document
-            # (issue #209); for the agentic path a cold launch.
+            # Same outcome as a GC'd transcript: the caller falls back to a cold turn — for
+            # the pure PRODUCER loop a cold REPAIR, carrying the findings and the prior
+            # document (issue #209).
             self.emit("resume_session_unavailable", phase=phase, substep=substep or "",
                       target=target)
             return None
-        if entry.provider == "claude_cli" and self._claude_session_resumable(
-                target, pure=pure):
+        if entry.provider == "claude_cli" and self._claude_session_resumable(target):
             return target
         if entry.provider == "codex_cli":
             from tools.orchestration_runtime import (
@@ -4380,58 +4140,32 @@ class Conductor:
         self.emit("resume_session_unavailable", phase=phase, substep=substep or "", target=target)
         return None
 
-    def _claude_session_resumable(self, session_id: str, *, pure: bool) -> bool:
+    def _claude_session_resumable(self, session_id: str) -> bool:
         """True if a claude session transcript for `session_id` still exists under
-        `<projects-root>/*/<session_id>.jsonl`. Used to decide whether a warm
+        `~/.claude/projects/*/<session_id>.jsonl`. Used to decide whether a warm
         `--resume` is viable or must fall back to a cold launch (the session may have
         been expired/GC'd by Claude Code).
 
-        THE HOME THIS LAUNCH WILL USE, and only that one — which is why `pure` is a
-        required argument rather than something inferred here.
+        THE HOME THIS LAUNCH WILL USE, and only that one. `--resume` is served from the
+        launching process's `CLAUDE_CONFIG_DIR`, and a pure leaf sets none: `--safe-mode`
+        already refuses every settings layer, so `record_launch` prepares no private home for
+        it, and its `--session-id` transcript is written to — and served from — the operator's
+        `~/.claude/projects`. MEASURED: the real `pure_leaf_flags()` set plus `--session-id`
+        does write `<config-home>/projects/<slug>/<sid>.jsonl`.
 
-        `--resume` is served from the launching process's `CLAUDE_CONFIG_DIR`, and the
-        two leaf shapes set it differently:
-
-        * an AGENTIC leaf gets this orchestration's private home (issue #63), so a
-          transcript anywhere else is unreachable however findable it is. Searching
-          the operator's `~/.claude/projects` too answered True for a session recorded
-          before the move and sent `--resume <id>` at a home that never held it — a
-          reviewer and an independent Codex pass both found that;
-        * a PURE leaf gets NO private home at all (`record_launch` prepares one only
-          for the agentic shape), so it launches with no `CLAUDE_CONFIG_DIR` and its
-          `--session-id` transcript is written to, and served from, the operator's
-          `~/.claude/projects`. MEASURED: the real `pure_leaf_flags()` set plus
-          `--session-id` does write `<config-home>/projects/<slug>/<sid>.jsonl`.
-
-        Narrowing this to the private home for BOTH shapes silently retired warm
-        resume for every pure leaf — every reuse repair and every inner repair turn of
-        `generate.generate`, the repo's largest token consumer, re-inlining
-        `pure_context` and `prior_document` on a cold launch. A test asserted that
-        wrong answer, so the suite defended it.
-
-        For the agentic shape, no private home recorded means no claude leaf has
-        launched under this orchestration yet, so anything findable is pre-move and
-        equally unreachable: False is right there too."""
+        Until Z4 (issue #171) this took a `pure` argument and searched this orchestration's
+        private home for the agentic shape. That home is gone with the shape; searching a
+        second root is what a reviewer and an independent Codex pass both found wrong (it
+        answered True for a transcript the launching home never held), and narrowing to the
+        private home for BOTH shapes is what silently retired warm resume for every pure leaf.
+        One shape, one root, no argument to get wrong."""
         if not isinstance(session_id, str) or not session_id.strip():
             return False
-        from tools.hooks.common import claude_workflow_home
-        if pure:
-            roots = [Path.home() / ".claude" / "projects"]
-        else:
-            try:
-                home = claude_workflow_home(self.repo_root, self.orchestration_id)
-            except (OSError, ValueError):
-                return False
-            if home is None:
-                return False
-            roots = [home / "projects"]
-        for root in roots:
-            try:
-                if sorted(root.glob(f"*/{session_id.strip()}.jsonl")):
-                    return True
-            except OSError:
-                continue
-        return False
+        root = Path.home() / ".claude" / "projects"
+        try:
+            return bool(sorted(root.glob(f"*/{session_id.strip()}.jsonl")))
+        except OSError:
+            return False
 
     def _pure_session_resumable(self, session_id: str,
                                 entry: ResolvedLeafEntry | None = None,
@@ -4454,8 +4188,7 @@ class Conductor:
         if not entry.supports(CAP_WARM_RESUME):
             return False
         if entry.provider == "claude_cli":
-            # This predicate serves the PURE loops, so the pure home is the right one.
-            return self._claude_session_resumable(session_id, pure=True)
+            return self._claude_session_resumable(session_id)
         # Codex exposes no safe local transcript-presence probe.  A thread id
         # emitted by this process is authoritative; `codex exec resume` remains
         # the final capability check and its failure is handled as transport.
@@ -4522,7 +4255,6 @@ class Conductor:
         *,
         session_id: str | None = None,
         resume_session_id: str | None = None,
-        pure: bool = False,
     ) -> list[str]:
         """Headless command to run one substep body as an isolated leaf agent.
         Honors the entry's custom `command` (wrapper + flags) so the conductor launches the
@@ -4560,18 +4292,12 @@ class Conductor:
         entry = entry if entry is not None else self.entry_for(None, None)
         base = _provider_command_base(entry)
         if entry.provider == "claude_cli":
-            # `-p` runs non-interactively. The leaf's MCP server set comes from
-            # `--strict-mcp-config --mcp-config .mcp.json` below — read directly from the
-            # committed file, not from an enablement decision recorded elsewhere. The
-            # permission grants that let the leaf CALL those tools come from the
-            # committed `leaf_config/claude/settings.json`, copied into the private
-            # home and read as the `user` layer (issue #63). Not `.claude/settings.json`
-            # — no leaf loads that — and not conditional on workspace trust: a user-tier
-            # grant was measured to be honoured with no trust seed present, while the
-            # trust conditionality of issue #65 applied to the `project` layer this
-            # launch no longer uses. (All three of those claims were the opposite here
-            # until R3 caught it, at the very comment someone debugging a refused MCP
-            # call would read.)
+            # `-p` runs non-interactively, and `pure_leaf_flags()` below is the whole of the
+            # leaf's surface: no tools, no MCP servers, no slash commands, no settings layer
+            # (`--safe-mode`), and the JSON result envelope. Since Z4 (issue #171) there is no
+            # second arm here — the agentic launch that carried `--setting-sources user`, a
+            # private CLAUDE_CONFIG_DIR, an MCP configuration and a tool allowlist is gone, and
+            # so is everything that existed to confine it.
             flags: list[str] = []
             # `--model` ONLY for a model the configuration FILE names. An operator who wrote
             # `model: haiku` for a substep means that leaf to run haiku, and recording it while
@@ -4593,54 +4319,13 @@ class Conductor:
                 flags += ["--resume", resume_session_id, "--fork-session"]
             if session_id:
                 flags += ["--session-id", session_id]
-            if pure:
-                from tools.pure_leaf import pure_leaf_flags
-                flags += pure_leaf_flags()
-            else:
-                # Issue #63 step 1: close the agentic leaf's configuration surface to
-                # what this repository declares. Without these the leaf inherits the
-                # OPERATOR's `~/.claude` unfiltered — model, effort, permission grants,
-                # skills, plugins, plugin hooks, and any MCP server their configuration
-                # carries (including a claude.ai connector) — none of which the workflow
-                # declares, records, or can reproduce. The pure path has justified the
-                # same closure since Z2 (`pure_leaf_flags`); this extends it to agentic
-                # leaves, which reach it through a different set of flags because they
-                # keep their tools, their skill, and the repo's PreToolUse hook.
-                #
-                # `user`, paired with `CLAUDE_CONFIG_DIR=<private home>` (issue #63 final
-                # form): the ONLY settings layer the leaf loads is the SHA-pinned copy of
-                # this repository's `leaf_config/claude/settings.json`, which carries the
-                # hooks and the build-runtime grant. The operator's `~/.claude` and this
-                # checkout's dev-only `.claude/` are both out of reach. MEASURED on CLI
-                # 2.1.235: `user` also stops the repo's CLAUDE.md — and the AGENTS.md it
-                # `@`-imports — from being injected into the leaf's first message, which
-                # `project` did.
-                flags += ["--setting-sources", "user",
-                          "--strict-mcp-config",
-                          "--mcp-config", CLAUDE_LEAF_MCP_CONFIG,
-                          "--disable-slash-commands"]
-                # A tool the PreToolUse hook cannot validate is a hole in the read
-                # boundary, so the leaf is given the judged set and nothing else
-                # (issue #71) — an ALLOWLIST, so a built-in the CLI adds in its next
-                # release arrives outside the leaf instead of silently inside it.
-                # A pure leaf already passes `--tools ""` and needs no allowlist.
-                from tools.orchestration_runtime import CLAUDE_LEAF_TOOLS
-                flags += ["--tools", ",".join(CLAUDE_LEAF_TOOLS)]
-                # The SAME result envelope the pure path selects (`pure_leaf_flags`), for the
-                # same reason: it is the only in-boundary channel that reports what the leaf
-                # actually cost and which model ran. Without it an agentic leaf's `usage` was
-                # recoverable only from `~/.claude`, which the workflow does not read — so
-                # every agentic row recorded `unavailable` (issue #47: 10 of 13 leaves on one
-                # billed run). The envelope never reaches a consumer that expects prose:
-                # `_unwrap_agentic_envelope` lifts the answer back out at the capture boundary.
-                flags += ["--output-format", "json"]
+            from tools.pure_leaf import pure_leaf_flags
+            flags += pure_leaf_flags()
             return [*base, *flags, "-p"]
         if entry.provider == "codex_cli":
             # JSONL is mandatory: thread.started is the sole authoritative Codex
             # session identity and is registered before a later hook can authorize
             # a file operation.
-            pure_flags: list[str] = []
-            pure_resume_flags: list[str] = []
             model = self._codex_pinned_model(entry)
             # `--config`, not the `-c` alias: the preflight certifies this argv by FLAG NAME
             # (`CODEX_EXEC_RESUME_REQUIRED_FLAGS`), so a spelling the probe does not assert
@@ -4648,36 +4333,32 @@ class Conductor:
             # flag; the reasoning level is a config override on both subcommands.
             effort_flags = (["--config", f'model_reasoning_effort="{entry.effort}"']
                             if entry.effort else [])
-            if pure:
-                schema = self._codex_pure_schema_path(session_id)
-                # CODEX_HOME is already an orchestration-private directory.
-                # Its config.toml marks this checkout untrusted so project-local
-                # hooks cannot join the verified user-level hook set.
-                pure_flags = ["--ignore-rules", "--sandbox", "read-only",
-                              "--output-schema", str(schema)]
-                # `codex exec resume` and `codex exec` do NOT accept the same options:
-                # resume has no `--sandbox` (only the never-used
-                # `--dangerously-bypass-approvals-and-sandbox`), so the read-only policy
-                # is re-pinned through the `-c` override both subcommands share rather
-                # than inherited implicitly from the resumed thread. Passing `--sandbox`
-                # here aborts the repair turn at argv parsing — before any
-                # `thread.started` — which makes EVERY pure repair a transport death
-                # (warm resume is how both pure loops run every repair attempt).
-                # `--config`, not the `-c` alias: the preflight certifies this argv
-                # against `exec resume --help` by flag name
-                # (CODEX_EXEC_RESUME_REQUIRED_FLAGS), so emitting a spelling the probe
-                # does not assert would leave the gate green on a CLI that dropped it.
-                pure_resume_flags = ["--ignore-rules", "--config", 'sandbox_mode="read-only"',
-                                     "--output-schema", str(schema)]
+            schema = self._codex_pure_schema_path(session_id)
+            # CODEX_HOME is already an orchestration-private directory. Its config.toml marks
+            # this checkout untrusted, which is what keeps this repository's DEV-layer
+            # `.codex/hooks.json` — written for an operator's own session — out of the leaf's
+            # hook set. Since Z4 (issue #171) the leaf brings no hooks of its own: what
+            # confines it is this read-only sandbox plus the output schema.
+            pure_flags = ["--ignore-rules", "--sandbox", "read-only",
+                          "--output-schema", str(schema)]
+            # `codex exec resume` and `codex exec` do NOT accept the same options: resume has
+            # no `--sandbox` (only the never-used
+            # `--dangerously-bypass-approvals-and-sandbox`), so the read-only policy is
+            # re-pinned through the `--config` override both subcommands share rather than
+            # inherited implicitly from the resumed thread. Passing `--sandbox` here aborts the
+            # repair turn at argv parsing — before any `thread.started` — which makes EVERY
+            # repair a transport death (warm resume is how both pure loops run every repair
+            # attempt). `--config`, not the `-c` alias, for the reason above.
+            pure_resume_flags = ["--ignore-rules", "--config", 'sandbox_mode="read-only"',
+                                 "--output-schema", str(schema)]
             # `-` is the documented stdin sentinel for the positional prompt on BOTH
             # subcommands. Spelled explicitly rather than omitted: `codex exec` reads stdin
             # when the prompt is absent, but `codex exec resume` documents only the `-`
             # form, and an omitted positional there would be read as the session id.
             if resume_session_id:
                 return [*base, "exec", "resume", "--model", model, resume_session_id,
-                        "--dangerously-bypass-hook-trust", *effort_flags, *pure_resume_flags,
-                        "--json", "-"]
-            return [*base, "exec", "--model", model, "--dangerously-bypass-hook-trust",
+                        *effort_flags, *pure_resume_flags, "--json", "-"]
+            return [*base, "exec", "--model", model,
                     *effort_flags, *pure_flags, "--json", "-"]
         raise ValueError(
             f"provider {entry.provider!r} launches no CLI leaf (it is not a spawnable "
@@ -4762,53 +4443,6 @@ class Conductor:
         unconfined (an unconfined leaf + FS-diff would authorize writes anywhere). The
         method is retained as a single seam for the call sites; it always returns True."""
         return True
-
-    def _ensure_codex_feature_cache(self, entry: ResolvedLeafEntry | None = None) -> None:
-        """Host-side: probe the codex hooks feature ONCE per orchestration and persist the
-        result to the leaf-unwritable cache (orchestration-dir root, RO inside the bwrap
-        sandbox), so the in-sandbox codex hook reads a host-certified value it cannot
-        forge. No-op for non-codex providers and after this command has been certified once
-        (memoized per launch command). The probe runs the SAME command prefix the leaf runs
-        (`_provider_command_base` — a configured wrapper, else the bare backend), so it
-        certifies the executable the leaf will actually use, not a hardcoded `codex`. A leaf
-        can never write this cache
-        (the prior design wrote it from the in-sandbox hook into the leaf-writable hooks/
-        dir).
-
-        Fails closed when the feature is NOT certified (hooks disabled or the probe errored)
-        and the requirement is on: a codex leaf whose PreToolUse/PostToolUse file-access
-        hooks would not fire must not launch at all — the in-sandbox gate fail-closes only if
-        the hook actually runs, which it does not when the hooks feature is off, so recording
-        a disabled cache without blocking would leave the leaf unguarded by the hook layer.
-        Honours the same `ATMOFAB_REQUIRE_CODEX_HOOKS_FEATURE` opt-out the hook does."""
-        entry = entry if entry is not None else self.entry_for(None, None)
-        if entry.provider != "codex_cli":
-            return
-        # Memoized per (provider, command): the probe certifies a BINARY, so a config that
-        # launches two different codex commands must certify each — while two leaves sharing
-        # one command still pay for the probe once.
-        command = _provider_command_base(entry)
-        cache_key = (entry.provider, tuple(command))
-        certified: set[tuple[str, tuple[str, ...]]] = getattr(
-            self, "_codex_feature_cache_written", set())
-        if cache_key in certified:
-            return
-        from tools.hooks.codex_feature import probe_and_write_codex_feature_cache
-        enabled, detail = probe_and_write_codex_feature_cache(
-            repo_root=self.repo_root, orchestration_id=self.orchestration_id,
-            command=command)
-        # Read the requirement from self.env (the same env the leaf's hook inherits via
-        # _child_env), defaulting to required — matches the hook's gate semantics.
-        require_raw = self.env.get("ATMOFAB_REQUIRE_CODEX_HOOKS_FEATURE", "1").strip().lower()
-        hooks_required = require_raw not in {"0", "false", "no"}
-        if hooks_required and not enabled:
-            # Fail closed BEFORE memoizing, so this never degrades into an allow on a retry.
-            raise SandboxEnforcementError(
-                f"codex hooks feature not certified for orchestration "
-                f"{self.orchestration_id} ({detail}); refusing to launch a codex leaf whose "
-                "file-access hooks would not fire (fail-closed)")
-        certified.add(cache_key)
-        self._codex_feature_cache_written = certified
 
     def _http_history_key(self, timeout_context: dict[str, str] | None) -> tuple[str, str]:
         ctx = timeout_context or {}
@@ -4915,7 +4549,6 @@ class Conductor:
         session_id: str | None = None,
         resume_session_id: str | None = None,
         child_arid: str,
-        pure: bool = False,
         timeout_context: dict[str, str] | None = None,
     ) -> ProcResult:
         """Launch one leaf and return its captured result.
@@ -4938,12 +4571,8 @@ class Conductor:
             return self._run_http_leaf(prompt_text, entry, child_env=child_env,
                                        child_arid=child_arid,
                                        timeout_context=timeout_context)
-        # Host-certify the codex hooks feature into the leaf-unwritable cache before the
-        # codex leaf launches (the in-sandbox hook reads it read-only; see
-        # _ensure_codex_feature_cache). Memoized; no-op for claude.
-        self._ensure_codex_feature_cache(entry)
         argv = self.leaf_command(
-            entry, session_id=session_id, resume_session_id=resume_session_id, pure=pure)
+            entry, session_id=session_id, resume_session_id=resume_session_id)
         # Wrap the leaf in the bwrap sandbox that record-launch already built (repo
         # read-only; writes confined to the child's write_roots + workspace/tmp).
         # record-launch records sandbox_enforced=True for every backend, so applying it
@@ -4962,6 +4591,17 @@ class Conductor:
                     "bwrap enforcement is mandatory but no usable sandbox profile is "
                     f"available for this leaf (child_arid={child_arid!r}); refusing to "
                     "launch unconfined (fail-closed)")
+            # Z4 (issue #171): every CLI leaf is a PURE leaf, which has no repository write
+            # authority at all, so its profile is the read-only one. Asserted at the spawn
+            # site rather than left to follow from "only the pure loops call this": a guard
+            # that rests on today's caller set goes quiet the moment a sixth caller appears,
+            # and what it protects is the FS-diff-free write model — nothing attributes a
+            # write from this window, because nothing in this window may write.
+            if profile.get("readonly") is not True:
+                raise SandboxEnforcementError(
+                    f"the sandbox profile for {child_arid!r} is not read-only; every leaf "
+                    "runs as a pure function with no repository write authority, so a "
+                    "writable profile is a host defect (fail-closed)")
             from tools.orchestration_runtime import render_bwrap_command
             try:
                 argv = render_bwrap_command(profile=profile, command_argv=argv)
@@ -5141,12 +4781,10 @@ class Conductor:
                     # one. Appended BEFORE `_timed_out_result`, which adds its own marker last
                     # (the tag's evidence is read from the last such line).
                     stderr = (stderr.rstrip() + "\n" + LEAF_STREAM_ABANDONED_MARKER).strip()
-                return _unwrap_agentic_envelope(
-                    self._timed_out_result(
-                        returncode, "".join(list(stdout_chunks)), stderr, entry=entry,
-                        timeout_seconds=timeout_seconds, started=started,
-                        context=timeout_context),
-                    entry, pure=pure)
+                return self._timed_out_result(
+                    returncode, "".join(list(stdout_chunks)), stderr, entry=entry,
+                    timeout_seconds=timeout_seconds, started=started,
+                    context=timeout_context)
             # The leaf exited on its own, so its status is authoritative. Only a descendant it
             # leaked can still hold the pipes, and that gets the teardown grace, not the cap.
             # INSIDE the try: an interrupt arriving during these joins still has to reach the
@@ -5179,10 +4817,12 @@ class Conductor:
         stderr = "".join(list(stderr_chunks))
         if stream_abandoned:
             stderr = (stderr.rstrip() + "\n" + LEAF_STREAM_ABANDONED_MARKER).strip()
-        # The ONE capture boundary for a claude leaf, so an agentic leaf's envelope is lifted
-        # exactly once and everything downstream reads the model's own text as it always has.
-        return _unwrap_agentic_envelope(
-            ProcResult(process.returncode, stdout, stderr), entry, pure=pure)
+        # Every claude leaf is a PURE leaf since Z4 (issue #171), and a pure loop parses the
+        # `--output-format json` envelope itself — reading `is_error` / `parse_error` off it is
+        # what makes a malformed reply repairable rather than silently empty. So the capture
+        # boundary hands the envelope through untouched; the agentic unwrap that used to sit
+        # here had no leaf left to serve.
+        return ProcResult(process.returncode, stdout, stderr)
 
     def _timed_out_result(
         self, returncode: int | None, stdout: str, stderr: str, *,
@@ -5905,137 +5545,51 @@ class Conductor:
                                 entry: ResolvedLeafEntry | None) -> dict[str, Any]:
         """What this leaf's launch closes its CONFIGURATION surface to, for the record.
 
-        The launch record already names the executable and the sandbox; it said nothing
-        about which settings layers and which MCP servers the leaf would come up with.
-        That is not recoverable from any other artifact: the persisted `sandbox_command`
-        renders `command_argv=[backend_command]` only, so the real spawn argv is written
-        down nowhere, and `orchestration_meta.json#repo_revision` carries `{commit, dirty}`
-        — on a dirty tree the bytes of `.mcp.json` cannot be reconstructed from it. Hence
-        the sha256, on the precedent of `codex_hooks_sha256`.
+        Since Z4 (issue #171) that is one field: the TOOLS the leaf was launched with. The
+        `--setting-sources` layer choice and the `.mcp.json` server set went with the agentic
+        leaf — a pure leaf takes `--safe-mode` (no settings layer at all), `--strict-mcp-config`
+        with no configuration, and `--tools ""`.
+
+        `claude_tools` stays because it is still written down nowhere else: the persisted
+        `sandbox_command` renders `command_argv` as the executable alone, so the tool set a
+        leaf was actually launched with is not recoverable from any artifact, and it is the
+        enforcement boundary a later audit of "could this leaf have done that" turns on. A pure
+        claude leaf records `[""]` — the CLI's spelling for "no tools at all" — which is the
+        honest description of its argv rather than an absence indistinguishable from a codex
+        leaf's.
 
         DERIVED FROM THE ARGV, by re-deriving it here rather than re-reading the constants
-        `leaf_command` used. `leaf_command` is a deterministic function of (entry, pure),
-        so this is the same list `spawn_leaf` builds, and a future edit that moves or drops
-        a flag cannot leave the record describing the old argv. The same reasoning already
-        pins `backend_command` to `leaf_command(entry)[0]`.
+        `leaf_command` used. `leaf_command` is a deterministic function of the entry, so this
+        is the same list `spawn_leaf` builds, and a future edit that moves or drops a flag
+        cannot leave the record describing the old argv. The same reasoning already pins
+        `backend_command` to `leaf_command(entry)[0]`.
 
-        `pure` comes from the REQUEST, through the shared `pure_leaf.is_pure_request`
-        predicate. Nothing is special-cased per provider: a pure leaf and a codex leaf simply
-        produce an argv without these flags, so they get no fields. Two launches are declined
-        outright instead, because they have no argv to describe at all — an HTTP leaf (no
-        process) and a deterministic substep (in-process).
-
-        Only VALUES are recorded. `--strict-mcp-config` / `--disable-slash-commands` are
-        boolean; their presence is a code constant pinned by the argv goldens, and copying
-        it here would be a second place to keep in step with no new information in it.
+        Two launches are declined outright, because they have no argv to describe at all — an
+        HTTP leaf (no process) and a deterministic substep (in-process).
         """
-        from tools.pure_leaf import is_pure_request
         entry = entry if entry is not None else self.entry_for(None, None)
         if entry.is_http:
             # There is no CLI leaf and no argv: `spawn_leaf` returns on this same predicate
             # before it reaches `leaf_command`, which refuses a non-spawnable provider
-            # outright. Nothing about CLI settings layers or an MCP configuration file is
-            # true of an HTTP leaf, so it is recorded about nothing rather than about "".
+            # outright. Nothing about CLI settings layers is true of an HTTP leaf, so it is
+            # recorded about nothing rather than about "".
             return {}
         if self._is_deterministic_substep(str(request.get("step", "")),
                                           request.get("substep") or None):
             # A deterministic substep is recorded through `record_launch` like any other, but
             # it runs IN-PROCESS (`_run_deterministic_substep`) and spawns no CLI at all.
             # Describing it with the argv a leaf WOULD have had is the very thing this field
-            # exists to prevent — a record of a launch that did not happen — and it would also
-            # make such a substep pay the fail-closed `.mcp.json` read for a file it never uses.
+            # exists to prevent — a record of a launch that did not happen.
             return {}
-        # THE shared predicate (`tools/pure_leaf.is_pure_request`), not a second spelling of
-        # it: the runtime and the pipeline validator both delegate there so producer and
-        # validators cannot disagree about what "pure" means, and this is the seam that decides
-        # whether the record describes the pure argv or the agentic one.
-        pure = is_pure_request(request)
         # `session_id=child_arid` because `leaf_command` is not free of side effects on every
         # branch: a pure CODEX launch writes its output schema, and with no session id it wrote
         # one into a stray `workspace/tmp/codex-pure-schema/` that nothing owns or cleans.
         # Passing the id spawn_leaf passes keeps the re-derivation on the production path.
-        argv = self.leaf_command(entry, session_id=child_arid, pure=pure)
+        argv = self.leaf_command(entry, session_id=child_arid)
         surface: dict[str, Any] = {}
-        sources = _effective_option_value(argv, "--setting-sources")
-        if sources is not None:
-            surface["claude_setting_sources"] = sources
         if "--tools" in argv:
-            # WHICH tools the leaf came up with (issue #71). Recorded for the same reason as
-            # the settings layers: the persisted `sandbox_command` renders `command_argv` as
-            # the executable alone, so the tool set a leaf was actually launched with is
-            # written down nowhere else, and it is the enforcement boundary a later audit of
-            # "could this leaf have done that" turns on. Read off the ARGV like every other
-            # field here, so a change to the flag cannot leave the record describing the
-            # constant instead of the launch. A PURE leaf records `[""]` — the CLI's spelling
-            # for "no tools at all" — which is the honest description of its argv rather than
-            # an absence indistinguishable from a codex leaf's.
             surface["claude_tools"] = _variadic_values(argv, "--tools")
-        if "--mcp-config" in argv:
-            refs = _variadic_values(argv, "--mcp-config")
-            entries: list[dict[str, str]] = []
-            # FAIL CLOSED. Under `--strict-mcp-config` this file is the leaf's entire MCP
-            # server set, so an unreadable one launches a leaf with no build-runtime — which
-            # cannot compile, run, or lint, and dies later having burned its retry budget on
-            # a failure that is the conductor's/environment's, not its own. This is the
-            # earliest point at which the file is certainly needed, and it is before the
-            # child window opens, so the OSError is left to propagate.
-            for ref in refs:
-                try:
-                    data = self._read_launch_config_bytes(ref)
-                except OSError as exc:
-                    raise OSError(
-                        f"the MCP configuration this leaf is launched with is unreadable: "
-                        f"{ref!r} under {self.repo_root} ({exc}). It is the leaf's ENTIRE "
-                        f"MCP server set (`--strict-mcp-config`), so launching would produce "
-                        f"a leaf with no build-runtime tools. Restore the committed file "
-                        f"(see mcp_servers/README.md) and re-run."
-                    ) from exc
-                # READABLE is not USABLE, and the refusal above argues about usable: a file
-                # the CLI will not start on produces exactly the tool-less leaf it describes,
-                # so the same raise has to cover it. The line drawn is the CLI'S OWN SCHEMA,
-                # measured on 2.1.234 — it rejects a non-object, and an object without an
-                # `mcpServers` record, with "Invalid MCP configuration", and accepts
-                # `{"mcpServers": {}}`. Checking THAT is checking the rule. Checking that the
-                # file defines `build-runtime` would be checking the result this repository
-                # happens to have, would refuse a legitimate future server set, and is the
-                # preflight's question in any case.
-                try:
-                    doc = json.loads(data.decode("utf-8"))
-                except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-                    raise OSError(
-                        f"the MCP configuration this leaf is launched with is not valid "
-                        f"JSON: {ref!r} under {self.repo_root} ({exc}). The CLI refuses to "
-                        f"start on it, so the leaf would die at launch with the failure "
-                        f"attributed to it. Restore the committed file "
-                        f"(see mcp_servers/README.md) and re-run."
-                    ) from exc
-                if not isinstance(doc, dict) or not isinstance(doc.get("mcpServers"), dict):
-                    raise OSError(
-                        f"the MCP configuration this leaf is launched with is valid JSON but "
-                        f"not an MCP configuration: {ref!r} under {self.repo_root} needs a "
-                        f"top-level object with an `mcpServers` object (an empty one is "
-                        f"allowed). The CLI refuses to start on anything else "
-                        f"(\"Invalid MCP configuration\"), so the leaf would die at launch "
-                        f"with the failure attributed to it. Restore the committed file "
-                        f"(see mcp_servers/README.md) and re-run."
-                    )
-                entries.append({"ref": ref,
-                                "sha256": hashlib.sha256(data).hexdigest()})
-            surface["mcp_config"] = entries
         return surface
-
-    def _read_launch_config_bytes(self, ref: str) -> bytes:
-        """The bytes of one repo-relative configuration file named on the leaf argv.
-
-        Its own method for the same reason `_write_launch_input_evidence` is one: it is the
-        I/O of `record_launch`, and the offline fakes pin a `repo_root` that does not exist
-        on disk. Stubbing it there leaves the argv derivation and the recorded shape live
-        while only the read is faked; the real read — including the fail-closed OSError —
-        is driven against a real Conductor over a real directory by
-        `test_record_launch_records_setting_surface_and_mcp_config_sha256` and
-        `test_record_launch_fails_closed_when_argv_mcp_config_is_unreadable`.
-        """
-        return (self.repo_root / ref).read_bytes()
 
     def finalize_child(self, child_arid: str, return_token: str, reply_text: str,
                        agent_run_json: dict[str, Any]) -> dict[str, Any]:
@@ -6289,7 +5843,7 @@ class Conductor:
         `validate_pipeline_semantics._ir_m3c_language`, and
         `orchestration_runtime.control_file_host_authored`, which record_launch calls to stamp the
         control-file authorship flag onto the launch request. A FIFTH reader,
-        `orchestration_runtime._payload_is_m3c_physics`, TRUSTS that stamp instead of re-deriving,
+        `orchestration_runtime`'s contract-doc deriver, TRUSTED that stamp instead of re-deriving it,
         so it cannot drift on its own but inherits whatever the fourth decided.
 
         Two earlier versions of this count were wrong in opposite ways — "the conductor /
@@ -6363,10 +5917,11 @@ class Conductor:
         * `harness` — an `infrastructure` node's self-test (issue #169). The host renders no
           runner for it, so the leaf authors model + the executable entry as a `runner`-role
           bundle file (bundle v1.1.0), and there is no checks module.
-        * None — no bundle representation, so the node's GENERATE substeps fall through to the
-          shared agentic leaf loop. Since #169 no in-tree node answers None; it is the
-          fail-safe for a hand-crafted IR whose toolchain the neutral core cannot write a
-          control file for, or whose language has no bundle backend.
+        * None — no bundle representation, so the node's GENERATE substeps FAIL CLOSED
+          (`run_substep` emits `node_has_no_bundle_shape`). They fell through to the shared
+          agentic leaf loop until Z4 (issue #171) deleted it. Since #169 no in-tree node
+          answers None; it is the fail-safe for a hand-crafted IR whose toolchain the neutral
+          core cannot write a control file for, or whose language has no bundle backend.
 
         The `infrastructure` question is asked of the NODE_KEY, not of the IR's self-declared
         `meta.spec_kind`: the shape decides which admissibility rules the bundle is judged
@@ -6390,21 +5945,26 @@ class Conductor:
     def _pure_leaf_substep(self, refs: NodeRefs, phase: str, substep: str | None) -> bool:
         """True when this substep runs as a host-mediated pure-function leaf.
 
-        Since M-F the generate-executor is no longer selectable (legacy execution removed; `pure`
-        is the only executor), so this dispatch is decided by the provider's `pure` capability
-        (Claude's closed tool-free transport or Codex's sandboxed structured approximation), the
-        migrated `(phase, substep)` pair, and — for the two GENERATE pairs only — whether the node
-        has a CodegenBundle shape at all (`_bundle_shape`, which answers `m3c` or `harness`).
+        Since Z4 (issue #171) there is nothing else an LLM leaf can be, so what this predicate
+        still decides is only whether the node HAS a pure path: the `(phase, substep)` pair, and
+        — for the two GENERATE pairs only — whether the node has a CodegenBundle shape at all
+        (`_bundle_shape`, which answers `m3c` or `harness`).
 
-        A node with no bundle shape falls through to the shared AGENTIC leaf loop in
-        `run_substep`. Since issue #169 NO in-tree node does: the `infrastructure` harness
-        self-test, which was the one live fall-through, is the `harness` shape (bundle v1.1.0's
-        `runner` role). The remaining None answers — a toolchain the neutral core writes no
-        control file for, a language with no bundle backend — no longer reach a run either
-        (spec-input rejects the dep count and the compile.static toolchain gate rejects the
-        backend), so this dispatch is a FAIL-SAFE to the agentic loop rather than a selectable
-        executor: such a node's invocation record still stamps `generate_executor=pure` (a
-        provenance stamp), and it is not rejected on resume.
+        It no longer tests the provider's `pure` capability. That is not a weakening: `pure` is
+        now a hard requirement of every LLM leaf at configuration load
+        (`llm_config.required_capabilities` / `_validate_assignment`), so an entry without it
+        cannot reach a run at all — and a predicate that still read it here would answer False
+        for such an entry and report the node as shapeless, which is a false diagnosis of an
+        operator's configuration error.
+
+        A node with no bundle shape has no pure path for those two pairs, and Z4 removed the
+        agentic loop it used to fall through to, so `run_substep` fails it CLOSED. Since issue
+        #169 NO in-tree node is one: the `infrastructure` harness self-test, which was the one
+        live fall-through, is the `harness` shape (bundle v1.1.0's `runner` role). The remaining
+        None answers — a toolchain the neutral core writes no control file for, a language with
+        no bundle backend — do not reach a run either (spec-input rejects the dep count and the
+        compile.static toolchain gate rejects the backend), so this is a FAIL-SAFE for a
+        hand-crafted IR rather than a live branch.
 
         The two COMPILE pairs (Z1, issue #168) carry NO shape condition, deliberately: the Compile
         contract does not depend on the node kind, and at `compile.generate` time no IR exists, so
@@ -6425,8 +5985,6 @@ class Conductor:
         `(validate, judge)` (the semantic reviewer, Z3). Each pair is dispatched to its own loop
         in `run_substep`. Deterministic substeps (compile.static, generate lint/syntax/static)
         are never pure — they run in-process regardless."""
-        if not self.entry_for(phase, substep).supports(CAP_PURE):
-            return False
         if (phase, substep) in (("compile", "generate"), ("compile", "verify"),
                                 ("validate", "judge")):
             return True
@@ -6933,8 +6491,8 @@ clean:
         author against. Here there is no host-rendered runner and no checks module: the leaf
         authors the executable entry itself, so what takes the runner's place is the contract
         that entry's OUTPUT must satisfy — `docs/workflow/RUNNER_OUTPUT_CONTRACT.md`, verbatim
-        and whole, which is what the agentic runner-authoring leaf force-read
-        (`leaf_contract_doc_refs`, the non-M3c branch). Whole, not sliced: every section of it
+        and whole, which is what the agentic runner-authoring leaf force-read (the non-M3c
+        branch of `leaf_contract_doc_refs`, deleted with that leaf in Z4 — issue #171). Whole, not sliced: every section of it
         governs a leaf that writes the program, where the judge (which reads §1+§3) only reads
         the output afterwards.
 
@@ -7802,7 +7360,7 @@ clean:
 
         `_host_authored_m3c` returns the constant `(True, True)`, which is the truth for the
         pure paths that only ever see an M3c node. The judge sees every node kind, so it asks
-        instead — the stamp's reader, `_payload_is_m3c_physics`, believes what the request says.
+        instead — the stamp's reader believed what the request said.
         """
         return (self._conductor_authors_makefile(refs), self._conductor_authors_runner(refs))
 
@@ -7935,7 +7493,7 @@ clean:
 
         `host_authored_flags` carries the NODE's real values rather than the M3c constant the
         two older reviewers pass: the judge runs on every node kind, and the launch request's
-        stamp is read back by `_payload_is_m3c_physics`."""
+        stamp had one reader, and it is deleted (see `_host_authored_render_flags`)."""
         return self._PureReviewerSpec(
             build_context=self._build_pure_judge_context,
             write_project_meta=self._write_semantic_review,
@@ -7995,7 +7553,7 @@ clean:
         #: A certified sibling exemplar is resolved and attached only where a template renders it.
         wants_exemplar: bool
         #: refs -> `(makefile_host_authored, runner_host_authored)` for the launch request.
-        #: The request's stamp is read back by `_payload_is_m3c_physics`, so it must carry the
+        #: The request's stamp HAD a reader (deleted in Z4, issue #171), so it must carry the
         #: node's real values, not the shape the phase happened to have when it went pure.
         host_authored_flags: Callable[[NodeRefs], tuple[bool, bool]]
         #: (launch record of the repair target) -> the document that producer attempt returned,
@@ -8100,7 +7658,7 @@ clean:
             rec["launch_prompt_text"], self._child_env(child_arid, entry), entry,
             session_id=child_arid,
             resume_session_id=(resume_session_id if warm else None),
-            child_arid=child_arid, pure=True,
+            child_arid=child_arid,
             timeout_context={"node_key": node_key, "step": phase,
                              "substep": substep or "", "agent_run_id": child_arid})
         self._persist_leaf_output(child_arid, proc)
@@ -8280,7 +7838,7 @@ clean:
                 self.new_agent_run_id(), "fail", [], 1,
                 ("pure_context_assembly_failed", _pure_assembly_detail(exc)), 1)
         # The launch request's host-authorship stamp is the NODE's, resolved once here. It is
-        # read back by `_payload_is_m3c_physics`, so a phase whose pure path also serves a node
+        # read back by the deleted contract-doc deriver, so a phase whose pure path also serves a node
         # the host authors nothing for must not stamp a constant.
         makefile_host_authored, runner_host_authored = spec.host_authored_flags(refs)
         per_attempt: list[dict[str, Any]] = []
@@ -8299,7 +7857,7 @@ clean:
         # render the full launch prompt, and only two: one with NO findings excerpt, and one whose
         # target the launch validator would refuse (`usable`, below) (issue #209).
         if repair and str(repair.get("repair_strategy", "")).strip() == "reuse":
-            target = self._resolve_reuse_resume(repair, phase, substep, pure=True)
+            target = self._resolve_reuse_resume(repair, phase, substep)
             # The outer-reopen excerpt is threaded into the first repair turn's
             # `repair_findings` (a UTF-8-persisted prompt). Its writers under the pure executor
             # (bundle_meta / source_meta) are already surrogate-safe, so this is safe by that
@@ -9147,7 +8705,7 @@ clean:
                 self.new_agent_run_id(), "fail", [], 1,
                 ("pure_context_assembly_failed", _pure_assembly_detail(exc)), 1)
         # The launch request's host-authorship stamp is the NODE's, resolved once here. It is
-        # read back by `_payload_is_m3c_physics`, so a phase whose pure path also serves a node
+        # read back by the deleted contract-doc deriver, so a phase whose pure path also serves a node
         # the host authors nothing for must not stamp a constant.
         makefile_host_authored, runner_host_authored = spec.host_authored_flags(refs)
         per_attempt: list[dict[str, Any]] = []
@@ -9628,33 +9186,30 @@ clean:
         if entry.provider == "claude_cli":
             env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = str(
                 entry.max_output_tokens or LEAF_MAX_OUTPUT_TOKENS)
-            # AUTO-MEMORY IS NOT A SETTING, so no `--setting-sources` value closes it:
-            # the CLI injects `~/.claude/projects/<repo-slug>/memory/MEMORY.md` into the leaf's
-            # FIRST USER MESSAGE, and its enable predicate keys on safe-mode / `--bare` / this
-            # variable, none of which an agentic leaf has (the PURE path is closed by
-            # `--safe-mode`, which is why this was invisible until agentic leaves were looked at).
-            # Measured on CLI 2.1.234 by capturing the leaf's own request: without this the
-            # first message carried the operator's memory index — past runs, merged PRs, open
-            # issues and standing instructions — 25,011 bytes of `messages` against 8,990 with
-            # it. That is ambient context the repository does not declare, the run does not
-            # record and no artifact can reproduce, which is exactly what the launch closure
-            # exists to prevent; it is also a leaf reading `~/.claude`, and a leaf being handed
-            # PAST-RUN state, both of which the workflow forbids outright.
-            # Set here rather than on the argv because the CLI exposes no flag for it.
-            # LOAD-BEARING, not redundant. An earlier version of this comment said
-            # issue #63's private home "independently empties the directory the memory
-            # would be read from"; that is FALSE, and measured so: the home's
-            # `projects/` stays writable (a leaf needs to write its own transcript),
-            # so `<home>/projects/<slug>/memory/MEMORY.md` can exist, and with this
-            # variable unset it IS injected. This variable is the only thing closing
-            # that path.
+            # AUTO-MEMORY IS NOT A SETTING, so no settings-layer flag closes it: the CLI
+            # injects `~/.claude/projects/<repo-slug>/memory/MEMORY.md` into the leaf's FIRST
+            # USER MESSAGE, and its enable predicate keys on safe-mode / `--bare` / this
+            # variable. Measured on CLI 2.1.234 by capturing an agentic leaf's own request:
+            # without it the first message carried the operator's memory index — past runs,
+            # merged PRs, open issues and standing instructions — 25,011 bytes of `messages`
+            # against 8,990 with it. That is ambient context the repository does not declare,
+            # the run does not record and no artifact can reproduce; it is also a leaf reading
+            # `~/.claude`, and a leaf being handed PAST-RUN state, both of which the workflow
+            # forbids outright.
+            #
+            # KEPT after Z4 (issue #171) although every claude leaf now passes `--safe-mode`,
+            # which closes this path on its own: the variable and the flag are two independent
+            # arms of the same predicate, and this one costs one environment entry. Its
+            # measurement was taken against the agentic launch that no longer exists, so what
+            # it is today is defense in depth for a documented CLI behaviour, not the only
+            # thing closing the path — which the comment claimed before and after being
+            # corrected once already. Set here rather than on the argv because the CLI exposes
+            # no flag for it.
             env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] = "1"
-            # CLAUDE_CONFIG_DIR is deliberately NOT set here. The private home reaches
-            # the leaf through exactly ONE route — the bwrap profile's `--setenv`,
-            # built from the home that `record_launch` prepared and recorded — which is
-            # the same single-route story codex's CODEX_HOME follows. A second spelling
-            # here could name a different home than the one whose settings were
-            # SHA-pinned and bound, and the record would describe neither.
+            # CLAUDE_CONFIG_DIR is deliberately NOT set: a pure leaf has no private home to
+            # name (`--safe-mode` refuses every settings layer, so `record_launch` prepares
+            # none), and naming one here would point the leaf at a configuration surface
+            # nothing prepared, hashed or recorded.
         elif entry.provider == "codex_cli":
             # ATMOFAB_HOME was the historical private alias for CODEX_HOME. An operator
             # who set BOTH to different homes has said two incompatible things, and the
@@ -9917,13 +9472,23 @@ clean:
     def determine_substep_status(self, refs: NodeRefs, phase: str, substep: str | None,
                                  allowed_output_paths: list[str],
                                  min_mtime: float = 0.0) -> tuple[str, list[str]]:
-        """Deterministically classify a substep from the artifacts it produced.
+        """Deterministically classify a DETERMINISTIC substep from the artifacts it produced.
 
-        verify/judge read the canonical status field; the producing substeps
-        (generate/execute/build) pass when their deliverables exist AND were
-        (re)written during this attempt (mtime >= min_mtime), so a retry/reopen
-        that reuses an artifact directory cannot pass on a prior attempt's stale
-        outputs. The downstream verify/judge then certifies the content.
+        Each in-process body writes a meta the conductor authored, and the substep passes when
+        that meta says pass AND its deliverables were (re)written during this attempt
+        (mtime >= min_mtime) — so a retry/reopen that reuses an artifact directory cannot pass
+        on a prior attempt's stale outputs.
+
+        DETERMINISTIC ONLY since Z4 (issue #171). It has exactly one caller, `run_substep`'s
+        in-process arm; every LLM substep is a pure leaf that computes its own status inside
+        its own loop and never reaches here. The per-LLM-substep branches that used to sit
+        here were already documented as unreachable defence, and they went with the caller that
+        could have reached them. What did NOT go is the thing they were defending against: an
+        LLM pair arriving here would fall to a generic tail where
+        `_fresh_deliverables_written([])` is vacuously True, certifying a substep on an
+        artifact some earlier attempt left. So the tail is a REFUSAL rather than a pass — one
+        statement instead of six readers, and it fails closed for a pair nobody has thought
+        about rather than only for the three that were enumerated.
 
         `min_mtime` must be a stamp of the same clock the deliverables' mtimes come from —
         `Conductor._launch_instant` is the ONE producer, and passing a `time.time()` reading
@@ -9942,55 +9507,6 @@ clean:
                 return False
             return all((self.repo_root / p).stat().st_mtime >= min_mtime for p in present)
 
-        if (phase == "generate" and substep == "generate"
-                and self._pure_leaf_substep(refs, phase, substep)):
-            # Z2 pure producer freshness (M-C 修正1): the pure `generate.generate` has NO
-            # leaf-authored deliverables (allowed_output_paths == []); its freshness-gated
-            # outputs are the HOST-written bundle_meta.json (result==pass) and codegen_bundle.json,
-            # both authored AFTER the child window closes. A stale-artifact reuse on a retry is
-            # prevented by the mtime guard on codegen_bundle.json (the source dir is rotated per
-            # attempt anyway). This branch is defensive — the pure substep computes its own status
-            # from validate_bundle — but keeps the freshness contract stated in one place.
-            bmeta = _read_json(self.repo_root / refs.source_dir() / "bundle_meta.json") or {}
-            bundle = self.repo_root / refs.source_dir() / "codegen_bundle.json"
-            fresh = bundle.exists() and bundle.stat().st_mtime >= min_mtime
-            status = "pass" if (bmeta.get("result") == "pass" and fresh) else "fail"
-            return status, output_refs
-        if (phase == "compile" and substep == "generate"
-                and self._pure_leaf_substep(refs, phase, substep)):
-            # Z1 pure IR producer freshness. Like the pure generate producer above, this substep
-            # has NO leaf-authored deliverables (allowed_output_paths == []); its freshness-gated
-            # outputs are the HOST-written compile_generate_meta.json (result==pass) and
-            # spec.ir.yaml, both authored AFTER the child window closes. The branch is defensive —
-            # the pure substep computes its own status and returns early in `run_substep` — but it
-            # must not be left to the generic tail, where `_fresh_deliverables_written([])` is
-            # vacuously True and would pass a substep that declared the phase uncompletable while
-            # a stale spec.ir.yaml happened to sit in the directory.
-            gmeta = _read_json(
-                self.repo_root / refs.ir_ref / "compile_generate_meta.json") or {}
-            ir_doc = self.repo_root / refs.ir_ref / "spec.ir.yaml"
-            fresh = ir_doc.exists() and ir_doc.stat().st_mtime >= min_mtime
-            status = "pass" if (gmeta.get("result") == "pass" and fresh) else "fail"
-            return status, output_refs
-        if (phase == "validate" and substep == "judge"
-                and self._pure_leaf_substep(refs, phase, substep)):
-            # Z3 pure judge freshness, the same defensive shape as the two pure producers above
-            # and for the same reason: the pure substep computes its own status and returns
-            # early in `run_substep`, so this is unreachable through the live path — but it must
-            # not be left to the branch below, where a pure judge's EMPTY `allowed_output_paths`
-            # makes `_fresh_deliverables_written` vacuously true and a `semantic_review.json`
-            # left by an earlier attempt would certify the node on its own. The two gated
-            # artifacts are the ones the host writes after the window closes: `judge_meta.json`
-            # (result==pass, i.e. a schema-valid review was obtained) and the review itself.
-            jmeta = _read_json(
-                self.repo_root / refs.run_node_dir() / "judge_meta.json") or {}
-            review = self.repo_root / refs.run_node_dir() / "semantic_review.json"
-            fresh = review.exists() and review.stat().st_mtime >= min_mtime
-            sem = _read_json(review) or {}
-            status = "pass" if (jmeta.get("result") == "pass" and fresh
-                                and str(sem.get("decision") or "").strip().lower() == "pass"
-                                ) else "fail"
-            return status, output_refs
         if phase == "compile" and substep == "static":
             # Deterministic compile gate: the conductor-authored compile_static_meta records the
             # workspace_root + --stage compile verdict. A violation is
@@ -10000,41 +9516,6 @@ clean:
             meta = _read_json(self.repo_root / refs.ir_ref / "compile_static_meta.json") or {}
             status = "pass" if (meta.get("status") == "pass"
                                 and _fresh_deliverables_written(allowed_output_paths)) else "fail"
-        elif phase == "compile" and substep == "verify":
-            # The pure-semantic verify leaf's SOLE deliverable is ir_meta.json; it must
-            # RE-AUTHOR it this attempt (verification_status + a refreshed idempotent field) to
-            # pass — an inspect-only verify that writes nothing cannot terminate pass (the SKILL
-            # contract). The freshness gate is load-bearing here: Compile.generate authors
-            # ir_meta.json and may leave verification_status=pass (the --stage compile gate only
-            # requires a non-empty string), and the gate that used to force verify to do work
-            # (its own end-of-substep --stage compile) moved to Compile.static, so without this
-            # a no-op verify (exit 0, no rewrite) would pass on generate's stale status.
-            # allowed_output_paths == [ir_meta.json], so _fresh_deliverables_written checks
-            # exactly that file's mtime against this substep's launch time.
-            # ...and it must satisfy the stage-meta contract: a verify that certifies its own
-            # phase with a schema-violating meta would persist an unrepairable artifact (the
-            # write gate only checks PASS step_results, so nothing else catches it here).
-            meta = _read_json(self.repo_root / refs.ir_ref / "ir_meta.json") or {}
-            status = "pass" if (meta.get("verification_status") == "pass"
-                                and _fresh_deliverables_written(allowed_output_paths)
-                                and not self._stage_meta_contract_findings(refs, phase)) else "fail"
-        elif phase == "generate" and substep == "verify":
-            # Same freshness requirement as compile.verify: post-G1 generate.verify is a pure
-            # semantic pass whose meta deliverable is source_meta.json, and it must RE-AUTHOR it
-            # this attempt to pass (an inspect-only verify that writes nothing cannot terminate
-            # pass). Without the gate a no-op verify (exit 0, no rewrite) would pass on a stale
-            # verification_status=pass that generate.generate left. The gate is scoped to
-            # source_meta.json ONLY — generate.verify's allowed_output_paths also lists the
-            # producer sources (model/runner.f90) it does NOT rewrite, so checking the whole set
-            # would false-fail a verify that legitimately only re-authors source_meta.json.
-            # The stage-meta contract is enforced here too (see the compile.verify note above):
-            # a pass-status meta whose last_fail_reason is a dict / whose keys are missing
-            # cannot certify the phase.
-            src_meta = f"{refs.source_dir()}/source_meta.json"
-            meta = _read_json(self.repo_root / src_meta) or {}
-            status = "pass" if (meta.get("verification_status") == "pass"
-                                and _fresh_deliverables_written([src_meta])
-                                and not self._stage_meta_contract_findings(refs, phase)) else "fail"
         elif phase == "validate" and substep == "pre_judge":
             # Deterministic pre-spawn DAG readiness: the conductor-authored pre_judge_meta
             # records whether every --with-deps closure node is built+validated in its own
@@ -10042,29 +9523,6 @@ clean:
             # here and classify_failure routes it to fail_closed (integrity blocker).
             meta = _read_gate_meta(self.repo_root / refs.run_node_dir() / "pre_judge_meta.json") or {}
             status = "pass" if (meta.get("status") == "pass"
-                                and _fresh_deliverables_written(allowed_output_paths)) else "fail"
-        elif phase == "validate" and substep == "judge":
-            # R2 judge: a PURE LLM semantic pass authoring ONLY semantic_review.json. The
-            # per-test verdict (verdict.json) is now deterministically host-authored at execute
-            # from the IR predicates, and a physics/contract fail there fails the execute
-            # substep before the judge is ever spawned. So when the judge runs, verdict is
-            # already ∈ {pass, xfail}; the judge passes iff its own semantic finding agrees the
-            # node is clean: semantic_review.decision == "pass". A decision=="fail" (a
-            # fabrication / consistency finding on otherwise-passing tests) breaks run_phase
-            # before post_judge; classify_failure then routes it (via the diagnostician).
-            #
-            # The same freshness requirement as every other LLM substep, and load-bearing for the
-            # SAME reason as compile.verify's: a judge that writes nothing this window must not
-            # pass on an artifact from an earlier attempt. The run dir is NOT rotated between
-            # attempts of one phase (`_ensure_fresh_producer_id` runs once per phase), so without
-            # this a judge leaf that authored `decision: "pass"` and THEN died on a transient
-            # transport fault would be tombstoned, retried, and the retry — finding the dead
-            # attempt's file already in place and rewriting nothing — would certify the node on an
-            # artifact authored by a leaf that never completed, vouched to an arid that never
-            # wrote it. semantic_review.json is the judge's ONLY allowed output path, so gating on
-            # the whole set is exact.
-            sem = _read_json(self.repo_root / refs.run_node_dir() / "semantic_review.json") or {}
-            status = "pass" if (str(sem.get("decision") or "").strip().lower() == "pass"
                                 and _fresh_deliverables_written(allowed_output_paths)) else "fail"
         elif phase == "validate" and substep == "post_judge":
             # Deterministic post-return gate: the conductor-authored post_judge_meta records
@@ -10104,11 +9562,13 @@ clean:
             status = "pass" if (meta.get("status") == "pass"
                                 and _fresh_deliverables_written(allowed_output_paths)) else "fail"
         else:
-            # remaining producing substeps (compile.generate / generate.generate): pass
-            # only when ALL DELIVERABLE outputs were written this attempt (mtime guard);
-            # the audit/process logs (optional basenames) are excluded. The downstream
-            # verify certifies the content.
-            status = "pass" if _fresh_deliverables_written(allowed_output_paths) else "fail"
+            # Not a deterministic substep. The only caller cannot produce one, so reaching
+            # here is a host defect — and the honest answer is a refusal, not the vacuous
+            # pass the old generic tail gave a pair whose `allowed_output_paths` is empty.
+            raise ValueError(
+                f"determine_substep_status is for deterministic substeps only; "
+                f"{phase}.{substep or ''} is an LLM leaf, which computes its own status "
+                f"inside its pure loop")
         return status, output_refs
 
     def _judge_semantic_decision(self, refs: NodeRefs) -> str:
@@ -12029,47 +11489,44 @@ clean:
                     repair: dict[str, str] | None = None,
                     resolved_dependencies: tuple[dict[str, str], ...] = (),
                     dependency_surface: tuple[dict[str, Any], ...] = ()) -> SubstepOutcome:
-        # Certify the codex hooks feature BEFORE record_launch: this can fail closed
-        # (SandboxEnforcementError) when the feature is uncertified, and doing it here —
-        # ahead of allocating an arid / recording a durable launch — avoids orphaning a
-        # recorded launch (phantom `child_running` active run) on that fail-closed path.
-        # Memoized per orchestration (no-op after the first); spawn_leaf also calls it as a
-        # safety net for the record-launch-less diagnostician leaf.
+        """Run one substep. Two shapes exist, and since Z4 (issue #171) only two.
+
+        * An LLM leaf runs as a host-mediated PURE FUNCTION — one typed document in, one JSON
+          document out, no tools, no write authority — through `_run_pure_producer_substep` /
+          `_run_pure_reviewer_substep`, each of which owns its own spawn/validate/repair/
+          finalize/write loop. The shared AGENTIC leaf loop that used to live here, and every
+          retry/warm-resume/exemplar decision it needed, went with it.
+        * A DETERMINISTIC substep (Build, Compile.static, Generate.gate, Validate.pre_judge /
+          execute / post_judge) runs in-process below. It still takes an agent_run_id, a
+          recorded launch and a child-return, so the integrity validators read it as an
+          ordinary substep agent run; what it does not take is a leaf, a sandbox, or a retry —
+          none of the transient-death, usage-limit or warm-resume paths the old loop carried
+          could ever fire for it, so the loop is gone too.
+
+        A node with no CodegenBundle shape has no pure path for the two `generate` pairs
+        (`_pure_leaf_substep`), and there is no longer a second loop to fall through to, so it
+        fails CLOSED here. No in-tree node reaches it (issue #169 made the `infrastructure`
+        harness self-test the `harness` shape); it is the fail-safe for a hand-crafted IR."""
         entry = self.entry_for(phase, substep)
-        # RUNTIME half of the pure-only rule. Config validation rejects an HTTP provider on an
-        # agentic SUBSTEP, but `_pure_leaf_substep` additionally requires the node to have a
-        # bundle SHAPE (`_bundle_shape`). Since issue #169 no in-tree node lacks one — the
-        # `infrastructure` harness self-test, which used to fall through here, is the `harness`
-        # shape — so a shapeless IR reaching this line is hand-crafted, the remaining None
-        # answers (a c/cpp/mixed toolchain, a language with no bundle backend) being rejected
-        # upstream.
-        # An entry that cannot run that loop must fail here, not launch into it.
-        if not entry.supports(CAP_AGENTIC) and not self._pure_leaf_substep(refs, phase, substep):
-            detail = (
-                f"provider {entry.provider!r} is configured for {phase}."
-                f"{substep or ''} but can only run the pure leaf, and this node has no pure "
-                f"path (the node has no CodegenBundle shape — `Conductor._bundle_shape` reads "
-                f"its node_key and its IR's toolchain — so the substep runs the agentic leaf "
-                f"loop). Configure an agentic provider for this substep, or run this node's "
-                f"generate phase on one.")
-            self.emit("pure_only_provider_on_agentic_path", node_key=refs.node_key,
-                      phase=phase, substep=substep or "", provider=entry.provider)
-            return SubstepOutcome(
-                self.new_agent_run_id(), "fail", [], 1,
-                ("pure_only_provider_on_agentic_path", detail), 1)
-        self._ensure_codex_feature_cache(entry)
-        # A pure-function leaf: its OWN spawn/validate/repair/finalize/write loop (empty write
-        # authority; the host writes the artifacts after the child window closes), not the generic
-        # leaf loop below (no allowed_output_paths, no determine_substep_status-before-finalize).
-        # WHICH substeps take it is `_pure_leaf_substep`'s docstring and nothing here: today the
-        # two `compile` pairs and `validate.judge` on every node, and the two `generate` pairs on
-        # any node with a bundle shape.
-        if self._pure_leaf_substep(refs, phase, substep):
+        deterministic = self._is_deterministic_substep(phase, substep)
+        if not deterministic:
+            if not self._pure_leaf_substep(refs, phase, substep):
+                detail = (
+                    f"{phase}.{substep or ''} runs as a pure-function leaf and this node has "
+                    f"no pure path: it has no CodegenBundle shape (`Conductor._bundle_shape` "
+                    f"reads its node_key and its IR's toolchain, and answered none). Give the "
+                    f"node a shape the bundle backends express, or run this phase on a node "
+                    f"that has one.")
+                self.emit("node_has_no_bundle_shape", node_key=refs.node_key,
+                          phase=phase, substep=substep or "", provider=entry.provider)
+                return SubstepOutcome(
+                    self.new_agent_run_id(), "fail", [], 1,
+                    ("node_has_no_bundle_shape", detail), 1)
             if substep in ("verify", "judge"):
-                # The pure reviewer: its own spawn/validate/repair/finalize loop, host-authors the
-                # phase's stage meta from the returned document after the child window closes.
-                # `judge` joined it in Z3 — a judge reviews a run where a verify reviews an
-                # artifact, and the loop is the same shape either way; what differs is the
+                # The pure reviewer: its own spawn/validate/repair/finalize loop, host-authors
+                # the phase's stage meta from the returned document after the child window
+                # closes. `judge` joined it in Z3 — a judge reviews a run where a verify reviews
+                # an artifact, and the loop is the same shape either way; what differs is the
                 # document, which the spec says.
                 return self._run_pure_reviewer_substep(
                     refs, phase, substep, resolved_dependencies,
@@ -12081,267 +11538,71 @@ clean:
                 refs, phase, substep, repair, resolved_dependencies,
                 self._pure_producer_spec(phase, self._shape_for_spec(refs, phase)),
                 dependency_surface)
-        # Resolve the warm-resume decision BEFORE building the request so the slim-vs-full
-        # prompt choice (build_launch_request) matches what record_launch persists and what
-        # spawn_leaf sends below. None => cold launch (full prompt). Deterministic substeps
-        # run in-process (no leaf to resume), so skip the resolver entirely — it keeps the
-        # session-transcript glob and the `resume_session_unavailable` emit side-effect-free
-        # for them even if a reuse repair ever reaches one.
-        deterministic = self._is_deterministic_substep(phase, substep)
-        # `pure=False` because a PURE substep has already returned above, through
-        # `_run_pure_generate_substep` / `_run_pure_verify_substep`, which resolve
-        # their own resume. Calling `_pure_leaf_substep` again here would read as
-        # though this line could see a pure node and would always answer False —
-        # a mutation replacing it with the constant survived, which is what showed
-        # the two are the same thing.
-        resume_session_id = (None if deterministic
-                             else self._resolve_reuse_resume(
-                                 repair, phase, substep, pure=False))
-        # Slim repair turn is always used when a warm resume actually fires (build_launch_request
-        # further requires a findings excerpt to be present, so in practice slim is scoped to the
-        # deterministic-gate reopens — lint/static/compile_static — which carry one; a warm reuse
-        # without findings, e.g. a cross-phase code repair, still re-sends the full prompt).
-        warm_resume = resume_session_id is not None
-        expected_codex_home_generation = (
-            self._codex_session_home_generation(resume_session_id, entry) if warm_resume else None)
-        # R5: resolve a certified sibling exemplar for the authoring leaf only (generate.generate),
-        # and NOT on a warm-resume slim repair (the resumed leaf already has it). build_launch_request
-        # attaches it solely for generate.generate; other substeps ignore the value.
-        exemplar = (self._resolve_exemplar(refs)
-                    if (phase == "generate" and substep == "generate"
-                        and not deterministic and not warm_resume) else None)
-        # Bounded transient-transport retry (see _RETRYABLE_LEAF_INFRA_TAGS): a leaf whose
-        # connection died mid-response is re-launched in place rather than fail-closing the whole
-        # run for a human to `--resume` hours later. The loop is closed INSIDE run_substep on
-        # purpose — run_phase's `outcomes` list is positionally aligned with SUBSTEPS[phase]
-        # (_producer_arid / _judge_attempt_count index into it), so an extra outcome per retry
-        # would corrupt it. Everything attempt-invariant (codex cache, warm-resume target,
-        # exemplar) is resolved ABOVE the loop; only the launch itself repeats.
-        attempt = 0
-        usage_waits = 0
-        transient_retries = 0
-        # Wall-clock spent on transient attempts that already died, against
-        # `TRANSIENT_RETRY_WALL_CLOCK_BUDGET_SECONDS`.
-        transient_spent = 0.0
-        while True:
-            child_arid = self.new_agent_run_id()
-            request = build_launch_request(
-                refs, step=phase, substep=substep,
-                orchestration_id=self.orchestration_id,
-                orchestration_agent_run_id=self.orchestration_agent_run_id,
-                child_agent_run_id=child_arid,
-                agent_model=entry.model, workflow_mode=self.workflow_mode,
-                case_ids=self.read_case_ids(refs) if phase == "validate" else (),
-                evidence_artifacts=self._read_evidence_artifacts(refs) if phase == "validate"
-                else ("state_snapshots",),
-                # build's allowed_output_paths binary path = the imposed canonical exe name.
-                exe_name=(self._resolve_exe_name(refs) if phase == "build" else None),
-                # leaf generate: src/Makefile is conductor-authored, so drop it from the leaf's
-                # allowed_output_paths (it must not author it).
-                makefile_host_authored=(
-                    phase == "generate" and self._conductor_authors_makefile(refs)),
-                # leaf generate: on an M3c node the runner is conductor-rendered, so the leaf
-                # authors <spec_id>_checks.f90 instead of <spec_id>_runner.f90
-                # (build_launch_request swaps it).
-                runner_host_authored=(
-                    phase == "generate" and self._conductor_authors_runner(refs)),
-                repair=repair,
-                resolved_dependencies=resolved_dependencies,
-                dependency_surface=dependency_surface,
-                exemplar=exemplar,
-                warm_resume=warm_resume,
-            )
-            rec = (self.record_launch(
-                child_arid, request, entry,
-                expected_codex_home_generation=expected_codex_home_generation)
-                   if expected_codex_home_generation is not None
-                   else self.record_launch(child_arid, request, entry))
-            if rec.get("codex_home_generation_mismatch"):
-                # The isolated HOME vanished after resume selection (pruned, or
-                # lost with its filesystem — it is durable since issue #64).  The
-                # runtime deliberately returned before creating launch state, so
-                # retry this same substep as a full cold launch against the new
-                # home rather than issuing `codex exec resume` to an empty one.
-                self.emit("resume_session_unavailable", phase=phase, substep=substep or "",
-                          target=resume_session_id or "", reason="codex_home_generation_rotated")
-                resume_session_id = None
-                warm_resume = False
-                expected_codex_home_generation = None
-                continue
-            # Capture the launch instant so a producer substep only passes on outputs
-            # (re)written during this child window, not stale files from a prior attempt.
-            # Re-taken per attempt: a half-written artifact left by the leaf that died is older
-            # than the retry's window, so it cannot fake the retry's pass.
-            launched_at = self._launch_instant(child_arid)
-            # A SECOND reading, monotonic, purely for measuring how long this attempt
-            # ran: `launched_at` must stay the FILESYSTEM's wall clock because
-            # `determine_substep_status` compares it against file mtimes, and a wall clock is
-            # not a duration.
-            launched_monotonic = time.monotonic()
-            if deterministic:
-                # Non-LLM step: run the body in-process and play the child-return ourselves
-                # (no `claude -p` leaf). record_launch above + record-child-return here +
-                # finalize_child below keep the executor a normal step/substep agent_run_id,
-                # so the integrity validators pass unchanged.
-                proc = self._run_deterministic_substep(refs, phase, substep, child_arid, request)
-                self._persist_leaf_output(child_arid, proc, prefix="deterministic")
-                token = self.read_parent_return_token(child_arid)
-                self.runtime([
-                    "record-child-return", *self._oid_args(),
-                    "--agent-run-id", child_arid, "--return-token", token,
-                ])
-            else:
-                # resume_session_id was resolved before build_launch_request (above) so the
-                # slim-vs-full prompt selection is consistent with what is actually sent here.
-                # A retry keeps the SAME resume target: the producer session is idempotent to
-                # fork, and a cold retry would silently drop the slim turn's findings excerpt
-                # (build_launch_request only sends it when warm_resume is True).
-                proc = self.spawn_leaf(
-                    rec["launch_prompt_text"], self._child_env(child_arid, entry), entry,
-                    session_id=child_arid, resume_session_id=resume_session_id,
-                    child_arid=child_arid,
-                    timeout_context={"node_key": refs.node_key, "step": phase,
-                                     "substep": substep or "", "agent_run_id": child_arid})
-                # Persist the leaf's verbatim stdout/stderr durably (every run, pass or
-                # fail) so the LLM's actual response — including an infra failure message
-                # such as a token-limit abort — is never lost. These conductor-side writes
-                # land in the child's bookkeeping dir (not its allowed_output_paths) and are
-                # not hook-guarded, so they don't trip the output-manifest guard. Each attempt
-                # has its own arid, so a retried substep keeps the dead attempt's log too.
-                self._persist_leaf_output(child_arid, proc)
-                token = self.read_parent_return_token(child_arid)
-                # G3 split: the `--stage pre_judge` gate that used to run here inline after the
-                # judge leaf is now the deterministic `post_judge` substep
-                # (Conductor._post_judge_inproc), so the judge leaf holds no gate and
-                # run_substep no longer runs any for it.
-            status, output_refs = self.determine_substep_status(
-                refs, phase, substep, request["allowed_output_paths"], min_mtime=launched_at)
-            # A nonzero leaf exit (crash / transport failure) fails the substep even if
-            # the expected artifacts happen to exist (e.g. stale outputs from a prior
-            # attempt) — the process return code gates artifact-based success.
-            # EVERY non-pass status must carry a result_summary: a failed payload has no
-            # output_refs, so without one _validate_agent_summary_text rejects the
-            # auto-generated agent.summary.txt and finalize-child crashes. A nonzero exit
-            # uses the leaf's stderr tail; a returncode-0 content failure (verify/judge
-            # fail, missing deliverable) uses a generic tag — the detailed diagnostics
-            # live in the canonical artifacts (ir_meta/verdict.json) that classify_failure
-            # reads for routing.
-            result_summary: str | None = None
-            infra_error: tuple[str, str] | None = None
-            if proc.returncode != 0:
-                status = "fail"
-                result_summary = self._leaf_failure_summary(proc)
-                infra_error = _leaf_infra_error(proc)
-            elif status != "pass":
-                result_summary = f"substep_fail: {phase}" + (f".{substep}" if substep else "")
-            reply = f"status: {status}\noutput_refs: {len(output_refs)}\nleaf rc={proc.returncode}"
-            if result_summary:
-                reply += f"\nresult_summary: {result_summary}"
-            # The agentic claude leaf now runs under `--output-format json` too, so its cost
-            # and the model it actually ran are readable from its own stdout — the in-boundary
-            # channel the pure path has always used. `_unwrap_agentic_envelope` already took
-            # both off it at the capture boundary, so they arrive on `proc`; a deterministic
-            # substep launched no leaf and records `not_measured` instead.
-            usage_row = _leaf_usage_row(proc, entry, deterministic=deterministic)
-            # `proc.model` REPLACES the `~/.claude` transcript lookup `_agent_run_json` used to
-            # fall back to for a claude leaf: the same value, from the leaf's own output
-            # instead of from outside the access boundary.
-            model_override = proc.model
-            # This used to terminalize the attempt and then TOMBSTONE it, in that order, and the
-            # ordering carried a careful two-part justification. Issue #177 deleted the tombstone
-            # — a terminal arid no step_result vouches is simply a failed attempt — so there is
-            # one write here now and no ordering left to get wrong. One half of that reasoning
-            # did not go with it, and it is recorded at clause (c) of
-            # `_validate_orchestration_completion_for_pass` rather than lost: the conductor
-            # deliberately did NOT tombstone a leaf that had made a genuine unauthorized write,
-            # so that the violation stayed visible. Nothing tombstones anything now, and the
-            # vouch refuses the diverted attempt's kept edge directly, which is the same
-            # protection stated where it is enforced instead of where it was worked around.
-            self.finalize_child(
-                child_arid, token, reply,
-                self._agent_run_json(refs, phase, substep, child_arid, status,
-                                     output_refs, result_summary, entry=entry,
-                                     agent_model_override=model_override,
-                                     usage=usage_row, resume_mode=proc.resume_mode))
-            transient_death = (
-                not deterministic
-                and proc.returncode != 0
-                and infra_error is not None
-                and infra_error[0] in _RETRYABLE_LEAF_INFRA_TAGS)
-            if transient_death:
-                # Charged for a TRANSIENT death only. Not literally the same predicate as the
-                # pure loops, which charge on `category == "pure_transport"` — that category is
-                # set for ANY nonzero leaf exit, so it also covers a 4xx and an unclassified
-                # crash. The difference is unreachable rather than tolerated: a `pure_transport`
-                # death that is not a retryable tag terminates the loop on the same pass
-                # (`can_repair` excludes the category), so the over-charge is never read back.
-                # In particular a
-                # `llm_usage_limit` attempt is not charged: `--wait-usage-reset` can wait one out
-                # for hours, and billing that to the transient budget would refuse the next cheap
-                # flake on time no transient attempt ever spent. Monotonic for the same reason as
-                # in the pure loops: a wall clock is not a duration.
-                elapsed_s = max(0.0, time.monotonic() - launched_monotonic)
-                spent_before = transient_spent
-                transient_spent += elapsed_s          # granted or refused, the attempt ran
-            retryable = transient_death and attempt < MAX_LEAF_TRANSIENT_RETRIES
-            # The wall-clock budget, evaluated LAST for the same reason as in the pure loop: it
-            # may only remove a retry the checks above would have granted, so it can never name a
-            # tag that was never retryable nor a budget that was already spent on count.
-            if retryable and self._transient_wall_clock_exhausted(
-                    refs=refs, phase=phase, substep=substep, tag=infra_error[0],
-                    child_arid=child_arid, evidence=infra_error[1], attempt=attempt + 1,
-                    elapsed_s=elapsed_s, spent_s=spent_before):
-                retryable = False
-            if not retryable:
-                # --wait-usage-reset (opt-in): a usage limit is normally terminal (fail_closed for
-                # a manual post-reset --resume). When the operator opted in AND the leaf's terminal
-                # line carried a resolvable reset (a machine `|<epoch>` or a TZ-anchored human reset),
-                # wait it out in place and re-launch — a same-run, substep-granular resume instead of
-                # a next-day fresh run. Bounded by MAX_USAGE_LIMIT_WAITS, a budget DISTINCT from the
-                # transient-retry budget above; a usage limit is never a transient-retry tag, so this
-                # cannot compound with it.
-                if (not deterministic and infra_error is not None
-                        and infra_error[0] == "llm_usage_limit"):
-                    # allow_envelope=False, not a `_pure_leaf_substep` call: a pure substep never
-                    # reaches this loop (the dispatch above returns in BOTH branches), so the
-                    # predicate is provably False here — evaluating it would only re-read the
-                    # node's IR on the failure path and imply this loop can carry a pure leaf.
-                    # An agentic claude leaf IS launched with `--output-format json` (issue #47),
-                    # but `_unwrap_agentic_envelope` lifted its answer out at the capture
-                    # boundary, so what reaches here is the model's own text — and a JSON line in
-                    # THAT is model-written and must never be unwrapped, exactly as before.
-                    plan = self._usage_reset_wait_plan(
-                        proc, usage_waits, entry=entry, node_key=refs.node_key, step=phase,
-                        substep=substep, dead_agent_run_id=child_arid,
-                        evidence=infra_error[1], allow_envelope=False)
-                    if plan is not None:
-                        self._wait_for_usage_reset(
-                            node_key=refs.node_key, step=phase, substep=substep,
-                            dead_agent_run_id=child_arid, wait_seconds=plan.wait_seconds,
-                            reset_epoch=plan.reset_epoch, reset_source=plan.reset_source,
-                            window=plan.window, wait_attempt=usage_waits + 1)
-                        usage_waits += 1
-                        continue
-                # `attempts` counts EVERY launch (transient retries + usage waits + this one), so a
-                # fail_closed after a wait still reports the honest launch count in `[attempts=N]`.
-                return SubstepOutcome(child_arid, status, output_refs, proc.returncode,
-                                      infra_error, attempt + usage_waits + 1)
-            tag = infra_error[0]
-            max_attempts = MAX_LEAF_TRANSIENT_RETRIES + 1
-            # A dead attempt is never vouched by a step_result (only the surviving attempt's arid
-            # goes into substep_agent_run_ids), and an un-vouched TERMINAL arid is an orphan the
-            # completion check rejects at the end of an otherwise-passing run. The FINAL attempt of
-            # an exhausted budget is tombstoned instead by run_phase's transport branch — between
-            # the two, every arid this loop mints is covered. Idempotent (a set union), so a
-            # re-tombstone is harmless.
-            delays = _LEAF_RETRY_BACKOFF_SECONDS.get(tag, _DEFAULT_LEAF_RETRY_BACKOFF)
-            delay = delays[min(attempt, len(delays) - 1)]
-            self.emit("leaf_transient_retry", node_key=refs.node_key, step=phase,
-                      substep=substep, tag=tag, attempt=attempt + 1,
-                      max_attempts=max_attempts, backoff_seconds=delay,
-                      dead_agent_run_id=child_arid, evidence=infra_error[1])
-            self._sleep_backoff(delay)
-            attempt += 1
+
+        # --- deterministic in-process substep ------------------------------------------
+        child_arid = self.new_agent_run_id()
+        request = build_launch_request(
+            refs, step=phase, substep=substep,
+            orchestration_id=self.orchestration_id,
+            orchestration_agent_run_id=self.orchestration_agent_run_id,
+            child_agent_run_id=child_arid,
+            agent_model=entry.model, workflow_mode=self.workflow_mode,
+            case_ids=self.read_case_ids(refs) if phase == "validate" else (),
+            evidence_artifacts=self._read_evidence_artifacts(refs) if phase == "validate"
+            else ("state_snapshots",),
+            # build's allowed_output_paths binary path = the imposed canonical exe name.
+            exe_name=(self._resolve_exe_name(refs) if phase == "build" else None),
+            makefile_host_authored=(
+                phase == "generate" and self._conductor_authors_makefile(refs)),
+            runner_host_authored=(
+                phase == "generate" and self._conductor_authors_runner(refs)),
+            repair=repair,
+            resolved_dependencies=resolved_dependencies,
+            dependency_surface=dependency_surface,
+        )
+        self.record_launch(child_arid, request, entry)
+        # Capture the launch instant so a producer substep only passes on outputs (re)written
+        # during this window, not stale files from a prior attempt.
+        launched_at = self._launch_instant(child_arid)
+        # Non-LLM step: run the body in-process and play the child-return ourselves (no leaf).
+        # record_launch above + record-child-return here + finalize_child below keep the
+        # executor a normal step/substep agent_run_id, so the integrity validators pass
+        # unchanged.
+        proc = self._run_deterministic_substep(refs, phase, substep, child_arid, request)
+        self._persist_leaf_output(child_arid, proc, prefix="deterministic")
+        token = self.read_parent_return_token(child_arid)
+        self.runtime([
+            "record-child-return", *self._oid_args(),
+            "--agent-run-id", child_arid, "--return-token", token,
+        ])
+        status, output_refs = self.determine_substep_status(
+            refs, phase, substep, request["allowed_output_paths"], min_mtime=launched_at)
+        # A nonzero exit fails the substep even if the expected artifacts happen to exist
+        # (e.g. stale outputs from a prior attempt). EVERY non-pass status must carry a
+        # result_summary: a failed payload has no output_refs, so without one
+        # `_validate_agent_summary_text` rejects the auto-generated agent.summary.txt and
+        # finalize-child crashes.
+        result_summary: str | None = None
+        infra_error: tuple[str, str] | None = None
+        if proc.returncode != 0:
+            status = "fail"
+            result_summary = self._leaf_failure_summary(proc)
+            infra_error = _leaf_infra_error(proc)
+        elif status != "pass":
+            result_summary = f"substep_fail: {phase}" + (f".{substep}" if substep else "")
+        reply = f"status: {status}\noutput_refs: {len(output_refs)}\nleaf rc={proc.returncode}"
+        if result_summary:
+            reply += f"\nresult_summary: {result_summary}"
+        # No leaf launched, so there is no in-boundary usage channel to read: the row records
+        # `not_measured` rather than inventing one.
+        usage_row = _leaf_usage_row(proc, entry, deterministic=True)
+        self.finalize_child(
+            child_arid, token, reply,
+            self._agent_run_json(refs, phase, substep, child_arid, status,
+                                 output_refs, result_summary, entry=entry,
+                                 agent_model_override=proc.model,
+                                 usage=usage_row, resume_mode=proc.resume_mode))
+        return SubstepOutcome(child_arid, status, output_refs, proc.returncode, infra_error, 1)
 
     def _transient_wall_clock_exhausted(
         self, *, refs: NodeRefs, phase: str, substep: str | None, tag: str,
@@ -12431,7 +11692,8 @@ clean:
 
         The argv base is `leaf_command`'s (the entry's `command:` wrapper if configured, else the bare
         backend), so the probe interrogates the executable the LEAF actually uses rather than a
-        hardcoded `claude` — the same reasoning as `_ensure_codex_feature_cache`.
+        hardcoded `claude` — the same reasoning the codex feature probe used before Z4
+        (issue #171) deleted it.
 
         The `result` is trusted ONLY when the envelope proves it came from the BUILT-IN `/usage`
         slash command, not from a model turn. `--output-format json -p /usage` on the real CLI
@@ -12926,8 +12188,8 @@ clean:
     #     `--stage pre_judge` and record `post_judge_meta.json` with a severity `disposition`;
     #     both graded classes (leaf/judge-authored conformance, and integrity) are
     #     fail_closed; an unknown one escalates.
-    # The judge leaf itself invokes no validator gate (ALLOWED_VALIDATE_PIPELINE_STAGES for
-    # all three of pre_judge/judge/post_judge == frozenset()), so it holds no gate at all.
+    # The judge leaf itself invokes no validator gate — it holds no shell to invoke one with,
+    # and all three of pre_judge / judge / post_judge run their gates in the conductor.
 
     def _judge_pre_spawn_dag_block(self, refs: NodeRefs) -> str | None:
         """Pre-spawn Validate.judge dependency-DAG readiness (multi-node closures only).

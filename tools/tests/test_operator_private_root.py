@@ -48,12 +48,11 @@ from unittest import mock
 import tools.hooks.common as hooks_common
 import tools.orchestration_runtime as ort
 from tools import run_workflow
-from tools.tests.leaf_config_fixture import (
+from tools.tests.private_root_fixture import (
     _private_root_redirects,
     isolated_homes_per_test_suite,
     redirect_isolated_homes_root_for_module,
     restore_isolated_homes_root_for_module,
-    seed_claude_leaf_config,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -173,9 +172,10 @@ class WorkflowHomesRootOverrideTests(unittest.TestCase):
         These roots are exempt from the containment DROP so the guard is not lost when
         one of them overlaps the checkout. The consequence for a root ABOVE the checkout
         is that every in-repo path is a path under a protected root — and the guard
-        matches the command's tokens, not only its read targets. Measured through the real
-        `evaluate_common_policy` with `ATMOFAB_WORKFLOW_HOMES_ROOT` set to the checkout's
-        parent: `cat README.md`, `ls`, `python3 tools/x.py` and `echo hi` all BLOCK. It used
+        matches the command's tokens, not only its read targets. Measured at the time through the
+        real `evaluate_common_policy` (deleted with the leaf hook layer in Z4, issue #171, so
+        the measurement is a record and cannot be re-run here) with
+        `ATMOFAB_WORKFLOW_HOMES_ROOT` set to the checkout's parent: `cat README.md`, `ls`, `python3 tools/x.py` and `echo hi` all BLOCK. It used
         to read "with either root", and that quantifier died with the operator token store
         (issue #176): the relocator left beside this one, `ATMOFAB_START_CLAIM_ROOT`, is in no
         `protected_host_read_roots` entry, so all four of those commands ALLOW under it.
@@ -222,18 +222,22 @@ class WorkflowHomesRootOverrideTests(unittest.TestCase):
 
 
 class OnePrivateRootTests(unittest.TestCase):
-    """The writers and the guard land in ONE root. This is issue #132 itself."""
+    """The writers land in ONE root. This is issue #132 itself."""
 
-    def test_the_two_writers_and_the_guard_resolve_one_root(self) -> None:
-        """Move `$HOME` and all three follow, together.
+    def test_the_two_writers_resolve_one_root(self) -> None:
+        """Move `$HOME` and both follow, together.
 
-        The three sites are `run_workflow._claim_lock_path` (writes a start claim),
-        `orchestration_runtime._workflow_homes_root` (writes the isolated homes) and
-        `protected_host_read_roots` (forbids a leaf from reading any of it). Before
+        The two sites are `run_workflow._claim_lock_path` (writes a start claim) and
+        `orchestration_runtime._workflow_homes_root` (writes the isolated homes). Before
         issue #132 each writer built `Path.home() / ".atmofab" / …` for itself, so they
         agreed by coincidence: the #127 rename moved one and the others stayed. There
         were four sites; the operator-token writer and its `dismiss_violation` reader
-        went with issue #176.
+        went with issue #176, and the READ GUARD — `protected_host_read_roots`, which
+        refused a leaf's `Bash` read of either root — went with Z4 (issue #171). It
+        guarded a leaf-held tool, and a pure leaf holds none: it receives a closed context
+        and returns one document, so there is no read for the guard to refuse and nothing
+        it could still be coupled to. What keeps the operator's root out of a leaf's reach
+        now is the sandbox profile, which binds the repository and nothing else.
 
         Driven through the REAL functions, not through the resolvers — pinning at the
         resolver would leave the wiring free to be deleted, which is the failure this
@@ -248,7 +252,6 @@ class OnePrivateRootTests(unittest.TestCase):
             fake_home.mkdir()
             repo = Path(td) / "repo"
             repo.mkdir()
-            seed_claude_leaf_config(repo)
             oid, arid = "opr_one", "arid-1"
             redirected = {name for name, _sub in _private_root_redirects()}
             env = {k: v for k, v in os.environ.items() if k not in redirected}
@@ -265,10 +268,8 @@ class OnePrivateRootTests(unittest.TestCase):
                 # WRITER 2 — the isolated homes root.
                 self.assertEqual(ort._workflow_homes_root(), atmofab / "homes")
 
-                # THE GUARD — both entries, so a Bash read of either fails closed.
-                roots = hooks_common.protected_host_read_roots()
-                self.assertIn(atmofab, roots)
-                self.assertIn(atmofab / "homes", roots)
+                # No third site: the read guard that was the third assertion here is gone
+                # with the tool it guarded (see the docstring).
 
     def test_the_dot_atmofab_constant_is_spelled_once(self) -> None:
         """`".atmofab"` is spelled exactly ONCE across `tools/` and `mcp_servers/`, in
