@@ -45,7 +45,15 @@ USAGE
 The default case list covers every spelling the check stopped examining, the absolute
 spellings it still refuses, and the controls that make an empty result mean something.
 Re-run it after a CLI upgrade; if an INERT row starts reading, the narrowing's premise is
-gone and `tools/hooks/cli.py`'s pattern check has to widen again.
+gone.
+
+**WHOSE PREMISE, since Z4** ([issue #171](https://github.com/seiya/atmofab/issues/171)):
+`tools/hooks/cli.py` — the leaf hook layer whose pattern check this script sized — is
+DELETED. A `pure-function leaf` holds no tool, so there is no tool call for a hook to judge
+and no narrowing left to re-check. What the script still measures is what the CLI itself
+reads for a given `--tools` set, which is the open question `TODO.md` records about
+`--safe-mode` and the operator's `~/.claude`; read a result as evidence about the CLI, not
+about a check this repository runs.
 """
 from __future__ import annotations
 
@@ -293,7 +301,7 @@ def main(argv: list[str] | None = None) -> int:
     if failures:
         print(f"\nFAIL: {len(failures)} of {len(cases)} rows did not behave as declared.")
         print("An INERT row that READ is the end of issue #71's narrowing premise:\n"
-              "`tools/hooks/cli.py`'s pattern check would have to widen again.\n"
+              "the leaf hook layer's pattern check would have had to widen again.\n"
               "A CONTROL or absolute row that came back inert means the measurement is\n"
               "broken, not that the tool is confined — fix the harness before believing\n"
               "any row above it.")

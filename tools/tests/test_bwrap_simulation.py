@@ -69,18 +69,6 @@ def _bwrap_usable() -> bool:
 
 
 @unittest.skipUnless(_bwrap_usable(), "bwrap / user namespaces not available")
-
-
-@unittest.skipUnless(_bwrap_usable(), "bwrap / user namespaces not available")
-
-
-@unittest.skipUnless(_bwrap_usable(), "bwrap / user namespaces not available")
-
-
-@unittest.skipUnless(_bwrap_usable(), "bwrap / user namespaces not available")
-
-
-@unittest.skipUnless(_bwrap_usable(), "bwrap / user namespaces not available")
 class BwrapReadonlyProfileTests(unittest.TestCase):
     """P2-4b: the failure diagnostician runs under a read-only bwrap profile
     (`build_readonly_bwrap_profile`) — no capability, no write_roots. Confirm the

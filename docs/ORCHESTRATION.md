@@ -241,7 +241,7 @@ This document defines the orchestration contract — the **conductor** (`tools/w
 - `verification input` is made explicit as input that the relevant `agent` may use only for pass/fail judgment, consistency confirmation, and dependency confirmation.
 - `expected output` is made explicit including the file name, storage location, and update responsibility.
 - The parent `agent` must not instruct guessed completion on an input shortage. When there is an input shortage, it instructs a `fail-fast` stop.
-- The launch request to a child `agent` records `skill_name`, `skill_ref`, and `skill_must_read_refs` as required.
+- The launch request to a child `agent` carries `skill_name`, `skill_ref` and `skill_must_read_refs` EMPTY. No leaf reads a `SKILL` since Z4 ([issue #171](https://github.com/seiya/atmofab/issues/171)) — its whole contract is the rendered prompt — and a pure launch request carrying a non-empty one is refused by name (`tools/orchestration_runtime.py`, `_validate_launch_request_payload`). They were REQUIRED fields until that change.
 
 ### Conventions for `ir_ref` / `pipeline_ref` / `dependency_ref`
 - `ir_ref` is only `workspace/ir/<node_key_safe>/<ir_id>`, and an additional path segment must not be appended. `<ir_id>` is in the canonical `<slug>_<YYYYMMDD>_<seq3>` form (regex `^[a-z0-9]+(?:-[a-z0-9]+)*_[0-9]{8}_[0-9]{3}$`, canonical source: `docs/workflow/WORKFLOW_CORE.md` and `_SLUG_DATE_SEQ3_PATTERN` of `tools/orchestration_runtime.py`). Place `<node_key_safe>` as the parent directory of `<ir_id>`, and do not prepend it as a prefix to `<ir_id>` itself (because `node_key_safe` contains `__` / `_`, it violates the slug regex).

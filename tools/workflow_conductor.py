@@ -1748,13 +1748,13 @@ def build_launch_request(
     # A verify substep's allowed_output_paths is already narrowed to exactly its stage-meta file
     # on ALL turns (compile.verify -> ir_meta.json, generate.verify -> source_meta.json, above),
     # so a verify_meta_schema repair turn — which re-authors ONLY that meta — needs no special-case
-    # narrowing here: the normal list already IS the meta. All three write-authorization layers are
-    # now substep-granular, giving real defence in depth: (1) allowed_file_tool_paths -> the
-    # output_manifest_write_guard hook (rejects an Edit/Write/apply_patch to any unlisted path),
-    # (2) the bwrap `write_roots` (the runtime pins verify's write_root to that same stage-meta
-    # file, so the rest of the source/ (resp. ir/) tree is not even RW-bound), and (3) the terminal
-    # FS-diff (which reads the narrowed write_roots). Because (2)/(3) are structural and independent
-    # of the pattern-based Bash-write detector, a source rewritten on a verify turn — which would
+    # narrowing here: the normal list already IS the meta. The THREE write-authorization layers this
+    # comment used to describe — `allowed_file_tool_paths` into the output-manifest write guard, the
+    # bwrap `write_roots` pinned to that same stage-meta file, and the terminal FS-diff reading those
+    # narrowed roots — are ALL DELETED (Z4, issue #171 PR-2): a verify leaf is pure, holds no tool,
+    # and authors nothing. What the narrowing still does is declare the phase's outputs, which
+    # `post_<phase>` validation checks the phase root against. The hazard they were defence in depth
+    # against — a source rewritten on a verify turn, which would
     # reach Build uncertified, the lint/syntax/static gates having already run and never re-running
     # — is refused by the sandbox itself, not merely by the hook. The constraint therefore does not
     # rely on the findings text (which the slim renderer fences as untrusted data anyway).

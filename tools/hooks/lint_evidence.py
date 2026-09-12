@@ -10,7 +10,8 @@ leaf-non-writable location that already forces host authorship of `lineage.json`
 written ONLY host-side by the conductor. The validator reads it read-only and fail-closes
 when it is missing/invalid.
 
-Mirrors the codex feature-check cache pattern in `tools/hooks/codex_feature.py`. Placement
+Mirrors the codex feature-check cache pattern that lived in `tools/hooks/codex_feature.py`
+until the leaf hook layer was deleted (Z4, issue #171). Placement
 is keyed on the pipeline root (which the validator already receives as `--pipeline-root`)
 rather than the orchestration id, so no extra `--orchestration-id` plumbing is needed.
 
