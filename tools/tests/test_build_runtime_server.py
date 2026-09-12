@@ -1853,6 +1853,82 @@ class McpCallClientTests(unittest.TestCase):
                 self.assertIn(needle, path.read_text(encoding="utf-8"))
 
 
+class SchemaMinimumsAreEnforcedTests(unittest.TestCase):
+    """An MCP argument schema is advisory; `_bounded_int` is what makes it a rule.
+
+    The served schema declares `"minimum": 1` on `jobs` and `timeout_sec` and 1000 on
+    `capture_limit`, and a client is free to ignore it — `make -j-5` then waits forever
+    and `timeout_sec=0` kills the build instantly, neither with an error naming the
+    cause. `_bounded_int` is the only thing refusing them.
+
+    It lost its witness in PR-2: the check lived in `OrchestratedEnvAllowlistTests`,
+    which was deleted whole with the capability gate, and it has nothing to do with that
+    gate. Deleting the `if value < minimum` raise left the full suite green.
+
+    The minimums are read OUT OF THE SERVED SCHEMA rather than restated here, so the two
+    cannot drift apart in the direction this test exists to catch: a schema that declares
+    a bound the code does not hold."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.mod = _load_server_module()
+
+    def setUp(self) -> None:
+        self.project_dir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.project_dir, ignore_errors=True)
+
+    def _args(self, tool: str) -> dict:
+        args: dict = {"project_dir": str(self.project_dir)}
+        if tool == "run_program":
+            args["command"] = ["true"]
+        if tool == "compile_project":
+            args["build_system"] = "make"
+        if tool == "run_linter":
+            args["preset"] = "fortitude"
+        return args
+
+    def _bounded_properties(self) -> list[tuple[str, str, int]]:
+        out = []
+        for name, tool in self.mod.TOOLS.items():
+            for prop, schema in tool.input_schema.get("properties", {}).items():
+                if schema.get("type") == "integer" and "minimum" in schema:
+                    out.append((name, prop, int(schema["minimum"])))
+        return out
+
+    def test_every_declared_minimum_is_refused_below_its_bound(self) -> None:
+        bounded = self._bounded_properties()
+        self.assertTrue(bounded, "no integer minimum in any served schema; "
+                                 "this coupling has lost its subject")
+        for tool, prop, minimum in bounded:
+            with self.subTest(tool=tool, argument=prop):
+                args = self._args(tool)
+                args[prop] = minimum - 1
+                with mock.patch.object(
+                    self.mod, "_run_command",
+                    return_value={"ok": True, "return_code": 0,
+                                  "stdout": "", "stderr": ""},
+                ) as run_command:
+                    with self.assertRaises(ValueError) as ctx:
+                        getattr(self.mod, f"tool_{tool}")(args)
+                self.assertIn(prop, str(ctx.exception))
+                self.assertIn(str(minimum), str(ctx.exception))
+                run_command.assert_not_called()
+
+    def test_the_bound_itself_is_accepted(self) -> None:
+        # Off-by-one in the other direction: a rule that refused the declared minimum
+        # would make the schema a lie the same way.
+        for tool, prop, minimum in self._bounded_properties():
+            with self.subTest(tool=tool, argument=prop):
+                args = self._args(tool)
+                args[prop] = minimum
+                with mock.patch.object(
+                    self.mod, "_run_command",
+                    return_value={"ok": True, "return_code": 0,
+                                  "stdout": "", "stderr": ""},
+                ):
+                    getattr(self.mod, f"tool_{tool}")(args)
+
+
 class ToolSchemaDocumentParityTests(unittest.TestCase):
     """`mcp_servers/tools/*.json` must say what the served schema says.
 
