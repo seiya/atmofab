@@ -48,12 +48,11 @@ from unittest import mock
 import tools.hooks.common as hooks_common
 import tools.orchestration_runtime as ort
 from tools import run_workflow
-from tools.tests.leaf_config_fixture import (
+from tools.tests.private_root_fixture import (
     _private_root_redirects,
     isolated_homes_per_test_suite,
     redirect_isolated_homes_root_for_module,
     restore_isolated_homes_root_for_module,
-    seed_claude_leaf_config,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -248,7 +247,6 @@ class OnePrivateRootTests(unittest.TestCase):
             fake_home.mkdir()
             repo = Path(td) / "repo"
             repo.mkdir()
-            seed_claude_leaf_config(repo)
             oid, arid = "opr_one", "arid-1"
             redirected = {name for name, _sub in _private_root_redirects()}
             env = {k: v for k, v in os.environ.items() if k not in redirected}

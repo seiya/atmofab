@@ -13168,7 +13168,22 @@ def _render_pure_launch_prompt(request_payload: dict[str, Any]) -> str:
     and the identity block. No `_template_placeholder_values` (no gate runbook / task card /
     capability paths — a pure leaf runs no gate and writes nothing)."""
     templates = _load_launch_prompt_templates()
-    template = templates[_pure_launch_template_name(request_payload)]
+    name = _pure_launch_template_name(request_payload)
+    try:
+        template = templates[name]
+    except KeyError:
+        # A NAMED refusal, not a KeyError. `prepare_launch_request_payload` force-renders a
+        # pure request BEFORE `_validate_launch_request_payload` runs, so a payload missing
+        # `step` (or naming a pair with no template) reaches here first and used to escape as
+        # an unnamed KeyError naming a half-built template key — hiding the field the caller
+        # actually has to fix. Until Z4 (issue #171) it did not: such a payload fell to the
+        # agentic renderer, which tolerated it, and the named refusal arrived from the
+        # validator a few lines later. Deleting that renderer moved the failure here, so the
+        # naming moves with it.
+        raise ValueError(
+            f"pure launch request names no rendered prompt: no template for {name!r} "
+            f"(step={request_payload.get('step')!r} substep={request_payload.get('substep')!r} "
+            f"pure_shape={request_payload.get('pure_shape')!r})") from None
     pure_context = request_payload.get("pure_context")
     subs: dict[str, str] = {}
     if isinstance(pure_context, dict):
@@ -16684,7 +16699,6 @@ def _secure_backend_home_file(
             os.close(fd)
 
 
-@contextlib.contextmanager
 def codex_isolation_profile_kwargs(isolation: Mapping[str, str]) -> dict[str, Any]:
     """The bwrap profile kwargs a prepared Codex home implies — ONE spelling."""
     return {

@@ -40,11 +40,10 @@ import tools.orchestration_runtime as wc_runtime
 import tools.workflow_conductor as wc
 from tools import orchestration_runtime as ort
 from tools.tests.orchestration_fixtures import certify_node
-from tools.tests.leaf_config_fixture import (
+from tools.tests.private_root_fixture import (
     isolated_homes_per_test_suite,
     redirect_isolated_homes_root_for_module,
     restore_isolated_homes_root_for_module,
-    seed_claude_leaf_config,
 )
 from tools.tests.llm_samples import sample_config as _sample_config
 from tools.tests.llm_samples import sample_config_with as _cfg
@@ -240,34 +239,35 @@ class BuildLaunchRequestTest(unittest.TestCase):
                            ir_id="x_20260101_001", pipeline_id="x_20260101_001",
                            source_id="src_20260101_002")
 
-    def _reuse_repair(self) -> dict[str, str]:
-        return {
-            "issue_severity": "major", "repair_strategy": "reuse",
-            "repair_target_agent_run_id": "child-1", "repair_reason": "lint_lint_findings",
-            "repair_findings": "x_model.f90:61:17: C061 argument 'u_l' missing 'intent'",
-        }
+    def test_build_launch_request_marks_a_warm_resume_repair(self) -> None:
+        """`warm_resume` + a `reuse` repair carrying findings is what selects the slim repair
+        turn, and the marker is the request field that says so.
 
-    def test_build_launch_request_sets_warm_resume_findings(self) -> None:
-        # warm_resume + reuse repair carrying findings -> slim signal + emptied must-read.
+        This row used to assert the OTHER half too — that the same combination emptied
+        `skill_must_read_refs`, and that without `warm_resume` the list stayed populated. No
+        launch carries a must-read list since Z4 (issue #171): a deterministic substep has no
+        leaf and a pure leaf is handed its context inlined, so there is nothing for a slim turn
+        to omit. What is left is the marker and the findings it carries."""
         req = wc.build_launch_request(
             self._generate_refs(), step="generate", substep="generate",
             orchestration_id="orch_x", orchestration_agent_run_id="parent",
             child_agent_run_id="child-2", agent_model="m", workflow_mode="dev",
             repair=self._reuse_repair(), warm_resume=True)
         self.assertTrue(req.get("warm_resume"))
-        self.assertEqual(req["skill_must_read_refs"], "")
         self.assertEqual(req["repair_findings"], self._reuse_repair()["repair_findings"])
-
-    def test_build_launch_request_no_warm_resume_keeps_full_must_read(self) -> None:
-        # Same reuse repair but warm_resume=False (session not resumable) -> full prompt:
-        # no slim signal and the must-read list stays populated.
-        req = wc.build_launch_request(
+        cold = wc.build_launch_request(
             self._generate_refs(), step="generate", substep="generate",
             orchestration_id="orch_x", orchestration_agent_run_id="parent",
             child_agent_run_id="child-2", agent_model="m", workflow_mode="dev",
             repair=self._reuse_repair(), warm_resume=False)
-        self.assertNotIn("warm_resume", req)
-        self.assertNotEqual(req["skill_must_read_refs"], "")
+        self.assertNotIn("warm_resume", cold)
+
+    def _reuse_repair(self) -> dict[str, str]:
+        return {
+            "issue_severity": "major", "repair_strategy": "reuse",
+            "repair_target_agent_run_id": "child-1", "repair_reason": "lint_lint_findings",
+            "repair_findings": "x_model.f90:61:17: C061 argument 'u_l' missing 'intent'",
+        }
 
     def test_dependency_surface_attached_only_for_compile_generate(self) -> None:
         # L2: the dependency_surface catalog rides ONLY on the compile.generate payload — not
@@ -290,40 +290,6 @@ class BuildLaunchRequestTest(unittest.TestCase):
             orchestration_agent_run_id="p", child_agent_run_id="c", agent_model="m",
             workflow_mode="dev", dependency_surface=surface)
         self.assertNotIn("dependency_surface", gg)
-
-    def test_m3d_runner_contract_narrowing_survives_record_launch(self) -> None:
-        # M3d node-aware must-read: an M3c physics generate leaf (runner host-rendered)
-        # drops RUNNER_OUTPUT_CONTRACT and keeps the checks ABI; a non-M3c leaf keeps
-        # RUNNER. The conductor stamps `runner_host_authored` into the payload so the
-        # record-launch security-boundary recompute derives the SAME set — end-to-end
-        # proof (beyond the synthetic-payload drift test) that the two paths cannot drift.
-        from tools.orchestration_runtime import build_skill_must_read_refs
-        RUN = "docs/workflow/RUNNER_OUTPUT_CONTRACT.md"
-        CHK = "docs/workflow/CHECKS_MODULE_CONTRACT.md"
-
-        m3c = wc.build_launch_request(
-            self._generate_refs(), step="generate", substep="generate",
-            orchestration_id="o", orchestration_agent_run_id="p",
-            child_agent_run_id="c", agent_model="m", workflow_mode="dev",
-            runner_host_authored=True)
-        self.assertTrue(m3c.get("runner_host_authored"))
-        self.assertNotIn(RUN, m3c["skill_must_read_refs"])
-        self.assertIn(CHK, m3c["skill_must_read_refs"])
-        # The record-launch recompute reads runner_host_authored off the SAME payload,
-        # so it must NOT re-add RUNNER (a drift would leak it back in).
-        self.assertNotIn(RUN, build_skill_must_read_refs(m3c))
-
-        # A runner-authoring node — the `infrastructure` harness self-test — keeps the
-        # RUNNER contract in its must-read set.
-        leaf_authored = wc.build_launch_request(
-            self._generate_refs(), step="generate", substep="generate",
-            orchestration_id="o", orchestration_agent_run_id="p",
-            child_agent_run_id="c", agent_model="m", workflow_mode="dev",
-            runner_host_authored=False)
-        self.assertNotIn("runner_host_authored", leaf_authored)  # non-M3c: not stamped
-        self.assertIn(RUN, leaf_authored["skill_must_read_refs"])
-        self.assertIn(RUN, build_skill_must_read_refs(leaf_authored))
-
 
 class ReuseResumeAndFindingsTest(unittest.TestCase):
     """The warm-resume eligibility resolver and the findings-excerpt reader that feed the
@@ -7124,7 +7090,6 @@ class DiagnosticianTest(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         root = Path(tmp.name)
-        seed_claude_leaf_config(root)
         # The private-home preparation records the home in orchestration metadata
         # under that file's own lock, exactly as the codex twin does, so the
         # orchestration directory has to exist for a diagnostician to launch at all.

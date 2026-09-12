@@ -13,7 +13,7 @@ attempt to fix that observed only half:
     silently skip rather than fail, which is the shape a safety net fails in;
   * the REDIRECT's own witness was first written into
     `tools/tests/test_operator_private_root.py`, which installs the MODULE-level redirect
-    from `leaf_config_fixture` in its `setUpModule`. That layer satisfied the assertion, so
+    from `private_root_fixture` in its `setUpModule`. That layer satisfied the assertion, so
     narrowing conftest's fixture back to homes-only left it green. A round-1 reviewer
     measured it: with `_private_root_redirects()[:1]` in conftest, the file still reported
     14 passed. The blind spot had moved, not closed.
@@ -80,7 +80,7 @@ class SuiteHarnessCoversAllPrivateRootsTests(unittest.TestCase):
         conftest's fixture to a subset fails HERE with the missing name rather than somewhere
         downstream.
         """
-        from tools.tests.leaf_config_fixture import _private_root_redirects
+        from tools.tests.private_root_fixture import _private_root_redirects
 
         for env_name, subdir in _private_root_redirects():
             value = os.environ.get(env_name, "")

@@ -18,7 +18,6 @@
     "workspace/pipelines/component__dynamics_advdiff_flux_1d_upwind_center2__0.1.0/advdiff-flux-1d-uc2_20260620_002/binary/bin_20260620_002/binary_meta.json",
     "workspace/pipelines/component__dynamics_advdiff_flux_1d_upwind_center2__0.1.0/advdiff-flux-1d-uc2_20260620_002/binary/bin_20260620_002/command_log.jsonl"
   ],
-  "skill_must_read_refs": "",
   "issue_severity": "none",
   "repair_strategy": "none",
   "repair_target_agent_run_id": "none",
