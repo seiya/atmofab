@@ -496,6 +496,73 @@ class ResolutionTests(_Tmp):
         self.assertEqual([r["backend"] for r in lc.describe_providers(cfg)], ["claude"])
 
 
+
+class ProviderCapabilityTableTests(unittest.TestCase):
+    """`docs/ORCHESTRATION.md`'s provider table is checked against the code, not read.
+
+    The table is the third statement of `PROVIDER_CAPABILITIES` (the code, `docs/GLOSSARY.md`
+    and this table), which is the count at which the skill says discipline has already lost —
+    and it lost: Z4 deleted `agentic` and swept the glossary and the example configuration,
+    and PR-2 deleted `mcp_tools` and swept them again, while the table kept a whole `mcp_tools`
+    column reading `yes | yes | — | —` through both. Nothing had ever read it.
+
+    Coupled by MEMBERS in both directions, because the table names them in full: the capability
+    columns must be exactly `KNOWN_CAPABILITIES`, and each cell must agree with that provider's
+    set. The code is the authority and the document is compared against it, never the reverse.
+    """
+
+    TABLE_DOC = REPO_ROOT / "docs" / "ORCHESTRATION.md"
+
+    def _rows(self) -> list[list[str]]:
+        lines = self.TABLE_DOC.read_text(encoding="utf-8").splitlines()
+        # Anchor on the header, which names the two non-capability columns. Text that
+        # PRECEDES the rule and is byte-identical in the wording being refused: a table that
+        # loses a capability column still opens `| provider | backend token |`.
+        starts = [i for i, line in enumerate(lines)
+                  if line.strip().startswith("| provider | backend token |")]
+        self.assertEqual(len(starts), 1,
+                         f"{self.TABLE_DOC.name}: expected exactly one provider table")
+        rows = []
+        for line in lines[starts[0]:]:
+            stripped = line.strip()
+            if not stripped.startswith("|"):
+                break
+            rows.append([cell.strip() for cell in stripped.strip("|").split("|")])
+        self.assertGreater(len(rows), 2, "table has a header but no provider rows")
+        return rows
+
+    def test_the_columns_are_exactly_the_known_capabilities(self) -> None:
+        header = self._rows()[0]
+        self.assertEqual(header[:2], ["provider", "backend token"])
+        columns = [cell.strip("`") for cell in header[2:]]
+        self.assertEqual(sorted(columns), sorted(lc.KNOWN_CAPABILITIES),
+                         "the table's capability columns and KNOWN_CAPABILITIES disagree; "
+                         "the code is the authority")
+
+    def test_every_cell_agrees_with_the_capability_authority(self) -> None:
+        rows = self._rows()
+        columns = [cell.strip("`") for cell in rows[0][2:]]
+        documented = {}
+        for row in rows[2:]:
+            provider = row[0].strip("`")
+            documented[provider] = frozenset(
+                cap for cap, cell in zip(columns, row[2:]) if cell == "yes")
+            for cap, cell in zip(columns, row[2:]):
+                with self.subTest(provider=provider, capability=cap):
+                    self.assertIn(cell, ("yes", "\u2014"),
+                                  "a cell is `yes` or an em dash and nothing else")
+        self.assertEqual(documented, dict(lc.PROVIDER_CAPABILITIES))
+
+    def test_the_backend_token_column_is_the_launch_identity(self) -> None:
+        # The other half of each row. A provider whose token the table invents would send an
+        # operator to `init --backend <token>` with a name the parser refuses.
+        for row in self._rows()[2:]:
+            provider, token = row[0].strip("`"), row[1].strip("`")
+            with self.subTest(provider=provider):
+                expected = "claude" if provider == "claude_cli" else (
+                    "codex" if provider == "codex_cli" else provider)
+                self.assertEqual(token, expected)
+
 class CapabilityTests(_Tmp):
     def test_provider_capability_table_is_the_authority(self) -> None:
         self.assertEqual(set(lc.PROVIDER_CAPABILITIES), set(lc.SUPPORTED_PROVIDERS))

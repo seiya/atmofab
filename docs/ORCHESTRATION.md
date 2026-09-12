@@ -57,15 +57,22 @@ This document defines the orchestration contract — the **conductor** (`tools/w
 - `defaults` also serves the one launch that carries no phase/`substep` — the failure diagnostician (`escalate`) — and must therefore support the `pure` capability. It is a pure leaf like every other `LLM` leaf (issue #169), so an entry restricted to `capabilities: [agentic]` is refused there. An `HTTP` provider is admissible as `defaults`, which the agentic requirement used to close by accident. `init` and the preflight still take ONE backend token whose parser is `choices={claude, codex}`, so it is resolved by `LlmConfig.cli_launch_identity()` from what the configuration can actually LAUNCH — `defaults` when it is a CLI provider, else the CLI entry the file does name (the preflight probes every provider through `--llm-config` regardless; that token is only its top-level description). A configuration in which nothing launches a process is refused by name, `llm_config_no_cli_backend`. Z3 (issue #169) removed the OTHER thing standing between a configuration and an all-HTTP run — `validate.judge` was the last leaf requiring `agentic` — so that refusal is now the single remaining floor, and lifting it is a separate question about `init` and the preflight rather than about the leaves.
 - **Capabilities are declared, never inferred.** `PROVIDER_CAPABILITIES` is the single authority; a configuration's own `capabilities:` list may only RESTRICT a provider's set, never extend it.
 
-  | provider | backend token | `pure` | `warm_resume` | `mcp_tools` | `usage_probe` |
-  | --- | --- | --- | --- | --- | --- |
-  | `claude_cli` | `claude` | yes | yes | yes | yes |
-  | `codex_cli` | `codex` | yes | yes | yes | — |
-  | `openai_compatible` | `openai_compatible` | yes | — | — | — |
-  | `anthropic_api` | `anthropic_api` | yes | — | — | — |
+  | provider | backend token | `pure` | `usage_probe` | `warm_resume` |
+  | --- | --- | --- | --- | --- |
+  | `claude_cli` | `claude` | yes | yes | yes |
+  | `codex_cli` | `codex` | yes | — | yes |
+  | `openai_compatible` | `openai_compatible` | yes | — | — |
+  | `anthropic_api` | `anthropic_api` | yes | — | — |
 
-  The `agentic` capability was the fifth column and is deleted with the leaf model it named
-  (Z4, [issue #171](https://github.com/seiya/atmofab/issues/171)). Every LLM leaf requires
+  Two columns are gone with Z4 ([issue #171](https://github.com/seiya/atmofab/issues/171)):
+  `agentic`, which named the leaf model this table's own paragraph below describes as
+  deleted, and `mcp_tools`, which said a leaf could be granted build-runtime MCP tools —
+  no leaf holds a tool, and PR-2 retired the capability gate the grant was spent at. Both
+  are refused at `capabilities:` parse time rather than accepted and ignored. This table
+  is checked against `PROVIDER_CAPABILITIES` by
+  `tools/tests/test_llm_config.py::ProviderCapabilityTableTests`, columns and cells both:
+  it was a hand-maintained third copy until round 1 of that PR, and it is the copy the
+  deletion missed. Every LLM leaf requires
   `pure`, on every provider: an entry whose `capabilities:` list drops it is refused at load,
   which is what makes "pure is the only leaf model" a property of the configuration and not
   only of the code path.
