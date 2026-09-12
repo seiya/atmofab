@@ -1889,68 +1889,19 @@ shell_tool                       stable             true
         self.assertEqual(
             _allowed_output_paths_for_launch(request_payload=judge_ok, write_roots=[]), [sem])
 
-    def test_phase_contract_compile_generate_admits_only_conductor_declaration(self) -> None:
-        """record-launch must admit exactly the compile.generate outputs the conductor declares,
-        and nothing else at the IR root. Driven by the CAPTURED PRODUCTION request
-        (tools/tests/data/conductor_launch_requests/compile_generate.request.json) through the
-        REAL `_allowed_output_paths_for_launch`, so the runtime is asserted against what the
-        conductor actually produced rather than against a hand-written list. The fixture is tied
-        back to the live conductor by `test_workflow_conductor.py`'s
-        `test_reproduces_every_real_substep_payload`, which is what fails if the conductor's
-        declaration changes — this test would not notice that on its own.
-
-        WHAT THIS DOES NOT PIN, deliberately: that BOTH files are *required*. The runtime's
-        `compile_required` is a membership allowlist, so a request declaring only one of the two
-        is still accepted (reproduced on origin/main as well — it is not a regression of the
-        commit that added this test). Under-declaring costs the declarer write authority rather
-        than gaining any, so it is a liveness gap, not a bypass; it is tracked in TODO.md
-        together with the `agent_role` dimension. The rejection side below is a SAMPLE of
-        plausible IR-root names, including the underscore respelling of the retired summary —
-        it makes an accidental re-widening likely to be caught, but it is not a proof of set
-        equality, which this layer cannot express from outside."""
-        from tools.orchestration_runtime import _allowed_output_paths_for_launch
-
-        fixture = (
-            Path(__file__).resolve().parent / "data" / "conductor_launch_requests"
-            / "compile_generate.request.json"
-        )
-        payload = json.loads(fixture.read_text(encoding="utf-8"))
-        declared = list(payload["allowed_output_paths"])
-        ir_ref = payload["ir_ref"]
-        self.assertEqual(
-            sorted(declared),
-            sorted([f"{ir_ref}/spec.ir.yaml", f"{ir_ref}/ir_meta.json"]),
-            "conductor's captured compile.generate declaration changed; update both readers",
-        )
-        self.assertEqual(
-            _allowed_output_paths_for_launch(request_payload=payload, write_roots=[]),
-            declared,
-            "record-launch must accept the conductor's own declaration unchanged",
-        )
-        # Anything else at the IR root is outside the contract. `algorithm.summary.md` is the
-        # retired view-only companion the SKILL used to instruct; `algorithm_summary.md` is the
-        # respelling a re-introduction would plausibly take; `dependency_graph.json` and
-        # `compile_static_meta.json` are conductor-authored and must stay leaf-non-writable.
-        # The last three are NOT a denylist of names anyone would write: they are the shapes a
-        # widening takes. A name no rule could plausibly enumerate catches a rule relaxed to a
-        # prefix or a suffix test; the nested paths catch a subtree escape (the `generate` branch
-        # grants a directory this way, so the shape is live in this same function).
-        for extra in ("algorithm.summary.md", "algorithm_summary.md", "io_contract.yaml",
-                      "dependency_graph.json", "compile_static_meta.json", "notes.md",
-                      "zz9_unlisted_artifact.xyz", "views/summary.md", "src/main.f90"):
-            forged = dict(payload, allowed_output_paths=[*declared, f"{ir_ref}/{extra}"])
-            with self.assertRaisesRegex(ValueError, "outside phase contract outputs"):
-                _allowed_output_paths_for_launch(request_payload=forged, write_roots=[])
-        # DIRECTORY-form entries (trailing slash) take a SEPARATE branch of the contract, which
-        # grants the whole subtree when it returns True — that is how `generate` authorizes its
-        # source dir. Compile has no directory deliverable, and a probe list made only of file
-        # paths cannot see that branch at all: review demonstrated a one-line grant of `<ir_ref>/`
-        # to compile that left every assertion above green while handing the leaf the entire IR
-        # run directory. Probe the branch, not just the names it would admit.
-        for extra in ("", "views/", "src/"):
-            forged = dict(payload, allowed_output_paths=[*declared, f"{ir_ref}/{extra}"])
-            with self.assertRaisesRegex(ValueError, "outside phase contract outputs"):
-                _allowed_output_paths_for_launch(request_payload=forged, write_roots=[])
+    # `test_phase_contract_compile_generate_admits_only_conductor_declaration` stood here until
+    # Z4 (issue #171). It drove the CAPTURED agentic `compile.generate` request through
+    # `_allowed_output_paths_for_launch` and pinned that record-launch admits exactly the two
+    # files the conductor declared at the IR root (`spec.ir.yaml` + `ir_meta.json`) and refuses
+    # any other name there, `algorithm.summary.md` and its underscore respelling included.
+    #
+    # Its subject was a LEAF-DECLARED write set. A pure `compile.generate` declares
+    # `allowed_output_paths: []` — it returns one JSON document and the HOST writes both files —
+    # so there is no declaration left for that function to admit or refuse, and the capture it
+    # read is deleted with the shape. What still carries the two-file rule is the host writer
+    # itself and `docs/workflow/phases/phase_01_compile.md`, which the pure compile prompt
+    # inlines whole; what is NOT carried forward is this layer's refusal of a third name at the
+    # IR root, because no leaf names anything there any more.
 
     def test_phase_contract_compile_static_is_the_meta_alone(self) -> None:
         """The `compile.static` branch pins its ONE conductor-authored deliverable with `==`.
@@ -31877,7 +31828,11 @@ class AgentRoleFailClosedTests(unittest.TestCase):
             Path(__file__).resolve().parent / "data" / "conductor_launch_requests"
         )
         captured = sorted(fixture_dir.glob("*.request.json"))
-        self.assertEqual(len(captured), 7, "captured payload set changed; revisit coverage")
+        # TWO since Z4 (issue #171). The five LLM captures were of the AGENTIC launch and are
+        # deleted — `BuildLaunchRequestTest`'s docstring carries the accounting and `TODO.md`
+        # what is owed. The coverage this row loses is the LLM half of the role rule; the role
+        # itself is still derived from `_required_child_agent_kind` for every step below.
+        self.assertEqual(len(captured), 2, "captured payload set changed; revisit coverage")
         for path in captured:
             payload = json.loads(path.read_text(encoding="utf-8"))
             with self.subTest(fixture=path.name):
@@ -31907,7 +31862,7 @@ class AgentRoleFailClosedTests(unittest.TestCase):
 
         fixture = (
             Path(__file__).resolve().parent / "data" / "conductor_launch_requests"
-            / "compile_generate.request.json"
+            / "build_step.request.json"
         )
         payload = json.loads(fixture.read_text(encoding="utf-8"))
         cap = build_capability_document(
@@ -32029,9 +31984,12 @@ class AgentRoleFailClosedTests(unittest.TestCase):
         through prepare."""
         from tools.orchestration_runtime import _validate_launch_request_payload
 
+        # The `compile_generate` capture this used before is deleted with the agentic shape
+        # (Z4, issue #171); `validate_execute` is the surviving SUBSTEP capture, and the role
+        # canonicalization under test is role-shaped rather than substep-specific.
         fixture = (
             Path(__file__).resolve().parent / "data" / "conductor_launch_requests"
-            / "compile_generate.request.json"
+            / "validate_execute.request.json"
         )
         base = json.loads(fixture.read_text(encoding="utf-8"))
         for spelling in ("SUBSTEP", " Substep ", "substep"):

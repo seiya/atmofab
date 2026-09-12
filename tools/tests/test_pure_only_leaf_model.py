@@ -509,3 +509,4 @@ class LaunchPromptValidationFloorTests(unittest.TestCase):
         _validate_launch_prompt_text(
             {"node_key": "component/x@0.1.0", "orchestration_id": "o",
              "agent_run_id": "orch"}, "conductor self-prompt\n")
+

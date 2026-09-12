@@ -19068,9 +19068,39 @@ def record_agent_run(
                 # for the same structural reason, and `record_launch` marks it the same way:
                 # `leaf_transport: "in_process"` with no profile. The exemption is read off the
                 # host-authored launch RESPONSE, never off the row.
+                #
+                # TWO conditions, symmetric with the HTTP arm above, which requires the
+                # transport string AND a genuine provider token. The round-1 review found this
+                # arm taking the string alone. No leaf can reach either document — both are
+                # host-authored and outside every write root, so nothing was exploitable; what
+                # was missing is that the exemption did not read the fact it rests on, and the
+                # HTTP arm beside it does (`validate_pipeline_semantics` re-checks both there).
+                #
+                # WHAT IS PINNED, stated because the halves differ. Neutering this whole arm
+                # kills 16 tests in `test_orchestration_runtime.py`, so the exemption itself is
+                # well witnessed. The `deterministic` conjunct added here is NOT driven by a
+                # case of its own: constructing one needs a whole orchestration on disk with a
+                # response saying `in_process` and a request that does not, and the finding it
+                # answers is a symmetry rather than a reachable hole. Recorded rather than
+                # pinned with a source-text assertion, which would pin the spelling and not the
+                # behaviour.
+                _launch_request_ref = payload.get("launch_request_ref")
+                _launch_request_payload: Any = None
+                if isinstance(_launch_request_ref, str) and _launch_request_ref.strip():
+                    try:
+                        _launch_request_payload = _read_json(
+                            repo_root / _launch_request_ref.strip())
+                    except (OSError, ValueError, json.JSONDecodeError):
+                        # An unreadable request leaves the exemption UNCLAIMED, which falls
+                        # through to the `sandbox_runtime == "bwrap"` requirement below. That
+                        # is the fail-closed direction: a row that cannot prove it was a
+                        # deterministic launch is treated as one that needed a sandbox.
+                        _launch_request_payload = None
                 _in_process_leaf = (
                     str(launch_response_payload.get("leaf_transport") or "").strip().lower()
-                    == "in_process")
+                    == "in_process"
+                    and isinstance(_launch_request_payload, dict)
+                    and _launch_request_payload.get("deterministic") is True)
                 if _http_leaf or _in_process_leaf:
                     payload.setdefault("sandbox_runtime", "none")
                     payload.setdefault("sandbox_enforced", False)
