@@ -9956,8 +9956,11 @@ def build_readonly_bwrap_profile(
     surfaces are a tmp scratch (sandbox tmp + workspace/tmp/<arid>) and the backend's
     config/credential home (auth/session, outside repo_root).
 
-    Nothing inside the repository is writable, so a leaf has nothing to attribute and the
-    FS-diff is trivially empty; an artifact write it attempts is refused by bwrap itself. The
+    Nothing inside the repository is writable EXCEPT `workspace/tmp/<arid>`, the leaf's own
+    scratch — bound rw below, and the reason `workspace/` is hidden by a tmpfs rather than left
+    unbound. Nothing an artifact could be written to is writable, so a leaf has nothing to
+    attribute and the FS-diff is trivially empty; an artifact write it attempts is refused by
+    bwrap itself. (The round-2 review caught this sentence claiming the stronger, false thing.) The
     per-orchestration `hooks/` and `audit/` binds that used to sit here were for the leaf's own
     PreToolUse/PostToolUse hooks to persist their event log and first-read state — the leaf
     runs no hook now, so binding them writable would open the only repository-writable surface
@@ -13218,13 +13221,21 @@ def _render_pure_launch_prompt(request_payload: dict[str, Any]) -> str:
     if isinstance(pure_context, dict):
         for key, value in pure_context.items():
             subs[str(key)] = _fence_pure_doc(str(value))
-    # dependency_facts stays UNFENCED (host-resolved orientation), so it remains in the
-    # gate-allowlist scan text; sanitize any stray PURE fence marker in it so it cannot pair
-    # with a later legitimate fence END and drop that region from the scan (fail-open of the
-    # recurrence lint). The exemplar is stripped wholesale by the scan carve-out, so it needs no
-    # separate PURE-marker sanitizing here.
+    # `dependency_facts` and `exemplar` are spliced UNFENCED — they are host-composed
+    # orientation, not an inlined document — so each is sanitized against the PURE fence
+    # markers on the way in. Without that, a marker inside either could pair with a later
+    # legitimate fence END and make the span between them read as data the host did not author
+    # (or, for a forged BEGIN, as a fence the host did not open).
+    #
+    # The exemplar used to be exempt here, "stripped wholesale by the scan carve-out" — the
+    # gate-allowlist lint's `_strip_exemplar_regions`, deleted in Z4 (issue #171). The round-2
+    # security review found the exemption outliving its reason, and measured the consequence: a
+    # certified sibling's `.f90` carrying the literal PURE markers renders straight through into
+    # a `generate.generate` prompt, 7 END markers against 6 BEGIN. `_sanitize_exemplar_body`
+    # already breaks the EXEMPLAR markers in that same body for the identical reason, so the two
+    # tokens are now treated alike rather than one being defended and the other argued away.
     subs["dependency_facts"] = _sanitize_pure_doc_body(_build_dependency_facts(request_payload))
-    subs["exemplar"] = _build_exemplar(request_payload)
+    subs["exemplar"] = _sanitize_pure_doc_body(_build_exemplar(request_payload))
     subs["node_key"] = str(request_payload.get("node_key", ""))
     subs["step"] = str(request_payload.get("step", ""))
     subs["substep"] = str(request_payload.get("substep", ""))
@@ -13719,9 +13730,13 @@ def _required_launch_prompt_lines(request_payload: dict[str, Any]) -> list[str]:
 
 def _validate_launch_prompt_text(request_payload: dict[str, Any], prompt_text: str) -> None:
     # Pure detection is the AND of "request declares pure" and "prompt opens with the pure
-    # sentinel" (line 0). Guard the reverse-injection here (mirroring the slim double-check in
-    # the pipeline-semantics sweep): a NON-pure request whose prompt was swapped for a
-    # pure-looking body would otherwise dodge the full skill / must-read / requirements markers.
+    # sentinel" (line 0), and BOTH directions of the disagreement are refused. The first arm is
+    # not redundant with the marker check below, measured by the round-2 security review: a
+    # DETERMINISTIC request whose prompt is the real deterministic render with the pure sentinel
+    # prepended carries every deterministic marker and every field value, so the marker and line
+    # checks both pass — this arm is the only thing that refuses it. Its mirror in
+    # `validate_pipeline_semantics` (`request_confirms_pure != prompt_is_pure`) answers for the
+    # persisted record; this one answers at the write.
     prompt_opens_pure = prompt_text.lstrip().startswith(PURE_PROMPT_SENTINEL)
     if prompt_opens_pure and not _is_pure_launch_request(request_payload):
         raise ValueError(
