@@ -10043,9 +10043,13 @@ clean:
         ran and passed). failure_categories / the composed excerpt are in canonical order
         (syntax_error -> lint_findings -> static family). A content failure returns rc 0 so
         run_phase routes it via classify_gate_failure -> generate.generate (warm resume);
-        determine_substep_status reads gate_meta.gate_status. The DRIFT GUARD
-        (test_mcp_grant_table_matches_conductor_call_sites) walks the `self._gate_*_check(` calls
-        BELOW to derive this substep's gated-tool set, so keep them as explicit method calls."""
+        determine_substep_status reads gate_meta.gate_status. A DRIFT GUARD
+        (`test_mcp_grant_table_matches_conductor_call_sites`) used to walk the
+        `self._gate_*_check(` calls BELOW to derive this substep's gated MCP tool set and compare
+        it against `_MCP_TOOL_GRANTS_BY_SUBSTEP`; the grant table and the guard went with the MCP
+        capability gate (issue #171 PR-2), so NOTHING reads the shape of these calls any more and
+        writing them as anything else breaks no test. They stay explicit because the composition
+        above is read line by line, not because a check requires it."""
         lint = self._gate_lint_check(refs, child_arid)
         syntax = self._gate_syntax_check(refs, child_arid)
         lint_ok = lint.get("status") == "pass"
