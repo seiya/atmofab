@@ -563,6 +563,34 @@ class CapabilityTests(_Tmp):
                          "llm_config_capability_insufficient_for_substep")
         self.assertIn("requires capability 'agentic'", str(ctx.exception))
 
+    def test_llm_config_refuses_an_entry_without_pure(self) -> None:
+        """Z4 (issue #171): `pure` is the ONLY leaf transport, so every LLM leaf hard-requires
+        it and an entry narrowed away from it is refused by name — on every pair, not on the
+        one this test happened to pick.
+
+        The second half is what makes the first enforceable rather than advisory: `agentic` is
+        no longer a capability the vocabulary knows, so a configuration still spelling it is
+        refused at `capabilities:` parse time rather than resolving to a transport that no
+        longer exists. (`mcp_tools` is retired with the MCP gate in PR-2, not here.)"""
+        for phase, substep in sorted(lc.LLM_LEAF_SUBSTEPS):
+            err = self.assert_rule(
+                "llm_config_capability_insufficient_for_substep",
+                "defaults:\n  provider: claude_cli\n"
+                f"phases:\n  {phase}:\n    substeps:\n      {substep}:\n"
+                "        capabilities: [warm_resume]\n")
+            self.assertIn("'pure'", str(err), msg=f"{phase}.{substep}")
+            # Not "agentic OR pure": there is no second transport to fall back to, and a
+            # message offering one is the shape this row exists to keep out.
+            self.assertNotIn("agentic", str(err), msg=f"{phase}.{substep}")
+        err = self.assert_rule(
+            "llm_config_invalid_field",
+            "defaults:\n  provider: claude_cli\n"
+            "  capabilities: [agentic, pure]\n")
+        self.assertIn("agentic", str(err))
+        self.assertNotIn("agentic", lc.KNOWN_CAPABILITIES)
+        for provider, caps in lc.PROVIDER_CAPABILITIES.items():
+            self.assertNotIn("agentic", caps, msg=provider)
+
     def test_every_declared_provider_validates_for_the_compile_leaves(self) -> None:
         """Issue #168's completion criterion: whichever provider this repository declares can be
         put on either compile leaf and the configuration loads. `no vendor lock-in` is the

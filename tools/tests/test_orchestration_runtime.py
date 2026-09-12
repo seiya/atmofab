@@ -22987,6 +22987,130 @@ class RecordTimeoutTests(unittest.TestCase):
             self.assertNotIn("claude_workflow_home", recorded)
             self.assertNotIn("claude_settings_sha256", recorded)
 
+    def _setup_deterministic_launch(self, repo_root: Path) -> str:
+        """A DETERMINISTIC launch (`generate.gate`), which no leaf process runs.
+
+        Written out rather than derived from `_setup_substep_launch` because the two payload
+        shapes are disjoint at the validator: `deterministic=True` is refused on an LLM pair,
+        and the skill fields are refused beside it."""
+        init_orchestration(
+            repo_root=repo_root,
+            orchestration_id="orch_det_001",
+            spec_ref="spec/problem/shallow_water2d/controlled_spec.md",
+            source_dependency_ref="spec/problem/shallow_water2d/deps.yaml",
+        )
+        _mark_dependencies_ready(repo_root, "orch_det_001")
+        write_preflight(
+            repo_root=repo_root,
+            orchestration_id="orch_det_001",
+            payload={
+                "status": "pass", "backend": "claude", "sandbox_runtime": "bwrap",
+                "sandbox_enforced": True, "can_launch_step_agents": True,
+                "can_launch_substep_agents": True,
+                "feature_states": {"multi_agent": True},
+                "checks": [
+                    {"name": "multi_agent_enabled", "pass": True},
+                    {"name": "sandbox_bwrap_available", "pass": True},
+                    {"name": "sandbox_bwrap_userns", "pass": True},
+                ],
+            },
+        )
+        arid = "substep_run_det_001"
+        req = {
+            "agent_model": "deterministic",
+            "agent_run_id": arid,
+            "agent_role": "substep",
+            "node_key": "problem/shallow_water2d@0.3.0",
+            "step": "generate",
+            "substep": "gate",
+            "deterministic": True,
+            "source_id": "src_20260509_001",
+            "orchestration_id": "orch_det_001",
+            "parent_agent_run_id": "orch_run_det_001",
+            "ir_ref": _FIX_IR_REF,
+            "pipeline_ref": _FIX_PIPE_REF,
+            "dependency_ref": _FIX_IR_REF,
+            "allowed_output_paths": [
+                f"{_FIX_PIPE_REF}/source/src_20260509_001/source_meta.json",
+            ],
+        }
+        req["launch_prompt_full"] = render_launch_prompt_text(dict(req))
+        record_launch(
+            repo_root=repo_root,
+            orchestration_id="orch_det_001",
+            parent_agent_run_id="orch_run_det_001",
+            child_agent_run_id=arid,
+            request_payload=req,
+            response_payload={
+                "agent_run_id": arid,
+                "backend": "claude",
+                "started_at": "2026-05-09T08:00:00Z",
+                **_spawn_response_payload(arid),
+            },
+        )
+        return arid
+
+    def test_record_launch_prepares_no_claude_home_for_any_launch(self) -> None:
+        """Z4 (issue #171): the private CLAUDE_CONFIG_DIR existed for the AGENTIC leaf, the
+        only launch that read a settings layer. With that leaf retired, NO launch prepares one
+        — not the pure leaf (`--safe-mode`, no tools, no hooks) and not the deterministic
+        in-process substep, which spawns no process at all.
+
+        The deterministic half is the one that is easy to miss: `record_launch` has no
+        deterministic branch, so such a launch is simply `not is_pure` and used to take the
+        agentic arm — preparing a home, and building a read-write profile, for a process that
+        never exists. Both are false records, which is why the assertion is on the directory
+        as well as on the fields."""
+        from tools.hooks.common import workflow_homes_root
+        for oid, pure in (("orch_to_001", True), ("orch_det_001", False)):
+            with tempfile.TemporaryDirectory() as td:
+                repo_root = Path(td)
+                if pure:
+                    arid = self._setup_substep_launch(repo_root, request_extra={
+                        "leaf_mode": "pure",
+                        "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
+                        "allowed_output_paths": [],
+                        "pure_context": {
+                            "harness_capabilities": "{}",
+                            "target_profile": "{}",
+                            "ir_document": "algorithm:\n  state_variables: [h]\n",
+                            "tests_document": "- test: conserves mass",
+                            "runner_document": "program p\nend program p\n",
+                        },
+                    })
+                else:
+                    arid = self._setup_deterministic_launch(repo_root)
+                orch_root = repo_root / "workspace" / "orchestrations" / oid
+                recorded = json.loads(
+                    (orch_root / "launches" / f"{arid}.response.json").read_text(
+                        encoding="utf-8"))
+                meta = json.loads(
+                    (orch_root / "orchestration_meta.json").read_text(encoding="utf-8"))
+                self.assertNotIn("claude_workflow_home", meta, msg=oid)
+                for key in ("claude_workflow_home", "claude_settings_sha256",
+                            "claude_credentials_bound", "claude_home_generation"):
+                    self.assertNotIn(key, recorded, msg=f"{oid}/{key}")
+                self.assertFalse((workflow_homes_root() / oid / "claude").exists(), msg=oid)
+
+    def test_deterministic_launch_records_no_sandbox(self) -> None:
+        """A launch that spawns no process has no sandbox, and says so.
+
+        Same shape as the HTTP arm, which has said it since issue #28: `sandbox_runtime:
+        "none"` plus `sandbox_enforced: false`, and no profile on disk. Recording a bwrap
+        profile for a body that runs in the conductor's own process describes a confinement
+        that never happened — the precedent for refusing that is `_launch_setting_surface`,
+        which already returns `{}` rather than inventing a settings surface for one."""
+        with tempfile.TemporaryDirectory() as td:
+            repo_root = Path(td)
+            arid = self._setup_deterministic_launch(repo_root)
+            orch_root = repo_root / "workspace" / "orchestrations" / "orch_det_001"
+            recorded = json.loads(
+                (orch_root / "launches" / f"{arid}.response.json").read_text(encoding="utf-8"))
+            self.assertEqual(recorded.get("sandbox_runtime"), "none")
+            self.assertIs(recorded.get("sandbox_enforced"), False)
+            self.assertFalse((orch_root / "sandbox_profiles" / f"{arid}.json").exists())
+            self.assertNotIn("sandbox_profile_ref", recorded)
+
     def test_a_claude_launch_records_the_private_home_it_prepared(self) -> None:
         """The configuration a leaf came up with must be recoverable from the record.
 
