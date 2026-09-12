@@ -540,10 +540,10 @@ class EnvOverrideDenylistTests(unittest.TestCase):
         deliberately outside `_SHELL_ACTIVE_CHARS`, so the value rule does not catch it."""
         for key in (".SHELLFLAGS", "SHELLFLAGS", ".shellflags", " .SHELLFLAGS "):
             with self.subTest(key=key):
-                with self._spy_run_command() as run_command:
-                    with self.assertRaises(ValueError) as ctx:
-                        self.mod.tool_compile_project(
-                            self._args("compile_project", {key: "-c /tmp/evil.sh"}))
+                with self._spy_run_command() as run_command, \
+                        self.assertRaises(ValueError) as ctx:
+                    self.mod.tool_compile_project(
+                        self._args("compile_project", {key: "-c /tmp/evil.sh"}))
                 self.assertIn("redirect execution", str(ctx.exception))
                 run_command.assert_not_called()
 
