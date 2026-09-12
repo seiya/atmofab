@@ -149,6 +149,17 @@ _UNSAFE_ASSIGNMENT_NAMES = frozenset(_UNSAFE_ENV_OVERRIDE_KEYS | {"SHELL", "MAKE
 # line's shell or make acts on is a command rather than a value. A space is not one of
 # them: it splits words in the recipe, but `CASES` is a word LIST by contract and a
 # checkout path may legitimately hold one.
+#
+# THIS SET OVER-REFUSES, deliberately and with a named cost. `~ [ ] * ? { }` are in it and
+# only some of them break something: a leading `~` in `$(BINDIR)/$(BIN)` IS tilde-expanded
+# by the recipe's shell, and a glob character matching a real file silently redirects the
+# command — but `/a/b~c` is literal, `{}` is literal under `/bin/sh`, and a glob that
+# matches nothing is literal too. So a checkout under `/home/user-1/x[1]` is refused by
+# name, and the recipe would have run. The refusal is LOUD and names the character, the
+# operator learns immediately, and narrowing the set means one measurement per character on
+# a surface that cannot confine anyone (see the scope paragraph in
+# `_validate_build_argv_overrides`) — the longer list the five review rounds on this surface
+# argue against. Recorded rather than narrowed.
 _SHELL_ACTIVE_CHARS = set("\t\n\r;&|$`'\"\\<>()*?[]{}~#!")
 
 
