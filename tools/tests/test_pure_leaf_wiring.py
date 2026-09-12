@@ -959,15 +959,21 @@ class PureRenderTests(unittest.TestCase):
     # reviewers reworded around them) but they named the axis in the failure. Both facts belong
     # in the PR body.
     _RUBRIC_DIGEST_BY_STEP = {
-        # Re-taken for issue #168 (Z1). The ONLY edit inside the span is the lead sentence's
-        # first clause, which used to say "the leaf records it in `ir_meta.json` next to
-        # `last_fail_reason`" and now says that an agentic leaf does and a `pure-function leaf`
-        # returns the value in its verdict for the host to project. Checked against all nine
-        # properties in the failure message before re-taking: the AXIS sentence, the three
-        # bullets, both tie-breaks and the §2-2 pointer are byte-identical, so 1-9 are answered
-        # by the previous reading, and the added clause states who WRITES the value rather than
-        # how it is chosen — it is not a fourth grading rule.
-        "compile": "a471b2a37fac855587209c9270953be749ce65d2cbddbf0c49292f26b2a40ead",
+        # Re-taken TWICE, both times for the same clause of the same lead sentence, and both
+        # times the edit says who WRITES the value rather than how it is CHOSEN — not a fourth
+        # grading rule either time.
+        #   * Issue #168 (Z1): "the leaf records it in `ir_meta.json`" became "an agentic leaf
+        #     does, and a `pure-function leaf` returns it in its verdict for the host to
+        #     project".
+        #   * Issue #171 round 2 (Z4): the agentic half of that clause is deleted with the
+        #     transport, so the sentence now addresses the one leaf there is — "You return it in
+        #     your verdict and the host projects it". This document is inlined WHOLE into both
+        #     compile prompts, so a leaf was reading a present-tense description of a path it
+        #     cannot take, which is what the round-2 disclosure review found.
+        # Checked against all nine properties in the failure message before each re-take: the
+        # AXIS sentence, the three bullets, both tie-breaks and the §2-2 pointer are
+        # byte-identical across both edits, so 1-9 are answered by the first reading.
+        "compile": "d12e281be8d27251eae742e2a356e7c96c31fbd195bd345b4152991efed05288",
         "generate": "83bed963f6bf9233e4167ce3c1a1f47953102c147431b7234d67fc560c3a04bc",
     }
 
@@ -2528,8 +2534,10 @@ class PureRenderTests(unittest.TestCase):
                     f"— no pin can check this, which is why it is on this list.\n"
                     f"  7. No `pass`-side rule has entered the span; this rubric grades a "
                     f"FAILING finding only.\n"
-                    f"  8. Every `fail` the phase's verify `SKILL` mandates can still be "
-                    f"graded by one of the three bullets.\n"
+                    f"  8. Every `fail` the phase's verify leaf can report — its checklist is "
+                    f"its launch template, `tools/prompt_templates/pure_{step}_verify.txt`, "
+                    f"since Z4 (issue #171) deleted the verify `SKILL`s — can still be graded "
+                    f"by one of the three bullets.\n"
                     f"  9. The bullets do not CONTRADICT each other: no example in one bullet's "
                     f"list names a case another bullet's list also claims. Round 5 added "
                     f"\"a `direct_deps` entry naming an operation the dependency's published "

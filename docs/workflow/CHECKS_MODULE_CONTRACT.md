@@ -9,8 +9,9 @@
 > host-rendered by the conductor (`tools/host_render.py` / `_write_makefile`) and are outside the leaf's `allowed_output_paths`. This is
 > not read by `Validate.judge`.
 >
-> Force-read by the **agentic** leaf. A `pure` leaf (`Z2`) reads no document from disk, so it is
-> reached two ways: the `generate.generate` producer is told the ten names and shown the rendered
+> NO leaf reads this document from disk — none has held a tool to read one with since Z4
+> ([issue #171](https://github.com/seiya/atmofab/issues/171)), and the force-read set that used to
+> deliver it is deleted. It reaches its leaves two ways, both inlined by the host: the `generate.generate` producer is told the ten names and shown the rendered
 > runner, gated by `m3c_checks_abi_violation`, with the §2/§3 behavioral contract distilled into
 > `pure_generate_generate.txt`; the `generate.verify` reviewer receives §1-4 of this document
 > inlined as `checks_module_contract_document` (issue #142). (pure-8's runner-driven per-id `checks_compute`
