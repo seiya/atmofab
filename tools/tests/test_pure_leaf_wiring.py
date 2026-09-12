@@ -690,7 +690,12 @@ class PureRenderTests(unittest.TestCase):
         prepared = ort.prepare_launch_request_payload(req)
         prompt = prepared["launch_prompt_full"]
         self.assertTrue(prompt.startswith(PURE_PROMPT_SENTINEL))
-        self.assertNotIn(ort.SLIM_REPAIR_PROMPT_SENTINEL, prompt.splitlines()[0])
+        # The slim sentinel must not open a pure prompt. Read from the VALIDATOR, which is the
+        # module that still owns the literal: `orchestration_runtime` rendered slim prompts and
+        # no longer does (Z4, issue #171), while `validate_pipeline_semantics` keeps its copy to
+        # classify records written before the cut.
+        from tools.validate_pipeline_semantics import SLIM_REPAIR_PROMPT_SENTINEL
+        self.assertNotIn(SLIM_REPAIR_PROMPT_SENTINEL, prompt.splitlines()[0])
         self.assertIn(PURE_DOC_FENCE_BEGIN, prompt)
         self.assertIn("verification_status missing from bundle", prompt)
         ort._validate_launch_prompt_text(prepared, prompt)

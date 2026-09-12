@@ -1544,9 +1544,12 @@ def build_launch_request(
     if substep is not None:
         req["substep"] = substep
     if runner_host_authored:
-        # M3c physics node (runner host-rendered). Stamp it into the payload so the
-        # record-launch security-boundary path (`_payload_is_m3c_physics`) derives the
-        # SAME physics-narrowed contract-doc set as this conductor path — no drift.
+        # M3c physics node (runner host-rendered). The stamp existed so record-launch's
+        # security-boundary path derived the SAME physics-narrowed contract-doc set as this
+        # conductor path — no drift. That reader (`_payload_is_m3c_physics`) and the whole
+        # contract-doc set went with the agentic leaf in Z4 (issue #171); the stamp is kept as
+        # recorded provenance of what the host rendered, and `_host_authored_render_flags`
+        # carries the accounting of its one remaining oddity.
         req["runner_host_authored"] = True
 
     if step == "compile":
@@ -2696,9 +2699,11 @@ class ProcResult:
     #     model's answer channel cannot be redacted in the value itself: the validators parse
     #     it, and a key that is a common substring would corrupt a legitimate document (a real
     #     defect, measured). The validators read `stdout`, the artifact gets this.
-    #   - an AGENTIC claude leaf's envelope is lifted at the capture boundary
-    #     (`_unwrap_agentic_envelope`), so `stdout` is the model's text while this keeps the
-    #     whole envelope — the accounting blocks included — for `dialogs/leaf.stdout.log`.
+    #   - it also served an AGENTIC claude leaf, whose envelope was lifted at the capture
+    #     boundary (`_unwrap_agentic_envelope`, deleted in Z4 — issue #171) so that `stdout`
+    #     was the model's text while this kept the whole envelope for
+    #     `dialogs/leaf.stdout.log`. A pure claude leaf's stdout IS the envelope and is never
+    #     lifted, so that user is gone and only the HTTP one above is live.
     persist_stdout: str | None = None
     # An HTTP provider reported its own answer cut off at the output-token ceiling
     # (`finish_reason == "length"` / `stop_reason == "max_tokens"`). Authoritative, so the pure
@@ -2720,15 +2725,6 @@ _MODEL_USAGE_KEYS: dict[str, str] = {
     "cacheReadInputTokens": "cache_read_input_tokens",
     "cacheCreationInputTokens": "cache_creation_input_tokens",
 }
-
-
-def _parse_leaf_envelope(stdout: Any) -> Any:
-    """`pure_leaf.parse_result_envelope`, imported lazily like every other use of that module.
-
-    One wrapper so every consumer of a leaf's envelope parses it with the same reader.
-    """
-    from tools.pure_leaf import parse_result_envelope
-    return parse_result_envelope(stdout)
 
 
 def _envelope_usage_totals(envelope: Any) -> tuple[dict[str, Any], bool]:
@@ -2772,60 +2768,6 @@ def _envelope_usage_totals(envelope: Any) -> tuple[dict[str, Any], bool]:
     # single-model envelope. `total_cost_usd` covers models these numbers do not, so it must
     # not ride them.
     return (usage if isinstance(usage, dict) else {}), False
-
-
-def _is_cli_result_envelope(raw: Any) -> bool:
-    """True when this JSON object is the CLI's own result envelope, not a model document.
-
-    Keyed on `type: "result"`, which the CLI stamps in the envelope factory (it is on every
-    recorded envelope) and which no leaf answer this repository has recorded carries.
-    """
-    return isinstance(raw, dict) and raw.get("type") == "result"
-
-
-def _envelope_leaf_text(envelope: Any, fallback: str) -> str:
-    r"""The line-oriented text a result envelope carries, for the diagnostic consumers.
-
-    The CLI writes TWO envelope families, and only one of them has an answer to lift:
-
-    - `subtype: "success"` carries the model's reply in `result`;
-    - the error families (`error_during_execution`, `error_max_turns`, `error_max_budget_usd`,
-      `error_max_structured_output_retries`) carry NO `result` at all — they carry `errors`,
-      a list of strings, alongside `subtype` and `terminal_reason`.
-
-    An error envelope is exactly the case the diagnostic consumers exist for, so leaving it
-    unlifted would hand the classifier and the failure summary a one-line JSON document in
-    the one situation where the message matters: the recorded `result_summary` would be the
-    envelope's trailing accounting block, and `_classify_leaf_infra_error`'s line-anchored
-    patterns would see nothing. So its `errors` are rendered ONE PER LINE, with the subtype
-    on a line of its own.
-
-    The subtype's own line is load-bearing, not formatting. Three of the classifier's
-    patterns are start-anchored (`^\s*overloaded\s*$`, the `^\s*api error\b` catch-all, and
-    the usage-limit lead-in), so prefixing the first error with `<subtype>: ` puts every one
-    of them out of reach — measured: `Overloaded` tags `llm_overloaded`,
-    `error_during_execution: Overloaded` tags nothing. A lost tag is a retryable death that
-    fails the run closed, or a quota stop that never arms `--wait-usage-reset`.
-
-    The two variants are DISJOINT — a `success` envelope has no `errors` key and an error one
-    has no `result` key — so a string `result` is always the whole answer, empty included.
-    The CLI writes `result: ""` on its deferred-tool and zero-turn paths; that is an empty
-    answer, and returning it empty is what the text-mode launch did. Falling back to the raw
-    envelope there would put the accounting block in front of the classifier and the failure
-    summary, which is what this function exists to prevent.
-
-    Anything else — a `result` that is not a string, an unrecognised variant — keeps the raw
-    stdout: an envelope this reader does not model must not cost the evidence it contains.
-    """
-    if isinstance(envelope.result, str):
-        return envelope.result
-    raw = envelope.raw if isinstance(envelope.raw, dict) else {}
-    errors = [line for line in (raw.get("errors") or []) if isinstance(line, str) and line.strip()]
-    if not errors:
-        return fallback
-    subtype = raw.get("subtype")
-    head = [subtype.strip()] if isinstance(subtype, str) and subtype.strip() else []
-    return "\n".join(head + errors)
 
 
 def _leaf_usage_row(
@@ -3362,9 +3304,9 @@ def _cli_abort_envelope_result(line: str) -> str | None:
     `_sole_content_usage_limit_line`), because only there is the stdout still a CLI-authored
     envelope when it arrives: the recorded incidents show one shape per launch
     mode — a bare abort line for the agentic launches (5 of 6) and, for the one PURE launch, the
-    same message carried in `result`. (Since issue #47 an agentic claude leaf is launched with the
-    flag too, but `_unwrap_agentic_envelope` lifts its answer out at the capture boundary, so the
-    bare shape is still what this side sees.)
+    same message carried in `result`. Both launch modes existed when that sweep was taken; only
+    the pure one does now (Z4, issue #171), which makes the `result` shape the live one and the
+    bare shape the historical majority of the corpus.
 
         {"type":"result","is_error":true,"api_error_status":429,...,
          "result":"You've hit your session limit · resets 12:30pm (Asia/Tokyo)",
@@ -3428,9 +3370,10 @@ def _sole_content_usage_limit_line(stdout: str, *, allow_envelope: bool) -> str 
     alone and stayed inert for the pure loops, the same bug one layer in. The direction this code
     RELIES on is `envelope => the CLI authored this stdout`, which holds by construction: the
     callers pass `allow_envelope` only for a `claude_cli` PURE launch. A codex or HTTP pure leaf
-    writes the model's own answer to stdout, and an agentic claude leaf's envelope was lifted at
-    the capture boundary (`_unwrap_agentic_envelope`) — in both cases a JSON line here is
-    model-written and its keys prove nothing. The converse is not assumed — a pure launch may
+    writes the model's own answer to stdout, so a JSON line there is model-written and its keys
+    prove nothing. (The third case this used to name — an agentic claude leaf, whose envelope
+    was lifted at the capture boundary by `_unwrap_agentic_envelope` — went with that leaf in
+    Z4, issue #171.) The converse is not assumed — a pure launch may
     still abort bare, and the bare path accepts it. Every count in this docstring and the two
     below comes from ONE sweep of the recorded workspaces (2026-07-24, 711 leaf stdout logs);
     in it an envelope appears iff the launch was pure, with zero exceptions. The corpus has
@@ -3894,10 +3837,10 @@ def _classify_leaf_infra_error(stderr: str, stdout: str = "") -> tuple[str, str]
     message, not one the run went on to survive.
 
     `stderr` is authoritative: stdout carries the leaf's OWN TEXT — the model's answer for a
-    codex or HTTP leaf, and for an AGENTIC claude leaf the `result` string
-    `_unwrap_agentic_envelope` lifted out of its envelope (a PURE claude leaf's stdout is
-    still the envelope itself, which is why the line-anchored patterns find nothing in it) —
-    which may well discuss "the rate-limiting step" of a numerical scheme, so a stdout match may override a
+    codex or HTTP leaf, while a claude leaf's stdout is the CLI envelope itself, which is why
+    the line-anchored patterns find nothing in it. (A third shape existed until Z4, issue #171:
+    an AGENTIC claude leaf's stdout was the `result` string `_unwrap_agentic_envelope` had
+    lifted out of that envelope.) The leaf's own text may well discuss "the rate-limiting step" of a numerical scheme, so a stdout match may override a
     stderr match only for a tag in _CROSS_STREAM_PROMOTING_TAGS. Otherwise stdout is consulted
     solely when stderr named nothing — which is the common case, since the CLI reports an
     infrastructure failure as its result text (the E2E #4 incident had an empty stderr).
@@ -3997,10 +3940,13 @@ def _host_authored_m3c(refs: NodeRefs) -> tuple[bool, bool]:
     `runner_host_authored=True` for a node whose runner the host does not author.
 
     That is unchanged from before this was a function — both loops wrote the same literal — and
-    it is inert: the stamp's only reader is `_payload_is_m3c_physics`, which uses it to narrow
-    the contract-doc set, and a pure launch empties `skill_must_read_refs` regardless. It is
-    written down because this is the SEAM, and the next author needs to know it already has a
-    caller it does not fit rather than discover it after adding a second.
+    it is inert. It was inert already when its only reader was `_payload_is_m3c_physics`, which
+    narrowed the AGENTIC contract-doc set while a pure launch emptied `skill_must_read_refs`
+    regardless; Z4 (issue #171) deleted that reader with the rest of the must-read machinery, so
+    the stamp now has NO reader at all and is recorded provenance. It is written down because
+    this is the SEAM: the next author needs to know it already has a caller it does not fit,
+    and that adding a reader means deciding what the flag means for an `infrastructure` node
+    first.
     """
     return (True, True)
 
@@ -5896,7 +5842,7 @@ class Conductor:
         `validate_pipeline_semantics._ir_m3c_language`, and
         `orchestration_runtime.control_file_host_authored`, which record_launch calls to stamp the
         control-file authorship flag onto the launch request. A FIFTH reader,
-        `orchestration_runtime._payload_is_m3c_physics`, TRUSTS that stamp instead of re-deriving,
+        `orchestration_runtime`'s contract-doc deriver, TRUSTED that stamp instead of re-deriving it,
         so it cannot drift on its own but inherits whatever the fourth decided.
 
         Two earlier versions of this count were wrong in opposite ways — "the conductor /
@@ -7412,7 +7358,7 @@ clean:
 
         `_host_authored_m3c` returns the constant `(True, True)`, which is the truth for the
         pure paths that only ever see an M3c node. The judge sees every node kind, so it asks
-        instead — the stamp's reader, `_payload_is_m3c_physics`, believes what the request says.
+        instead — the stamp's reader believed what the request said.
         """
         return (self._conductor_authors_makefile(refs), self._conductor_authors_runner(refs))
 
@@ -7545,7 +7491,7 @@ clean:
 
         `host_authored_flags` carries the NODE's real values rather than the M3c constant the
         two older reviewers pass: the judge runs on every node kind, and the launch request's
-        stamp is read back by `_payload_is_m3c_physics`."""
+        stamp had one reader, and it is deleted (see `_host_authored_render_flags`)."""
         return self._PureReviewerSpec(
             build_context=self._build_pure_judge_context,
             write_project_meta=self._write_semantic_review,
@@ -7605,7 +7551,7 @@ clean:
         #: A certified sibling exemplar is resolved and attached only where a template renders it.
         wants_exemplar: bool
         #: refs -> `(makefile_host_authored, runner_host_authored)` for the launch request.
-        #: The request's stamp is read back by `_payload_is_m3c_physics`, so it must carry the
+        #: The request's stamp HAD a reader (deleted in Z4, issue #171), so it must carry the
         #: node's real values, not the shape the phase happened to have when it went pure.
         host_authored_flags: Callable[[NodeRefs], tuple[bool, bool]]
         #: (launch record of the repair target) -> the document that producer attempt returned,
@@ -7890,7 +7836,7 @@ clean:
                 self.new_agent_run_id(), "fail", [], 1,
                 ("pure_context_assembly_failed", _pure_assembly_detail(exc)), 1)
         # The launch request's host-authorship stamp is the NODE's, resolved once here. It is
-        # read back by `_payload_is_m3c_physics`, so a phase whose pure path also serves a node
+        # read back by the deleted contract-doc deriver, so a phase whose pure path also serves a node
         # the host authors nothing for must not stamp a constant.
         makefile_host_authored, runner_host_authored = spec.host_authored_flags(refs)
         per_attempt: list[dict[str, Any]] = []
@@ -8757,7 +8703,7 @@ clean:
                 self.new_agent_run_id(), "fail", [], 1,
                 ("pure_context_assembly_failed", _pure_assembly_detail(exc)), 1)
         # The launch request's host-authorship stamp is the NODE's, resolved once here. It is
-        # read back by `_payload_is_m3c_physics`, so a phase whose pure path also serves a node
+        # read back by the deleted contract-doc deriver, so a phase whose pure path also serves a node
         # the host authors nothing for must not stamp a constant.
         makefile_host_authored, runner_host_authored = spec.host_authored_flags(refs)
         per_attempt: list[dict[str, Any]] = []
