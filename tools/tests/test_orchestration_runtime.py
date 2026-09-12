@@ -9,7 +9,6 @@ import json
 import os
 import re
 import shutil
-import stat
 import subprocess
 import sys
 import tempfile
@@ -52,7 +51,6 @@ from tools.orchestration_runtime import (
     _write_roots_for_launch,
     _update_preflight_probed_at,
     _validate_agent_summary_text,
-    build_launch_prompt_text,
     resume_orchestration,
     get_preflight_ttl_status,
     init_orchestration,
@@ -29786,7 +29784,6 @@ class R5ExemplarConductorGatingTests(unittest.TestCase):
     """
 
     def _conductor(self, tmp: str):
-        import tools.workflow_conductor as wc
         from tools.tests.test_workflow_conductor import _FakeConductor
         return _FakeConductor(repo_root=Path(tmp), orchestration_id="o",
                               orchestration_agent_run_id="ORCH",
