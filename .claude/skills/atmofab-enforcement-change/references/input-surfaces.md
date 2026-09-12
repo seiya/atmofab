@@ -227,7 +227,10 @@ what makes it trustworthy (the anti-mock-green check has just run, and no leaf c
 writing). The plan's own §4 asked one question about it: is that write attributed to anyone as
 an unauthorized write?
 
-Reading said no. The probe said yes, and the probe is the record:
+Reading said no. The probe said yes, and the probe is the record. **The mechanism below is
+deleted** ([issue #171](https://github.com/seiya/atmofab/issues/171) PR-2 — a pure leaf has no
+write authority to attribute), so the code will not run at HEAD; it is kept because the
+EPISODE is the lesson — reading a layer said one thing and driving it said another:
 
 ```python
 # after a child authored the meta inside its window and terminalized cleanly,
@@ -240,7 +243,7 @@ _validate_actual_write_paths(repo, orch, {"agent_run_id": "orchestration_run_pro
 #                          workspace/pipelines/.../source_meta.json
 ```
 
-The mechanism is `_child_managed_paths_excludable_from_orchestration_diff`: it excludes a
+The mechanism was `_child_managed_paths_excludable_from_orchestration_diff`: it excluded a
 child-authored path from the orchestration's own FS-diff **only while the path's current digest
 still equals the digest the child left** (`if current_digest != digest: continue`). The host
 stamp changes the bytes, the exclusion lapses, and the path falls through to the

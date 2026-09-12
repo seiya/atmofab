@@ -375,13 +375,17 @@ recipes are in `references/input-surfaces.md`:
 - **Surface 9-b — a HOST write that lands OUTSIDE every child window is a new thing for the
   write-attribution layer to classify, and the layer has no category for it.** Surface 9 asks
   what can MOVE a protected path; this asks what happens when the same path is written at a new
-  TIME. `_validate_actual_write_paths` attributes by WINDOW: a leaf's changes are diffed against
-  the baseline its launch took, and a child-authored path is excluded from the orchestration's
-  own diff only while its digest still equals what the child left
-  (`_child_managed_paths_excludable_from_orchestration_diff`). A host write after the window
-  closes therefore breaks that equality and the path re-enters the orchestration-role diff,
-  where the orchestration's write_roots are the ORCH ROOT ALONE — so it reads as an
-  unauthorized write to a path the host is entitled to write. Issue #177 met this by stamping a
+  TIME. **HISTORICAL since Z4** ([issue #171](https://github.com/seiya/atmofab/issues/171)
+  PR-2): the write-attribution layer this surface is about is deleted, because a
+  `pure-function leaf` has no write authority to attribute — the host writes every artifact.
+  The surface is kept because the SHAPE recurs wherever one layer classifies by window and
+  another writes outside it. What it described: `_validate_actual_write_paths` attributed by
+  WINDOW, a leaf's changes diffed against the baseline its launch took, and a child-authored
+  path excluded from the orchestration's own diff only while its digest still equalled what the
+  child left (`_child_managed_paths_excludable_from_orchestration_diff`). A host write after the
+  window closed broke that equality and the path re-entered the orchestration-role diff, where
+  the orchestration's write_roots were the ORCH ROOT ALONE — so it read as an unauthorized
+  write to a path the host is entitled to write. Issue #177 met this by stamping a
   certification into a stage meta at `write-step-result` time; measured, the direct call DOES
   flag it. **It shipped because no production caller records a terminal orchestration-role agent
   run** — `update_orchestration_status` rewrites that row in place — so the branch is

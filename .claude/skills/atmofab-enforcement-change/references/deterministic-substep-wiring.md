@@ -30,10 +30,13 @@ and dispatch sites — which is how the green-unit-suite failure above happens:
    more: `revoke-artifact` takes the phase to re-derive rather than a trigger to validate, so the
    permission lives entirely in `conduct`'s routing conditions (issue #177 retired `reopen-phase`,
    whose trigger gate was the thing this item used to point at).
-7. `_mandatory_file_tool_pins_for_launch`'s early-return set, if this substep's output is
-   host-written and should be exempt from leaf file-tool pins.
-8. `_allowed_file_tool_paths_for_launch` — both the auto-derive and the explicit-list branches —
-   so a host-authored artifact this substep writes is leaf-non-writable.
+7. ~~`_mandatory_file_tool_pins_for_launch`'s early-return set~~ and
+   8. ~~`_allowed_file_tool_paths_for_launch`~~ — **both RETIRED**, so this is a checklist of
+   SEVEN sites now. They pinned which paths a leaf's `Edit`/`Write` grant covered; a
+   `pure-function leaf` holds no tool and writes nothing, the host writes every artifact from
+   the document the leaf returns, and both functions went with that grant in Z4
+   ([issue #171](https://github.com/seiya/atmofab/issues/171) PR-2). There is nothing to make
+   leaf-non-writable: a host-authored artifact is unreachable by construction.
 9. `ALLOWED_VALIDATE_PIPELINE_STAGES` and `_build_gate_runbook`, and the matching table in
    `docs/workflow/LAUNCH_PROMPT_REFERENCE.md` — keep them in sync in the same commit.
 
